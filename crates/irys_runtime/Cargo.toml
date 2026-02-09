@@ -1,0 +1,21 @@
+[package]
+name = "irys_runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+irys_parser = { workspace = true }
+irys_forms = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+chrono = "0.4"
+
+[dev-dependencies]
+pest = { workspace = true }
+pest_derive = { workspace = true }
+
+[[example]]
+name = "parse_test"
+path = "examples/parse_test.rs"
