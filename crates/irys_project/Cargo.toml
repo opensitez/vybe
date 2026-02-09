@@ -1,0 +1,14 @@
+[package]
+name = "irys_project"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+irys_forms = { workspace = true }
+irys_parser = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+quick-xml = { version = "0.31", features = ["serialize"] }
