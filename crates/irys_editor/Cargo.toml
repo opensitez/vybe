@@ -1,0 +1,24 @@
+[package]
+name = "irys_editor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "irys_editor"
+path = "src/main.rs"
+
+[dependencies]
+irys_parser = { workspace = true }
+irys_runtime = { workspace = true }
+irys_forms = { workspace = true }
+irys_project = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+
+# Dioxus for GUI
+dioxus = { version = "0.5", features = ["desktop"] }
+dioxus-desktop = "0.5"
+dioxus-hooks = "0.5"
+rfd = "0.14"
