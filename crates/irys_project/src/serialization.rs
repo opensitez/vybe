@@ -572,6 +572,24 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
         }
     }
 
+    // If startup_object is Form("X") but no form with that name was loaded,
+    // it's actually a module reference (e.g. <StartupObject>Program</StartupObject>).
+    // Check if the referenced code file contains Sub Main.
+    if let crate::project::StartupObject::Form(ref name) = project.startup_object {
+        let has_form = project.forms.iter().any(|f| f.form.name.eq_ignore_ascii_case(name));
+        if !has_form {
+            // Not a real form — check code files for Sub Main
+            let has_sub_main = project.code_files.iter().any(|cf| {
+                cf.code.to_uppercase().contains("SUB MAIN")
+            });
+            if has_sub_main {
+                eprintln!("[DEBUG] '{}' is not a form, found Sub Main in code — setting SubMain", name);
+                project.startup_object = crate::project::StartupObject::SubMain;
+                project.startup_form = None;
+            }
+        }
+    }
+
     eprintln!("[DEBUG] Project startup_object after loading: {:?}", project.startup_object);
     eprintln!("[DEBUG] Project startup_form after loading: {:?}", project.startup_form);
 

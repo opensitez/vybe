@@ -271,12 +271,12 @@ pub fn FormRunner() -> Element {
                     }
                     interp.register_resources(res_map);
 
-                    // Load all code files
+                    // Load all code files (global scope — VB.NET modules are flattened)
                     let project_read2 = rp.project.read();
                     if let Some(proj) = project_read2.as_ref() {
                         for code_file in &proj.code_files {
                             if let Ok(program) = parse_program(&code_file.code) {
-                                let _ = interp.load_module(&code_file.name, &program);
+                                let _ = interp.load_code_file(&program);
                             }
                         }
 

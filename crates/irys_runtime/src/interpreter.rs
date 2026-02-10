@@ -191,6 +191,31 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Load a VB.NET code file into **global** scope.
+    ///
+    /// Unlike `load_module`, this does NOT prefix declarations with a module
+    /// name.  The parser already flattens `Module X ... End Module` contents
+    /// into top-level declarations, so everything defined in a Module is
+    /// globally accessible — exactly how VB.NET works.
+    ///
+    /// Use this for `.vbproj` code files.  Use `load_module` when you need a
+    /// named scope (VB6 `.bas` files, form code-behind, synthetic helpers).
+    pub fn load_code_file(&mut self, program: &Program) -> Result<(), RuntimeError> {
+        // No current_module ⇒ declare() registers names without a prefix.
+        let prev_module = self.current_module.take();
+
+        for decl in &program.declarations {
+            self.declare(decl)?;
+        }
+
+        for stmt in &program.statements {
+            self.execute(stmt)?;
+        }
+
+        self.current_module = prev_module;
+        Ok(())
+    }
+
     fn declare(&mut self, decl: &Declaration) -> Result<(), RuntimeError> {
         match decl {
             Declaration::Variable(var) => {
@@ -1492,6 +1517,10 @@ impl Interpreter {
                     let mut fields = std::collections::HashMap::new();
                     fields.insert("__type".to_string(), Value::String("WebClient".to_string()));
                     fields.insert("Encoding".to_string(), Value::String("UTF-8".to_string()));
+                    // Headers stored as a Dictionary for curl -H flags
+                    fields.insert("headers".to_string(), Value::Dictionary(
+                        std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))
+                    ));
                     let obj = crate::value::ObjectData {
                         class_name: "WebClient".to_string(),
                         fields,
@@ -1503,8 +1532,54 @@ impl Interpreter {
                 if class_name == "httpclient" || class_name == "system.net.http.httpclient" {
                     let mut fields = std::collections::HashMap::new();
                     fields.insert("__type".to_string(), Value::String("HttpClient".to_string()));
+                    // DefaultRequestHeaders stored as a Dictionary
+                    fields.insert("defaultrequestheaders".to_string(), Value::Dictionary(
+                        std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))
+                    ));
                     let obj = crate::value::ObjectData {
                         class_name: "HttpClient".to_string(),
+                        fields,
+                    };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // NetworkCredential
+                if class_name == "networkcredential" || class_name == "system.net.networkcredential" {
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("NetworkCredential".to_string()));
+                    if ctor_args.len() >= 2 {
+                        let user = self.evaluate_expr(&ctor_args[0])?.as_string();
+                        let pass = self.evaluate_expr(&ctor_args[1])?.as_string();
+                        fields.insert("username".to_string(), Value::String(user));
+                        fields.insert("password".to_string(), Value::String(pass));
+                        if ctor_args.len() >= 3 {
+                            let domain = self.evaluate_expr(&ctor_args[2])?.as_string();
+                            fields.insert("domain".to_string(), Value::String(domain));
+                        }
+                    }
+                    let obj = crate::value::ObjectData {
+                        class_name: "NetworkCredential".to_string(),
+                        fields,
+                    };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // StringContent (System.Net.Http.StringContent) — for PostAsync
+                if class_name == "stringcontent" || class_name == "system.net.http.stringcontent" {
+                    let content = if !ctor_args.is_empty() {
+                        self.evaluate_expr(&ctor_args[0])?.as_string()
+                    } else {
+                        String::new()
+                    };
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("StringContent".to_string()));
+                    fields.insert("body".to_string(), Value::String(content));
+                    if ctor_args.len() >= 3 {
+                        let media_type = self.evaluate_expr(&ctor_args[2])?.as_string();
+                        fields.insert("mediatype".to_string(), Value::String(media_type));
+                    }
+                    let obj = crate::value::ObjectData {
+                        class_name: "StringContent".to_string(),
                         fields,
                     };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
@@ -2140,25 +2215,57 @@ impl Interpreter {
                         return stringbuilder_method_fn(&method_name, &obj_val, &arg_values?);
                     }
                     if type_name == "WebClient" {
+                        // Collect headers from the object for curl -H flags
+                        let header_args: Vec<String> = {
+                            if let Some(Value::Dictionary(hd)) = obj_ref.borrow().fields.get("headers") {
+                                let hd_b = hd.borrow();
+                                let keys = hd_b.keys();
+                                let vals = hd_b.values();
+                                keys.iter().zip(vals.iter()).map(|(k, v)| {
+                                    format!("{}: {}", k.as_string(), v.as_string())
+                                }).collect()
+                            } else {
+                                vec![]
+                            }
+                        };
+                        // Check for credentials
+                        let cred_args: Vec<String> = {
+                            if let Some(Value::Object(cred_ref)) = obj_ref.borrow().fields.get("credentials") {
+                                let cb = cred_ref.borrow();
+                                if let (Some(Value::String(u)), Some(Value::String(p))) = (cb.fields.get("username"), cb.fields.get("password")) {
+                                    vec!["-u".to_string(), format!("{}:{}", u, p)]
+                                } else { vec![] }
+                            } else { vec![] }
+                        };
+                        let build_curl = |extra: &[&str], url: &str| -> std::process::Command {
+                            let mut cmd = std::process::Command::new("curl");
+                            cmd.arg("-s").arg("-L");
+                            for h in &header_args {
+                                cmd.arg("-H").arg(h);
+                            }
+                            for c in &cred_args {
+                                cmd.arg(c);
+                            }
+                            for e in extra {
+                                cmd.arg(*e);
+                            }
+                            cmd.arg(url);
+                            cmd
+                        };
                         match method_name.as_str() {
                             "downloadstring" => {
                                 let url = self.evaluate_expr(&args[0])?.as_string();
-                                let output = std::process::Command::new("curl")
-                                    .args(&["-s", "-L", &url])
-                                    .output()
+                                let output = build_curl(&[], &url).output()
                                     .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
                                 if !output.status.success() {
                                     let stderr = String::from_utf8_lossy(&output.stderr);
                                     return Err(RuntimeError::Custom(format!("WebClient.DownloadString failed: {}", stderr)));
                                 }
-                                let body = String::from_utf8_lossy(&output.stdout).to_string();
-                                return Ok(Value::String(body));
+                                return Ok(Value::String(String::from_utf8_lossy(&output.stdout).to_string()));
                             }
                             "downloaddata" => {
                                 let url = self.evaluate_expr(&args[0])?.as_string();
-                                let output = std::process::Command::new("curl")
-                                    .args(&["-s", "-L", &url])
-                                    .output()
+                                let output = build_curl(&[], &url).output()
                                     .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
                                 if !output.status.success() {
                                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2167,67 +2274,238 @@ impl Interpreter {
                                 let bytes: Vec<Value> = output.stdout.iter().map(|b| Value::Byte(*b)).collect();
                                 return Ok(Value::Array(bytes));
                             }
+                            "downloadfile" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let path = self.evaluate_expr(&args[1])?.as_string();
+                                let output = build_curl(&["-o", &path], &url).output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                if !output.status.success() {
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    return Err(RuntimeError::Custom(format!("WebClient.DownloadFile failed: {}", stderr)));
+                                }
+                                return Ok(Value::Nothing);
+                            }
                             "uploadstring" => {
                                 let url = self.evaluate_expr(&args[0])?.as_string();
                                 let data = self.evaluate_expr(&args[1])?.as_string();
-                                let output = std::process::Command::new("curl")
-                                    .args(&["-s", "-L", "-X", "POST", "-d", &data, &url])
-                                    .output()
+                                let output = build_curl(&["-X", "POST", "-d", &data], &url).output()
                                     .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
                                 if !output.status.success() {
                                     let stderr = String::from_utf8_lossy(&output.stderr);
                                     return Err(RuntimeError::Custom(format!("WebClient.UploadString failed: {}", stderr)));
                                 }
-                                let body = String::from_utf8_lossy(&output.stdout).to_string();
-                                return Ok(Value::String(body));
+                                return Ok(Value::String(String::from_utf8_lossy(&output.stdout).to_string()));
+                            }
+                            "uploaddata" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let data = self.evaluate_expr(&args[1])?;
+                                // Convert byte array to a temp approach: write via stdin
+                                let bytes: Vec<u8> = if let Value::Array(arr) = &data {
+                                    arr.iter().map(|v| match v { Value::Byte(b) => *b, _ => 0 }).collect()
+                                } else {
+                                    data.as_string().into_bytes()
+                                };
+                                use std::io::Write;
+                                let mut child = std::process::Command::new("curl")
+                                    .args(&["-s", "-L", "-X", "POST", "--data-binary", "@-"])
+                                    .args(header_args.iter().flat_map(|h| vec!["-H", h.as_str()]))
+                                    .args(&cred_args)
+                                    .arg(&url)
+                                    .stdin(std::process::Stdio::piped())
+                                    .stdout(std::process::Stdio::piped())
+                                    .stderr(std::process::Stdio::piped())
+                                    .spawn()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                if let Some(mut stdin) = child.stdin.take() {
+                                    let _ = stdin.write_all(&bytes);
+                                }
+                                let output = child.wait_with_output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                let resp_bytes: Vec<Value> = output.stdout.iter().map(|b| Value::Byte(*b)).collect();
+                                return Ok(Value::Array(resp_bytes));
                             }
                             "dispose" => return Ok(Value::Nothing),
                             _ => {}
                         }
                     }
                     if type_name == "HttpClient" {
+                        // Collect DefaultRequestHeaders
+                        let header_args: Vec<String> = {
+                            if let Some(Value::Dictionary(hd)) = obj_ref.borrow().fields.get("defaultrequestheaders") {
+                                let hd_b = hd.borrow();
+                                let keys = hd_b.keys();
+                                let vals = hd_b.values();
+                                keys.iter().zip(vals.iter()).map(|(k, v)| {
+                                    format!("{}: {}", k.as_string(), v.as_string())
+                                }).collect()
+                            } else {
+                                vec![]
+                            }
+                        };
+                        let build_http_curl = |method: &str, url: &str, body: Option<&str>, content_type: Option<&str>| -> std::process::Command {
+                            let mut cmd = std::process::Command::new("curl");
+                            cmd.arg("-s").arg("-L").arg("-w").arg("\n%{http_code}");
+                            cmd.arg("-X").arg(method);
+                            for h in &header_args {
+                                cmd.arg("-H").arg(h);
+                            }
+                            if let Some(ct) = content_type {
+                                cmd.arg("-H").arg(&format!("Content-Type: {}", ct));
+                            }
+                            if let Some(b) = body {
+                                cmd.arg("-d").arg(b);
+                            }
+                            cmd.arg(url);
+                            cmd
+                        };
+                        let make_response = |output: std::process::Output| -> Result<Value, RuntimeError> {
+                            let full = String::from_utf8_lossy(&output.stdout).to_string();
+                            let mut fields = std::collections::HashMap::new();
+                            fields.insert("__type".to_string(), Value::String("HttpResponseMessage".to_string()));
+                            if let Some(pos) = full.rfind('\n') {
+                                let body = full[..pos].to_string();
+                                let code = full[pos+1..].trim().to_string();
+                                fields.insert("content".to_string(), Value::String(body));
+                                fields.insert("statuscode".to_string(), Value::String(code.clone()));
+                                fields.insert("issuccessstatuscode".to_string(), Value::Boolean(code.starts_with('2')));
+                            } else {
+                                fields.insert("content".to_string(), Value::String(full));
+                                fields.insert("statuscode".to_string(), Value::String("200".to_string()));
+                                fields.insert("issuccessstatuscode".to_string(), Value::Boolean(true));
+                            }
+                            let obj = crate::value::ObjectData { class_name: "HttpResponseMessage".to_string(), fields };
+                            Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))))
+                        };
                         match method_name.as_str() {
                             "getstringasync" => {
                                 let url = self.evaluate_expr(&args[0])?.as_string();
-                                let output = std::process::Command::new("curl")
-                                    .args(&["-s", "-L", &url])
-                                    .output()
+                                let output = build_http_curl("GET", &url, None, None).output()
                                     .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
-                                if !output.status.success() {
-                                    let stderr = String::from_utf8_lossy(&output.stderr);
-                                    return Err(RuntimeError::Custom(format!("HttpClient.GetStringAsync failed: {}", stderr)));
-                                }
-                                let body = String::from_utf8_lossy(&output.stdout).to_string();
+                                // getstringasync returns the body directly, not a response object
+                                let full = String::from_utf8_lossy(&output.stdout).to_string();
+                                // Strip the status code line we appended
+                                let body = if let Some(pos) = full.rfind('\n') {
+                                    full[..pos].to_string()
+                                } else { full };
                                 return Ok(Value::String(body));
                             }
                             "getasync" => {
                                 let url = self.evaluate_expr(&args[0])?.as_string();
-                                let output = std::process::Command::new("curl")
-                                    .args(&["-s", "-L", "-w", "\n%{http_code}", &url])
-                                    .output()
+                                let output = build_http_curl("GET", &url, None, None).output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                return make_response(output);
+                            }
+                            "postasync" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let content_val = self.evaluate_expr(&args[1])?;
+                                let (body_str, ct) = if let Value::Object(cref) = &content_val {
+                                    let cb = cref.borrow();
+                                    let b = cb.fields.get("body").map(|v| v.as_string()).unwrap_or_default();
+                                    let t = cb.fields.get("mediatype").map(|v| v.as_string()).unwrap_or("application/json".to_string());
+                                    (b, t)
+                                } else {
+                                    (content_val.as_string(), "text/plain".to_string())
+                                };
+                                let output = build_http_curl("POST", &url, Some(&body_str), Some(&ct)).output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                return make_response(output);
+                            }
+                            "putasync" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let content_val = self.evaluate_expr(&args[1])?;
+                                let (body_str, ct) = if let Value::Object(cref) = &content_val {
+                                    let cb = cref.borrow();
+                                    let b = cb.fields.get("body").map(|v| v.as_string()).unwrap_or_default();
+                                    let t = cb.fields.get("mediatype").map(|v| v.as_string()).unwrap_or("application/json".to_string());
+                                    (b, t)
+                                } else {
+                                    (content_val.as_string(), "text/plain".to_string())
+                                };
+                                let output = build_http_curl("PUT", &url, Some(&body_str), Some(&ct)).output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                return make_response(output);
+                            }
+                            "deleteasync" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let output = build_http_curl("DELETE", &url, None, None).output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                return make_response(output);
+                            }
+                            "dispose" => return Ok(Value::Nothing),
+                            _ => {}
+                        }
+                    }
+                    // HttpResponseMessage.Content.ReadAsStringAsync()
+                    if type_name == "HttpResponseMessage" {
+                        match method_name.as_str() {
+                            "readasstringasync" | "tostring" => {
+                                let content = obj_ref.borrow().fields.get("content").cloned()
+                                    .unwrap_or(Value::String(String::new()));
+                                return Ok(content);
+                            }
+                            _ => {}
+                        }
+                    }
+                    // HttpWebRequest methods
+                    if type_name == "HttpWebRequest" {
+                        match method_name.as_str() {
+                            "getresponse" | "getresponseasync" => {
+                                let url = obj_ref.borrow().fields.get("url").cloned()
+                                    .unwrap_or(Value::String(String::new())).as_string();
+                                let method_str = obj_ref.borrow().fields.get("method").cloned()
+                                    .unwrap_or(Value::String("GET".to_string())).as_string();
+                                let mut cmd = std::process::Command::new("curl");
+                                cmd.args(&["-s", "-L", "-w", "\n%{http_code}", "-X", &method_str]);
+                                // Add headers if any
+                                if let Some(Value::Dictionary(hd)) = obj_ref.borrow().fields.get("headers") {
+                                    let hd_b = hd.borrow();
+                                    let keys = hd_b.keys();
+                                    let vals = hd_b.values();
+                                    for (k, v) in keys.iter().zip(vals.iter()) {
+                                        cmd.arg("-H").arg(&format!("{}: {}", k.as_string(), v.as_string()));
+                                    }
+                                }
+                                // Credentials
+                                if let Some(Value::Object(cred)) = obj_ref.borrow().fields.get("credentials") {
+                                    let cb = cred.borrow();
+                                    if let (Some(Value::String(u)), Some(Value::String(p))) = (cb.fields.get("username"), cb.fields.get("password")) {
+                                        cmd.arg("-u").arg(&format!("{}:{}", u, p));
+                                    }
+                                }
+                                cmd.arg(&url);
+                                let output = cmd.output()
                                     .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
                                 let full = String::from_utf8_lossy(&output.stdout).to_string();
                                 let mut fields = std::collections::HashMap::new();
-                                fields.insert("__type".to_string(), Value::String("HttpResponseMessage".to_string()));
-                                // Last line is the status code
+                                fields.insert("__type".to_string(), Value::String("HttpWebResponse".to_string()));
                                 if let Some(pos) = full.rfind('\n') {
                                     let body = full[..pos].to_string();
                                     let code = full[pos+1..].trim().to_string();
-                                    fields.insert("Content".to_string(), Value::String(body));
-                                    fields.insert("StatusCode".to_string(), Value::String(code.clone()));
-                                    fields.insert("IsSuccessStatusCode".to_string(), Value::Boolean(code.starts_with('2')));
+                                    fields.insert("body".to_string(), Value::String(body.clone()));
+                                    fields.insert("statuscode".to_string(), Value::String(code));
+                                    fields.insert("contentlength".to_string(), Value::Integer(body.len() as i32));
                                 } else {
-                                    fields.insert("Content".to_string(), Value::String(full));
-                                    fields.insert("StatusCode".to_string(), Value::String("200".to_string()));
-                                    fields.insert("IsSuccessStatusCode".to_string(), Value::Boolean(true));
+                                    fields.insert("body".to_string(), Value::String(full.clone()));
+                                    fields.insert("statuscode".to_string(), Value::String("200".to_string()));
+                                    fields.insert("contentlength".to_string(), Value::Integer(full.len() as i32));
                                 }
-                                let obj = crate::value::ObjectData {
-                                    class_name: "HttpResponseMessage".to_string(),
-                                    fields,
-                                };
+                                let obj = crate::value::ObjectData { class_name: "HttpWebResponse".to_string(), fields };
                                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                             }
-                            "dispose" => return Ok(Value::Nothing),
+                            "dispose" | "abort" => return Ok(Value::Nothing),
+                            _ => {}
+                        }
+                    }
+                    // HttpWebResponse methods
+                    if type_name == "HttpWebResponse" {
+                        match method_name.as_str() {
+                            "getresponsestream" => {
+                                // Return the body as a string (simulates reading a stream)
+                                let body = obj_ref.borrow().fields.get("body").cloned()
+                                    .unwrap_or(Value::String(String::new()));
+                                return Ok(body);
+                            }
+                            "close" | "dispose" => return Ok(Value::Nothing),
                             _ => {}
                         }
                     }
@@ -2567,6 +2845,168 @@ impl Interpreter {
                     .map(|a| Value::String(a.clone()))
                     .collect();
                 return Ok(Value::Array(args_array));
+            }
+
+            // ---- WebRequest.Create ----
+            "webrequest.create" | "system.net.webrequest.create"
+            | "httpwebrequest.create" | "system.net.httpwebrequest.create" => {
+                let url = arg_values[0].as_string();
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("HttpWebRequest".to_string()));
+                fields.insert("url".to_string(), Value::String(url));
+                fields.insert("method".to_string(), Value::String("GET".to_string()));
+                fields.insert("contenttype".to_string(), Value::String("application/x-www-form-urlencoded".to_string()));
+                fields.insert("useragent".to_string(), Value::String("irys/1.0".to_string()));
+                fields.insert("timeout".to_string(), Value::Integer(100000));
+                fields.insert("headers".to_string(), Value::Dictionary(
+                    std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))
+                ));
+                let obj = crate::value::ObjectData { class_name: "HttpWebRequest".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+
+            // ---- ServicePointManager (no-op, just absorb assignments) ----
+            "servicepointmanager.securityprotocol" => {
+                // No-op: TLS is handled by curl
+                return Ok(Value::Integer(0));
+            }
+
+            // ---- Dns class ----
+            "dns.gethostentry" | "system.net.dns.gethostentry" => {
+                let host = arg_values[0].as_string();
+                let output = std::process::Command::new("host")
+                    .arg(&host)
+                    .output();
+                let mut addresses = Vec::new();
+                let mut hostname = host.clone();
+                if let Ok(out) = output {
+                    let text = String::from_utf8_lossy(&out.stdout).to_string();
+                    for line in text.lines() {
+                        if line.contains("has address") {
+                            if let Some(addr) = line.split_whitespace().last() {
+                                addresses.push(Value::String(addr.to_string()));
+                            }
+                        }
+                        if line.contains("has IPv6 address") {
+                            if let Some(addr) = line.split_whitespace().last() {
+                                addresses.push(Value::String(addr.to_string()));
+                            }
+                        }
+                        // Extract canonical hostname
+                        if line.contains("is an alias for") {
+                            if let Some(alias) = line.split("is an alias for ").nth(1) {
+                                hostname = alias.trim_end_matches('.').to_string();
+                            }
+                        }
+                    }
+                }
+                // Fallback: try getent / dig if host not available
+                if addresses.is_empty() {
+                    if let Ok(out) = std::process::Command::new("getent").args(&["hosts", &host]).output() {
+                        let text = String::from_utf8_lossy(&out.stdout).to_string();
+                        for line in text.lines() {
+                            if let Some(addr) = line.split_whitespace().next() {
+                                addresses.push(Value::String(addr.to_string()));
+                            }
+                        }
+                    }
+                }
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("hostname".to_string(), Value::String(hostname));
+                fields.insert("addresslist".to_string(), Value::Array(addresses));
+                let obj = crate::value::ObjectData { class_name: "IPHostEntry".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+            "dns.gethostaddresses" | "system.net.dns.gethostaddresses" => {
+                let host = arg_values[0].as_string();
+                let output = std::process::Command::new("host")
+                    .arg(&host)
+                    .output();
+                let mut addresses = Vec::new();
+                if let Ok(out) = output {
+                    let text = String::from_utf8_lossy(&out.stdout).to_string();
+                    for line in text.lines() {
+                        if line.contains("has address") || line.contains("has IPv6 address") {
+                            if let Some(addr) = line.split_whitespace().last() {
+                                addresses.push(Value::String(addr.to_string()));
+                            }
+                        }
+                    }
+                }
+                if addresses.is_empty() {
+                    if let Ok(out) = std::process::Command::new("getent").args(&["hosts", &host]).output() {
+                        let text = String::from_utf8_lossy(&out.stdout).to_string();
+                        for line in text.lines() {
+                            if let Some(addr) = line.split_whitespace().next() {
+                                addresses.push(Value::String(addr.to_string()));
+                            }
+                        }
+                    }
+                }
+                return Ok(Value::Array(addresses));
+            }
+            "dns.gethostname" | "system.net.dns.gethostname" => {
+                let output = std::process::Command::new("hostname").output();
+                let name = if let Ok(out) = output {
+                    String::from_utf8_lossy(&out.stdout).trim().to_string()
+                } else {
+                    "localhost".to_string()
+                };
+                return Ok(Value::String(name));
+            }
+
+            // ---- IPAddress class ----
+            "ipaddress.parse" | "system.net.ipaddress.parse" => {
+                let addr_str = arg_values[0].as_string();
+                // Validate: try to parse as IPv4 or IPv6
+                let is_v4 = addr_str.parse::<std::net::Ipv4Addr>().is_ok();
+                let is_v6 = addr_str.parse::<std::net::Ipv6Addr>().is_ok();
+                if !is_v4 && !is_v6 {
+                    return Err(RuntimeError::Custom(format!("IPAddress.Parse: invalid address '{}'", addr_str)));
+                }
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("IPAddress".to_string()));
+                fields.insert("address".to_string(), Value::String(addr_str.clone()));
+                fields.insert("addressfamily".to_string(), Value::String(
+                    if is_v4 { "InterNetwork".to_string() } else { "InterNetworkV6".to_string() }
+                ));
+                let obj = crate::value::ObjectData { class_name: "IPAddress".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+            "ipaddress.tryparse" | "system.net.ipaddress.tryparse" => {
+                let addr_str = arg_values[0].as_string();
+                let is_v4 = addr_str.parse::<std::net::Ipv4Addr>().is_ok();
+                let is_v6 = addr_str.parse::<std::net::Ipv6Addr>().is_ok();
+                if is_v4 || is_v6 {
+                    // Store the parsed address in the ByRef second arg if possible
+                    // For now, just return True (the parsed value can be re-obtained via Parse)
+                    return Ok(Value::Boolean(true));
+                }
+                return Ok(Value::Boolean(false));
+            }
+            "ipaddress.loopback" | "system.net.ipaddress.loopback" => {
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("IPAddress".to_string()));
+                fields.insert("address".to_string(), Value::String("127.0.0.1".to_string()));
+                fields.insert("addressfamily".to_string(), Value::String("InterNetwork".to_string()));
+                let obj = crate::value::ObjectData { class_name: "IPAddress".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+            "ipaddress.any" | "system.net.ipaddress.any" => {
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("IPAddress".to_string()));
+                fields.insert("address".to_string(), Value::String("0.0.0.0".to_string()));
+                fields.insert("addressfamily".to_string(), Value::String("InterNetwork".to_string()));
+                let obj = crate::value::ObjectData { class_name: "IPAddress".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+            "ipaddress.ipv6loopback" | "system.net.ipaddress.ipv6loopback" => {
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("IPAddress".to_string()));
+                fields.insert("address".to_string(), Value::String("::1".to_string()));
+                fields.insert("addressfamily".to_string(), Value::String("InterNetworkV6".to_string()));
+                let obj = crate::value::ObjectData { class_name: "IPAddress".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
 
             // ---- TimeSpan factory methods ----

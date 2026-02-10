@@ -1001,7 +1001,9 @@ fn parse_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
         Rule::identifier => Ok(Expression::Variable(Identifier::new(pair.as_str()))),
         Rule::string_literal => {
             let s = pair.as_str();
-            Ok(Expression::StringLiteral(s[1..s.len()-1].to_string()))
+            // Strip outer quotes, then unescape VB-style doubled quotes ("" -> ")
+            let inner = s[1..s.len()-1].replace("\"\"", "\"");
+            Ok(Expression::StringLiteral(inner))
         }
         Rule::numeric_literal => {
             let s = pair.as_str();

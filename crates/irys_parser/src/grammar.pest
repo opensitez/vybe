@@ -395,7 +395,7 @@ literal = _{
 
 nothing_literal = { ^"Nothing" }
 
-string_literal = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+string_literal = @{ "\"" ~ ("\"\"" | (!"\"" ~ ANY))* ~ "\"" }
 // Numeric literals: support optional type suffix (F, D, L, S, US, UI, UL, R, !)
 numeric_literal = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"F" | ^"D" | ^"L" | ^"R" | ^"S" | ^"US" | ^"UI" | ^"UL" | "!" | "#" | "@" | "%")? }
 boolean_literal = { ^"True" | ^"False" }

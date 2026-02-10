@@ -133,8 +133,15 @@ fn run_console_project(project: &Project, extra_args: &[String]) {
     interp.register_resources(res_map);
 
     for code_file in &project.code_files {
-        if let Ok(program) = parse_program(&code_file.code) {
-            let _ = interp.load_module(&code_file.name, &program);
+        match parse_program(&code_file.code) {
+            Ok(program) => {
+                if let Err(e) = interp.load_code_file(&program) {
+                    eprintln!("Runtime error loading '{}': {:?}", code_file.name, e);
+                }
+            }
+            Err(e) => {
+                eprintln!("Parse error in '{}': {:?}", code_file.name, e);
+            }
         }
     }
 
