@@ -20,6 +20,7 @@ pub struct Interpreter {
     with_object: Option<Value>,
     pub file_handles: HashMap<i32, crate::file_io::FileHandle>,
     pub resources: HashMap<String, String>,
+    pub command_line_args: Vec<String>,
 }
 
 impl Interpreter {
@@ -36,6 +37,7 @@ impl Interpreter {
             with_object: None,
             file_handles: HashMap::new(),
             resources: HashMap::new(),
+            command_line_args: Vec::new(),
         };
         interp.register_builtin_constants();
         interp.init_namespaces();
@@ -155,6 +157,15 @@ impl Interpreter {
         }
 
         Ok(())
+    }
+
+    /// Set the command-line arguments available to the VB program.
+    /// These are the arguments *after* the project file on the irys command line.
+    /// We prepend the program name (like .NET's Environment.GetCommandLineArgs).
+    pub fn set_command_line_args(&mut self, args: Vec<String>) {
+        let mut full = vec!["irys".to_string()];
+        full.extend(args);
+        self.command_line_args = full;
     }
 
     pub fn load_module(&mut self, module_name: &str, program: &Program) -> Result<(), RuntimeError> {
@@ -1453,6 +1464,52 @@ impl Interpreter {
                      return Ok(Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
                 }
 
+                // Queue
+                if class_name == "queue" || class_name == "system.collections.queue"
+                    || class_name == "system.collections.generic.queue" {
+                    return Ok(Value::Queue(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::Queue::new()))));
+                }
+
+                // Stack
+                if class_name == "stack" || class_name == "system.collections.stack"
+                    || class_name == "system.collections.generic.stack" {
+                    return Ok(Value::Stack(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::Stack::new()))));
+                }
+
+                // HashSet
+                if class_name == "hashset" || class_name == "system.collections.generic.hashset" {
+                    return Ok(Value::HashSet(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBHashSet::new()))));
+                }
+
+                // Dictionary
+                if class_name == "dictionary" || class_name == "system.collections.generic.dictionary"
+                    || class_name == "system.collections.hashtable" || class_name == "hashtable" {
+                    return Ok(Value::Dictionary(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))));
+                }
+
+                // WebClient (System.Net.WebClient) – backed by curl
+                if class_name == "webclient" || class_name == "system.net.webclient" {
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("WebClient".to_string()));
+                    fields.insert("Encoding".to_string(), Value::String("UTF-8".to_string()));
+                    let obj = crate::value::ObjectData {
+                        class_name: "WebClient".to_string(),
+                        fields,
+                    };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // HttpClient (System.Net.Http.HttpClient) – backed by curl
+                if class_name == "httpclient" || class_name == "system.net.http.httpclient" {
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("HttpClient".to_string()));
+                    let obj = crate::value::ObjectData {
+                        class_name: "HttpClient".to_string(),
+                        fields,
+                    };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
                 if let Some(class_decl) = self.classes.get(&class_name).cloned() {
                     // Collect fields from hierarchy
                     let fields = self.collect_fields(&class_name);
@@ -1525,6 +1582,43 @@ impl Interpreter {
                 if let Value::Collection(col_rc) = &obj_val {
                     if member.as_str().eq_ignore_ascii_case("Count") {
                         return Ok(Value::Integer(col_rc.borrow().count()));
+                    }
+                }
+
+                // Queue Properties
+                if let Value::Queue(q) = &obj_val {
+                    let m = member.as_str().to_lowercase();
+                    if m == "count" { return Ok(Value::Integer(q.borrow().count())); }
+                }
+
+                // Stack Properties
+                if let Value::Stack(s) = &obj_val {
+                    let m = member.as_str().to_lowercase();
+                    if m == "count" { return Ok(Value::Integer(s.borrow().count())); }
+                }
+
+                // HashSet Properties
+                if let Value::HashSet(h) = &obj_val {
+                    let m = member.as_str().to_lowercase();
+                    if m == "count" { return Ok(Value::Integer(h.borrow().count())); }
+                }
+
+                // Dictionary Properties
+                if let Value::Dictionary(d) = &obj_val {
+                    let m = member.as_str().to_lowercase();
+                    match m.as_str() {
+                        "count" => return Ok(Value::Integer(d.borrow().count())),
+                        "keys" => return Ok(Value::Array(d.borrow().keys())),
+                        "values" => return Ok(Value::Array(d.borrow().values())),
+                        _ => {}
+                    }
+                }
+
+                // Array Properties (Length, Count)
+                if let Value::Array(arr) = &obj_val {
+                    let m = member.as_str().to_lowercase();
+                    if m == "length" || m == "count" {
+                        return Ok(Value::Integer(arr.len() as i32));
                     }
                 }
 
@@ -1942,7 +2036,9 @@ impl Interpreter {
             "beep" => return beep_fn(&arg_values),
             "shell" => return shell_fn(&arg_values),
             "environ" | "environ$" => return environ_fn(&arg_values),
-            "command" | "command$" => return command_fn(&arg_values),
+            "command" | "command$" => {
+                return Ok(Value::String(self.command_line_args.join(" ")));
+            }
             "sendkeys" => return sendkeys_fn(&arg_values),
             "appactivate" => return appactivate_fn(&arg_values),
             "load" => return load_fn(&arg_values),
@@ -2043,6 +2139,98 @@ impl Interpreter {
                             .collect();
                         return stringbuilder_method_fn(&method_name, &obj_val, &arg_values?);
                     }
+                    if type_name == "WebClient" {
+                        match method_name.as_str() {
+                            "downloadstring" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let output = std::process::Command::new("curl")
+                                    .args(&["-s", "-L", &url])
+                                    .output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                if !output.status.success() {
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    return Err(RuntimeError::Custom(format!("WebClient.DownloadString failed: {}", stderr)));
+                                }
+                                let body = String::from_utf8_lossy(&output.stdout).to_string();
+                                return Ok(Value::String(body));
+                            }
+                            "downloaddata" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let output = std::process::Command::new("curl")
+                                    .args(&["-s", "-L", &url])
+                                    .output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                if !output.status.success() {
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    return Err(RuntimeError::Custom(format!("WebClient.DownloadData failed: {}", stderr)));
+                                }
+                                let bytes: Vec<Value> = output.stdout.iter().map(|b| Value::Byte(*b)).collect();
+                                return Ok(Value::Array(bytes));
+                            }
+                            "uploadstring" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let data = self.evaluate_expr(&args[1])?.as_string();
+                                let output = std::process::Command::new("curl")
+                                    .args(&["-s", "-L", "-X", "POST", "-d", &data, &url])
+                                    .output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                if !output.status.success() {
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    return Err(RuntimeError::Custom(format!("WebClient.UploadString failed: {}", stderr)));
+                                }
+                                let body = String::from_utf8_lossy(&output.stdout).to_string();
+                                return Ok(Value::String(body));
+                            }
+                            "dispose" => return Ok(Value::Nothing),
+                            _ => {}
+                        }
+                    }
+                    if type_name == "HttpClient" {
+                        match method_name.as_str() {
+                            "getstringasync" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let output = std::process::Command::new("curl")
+                                    .args(&["-s", "-L", &url])
+                                    .output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                if !output.status.success() {
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    return Err(RuntimeError::Custom(format!("HttpClient.GetStringAsync failed: {}", stderr)));
+                                }
+                                let body = String::from_utf8_lossy(&output.stdout).to_string();
+                                return Ok(Value::String(body));
+                            }
+                            "getasync" => {
+                                let url = self.evaluate_expr(&args[0])?.as_string();
+                                let output = std::process::Command::new("curl")
+                                    .args(&["-s", "-L", "-w", "\n%{http_code}", &url])
+                                    .output()
+                                    .map_err(|e| RuntimeError::Custom(format!("curl failed: {}", e)))?;
+                                let full = String::from_utf8_lossy(&output.stdout).to_string();
+                                let mut fields = std::collections::HashMap::new();
+                                fields.insert("__type".to_string(), Value::String("HttpResponseMessage".to_string()));
+                                // Last line is the status code
+                                if let Some(pos) = full.rfind('\n') {
+                                    let body = full[..pos].to_string();
+                                    let code = full[pos+1..].trim().to_string();
+                                    fields.insert("Content".to_string(), Value::String(body));
+                                    fields.insert("StatusCode".to_string(), Value::String(code.clone()));
+                                    fields.insert("IsSuccessStatusCode".to_string(), Value::Boolean(code.starts_with('2')));
+                                } else {
+                                    fields.insert("Content".to_string(), Value::String(full));
+                                    fields.insert("StatusCode".to_string(), Value::String("200".to_string()));
+                                    fields.insert("IsSuccessStatusCode".to_string(), Value::Boolean(true));
+                                }
+                                let obj = crate::value::ObjectData {
+                                    class_name: "HttpResponseMessage".to_string(),
+                                    fields,
+                                };
+                                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                            }
+                            "dispose" => return Ok(Value::Nothing),
+                            _ => {}
+                        }
+                    }
                 }
             }
             
@@ -2056,6 +2244,16 @@ impl Interpreter {
                 }
             }
             
+            // Array properties accessed as method calls
+            if let Value::Array(arr) = &obj_val {
+                match method_name.as_str() {
+                    "length" | "count" => {
+                        return Ok(Value::Integer(arr.len() as i32));
+                    }
+                    _ => {}
+                }
+            }
+
             if let Value::Collection(col_rc) = &obj_val {
                  match method_name.as_str() {
                     "add" => {
@@ -2086,6 +2284,135 @@ impl Interpreter {
                     }
                     _ => {} // Fall through to other handlers
                  }
+            }
+
+            // Queue methods
+            if let Value::Queue(q) = &obj_val {
+                match method_name.as_str() {
+                    "enqueue" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        q.borrow_mut().enqueue(val);
+                        return Ok(Value::Nothing);
+                    }
+                    "dequeue" => {
+                        return q.borrow_mut().dequeue();
+                    }
+                    "peek" => {
+                        return q.borrow().peek();
+                    }
+                    "clear" => {
+                        q.borrow_mut().clear();
+                        return Ok(Value::Nothing);
+                    }
+                    "contains" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        return Ok(Value::Boolean(q.borrow().contains(&val)));
+                    }
+                    "toarray" => {
+                        return Ok(Value::Array(q.borrow().to_array()));
+                    }
+                    "count" => {
+                        return Ok(Value::Integer(q.borrow().count()));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Stack methods
+            if let Value::Stack(s) = &obj_val {
+                match method_name.as_str() {
+                    "push" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        s.borrow_mut().push(val);
+                        return Ok(Value::Nothing);
+                    }
+                    "pop" => {
+                        return s.borrow_mut().pop();
+                    }
+                    "peek" => {
+                        return s.borrow().peek();
+                    }
+                    "clear" => {
+                        s.borrow_mut().clear();
+                        return Ok(Value::Nothing);
+                    }
+                    "contains" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        return Ok(Value::Boolean(s.borrow().contains(&val)));
+                    }
+                    "toarray" => {
+                        return Ok(Value::Array(s.borrow().to_array()));
+                    }
+                    "count" => {
+                        return Ok(Value::Integer(s.borrow().count()));
+                    }
+                    _ => {}
+                }
+            }
+
+            // HashSet methods
+            if let Value::HashSet(h) = &obj_val {
+                match method_name.as_str() {
+                    "add" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        let was_new = h.borrow_mut().add(val);
+                        return Ok(Value::Boolean(was_new));
+                    }
+                    "remove" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        let removed = h.borrow_mut().remove(&val);
+                        return Ok(Value::Boolean(removed));
+                    }
+                    "contains" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        return Ok(Value::Boolean(h.borrow().contains(&val)));
+                    }
+                    "clear" => {
+                        h.borrow_mut().clear();
+                        return Ok(Value::Nothing);
+                    }
+                    "count" => {
+                        return Ok(Value::Integer(h.borrow().count()));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Dictionary methods
+            if let Value::Dictionary(d) = &obj_val {
+                match method_name.as_str() {
+                    "add" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        let val = self.evaluate_expr(&args[1])?;
+                        d.borrow_mut().add(key, val)?;
+                        return Ok(Value::Nothing);
+                    }
+                    "item" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        return d.borrow().item(&key);
+                    }
+                    "containskey" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        return Ok(Value::Boolean(d.borrow().contains_key(&key)));
+                    }
+                    "containsvalue" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        return Ok(Value::Boolean(d.borrow().contains_value(&val)));
+                    }
+                    "remove" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        let removed = d.borrow_mut().remove(&key);
+                        return Ok(Value::Boolean(removed));
+                    }
+                    "clear" => {
+                        d.borrow_mut().clear();
+                        return Ok(Value::Nothing);
+                    }
+                    "count" => {
+                        return Ok(Value::Integer(d.borrow().count()));
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -2210,6 +2537,124 @@ impl Interpreter {
                 self.side_effects.push_back(crate::RuntimeSideEffect::MsgBox(format!("[Debug] {}", msg)));
                 return Ok(Value::Nothing);
             }
+
+            // ---- Convert class ----
+            "convert.todatetime" => {
+                return crate::builtins::cdate_fn(&arg_values);
+            }
+            "convert.toint32" | "convert.toint16" | "convert.toint64" => {
+                return crate::builtins::cint_fn(&arg_values);
+            }
+            "convert.todouble" | "convert.tosingle" | "convert.todecimal" => {
+                return crate::builtins::cdbl_fn(&arg_values);
+            }
+            "convert.tostring" => {
+                return crate::builtins::cstr_fn(&arg_values);
+            }
+            "convert.toboolean" => {
+                return crate::builtins::cbool_fn(&arg_values);
+            }
+            "convert.tochar" => {
+                return crate::builtins::cchar_fn(&arg_values);
+            }
+            "convert.tobyte" => {
+                return crate::builtins::cbyte_fn(&arg_values);
+            }
+
+            // ---- Environment class ----
+            "environment.getcommandlineargs" => {
+                let args_array: Vec<Value> = self.command_line_args.iter()
+                    .map(|a| Value::String(a.clone()))
+                    .collect();
+                return Ok(Value::Array(args_array));
+            }
+
+            // ---- TimeSpan factory methods ----
+            "timespan.fromdays" => {
+                let days = arg_values[0].as_double()?;
+                let total_seconds = days * 86400.0;
+                let obj_data = crate::value::ObjectData {
+                    class_name: "TimeSpan".to_string(),
+                    fields: {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("days".to_string(), Value::Integer(days as i32));
+                        f.insert("hours".to_string(), Value::Integer(0));
+                        f.insert("minutes".to_string(), Value::Integer(0));
+                        f.insert("seconds".to_string(), Value::Integer(0));
+                        f.insert("milliseconds".to_string(), Value::Integer(0));
+                        f.insert("totaldays".to_string(), Value::Double(days));
+                        f.insert("totalhours".to_string(), Value::Double(days * 24.0));
+                        f.insert("totalminutes".to_string(), Value::Double(days * 1440.0));
+                        f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                        f.insert("totalmilliseconds".to_string(), Value::Double(total_seconds * 1000.0));
+                        f
+                    },
+                };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+            }
+            "timespan.fromhours" => {
+                let hours = arg_values[0].as_double()?;
+                let total_seconds = hours * 3600.0;
+                let obj_data = crate::value::ObjectData {
+                    class_name: "TimeSpan".to_string(),
+                    fields: {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("days".to_string(), Value::Integer(0));
+                        f.insert("hours".to_string(), Value::Integer(hours as i32));
+                        f.insert("minutes".to_string(), Value::Integer(0));
+                        f.insert("seconds".to_string(), Value::Integer(0));
+                        f.insert("totaldays".to_string(), Value::Double(hours / 24.0));
+                        f.insert("totalhours".to_string(), Value::Double(hours));
+                        f.insert("totalminutes".to_string(), Value::Double(hours * 60.0));
+                        f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                        f.insert("totalmilliseconds".to_string(), Value::Double(total_seconds * 1000.0));
+                        f
+                    },
+                };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+            }
+            "timespan.fromminutes" => {
+                let mins = arg_values[0].as_double()?;
+                let total_seconds = mins * 60.0;
+                let obj_data = crate::value::ObjectData {
+                    class_name: "TimeSpan".to_string(),
+                    fields: {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("days".to_string(), Value::Integer(0));
+                        f.insert("hours".to_string(), Value::Integer(0));
+                        f.insert("minutes".to_string(), Value::Integer(mins as i32));
+                        f.insert("seconds".to_string(), Value::Integer(0));
+                        f.insert("totaldays".to_string(), Value::Double(mins / 1440.0));
+                        f.insert("totalhours".to_string(), Value::Double(mins / 60.0));
+                        f.insert("totalminutes".to_string(), Value::Double(mins));
+                        f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                        f.insert("totalmilliseconds".to_string(), Value::Double(total_seconds * 1000.0));
+                        f
+                    },
+                };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+            }
+            "timespan.fromseconds" => {
+                let secs = arg_values[0].as_double()?;
+                let obj_data = crate::value::ObjectData {
+                    class_name: "TimeSpan".to_string(),
+                    fields: {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("days".to_string(), Value::Integer(0));
+                        f.insert("hours".to_string(), Value::Integer(0));
+                        f.insert("minutes".to_string(), Value::Integer(0));
+                        f.insert("seconds".to_string(), Value::Integer(secs as i32));
+                        f.insert("totaldays".to_string(), Value::Double(secs / 86400.0));
+                        f.insert("totalhours".to_string(), Value::Double(secs / 3600.0));
+                        f.insert("totalminutes".to_string(), Value::Double(secs / 60.0));
+                        f.insert("totalseconds".to_string(), Value::Double(secs));
+                        f.insert("totalmilliseconds".to_string(), Value::Double(secs * 1000.0));
+                        f
+                    },
+                };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+            }
+
             _ => {}
         }
 

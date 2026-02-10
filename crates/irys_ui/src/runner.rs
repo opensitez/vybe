@@ -30,15 +30,18 @@ thread_local! {
 /// * `.vb`    → parse & run as console program
 /// * `.vbp`   → load VB6 project, run as form or console
 /// * `.vbproj` → load VB.NET project, run as form or console
-pub fn run(path: &Path) {
+///
+/// `extra_args` are the command-line arguments passed *after* the project file,
+/// available to the VB program via `Command()` or `Environment.GetCommandLineArgs()`.
+pub fn run(path: &Path, extra_args: &[String]) {
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
     match ext.as_str() {
-        "vb" => run_vb_file(path),
-        "vbp" | "vbproj" => run_project(path),
+        "vb" => run_vb_file(path, extra_args),
+        "vbp" | "vbproj" => run_project(path, extra_args),
         _ => {
             eprintln!(
                 "Error: unsupported file type '.{}'. Expected .vb, .vbp, or .vbproj",
@@ -54,7 +57,7 @@ pub fn run(path: &Path) {
 // ---------------------------------------------------------------------------
 
 /// Run a standalone .vb file as a console program.
-fn run_vb_file(path: &Path) {
+fn run_vb_file(path: &Path, extra_args: &[String]) {
     let code = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -72,6 +75,7 @@ fn run_vb_file(path: &Path) {
     };
 
     let mut interp = Interpreter::new();
+    interp.set_command_line_args(extra_args.to_vec());
 
     if let Err(e) = interp.run(&program) {
         eprintln!("Runtime error: {:?}", e);
@@ -83,7 +87,7 @@ fn run_vb_file(path: &Path) {
 }
 
 /// Run a .vbp / .vbproj project.
-fn run_project(path: &Path) {
+fn run_project(path: &Path, extra_args: &[String]) {
     let project = match irys_project::load_project_auto(path) {
         Ok(p) => p,
         Err(e) => {
@@ -110,7 +114,7 @@ fn run_project(path: &Path) {
         run_form_project(project);
     } else if starts_with_main {
         // Pure console project
-        run_console_project(&project);
+        run_console_project(&project, extra_args);
     } else {
         eprintln!("Error: project has no forms and no Sub Main entry point");
         std::process::exit(1);
@@ -118,8 +122,9 @@ fn run_project(path: &Path) {
 }
 
 /// Run a console-only project (Sub Main, no forms).
-fn run_console_project(project: &Project) {
+fn run_console_project(project: &Project, extra_args: &[String]) {
     let mut interp = Interpreter::new();
+    interp.set_command_line_args(extra_args.to_vec());
 
     let mut res_map = HashMap::new();
     for item in &project.resources.resources {

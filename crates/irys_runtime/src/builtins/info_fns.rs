@@ -81,6 +81,10 @@ pub fn typename_fn(args: &[Value]) -> Result<Value, RuntimeError> {
             return Ok(Value::String(borrowed.class_name.clone()));
         }
         Value::Collection(_) => "Collection",
+        Value::Queue(_) => "Queue",
+        Value::Stack(_) => "Stack",
+        Value::HashSet(_) => "HashSet",
+        Value::Dictionary(_) => "Dictionary",
         Value::Lambda { .. } => "Lambda",
     };
     Ok(Value::String(name.to_string()))
@@ -104,6 +108,10 @@ pub fn vartype_fn(args: &[Value]) -> Result<Value, RuntimeError> {
         Value::Char(_) => 18,   // vbChar
         Value::Object(_) => 9,  // vbObject
         Value::Collection(_) => 9, // vbObject
+        Value::Queue(_) => 9,      // vbObject
+        Value::Stack(_) => 9,      // vbObject
+        Value::HashSet(_) => 9,    // vbObject
+        Value::Dictionary(_) => 9, // vbObject
         Value::Array(_) => 8192, // vbArray
         Value::Lambda { .. } => 9, // vbObject
     };

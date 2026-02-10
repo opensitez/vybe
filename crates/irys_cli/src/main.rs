@@ -4,7 +4,7 @@ use std::path::PathBuf;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: irys <filename.vb|filename.vbp|filename.vbproj>");
+        eprintln!("Usage: irys <filename.vb|filename.vbp|filename.vbproj> [args...]");
         std::process::exit(1);
     }
 
@@ -14,5 +14,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    irys_ui::run(&file_path);
+    let extra_args: Vec<String> = args[2..].to_vec();
+    irys_ui::run(&file_path, &extra_args);
 }
