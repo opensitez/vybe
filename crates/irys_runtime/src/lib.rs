@@ -7,6 +7,7 @@ pub mod builtins;
 pub mod file_io;
 pub mod std_lib;
 pub mod collections;
+pub mod data_access;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeSideEffect {
