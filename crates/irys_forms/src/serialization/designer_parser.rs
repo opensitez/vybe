@@ -27,6 +27,11 @@ pub fn vbnet_type_to_control_type(name: &str) -> Option<ControlType> {
         "datagridview" => Some(ControlType::DataGridView),
         "panel" => Some(ControlType::Panel),
         "listview" => Some(ControlType::ListView),
+        "bindingnavigator" => Some(ControlType::BindingNavigator),
+        "bindingsource" => Some(ControlType::BindingSourceComponent),
+        "dataset" => Some(ControlType::DataSetComponent),
+        "datatable" => Some(ControlType::DataTableComponent),
+        "sqldataadapter" | "dataadapter" | "oledbdataadapter" => Some(ControlType::DataAdapterComponent),
         _ => None,
     }
 }
@@ -46,6 +51,8 @@ struct ControlBuilder {
     tab_index: i32,
     tag: Option<String>,
     explicit_name: Option<String>,
+    /// Additional string properties (DataSource, DataMember, DisplayMember, etc.)
+    extra_props: std::collections::HashMap<String, String>,
 }
 
 impl ControlBuilder {
@@ -65,6 +72,7 @@ impl ControlBuilder {
             tab_index: 0,
             tag: None,
             explicit_name: None,
+            extra_props: std::collections::HashMap::new(),
         }
     }
 
@@ -102,6 +110,10 @@ impl ControlBuilder {
         }
         if let Some(font) = self.font {
             ctrl.set_font(font);
+        }
+        // Apply extra data-binding properties
+        for (key, val) in &self.extra_props {
+            ctrl.properties.set(key.as_str(), val.clone());
         }
         ctrl
     }
@@ -228,6 +240,74 @@ pub fn extract_form_from_designer(class_decl: &ClassDecl) -> Option<Form> {
                             "tabindex" => {
                                 if let Expression::IntegerLiteral(n) = value {
                                     builder.tab_index = *n;
+                                }
+                            }
+                            // Data binding properties: Me.ctrl.DataSource = Me.bs1
+                            "datasource" => {
+                                match value {
+                                    Expression::MemberAccess(inner, member) if is_me(inner) => {
+                                        builder.extra_props.insert("DataSource".to_string(), member.as_str().to_string());
+                                    }
+                                    Expression::StringLiteral(s) => {
+                                        builder.extra_props.insert("DataSource".to_string(), s.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            "datamember" => {
+                                if let Expression::StringLiteral(s) = value {
+                                    builder.extra_props.insert("DataMember".to_string(), s.clone());
+                                }
+                            }
+                            "displaymember" => {
+                                if let Expression::StringLiteral(s) = value {
+                                    builder.extra_props.insert("DisplayMember".to_string(), s.clone());
+                                }
+                            }
+                            "valuemember" => {
+                                if let Expression::StringLiteral(s) = value {
+                                    builder.extra_props.insert("ValueMember".to_string(), s.clone());
+                                }
+                            }
+                            "bindingsource" => {
+                                match value {
+                                    Expression::MemberAccess(inner, member) if is_me(inner) => {
+                                        builder.extra_props.insert("BindingSource".to_string(), member.as_str().to_string());
+                                    }
+                                    Expression::StringLiteral(s) => {
+                                        builder.extra_props.insert("BindingSource".to_string(), s.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            "filter" => {
+                                if let Expression::StringLiteral(s) = value {
+                                    builder.extra_props.insert("Filter".to_string(), s.clone());
+                                }
+                            }
+                            "sort" => {
+                                if let Expression::StringLiteral(s) = value {
+                                    builder.extra_props.insert("Sort".to_string(), s.clone());
+                                }
+                            }
+                            "datasetname" => {
+                                if let Expression::StringLiteral(s) = value {
+                                    builder.extra_props.insert("DataSetName".to_string(), s.clone());
+                                }
+                            }
+                            "tablename" => {
+                                if let Expression::StringLiteral(s) = value {
+                                    builder.extra_props.insert("TableName".to_string(), s.clone());
+                                }
+                            }
+                            "selectcommand" => {
+                                if let Expression::StringLiteral(s) = value {
+                                    builder.extra_props.insert("SelectCommand".to_string(), s.clone());
+                                }
+                            }
+                            "connectionstring" => {
+                                if let Expression::StringLiteral(s) = value {
+                                    builder.extra_props.insert("ConnectionString".to_string(), s.clone());
                                 }
                             }
                             _ => {}

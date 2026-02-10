@@ -137,8 +137,11 @@ impl RecordSet {
 /// Manages database connections and provides query execution.
 ///
 /// Uses a tokio Runtime internally to drive sqlx's async API synchronously.
+/// The runtime lives on a dedicated background thread so it can be used even
+/// when the caller is already inside a tokio runtime (e.g. Dioxus desktop).
 pub struct DataAccessManager {
-    runtime: tokio::runtime::Runtime,
+    /// Sender to dispatch async work to the background runtime thread.
+    bg_sender: std::sync::mpsc::Sender<Box<dyn FnOnce(&tokio::runtime::Runtime) + Send>>,
     /// Active connections keyed by connection ID.
     connections: HashMap<u64, DbConnection>,
     /// Active recordsets keyed by recordset ID.
@@ -164,17 +167,46 @@ struct DbConnection {
 
 impl DataAccessManager {
     pub fn new() -> Self {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create tokio runtime for data access");
+        // Spawn a dedicated thread that owns the tokio runtime.
+        // This avoids "Cannot start a runtime from within a runtime" when
+        // the caller (e.g. Dioxus/editor) already has an active tokio context.
+        let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce(&tokio::runtime::Runtime) + Send>>();
+        std::thread::Builder::new()
+            .name("irys-data-rt".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime for data access");
+                while let Ok(task) = rx.recv() {
+                    task(&rt);
+                }
+            })
+            .expect("Failed to spawn data-access runtime thread");
 
         Self {
-            runtime,
+            bg_sender: tx,
             connections: HashMap::new(),
             recordsets: HashMap::new(),
             pending_results: HashMap::new(),
         }
+    }
+
+    /// Run an async block on the background tokio runtime and wait for the
+    /// result.  Safe to call from inside another tokio runtime.
+    fn block_on_bg<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&tokio::runtime::Runtime) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<R>();
+        self.bg_sender
+            .send(Box::new(move |rt| {
+                let result = f(rt);
+                let _ = done_tx.send(result);
+            }))
+            .expect("Data-access runtime thread has exited");
+        done_rx.recv().expect("Data-access runtime thread panicked")
     }
 
     /// Parse a connection string and determine the backend.
@@ -287,18 +319,20 @@ impl DataAccessManager {
         // Install the sqlx Any driver for this backend
         sqlx::any::install_default_drivers();
 
-        let pool = self.runtime.block_on(async {
-            let mut opts = sqlx::any::AnyPoolOptions::new();
-            // For SQLite in-memory databases, we must use a single connection
-            // because each connection gets its own separate database.
-            if backend == DbBackend::Sqlite && url.contains(":memory:") {
-                opts = opts.max_connections(1).min_connections(1);
-            } else {
-                opts = opts.max_connections(max_pool).min_connections(min_pool);
-            }
-            opts = opts.acquire_timeout(std::time::Duration::from_secs(conn_timeout as u64));
-            opts.connect(&url)
-                .await
+        let backend_clone = backend.clone();
+        let url_clone = url.clone();
+        let pool = self.block_on_bg(move |rt| {
+            rt.block_on(async {
+                let mut opts = sqlx::any::AnyPoolOptions::new();
+                if backend_clone == DbBackend::Sqlite && url_clone.contains(":memory:") {
+                    opts = opts.max_connections(1).min_connections(1);
+                } else {
+                    opts = opts.max_connections(max_pool).min_connections(min_pool);
+                }
+                opts = opts.acquire_timeout(std::time::Duration::from_secs(conn_timeout as u64));
+                opts.connect(&url_clone)
+                    .await
+            })
         }).map_err(|e| format!("Failed to connect: {}", e))?;
 
         let id = NEXT_CONN_ID.fetch_add(1, Ordering::SeqCst);
@@ -317,8 +351,11 @@ impl DataAccessManager {
     /// Close a connection.
     pub fn close_connection(&mut self, conn_id: u64) -> Result<(), String> {
         if let Some(conn) = self.connections.remove(&conn_id) {
-            self.runtime.block_on(async {
-                conn.pool.close().await;
+            let pool = conn.pool.clone();
+            self.block_on_bg(move |rt| {
+                rt.block_on(async move {
+                    pool.close().await;
+                });
             });
             Ok(())
         } else {
@@ -332,44 +369,46 @@ impl DataAccessManager {
         let conn = self.connections.get(&conn_id)
             .ok_or_else(|| format!("Connection {} not found or not open", conn_id))?;
 
-        let rows_result = self.runtime.block_on(async {
-            use sqlx::Row;
-            use sqlx::Column;
+        let pool = conn.pool.clone();
+        let sql_owned = sql.to_string();
+        let rows_result = self.block_on_bg(move |rt| {
+            rt.block_on(async move {
+                use sqlx::Row;
+                use sqlx::Column;
 
-            let raw_rows = sqlx::query(sql)
-                .fetch_all(&conn.pool)
-                .await
-                .map_err(|e| format!("Query error: {}", e))?;
+                let raw_rows = sqlx::query(&sql_owned)
+                    .fetch_all(&pool)
+                    .await
+                    .map_err(|e| format!("Query error: {}", e))?;
 
-            let mut columns: Vec<String> = Vec::new();
-            let mut db_rows: Vec<DbRow> = Vec::new();
+                let mut columns: Vec<String> = Vec::new();
+                let mut db_rows: Vec<DbRow> = Vec::new();
 
-            for raw_row in &raw_rows {
-                // Get column names from the first row
-                if columns.is_empty() {
-                    columns = raw_row.columns().iter()
-                        .map(|c| c.name().to_string())
-                        .collect();
+                for raw_row in &raw_rows {
+                    if columns.is_empty() {
+                        columns = raw_row.columns().iter()
+                            .map(|c| c.name().to_string())
+                            .collect();
+                    }
+
+                    let mut values = Vec::new();
+                    for i in 0..raw_row.columns().len() {
+                        let val: String = raw_row.try_get::<String, _>(i)
+                            .or_else(|_| raw_row.try_get::<i64, _>(i).map(|v| v.to_string()))
+                            .or_else(|_| raw_row.try_get::<f64, _>(i).map(|v| v.to_string()))
+                            .or_else(|_| raw_row.try_get::<bool, _>(i).map(|v| v.to_string()))
+                            .unwrap_or_else(|_| "NULL".to_string());
+                        values.push(val);
+                    }
+
+                    db_rows.push(DbRow {
+                        columns: columns.clone(),
+                        values,
+                    });
                 }
 
-                let mut values = Vec::new();
-                for i in 0..raw_row.columns().len() {
-                    // Try to get as string — sqlx Any backend
-                    let val: String = raw_row.try_get::<String, _>(i)
-                        .or_else(|_| raw_row.try_get::<i64, _>(i).map(|v| v.to_string()))
-                        .or_else(|_| raw_row.try_get::<f64, _>(i).map(|v| v.to_string()))
-                        .or_else(|_| raw_row.try_get::<bool, _>(i).map(|v| v.to_string()))
-                        .unwrap_or_else(|_| "NULL".to_string());
-                    values.push(val);
-                }
-
-                db_rows.push(DbRow {
-                    columns: columns.clone(),
-                    values,
-                });
-            }
-
-            Ok::<(Vec<String>, Vec<DbRow>), String>((columns, db_rows))
+                Ok::<(Vec<String>, Vec<DbRow>), String>((columns, db_rows))
+            })
         })?;
 
         let (columns, db_rows) = rows_result;
@@ -386,11 +425,15 @@ impl DataAccessManager {
         let conn = self.connections.get(&conn_id)
             .ok_or_else(|| format!("Connection {} not found or not open", conn_id))?;
 
-        let result = self.runtime.block_on(async {
-            sqlx::query(sql)
-                .execute(&conn.pool)
-                .await
-                .map_err(|e| format!("Execute error: {}", e))
+        let pool = conn.pool.clone();
+        let sql_owned = sql.to_string();
+        let result = self.block_on_bg(move |rt| {
+            rt.block_on(async move {
+                sqlx::query(&sql_owned)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| format!("Execute error: {}", e))
+            })
         })?;
 
         Ok(result.rows_affected() as i64)
@@ -450,9 +493,12 @@ impl DataAccessManager {
     pub fn begin_transaction(&mut self, conn_id: u64) -> Result<u64, String> {
         let conn = self.connections.get(&conn_id)
             .ok_or_else(|| format!("Connection {} not found", conn_id))?;
-        self.runtime.block_on(async {
-            sqlx::query("BEGIN").execute(&conn.pool).await
-                .map_err(|e| format!("BEGIN error: {}", e))
+        let pool = conn.pool.clone();
+        self.block_on_bg(move |rt| {
+            rt.block_on(async move {
+                sqlx::query("BEGIN").execute(&pool).await
+                    .map_err(|e| format!("BEGIN error: {}", e))
+            })
         })?;
         // Use conn_id as transaction id (one active tx per connection)
         Ok(conn_id)
@@ -462,9 +508,12 @@ impl DataAccessManager {
     pub fn commit(&mut self, conn_id: u64) -> Result<(), String> {
         let conn = self.connections.get(&conn_id)
             .ok_or_else(|| format!("Connection {} not found", conn_id))?;
-        self.runtime.block_on(async {
-            sqlx::query("COMMIT").execute(&conn.pool).await
-                .map_err(|e| format!("COMMIT error: {}", e))
+        let pool = conn.pool.clone();
+        self.block_on_bg(move |rt| {
+            rt.block_on(async move {
+                sqlx::query("COMMIT").execute(&pool).await
+                    .map_err(|e| format!("COMMIT error: {}", e))
+            })
         })?;
         Ok(())
     }
@@ -473,9 +522,12 @@ impl DataAccessManager {
     pub fn rollback(&mut self, conn_id: u64) -> Result<(), String> {
         let conn = self.connections.get(&conn_id)
             .ok_or_else(|| format!("Connection {} not found", conn_id))?;
-        self.runtime.block_on(async {
-            sqlx::query("ROLLBACK").execute(&conn.pool).await
-                .map_err(|e| format!("ROLLBACK error: {}", e))
+        let pool = conn.pool.clone();
+        self.block_on_bg(move |rt| {
+            rt.block_on(async move {
+                sqlx::query("ROLLBACK").execute(&pool).await
+                    .map_err(|e| format!("ROLLBACK error: {}", e))
+            })
         })?;
         Ok(())
     }
@@ -733,6 +785,26 @@ pub fn get_global_dam() -> Arc<Mutex<DataAccessManager>> {
     GLOBAL_DAM.get_or_init(|| {
         Arc::new(Mutex::new(DataAccessManager::new()))
     }).clone()
+}
+
+/// Test a connection string and return a list of table names.
+/// This is a convenience function for the editor's properties panel.
+/// Returns Ok(vec of table names) on success or Err(error message).
+pub fn test_connection_and_list_tables(conn_str: &str) -> Result<Vec<String>, String> {
+    let dam_arc = get_global_dam();
+    let mut dam = dam_arc.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let conn_id = dam.open_connection(conn_str)?;
+    let rs_id = dam.get_schema(conn_id, "tables")?;
+    let tables: Vec<String> = if let Some(rs) = dam.recordsets.get(&rs_id) {
+        rs.rows.iter().filter_map(|row| {
+            row.get_by_name("TABLE_NAME").map(|s| s.to_string())
+        }).collect()
+    } else {
+        Vec::new()
+    };
+    dam.recordsets.remove(&rs_id);
+    // Don't close — keep the connection around for reuse by the runtime
+    Ok(tables)
 }
 
 #[cfg(test)]

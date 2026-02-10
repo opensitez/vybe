@@ -248,6 +248,11 @@ fn write_control(content: &mut String, control: &Control, indent_level: usize) -
         ControlType::DataGridView => "MSDataGridLib.DataGrid",
         ControlType::Panel => "VB.PictureBox",
         ControlType::ListView => "MSComctlLib.ListView",
+        ControlType::BindingNavigator => "VB.ToolBar",
+        ControlType::BindingSourceComponent => "VB.Data",
+        ControlType::DataSetComponent => "VB.Data",
+        ControlType::DataTableComponent => "VB.Data",
+        ControlType::DataAdapterComponent => "VB.Data",
     };
 
     content.push_str(&format!("{}Begin {} {} \n", indent, vb_type, control.name));

@@ -351,6 +351,19 @@ impl AppState {
                                 control.properties.set("ToolbarVisible", visible);
                             }
                         },
+                        // Data binding properties
+                        "DataSource" | "DataMember" | "Filter" | "Sort" |
+                        "BindingSource" | "DataSetName" | "TableName" |
+                        "SelectCommand" | "ConnectionString" |
+                        "DisplayMember" | "ValueMember" |
+                        "DbType" | "DbPath" | "DbHost" | "DbPort" |
+                        "DbName" | "DbUser" | "DbPassword" => {
+                            control.properties.set(property, value);
+                        },
+                        // Simple data bindings (DataBindings.Text, DataBindings.Checked, etc.)
+                        prop if prop.starts_with("DataBindings.") => {
+                            control.properties.set(prop, value);
+                        },
                         _ => {}
                     }
                 }

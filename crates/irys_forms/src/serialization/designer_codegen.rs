@@ -29,6 +29,11 @@ pub fn control_type_to_vbnet(ct: &ControlType) -> &str {
         ControlType::DataGridView => "System.Windows.Forms.DataGridView",
         ControlType::Panel => "System.Windows.Forms.Panel",
         ControlType::ListView => "System.Windows.Forms.ListView",
+        ControlType::BindingNavigator => "System.Windows.Forms.BindingNavigator",
+        ControlType::BindingSourceComponent => "System.Windows.Forms.BindingSource",
+        ControlType::DataSetComponent => "System.Data.DataSet",
+        ControlType::DataTableComponent => "System.Data.DataTable",
+        ControlType::DataAdapterComponent => "System.Data.SqlClient.SqlDataAdapter",
     }
 }
 
@@ -63,15 +68,64 @@ pub fn generate_designer_code(form: &Form) -> String {
     // Control property assignment
     for control in &form.controls {
         let field_name = control_field_name(control);
+        let is_non_visual = control.control_type.is_non_visual();
 
-        code.push_str(&format!(
-            "        Me.{}.Location = New System.Drawing.Point({}, {})\n",
-            field_name, control.bounds.x, control.bounds.y
-        ));
-        code.push_str(&format!(
-            "        Me.{}.Size = New System.Drawing.Size({}, {})\n",
-            field_name, control.bounds.width, control.bounds.height
-        ));
+        if !is_non_visual {
+            code.push_str(&format!(
+                "        Me.{}.Location = New System.Drawing.Point({}, {})\n",
+                field_name, control.bounds.x, control.bounds.y
+            ));
+            code.push_str(&format!(
+                "        Me.{}.Size = New System.Drawing.Size({}, {})\n",
+                field_name, control.bounds.width, control.bounds.height
+            ));
+        }
+
+        // Non-visual component specific properties
+        if is_non_visual {
+            if let Some(ds) = control.properties.get_string("DataSource") {
+                if !ds.is_empty() {
+                    code.push_str(&format!("        Me.{}.DataSource = Me.{}\n", field_name, ds));
+                }
+            }
+            if let Some(dm) = control.properties.get_string("DataMember") {
+                if !dm.is_empty() {
+                    code.push_str(&format!("        Me.{}.DataMember = \"{}\"\n", field_name, dm));
+                }
+            }
+            if let Some(filter) = control.properties.get_string("Filter") {
+                if !filter.is_empty() {
+                    code.push_str(&format!("        Me.{}.Filter = \"{}\"\n", field_name, filter));
+                }
+            }
+            if let Some(sort) = control.properties.get_string("Sort") {
+                if !sort.is_empty() {
+                    code.push_str(&format!("        Me.{}.Sort = \"{}\"\n", field_name, sort));
+                }
+            }
+            if let Some(tn) = control.properties.get_string("TableName") {
+                if !tn.is_empty() {
+                    code.push_str(&format!("        Me.{}.TableName = \"{}\"\n", field_name, tn));
+                }
+            }
+            if let Some(dsn) = control.properties.get_string("DataSetName") {
+                if !dsn.is_empty() {
+                    code.push_str(&format!("        Me.{}.DataSetName = \"{}\"\n", field_name, dsn));
+                }
+            }
+            if let Some(sc) = control.properties.get_string("SelectCommand") {
+                if !sc.is_empty() {
+                    code.push_str(&format!("        Me.{}.SelectCommand = \"{}\"\n", field_name, sc));
+                }
+            }
+            if let Some(cs) = control.properties.get_string("ConnectionString") {
+                if !cs.is_empty() {
+                    code.push_str(&format!("        Me.{}.ConnectionString = \"{}\"\n", field_name, cs));
+                }
+            }
+            code.push_str(&format!("        Me.{}.Name = \"{}\"\n", field_name, control.name));
+            continue;
+        }
 
         // Text/Caption property
         let text = control
@@ -114,6 +168,63 @@ pub fn generate_designer_code(form: &Form) -> String {
         if let Some(idx) = control.index {
             code.push_str(&format!("        Me.{}.Tag = \"ArrayIndex={}\"\n", field_name, idx));
         }
+
+        // DataSource binding for data-bound visual controls
+        if control.control_type.supports_complex_binding() {
+            if let Some(ds) = control.properties.get_string("DataSource") {
+                if !ds.is_empty() {
+                    code.push_str(&format!("        Me.{}.DataSource = Me.{}\n", field_name, ds));
+                }
+            }
+            if let Some(dm) = control.properties.get_string("DataMember") {
+                if !dm.is_empty() {
+                    code.push_str(&format!("        Me.{}.DataMember = \"{}\"\n", field_name, dm));
+                }
+            }
+        }
+
+        // DisplayMember/ValueMember for list controls (ComboBox, ListBox)
+        if matches!(control.control_type, ControlType::ComboBox | ControlType::ListBox) {
+            if let Some(dpm) = control.properties.get_string("DisplayMember") {
+                if !dpm.is_empty() {
+                    code.push_str(&format!("        Me.{}.DisplayMember = \"{}\"\n", field_name, dpm));
+                }
+            }
+            if let Some(vm) = control.properties.get_string("ValueMember") {
+                if !vm.is_empty() {
+                    code.push_str(&format!("        Me.{}.ValueMember = \"{}\"\n", field_name, vm));
+                }
+            }
+        }
+
+        // Simple data bindings (DataBindings.Add) for all visual controls
+        if let Some(binding_source) = control.properties.get_string("DataBindings.Source") {
+            if !binding_source.is_empty() {
+                // Determine which property is being bound
+                let bindable_props = ["Text", "Checked", "ImageLocation", "Value"];
+                for prop in &bindable_props {
+                    let key = format!("DataBindings.{}", prop);
+                    if let Some(col) = control.properties.get_string(&key) {
+                        if !col.is_empty() {
+                            code.push_str(&format!(
+                                "        Me.{}.DataBindings.Add(\"{}\", Me.{}, \"{}\")\n",
+                                field_name, prop, binding_source, col
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // BindingSource reference for BindingNavigator
+        if matches!(control.control_type, ControlType::BindingNavigator) {
+            if let Some(bs) = control.properties.get_string("BindingSource") {
+                if !bs.is_empty() {
+                    code.push_str(&format!("        Me.{}.BindingSource = Me.{}\n", field_name, bs));
+                }
+            }
+        }
+
         code.push_str(&format!(
             "        Me.{}.TabIndex = {}\n",
             field_name, control.tab_index

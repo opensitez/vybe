@@ -183,6 +183,25 @@ fn process_side_effects(
             RuntimeSideEffect::ConsoleClear => {
                 println!("[Runtime Console] Cleared");
             }
+            RuntimeSideEffect::DataSourceChanged { control_name, columns, rows } => {
+                // Update the DataGridView control's grid data
+                if let Some(frm) = runtime_form.write().as_mut() {
+                    if let Some(ctrl) = frm.get_control_by_name_mut(&control_name) {
+                        // Store columns and rows as serialized JSON in properties
+                        ctrl.properties.set_raw("__grid_columns",
+                            irys_forms::PropertyValue::StringArray(columns.clone()));
+                        let row_strs: Vec<String> = rows.iter()
+                            .map(|r| r.join("\t"))
+                            .collect();
+                        ctrl.properties.set_raw("__grid_rows",
+                            irys_forms::PropertyValue::StringArray(row_strs));
+                    }
+                }
+            }
+            RuntimeSideEffect::BindingPositionChanged { binding_source_name: _, position: _ } => {
+                // Bindings are refreshed via the interpreter's side_effects from DataBindings.Add
+                // The interpreter pushes PropertyChange events for bound controls
+            }
         }
     }
 
@@ -718,8 +737,8 @@ pub fn FormRunner() -> Element {
                                 "{caption}"
                             }
 
-                            // Controls
-                            for control in form.controls {
+                            // Controls (skip non-visual components)
+                            for control in form.controls.into_iter().filter(|c| !c.control_type.is_non_visual()) {
                                 {
                                     let control_type = control.control_type;
                                     let x = control.bounds.x;
@@ -1023,22 +1042,111 @@ pub fn FormRunner() -> Element {
                                                         }
                                                     },
                                                     ControlType::DataGridView => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #999; background: #808080; padding: 1px; overflow: auto;",
-                                                            table {
-                                                                style: "width: 100%; background: white; border-collapse: separate; border-spacing: 0;",
-                                                                thead {
-                                                                    tr {
-                                                                        th { style: "background: #e0e0e0; border-right: 1px solid #999; border-bottom: 1px solid #999; padding: 2px; width: 20px;", "" }
-                                                                        th { style: "background: #e0e0e0; border-right: 1px solid #999; border-bottom: 1px solid #999; padding: 2px;", "A" }
-                                                                        th { style: "background: #e0e0e0; border-right: 1px solid #999; border-bottom: 1px solid #999; padding: 2px;", "B" }
+                                                        {
+                                                            // Get dynamic grid data from properties (set by DataSourceChanged)
+                                                            let grid_columns = control.properties.get_string_array("__grid_columns")
+                                                                .cloned()
+                                                                .unwrap_or_default();
+                                                            let grid_row_strs = control.properties.get_string_array("__grid_rows")
+                                                                .cloned()
+                                                                .unwrap_or_default();
+                                                            let grid_rows: Vec<Vec<String>> = grid_row_strs.iter()
+                                                                .map(|s| s.split('\t').map(|c| c.to_string()).collect())
+                                                                .collect();
+                                                            let has_data = !grid_columns.is_empty();
+
+                                                            rsx! {
+                                                                div {
+                                                                    style: "width: 100%; height: 100%; border: 1px solid #999; background: #f0f0f0; padding: 1px; overflow: auto;",
+                                                                    table {
+                                                                        style: "width: 100%; background: white; border-collapse: separate; border-spacing: 0; font-size: 12px;",
+                                                                        thead {
+                                                                            tr {
+                                                                                th { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 2px solid #999; padding: 4px 6px; width: 30px; text-align: center; font-weight: normal; color: #333;", "" }
+                                                                                if has_data {
+                                                                                    for col in &grid_columns {
+                                                                                        th { style: "background: #e8e8e8; border-right: 1px solid #ccc; border-bottom: 2px solid #999; padding: 4px 8px; text-align: left; font-weight: bold; color: #222; cursor: default; white-space: nowrap;", "{col}" }
+                                                                                    }
+                                                                                } else {
+                                                                                    th { style: "background: #e8e8e8; border-right: 1px solid #ccc; border-bottom: 2px solid #999; padding: 4px 8px;", "Column1" }
+                                                                                    th { style: "background: #e8e8e8; border-right: 1px solid #ccc; border-bottom: 2px solid #999; padding: 4px 8px;", "Column2" }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        tbody {
+                                                                            if has_data {
+                                                                                for (ri, row) in grid_rows.iter().enumerate() {
+                                                                                    tr {
+                                                                                        td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; color: #333; width: 30px;", "{ri}" }
+                                                                                        for cell in row {
+                                                                                            td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; white-space: nowrap;", "{cell}" }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            } else {
+                                                                                tr {
+                                                                                    td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; width: 30px;", "" }
+                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px;", "" }
+                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px;", "" }
+                                                                                }
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
-                                                                tbody {
-                                                                    tr {
-                                                                        td { style: "background: #e0e0e0; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center;", "1" }
-                                                                        td { style: "border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; padding: 2px;", "" }
-                                                                        td { style: "border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; padding: 2px;", "" }
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::BindingNavigator => rsx! {
+                                                        {
+                                                            let nav_first = name.clone();
+                                                            let nav_prev = name.clone();
+                                                            let nav_next = name.clone();
+                                                            let nav_last = name.clone();
+                                                            let nav_add = name.clone();
+                                                            let nav_del = name.clone();
+                                                            rsx! {
+                                                                div {
+                                                                    style: "width: 100%; height: 100%; display: flex; align-items: center; gap: 2px; background: #f0f0f0; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
+                                                                    button {
+                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                                        title: "Move first",
+                                                                        onclick: move |_| handle_event(nav_first.clone(), "MoveFirst".to_string()),
+                                                                        "⏮"
+                                                                    }
+                                                                    button {
+                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                                        title: "Move previous",
+                                                                        onclick: move |_| handle_event(nav_prev.clone(), "MovePrevious".to_string()),
+                                                                        "◀"
+                                                                    }
+                                                                    span {
+                                                                        style: "padding: 0 4px; min-width: 40px; text-align: center; border: 1px solid #ccc; background: white;",
+                                                                        "{text}"
+                                                                    }
+                                                                    button {
+                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                                        title: "Move next",
+                                                                        onclick: move |_| handle_event(nav_next.clone(), "MoveNext".to_string()),
+                                                                        "▶"
+                                                                    }
+                                                                    button {
+                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                                        title: "Move last",
+                                                                        onclick: move |_| handle_event(nav_last.clone(), "MoveLast".to_string()),
+                                                                        "⏭"
+                                                                    }
+                                                                    div { style: "width: 1px; height: 16px; background: #aaa; margin: 0 2px;" }
+                                                                    button {
+                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                                        title: "Add new",
+                                                                        onclick: move |_| handle_event(nav_add.clone(), "AddNew".to_string()),
+                                                                        "➕"
+                                                                    }
+                                                                    button {
+                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                                        title: "Delete",
+                                                                        onclick: move |_| handle_event(nav_del.clone(), "Delete".to_string()),
+                                                                        "❌"
                                                                     }
                                                                 }
                                                             }

@@ -219,6 +219,8 @@ fn drain_console_effects(interp: &mut Interpreter) {
             RuntimeSideEffect::ConsoleClear => {}
             RuntimeSideEffect::MsgBox(msg) => println!("[MsgBox] {msg}"),
             RuntimeSideEffect::PropertyChange { .. } => {}
+            RuntimeSideEffect::DataSourceChanged { .. } => {}
+            RuntimeSideEffect::BindingPositionChanged { .. } => {}
         }
     }
 }

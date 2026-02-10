@@ -46,6 +46,12 @@ pub enum ControlType {
     DataGridView,
     Panel,
     ListView,
+    BindingNavigator,
+    // Non-visual data components (appear in component tray)
+    BindingSourceComponent,
+    DataSetComponent,
+    DataTableComponent,
+    DataAdapterComponent,
 }
 
 impl ControlType {
@@ -66,7 +72,33 @@ impl ControlType {
             ControlType::DataGridView => "DataGridView",
             ControlType::Panel => "Panel",
             ControlType::ListView => "ListView",
+            ControlType::BindingNavigator => "BindingNavigator",
+            ControlType::BindingSourceComponent => "BindingSource",
+            ControlType::DataSetComponent => "DataSet",
+            ControlType::DataTableComponent => "DataTable",
+            ControlType::DataAdapterComponent => "DataAdapter",
         }
+    }
+
+    /// Returns true if this is a non-visual component (lives in component tray, not form surface)
+    pub fn is_non_visual(&self) -> bool {
+        matches!(self,
+            ControlType::BindingSourceComponent |
+            ControlType::DataSetComponent |
+            ControlType::DataTableComponent |
+            ControlType::DataAdapterComponent
+        )
+    }
+
+    /// Returns true if this control type supports DataSource/DataMember complex binding
+    /// (list/grid controls that display multiple records from a BindingSource)
+    pub fn supports_complex_binding(&self) -> bool {
+        matches!(self,
+            ControlType::DataGridView |
+            ControlType::ListBox |
+            ControlType::ComboBox |
+            ControlType::BindingNavigator
+        )
     }
 
     pub fn default_name_prefix(&self) -> &str {
@@ -86,6 +118,11 @@ impl ControlType {
             ControlType::DataGridView => "dgv",
             ControlType::Panel => "pnl",
             ControlType::ListView => "lvw",
+            ControlType::BindingNavigator => "bnav",
+            ControlType::BindingSourceComponent => "bs",
+            ControlType::DataSetComponent => "ds",
+            ControlType::DataTableComponent => "dt",
+            ControlType::DataAdapterComponent => "da",
         }
     }
 
@@ -106,6 +143,11 @@ impl ControlType {
             ControlType::DataGridView => (300, 200),
             ControlType::Panel => (200, 150),
             ControlType::ListView => (250, 200),
+            ControlType::BindingNavigator => (300, 25),
+            ControlType::BindingSourceComponent => (32, 32),
+            ControlType::DataSetComponent => (32, 32),
+            ControlType::DataTableComponent => (32, 32),
+            ControlType::DataAdapterComponent => (32, 32),
         }
     }
 }
@@ -202,6 +244,27 @@ impl Control {
                 properties.set("Enabled", true);
                 properties.set("Visible", true);
                 properties.set("BorderStyle", "None"); // None, FixedSingle, Fixed3D
+            }
+            ControlType::BindingNavigator => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                properties.set("BindingSource", "");
+            }
+            ControlType::BindingSourceComponent => {
+                properties.set("DataSource", "");
+                properties.set("DataMember", "");
+                properties.set("Filter", "");
+                properties.set("Sort", "");
+            }
+            ControlType::DataSetComponent => {
+                properties.set("DataSetName", "NewDataSet");
+            }
+            ControlType::DataTableComponent => {
+                properties.set("TableName", "Table1");
+            }
+            ControlType::DataAdapterComponent => {
+                properties.set("SelectCommand", "");
+                properties.set("ConnectionString", "");
             }
             _ => {
                 properties.set("Enabled", true);

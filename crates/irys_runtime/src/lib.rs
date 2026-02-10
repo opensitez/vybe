@@ -19,6 +19,17 @@ pub enum RuntimeSideEffect {
     },
     ConsoleOutput(String),
     ConsoleClear,
+    /// Signals that a data-bound control's data source has changed and needs re-rendering.
+    DataSourceChanged {
+        control_name: String,
+        columns: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+    /// Signals BindingSource position change — bound controls should refresh.
+    BindingPositionChanged {
+        binding_source_name: String,
+        position: i32,
+    },
 }
 
 pub use interpreter::*;

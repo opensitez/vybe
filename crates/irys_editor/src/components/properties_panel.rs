@@ -132,9 +132,14 @@ pub fn PropertiesPanel() -> Element {
                                                 irys_forms::ControlType::ComboBox => vec!["Click", "Change", "DropDown"],
                                                 irys_forms::ControlType::Frame => vec!["Click", "DblClick"],
                                                 irys_forms::ControlType::TreeView => vec!["Click", "DblClick"],
-                                                irys_forms::ControlType::DataGridView => vec!["Click"],
+                                                irys_forms::ControlType::DataGridView => vec!["Click", "CellClick", "SelectionChanged", "DataSourceChanged"],
                                                 irys_forms::ControlType::Panel => vec!["Click", "DblClick"],
                                                 irys_forms::ControlType::ListView => vec!["Click", "DblClick"],
+                                                irys_forms::ControlType::BindingNavigator => vec!["Click"],
+                                                irys_forms::ControlType::BindingSourceComponent => vec!["CurrentChanged", "PositionChanged", "DataSourceChanged"],
+                                                irys_forms::ControlType::DataSetComponent => vec![],
+                                                irys_forms::ControlType::DataTableComponent => vec!["RowChanged", "ColumnChanged"],
+                                                irys_forms::ControlType::DataAdapterComponent => vec!["FillError"],
                                                 _ => vec!["Click"],
                                             };
                                             
@@ -309,6 +314,7 @@ pub fn PropertiesPanel() -> Element {
                                     let has_text = matches!(control.control_type, 
                                         irys_forms::ControlType::TextBox | 
                                         irys_forms::ControlType::RichTextBox);
+                                    let is_non_visual = control.control_type.is_non_visual();
 
                                     rsx! {
                                         div {
@@ -337,6 +343,7 @@ pub fn PropertiesPanel() -> Element {
                                             div { style: "font-weight: bold;", "Type" }
                                             div { style: "font-size: 12px; color: #666;", "{ctype}" }
                                             
+                                            if !is_non_visual {
                                             div { style: "font-weight: bold;", "Left" }
                                             input { 
                                                 r#type: "number",
@@ -536,7 +543,470 @@ pub fn PropertiesPanel() -> Element {
                                                     state.update_control_property(cid, "Visible", evt.checked().to_string());
                                                 }
                                             }
+                                            } // end if !is_non_visual
                                             
+                                            // ---- Data Binding section ----
+                                            // ALL controls get data binding options
+                                            {
+                                                {
+                                                    // Collect available data components on the form (exclude self!)
+                                                    let control_id = control.id;
+                                                    let form_opt2 = state.get_current_form();
+                                                    // For visual controls: they bind to a BindingSource
+                                                    let binding_sources: Vec<String> = form_opt2.as_ref()
+                                                        .map(|f| f.controls.iter()
+                                                            .filter(|c| c.id != control_id && matches!(c.control_type,
+                                                                irys_forms::ControlType::BindingSourceComponent))
+                                                            .map(|c| c.name.clone())
+                                                            .collect())
+                                                        .unwrap_or_default();
+                                                    // For BindingSource: its DataSource can be DataAdapter, DataSet, or DataTable
+                                                    let bs_data_sources: Vec<String> = form_opt2.as_ref()
+                                                        .map(|f| f.controls.iter()
+                                                            .filter(|c| c.id != control_id && matches!(c.control_type,
+                                                                irys_forms::ControlType::DataAdapterComponent |
+                                                                irys_forms::ControlType::DataSetComponent |
+                                                                irys_forms::ControlType::DataTableComponent))
+                                                            .map(|c| c.name.clone())
+                                                            .collect())
+                                                        .unwrap_or_default();
+                                                    let has_complex_binding = control.control_type.supports_complex_binding();
+
+                                                    rsx! {
+                                                        div { style: "grid-column: 1 / -1; margin-top: 8px; padding-top: 6px; border-top: 1px solid #ddd; font-weight: bold; font-size: 11px; color: #0078d4; text-transform: uppercase;",
+                                                            "Data"
+                                                        }
+
+                                                        // === Simple Data Bindings for all visual controls ===
+                                                        // (TextBox→Text, Label→Text, CheckBox→Checked, etc.)
+                                                        if !is_non_visual {
+                                                            {
+                                                                // Determine which control property to bind (the "bindable property")
+                                                                let bindable_prop = match control.control_type {
+                                                                    irys_forms::ControlType::TextBox | irys_forms::ControlType::RichTextBox => "Text",
+                                                                    irys_forms::ControlType::Label => "Text",
+                                                                    irys_forms::ControlType::CheckBox | irys_forms::ControlType::RadioButton => "Checked",
+                                                                    irys_forms::ControlType::Button => "Text",
+                                                                    irys_forms::ControlType::PictureBox => "ImageLocation",
+                                                                    _ => "Text",
+                                                                };
+                                                                let binding_key = format!("DataBindings.{}", bindable_prop);
+                                                                let current_binding_bs = control.properties.get_string("DataBindings.Source")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let current_binding_col = control.properties.get_string(&binding_key)
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+
+                                                                rsx! {
+                                                                    div { style: "grid-column: 1 / -1; font-size: 10px; color: #888; font-style: italic; margin-bottom: 2px;",
+                                                                        "(DataBindings)"
+                                                                    }
+
+                                                                    div { style: "font-weight: bold; font-size: 11px;", "Source" }
+                                                                    select {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{current_binding_bs}",
+                                                                        onchange: move |evt| {
+                                                                            state.update_control_property(cid, "DataBindings.Source", evt.value());
+                                                                        },
+                                                                        option { value: "", "(none)" }
+                                                                        for bs_name in &binding_sources {
+                                                                            option { value: "{bs_name}", "{bs_name}" }
+                                                                        }
+                                                                    }
+
+                                                                    div { style: "font-weight: bold; font-size: 11px;", "{bindable_prop}" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{current_binding_col}",
+                                                                        placeholder: "Column name",
+                                                                        title: "DataBindings.Add(\"{bindable_prop}\", bindingSource, \"ColumnName\")",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, &binding_key, evt.value());
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // === Complex binding (DataSource property) for list/grid controls ===
+                                                        // Visual controls bind to a BindingSource
+                                                        if has_complex_binding {
+                                                            {
+                                                                let current_ds = control.properties.get_string("DataSource")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let current_dm = control.properties.get_string("DataMember")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                rsx! {
+                                                                    div { style: "font-weight: bold;", "DataSource" }
+                                                                    select {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{current_ds}",
+                                                                        onchange: move |evt| {
+                                                                            state.update_control_property(cid, "DataSource", evt.value());
+                                                                        },
+                                                                        option { value: "", "(none)" }
+                                                                        for bs_name in &binding_sources {
+                                                                            option { value: "{bs_name}", "{bs_name}" }
+                                                                        }
+                                                                    }
+
+                                                                    div { style: "font-weight: bold;", "DataMember" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{current_dm}",
+                                                                        placeholder: "(none)",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, "DataMember", evt.value());
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // === BindingSource DataSource: binds to DataAdapter/DataSet/DataTable ===
+                                                        if matches!(control.control_type, irys_forms::ControlType::BindingSourceComponent) {
+                                                            {
+                                                                let current_ds = control.properties.get_string("DataSource")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let current_dm = control.properties.get_string("DataMember")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                rsx! {
+                                                                    div { style: "font-weight: bold;", "DataSource" }
+                                                                    select {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{current_ds}",
+                                                                        onchange: move |evt| {
+                                                                            state.update_control_property(cid, "DataSource", evt.value());
+                                                                        },
+                                                                        option { value: "", "(none)" }
+                                                                        for ds_name in &bs_data_sources {
+                                                                            option { value: "{ds_name}", "{ds_name}" }
+                                                                        }
+                                                                    }
+
+                                                                    div { style: "font-weight: bold;", "DataMember" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{current_dm}",
+                                                                        placeholder: "Table name",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, "DataMember", evt.value());
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // DisplayMember/ValueMember for ListBox/ComboBox
+                                                        if matches!(control.control_type, irys_forms::ControlType::ListBox | irys_forms::ControlType::ComboBox) {
+                                                            {
+                                                                let display_member = control.properties.get_string("DisplayMember")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let value_member = control.properties.get_string("ValueMember")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                rsx! {
+                                                                    div { style: "font-weight: bold;", "DisplayMember" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{display_member}",
+                                                                        placeholder: "Column to display",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, "DisplayMember", evt.value());
+                                                                        }
+                                                                    }
+                                                                    div { style: "font-weight: bold;", "ValueMember" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{value_member}",
+                                                                        placeholder: "Column for value",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, "ValueMember", evt.value());
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // BindingNavigator: link to BindingSource
+                                                        if matches!(control.control_type, irys_forms::ControlType::BindingNavigator) {
+                                                            {
+                                                                let current_bs = control.properties.get_string("BindingSource")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                rsx! {
+                                                                    div { style: "font-weight: bold;", "BindingSource" }
+                                                                    select {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{current_bs}",
+                                                                        onchange: move |evt| {
+                                                                            state.update_control_property(cid, "BindingSource", evt.value());
+                                                                        },
+                                                                        option { value: "", "(none)" }
+                                                                        for bs_name in &binding_sources {
+                                                                            option { value: "{bs_name}", "{bs_name}" }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // BindingSource-specific properties
+                                                        if matches!(control.control_type, irys_forms::ControlType::BindingSourceComponent) {
+                                                            {
+                                                                let filter = control.properties.get_string("Filter")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let sort = control.properties.get_string("Sort")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                rsx! {
+                                                                    div { style: "font-weight: bold;", "Filter" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{filter}",
+                                                                        placeholder: "e.g. Name = 'Test'",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, "Filter", evt.value());
+                                                                        }
+                                                                    }
+                                                                    div { style: "font-weight: bold;", "Sort" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{sort}",
+                                                                        placeholder: "e.g. Name ASC",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, "Sort", evt.value());
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // DataSet-specific properties
+                                                        if matches!(control.control_type, irys_forms::ControlType::DataSetComponent) {
+                                                            {
+                                                                let dsn = control.properties.get_string("DataSetName")
+                                                                    .map(|s| s.to_string()).unwrap_or_else(|| "NewDataSet".to_string());
+                                                                rsx! {
+                                                                    div { style: "font-weight: bold;", "DataSetName" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{dsn}",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, "DataSetName", evt.value());
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // DataTable-specific properties
+                                                        if matches!(control.control_type, irys_forms::ControlType::DataTableComponent) {
+                                                            {
+                                                                let tn = control.properties.get_string("TableName")
+                                                                    .map(|s| s.to_string()).unwrap_or_else(|| "Table1".to_string());
+                                                                rsx! {
+                                                                    div { style: "font-weight: bold;", "TableName" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{tn}",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, "TableName", evt.value());
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // DataAdapter-specific properties (no DataSource — it IS the source)
+                                                        if matches!(control.control_type, irys_forms::ControlType::DataAdapterComponent) {
+                                                            {
+                                                                let sc = control.properties.get_string("SelectCommand")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let cs = control.properties.get_string("ConnectionString")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let db_type = control.properties.get_string("DbType")
+                                                                    .map(|s| s.to_string()).unwrap_or_else(|| "SQLite".to_string());
+                                                                let db_path = control.properties.get_string("DbPath")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let db_host = control.properties.get_string("DbHost")
+                                                                    .map(|s| s.to_string()).unwrap_or_else(|| "localhost".to_string());
+                                                                let db_port = control.properties.get_string("DbPort")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let db_name = control.properties.get_string("DbName")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let db_user = control.properties.get_string("DbUser")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let db_pass = control.properties.get_string("DbPassword")
+                                                                    .map(|s| s.to_string()).unwrap_or_default();
+                                                                let mut show_conn_builder = use_signal(|| false);
+                                                                let is_builder_open = *show_conn_builder.read();
+
+                                                                rsx! {
+                                                                    div { style: "font-weight: bold;", "SelectCmd" }
+                                                                    input {
+                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                        value: "{sc}",
+                                                                        placeholder: "SELECT * FROM ...",
+                                                                        oninput: move |evt| {
+                                                                            state.update_control_property(cid, "SelectCommand", evt.value());
+                                                                        }
+                                                                    }
+
+                                                                    div { style: "font-weight: bold;", "ConnStr" }
+                                                                    div { style: "display: flex; gap: 4px; align-items: center;",
+                                                                        input {
+                                                                            style: "flex: 1; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
+                                                                            value: "{cs}",
+                                                                            placeholder: "Data Source=...",
+                                                                            oninput: move |evt| {
+                                                                                state.update_control_property(cid, "ConnectionString", evt.value());
+                                                                            }
+                                                                        }
+                                                                        button {
+                                                                            style: "padding: 2px 8px; border: 1px solid #999; background: #f0f0f0; cursor: pointer; font-size: 12px; white-space: nowrap;",
+                                                                            title: "Connection String Builder",
+                                                                            onclick: move |_| {
+                                                                                show_conn_builder.set(!is_builder_open);
+                                                                            },
+                                                                            "..."
+                                                                        }
+                                                                    }
+
+                                                                    // Connection String Builder panel
+                                                                    if is_builder_open {
+                                                                        div { style: "grid-column: 1 / -1; background: #f5f9ff; border: 1px solid #a0c4e8; border-radius: 4px; padding: 8px; margin-top: 4px;",
+                                                                            div { style: "font-weight: bold; font-size: 11px; color: #0078d4; margin-bottom: 6px;", "🔧 Connection Builder" }
+
+                                                                            div { style: "display: grid; grid-template-columns: 70px 1fr; gap: 4px; align-items: center;",
+                                                                                div { style: "font-size: 11px; font-weight: bold;", "Server" }
+                                                                                select {
+                                                                                    style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
+                                                                                    value: "{db_type}",
+                                                                                    onchange: move |evt| {
+                                                                                        let val = evt.value();
+                                                                                        state.update_control_property(cid, "DbType", val.clone());
+                                                                                        // Set default port
+                                                                                        let port = match val.as_str() {
+                                                                                            "PostgreSQL" => "5432",
+                                                                                            "MySQL" => "3306",
+                                                                                            _ => "",
+                                                                                        };
+                                                                                        state.update_control_property(cid, "DbPort", port.to_string());
+                                                                                    },
+                                                                                    option { value: "SQLite", "SQLite" }
+                                                                                    option { value: "PostgreSQL", "PostgreSQL" }
+                                                                                    option { value: "MySQL", "MySQL" }
+                                                                                }
+
+                                                                                if db_type == "SQLite" {
+                                                                                    div { style: "font-size: 11px; font-weight: bold;", "File" }
+                                                                                    input {
+                                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
+                                                                                        value: "{db_path}",
+                                                                                        placeholder: "database.db  or  :memory:",
+                                                                                        oninput: move |evt| {
+                                                                                            state.update_control_property(cid, "DbPath", evt.value());
+                                                                                        }
+                                                                                    }
+                                                                                } else {
+                                                                                    div { style: "font-size: 11px; font-weight: bold;", "Host" }
+                                                                                    input {
+                                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
+                                                                                        value: "{db_host}",
+                                                                                        placeholder: "localhost",
+                                                                                        oninput: move |evt| {
+                                                                                            state.update_control_property(cid, "DbHost", evt.value());
+                                                                                        }
+                                                                                    }
+
+                                                                                    div { style: "font-size: 11px; font-weight: bold;", "Port" }
+                                                                                    input {
+                                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
+                                                                                        value: "{db_port}",
+                                                                                        placeholder: "5432",
+                                                                                        oninput: move |evt| {
+                                                                                            state.update_control_property(cid, "DbPort", evt.value());
+                                                                                        }
+                                                                                    }
+
+                                                                                    div { style: "font-size: 11px; font-weight: bold;", "Database" }
+                                                                                    input {
+                                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
+                                                                                        value: "{db_name}",
+                                                                                        placeholder: "mydb",
+                                                                                        oninput: move |evt| {
+                                                                                            state.update_control_property(cid, "DbName", evt.value());
+                                                                                        }
+                                                                                    }
+
+                                                                                    div { style: "font-size: 11px; font-weight: bold;", "User" }
+                                                                                    input {
+                                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
+                                                                                        value: "{db_user}",
+                                                                                        placeholder: "username",
+                                                                                        oninput: move |evt| {
+                                                                                            state.update_control_property(cid, "DbUser", evt.value());
+                                                                                        }
+                                                                                    }
+
+                                                                                    div { style: "font-size: 11px; font-weight: bold;", "Password" }
+                                                                                    input {
+                                                                                        r#type: "password",
+                                                                                        style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
+                                                                                        value: "{db_pass}",
+                                                                                        placeholder: "••••••",
+                                                                                        oninput: move |evt| {
+                                                                                            state.update_control_property(cid, "DbPassword", evt.value());
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+
+                                                                            button {
+                                                                                style: "margin-top: 8px; width: 100%; padding: 4px 8px; border: 1px solid #0078d4; background: #0078d4; color: white; cursor: pointer; border-radius: 3px; font-size: 11px;",
+                                                                                onclick: move |_| {
+                                                                                    // Build connection string from fields
+                                                                                    let form_opt3 = state.get_current_form();
+                                                                                    if let Some(form) = form_opt3.as_ref() {
+                                                                                        if let Some(ctrl) = form.get_control(cid) {
+                                                                                            let dtype = ctrl.properties.get_string("DbType").unwrap_or("SQLite");
+                                                                                            let conn = match dtype {
+                                                                                                "SQLite" => {
+                                                                                                    let path = ctrl.properties.get_string("DbPath").unwrap_or("database.db");
+                                                                                                    format!("Data Source={}", path)
+                                                                                                }
+                                                                                                "PostgreSQL" => {
+                                                                                                    let host = ctrl.properties.get_string("DbHost").unwrap_or("localhost");
+                                                                                                    let port = ctrl.properties.get_string("DbPort").unwrap_or("5432");
+                                                                                                    let db = ctrl.properties.get_string("DbName").unwrap_or("mydb");
+                                                                                                    let user = ctrl.properties.get_string("DbUser").unwrap_or("postgres");
+                                                                                                    let pass = ctrl.properties.get_string("DbPassword").unwrap_or("");
+                                                                                                    format!("Host={};Port={};Database={};Username={};Password={}", host, port, db, user, pass)
+                                                                                                }
+                                                                                                "MySQL" => {
+                                                                                                    let host = ctrl.properties.get_string("DbHost").unwrap_or("localhost");
+                                                                                                    let port = ctrl.properties.get_string("DbPort").unwrap_or("3306");
+                                                                                                    let db = ctrl.properties.get_string("DbName").unwrap_or("mydb");
+                                                                                                    let user = ctrl.properties.get_string("DbUser").unwrap_or("root");
+                                                                                                    let pass = ctrl.properties.get_string("DbPassword").unwrap_or("");
+                                                                                                    format!("Server={};Port={};Database={};Uid={};Pwd={}", host, port, db, user, pass)
+                                                                                                }
+                                                                                                _ => String::new(),
+                                                                                            };
+                                                                                            state.update_control_property(cid, "ConnectionString", conn);
+                                                                                        }
+                                                                                    }
+                                                                                    show_conn_builder.set(false);
+                                                                                },
+                                                                                "Build Connection String"
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
                                             // URL property for WebBrowser
                                             if matches!(control.control_type, irys_forms::ControlType::WebBrowser) {
                                                 {

@@ -222,8 +222,14 @@ pub fn FormDesigner() -> Element {
                             ",
                             onmouseover: move |_| { drop_target.set(Some(None)); }, // Target is Form (None parent)
                             onclick: move |evt| {
-                                let tool_opt = *selected_tool.read(); // specific simple Copy
+                                let tool_opt = *selected_tool.read();
                                 if let Some(tool) = tool_opt {
+                                     // Non-visual components don't need coordinates
+                                     if tool.is_non_visual() {
+                                         state.add_control_at(tool, 0, 0);
+                                         selected_tool.set(None);
+                                         return;
+                                     }
                                      let x = evt.data.element_coordinates().x as i32;
                                      let y = evt.data.element_coordinates().y as i32;
                                      let grid_x = (x / 10) * 10;
@@ -255,12 +261,80 @@ pub fn FormDesigner() -> Element {
                             // Root controls
                             RecursiveControls { 
                                 parent_id: None, 
-                                hierarchy: hierarchy,
+                                hierarchy: hierarchy.clone(),
                                 selected_control: selected_control,
                                 drag_state: drag_state,
                                 drop_target: drop_target,
                                 parent_is_dragging: false,
                                 depth: 0
+                            }
+                        }
+
+                        // Component tray (non-visual data components)
+                        {
+                            let non_visual: Vec<Control> = form.controls.iter()
+                                .filter(|c| c.control_type.is_non_visual())
+                                .cloned()
+                                .collect();
+
+                            if !non_visual.is_empty() {
+                                rsx! {
+                                    div {
+                                        style: "
+                                            margin: 0 20px 20px 20px;
+                                            width: {form_width}px;
+                                            background: #f0f0f0;
+                                            border: 1px solid #999;
+                                            border-top: 2px solid #bbb;
+                                            padding: 6px 8px;
+                                            display: flex;
+                                            flex-wrap: wrap;
+                                            gap: 8px;
+                                            min-height: 48px;
+                                        ",
+
+                                        // Tray label
+                                        div {
+                                            style: "width: 100%; font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;",
+                                            "Component Tray"
+                                        }
+
+                                        for comp in non_visual {
+                                            {
+                                                let comp_id = comp.id;
+                                                let comp_name = comp.name.clone();
+                                                let is_sel = *selected_control.read() == Some(comp_id);
+                                                let sel_bg = if is_sel { "#cce4f7" } else { "#e8e8e8" };
+                                                let sel_border = if is_sel { "2px solid #0078d4" } else { "1px solid #bbb" };
+                                                let icon = match comp.control_type {
+                                                    ControlType::BindingSourceComponent => "🔗",
+                                                    ControlType::DataSetComponent => "🗄️",
+                                                    ControlType::DataTableComponent => "📋",
+                                                    ControlType::DataAdapterComponent => "🔌",
+                                                    _ => "📦",
+                                                };
+                                                rsx! {
+                                                    div {
+                                                        key: "{comp_id}",
+                                                        style: "
+                                                            display: flex; flex-direction: column; align-items: center;
+                                                            padding: 4px 10px; background: {sel_bg}; border: {sel_border};
+                                                            border-radius: 4px; cursor: pointer; min-width: 64px;
+                                                        ",
+                                                        onclick: move |evt| {
+                                                            evt.stop_propagation();
+                                                            selected_control.set(Some(comp_id));
+                                                        },
+                                                        div { style: "font-size: 20px;", "{icon}" }
+                                                        div { style: "font-size: 10px; color: #333; white-space: nowrap;", "{comp_name}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                rsx! {}
                             }
                         }
                     }
@@ -286,8 +360,11 @@ fn RecursiveControls(
         return rsx! { div { "Max depth reached" } };
     }
 
-    // Get children for this parent
-    let children = hierarchy.get(&parent_id).cloned().unwrap_or_default();
+    // Get children for this parent, filtering out non-visual components
+    let children: Vec<Control> = hierarchy.get(&parent_id).cloned().unwrap_or_default()
+        .into_iter()
+        .filter(|c| !c.control_type.is_non_visual())
+        .collect();
     
     rsx! {
         for control in children {
@@ -578,6 +655,19 @@ fn ControlVisuals(control: Control) -> Element {
                     div { style: "flex: 1; padding: 3px 6px;", "Size" }
                 }
                 div { style: "flex: 1; padding: 4px; color: #999;", "(empty)" }
+            }
+        },
+        ControlType::BindingNavigator => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; align-items: center; gap: 2px; background: #f0f0f0; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px; color: black;",
+                div { style: "padding: 1px 4px; border: 1px solid #aaa; background: #e8e8e8;", "⏮" }
+                div { style: "padding: 1px 4px; border: 1px solid #aaa; background: #e8e8e8;", "◀" }
+                div { style: "padding: 0 4px; min-width: 30px; text-align: center; border: 1px solid #ccc; background: white;", "0" }
+                div { style: "padding: 1px 4px; border: 1px solid #aaa; background: #e8e8e8;", "▶" }
+                div { style: "padding: 1px 4px; border: 1px solid #aaa; background: #e8e8e8;", "⏭" }
+                div { style: "width: 1px; height: 12px; background: #aaa; margin: 0 2px;" }
+                div { style: "padding: 1px 4px; border: 1px solid #aaa; background: #e8e8e8;", "➕" }
+                div { style: "padding: 1px 4px; border: 1px solid #aaa; background: #e8e8e8;", "❌" }
             }
         },
         _ => rsx! { div { "..." } }

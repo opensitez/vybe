@@ -25,14 +25,23 @@ pub fn Toolbox() -> Element {
         ("Panel", Some(ControlType::Panel)),
         ("ListView", Some(ControlType::ListView)),
     ];
+
+    let data_controls = vec![
+        ("BindingSource", Some(ControlType::BindingSourceComponent)),
+        ("BindingNavigator", Some(ControlType::BindingNavigator)),
+        ("DataSet", Some(ControlType::DataSetComponent)),
+        ("DataTable", Some(ControlType::DataTableComponent)),
+        ("DataAdapter", Some(ControlType::DataAdapterComponent)),
+    ];
     
     rsx! {
         div {
             class: "toolbox",
-            style: "width: 150px; background: #fafafa; border-right: 1px solid #ccc; padding: 8px;",
+            style: "width: 150px; background: #fafafa; border-right: 1px solid #ccc; padding: 8px; overflow-y: auto;",
             
             h3 { style: "margin: 0 0 8px 0; font-size: 14px;", "Toolbox" }
             
+            // Standard controls
             div {
                 style: "border-top: 1px solid #ccc; padding-top: 8px;",
                 
@@ -50,6 +59,39 @@ pub fn Toolbox() -> Element {
                                     selected_tool.set(control_type);
                                 },
                                 "{name}"
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Data section
+            h4 { style: "margin: 12px 0 4px 0; font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.5px;", "Data" }
+            div {
+                style: "border-top: 1px solid #ccc; padding-top: 4px;",
+
+                for (name, control_type) in data_controls {
+                    {
+                        let is_selected = *selected_tool.read() == control_type;
+                        let bg_color = if is_selected { "#0078d4" } else { "transparent" };
+                        let text_color = if is_selected { "white" } else { "black" };
+                        let icon = match name {
+                            "BindingSource" => "🔗 ",
+                            "BindingNavigator" => "🧭 ",
+                            "DataSet" => "🗄️ ",
+                            "DataTable" => "📋 ",
+                            "DataAdapter" => "🔌 ",
+                            _ => "",
+                        };
+
+                        rsx! {
+                            div {
+                                key: "{name}",
+                                style: "padding: 5px 8px; cursor: pointer; background: {bg_color}; color: {text_color}; border-radius: 3px; margin-bottom: 2px; font-size: 12px;",
+                                onclick: move |_| {
+                                    selected_tool.set(control_type);
+                                },
+                                "{icon}{name}"
                             }
                         }
                     }

@@ -331,7 +331,7 @@ postfix = { primary ~ member_chain* }
 xor_op = { ^"Xor" }
 or_op = { ^"Or" | ^"OrElse" }
 and_op = { ^"And" | ^"AndAlso" }
-eq_op = { ^"=" | ^"<>" | ^"Is" | ^"IsNot" }
+eq_op = { ^"=" | ^"<>" | ^"IsNot" | ^"Is" }
 comp_op = { ^"<=" | ^">=" | "<" | ">" }
 shift_op = { "<<" | ">>" }
 add_op = { "+" | "-" | "&" }
