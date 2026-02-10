@@ -1869,6 +1869,16 @@ impl Interpreter {
             "rmdir" => return rmdir_fn(&arg_values),
             "freefile" => return freefile_fn(&arg_values),
             "fileexists" | "file.exists" => return file_exists_fn(&arg_values),
+            
+            // VB6 File Handle functions
+            "eof" => return eof_fn(&arg_values),
+            "lof" => return lof_fn(&arg_values),
+            "loc" => return loc_fn(&arg_values),
+            "fileattr" => return fileattr_fn(&arg_values),
+            
+            // Image functions
+            "loadpicture" => return loadpicture_fn(&arg_values),
+            "savepicture" => return savepicture_fn(&arg_values),
 
             // Interaction functions
             "beep" => return beep_fn(&arg_values),

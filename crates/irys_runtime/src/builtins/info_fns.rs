@@ -30,15 +30,33 @@ pub fn isnothing_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Boolean(matches!(&args[0], Value::Nothing)))
 }
 
-/// IsDate(expression) - Returns True if value can be converted to a date (stub)
+/// IsDate(expression) - Returns True if value can be converted to a date
 pub fn isdate_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         return Err(RuntimeError::Custom("IsDate requires exactly one argument".to_string()));
     }
-    // Simplified: just check some common date patterns
+    
+    // Check if value is already a date type
+    if matches!(&args[0], Value::Date(_)) {
+        return Ok(Value::Boolean(true));
+    }
+    
+    // Try parsing string as date
     let s = args[0].as_string();
-    let is_date = s.contains('/') || s.contains('-');
-    Ok(Value::Boolean(is_date))
+    let formats = [
+        "%m/%d/%Y", "%Y-%m-%d", "%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S",
+        "%m/%d/%y", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d",
+        "%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y",
+    ];
+    
+    use chrono::NaiveDate;
+    for fmt in &formats {
+        if NaiveDate::parse_from_str(&s, fmt).is_ok() {
+            return Ok(Value::Boolean(true));
+        }
+    }
+    
+    Ok(Value::Boolean(false))
 }
 
 /// TypeName(expression) - Returns a string describing the type
@@ -259,10 +277,17 @@ pub fn iserror_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         return Err(RuntimeError::Custom("IsError requires exactly one argument".to_string()));
     }
-    // In VB, errors are typically represented as special Variant values
-    // For now, we'll check if it's a string that looks like an error
+    // In VB, CVErr creates error values. We don't have a dedicated Error type,
+    // but we can check for special patterns or Nothing which might represent errors
     let result = match &args[0] {
-        Value::String(s) => s.to_lowercase().contains("error"),
+        Value::Nothing => false, // Nothing is not an error, it's an absence of value
+        Value::String(s) => {
+            // Check for common error string patterns
+            let lower = s.to_lowercase();
+            lower.starts_with("error") || 
+            lower.contains("exception") || 
+            lower.starts_with("err:")
+        }
         _ => false,
     };
     Ok(Value::Boolean(result))

@@ -562,3 +562,151 @@ pub fn freefile_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     let num = FILE_NUMBER.fetch_add(1, Ordering::SeqCst);
     Ok(Value::Integer(num))
 }
+
+// ─── VB6 File Handle Functions ───
+// Note: These work with the file_handles HashMap in the Interpreter
+// For now, we provide basic implementations that work with file metadata
+
+/// EOF(filenumber) - Returns True if at end of file
+/// Note: In full implementation, this would check the file handle position
+pub fn eof_fn(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(RuntimeError::Custom("EOF requires 1 argument".to_string()));
+    }
+    
+    let _file_num = args[0].as_integer()?;
+    
+    // Without actual file handle tracking, we return False
+    // A full implementation would track open file handles and their positions
+    Ok(Value::Boolean(false))
+}
+
+/// LOF(filenumber) - Returns length of open file in bytes
+pub fn lof_fn(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(RuntimeError::Custom("LOF requires 1 argument".to_string()));
+    }
+    
+    let _file_num = args[0].as_integer()?;
+    
+    // Without actual file handle tracking, return 0
+    // A full implementation would look up the file handle and get its length
+    Ok(Value::Long(0))
+}
+
+/// LOC(filenumber) - Returns current read/write position in file
+pub fn loc_fn(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(RuntimeError::Custom("LOC requires 1 argument".to_string()));
+    }
+    
+    let _file_num = args[0].as_integer()?;
+    
+    // Without actual file handle tracking, return 0
+    // A full implementation would track file position
+    Ok(Value::Long(0))
+}
+
+/// FileAttr(filenumber, returntype) - Returns mode or OS file handle of open file
+pub fn fileattr_fn(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RuntimeError::Custom("FileAttr requires 1 or 2 arguments".to_string()));
+    }
+    
+    let _file_num = args[0].as_integer()?;
+    let return_type = if args.len() == 2 {
+        args[1].as_integer()?
+    } else {
+        1 // Default to file mode
+    };
+    
+    // returntype: 1 = file mode, 2 = OS file handle
+    // Without actual file handle tracking, return default values
+    match return_type {
+        1 => Ok(Value::Integer(1)), // Input mode
+        2 => Ok(Value::Integer(0)), // No OS handle
+        _ => Err(RuntimeError::Custom("FileAttr: invalid return type".to_string())),
+    }
+}
+
+// ─── Image Functions ───
+
+/// LoadPicture(filename) - Loads an image file
+/// Returns a simple object representing the image
+pub fn loadpicture_fn(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args.is_empty() || args.len() > 1 {
+        return Err(RuntimeError::Custom("LoadPicture requires 1 argument".to_string()));
+    }
+    
+    let path = args[0].as_string();
+    
+    // Check if file exists
+    if !Path::new(&path).exists() {
+        return Err(RuntimeError::Custom(format!("LoadPicture: file not found: {}", path)));
+    }
+    
+    // Read file metadata
+    match fs::metadata(&path) {
+        Ok(metadata) => {
+            use std::rc::Rc;
+            use std::cell::RefCell;
+            use std::collections::HashMap;
+            use crate::ObjectData;
+            
+            // Create a simple Picture object with basic properties
+            let mut fields = HashMap::new();
+            fields.insert("filename".to_string(), Value::String(path.clone()));
+            fields.insert("size".to_string(), Value::Long(metadata.len() as i64));
+            fields.insert("type".to_string(), Value::String("Picture".to_string()));
+            
+            // Determine image type from extension
+            let ext = Path::new(&path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            fields.insert("format".to_string(), Value::String(ext));
+            
+            let obj = ObjectData {
+                class_name: "Picture".to_string(),
+                fields,
+            };
+            
+            Ok(Value::Object(Rc::new(RefCell::new(obj))))
+        }
+        Err(e) => Err(RuntimeError::Custom(format!("LoadPicture error: {}", e))),
+    }
+}
+
+/// SavePicture(picture, filename) - Saves a picture object to file
+pub fn savepicture_fn(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(RuntimeError::Custom("SavePicture requires 2 arguments".to_string()));
+    }
+    
+    let _picture = &args[0]; // Picture object
+    let dest_path = args[1].as_string();
+    
+    // In a full implementation, this would:
+    // 1. Extract image data from picture object
+    // 2. Encode it to the target format
+    // 3. Write to file
+    
+    // For now, if the picture has a filename, copy that file
+    if let Value::Object(obj_ref) = _picture {
+        let obj = obj_ref.borrow();
+        if let Some(Value::String(source)) = obj.fields.get("filename") {
+            // Copy source file to destination
+            match fs::copy(source, &dest_path) {
+                Ok(_) => return Ok(Value::Nothing),
+                Err(e) => return Err(RuntimeError::Custom(format!("SavePicture error: {}", e))),
+            }
+        }
+    }
+    
+    // If we can't extract source, just create an empty file
+    match fs::write(&dest_path, b"") {
+        Ok(_) => Ok(Value::Nothing),
+        Err(e) => Err(RuntimeError::Custom(format!("SavePicture error: {}", e))),
+    }
+}
