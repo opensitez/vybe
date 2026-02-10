@@ -30,8 +30,16 @@ pub fn save_project_vbproj(project: &Project, path: impl AsRef<Path>) -> SaveRes
     xml.push_str(&format!("    <AssemblyName>{}</AssemblyName>\n", project.name));
     xml.push_str("    <TargetFramework>net6.0-windows</TargetFramework>\n");
     xml.push_str("    <UseWindowsForms>true</UseWindowsForms>\n");
-    if let Some(startup) = &project.startup_form {
-        xml.push_str(&format!("    <StartupObject>{}.{}</StartupObject>\n", project.name, startup));
+    match &project.startup_object {
+        crate::project::StartupObject::Form(form_name) => {
+            xml.push_str(&format!("    <StartupObject>{}.{}</StartupObject>\n", project.name, form_name));
+        }
+        crate::project::StartupObject::SubMain => {
+            xml.push_str("    <StartupObject>Sub Main</StartupObject>\n");
+        }
+        crate::project::StartupObject::None => {
+            // Don't write a StartupObject tag — loader will auto-detect
+        }
     }
     xml.push_str("  </PropertyGroup>\n");
     xml.push_str("  <ItemGroup>\n");
@@ -549,6 +557,18 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
             let name = Path::new(&mod_path).file_stem().unwrap_or_default().to_string_lossy().to_string();
              // TODO: parse "Module X" to get real name
              project.add_code_file(crate::project::CodeFile { name, code: content });
+        }
+    }
+
+    // If no explicit startup object was specified, scan code files for Sub Main
+    if matches!(project.startup_object, crate::project::StartupObject::None) {
+        for cf in &project.code_files {
+            let upper = cf.code.to_uppercase();
+            if upper.contains("SUB MAIN") {
+                eprintln!("[DEBUG] Auto-detected Sub Main in code file '{}'", cf.name);
+                project.startup_object = crate::project::StartupObject::SubMain;
+                break;
+            }
         }
     }
 

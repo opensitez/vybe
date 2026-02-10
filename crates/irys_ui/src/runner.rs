@@ -93,7 +93,17 @@ fn run_project(path: &Path) {
     };
 
     let has_forms = !project.forms.is_empty();
-    let starts_with_main = project.starts_with_main();
+    let mut starts_with_main = project.starts_with_main();
+
+    // Fallback: if startup_object is None, scan code for Sub Main
+    if !starts_with_main && !has_forms {
+        for cf in &project.code_files {
+            if cf.code.to_uppercase().contains("SUB MAIN") {
+                starts_with_main = true;
+                break;
+            }
+        }
+    }
 
     if has_forms {
         // Has forms → launch the GUI (handles Sub Main inside FormRunner too)
