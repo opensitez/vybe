@@ -705,6 +705,7 @@ pub fn FormRunner() -> Element {
                                 let instance_name = format!("RuntimeGlobals.{}Instance", frm.name);
                                 // Call bs.MoveFirst() etc. through the interpreter
                                 let nav_script = format!("{}.{}.{}()", instance_name, bs_name, event_name);
+                                eprintln!("[Nav] script: {}", nav_script);
                                 if let Ok(prog) = parse_program(&nav_script) {
                                     let _ = interp.load_module("NavAction", &prog);
                                 }

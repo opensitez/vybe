@@ -22,10 +22,27 @@ enum DragMode {
 struct DragState {
     start_x: i32,
     start_y: i32,
-    // Current mouse pos to track delta for pending state
-    // Actually we can just compare against start_x/y
+    /// For single-control resize; also used as the "primary" during multi-move.
     initial_bounds: Bounds,
+    /// Bounds snapshot for every control in the selection at drag-start.
+    all_initial_bounds: Vec<(Uuid, Bounds)>,
     mode: DragMode,
+}
+
+/// Rubber-band / lasso selection rectangle.
+/// Uses element-relative coordinates for the origin (set in the form canvas onmousedown)
+/// and client-relative deltas to track movement.
+#[derive(Clone, Debug)]
+struct LassoState {
+    /// Mouse-down position in form-canvas element coordinates.
+    origin_x: i32,
+    origin_y: i32,
+    /// Current end-point in form-canvas element coordinates.
+    current_x: i32,
+    current_y: i32,
+    /// Client coordinates at mouse-down, used to compute delta.
+    client_start_x: i32,
+    client_start_y: i32,
 }
 
 #[component]
@@ -33,10 +50,12 @@ pub fn FormDesigner() -> Element {
     let state = use_context::<AppState>();
     let form_opt = state.get_current_form();
     let mut selected_tool = state.selected_tool;
-    let mut selected_control = state.selected_control;
+    let mut selected_controls = state.selected_controls;
     
     // Local state for dragging
     let mut drag_state = use_signal(|| None::<DragState>);
+    let mut lasso_state = use_signal(|| None::<LassoState>);
+    let mut lasso_just_finished = use_signal(|| false);
     let mut drop_target = use_signal(|| None::<Option<Uuid>>); // None = Form, Some(id) = Container, None in Option means nothing
 
     // Helper to organize controls by parent
@@ -57,104 +76,139 @@ pub fn FormDesigner() -> Element {
 
     // Move handler (Global for the designer area)
     let handle_move = move |evt: MouseEvent| {
+        // --- Lasso update ---
+        let lasso_snap = lasso_state.read().clone();
+        if let Some(mut ls) = lasso_snap {
+            let dx = evt.client_coordinates().x as i32 - ls.client_start_x;
+            let dy = evt.client_coordinates().y as i32 - ls.client_start_y;
+            ls.current_x = ls.origin_x + dx;
+            ls.current_y = ls.origin_y + dy;
+            lasso_state.set(Some(ls));
+            return;
+        }
+
         let current_ds = drag_state.read().clone();
 
         if let Some(mut ds) = current_ds { 
             if let Some(_) = state.get_current_form() {
-                let control_id_opt = *selected_control.read();
+                let sel = selected_controls.read().clone();
+                if sel.is_empty() { return; }
 
-                if let Some(control_id) = control_id_opt {
-                    let client_x = evt.client_coordinates().x as i32;
-                    let client_y = evt.client_coordinates().y as i32;
-                    // Calculate delta
-                    let delta_x = client_x - ds.start_x;
-                    let delta_y = client_y - ds.start_y;
+                let client_x = evt.client_coordinates().x as i32;
+                let client_y = evt.client_coordinates().y as i32;
+                // Calculate delta
+                let delta_x = client_x - ds.start_x;
+                let delta_y = client_y - ds.start_y;
 
-                    // Handle Pending State
-                    if matches!(ds.mode, DragMode::Pending) {
-                        if delta_x.abs() > 5 || delta_y.abs() > 5 {
-                            // Threshold passed, switch to Move
-                            ds.mode = DragMode::Move;
-                            drag_state.set(Some(ds)); // Update state to trigger pointer-events: none
+                // Handle Pending State
+                if matches!(ds.mode, DragMode::Pending) {
+                    if delta_x.abs() > 5 || delta_y.abs() > 5 {
+                        // Threshold passed, switch to Move
+                        ds.mode = DragMode::Move;
+                        drag_state.set(Some(ds)); // Update state to trigger pointer-events: none
+                    }
+                    return; // Don't move yet
+                }
+
+                match ds.mode {
+                    DragMode::Move => {
+                        // Move ALL selected controls by the same delta
+                        for (cid, ib) in &ds.all_initial_bounds {
+                            let new_x = ((ib.x + delta_x) / 10) * 10;
+                            let new_y = ((ib.y + delta_y) / 10) * 10;
+                            state.update_control_geometry(*cid, new_x, new_y, ib.width, ib.height);
                         }
-                        return; // Don't move yet
-                    }
-                    
-                    let mut new_bounds = ds.initial_bounds;
+                    },
+                    DragMode::Resize(handle) => {
+                        // Resize only the primary control (single selection)
+                        let mut new_bounds = ds.initial_bounds;
+                        match handle {
+                            HandlePosition::Right => new_bounds.width = (new_bounds.width + delta_x).max(10),
+                            HandlePosition::Bottom => new_bounds.height = (new_bounds.height + delta_y).max(10),
+                            HandlePosition::BottomRight => {
+                                new_bounds.width = (new_bounds.width + delta_x).max(10);
+                                new_bounds.height = (new_bounds.height + delta_y).max(10);
+                            },
+                            HandlePosition::Left => {
+                                let old_right = new_bounds.x + new_bounds.width;
+                                new_bounds.x = (new_bounds.x + delta_x).min(old_right - 10);
+                                new_bounds.width = old_right - new_bounds.x;
+                            },
+                            HandlePosition::Top => {
+                                let old_bottom = new_bounds.y + new_bounds.height;
+                                new_bounds.y = (new_bounds.y + delta_y).min(old_bottom - 10);
+                                new_bounds.height = old_bottom - new_bounds.y;
+                            },
+                            _ => {} 
+                        }
+                        
+                        // Align to grid
+                        new_bounds.width = (new_bounds.width / 10).max(1) * 10;
+                        new_bounds.height = (new_bounds.height / 10).max(1) * 10;
+                        if matches!(handle, HandlePosition::Left) { new_bounds.x = (new_bounds.x / 10) * 10; }
+                        if matches!(handle, HandlePosition::Top) { new_bounds.y = (new_bounds.y / 10) * 10; }
 
-                    match ds.mode {
-                        DragMode::Move => {
-                            new_bounds.x += delta_x;
-                            new_bounds.y += delta_y;
-                            
-                            // Snap to grid (10px)
-                            new_bounds.x = (new_bounds.x / 10) * 10;
-                            new_bounds.y = (new_bounds.y / 10) * 10;
-                        },
-                        DragMode::Resize(handle) => {
-                            // Logic for resizing based on handle
-                            // We construct new bounds based on delta
-                            // Snap delta to grid?
-                            
-                            // Simple approach: apply delta to edges
-                            match handle {
-                                HandlePosition::Right => new_bounds.width = (new_bounds.width + delta_x).max(10),
-                                HandlePosition::Bottom => new_bounds.height = (new_bounds.height + delta_y).max(10),
-                                HandlePosition::BottomRight => {
-                                    new_bounds.width = (new_bounds.width + delta_x).max(10);
-                                    new_bounds.height = (new_bounds.height + delta_y).max(10);
-                                },
-                                HandlePosition::Left => {
-                                    let old_right = new_bounds.x + new_bounds.width;
-                                    new_bounds.x = (new_bounds.x + delta_x).min(old_right - 10);
-                                    new_bounds.width = old_right - new_bounds.x;
-                                },
-                                HandlePosition::Top => {
-                                    let old_bottom = new_bounds.y + new_bounds.height;
-                                    new_bounds.y = (new_bounds.y + delta_y).min(old_bottom - 10);
-                                    new_bounds.height = old_bottom - new_bounds.y;
-                                },
-                                // ... implement others as needed, simplified for main ones
-                                _ => {} 
-                            }
-                            
-                            // Align to grid
-                            new_bounds.width = (new_bounds.width / 10).max(1) * 10;
-                            new_bounds.height = (new_bounds.height / 10).max(1) * 10;
-                            if matches!(handle, HandlePosition::Left) { new_bounds.x = (new_bounds.x / 10) * 10; }
-                            if matches!(handle, HandlePosition::Top) { new_bounds.y = (new_bounds.y / 10) * 10; }
-                        },
-                        _ => {}
-                    }
-                    
-                    // Update control in state
-                    state.update_control_geometry(
-                        control_id, 
-                        new_bounds.x, 
-                        new_bounds.y, 
-                        new_bounds.width, 
-                        new_bounds.height
-                    );
+                        if let Some(cid) = sel.first() {
+                            state.update_control_geometry(
+                                *cid,
+                                new_bounds.x,
+                                new_bounds.y,
+                                new_bounds.width,
+                                new_bounds.height
+                            );
+                        }
+                    },
+                    _ => {}
                 }
             }
         }
     };
 
     let handle_up = move |_| {
-        let mut should_reparent = None;
+        // --- Lasso finish: select all controls that intersect the rectangle ---
+        let lasso_snapshot = lasso_state.read().clone();
+        if let Some(ls) = lasso_snapshot {
+            let lx = ls.origin_x.min(ls.current_x);
+            let ly = ls.origin_y.min(ls.current_y);
+            let lw = (ls.origin_x - ls.current_x).abs();
+            let lh = (ls.origin_y - ls.current_y).abs();
+
+            if lw > 3 || lh > 3 {
+                if let Some(form) = state.get_current_form() {
+                    let mut hits: Vec<Uuid> = Vec::new();
+                    for ctrl in &form.controls {
+                        if ctrl.control_type.is_non_visual() { continue; }
+                        let cb = &ctrl.bounds;
+                        // AABB intersection test
+                        if cb.x < lx + lw && cb.x + cb.width > lx
+                            && cb.y < ly + lh && cb.y + cb.height > ly
+                        {
+                            hits.push(ctrl.id);
+                        }
+                    }
+                    selected_controls.set(hits);
+                }
+                lasso_just_finished.set(true);
+            }
+            lasso_state.set(None);
+            return;
+        }
+
+        let mut should_reparent: Vec<(Uuid, Option<Uuid>)> = Vec::new();
         
         if let Some(ds) = drag_state.read().as_ref() {
             if matches!(ds.mode, DragMode::Move) {
-                if let Some(control_id) = *selected_control.read() {
-                     if let Some(target_opt) = *drop_target.read() {
-                        should_reparent = Some((control_id, target_opt));
-                     }
+                let sel = selected_controls.read().clone();
+                if let Some(target_opt) = *drop_target.read() {
+                    for cid in sel {
+                        should_reparent.push((cid, target_opt));
+                    }
                 }
             }
         }
         
-        if let Some((control_id, target_opt)) = should_reparent {
-             state.reparent_control(control_id, target_opt);
+        for (control_id, target_opt) in should_reparent {
+            state.reparent_control(control_id, target_opt);
         }
         
         if drag_state.read().is_some() {
@@ -179,6 +233,13 @@ pub fn FormDesigner() -> Element {
             }
             Key::Character(ref c) if is_ctrl_or_meta && (c == "v" || c == "V") => {
                 state.paste_control();
+            }
+            Key::Character(ref c) if is_ctrl_or_meta && (c == "a" || c == "A") => {
+                // Select all controls
+                if let Some(form) = state.get_current_form() {
+                    let all_ids: Vec<Uuid> = form.controls.iter().map(|c| c.id).collect();
+                    selected_controls.set(all_ids);
+                }
             }
             _ => {}
         }
@@ -221,6 +282,19 @@ pub fn FormDesigner() -> Element {
                                 font: {form_font};
                             ",
                             onmouseover: move |_| { drop_target.set(Some(None)); }, // Target is Form (None parent)
+                            onmousedown: move |evt| {
+                                // If a tool is selected, don't start lasso (onclick handles placement)
+                                if selected_tool.read().is_some() { return; }
+                                // Start rubber-band lasso selection on form background
+                                let x = evt.element_coordinates().x as i32;
+                                let y = evt.element_coordinates().y as i32;
+                                lasso_state.set(Some(LassoState {
+                                    origin_x: x, origin_y: y,
+                                    current_x: x, current_y: y,
+                                    client_start_x: evt.client_coordinates().x as i32,
+                                    client_start_y: evt.client_coordinates().y as i32,
+                                }));
+                            },
                             onclick: move |evt| {
                                 let tool_opt = *selected_tool.read();
                                 if let Some(tool) = tool_opt {
@@ -238,8 +312,12 @@ pub fn FormDesigner() -> Element {
                                      state.add_control_at(tool, grid_x, grid_y);
                                      selected_tool.set(None);
                                 } else {
-                                     // Only deselect if not dragging (handled by stop_propagation on controls)
-                                     selected_control.set(None);
+                                     // Deselect only if there was no meaningful lasso drag
+                                     if *lasso_just_finished.read() {
+                                         lasso_just_finished.set(false);
+                                     } else {
+                                         selected_controls.set(Vec::new());
+                                     }
                                 }
                             },
                             
@@ -262,11 +340,26 @@ pub fn FormDesigner() -> Element {
                             RecursiveControls { 
                                 parent_id: None, 
                                 hierarchy: hierarchy.clone(),
-                                selected_control: selected_control,
+                                selected_controls: selected_controls,
                                 drag_state: drag_state,
                                 drop_target: drop_target,
                                 parent_is_dragging: false,
                                 depth: 0
+                            }
+
+                            // Lasso selection rectangle overlay
+                            if let Some(ls) = lasso_state.read().as_ref() {
+                                {
+                                    let lx = ls.origin_x.min(ls.current_x);
+                                    let ly = ls.origin_y.min(ls.current_y);
+                                    let lw = (ls.origin_x - ls.current_x).abs();
+                                    let lh = (ls.origin_y - ls.current_y).abs();
+                                    rsx! {
+                                        div {
+                                            style: "position: absolute; left: {lx}px; top: {ly}px; width: {lw}px; height: {lh}px; border: 1px dashed #0078d4; background: rgba(0, 120, 212, 0.08); pointer-events: none; z-index: 9999;",
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -303,7 +396,7 @@ pub fn FormDesigner() -> Element {
                                             {
                                                 let comp_id = comp.id;
                                                 let comp_name = comp.name.clone();
-                                                let is_sel = *selected_control.read() == Some(comp_id);
+                                                let is_sel = selected_controls.read().contains(&comp_id);
                                                 let sel_bg = if is_sel { "#cce4f7" } else { "#e8e8e8" };
                                                 let sel_border = if is_sel { "2px solid #0078d4" } else { "1px solid #bbb" };
                                                 let icon = match comp.control_type {
@@ -323,7 +416,19 @@ pub fn FormDesigner() -> Element {
                                                         ",
                                                         onclick: move |evt| {
                                                             evt.stop_propagation();
-                                                            selected_control.set(Some(comp_id));
+                                                            let mods = evt.modifiers();
+                                                            let multi = mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::META) || mods.contains(Modifiers::SHIFT);
+                                                            let mut cur = selected_controls.read().clone();
+                                                            if multi {
+                                                                if let Some(pos) = cur.iter().position(|id| *id == comp_id) {
+                                                                    cur.remove(pos);
+                                                                } else {
+                                                                    cur.push(comp_id);
+                                                                }
+                                                                selected_controls.set(cur);
+                                                            } else {
+                                                                selected_controls.set(vec![comp_id]);
+                                                            }
                                                         },
                                                         div { style: "font-size: 20px;", "{icon}" }
                                                         div { style: "font-size: 10px; color: #333; white-space: nowrap;", "{comp_name}" }
@@ -350,7 +455,7 @@ pub fn FormDesigner() -> Element {
 fn RecursiveControls(
     parent_id: Option<Uuid>, 
     hierarchy: HashMap<Option<Uuid>, Vec<Control>>,
-    selected_control: Signal<Option<Uuid>>,
+    selected_controls: Signal<Vec<Uuid>>,
     drag_state: Signal<Option<DragState>>,
     drop_target: Signal<Option<Option<Uuid>>>,
     parent_is_dragging: bool,
@@ -372,7 +477,7 @@ fn RecursiveControls(
                 key: "{control.id}",
                 control: control,
                 hierarchy: hierarchy.clone(),
-                selected_control: selected_control,
+                selected_controls: selected_controls,
                 drag_state: drag_state,
                 drop_target: drop_target,
                 parent_is_dragging: parent_is_dragging,
@@ -387,35 +492,58 @@ fn RecursiveControls(
 fn RecursiveControlItem(
     control: Control, 
     hierarchy: HashMap<Option<Uuid>, Vec<Control>>,
-    selected_control: Signal<Option<Uuid>>,
+    selected_controls: Signal<Vec<Uuid>>,
     drag_state: Signal<Option<DragState>>,
     drop_target: Signal<Option<Option<Uuid>>>,
     parent_is_dragging: bool,
     depth: usize
 ) -> Element {
+    let state = use_context::<AppState>();
     let control_id = control.id;
     let display_name = control.display_name();
-    let is_selected = *selected_control.read() == Some(control_id);
+    let is_selected = selected_controls.read().contains(&control_id);
     let border_style = if is_selected { "2px dashed #0078d4" } else { "none" };
 
     // Check if dragging (Move mode only for pointer-events)
-    let is_self_dragging = drag_state.read().as_ref().map_or(false, |ds| matches!(ds.mode, DragMode::Move) && is_selected);
+    let is_any_selected_dragging = drag_state.read().as_ref().map_or(false, |ds| matches!(ds.mode, DragMode::Move)) && is_selected;
     
-    // Effectively dragging if self is dragging OR parent is dragging
-    let is_essentially_dragging = is_self_dragging || parent_is_dragging;
+    // Effectively dragging if self is selected+dragging OR parent is dragging
+    let is_essentially_dragging = is_any_selected_dragging || parent_is_dragging;
     
     let pointer_events = if is_essentially_dragging { "none" } else { "auto" };
 
     let handle_down = move |evt: MouseEvent| {
-        evt.stop_propagation(); 
-        if !is_selected {
-            selected_control.set(Some(control_id));
+        evt.stop_propagation();
+        let mods = evt.modifiers();
+        let multi = mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::META) || mods.contains(Modifiers::SHIFT);
+        let mut cur = selected_controls.read().clone();
+        if multi {
+            // Toggle this control in the selection
+            if let Some(pos) = cur.iter().position(|id| *id == control_id) {
+                cur.remove(pos);
+            } else {
+                cur.push(control_id);
+            }
+            selected_controls.set(cur.clone());
+        } else if !is_selected {
+            cur = vec![control_id];
+            selected_controls.set(cur.clone());
+        }
+        // Build initial bounds for all selected controls
+        let mut all_bounds = Vec::new();
+        if let Some(form) = state.get_current_form() {
+            for cid in &cur {
+                if let Some(c) = form.get_control(*cid) {
+                    all_bounds.push((*cid, c.bounds));
+                }
+            }
         }
         drag_state.set(Some(DragState {
             start_x: evt.client_coordinates().x as i32,
             start_y: evt.client_coordinates().y as i32,
             initial_bounds: control.bounds,
-            mode: DragMode::Pending // Start in Pending
+            all_initial_bounds: all_bounds,
+            mode: DragMode::Pending
         }));
     };
 
@@ -440,14 +568,15 @@ fn RecursiveControlItem(
             ControlContent {
                 control: control.clone(),
                 hierarchy: hierarchy.clone(),
-                selected_control: selected_control,
+                selected_controls: selected_controls,
                 drag_state: drag_state,
                 drop_target: drop_target,
                 is_dragging: is_essentially_dragging,
                 depth: depth
             }
 
-            if is_selected {
+            // Show resize handles only for single selection
+            if is_selected && selected_controls.read().len() == 1 {
                 ResizeHandles { 
                     control_bounds: control.bounds, 
                     drag_state: drag_state
@@ -461,7 +590,7 @@ fn RecursiveControlItem(
 fn ControlContent(
     control: Control,
     hierarchy: HashMap<Option<Uuid>, Vec<Control>>,
-    selected_control: Signal<Option<Uuid>>,
+    selected_controls: Signal<Vec<Uuid>>,
     drag_state: Signal<Option<DragState>>,
     drop_target: Signal<Option<Option<Uuid>>>,
     is_dragging: bool,
@@ -510,7 +639,7 @@ fn ControlContent(
                     RecursiveControls {
                         parent_id: Some(control_id),
                         hierarchy: hierarchy,
-                        selected_control: selected_control,
+                        selected_controls: selected_controls,
                         drag_state: drag_state,
                         drop_target: drop_target,
                         parent_is_dragging: is_dragging,
@@ -688,6 +817,7 @@ fn ResizeHandles(control_bounds: Bounds, drag_state: Signal<Option<DragState>>) 
                         start_x: evt.client_coordinates().x as i32,
                         start_y: evt.client_coordinates().y as i32,
                         initial_bounds: control_bounds,
+                        all_initial_bounds: Vec::new(),
                         mode: DragMode::Resize(pos)
                     }));
                 }

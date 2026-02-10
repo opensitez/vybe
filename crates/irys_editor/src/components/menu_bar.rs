@@ -104,8 +104,8 @@ pub fn MenuBar() -> Element {
                         onclick: move |evt| evt.stop_propagation(),
 
                         {
-                            let has_selection = state.selected_control.read().is_some();
-                            let has_clipboard = state.clipboard_control.read().is_some();
+                            let has_selection = !state.selected_controls.read().is_empty();
+                            let has_clipboard = !state.clipboard_controls.read().is_empty();
                             let disabled_style = "padding: 6px 12px; color: #999; cursor: default;";
                             let enabled_style = dropdown_item_style;
                             rsx! {

@@ -6258,6 +6258,7 @@ impl Interpreter {
             } else { None })
             .unwrap_or_default();
 
+        eprintln!("[refresh_bindings] pos={} bindings={:?}", position, bindings);
         if bindings.is_empty() { return; }
 
         let row = self.binding_source_get_row(datasource, position);

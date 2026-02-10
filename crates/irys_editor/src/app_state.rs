@@ -35,7 +35,7 @@ pub struct AppState {
     pub project: Signal<Option<Project>>,
     pub current_form: Signal<Option<String>>,
     pub current_project_path: Signal<Option<PathBuf>>,
-    pub selected_control: Signal<Option<Uuid>>,
+    pub selected_controls: Signal<Vec<Uuid>>,
     pub selected_tool: Signal<Option<ControlType>>,
     pub run_mode: Signal<bool>,
     pub show_code_editor: Signal<bool>,
@@ -44,7 +44,7 @@ pub struct AppState {
     pub show_project_explorer: Signal<bool>,
     pub show_project_properties: Signal<bool>,
     pub show_resources: Signal<bool>,
-    pub clipboard_control: Signal<Option<irys_forms::Control>>,
+    pub clipboard_controls: Signal<Vec<irys_forms::Control>>,
 }
 
 impl AppState {
@@ -53,7 +53,7 @@ impl AppState {
             project: Signal::new(None),
             current_form: Signal::new(None),
             current_project_path: Signal::new(None),
-            selected_control: Signal::new(None),
+            selected_controls: Signal::new(Vec::new()),
             selected_tool: Signal::new(None),
             run_mode: Signal::new(false),
             show_code_editor: Signal::new(false),
@@ -62,7 +62,7 @@ impl AppState {
             show_project_explorer: Signal::new(true),
             show_project_properties: Signal::new(false),
             show_resources: Signal::new(false),
-            clipboard_control: Signal::new(None),
+            clipboard_controls: Signal::new(Vec::new()),
         }
     }
     
@@ -526,10 +526,8 @@ impl AppState {
     }
 
     pub fn delete_selected_control(&self) {
-        let control_id = match *self.selected_control.read() {
-            Some(id) => id,
-            None => return,
-        };
+        let sel = self.selected_controls.read().clone();
+        if sel.is_empty() { return; }
 
         let mut project_signal = self.project;
         let mut project_write = project_signal.write();
@@ -537,8 +535,8 @@ impl AppState {
 
         if let (Some(proj), Some(name)) = (project_write.as_mut(), form_name.as_ref()) {
             if let Some(form_module) = proj.get_form_mut(name) {
-                // Collect IDs of the control and all its descendants
-                let mut to_remove = vec![control_id];
+                // Collect IDs of all selected controls and their descendants
+                let mut to_remove = sel.clone();
                 let mut i = 0;
                 while i < to_remove.len() {
                     let parent = to_remove[i];
@@ -555,24 +553,28 @@ impl AppState {
             }
         }
 
-        let mut selected = self.selected_control;
-        selected.set(None);
+        let mut selected = self.selected_controls;
+        selected.set(Vec::new());
     }
 
     pub fn copy_selected_control(&self) {
-        let control_id = match *self.selected_control.read() {
-            Some(id) => id,
-            None => return,
-        };
+        let sel = self.selected_controls.read().clone();
+        if sel.is_empty() { return; }
 
         let project = self.project.read();
         let form_name = self.current_form.read();
 
         if let (Some(proj), Some(name)) = (project.as_ref(), form_name.as_ref()) {
             if let Some(fm) = proj.get_form(name) {
-                if let Some(control) = fm.form.get_control(control_id) {
-                    let mut clipboard = self.clipboard_control;
-                    clipboard.set(Some(control.clone()));
+                let mut copied = Vec::new();
+                for cid in &sel {
+                    if let Some(control) = fm.form.get_control(*cid) {
+                        copied.push(control.clone());
+                    }
+                }
+                if !copied.is_empty() {
+                    let mut clipboard = self.clipboard_controls;
+                    clipboard.set(copied);
                 }
             }
         }
@@ -584,10 +586,8 @@ impl AppState {
     }
 
     pub fn paste_control(&self) {
-        let clipboard_control = match self.clipboard_control.read().clone() {
-            Some(c) => c,
-            None => return,
-        };
+        let clipboard_list = self.clipboard_controls.read().clone();
+        if clipboard_list.is_empty() { return; }
 
         let mut project_signal = self.project;
         let mut project_write = project_signal.write();
@@ -595,42 +595,47 @@ impl AppState {
 
         if let (Some(proj), Some(name)) = (project_write.as_mut(), form_name.as_ref()) {
             if let Some(form_module) = proj.get_form_mut(name) {
-                let mut new_control = clipboard_control.clone();
-                new_control.id = Uuid::new_v4();
-                new_control.parent_id = None;
-                new_control.bounds.x += 20;
-                new_control.bounds.y += 20;
+                let mut new_ids = Vec::new();
+                let mut updated_clipboard = Vec::new();
 
-                if clipboard_control.is_array_member() {
-                    // Array-aware paste: keep same name, assign next array index
-                    let next_idx = form_module.form.next_array_index(&clipboard_control.name);
-                    new_control.name = clipboard_control.name.clone();
-                    new_control.index = Some(next_idx);
-                } else {
-                    // Generate unique name
-                    let prefix = new_control.control_type.default_name_prefix();
-                    let mut counter = 1;
-                    let mut new_name = format!("{}{}", prefix, counter);
-                    while form_module.form.get_control_by_name(&new_name).is_some() {
-                        counter += 1;
-                        new_name = format!("{}{}", prefix, counter);
+                for clipboard_control in &clipboard_list {
+                    let mut new_control = clipboard_control.clone();
+                    new_control.id = Uuid::new_v4();
+                    new_control.parent_id = None;
+                    new_control.bounds.x += 20;
+                    new_control.bounds.y += 20;
+
+                    if clipboard_control.is_array_member() {
+                        let next_idx = form_module.form.next_array_index(&clipboard_control.name);
+                        new_control.name = clipboard_control.name.clone();
+                        new_control.index = Some(next_idx);
+                    } else {
+                        let prefix = new_control.control_type.default_name_prefix();
+                        let mut counter = 1;
+                        let mut new_name = format!("{}{}", prefix, counter);
+                        while form_module.form.get_control_by_name(&new_name).is_some() {
+                            counter += 1;
+                            new_name = format!("{}{}", prefix, counter);
+                        }
+                        new_control.name = new_name;
                     }
-                    new_control.name = new_name;
+
+                    let mut updated = clipboard_control.clone();
+                    updated.bounds.x += 20;
+                    updated.bounds.y += 20;
+                    updated_clipboard.push(updated);
+
+                    new_ids.push(new_control.id);
+                    form_module.form.add_control(new_control);
                 }
 
-                // Update clipboard with offset position for next paste
-                let mut clipboard = self.clipboard_control;
-                let mut updated = clipboard_control.clone();
-                updated.bounds.x += 20;
-                updated.bounds.y += 20;
-                clipboard.set(Some(updated));
-
-                let new_id = new_control.id;
-                form_module.form.add_control(new_control);
                 form_module.sync_designer_code();
 
-                let mut selected = self.selected_control;
-                selected.set(Some(new_id));
+                let mut clipboard = self.clipboard_controls;
+                clipboard.set(updated_clipboard);
+
+                let mut selected = self.selected_controls;
+                selected.set(new_ids);
             }
         }
     }
