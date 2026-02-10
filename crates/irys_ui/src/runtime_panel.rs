@@ -1077,17 +1077,17 @@ pub fn FormRunner() -> Element {
                                                                             if has_data {
                                                                                 for (ri, row) in grid_rows.iter().enumerate() {
                                                                                     tr {
-                                                                                        td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; color: #333; width: 30px;", "{ri}" }
+                                                                                        td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; color: #333; width: 30px; height: 22px;", "{ri}" }
                                                                                         for cell in row {
-                                                                                            td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; white-space: nowrap;", "{cell}" }
+                                                                                            td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; white-space: nowrap; height: 22px;", "{cell}" }
                                                                                         }
                                                                                     }
                                                                                 }
                                                                             } else {
                                                                                 tr {
-                                                                                    td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; width: 30px;", "" }
-                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px;", "" }
-                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px;", "" }
+                                                                                    td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; width: 30px; height: 22px;", "" }
+                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; height: 22px;", "" }
+                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; height: 22px;", "" }
                                                                                 }
                                                                             }
                                                                         }

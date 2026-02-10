@@ -609,6 +609,24 @@ impl Interpreter {
                             if member_lower == "datasource" {
                                 obj_ref.borrow_mut().fields.insert("__datasource".to_string(), val.clone());
                                 obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Integer(0));
+
+                                // Propagate DataSourceChanged to all controls bound to this BindingSource
+                                let bound: Vec<String> = obj_ref.borrow()
+                                    .fields.get("__bound_controls")
+                                    .and_then(|v| if let Value::Array(arr) = v {
+                                        Some(arr.iter().filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).collect())
+                                    } else { None })
+                                    .unwrap_or_default();
+                                let bs_val = Value::Object(obj_ref.clone());
+                                for ctrl_name in bound {
+                                    let (columns, rows) = self.get_datasource_table_data(&bs_val);
+                                    self.side_effects.push_back(crate::RuntimeSideEffect::DataSourceChanged {
+                                        control_name: ctrl_name,
+                                        columns,
+                                        rows,
+                                    });
+                                }
+
                                 return Ok(());
                             }
                             // Store other BindingSource properties directly
@@ -624,6 +642,25 @@ impl Interpreter {
                             let mut obj_name: Option<String> = None;
                             if let Some(Value::String(name_val)) = obj_ref.borrow().fields.get("name") {
                                 obj_name = Some(name_val.clone());
+                            }
+                            // If the value is a BindingSource, register this control as a subscriber
+                            if let Value::Object(bs_ref) = &val {
+                                let is_bs = bs_ref.borrow().fields.get("__type")
+                                    .and_then(|v| if let Value::String(s) = v { Some(s == "BindingSource") } else { None })
+                                    .unwrap_or(false);
+                                if is_bs {
+                                    if let Some(ref oname) = obj_name {
+                                        let mut bs = bs_ref.borrow_mut();
+                                        let arr = bs.fields.entry("__bound_controls".to_string())
+                                            .or_insert_with(|| Value::Array(Vec::new()));
+                                        if let Value::Array(list) = arr {
+                                            let name_val = Value::String(oname.clone());
+                                            if !list.contains(&name_val) {
+                                                list.push(name_val);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             if let Some(oname) = &obj_name {
                                 let (columns, rows) = self.get_datasource_table_data(&val);

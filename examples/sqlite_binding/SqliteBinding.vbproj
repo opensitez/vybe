@@ -1,20 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net6.0-windows</TargetFramework>
-    <StartupObject>SqliteBinding.Form1</StartupObject>
-    <UseWindowsForms>true</UseWindowsForms>
-    <MyType>WindowsForms</MyType>
+    <RootNamespace>SqliteBinding</RootNamespace>
     <AssemblyName>SqliteBinding</AssemblyName>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <StartupObject>SqliteBinding.Form1</StartupObject>
   </PropertyGroup>
-
-  <ItemGroup>
-    <Import Include="System.Data" />
-    <Import Include="System.Drawing" />
-    <Import Include="System.Windows.Forms" />
-  </ItemGroup>
-
   <ItemGroup>
     <Compile Include="Form1.vb">
       <SubType>Form</SubType>
@@ -23,5 +15,4 @@
       <DependentUpon>Form1.vb</DependentUpon>
     </Compile>
   </ItemGroup>
-
 </Project>

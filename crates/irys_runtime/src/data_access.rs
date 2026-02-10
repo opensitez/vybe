@@ -217,6 +217,18 @@ impl DataAccessManager {
     ///   MySQL:     "Server=localhost;Database=mydb;Uid=user;Pwd=pass" or "mysql://user:pass@host/db"
     ///   ADODB:     "Provider=Microsoft.Jet.OLEDB..." (mapped to SQLite)
     ///              "Provider=SQLOLEDB;..." (mapped to MySQL/MSSQL-compatible)
+    /// Build a SQLite connection URL, appending `?mode=rwc` so the database
+    /// file is automatically created when it does not yet exist.
+    fn sqlite_url(path: &str) -> String {
+        let p = path.trim();
+        if p == ":memory:" || p.is_empty() {
+            "sqlite::memory:".to_string()
+        } else {
+            // mode=rwc = read-write-create
+            format!("sqlite:{}?mode=rwc", p)
+        }
+    }
+
     fn parse_connection_string(conn_str: &str) -> Result<(DbBackend, String), String> {
         let trimmed = conn_str.trim();
         let lower = trimmed.to_lowercase();
@@ -224,7 +236,7 @@ impl DataAccessManager {
         // Direct URL format: sqlite:, postgres://, mysql://
         if lower.starts_with("sqlite:") {
             let path = &trimmed[7..];
-            return Ok((DbBackend::Sqlite, format!("sqlite:{}", path)));
+            return Ok((DbBackend::Sqlite, Self::sqlite_url(path)));
         }
         if lower.starts_with("postgres://") || lower.starts_with("postgresql://") {
             return Ok((DbBackend::Postgres, trimmed.to_string()));
@@ -249,7 +261,7 @@ impl DataAccessManager {
             }).unwrap_or(false)
         {
             let ds = pairs.get("data source").cloned().unwrap_or(":memory:".to_string());
-            return Ok((DbBackend::Sqlite, format!("sqlite:{}", ds)));
+            return Ok((DbBackend::Sqlite, Self::sqlite_url(&ds)));
         }
 
         // PostgreSQL detection
@@ -276,7 +288,7 @@ impl DataAccessManager {
 
         // Fallback: treat as SQLite with the whole string as a path
         if !trimmed.is_empty() {
-            return Ok((DbBackend::Sqlite, format!("sqlite:{}", trimmed)));
+            return Ok((DbBackend::Sqlite, Self::sqlite_url(trimmed)));
         }
 
         Err("Cannot determine database backend from connection string".to_string())
@@ -417,6 +429,56 @@ impl DataAccessManager {
         self.recordsets.insert(rs_id, rs);
 
         Ok(rs_id)
+    }
+
+    /// Fetch the column names for a table using database metadata queries.
+    /// Uses INFORMATION_SCHEMA (MySQL/Postgres) or PRAGMA (SQLite) so the
+    /// result only contains plain string columns — no type-mapping issues
+    /// with exotic column types like JSON, BLOB, etc.
+    pub fn fetch_table_column_names(&mut self, conn_id: u64, table: &str) -> Result<Vec<String>, String> {
+        let conn = self.connections.get(&conn_id)
+            .ok_or_else(|| format!("Connection {} not found or not open", conn_id))?;
+
+        let backend = conn.backend.clone();
+        let sql = match backend {
+            DbBackend::Sqlite => {
+                format!("PRAGMA table_info('{}')", table.replace('\'', "''"))
+            }
+            DbBackend::MySql => {
+                format!("SELECT COLUMN_NAME FROM information_schema.columns WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='{}' ORDER BY ORDINAL_POSITION",
+                    table.replace('\'', "''"))
+            }
+            DbBackend::Postgres => {
+                format!("SELECT column_name AS COLUMN_NAME FROM information_schema.columns WHERE table_schema='public' AND table_name='{}' ORDER BY ordinal_position",
+                    table.replace('\'', "''"))
+            }
+        };
+
+        let rs_id = self.execute_reader(conn_id, &sql)?;
+        let columns: Vec<String> = if let Some(rs) = self.recordsets.get(&rs_id) {
+            match backend {
+                DbBackend::Sqlite => {
+                    // PRAGMA table_info returns rows with column "name" at index 1
+                    rs.rows.iter().filter_map(|row| {
+                        row.get_by_name("name")
+                            .or_else(|| row.get_by_index(1))
+                            .map(|s| s.to_string())
+                    }).collect()
+                }
+                _ => {
+                    // MySQL / Postgres: rows have COLUMN_NAME
+                    rs.rows.iter().filter_map(|row| {
+                        row.get_by_name("COLUMN_NAME")
+                            .or_else(|| row.get_by_index(0))
+                            .map(|s| s.to_string())
+                    }).collect()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        self.recordsets.remove(&rs_id);
+        Ok(columns)
     }
 
     /// Execute a non-query statement (INSERT, UPDATE, DELETE, CREATE TABLE, etc.).
@@ -787,8 +849,32 @@ pub fn get_global_dam() -> Arc<Mutex<DataAccessManager>> {
     }).clone()
 }
 
+/// Extract the main table name from a SELECT statement.
+/// Handles simple cases like "SELECT ... FROM tablename ..." and
+/// "SELECT * FROM tablename WHERE ..." / "ORDER BY ..." etc.
+fn extract_table_from_select(sql: &str) -> Option<String> {
+    let upper = sql.to_uppercase();
+    let from_pos = upper.find(" FROM ")?;
+    let after_from = &sql[from_pos + 6..].trim_start();
+    // Take the first word after FROM (the table name)
+    let end = after_from.find(|c: char| c.is_whitespace() || c == ';' || c == ')' || c == ',')
+        .unwrap_or(after_from.len());
+    let table = after_from[..end].trim();
+    if table.is_empty() { return None; }
+    // Strip optional schema prefix (e.g. "public.mytable" → "mytable") and backticks/brackets
+    let table = table.trim_matches(|c| c == '`' || c == '[' || c == ']' || c == '"');
+    let table = if let Some(dot) = table.rfind('.') {
+        &table[dot + 1..]
+    } else {
+        table
+    };
+    Some(table.to_string())
+}
+
 /// Fetch column names for a given SELECT query against a connection string.
-/// Runs the query with LIMIT 0 (or wraps in a subquery) to get schema only.
+/// Uses INFORMATION_SCHEMA / PRAGMA metadata queries so it works regardless
+/// of exotic column types (JSON, BLOB, etc.) that the sqlx Any driver may
+/// not support for value extraction.
 pub fn fetch_columns_for_query(conn_str: &str, select_cmd: &str) -> Result<Vec<String>, String> {
     if conn_str.is_empty() || select_cmd.is_empty() {
         return Ok(Vec::new());
@@ -797,14 +883,38 @@ pub fn fetch_columns_for_query(conn_str: &str, select_cmd: &str) -> Result<Vec<S
     let mut dam = dam_arc.lock().map_err(|e| format!("Lock error: {}", e))?;
     let conn_id = dam.open_connection(conn_str)?;
 
-    // Wrap the SELECT in a LIMIT 0 subquery to fetch column names without data
-    let schema_sql = format!("SELECT * FROM ({}) AS __cols LIMIT 0", select_cmd.trim().trim_end_matches(';'));
-    let rs_id = dam.execute_reader(conn_id, &schema_sql)
+    // Try to extract the table name from the query and use metadata queries.
+    // This avoids type-mapping errors with exotic column types.
+    if let Some(table) = extract_table_from_select(select_cmd) {
+        match dam.fetch_table_column_names(conn_id, &table) {
+            Ok(cols) if !cols.is_empty() => return Ok(cols),
+            Ok(_) => {  /* empty — table might not exist yet, fall through */ }
+            Err(_) => { /* metadata query failed, fall through to fallback */ }
+        }
+    }
+
+    // Fallback: if we can't extract the table name (complex joins, sub-selects, etc.)
+    // or if the metadata query returned nothing, try running the query with LIMIT 1.
+    // This may still fail for tables with unsupported column types.
+    let schema_sql = format!("SELECT * FROM ({}) AS __cols LIMIT 1", select_cmd.trim().trim_end_matches(';'));
+    let rs_id = match dam.execute_reader(conn_id, &schema_sql)
         .or_else(|_| {
-            // Fallback: try adding LIMIT 0 directly (simpler queries)
-            let fallback = format!("{} LIMIT 0", select_cmd.trim().trim_end_matches(';'));
+            let fallback = format!("{} LIMIT 1", select_cmd.trim().trim_end_matches(';'));
             dam.execute_reader(conn_id, &fallback)
-        })?;
+        }) {
+        Ok(id) => id,
+        Err(e) => {
+            // Table may not exist yet (e.g. freshly created database).
+            let el = e.to_lowercase();
+            if el.contains("no such table") || el.contains("doesn't exist")
+                || el.contains("does not exist") || el.contains("unknown table")
+                || el.contains("relation") && el.contains("does not exist")
+            {
+                return Ok(Vec::new());
+            }
+            return Err(e);
+        }
+    };
     let columns: Vec<String> = if let Some(rs) = dam.recordsets.get(&rs_id) {
         rs.columns.clone()
     } else {
@@ -842,14 +952,14 @@ mod tests {
     fn test_parse_sqlite_connection_string() {
         let (backend, url) = DataAccessManager::parse_connection_string("Data Source=test.db").unwrap();
         assert_eq!(backend, DbBackend::Sqlite);
-        assert!(url.starts_with("sqlite:"));
+        assert_eq!(url, "sqlite:test.db?mode=rwc");
     }
 
     #[test]
     fn test_parse_sqlite_direct() {
         let (backend, url) = DataAccessManager::parse_connection_string("sqlite:test.db").unwrap();
         assert_eq!(backend, DbBackend::Sqlite);
-        assert_eq!(url, "sqlite:test.db");
+        assert_eq!(url, "sqlite:test.db?mode=rwc");
     }
 
     #[test]

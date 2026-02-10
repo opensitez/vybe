@@ -572,33 +572,89 @@ pub fn PropertiesPanel() -> Element {
                                                         .unwrap_or_default();
                                                     let has_complex_binding = control.control_type.supports_complex_binding();
 
+                                                    // Helper: resolve a connection string's relative Data Source path
+                                                    // against the project directory so the editor can find the DB file.
+                                                    let project_dir: Option<std::path::PathBuf> = state.current_project_path.read()
+                                                        .as_ref()
+                                                        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                                                    let resolve_conn_str = move |conn_str: &str| -> String {
+                                                        if let Some(ref dir) = project_dir {
+                                                            // Parse "Data Source=relative.db" and make absolute
+                                                            let lower = conn_str.to_lowercase();
+                                                            if let Some(pos) = lower.find("data source=") {
+                                                                let start = pos + 12;
+                                                                let rest = &conn_str[start..];
+                                                                let end = rest.find(';').unwrap_or(rest.len());
+                                                                let db_path = rest[..end].trim();
+                                                                if !db_path.is_empty() && db_path != ":memory:" && !std::path::Path::new(db_path).is_absolute() {
+                                                                    let abs = dir.join(db_path);
+                                                                    let resolved = format!("{}Data Source={}{}",
+                                                                        &conn_str[..pos],
+                                                                        abs.display(),
+                                                                        &rest[end..]);
+                                                                    return resolved;
+                                                                }
+                                                            }
+                                                        }
+                                                        conn_str.to_string()
+                                                    };
+
                                                     // Helper: resolve available column names by walking the binding chain
                                                     // control -> BindingSource (bs_name) -> DataAdapter -> ConnectionString + SelectCommand -> columns
                                                     // Also considers BindingSource.DataMember (table name) as fallback query
                                                     let resolve_columns_for_bs = |bs_name: &str| -> Vec<String> {
-                                                        if bs_name.is_empty() { return Vec::new(); }
+                                                        if bs_name.is_empty() {
+                                                            eprintln!("[resolve_columns] bs_name is empty");
+                                                            return Vec::new();
+                                                        }
                                                         let form_ref = state.get_current_form();
-                                                        let form = match form_ref.as_ref() { Some(f) => f, None => return Vec::new() };
+                                                        let form = match form_ref.as_ref() {
+                                                            Some(f) => f,
+                                                            None => { eprintln!("[resolve_columns] no current form"); return Vec::new(); }
+                                                        };
                                                         // Find the BindingSource control
                                                         let bs_ctrl = form.controls.iter()
                                                             .find(|c| c.name.eq_ignore_ascii_case(bs_name)
                                                                 && matches!(c.control_type, irys_forms::ControlType::BindingSourceComponent));
-                                                        let bs_ctrl = match bs_ctrl { Some(c) => c, None => return Vec::new() };
+                                                        let bs_ctrl = match bs_ctrl {
+                                                            Some(c) => c,
+                                                            None => {
+                                                                eprintln!("[resolve_columns] BindingSource '{}' not found among {} controls: {:?}",
+                                                                    bs_name, form.controls.len(),
+                                                                    form.controls.iter().map(|c| format!("{}({:?})", c.name, c.control_type)).collect::<Vec<_>>());
+                                                                return Vec::new();
+                                                            }
+                                                        };
                                                         // Get the DataAdapter name from the BindingSource
                                                         let da_name = match bs_ctrl.properties.get_string("DataSource") {
                                                             Some(s) if !s.is_empty() => s.to_string(),
-                                                            _ => return Vec::new(),
+                                                            _ => {
+                                                                eprintln!("[resolve_columns] BindingSource '{}' has no DataSource property. Props: {:?}",
+                                                                    bs_name, bs_ctrl.properties.iter().map(|(k,v)| format!("{}={:?}", k, v)).collect::<Vec<_>>());
+                                                                return Vec::new();
+                                                            }
                                                         };
                                                         // Get the DataMember (table name) from the BindingSource
                                                         let data_member = bs_ctrl.properties.get_string("DataMember")
                                                             .map(|s| s.to_string()).unwrap_or_default();
+                                                        eprintln!("[resolve_columns] BS '{}' -> DataAdapter '{}', DataMember '{}'", bs_name, da_name, data_member);
                                                         // Find the DataAdapter control
                                                         let da_ctrl = form.controls.iter()
                                                             .find(|c| c.name.eq_ignore_ascii_case(&da_name)
                                                                 && matches!(c.control_type, irys_forms::ControlType::DataAdapterComponent));
-                                                        let da_ctrl = match da_ctrl { Some(c) => c, None => return Vec::new() };
+                                                        let da_ctrl = match da_ctrl {
+                                                            Some(c) => c,
+                                                            None => {
+                                                                eprintln!("[resolve_columns] DataAdapter '{}' not found", da_name);
+                                                                return Vec::new();
+                                                            }
+                                                        };
                                                         let conn_str = da_ctrl.properties.get_string("ConnectionString").unwrap_or("");
-                                                        if conn_str.is_empty() { return Vec::new(); }
+                                                        if conn_str.is_empty() {
+                                                            eprintln!("[resolve_columns] DataAdapter '{}' has empty ConnectionString", da_name);
+                                                            return Vec::new();
+                                                        }
+                                                        let conn_str = resolve_conn_str(conn_str);
                                                         // Use the DataAdapter's SelectCommand if available,
                                                         // otherwise fall back to "SELECT * FROM <DataMember>" if a table is selected
                                                         let da_select = da_ctrl.properties.get_string("SelectCommand").unwrap_or("").to_string();
@@ -607,11 +663,24 @@ pub fn PropertiesPanel() -> Element {
                                                         } else if !data_member.is_empty() {
                                                             format!("SELECT * FROM {}", data_member)
                                                         } else {
+                                                            eprintln!("[resolve_columns] No SelectCommand and no DataMember for DA '{}'", da_name);
                                                             return Vec::new();
                                                         };
-                                                        irys_runtime::data_access::fetch_columns_for_query(conn_str, &query)
-                                                            .unwrap_or_default()
+                                                        eprintln!("[resolve_columns] conn='{}', query='{}'", conn_str, query);
+                                                        match irys_runtime::data_access::fetch_columns_for_query(&conn_str, &query) {
+                                                            Ok(cols) => {
+                                                                eprintln!("[resolve_columns] SUCCESS: {:?}", cols);
+                                                                cols
+                                                            }
+                                                            Err(e) => {
+                                                                eprintln!("[resolve_columns] ERROR: {}", e);
+                                                                Vec::new()
+                                                            }
+                                                        }
                                                     };
+
+                                                    eprintln!("[DATA_SECTION] Rendering for '{}' ({:?}), is_non_visual={}, has_complex={}, binding_sources={:?}",
+                                                        control.name, control.control_type, is_non_visual, has_complex_binding, binding_sources);
 
                                                     rsx! {
                                                         div { style: "grid-column: 1 / -1; margin-top: 8px; padding-top: 6px; border-top: 1px solid #ddd; font-weight: bold; font-size: 11px; color: #0078d4; text-transform: uppercase;",
@@ -739,7 +808,8 @@ pub fn PropertiesPanel() -> Element {
                                                                                 && matches!(c.control_type, irys_forms::ControlType::DataAdapterComponent))?;
                                                                         let cs = da.properties.get_string("ConnectionString")?;
                                                                         if cs.is_empty() { return None; }
-                                                                        irys_runtime::data_access::test_connection_and_list_tables(cs).ok()
+                                                                        let cs = resolve_conn_str(cs);
+                                                                        irys_runtime::data_access::test_connection_and_list_tables(&cs).ok()
                                                                     }).unwrap_or_default()
                                                                 } else {
                                                                     Vec::new()
@@ -1121,6 +1191,7 @@ pub fn PropertiesPanel() -> Element {
                                                                                                 conn_status.set("⚠ No connection string".to_string());
                                                                                                 return;
                                                                                             }
+                                                                                            let cs = resolve_conn_str(&cs);
                                                                                             match irys_runtime::data_access::test_connection_and_list_tables(&cs) {
                                                                                                 Ok(tbl_list) => {
                                                                                                     conn_status.set(format!("✓ Connected — {} tables found", tbl_list.len()));
