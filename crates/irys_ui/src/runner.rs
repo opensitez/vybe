@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 
 use dioxus::prelude::*;
-use dioxus_desktop::{Config, WindowBuilder};
+use dioxus::desktop::{Config, WindowBuilder};
 
 use irys_parser::parse_program;
 use irys_project::Project;

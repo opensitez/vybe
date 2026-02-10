@@ -135,7 +135,7 @@ fn process_side_effects(
                                         "url" => {
                                             ctrl.properties.set("URL", value.as_string());
                                             let url = value.as_string();
-                                            let _ = eval(&format!(
+                                            let _ = document::eval(&format!(
                                                 r#"
                                                 const iframe = document.getElementById('{}');
                                                 if (iframe) {{
@@ -149,7 +149,7 @@ fn process_side_effects(
                                             ctrl.properties.set("HTML", value.as_string());
                                             let html = value.as_string();
                                             let rtb_id = format!("rtb_{}", control_part);
-                                            let _ = eval(&format!(
+                                            let _ = document::eval(&format!(
                                                 r#"
                                                 const editor = document.getElementById('{}');
                                                 if (editor) {{
@@ -928,7 +928,7 @@ pub fn FormRunner() -> Element {
                                                                                 style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer; font-weight: bold;",
                                                                                 title: "Bold (Ctrl+B)",
                                                                                 onclick: move |_| {
-                                                                                    let _ = eval(&format!("document.execCommand('bold', false, null); document.getElementById('{}').focus();", rtb_id_bold));
+                                                                                    let _ = document::eval(&format!("document.execCommand('bold', false, null); document.getElementById('{}').focus();", rtb_id_bold));
                                                                                 },
                                                                                 "B"
                                                                             }
@@ -936,7 +936,7 @@ pub fn FormRunner() -> Element {
                                                                                 style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer; font-style: italic;",
                                                                                 title: "Italic (Ctrl+I)",
                                                                                 onclick: move |_| {
-                                                                                    let _ = eval(&format!("document.execCommand('italic', false, null); document.getElementById('{}').focus();", rtb_id_italic));
+                                                                                    let _ = document::eval(&format!("document.execCommand('italic', false, null); document.getElementById('{}').focus();", rtb_id_italic));
                                                                                 },
                                                                                 "I"
                                                                             }
@@ -944,7 +944,7 @@ pub fn FormRunner() -> Element {
                                                                                 style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer; text-decoration: underline;",
                                                                                 title: "Underline (Ctrl+U)",
                                                                                 onclick: move |_| {
-                                                                                    let _ = eval(&format!("document.execCommand('underline', false, null); document.getElementById('{}').focus();", rtb_id_underline));
+                                                                                    let _ = document::eval(&format!("document.execCommand('underline', false, null); document.getElementById('{}').focus();", rtb_id_underline));
                                                                                 },
                                                                                 "U"
                                                                             }
@@ -953,7 +953,7 @@ pub fn FormRunner() -> Element {
                                                                                 style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer;",
                                                                                 title: "Bullet List",
                                                                                 onclick: move |_| {
-                                                                                    let _ = eval(&format!("document.execCommand('insertUnorderedList', false, null); document.getElementById('{}').focus();", rtb_id_ul));
+                                                                                    let _ = document::eval(&format!("document.execCommand('insertUnorderedList', false, null); document.getElementById('{}').focus();", rtb_id_ul));
                                                                                 },
                                                                                 "• List"
                                                                             }
@@ -961,7 +961,7 @@ pub fn FormRunner() -> Element {
                                                                                 style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer;",
                                                                                 title: "Numbered List",
                                                                                 onclick: move |_| {
-                                                                                    let _ = eval(&format!("document.execCommand('insertOrderedList', false, null); document.getElementById('{}').focus();", rtb_id_ol));
+                                                                                    let _ = document::eval(&format!("document.execCommand('insertOrderedList', false, null); document.getElementById('{}').focus();", rtb_id_ol));
                                                                                 },
                                                                                 "1. List"
                                                                             }
@@ -973,7 +973,7 @@ pub fn FormRunner() -> Element {
                                                                         style: "flex: 1; padding: 8px; overflow: auto; outline: none; background: white; {style_back} {style_font} {style_fore};",
                                                                         dangerous_inner_html: "{html}",
                                                                         onmounted: move |_| {
-                                                                            let _ = eval(&format!(r#"
+                                                                            let _ = document::eval(&format!(r#"
                                                                                 (function() {{
                                                                                     const editor = document.getElementById('{}');
                                                                                     if (editor) {{

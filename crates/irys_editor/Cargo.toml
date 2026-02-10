@@ -19,7 +19,6 @@ serde = { workspace = true }
 uuid = { workspace = true }
 
 # Dioxus for GUI
-dioxus = { version = "0.5", features = ["desktop"] }
-dioxus-desktop = "0.5"
-dioxus-hooks = "0.5"
+dioxus = { version = "0.7.3", features = ["desktop"] }
+serde_json = "1.0"
 rfd = "0.14"

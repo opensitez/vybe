@@ -5384,7 +5384,8 @@ impl Interpreter {
             "environment.setenvironmentvariable" => {
                 let key = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
                 let val = arg_values.get(1).map(|v| v.as_string()).unwrap_or_default();
-                std::env::set_var(&key, &val);
+                // SAFETY: We are single-threaded in the VB interpreter context
+                unsafe { std::env::set_var(&key, &val); }
                 return Ok(Value::Nothing);
             }
             "environment.getfolderpath" => {

@@ -13,5 +13,4 @@ irys_project = { workspace = true }
 serde = { workspace = true }
 
 # Dioxus for GUI rendering
-dioxus = { version = "0.5", features = ["desktop"] }
-dioxus-desktop = "0.5"
+dioxus = { version = "0.7.3", features = ["desktop"] }

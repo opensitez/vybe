@@ -179,7 +179,7 @@ pub fn PropertiesPanel() -> Element {
                                                                             );
                                                                             state.update_current_code(new_code.clone());
                                                                             let escaped = new_code.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-                                                                            let _ = eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
+                                                                            let _ = document::eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
                                                                         }
 
                                                                         state.show_code_editor.set(true);
@@ -193,7 +193,7 @@ pub fn PropertiesPanel() -> Element {
                                                                         let new_code = format!("{}\n\n{}\n    ' TODO: Add your code here\nEnd Sub", current_code, sub_decl);
                                                                         state.update_current_code(new_code.clone());
                                                                         let escaped = new_code.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-                                                                        let _ = eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
+                                                                        let _ = document::eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
                                                                     }
 
                                                                     state.show_code_editor.set(true);
@@ -248,7 +248,7 @@ pub fn PropertiesPanel() -> Element {
                                                             );
                                                             state.update_current_code(new_code.clone());
                                                             let escaped = new_code.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-                                                            let _ = eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
+                                                            let _ = document::eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
                                                         }
 
                                                         state.show_code_editor.set(true);
@@ -262,7 +262,7 @@ pub fn PropertiesPanel() -> Element {
                                                         let new_code = format!("{}\n\n{}\n    ' TODO: Add your code here\nEnd Sub", current_code, sub_decl);
                                                         state.update_current_code(new_code.clone());
                                                         let escaped = new_code.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-                                                        let _ = eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
+                                                        let _ = document::eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
                                                     }
 
                                                     state.show_code_editor.set(true);
@@ -1211,7 +1211,7 @@ pub fn PropertiesPanel() -> Element {
                                                                     style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer; font-weight: bold;",
                                                                     title: "Bold (Ctrl+B)",
                                                                     onclick: move |_| {
-                                                                        let _ = eval(&format!("document.execCommand('bold', false, null); document.getElementById('{}').focus();", rtb_prop_id_bold));
+                                                                        let _ = document::eval(&format!("document.execCommand('bold', false, null); document.getElementById('{}').focus();", rtb_prop_id_bold));
                                                                     },
                                                                     "B"
                                                                 }
@@ -1219,7 +1219,7 @@ pub fn PropertiesPanel() -> Element {
                                                                     style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer; font-style: italic;",
                                                                     title: "Italic (Ctrl+I)",
                                                                     onclick: move |_| {
-                                                                        let _ = eval(&format!("document.execCommand('italic', false, null); document.getElementById('{}').focus();", rtb_prop_id_italic));
+                                                                        let _ = document::eval(&format!("document.execCommand('italic', false, null); document.getElementById('{}').focus();", rtb_prop_id_italic));
                                                                     },
                                                                     "I"
                                                                 }
@@ -1227,7 +1227,7 @@ pub fn PropertiesPanel() -> Element {
                                                                     style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer; text-decoration: underline;",
                                                                     title: "Underline (Ctrl+U)",
                                                                     onclick: move |_| {
-                                                                        let _ = eval(&format!("document.execCommand('underline', false, null); document.getElementById('{}').focus();", rtb_prop_id_underline));
+                                                                        let _ = document::eval(&format!("document.execCommand('underline', false, null); document.getElementById('{}').focus();", rtb_prop_id_underline));
                                                                     },
                                                                     "U"
                                                                 }
@@ -1236,7 +1236,7 @@ pub fn PropertiesPanel() -> Element {
                                                                     style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer;",
                                                                     title: "Bullet List",
                                                                     onclick: move |_| {
-                                                                        let _ = eval(&format!("document.execCommand('insertUnorderedList', false, null); document.getElementById('{}').focus();", rtb_prop_id_ul));
+                                                                        let _ = document::eval(&format!("document.execCommand('insertUnorderedList', false, null); document.getElementById('{}').focus();", rtb_prop_id_ul));
                                                                     },
                                                                     "• List"
                                                                 }
@@ -1244,7 +1244,7 @@ pub fn PropertiesPanel() -> Element {
                                                                     style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer;",
                                                                     title: "Numbered List",
                                                                     onclick: move |_| {
-                                                                        let _ = eval(&format!("document.execCommand('insertOrderedList', false, null); document.getElementById('{}').focus();", rtb_prop_id_ol));
+                                                                        let _ = document::eval(&format!("document.execCommand('insertOrderedList', false, null); document.getElementById('{}').focus();", rtb_prop_id_ol));
                                                                     },
                                                                     "1. List"
                                                                 }
@@ -1281,7 +1281,7 @@ pub fn PropertiesPanel() -> Element {
                                                                         }
                                                                     })();"#
                                                                         .replace("__ID__", &rtb_prop_id_mount);
-                                                                    let _ = eval(&js);
+                                                                    let _ = document::eval(&js);
                                                                 },
                                                                 oninput: move |_| {
                                                                     // Update the HTML property when content changes
@@ -1298,7 +1298,7 @@ pub fn PropertiesPanel() -> Element {
                                                                         })()"#
                                                                             .replace("__ID__", &rtb_id_clone);
 
-                                                                        if let Ok(result) = eval(&js).recv().await {
+                                                                        if let Ok(result) = document::eval(&js).recv::<serde_json::Value>().await {
                                                                             if let Some(html_value) = result.as_str() {
                                                                                 state.update_control_property(ctrl_id, "HTML", html_value.to_string());
                                                                             }

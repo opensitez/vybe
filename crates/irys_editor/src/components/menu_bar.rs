@@ -80,7 +80,7 @@ pub fn MenuBar() -> Element {
                         div { style: "height: 1px; background: #eee; margin: 2px 0;" }
                         div { 
                             style: "{dropdown_item_style}", 
-                            onclick: move |_| { std::process::exit(0); },
+                            onclick: move |_| -> () { std::process::exit(0); },
                             "Exit" 
                         }
                     }

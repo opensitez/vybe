@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use irys_project::Project;
 use irys_forms::Form;
-use dioxus_desktop::{Config, WindowBuilder};
+use dioxus::desktop::{Config, WindowBuilder};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 

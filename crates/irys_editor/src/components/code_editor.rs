@@ -21,7 +21,7 @@ pub fn CodeEditor() -> Element {
         let current_item = state.current_form.read().clone();
         if current_item.is_some() {
             let code = state.get_current_code();
-            let _ = eval(&format!(r#"
+            let _ = document::eval(&format!(r#"
                 if (window.updateMonacoCode) {{
                     window.updateMonacoCode(`{}`);
                 }}
@@ -140,11 +140,11 @@ pub fn CodeEditor() -> Element {
     // On remount (after run/stop), the component is fresh: effect runs again, new eval + spawn.
     use_effect(move || {
         let script = monaco_script.clone();
-        let mut handle = eval(&script);
+        let mut handle = document::eval(&script);
 
         spawn(async move {
             loop {
-                match handle.recv().await {
+                match handle.recv::<serde_json::Value>().await {
                     Ok(msg) => {
                         if let Some(obj) = msg.as_object() {
                             if let Some(val_type) = obj.get("type").and_then(|v| v.as_str()) {
@@ -155,7 +155,7 @@ pub fn CodeEditor() -> Element {
                                         let code = state.get_current_code();
                                         if !code.is_empty() {
                                             let escaped = code.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-                                            let _ = eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
+                                            let _ = document::eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
                                         }
                                     },
                                     "code_change" => {
@@ -226,7 +226,7 @@ pub fn CodeEditor() -> Element {
         let search_pattern = format!("Sub {}", sub_name);
 
         if current_code.contains(&search_pattern) {
-             let _ = eval(&format!(r#"
+             let _ = document::eval(&format!(r#"
                 if (window.jumpToLine) window.jumpToLine("{}");
              "#, search_pattern));
         } else {
@@ -244,7 +244,7 @@ pub fn CodeEditor() -> Element {
 
              // Sync Monaco with the new code
              let escaped = new_code.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-             let _ = eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
+             let _ = document::eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
         }
     };
 
@@ -308,11 +308,11 @@ pub fn CodeEditor() -> Element {
                                 onclick: move |_| {
                                     code_tab.set("code".to_string());
                                     // Re-enable editing
-                                    let _ = eval("if(window.monacoEditor) window.monacoEditor.updateOptions({readOnly: false});");
+                                    let _ = document::eval("if(window.monacoEditor) window.monacoEditor.updateOptions({readOnly: false});");
                                     // Sync Monaco to user code
                                     let code = state.get_current_code();
                                     let escaped = code.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-                                    let _ = eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
+                                    let _ = document::eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
                                 },
                                 "Code"
                             }
@@ -323,9 +323,9 @@ pub fn CodeEditor() -> Element {
                                     // Sync Monaco to designer code (read-only)
                                     let code = state.get_current_designer_code();
                                     let escaped = code.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-                                    let _ = eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
+                                    let _ = document::eval(&format!("if(window.updateMonacoCode) window.updateMonacoCode(`{}`);", escaped));
                                     // Make read-only
-                                    let _ = eval("if(window.monacoEditor) window.monacoEditor.updateOptions({readOnly: true});");
+                                    let _ = document::eval("if(window.monacoEditor) window.monacoEditor.updateOptions({readOnly: true});");
                                 },
                                 "Designer"
                             }
