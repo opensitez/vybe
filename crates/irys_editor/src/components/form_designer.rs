@@ -814,7 +814,247 @@ fn ControlVisuals(control: Control) -> Element {
                 div { style: "padding: 1px 4px; border: 1px solid #aaa; background: #e8e8e8;", "❌" }
             }
         },
-        _ => rsx! { div { "..." } }
+        // ── TabControl ──
+        ControlType::TabControl => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px solid #999; display: flex; flex-direction: column; background: white;",
+                div {
+                    style: "display: flex; background: #e9ecef; border-bottom: 1px solid #999;",
+                    div { style: "padding: 3px 10px; background: white; border: 1px solid #999; border-bottom: none; font: {font}; color: {fore}; font-size: 11px;", "Tab 1" }
+                    div { style: "padding: 3px 10px; font: {font}; color: #666; font-size: 11px;", "Tab 2" }
+                }
+                div { style: "flex: 1; background: white;" }
+            }
+        },
+        // ── TabPage ──
+        ControlType::TabPage => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px solid #999; background: white; padding: 4px; font: {font}; color: {fore};",
+                "{caption}"
+            }
+        },
+        // ── ProgressBar ──
+        ControlType::ProgressBar => rsx! {
+            div {
+                style: "width: 100%; height: 100%; background: #e9ecef; border: 1px solid #999; overflow: hidden;",
+                div { style: "height: 100%; background: #0d6efd; width: 30%;" }
+            }
+        },
+        // ── NumericUpDown ──
+        ControlType::NumericUpDown => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; border: 1px inset #999; background: {back}; font: {font}; color: {fore};",
+                div { style: "flex: 1; padding: 2px 4px; display: flex; align-items: center;", "0" }
+                div {
+                    style: "width: 16px; display: flex; flex-direction: column; border-left: 1px solid #999;",
+                    div { style: "flex: 1; border-bottom: 1px solid #ccc; display: flex; align-items: center; justify-content: center; font-size: 8px; background: #e8e8e8;", "▲" }
+                    div { style: "flex: 1; display: flex; align-items: center; justify-content: center; font-size: 8px; background: #e8e8e8;", "▼" }
+                }
+            }
+        },
+        // ── MenuStrip ──
+        ControlType::MenuStrip => rsx! {
+            div {
+                style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; padding: 0 4px; font: {font}; font-size: 12px; color: {fore};",
+                div { style: "padding: 2px 8px; font-size: 12px;", "File" }
+                div { style: "padding: 2px 8px; font-size: 12px;", "Edit" }
+                div { style: "padding: 2px 8px; font-size: 12px;", "View" }
+                div { style: "padding: 2px 8px; font-size: 12px;", "Help" }
+            }
+        },
+        // ── ContextMenuStrip ──
+        ControlType::ContextMenuStrip => rsx! {
+            div {
+                style: "width: 100%; height: 100%; background: #f0f0f0; border: 1px solid #999; box-shadow: 2px 2px 4px rgba(0,0,0,0.15); padding: 2px 0; font: {font}; font-size: 12px; color: {fore};",
+                div { style: "padding: 3px 20px;", "Cut" }
+                div { style: "padding: 3px 20px;", "Copy" }
+                div { style: "padding: 3px 20px;", "Paste" }
+            }
+        },
+        // ── StatusStrip ──
+        ControlType::StatusStrip => rsx! {
+            div {
+                style: "width: 100%; height: 100%; background: #007acc; color: white; display: flex; align-items: center; padding: 0 8px; font: {font}; font-size: 11px;",
+                "Ready"
+            }
+        },
+        // ── ToolStripStatusLabel / ToolStripMenuItem ──
+        ControlType::ToolStripStatusLabel => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 0 4px; font: {font}; font-size: 11px; color: {fore}; background: {back};",
+                "{caption}"
+            }
+        },
+        ControlType::ToolStripMenuItem => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 2px 8px; font: {font}; font-size: 12px; color: {fore}; background: {back};",
+                "{caption}"
+            }
+        },
+        // ── DateTimePicker ──
+        ControlType::DateTimePicker => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; align-items: center; border: 1px solid #999; background: white; padding: 2px 4px; font: {font}; color: {fore};",
+                span { style: "flex: 1; font-size: 12px;", "Thursday, January 01, 2026" }
+                span { style: "padding: 0 4px; border-left: 1px solid #ccc; cursor: pointer; font-size: 10px;", "▼" }
+            }
+        },
+        // ── LinkLabel ──
+        ControlType::LinkLabel => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 2px; font: {font}; color: #0066cc; text-decoration: underline; cursor: pointer;",
+                "{caption}"
+            }
+        },
+        // ── ToolStrip ──
+        ControlType::ToolStrip => rsx! {
+            div {
+                style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; gap: 1px; padding: 2px 4px; font: {font}; font-size: 11px; color: {fore};",
+                div { style: "padding: 2px 6px; border: 1px solid transparent; background: #e8e8e8;", "Button1" }
+                div { style: "width: 1px; height: 16px; background: #aaa; margin: 0 2px;" }
+                div { style: "padding: 2px 6px; border: 1px solid transparent; background: #e8e8e8;", "Button2" }
+            }
+        },
+        // ── TrackBar ──
+        ControlType::TrackBar => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 4px; background: {back};",
+                input {
+                    r#type: "range",
+                    style: "width: 100%; pointer-events: none;",
+                    min: "0",
+                    max: "10",
+                    value: "0",
+                }
+            }
+        },
+        // ── MaskedTextBox ──
+        ControlType::MaskedTextBox => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px inset #999; padding: 2px 4px; font: {font}; color: #999; background: {back}; display: flex; align-items: center;",
+                "___-__-____"
+            }
+        },
+        // ── SplitContainer ──
+        ControlType::SplitContainer => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; border: 1px solid #999;",
+                div { style: "flex: 1; background: {back}; border-right: 3px solid #d0d0d0;" }
+                div { style: "flex: 1; background: {back};" }
+            }
+        },
+        // ── FlowLayoutPanel ──
+        ControlType::FlowLayoutPanel => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px dashed #999; display: flex; flex-wrap: wrap; align-content: flex-start; padding: 2px; background: {back};",
+            }
+        },
+        // ── TableLayoutPanel ──
+        ControlType::TableLayoutPanel => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px dashed #999; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; background: {back};",
+                div { style: "border: 1px dotted #ccc;" }
+                div { style: "border: 1px dotted #ccc;" }
+                div { style: "border: 1px dotted #ccc;" }
+                div { style: "border: 1px dotted #ccc;" }
+            }
+        },
+        // ── MonthCalendar ──
+        ControlType::MonthCalendar => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px solid #999; background: white; display: flex; flex-direction: column; font-size: 11px; overflow: hidden;",
+                div {
+                    style: "background: #0078d4; color: white; text-align: center; padding: 4px; font-weight: bold;",
+                    "◀  January 2026  ▶"
+                }
+                div {
+                    style: "display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; padding: 2px; gap: 1px; font-size: 9px;",
+                    span { style: "font-weight: bold; color: #666;", "Su" }
+                    span { style: "font-weight: bold; color: #666;", "Mo" }
+                    span { style: "font-weight: bold; color: #666;", "Tu" }
+                    span { style: "font-weight: bold; color: #666;", "We" }
+                    span { style: "font-weight: bold; color: #666;", "Th" }
+                    span { style: "font-weight: bold; color: #666;", "Fr" }
+                    span { style: "font-weight: bold; color: #666;", "Sa" }
+                    for _d in 0..4u8 { span { } }
+                    span { "1" } span { "2" } span { "3" }
+                    for d in 4..31u8 {
+                        span { key: "{d}", "{d}" }
+                    }
+                }
+            }
+        },
+        // ── HScrollBar ──
+        ControlType::HScrollBar => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; align-items: center; background: #f0f0f0; border: 1px solid #999;",
+                div { style: "width: 17px; height: 100%; background: #e8e8e8; border-right: 1px solid #ccc; display: flex; align-items: center; justify-content: center; font-size: 9px;", "◀" }
+                div { style: "flex: 1; height: 60%; background: #cdcdcd; margin: 0 2px; border-radius: 2px;" }
+                div { style: "width: 17px; height: 100%; background: #e8e8e8; border-left: 1px solid #ccc; display: flex; align-items: center; justify-content: center; font-size: 9px;", "▶" }
+            }
+        },
+        // ── VScrollBar ──
+        ControlType::VScrollBar => rsx! {
+            div {
+                style: "width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; background: #f0f0f0; border: 1px solid #999;",
+                div { style: "width: 100%; height: 17px; background: #e8e8e8; border-bottom: 1px solid #ccc; display: flex; align-items: center; justify-content: center; font-size: 9px;", "▲" }
+                div { style: "width: 60%; flex: 1; background: #cdcdcd; margin: 2px 0; border-radius: 2px;" }
+                div { style: "width: 100%; height: 17px; background: #e8e8e8; border-top: 1px solid #ccc; display: flex; align-items: center; justify-content: center; font-size: 9px;", "▼" }
+            }
+        },
+        // ── ToolTip (non-visual, show icon) ──
+        ControlType::ToolTip => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px solid #999; background: #ffffcc; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #333;",
+                "💬 ToolTip"
+            }
+        },
+        // ── RichTextBox ──
+        ControlType::RichTextBox => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px inset #999; padding: 4px; font: {font}; color: {fore}; background: {back}; overflow: hidden;",
+                "{text}"
+            }
+        },
+        // ── Frame (GroupBox) ──
+        ControlType::Frame => rsx! {
+            fieldset {
+                style: "width: 100%; height: 100%; border: 1px solid #999; padding: 4px; font: {font}; color: {fore}; background: {back};",
+                legend { "{caption}" }
+            }
+        },
+        // ── PictureBox ──
+        ControlType::PictureBox => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; background: {back}; display: flex; align-items: center; justify-content: center; overflow: hidden;",
+                span { style: "color: #999; font-size: 18px;", "🖼" }
+            }
+        },
+        // ── WebBrowser ──
+        ControlType::WebBrowser => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px solid #999; background: white; overflow: hidden; display: flex; flex-direction: column;",
+                div {
+                    style: "display: flex; align-items: center; gap: 4px; padding: 2px 4px; background: #f0f0f0; border-bottom: 1px solid #ccc; font-size: 11px;",
+                    span { "←" } span { "→" } span { "🔄" }
+                    div { style: "flex: 1; padding: 1px 4px; background: white; border: 1px solid #ccc; font-size: 10px; color: #999;", "about:blank" }
+                }
+                div { style: "flex: 1;" }
+            }
+        },
+        // ── Panel ──
+        ControlType::Panel => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; background: {back};",
+            }
+        },
+        // Fallback for any remaining control
+        _ => rsx! {
+            div {
+                style: "width: 100%; height: 100%; border: 1px dotted #999; background: #f8f8f8; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #666;",
+                "{caption}"
+            }
+        }
     }
 }
 

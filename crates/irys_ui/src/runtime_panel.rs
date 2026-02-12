@@ -1812,144 +1812,313 @@ pub fn FormRunner() -> Element {
                                                             }
                                                         }
                                                     },
-                                                    ControlType::ProgressBar => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; background: #e9ecef; border: 1px solid #adb5bd; overflow: hidden;",
+                                                    ControlType::ProgressBar => {
+                                                        let pb_val = control.properties.get_int("Value").unwrap_or(0);
+                                                        let pb_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                                        let pb_pct = if pb_max > 0 { (pb_val as f64 / pb_max as f64 * 100.0) as i32 } else { 0 };
+                                                        rsx! {
                                                             div {
-                                                                style: "height: 100%; background: #0d6efd; width: 0%; transition: width 0.3s;",
+                                                                style: "width: 100%; height: 100%; background: #e9ecef; border: 1px solid #adb5bd; overflow: hidden; border-radius: 4px;",
+                                                                div {
+                                                                    style: "height: 100%; background: linear-gradient(180deg, #5cb85c, #4cae4c); width: {pb_pct}%; transition: width 0.3s;",
+                                                                }
                                                             }
                                                         }
                                                     },
-                                                    ControlType::NumericUpDown => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; border: 1px solid #adb5bd;",
-                                                            input {
-                                                                r#type: "number",
-                                                                style: "flex: 1; border: none; padding: 2px 4px; font-size: 12px; outline: none;",
-                                                                value: "0",
+                                                    ControlType::NumericUpDown => {
+                                                        let nud_val = control.properties.get_int("Value").unwrap_or(0);
+                                                        let nud_min = control.properties.get_int("Minimum").unwrap_or(0);
+                                                        let nud_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                                        let nud_val_str = nud_val.to_string();
+                                                        let nud_min_str = nud_min.to_string();
+                                                        let nud_max_str = nud_max.to_string();
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; display: flex; border: 1px solid #adb5bd; border-radius: 6px; overflow: hidden; {style_back}",
+                                                                input {
+                                                                    r#type: "number",
+                                                                    style: "flex: 1; border: none; padding: 2px 6px; {style_font} {style_fore} outline: none; background: transparent;",
+                                                                    disabled: !is_enabled,
+                                                                    min: "{nud_min_str}",
+                                                                    max: "{nud_max_str}",
+                                                                    value: "{nud_val_str}",
+                                                                    oninput: move |evt: FormEvent| {
+                                                                        if let Ok(v) = evt.value().parse::<i32>() {
+                                                                            if let Some(frm) = runtime_form.write().as_mut() {
+                                                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                                    ctrl.properties.set("Value", v);
+                                                                                    ctrl.set_text(v.to_string());
+                                                                                }
+                                                                            }
+                                                                            handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     },
-                                                    ControlType::MenuStrip | ControlType::ContextMenuStrip => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; padding: 0 4px; font-size: 12px;",
-                                                            "Menu"
+                                                    ControlType::MenuStrip | ControlType::ContextMenuStrip => {
+                                                        let menu_items = control.get_list_items();
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; padding: 0 4px; {style_font} font-size: 12px;",
+                                                                if menu_items.is_empty() {
+                                                                    span { style: "padding: 2px 8px;", "File" }
+                                                                    span { style: "padding: 2px 8px;", "Edit" }
+                                                                    span { style: "padding: 2px 8px;", "View" }
+                                                                    span { style: "padding: 2px 8px;", "Help" }
+                                                                } else {
+                                                                    for item in menu_items {
+                                                                        span { style: "padding: 2px 8px; cursor: pointer;", "{item}" }
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                     },
                                                     ControlType::StatusStrip => rsx! {
                                                         div {
-                                                            style: "width: 100%; height: 100%; background: #007acc; border-top: 1px solid #005a9e; display: flex; align-items: center; padding: 0 8px; font-size: 12px; color: white;",
+                                                            style: "width: 100%; height: 100%; background: #007acc; border-top: 1px solid #005a9e; display: flex; align-items: center; padding: 0 8px; font-size: 12px; color: white; {style_font}",
                                                             "{text}"
                                                         }
                                                     },
-                                                    ControlType::DateTimePicker => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; border: 1px solid #adb5bd; background: white; padding: 2px 4px; font-size: 12px;",
-                                                            span { style: "flex: 1;", "{text}" }
-                                                            span { style: "padding: 0 4px; border-left: 1px solid #ccc; cursor: pointer;", "▼" }
+                                                    ControlType::DateTimePicker => {
+                                                        // Use native HTML date input for proper dropdown
+                                                        let dtp_format = control.properties.get_string("Format").map(|s| s.to_string()).unwrap_or_else(|| "Long".to_string());
+                                                        let input_type = if dtp_format == "Time" { "time" } else { "date" };
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; display: flex; align-items: center; {style_back} {style_font} {style_fore}",
+                                                                input {
+                                                                    r#type: "{input_type}",
+                                                                    style: "width: 100%; height: 100%; border: 1px solid #adb5bd; padding: 2px 6px; border-radius: 6px; {style_font} {style_fore} {style_back} outline: none; cursor: pointer;",
+                                                                    disabled: !is_enabled,
+                                                                    value: "{text}",
+                                                                    oninput: move |evt: FormEvent| {
+                                                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                                ctrl.set_text(evt.value());
+                                                                                ctrl.properties.set("Value", evt.value());
+                                                                            }
+                                                                        }
+                                                                        handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                     },
                                                     ControlType::LinkLabel => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; font-size: 12px; color: #0066cc; text-decoration: underline; cursor: pointer;",
+                                                        a {
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; {style_font} font-size: 12px; color: #0066cc; text-decoration: underline; cursor: pointer;",
+                                                            onclick: move |evt: MouseEvent| {
+                                                                let data = irys_runtime::EventData::Mouse {
+                                                                    button: 0x100000, clicks: 1,
+                                                                    x: evt.client_coordinates().x as i32,
+                                                                    y: evt.client_coordinates().y as i32,
+                                                                    delta: 0,
+                                                                };
+                                                                let data2 = irys_runtime::EventData::Mouse {
+                                                                    button: 0x100000, clicks: 1,
+                                                                    x: evt.client_coordinates().x as i32,
+                                                                    y: evt.client_coordinates().y as i32,
+                                                                    delta: 0,
+                                                                };
+                                                                handle_event(name_clone.clone(), "LinkClicked".to_string(), Some(data));
+                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data2));
+                                                            },
                                                             "{caption}"
                                                         }
                                                     },
-                                                    ControlType::ToolStrip => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; padding: 0 4px; font-size: 12px;",
-                                                            "ToolStrip"
-                                                        }
-                                                    },
-                                                    ControlType::TrackBar => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 4px;",
-                                                            input {
-                                                                r#type: "range",
-                                                                style: "width: 100%;",
-                                                                min: "0",
-                                                                max: "10",
-                                                                value: "0",
+                                                    ControlType::ToolStrip => {
+                                                        let ts_items = control.get_list_items();
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; gap: 1px; padding: 2px 4px; {style_font} font-size: 11px;",
+                                                                if ts_items.is_empty() {
+                                                                    span { style: "padding: 2px 6px; background: #e8e8e8; border: 1px solid #ccc; cursor: pointer;", "Button1" }
+                                                                } else {
+                                                                    for it in ts_items {
+                                                                        span { style: "padding: 2px 6px; background: #e8e8e8; border: 1px solid #ccc; cursor: pointer;", "{it}" }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     },
-                                                    ControlType::MaskedTextBox => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: center;",
-                                                            input {
-                                                                r#type: "text",
-                                                                style: "width: 100%; height: 100%; border: 1px solid #adb5bd; padding: 2px 4px; font-size: 12px; outline: none; {style_back} {style_font} {style_fore};",
-                                                                value: "{text}",
-                                                                placeholder: "___-__-____",
+                                                    ControlType::TrackBar => {
+                                                        let tb_val = control.properties.get_int("Value").unwrap_or(0);
+                                                        let tb_min = control.properties.get_int("Minimum").unwrap_or(0);
+                                                        let tb_max = control.properties.get_int("Maximum").unwrap_or(10);
+                                                        let tb_val_str = tb_val.to_string();
+                                                        let tb_min_str = tb_min.to_string();
+                                                        let tb_max_str = tb_max.to_string();
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 4px; {style_back}",
+                                                                input {
+                                                                    r#type: "range",
+                                                                    style: "width: 100%; cursor: pointer;",
+                                                                    disabled: !is_enabled,
+                                                                    min: "{tb_min_str}",
+                                                                    max: "{tb_max_str}",
+                                                                    value: "{tb_val_str}",
+                                                                    oninput: move |evt: FormEvent| {
+                                                                        if let Ok(v) = evt.value().parse::<i32>() {
+                                                                            if let Some(frm) = runtime_form.write().as_mut() {
+                                                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                                    ctrl.properties.set("Value", v);
+                                                                                }
+                                                                            }
+                                                                            handle_event(name_clone.clone(), "Scroll".to_string(), None);
+                                                                            handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     },
-                                                    ControlType::SplitContainer => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; border: 1px solid #adb5bd;",
-                                                            div { style: "flex: 1; background: #f8f8f8; border-right: 3px solid #ccc;" }
-                                                            div { style: "flex: 1; background: #f8f8f8;" }
+                                                    ControlType::MaskedTextBox => {
+                                                        let mask = control.properties.get_string("Mask").map(|s| s.to_string()).unwrap_or_default();
+                                                        let prompt_char = control.properties.get_string("PromptChar").map(|s| s.to_string()).unwrap_or_else(|| "_".to_string());
+                                                        let placeholder = if mask.is_empty() { String::new() } else { mask.chars().map(|c| if c == '0' || c == '9' || c == '#' { prompt_char.chars().next().unwrap_or('_') } else { c }).collect::<String>() };
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; display: flex; align-items: center;",
+                                                                input {
+                                                                    r#type: "text",
+                                                                    style: "width: 100%; height: 100%; border: 1px solid #adb5bd; padding: 2px 6px; border-radius: 6px; {style_font} {style_fore} {style_back} outline: none;",
+                                                                    disabled: !is_enabled,
+                                                                    value: "{text}",
+                                                                    placeholder: "{placeholder}",
+                                                                    oninput: move |evt: FormEvent| {
+                                                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                                ctrl.set_text(evt.value());
+                                                                            }
+                                                                        }
+                                                                        handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::SplitContainer => {
+                                                        let sc_orient = control.properties.get_string("Orientation").map(|s| s.to_string()).unwrap_or_else(|| "Vertical".to_string());
+                                                        let flex_dir = if sc_orient == "Horizontal" { "column" } else { "row" };
+                                                        let splitter_style = if sc_orient == "Horizontal" { "height: 4px; background: #d0d0d0; cursor: ns-resize; flex-shrink: 0;" } else { "width: 4px; background: #d0d0d0; cursor: ew-resize; flex-shrink: 0;" };
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; display: flex; flex-direction: {flex_dir}; border: 1px solid #adb5bd; {style_back}",
+                                                                div { style: "flex: 1; overflow: hidden;" }
+                                                                div { style: "{splitter_style}" }
+                                                                div { style: "flex: 1; overflow: hidden;" }
+                                                            }
                                                         }
                                                     },
                                                     ControlType::FlowLayoutPanel => rsx! {
                                                         div {
-                                                            style: "width: 100%; height: 100%; border: 1px dashed #adb5bd; display: flex; flex-wrap: wrap; align-content: flex-start; padding: 2px;",
+                                                            style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: flex; flex-wrap: wrap; align-content: flex-start; padding: 2px; {style_back}",
                                                         }
                                                     },
-                                                    ControlType::TableLayoutPanel => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px dashed #adb5bd; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;",
-                                                            div { style: "border: 1px dotted #ccc;" }
-                                                            div { style: "border: 1px dotted #ccc;" }
-                                                            div { style: "border: 1px dotted #ccc;" }
-                                                            div { style: "border: 1px dotted #ccc;" }
+                                                    ControlType::TableLayoutPanel => {
+                                                        let tlp_cols = control.properties.get_int("ColumnCount").unwrap_or(2);
+                                                        let tlp_rows = control.properties.get_int("RowCount").unwrap_or(2);
+                                                        let grid_cols = format!("repeat({}, 1fr)", tlp_cols);
+                                                        let grid_rows = format!("repeat({}, 1fr)", tlp_rows);
+                                                        let cell_count = (tlp_cols * tlp_rows) as usize;
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: grid; grid-template-columns: {grid_cols}; grid-template-rows: {grid_rows}; {style_back}",
+                                                                for i in 0..cell_count {
+                                                                    div { key: "{i}", style: "border: 1px dotted #ccc;" }
+                                                                }
+                                                            }
                                                         }
                                                     },
                                                     ControlType::MonthCalendar => rsx! {
                                                         div {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #adb5bd; background: white; display: flex; flex-direction: column; font-size: 11px;",
-                                                            div {
-                                                                style: "background: #0078d4; color: white; text-align: center; padding: 4px; font-weight: bold;",
-                                                                "January 2026"
-                                                            }
-                                                            div {
-                                                                style: "flex: 1; display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; padding: 2px; gap: 1px;",
-                                                                span { style: "font-weight: bold;", "Su" }
-                                                                span { style: "font-weight: bold;", "Mo" }
-                                                                span { style: "font-weight: bold;", "Tu" }
-                                                                span { style: "font-weight: bold;", "We" }
-                                                                span { style: "font-weight: bold;", "Th" }
-                                                                span { style: "font-weight: bold;", "Fr" }
-                                                                span { style: "font-weight: bold;", "Sa" }
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: stretch;",
+                                                            input {
+                                                                r#type: "date",
+                                                                style: "width: 100%; height: 100%; border: 1px solid #adb5bd; border-radius: 6px; padding: 4px 8px; {style_font} {style_fore} {style_back} outline: none; cursor: pointer;",
+                                                                disabled: !is_enabled,
+                                                                value: "{text}",
+                                                                oninput: move |evt: FormEvent| {
+                                                                    if let Some(frm) = runtime_form.write().as_mut() {
+                                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                            ctrl.set_text(evt.value());
+                                                                            ctrl.properties.set("SelectionStart", evt.value());
+                                                                        }
+                                                                    }
+                                                                    handle_event(name_clone.clone(), "DateChanged".to_string(), None);
+                                                                }
                                                             }
                                                         }
                                                     },
-                                                    ControlType::HScrollBar => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: center;",
-                                                            input {
-                                                                r#type: "range",
-                                                                style: "width: 100%; height: 100%;",
-                                                                min: "0",
-                                                                max: "100",
-                                                                value: "0",
+                                                    ControlType::HScrollBar => {
+                                                        let hs_val = control.properties.get_int("Value").unwrap_or(0);
+                                                        let hs_min = control.properties.get_int("Minimum").unwrap_or(0);
+                                                        let hs_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                                        let hs_val_str = hs_val.to_string();
+                                                        let hs_min_str = hs_min.to_string();
+                                                        let hs_max_str = hs_max.to_string();
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; display: flex; align-items: center;",
+                                                                input {
+                                                                    r#type: "range",
+                                                                    style: "width: 100%; height: 100%; cursor: pointer;",
+                                                                    disabled: !is_enabled,
+                                                                    min: "{hs_min_str}",
+                                                                    max: "{hs_max_str}",
+                                                                    value: "{hs_val_str}",
+                                                                    oninput: move |evt: FormEvent| {
+                                                                        if let Ok(v) = evt.value().parse::<i32>() {
+                                                                            if let Some(frm) = runtime_form.write().as_mut() {
+                                                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                                    ctrl.properties.set("Value", v);
+                                                                                }
+                                                                            }
+                                                                            handle_event(name_clone.clone(), "Scroll".to_string(), None);
+                                                                            handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     },
-                                                    ControlType::VScrollBar => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: center;",
-                                                            input {
-                                                                r#type: "range",
-                                                                style: "width: 17px; height: 100%; writing-mode: vertical-lr; direction: rtl;",
-                                                                min: "0",
-                                                                max: "100",
-                                                                value: "0",
+                                                    ControlType::VScrollBar => {
+                                                        let vs_val = control.properties.get_int("Value").unwrap_or(0);
+                                                        let vs_min = control.properties.get_int("Minimum").unwrap_or(0);
+                                                        let vs_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                                        let vs_val_str = vs_val.to_string();
+                                                        let vs_min_str = vs_min.to_string();
+                                                        let vs_max_str = vs_max.to_string();
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; display: flex; align-items: center;",
+                                                                input {
+                                                                    r#type: "range",
+                                                                    style: "width: 17px; height: 100%; writing-mode: vertical-lr; direction: rtl; cursor: pointer;",
+                                                                    disabled: !is_enabled,
+                                                                    min: "{vs_min_str}",
+                                                                    max: "{vs_max_str}",
+                                                                    value: "{vs_val_str}",
+                                                                    oninput: move |evt: FormEvent| {
+                                                                        if let Ok(v) = evt.value().parse::<i32>() {
+                                                                            if let Some(frm) = runtime_form.write().as_mut() {
+                                                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                                    ctrl.properties.set("Value", v);
+                                                                                }
+                                                                            }
+                                                                            handle_event(name_clone.clone(), "Scroll".to_string(), None);
+                                                                            handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     },
                                                     _ => rsx! {
-                                                        div { style: "border: 1px dotted red;", "Unknown Control" }
+                                                        div { style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #666; {style_back}", "{caption}" }
                                                     }
                                                 }}
                                             }
