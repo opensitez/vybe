@@ -38,6 +38,16 @@ pub struct SubDecl {
     pub is_async: bool,
     #[serde(default)]
     pub is_extension: bool,
+    #[serde(default)]
+    pub is_overridable: bool,
+    #[serde(default)]
+    pub is_overrides: bool,
+    #[serde(default)]
+    pub is_must_override: bool,
+    #[serde(default)]
+    pub is_shared: bool,
+    #[serde(default)]
+    pub is_not_overridable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,6 +61,16 @@ pub struct FunctionDecl {
     pub is_async: bool,
     #[serde(default)]
     pub is_extension: bool,
+    #[serde(default)]
+    pub is_overridable: bool,
+    #[serde(default)]
+    pub is_overrides: bool,
+    #[serde(default)]
+    pub is_must_override: bool,
+    #[serde(default)]
+    pub is_shared: bool,
+    #[serde(default)]
+    pub is_not_overridable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,9 +79,14 @@ pub struct ClassDecl {
     pub name: Identifier,
     pub is_partial: bool,
     pub inherits: Option<VBType>,
+    pub implements: Vec<VBType>,
     pub properties: Vec<PropertyDecl>,
     pub methods: Vec<MethodDecl>,
     pub fields: Vec<VariableDecl>,
+    #[serde(default)]
+    pub is_must_inherit: bool,
+    #[serde(default)]
+    pub is_not_inheritable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

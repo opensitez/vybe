@@ -1260,13 +1260,32 @@ impl Interpreter {
                         if existing.inherits.is_none() {
                             existing.inherits = class_decl.inherits.clone();
                         }
+                        if existing.implements.is_empty() && !class_decl.implements.is_empty() {
+                            existing.implements = class_decl.implements.clone();
+                        }
                         existing.is_partial = existing.is_partial || class_decl.is_partial;
+                        existing.is_must_inherit = existing.is_must_inherit || class_decl.is_must_inherit;
+                        existing.is_not_inheritable = existing.is_not_inheritable || class_decl.is_not_inheritable;
                     } else {
                         // Replace only when both are non-partial
                         *existing = class_decl.clone();
                     }
                 } else {
                     self.classes.insert(key.clone(), class_decl.clone());
+                }
+
+                // Enforce NotInheritable
+                if let Some(irys_parser::VBType::Custom(parent_name)) = &class_decl.inherits {
+                    let parent_key = self.resolve_class_key(parent_name);
+                    if let Some(parent_cls) = parent_key.as_ref().and_then(|k| self.classes.get(k)) {
+                        if parent_cls.is_not_inheritable {
+                            return Err(RuntimeError::Custom(format!(
+                                "Class '{}' cannot inherit from NotInheritable class '{}'",
+                                class_decl.name.as_str(),
+                                parent_cls.name.as_str()
+                            )));
+                        }
+                    }
                 }
 
                 // Register class methods as subs so they can be called by event system
@@ -1490,6 +1509,45 @@ impl Interpreter {
         None
     }
 
+    /// Get the parent class name from a class's `Inherits` clause.
+    pub fn get_parent_class_name(&self, class_name: &str) -> Option<String> {
+        let key = self.resolve_class_key(class_name)?;
+        let cls = self.classes.get(&key)?;
+        match &cls.inherits {
+            Some(irys_parser::VBType::Custom(n)) => Some(n.clone()),
+            _ => None,
+        }
+    }
+
+    /// Find a method starting from the **parent** of the given class.
+    /// Used for `MyBase.Method()` — skips the derived class entirely.
+    pub fn find_method_in_base(&self, class_name: &str, method_name: &str) -> Option<irys_parser::ast::decl::MethodDecl> {
+        if let Some(parent) = self.get_parent_class_name(class_name) {
+            self.find_method(&parent, method_name)
+        } else {
+            None
+        }
+    }
+
+    /// Walk the inheritance chain to check if `class_name` is or inherits from `target`.
+    /// Used for `TypeOf x Is BaseClass`.
+    pub fn is_type_or_base(&self, class_name: &str, target: &str) -> bool {
+        if class_name.eq_ignore_ascii_case(target) {
+            return true;
+        }
+        // Also match against unqualified target (e.g. "Form" matches "System.Windows.Forms.Form")
+        let class_lower = class_name.to_lowercase();
+        let target_lower = target.to_lowercase();
+        if class_lower.ends_with(&format!(".{}", target_lower)) || target_lower.ends_with(&format!(".{}", class_lower)) {
+            return true;
+        }
+        // Walk up the hierarchy
+        if let Some(parent) = self.get_parent_class_name(class_name) {
+            return self.is_type_or_base(&parent, target);
+        }
+        false
+    }
+
 
     pub fn execute(&mut self, stmt: &Statement) -> Result<(), RuntimeError> {
         match stmt {
@@ -1568,6 +1626,11 @@ impl Interpreter {
                                             handles: None,
                                             is_async: false,
                                             is_extension: false,
+                                            is_overridable: false,
+                                            is_overrides: false,
+                                            is_must_override: false,
+                                            is_shared: false,
+                                            is_not_overridable: false,
                                         };
                                         return match self.call_user_sub(&sub, &[val], Some(obj_ref.clone())) {
                                             Ok(_) => Ok(()),
@@ -2946,7 +3009,7 @@ impl Interpreter {
                 let result = match &val {
                     Value::Object(obj) => {
                         let b = obj.borrow();
-                        b.class_name.eq_ignore_ascii_case(tn)
+                        self.is_type_or_base(&b.class_name, tn)
                     }
                     Value::String(_) => tn.eq_ignore_ascii_case("String"),
                     Value::Integer(_) => tn.eq_ignore_ascii_case("Integer") || tn.eq_ignore_ascii_case("Int32"),
@@ -2993,12 +3056,28 @@ impl Interpreter {
                     Err(RuntimeError::Custom("'Me' used outside of object context".to_string()))
                 }
             }
+            Expression::MyBase => {
+                // MyBase refers to the same object as Me, but method
+                // dispatch starts from the parent class.  We return the
+                // same Rc; call_method checks for Expression::MyBase to
+                // resolve the method from the base class.
+                if let Some(obj_rc) = &self.current_object {
+                    Ok(Value::Object(obj_rc.clone()))
+                } else {
+                    Err(RuntimeError::Custom("'MyBase' used outside of object context".to_string()))
+                }
+            }
             Expression::WithTarget => {
                 if let Some(val) = &self.with_object {
                     Ok(val.clone())
                 } else {
                     Err(RuntimeError::Custom("'.' used outside of With block".to_string()))
                 }
+            }
+            Expression::Cast { expr, .. } => {
+                // CType/DirectCast/TryCast — in our dynamically typed interpreter,
+                // just evaluate the inner expression (the cast is a no-op at runtime).
+                self.evaluate_expr(expr)
             }
             Expression::IfExpression(first, second, third) => {
                 if let Some(false_expr) = third {
@@ -3023,7 +3102,13 @@ impl Interpreter {
                 Ok(Value::String(format!("AddressOf:{}", name)))
             }
             Expression::New(class_id, ctor_args) => {
-                let class_name = class_id.as_str().to_lowercase();
+                // Strip generic suffix: "List(Of String)" → "list"
+                let class_name_full = class_id.as_str().to_lowercase();
+                let class_name = if let Some(idx) = class_name_full.find("(of ") {
+                    class_name_full[..idx].trim_end().to_string()
+                } else {
+                    class_name_full
+                };
 
                 // Handle Common Dialogs
                 if class_name == "openfiledialog" || class_name.ends_with(".openfiledialog") {
@@ -4049,6 +4134,14 @@ impl Interpreter {
 
                 let resolved_key = self.resolve_class_key(&class_name);
                 if let Some(class_decl) = resolved_key.as_ref().and_then(|k| self.classes.get(k).cloned()) {
+                    // Enforce MustInherit — cannot instantiate abstract classes
+                    if class_decl.is_must_inherit {
+                        return Err(RuntimeError::Custom(format!(
+                            "Cannot create an instance of MustInherit class '{}'",
+                            class_decl.name.as_str()
+                        )));
+                    }
+
                     // Collect fields from hierarchy
                     let fields = self.collect_fields(&class_name);
 
@@ -4067,6 +4160,27 @@ impl Interpreter {
                     let new_method = self.find_method(&class_name, "new");
 
                     if let Some(method) = new_method {
+                        // Check if the derived constructor body contains a
+                        // MyBase.New() call.  If not, auto-call the base class
+                        // Sub New first (VB.NET inserts this automatically).
+                        let method_body = match &method {
+                            irys_parser::ast::decl::MethodDecl::Sub(s) => &s.body,
+                            irys_parser::ast::decl::MethodDecl::Function(f) => &f.body,
+                        };
+                        let has_mybase_new = body_contains_mybase_new(method_body);
+                        if !has_mybase_new {
+                            if let Some(base_new) = self.find_method_in_base(&class_name, "new") {
+                                match base_new {
+                                    irys_parser::ast::decl::MethodDecl::Sub(s) => {
+                                        let _ = self.call_user_sub(&s, &[], Some(obj_ref.clone()));
+                                    }
+                                    irys_parser::ast::decl::MethodDecl::Function(f) => {
+                                        let _ = self.call_user_function(&f, &[], Some(obj_ref.clone()));
+                                    }
+                                }
+                            }
+                        }
+
                         match method {
                             irys_parser::ast::decl::MethodDecl::Sub(s) => {
                                 self.call_user_sub(&s, &arg_values, Some(obj_ref.clone()))?;
@@ -4103,6 +4217,48 @@ impl Interpreter {
                     // If the class is unknown, return Nothing instead of error to keep VB code running
                     return Ok(Value::Nothing);
                 }
+            }
+
+            Expression::NewFromInitializer(class_id, ctor_args, init_elements) => {
+                // New List(Of T) From { expr, expr, ... }
+                // Create the collection then add each element
+                let obj = self.evaluate_expr(&Expression::New(class_id.clone(), ctor_args.clone()))?;
+                for elem_expr in init_elements {
+                    let elem_val = self.evaluate_expr(elem_expr)?;
+                    // Add to the collection
+                    match &obj {
+                        Value::Collection(al) => { al.borrow_mut().add(elem_val); }
+                        Value::Object(obj_ref) => {
+                            // For List, Dictionary etc. — push into __items
+                            let mut b = obj_ref.borrow_mut();
+                            let items = b.fields.entry("__items".to_string())
+                                .or_insert_with(|| Value::Array(Vec::new()));
+                            if let Value::Array(arr) = items {
+                                arr.push(elem_val);
+                            }
+                            // Update count
+                            if let Some(Value::Array(arr)) = b.fields.get("__items") {
+                                let count = arr.len() as i32;
+                                b.fields.insert("count".to_string(), Value::Integer(count));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(obj)
+            }
+
+            Expression::NewWithInitializer(class_id, ctor_args, members) => {
+                // New Type() With { .Prop = expr, ... }
+                // Create the object then set each property
+                let obj = self.evaluate_expr(&Expression::New(class_id.clone(), ctor_args.clone()))?;
+                if let Value::Object(obj_ref) = &obj {
+                    for (prop_name, prop_expr) in members {
+                        let val = self.evaluate_expr(prop_expr)?;
+                        obj_ref.borrow_mut().fields.insert(prop_name.to_lowercase(), val);
+                    }
+                }
+                Ok(obj)
             }
             
             Expression::MemberAccess(obj, member) => {
@@ -4886,6 +5042,11 @@ impl Interpreter {
                                  body: body.clone(),
                                  is_async: false,
                                  is_extension: false,
+                                 is_overridable: false,
+                                 is_overrides: false,
+                                 is_must_override: false,
+                                 is_shared: false,
+                                 is_not_overridable: false,
                              };
                              
                              // Execute Property Get
@@ -4978,8 +5139,24 @@ impl Interpreter {
                     if let Some(val) = obj.fields.get(&var_lower) {
                         return Ok(val.clone());
                     }
-                    // If field not present, create it as Nothing to mimic VB's instance fields being default-initialized
                     drop(obj);
+                    
+                    // Before auto-creating a field, check global scope first.
+                    // Global variables (Console, Math, etc.) should NOT be shadowed
+                    // by auto-created Nothing fields on the object.
+                    if let Some(val) = self.env.get_global(var_name) {
+                        return Ok(val);
+                    }
+                    // Also check module-level variables
+                    if let Some(module) = &self.current_module {
+                        let module_key = format!("{}.{}", module, var_name).to_lowercase();
+                        if let Ok(val) = self.env.get(&module_key) {
+                            return Ok(val);
+                        }
+                    }
+                    
+                    // If field not present and not a global, create it as Nothing
+                    // to mimic VB's instance fields being default-initialized
                     obj_rc.borrow_mut().fields.insert(var_lower.clone(), Value::Nothing);
                     return Ok(Value::Nothing);
                 }
@@ -5430,6 +5607,35 @@ impl Interpreter {
 
     fn call_method(&mut self, obj: &Expression, method: &Identifier, args: &[Expression]) -> Result<Value, RuntimeError> {
         let method_name = method.as_str().to_lowercase();
+
+        // ── MyBase dispatch ─────────────────────────────────────────────
+        // MyBase.Method() dispatches to the parent class's method on the
+        // same object instance (Me).
+        let is_mybase = matches!(obj, Expression::MyBase);
+        if is_mybase {
+            if let Some(obj_rc) = &self.current_object {
+                let obj_clone = obj_rc.clone();
+                let class_name = obj_clone.borrow().class_name.clone();
+                let arg_values: Vec<Value> = args.iter()
+                    .map(|a| self.evaluate_expr(a))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if let Some(base_method) = self.find_method_in_base(&class_name, &method_name) {
+                    match base_method {
+                        irys_parser::ast::decl::MethodDecl::Sub(s) => {
+                            self.call_user_sub(&s, &arg_values, Some(obj_clone))?;
+                            return Ok(Value::Nothing);
+                        }
+                        irys_parser::ast::decl::MethodDecl::Function(f) => {
+                            return self.call_user_function(&f, &arg_values, Some(obj_clone));
+                        }
+                    }
+                }
+                return Err(RuntimeError::UndefinedFunction(
+                    format!("MyBase.{}", method.as_str()),
+                ));
+            }
+            return Err(RuntimeError::Custom("'MyBase' used outside of object context".to_string()));
+        }
 
         // Handle WinForms designer no-op methods
         match method_name.as_str() {
@@ -8796,6 +9002,11 @@ impl Interpreter {
                                   body: body.clone(),
                                   is_async: false,
                                   is_extension: false,
+                                  is_overridable: false,
+                                  is_overrides: false,
+                                  is_must_override: false,
+                                  is_shared: false,
+                                  is_not_overridable: false,
                               };
                               return self.call_user_function(&func, &[], Some(obj_ref.clone()));
                          }
@@ -8828,10 +9039,6 @@ impl Interpreter {
         // Check if this is a class instance method call
         // We evaluate the object expression to get the instance
         if let Ok(obj_val) = self.evaluate_expr(obj) {
-            // Method call on Nothing - silently ignore (common in WinForms designer for Controls.Add etc.)
-            if obj_val == Value::Nothing {
-                return Ok(Value::Nothing);
-            }
             // String proxy: the object is a control name string (WinForms pattern)
             // Property access like btn.Caption resolves to env key "btn0.Caption"
             if let Value::String(obj_name) = &obj_val {
@@ -10588,6 +10795,14 @@ impl Interpreter {
             .and_then(|k| self.classes.get(k).cloned())
             .ok_or_else(|| RuntimeError::Custom(format!("Class '{}' not found", class_name)))?;
 
+        // Enforce MustInherit
+        if class_decl.is_must_inherit {
+            return Err(RuntimeError::Custom(format!(
+                "Cannot create an instance of MustInherit class '{}'",
+                class_decl.name.as_str()
+            )));
+        }
+
         let fields = self.collect_fields(class_name);
         let obj_data = crate::value::ObjectData {
             class_name: class_decl.name.as_str().to_string(),
@@ -10598,6 +10813,24 @@ impl Interpreter {
         // Call Sub New if it exists (which typically calls InitializeComponent)
         let new_method = self.find_method(class_name, "new");
         if let Some(method) = new_method {
+            // Auto-call base Sub New first if derived doesn't explicitly do it
+            let method_body = match &method {
+                irys_parser::ast::decl::MethodDecl::Sub(s) => &s.body,
+                irys_parser::ast::decl::MethodDecl::Function(f) => &f.body,
+            };
+            if !body_contains_mybase_new(method_body) {
+                if let Some(base_new) = self.find_method_in_base(class_name, "new") {
+                    match base_new {
+                        irys_parser::ast::decl::MethodDecl::Sub(s) => {
+                            let _ = self.call_user_sub(&s, &[], Some(obj_ref.clone()));
+                        }
+                        irys_parser::ast::decl::MethodDecl::Function(f) => {
+                            let _ = self.call_user_function(&f, &[], Some(obj_ref.clone()));
+                        }
+                    }
+                }
+            }
+
             match method {
                 irys_parser::ast::decl::MethodDecl::Sub(s) => {
                     self.call_user_sub(&s, &[], Some(obj_ref.clone()))?;
@@ -11378,6 +11611,8 @@ impl Interpreter {
         match expr {
             Expression::Variable(name) => name.as_str().to_string(),
             Expression::Me => "Me".to_string(),
+            Expression::MyBase => "MyBase".to_string(),
+            Expression::Cast { expr, .. } => self.expr_to_string(expr),
             Expression::MemberAccess(obj, member) => {
                 format!("{}.{}", self.expr_to_string(obj), member.as_str())
             }
@@ -12103,5 +12338,58 @@ fn vb_like_match_inner(text: &[char], pattern: &[char]) -> bool {
                 false
             }
         }
+    }
+}
+
+/// Check whether a method body contains a `MyBase.New(...)` call.
+/// Used to decide if automatic base-class constructor chaining is needed.
+fn body_contains_mybase_new(body: &[irys_parser::ast::Statement]) -> bool {
+    use irys_parser::ast::Expression;
+    for stmt in body {
+        if expr_in_stmt_matches(stmt, &|e| {
+            matches!(e, Expression::MethodCall(obj, method, _)
+                if matches!(obj.as_ref(), Expression::MyBase)
+                   && method.as_str().eq_ignore_ascii_case("new"))
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recursively check if any expression inside a statement satisfies a predicate.
+fn expr_in_stmt_matches(stmt: &irys_parser::ast::Statement, pred: &dyn Fn(&irys_parser::ast::Expression) -> bool) -> bool {
+    use irys_parser::ast::Statement;
+    match stmt {
+        Statement::ExpressionStatement(e) => expr_matches(e, pred),
+        Statement::Assignment { value, .. } => expr_matches(value, pred),
+        Statement::MemberAssignment { object, value, .. } => expr_matches(object, pred) || expr_matches(value, pred),
+        Statement::If { condition, then_branch, elseif_branches, else_branch, .. } => {
+            if expr_matches(condition, pred) { return true; }
+            for s in then_branch { if expr_in_stmt_matches(s, pred) { return true; } }
+            for (c, b) in elseif_branches {
+                if expr_matches(c, pred) { return true; }
+                for s in b { if expr_in_stmt_matches(s, pred) { return true; } }
+            }
+            if let Some(eb) = else_branch {
+                for s in eb { if expr_in_stmt_matches(s, pred) { return true; } }
+            }
+            false
+        }
+        _ => false, // For constructor chaining detection, other statement types are unlikely
+    }
+}
+
+fn expr_matches(expr: &irys_parser::ast::Expression, pred: &dyn Fn(&irys_parser::ast::Expression) -> bool) -> bool {
+    use irys_parser::ast::Expression;
+    if pred(expr) { return true; }
+    match expr {
+        Expression::MethodCall(obj, _, args) => {
+            if expr_matches(obj, pred) { return true; }
+            args.iter().any(|a| expr_matches(a, pred))
+        }
+        Expression::MemberAccess(obj, _) => expr_matches(obj, pred),
+        Expression::Call(_, args) => args.iter().any(|a| expr_matches(a, pred)),
+        _ => false,
     }
 }

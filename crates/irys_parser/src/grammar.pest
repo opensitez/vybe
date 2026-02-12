@@ -77,7 +77,7 @@ dim_new_keyword = { ^"New" }
 dim_statement = {
     ^"Dim" ~ identifier ~
     ("(" ~ array_bounds? ~ ")")? ~
-    (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")?)? ~
+    (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer)?)? ~
     ("=" ~ (array_literal | expression))?
 }
 
@@ -286,7 +286,9 @@ class_decl = {
     ~ (!class_end ~ (property_decl | sub_decl | function_decl | event_line | delegate_line | field_line | dim_line | enum_decl | imports_statement | attribute_line | NEWLINE | COMMENT))*
     ~ class_end
 }
-class_modifier = _{ partial_keyword | visibility_modifier }
+class_modifier = _{ partial_keyword | must_inherit_keyword | not_inheritable_keyword | visibility_modifier }
+must_inherit_keyword = { ^"MustInherit" }
+not_inheritable_keyword = { ^"NotInheritable" }
 
 class_end = { ^"End" ~ ^"Class" }
 dim_line = _{ dim_statement ~ (NEWLINE | EOI) }
@@ -424,6 +426,7 @@ dotted_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("." 
 
 primary = _{
     typeof_expression
+    | cast_expression
     | new_expression
     | literal
     | lambda_expression
@@ -445,13 +448,23 @@ primary = _{
 // TypeOf...Is expression
 typeof_expression = { ^"TypeOf" ~ postfix ~ ^"Is" ~ type_name }
 
+// Type cast expressions: CType(expr, Type), DirectCast(expr, Type), TryCast(expr, Type)
+cast_expression = { (^"CType" | ^"DirectCast" | ^"TryCast") ~ "(" ~ expression ~ "," ~ type_name ~ ")" }
+// CType(...).Method() as a statement
+cast_member_call = { cast_expression ~ member_chain+ }
+
 // Inline If expression: If(cond, true, false) or If(value, default)
 if_expression = { ^"If" ~ "(" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" }
 
 // New expression: supports dotted identifiers like New System.Windows.Forms.Button()
 // Also supports generic types like New List(Of String), New Dictionary(Of String, Integer)
 // Also supports array initializers: New Task() {task1, task2}
-new_expression = { "New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ argument_list? ~ ")")? ~ array_literal? }
+// Also supports collection initializers: New List(Of T) From { expr, ... }
+// Also supports object initializers: New Type() With { .Prop = expr, ... }
+new_expression = { "New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer | array_literal)? }
+from_initializer = { ^"From" ~ "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
+with_initializer = { ^"With" ~ "{" ~ NEWLINE* ~ (member_initializer ~ (NEWLINE* ~ "," ~ NEWLINE* ~ member_initializer)*)? ~ NEWLINE* ~ "}" }
+member_initializer = { "." ~ member_identifier ~ "=" ~ expression }
 
 call_expression = { identifier ~ "(" ~ argument_list? ~ ")" }
 member_chain_call = { "." ~ member_identifier ~ "(" ~ argument_list? ~ ")" }
@@ -460,7 +473,8 @@ member_chain = { member_chain_call | member_chain_access }
 member_call = { identifier ~ member_chain+ }
 call_statement = {
     ^"Call"? ~ (
-        me_member_call
+        cast_member_call
+        | me_member_call
         | mybase_member_call
         | member_call
         | member_access
@@ -469,7 +483,7 @@ call_statement = {
         | identifier
     )
 }
-expression_statement = { dot_call_statement | me_member_call | mybase_member_call | member_call | call_expression | member_access | dot_member_access }
+expression_statement = { cast_member_call | dot_call_statement | me_member_call | mybase_member_call | member_call | call_expression | member_access | dot_member_access }
 
 // AddHandler / RemoveHandler
 addressof_expr = { ^"AddressOf" ~ dotted_identifier }

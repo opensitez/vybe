@@ -70,6 +70,12 @@ pub enum Expression {
     // Instantiation
     New(Identifier, Vec<Expression>),
 
+    // Collection initializer: New List(Of T) From { expr, expr, ... }
+    NewFromInitializer(Identifier, Vec<Expression>, Vec<Expression>),
+
+    // Object initializer: New Type() With { .Prop = expr, ... }
+    NewWithInitializer(Identifier, Vec<Expression>, Vec<(String, Expression)>),
+
     // Lambda
     Lambda {
         params: Vec<super::decl::Parameter>,
@@ -82,6 +88,9 @@ pub enum Expression {
     // Self-reference
     Me,
 
+    // Base class reference (MyBase.Member)
+    MyBase,
+
     // With block implicit target (for .Property syntax)
     WithTarget,
 
@@ -90,6 +99,20 @@ pub enum Expression {
 
     // AddressOf (delegate reference - stored as string for now)
     AddressOf(String),
+
+    // Type cast: CType(expr, Type), DirectCast(expr, Type), TryCast(expr, Type)
+    Cast {
+        kind: CastKind,
+        expr: Box<Expression>,
+        target_type: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CastKind {
+    CType,
+    DirectCast,
+    TryCast,
 }
 
 impl Expression {
