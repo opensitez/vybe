@@ -52,6 +52,7 @@ statement = _{
     | try_statement
     | continue_statement
     | exit_statement
+    | throw_statement
     | return_statement
     | line_input_statement
     | open_statement
@@ -200,6 +201,7 @@ finally_block = { ^"Finally" ~ (NEWLINE | EOI) ~ try_body }
 try_end = { ^"End" ~ ^"Try" }
 try_control = _{ ^"Catch" | ^"Finally" | try_end }
 
+throw_statement = { ^"Throw" ~ expression? }
 continue_statement = { ^"Continue" ~ (^"Do" | ^"For" | ^"While") }
 
 exit_statement = { ^"Exit" ~ exit_type }

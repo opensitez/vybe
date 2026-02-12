@@ -325,6 +325,10 @@ pub enum RuntimeError {
 
     #[error("{0}")]
     Custom(String),
+
+    /// Typed exception: (exception_type, message, inner_exception_msg)
+    #[error("{1}")]
+    Exception(String, String, Option<String>),
     
     #[error("Continue")]
     Continue(irys_parser::ast::stmt::ContinueType),

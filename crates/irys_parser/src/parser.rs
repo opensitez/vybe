@@ -703,6 +703,11 @@ fn parse_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
             }
         }
         Rule::try_statement => parse_try_statement(pair),
+        Rule::throw_statement => {
+            let mut inner = pair.into_inner();
+            let expr = inner.next().map(parse_expression).transpose()?;
+            Ok(Statement::Throw(expr))
+        }
         Rule::continue_statement => parse_continue_statement(pair),
         Rule::open_statement => parse_open_statement(pair),
         Rule::close_statement => parse_close_statement(pair),
@@ -1220,16 +1225,17 @@ fn parse_argument_list(pair: Pair<Rule>) -> ParseResult<Vec<Expression>> {
 }
 
 fn parse_try_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
-    let mut inner = pair.into_inner();
-    // try_body is first
-    let body_pair = inner.next().unwrap();
-    let body = parse_block_body(body_pair)?;
+    let inner = pair.into_inner();
     
+    let mut body = Vec::new();
     let mut catches = Vec::new();
     let mut finally = None;
     
     for p in inner {
         match p.as_rule() {
+            Rule::try_body => {
+                body = parse_block_body(p)?;
+            }
             Rule::catch_block => catches.push(parse_catch_block(p)?),
             Rule::finally_block => {
                 let f_inner = p.into_inner();

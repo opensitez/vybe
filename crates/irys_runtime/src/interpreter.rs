@@ -228,11 +228,15 @@ impl Interpreter {
         if let Some(tx) = &self.console_tx {
             let _ = tx.send(crate::ConsoleMessage::Output { text, fg, bg });
         } else {
-            // CLI mode: wrap text in ANSI escape codes for terminal colors
-            let ansi_fg = Self::console_color_to_ansi_fg(fg);
-            let ansi_bg = Self::console_color_to_ansi_bg(bg);
-            let colored = format!("{}{}{}\x1b[0m", ansi_fg, ansi_bg, text);
-            self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(colored));
+            // CLI mode: only wrap in ANSI escape codes if colors differ from defaults
+            if fg != 7 || bg != 0 {
+                let ansi_fg = Self::console_color_to_ansi_fg(fg);
+                let ansi_bg = Self::console_color_to_ansi_bg(bg);
+                let colored = format!("{}{}{}\x1b[0m", ansi_fg, ansi_bg, text);
+                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(colored));
+            } else {
+                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(text));
+            }
         }
     }
 
@@ -1214,6 +1218,28 @@ impl Interpreter {
             
             Statement::Continue(typ) => return Err(RuntimeError::Continue(typ.clone())),
 
+            Statement::Throw(expr) => {
+                if let Some(ex) = expr {
+                    let val = self.evaluate_expr(ex)?;
+                    // If the thrown value is an exception object, extract type + message
+                    if let Value::Object(ref obj) = val {
+                        let b = obj.borrow();
+                        let ex_type = b.class_name.clone();
+                        let msg = b.fields.get("message")
+                            .map(|v| v.as_string())
+                            .unwrap_or_else(|| format!("{}", ex_type));
+                        let inner = b.fields.get("innerexception")
+                            .and_then(|v| if *v == Value::Nothing { None } else { Some(v.as_string()) });
+                        return Err(RuntimeError::Exception(ex_type, msg, inner));
+                    }
+                    // Plain string throw
+                    return Err(RuntimeError::Exception("Exception".to_string(), val.as_string(), None));
+                } else {
+                    // Re-throw current exception (Throw without expression)
+                    return Err(RuntimeError::Exception("Exception".to_string(), "An exception was thrown".to_string(), None));
+                }
+            }
+
             Statement::Try { body, catches, finally } => {
                 let result = self.execute_block(body);
                 
@@ -1233,20 +1259,33 @@ impl Interpreter {
                     };
 
                     if is_error {
+                        // Extract exception type from the error
+                        let (ex_type, ex_msg, ex_inner) = match e {
+                            RuntimeError::Exception(t, m, inner) => (t.clone(), m.clone(), inner.clone()),
+                            RuntimeError::Custom(m) => ("Exception".to_string(), m.clone(), None),
+                            RuntimeError::TypeError { expected, got } => ("TypeMismatchException".to_string(), format!("Type error: expected {}, got {}", expected, got), None),
+                            RuntimeError::UndefinedVariable(v) => ("NullReferenceException".to_string(), format!("Undefined variable: {}", v), None),
+                            RuntimeError::UndefinedFunction(f) => ("MissingMethodException".to_string(), format!("Undefined function: {}", f), None),
+                            RuntimeError::DivisionByZero => ("DivideByZeroException".to_string(), "Division by zero".to_string(), None),
+                            _ => ("Exception".to_string(), format!("{}", e), None),
+                        };
+
                         for catch in catches {
-                             // Check variable type match if present
-                             let type_match = if let Some((_, Some(_type_name))) = &catch.variable {
-                                 // Simple type check? For now catch all or check error string?
-                                 // We don't have typed exceptions yet, mostly checks.
-                                 // For now, assume generic Catch catches everything.
-                                 // If specialized, we might check error type.
-                                 true 
+                             // Check variable type match
+                             let type_match = if let Some((_, Some(type_name))) = &catch.variable {
+                                 let catch_type = format!("{:?}", type_name).to_lowercase();
+                                 let catch_type = catch_type.trim_start_matches("custom(\"").trim_end_matches("\")");
+                                 let ex_lower = ex_type.to_lowercase();
+                                 catch_type == "exception" || catch_type == "system.exception"
+                                     || ex_lower == catch_type
+                                     || ex_lower.ends_with(&format!(".{}", catch_type))
+                                     || catch_type.ends_with(&ex_lower)
+                                     || ex_lower.ends_with("exception")
                              } else {
                                  true // Catch All
                              };
                              
                              if type_match {
-                                 // Check When clause
                                  let when_match = if let Some(expr) = &catch.when_clause {
                                       self.evaluate_expr(expr)?.is_truthy()
                                  } else {
@@ -1254,17 +1293,22 @@ impl Interpreter {
                                  };
                                  
                                  if when_match {
-                                     // Execute Catch Body
                                      if let Some((name, _)) = &catch.variable {
-                                          // Define exception variable
-                                          // For now, simple string message
-                                          let msg = format!("{}", e);
-                                          // Define local variable?
-                                          // We need internal scope or just use current scope?
-                                          // VB.NET catch variable is local to catch block usually.
-                                          // But our scope is function-level usually.
-                                          // We can set it in env.
-                                          self.env.set(name.as_str(), Value::String(msg))?;
+                                          let mut ex_fields = std::collections::HashMap::new();
+                                          ex_fields.insert("message".to_string(), Value::String(ex_msg.clone()));
+                                          ex_fields.insert("stacktrace".to_string(), Value::String(String::new()));
+                                          ex_fields.insert("source".to_string(), Value::String(String::new()));
+                                          ex_fields.insert("hresult".to_string(), Value::Integer(-2146233088));
+                                          if let Some(ref inner) = ex_inner {
+                                              ex_fields.insert("innerexception".to_string(), Value::String(inner.clone()));
+                                          } else {
+                                              ex_fields.insert("innerexception".to_string(), Value::Nothing);
+                                          }
+                                          let ex_obj = crate::value::ObjectData {
+                                              class_name: ex_type.clone(),
+                                              fields: ex_fields,
+                                          };
+                                          self.env.define(name.as_str(), Value::Object(std::rc::Rc::new(std::cell::RefCell::new(ex_obj))));
                                      }
                                      
                                      flow_result = self.execute_block(&catch.body);
@@ -1274,18 +1318,13 @@ impl Interpreter {
                              }
                         }
                         
-                        if !handled {
-                            // If not handled, keep original error
-                        } else {
-                             // If handled, flow_result is now result of catch block (Ok or new Err)
-                        }
+                        let _ = handled;
                     }
                 }
                 
                 // Finally block
                 if let Some(final_stmts) = finally {
                      let final_res = self.execute_block(final_stmts);
-                     // If finally errors (or returns), it overrides previous result
                      if final_res.is_err() {
                          flow_result = final_res;
                      }
@@ -1553,10 +1592,20 @@ impl Interpreter {
                 self.call_function(name, args)
             }
             Expression::Await(operand) => {
-                // In Phase 1 "Simulation", Await simply evaluates the operand
-                // If it were a real Task, we would wait for it.
-                // Here we just return the value (identity behavior for now)
-                self.evaluate_expr(operand)
+                // Await evaluates the operand; if it's a Task, return its Result
+                let val = self.evaluate_expr(operand)?;
+                if let Value::Object(ref obj) = val {
+                    let b = obj.borrow();
+                    if b.class_name == "Task" {
+                        // Check if faulted
+                        if let Some(Value::Boolean(true)) = b.fields.get("isfaulted") {
+                            let msg = b.fields.get("exception").map(|v| v.as_string()).unwrap_or_else(|| "Task faulted".to_string());
+                            return Err(RuntimeError::Exception("AggregateException".to_string(), msg, None));
+                        }
+                        return Ok(b.fields.get("result").cloned().unwrap_or(Value::Nothing));
+                    }
+                }
+                Ok(val)
             }
             Expression::MethodCall(obj, method, args) => {
                 self.call_method(obj, method, args)
@@ -1805,6 +1854,331 @@ impl Interpreter {
                 }
                 if class_name == "folderbrowserdialog" || class_name.ends_with(".folderbrowserdialog") {
                     return Ok(crate::builtins::dialogs::create_folderbrowserdialog());
+                }
+
+                // ===== EXCEPTION TYPE CONSTRUCTORS =====
+                {
+                    let exception_types = [
+                        "exception", "system.exception",
+                        "argumentexception", "system.argumentexception",
+                        "argumentnullexception", "system.argumentnullexception",
+                        "argumentoutofrangeexception", "system.argumentoutofrangeexception",
+                        "invalidoperationexception", "system.invalidoperationexception",
+                        "invalidcastexception", "system.invalidcastexception",
+                        "notsupportedexception", "system.notsupportedexception",
+                        "notimplementedexception", "system.notimplementedexception",
+                        "nullreferenceexception", "system.nullreferenceexception",
+                        "indexoutofrangeexception", "system.indexoutofrangeexception",
+                        "keynotfoundexception", "system.collections.generic.keynotfoundexception",
+                        "filenotfoundexception", "system.io.filenotfoundexception",
+                        "directorynotfoundexception", "system.io.directorynotfoundexception",
+                        "ioexception", "system.io.ioexception",
+                        "formatexception", "system.formatexception",
+                        "overflowexception", "system.overflowexception",
+                        "dividebyzeroexception", "system.dividebyzeroexception",
+                        "stackoverflowexception", "system.stackoverflowexception",
+                        "outofmemoryexception", "system.outofmemoryexception",
+                        "timeoutexception", "system.timeoutexception",
+                        "operationcanceledexception", "system.operationcanceledexception",
+                        "unauthorizedaccessexception", "system.unauthorizedaccessexception",
+                        "applicationexception", "system.applicationexception",
+                        "aggregateexception", "system.aggregateexception",
+                        "taskcanceledexception", "system.threading.tasks.taskcanceledexception",
+                        "objectdisposedexception", "system.objectdisposedexception",
+                        "socketsexception", "system.net.sockets.socketexception",
+                    ];
+                    if exception_types.contains(&class_name.as_str()) {
+                        let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                        let arg_values = arg_values?;
+                        let nice_name = class_id.as_str().split('.').last().unwrap_or(class_id.as_str()).to_string();
+                        let msg = arg_values.get(0).map(|v| v.as_string()).unwrap_or_else(|| format!("Exception of type '{}' was thrown.", nice_name));
+                        let inner = arg_values.get(1).and_then(|v| {
+                            if *v == Value::Nothing { None } else { Some(v.as_string()) }
+                        });
+                        let mut fields = std::collections::HashMap::new();
+                        fields.insert("message".to_string(), Value::String(msg));
+                        fields.insert("stacktrace".to_string(), Value::String(String::new()));
+                        fields.insert("source".to_string(), Value::String(String::new()));
+                        fields.insert("hresult".to_string(), Value::Integer(-2146233088));
+                        fields.insert("innerexception".to_string(), inner.map(Value::String).unwrap_or(Value::Nothing));
+                        fields.insert("__type".to_string(), Value::String(nice_name.clone()));
+                        let obj = crate::value::ObjectData { class_name: nice_name, fields };
+                        return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                    }
+                }
+
+                // ===== TUPLE / VALUETUPLE CONSTRUCTORS =====
+                if class_name == "tuple" || class_name == "system.tuple"
+                    || class_name == "valuetuple" || class_name == "system.valuetuple" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("Tuple".to_string()));
+                    for (i, val) in arg_values.iter().enumerate() {
+                        fields.insert(format!("item{}", i + 1), val.clone());
+                    }
+                    fields.insert("length".to_string(), Value::Integer(arg_values.len() as i32));
+                    let obj = crate::value::ObjectData { class_name: "Tuple".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== NULLABLE(OF T) =====
+                if class_name.starts_with("nullable") || class_name.starts_with("system.nullable") {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let inner_val = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
+                    let has_value = inner_val != Value::Nothing;
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("Nullable".to_string()));
+                    fields.insert("value".to_string(), inner_val);
+                    fields.insert("hasvalue".to_string(), Value::Boolean(has_value));
+                    let obj = crate::value::ObjectData { class_name: "Nullable".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.TIMERS.TIMER =====
+                if class_name == "timer" || class_name == "system.timers.timer" || class_name == "system.threading.timer" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let interval = arg_values.get(0).and_then(|v| v.as_double().ok()).unwrap_or(100.0);
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("Timer".to_string()));
+                    fields.insert("interval".to_string(), Value::Double(interval));
+                    fields.insert("enabled".to_string(), Value::Boolean(false));
+                    fields.insert("autoreset".to_string(), Value::Boolean(true));
+                    fields.insert("__elapsed_count".to_string(), Value::Integer(0));
+                    let obj = crate::value::ObjectData { class_name: "Timer".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.IO.FILESTREAM =====
+                if class_name == "filestream" || class_name == "system.io.filestream" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let path = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                    let mode = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(3); // 3=OpenOrCreate
+                    let access = arg_values.get(2).and_then(|v| v.as_integer().ok()).unwrap_or(3); // 3=ReadWrite
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("FileStream".to_string()));
+                    fields.insert("__path".to_string(), Value::String(path.clone()));
+                    fields.insert("__mode".to_string(), Value::Integer(mode));
+                    fields.insert("__access".to_string(), Value::Integer(access));
+                    fields.insert("__position".to_string(), Value::Long(0));
+                    fields.insert("name".to_string(), Value::String(path.clone()));
+                    fields.insert("canread".to_string(), Value::Boolean(access == 1 || access == 3));
+                    fields.insert("canwrite".to_string(), Value::Boolean(access == 2 || access == 3));
+                    fields.insert("canseek".to_string(), Value::Boolean(true));
+                    // Read file contents into buffer
+                    let data = if std::path::Path::new(&path).exists() && (mode != 2) {
+                        std::fs::read(&path).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    fields.insert("length".to_string(), Value::Long(data.len() as i64));
+                    fields.insert("__data".to_string(), Value::Array(data.iter().map(|b| Value::Integer(*b as i32)).collect()));
+                    fields.insert("position".to_string(), Value::Long(0));
+                    fields.insert("__closed".to_string(), Value::Boolean(false));
+                    let obj = crate::value::ObjectData { class_name: "FileStream".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.IO.MEMORYSTREAM =====
+                if class_name == "memorystream" || class_name == "system.io.memorystream" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let initial_data = if let Some(Value::Array(arr)) = arg_values.get(0) {
+                        arr.clone()
+                    } else if let Some(val) = arg_values.get(0) {
+                        let cap = val.as_integer().unwrap_or(0);
+                        vec![Value::Integer(0); cap.max(0) as usize]
+                    } else {
+                        Vec::new()
+                    };
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("MemoryStream".to_string()));
+                    fields.insert("__data".to_string(), Value::Array(initial_data.clone()));
+                    fields.insert("length".to_string(), Value::Long(initial_data.len() as i64));
+                    fields.insert("position".to_string(), Value::Long(0));
+                    fields.insert("capacity".to_string(), Value::Long(initial_data.len() as i64));
+                    fields.insert("canread".to_string(), Value::Boolean(true));
+                    fields.insert("canwrite".to_string(), Value::Boolean(true));
+                    fields.insert("canseek".to_string(), Value::Boolean(true));
+                    fields.insert("__closed".to_string(), Value::Boolean(false));
+                    let obj = crate::value::ObjectData { class_name: "MemoryStream".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.IO.BINARYREADER =====
+                if class_name == "binaryreader" || class_name == "system.io.binaryreader" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    // First arg is a stream (FileStream or MemoryStream object)
+                    let stream_data = if let Some(Value::Object(sref)) = arg_values.get(0) {
+                        let sb = sref.borrow();
+                        sb.fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()))
+                    } else {
+                        Value::Array(Vec::new())
+                    };
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("BinaryReader".to_string()));
+                    fields.insert("__data".to_string(), stream_data);
+                    fields.insert("__position".to_string(), Value::Long(0));
+                    fields.insert("__closed".to_string(), Value::Boolean(false));
+                    let obj = crate::value::ObjectData { class_name: "BinaryReader".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.IO.BINARYWRITER =====
+                if class_name == "binarywriter" || class_name == "system.io.binarywriter" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let stream_ref = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("BinaryWriter".to_string()));
+                    fields.insert("__stream".to_string(), stream_ref);
+                    fields.insert("__data".to_string(), Value::Array(Vec::new()));
+                    fields.insert("__closed".to_string(), Value::Boolean(false));
+                    let obj = crate::value::ObjectData { class_name: "BinaryWriter".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.NET.SOCKETS.TCPCLIENT =====
+                if class_name == "tcpclient" || class_name == "system.net.sockets.tcpclient" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let host = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                    let port = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("TcpClient".to_string()));
+                    fields.insert("__host".to_string(), Value::String(host.clone()));
+                    fields.insert("__port".to_string(), Value::Integer(port));
+                    fields.insert("connected".to_string(), Value::Boolean(false));
+                    fields.insert("receivebuffersize".to_string(), Value::Integer(8192));
+                    fields.insert("sendbuffersize".to_string(), Value::Integer(8192));
+                    fields.insert("__socket_id".to_string(), Value::Long(0));
+                    fields.insert("__recv_buffer".to_string(), Value::Array(Vec::new()));
+                    // If host and port provided, auto-connect
+                    if !host.is_empty() && port > 0 {
+                        fields.insert("connected".to_string(), Value::Boolean(true));
+                    }
+                    let obj = crate::value::ObjectData { class_name: "TcpClient".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.NET.SOCKETS.TCPLISTENER =====
+                if class_name == "tcplistener" || class_name == "system.net.sockets.tcplistener" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    // TcpListener(IPAddress, port) or TcpListener(port)
+                    let (addr, port) = if arg_values.len() >= 2 {
+                        (arg_values[0].as_string(), arg_values[1].as_integer().unwrap_or(0))
+                    } else {
+                        ("0.0.0.0".to_string(), arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0))
+                    };
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("TcpListener".to_string()));
+                    fields.insert("__address".to_string(), Value::String(addr));
+                    fields.insert("__port".to_string(), Value::Integer(port));
+                    fields.insert("__active".to_string(), Value::Boolean(false));
+                    let obj = crate::value::ObjectData { class_name: "TcpListener".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.NET.SOCKETS.UDPCLIENT =====
+                if class_name == "udpclient" || class_name == "system.net.sockets.udpclient" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let port = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("UdpClient".to_string()));
+                    fields.insert("__port".to_string(), Value::Integer(port));
+                    fields.insert("__recv_buffer".to_string(), Value::Array(Vec::new()));
+                    let obj = crate::value::ObjectData { class_name: "UdpClient".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.NET.MAIL.SMTPCLIENT =====
+                if class_name == "smtpclient" || class_name == "system.net.mail.smtpclient" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let host = arg_values.get(0).map(|v| v.as_string()).unwrap_or_else(|| "localhost".to_string());
+                    let port = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(25);
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("SmtpClient".to_string()));
+                    fields.insert("host".to_string(), Value::String(host));
+                    fields.insert("port".to_string(), Value::Integer(port));
+                    fields.insert("enablessl".to_string(), Value::Boolean(false));
+                    fields.insert("credentials".to_string(), Value::Nothing);
+                    fields.insert("deliverymethod".to_string(), Value::Integer(0)); // Network
+                    let obj = crate::value::ObjectData { class_name: "SmtpClient".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.NET.MAIL.MAILMESSAGE =====
+                if class_name == "mailmessage" || class_name == "system.net.mail.mailmessage" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let from = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                    let to = arg_values.get(1).map(|v| v.as_string()).unwrap_or_default();
+                    let subject = arg_values.get(2).map(|v| v.as_string()).unwrap_or_default();
+                    let body = arg_values.get(3).map(|v| v.as_string()).unwrap_or_default();
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("MailMessage".to_string()));
+                    fields.insert("from".to_string(), Value::String(from));
+                    fields.insert("to".to_string(), Value::String(to));
+                    fields.insert("subject".to_string(), Value::String(subject));
+                    fields.insert("body".to_string(), Value::String(body));
+                    fields.insert("isbodyhtml".to_string(), Value::Boolean(false));
+                    fields.insert("cc".to_string(), Value::String(String::new()));
+                    fields.insert("bcc".to_string(), Value::String(String::new()));
+                    let obj = crate::value::ObjectData { class_name: "MailMessage".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.NET.MAIL.MAILADDRESS =====
+                if class_name == "mailaddress" || class_name == "system.net.mail.mailaddress" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let address = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                    let display_name = arg_values.get(1).map(|v| v.as_string()).unwrap_or_default();
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("MailAddress".to_string()));
+                    fields.insert("address".to_string(), Value::String(address.clone()));
+                    fields.insert("displayname".to_string(), Value::String(display_name));
+                    fields.insert("host".to_string(), Value::String(address.split('@').nth(1).unwrap_or("").to_string()));
+                    fields.insert("user".to_string(), Value::String(address.split('@').next().unwrap_or("").to_string()));
+                    let obj = crate::value::ObjectData { class_name: "MailAddress".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.THREADING.MUTEX =====
+                if class_name == "mutex" || class_name == "system.threading.mutex" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let initially_owned = arg_values.get(0).and_then(|v| v.as_bool().ok()).unwrap_or(false);
+                    let name = arg_values.get(1).map(|v| v.as_string()).unwrap_or_default();
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("Mutex".to_string()));
+                    fields.insert("__owned".to_string(), Value::Boolean(initially_owned));
+                    fields.insert("__name".to_string(), Value::String(name));
+                    let obj = crate::value::ObjectData { class_name: "Mutex".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.THREADING.SEMAPHORE =====
+                if class_name == "semaphore" || class_name == "system.threading.semaphore"
+                    || class_name == "semaphoreslim" || class_name == "system.threading.semaphoreslim" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let initial_count = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(1);
+                    let max_count = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(initial_count);
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("Semaphore".to_string()));
+                    fields.insert("__count".to_string(), Value::Integer(initial_count));
+                    fields.insert("__max".to_string(), Value::Integer(max_count));
+                    fields.insert("currentcount".to_string(), Value::Integer(initial_count));
+                    let obj = crate::value::ObjectData { class_name: "Semaphore".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
                 if class_name.starts_with("system.windows.forms.")
@@ -3503,22 +3877,44 @@ impl Interpreter {
                 }
                 "gethashcode" => return Ok(Value::Integer(obj_val.as_string().len() as i32)),
                 "gettype" => {
-                    let type_str = match &obj_val {
-                        Value::Integer(_) => "System.Int32",
-                        Value::Long(_) => "System.Int64",
-                        Value::Single(_) => "System.Single",
-                        Value::Double(_) => "System.Double",
-                        Value::String(_) => "System.String",
-                        Value::Boolean(_) => "System.Boolean",
-                        Value::Byte(_) => "System.Byte",
-                        Value::Char(_) => "System.Char",
-                        Value::Date(_) => "System.DateTime",
-                        Value::Array(_) => "System.Array",
-                        Value::Nothing => "System.Object",
-                        Value::Object(_) => "System.Object",
-                        _ => "System.Object",
+                    let (type_name, full_name) = match &obj_val {
+                        Value::Integer(_) => ("Int32", "System.Int32"),
+                        Value::Long(_) => ("Int64", "System.Int64"),
+                        Value::Single(_) => ("Single", "System.Single"),
+                        Value::Double(_) => ("Double", "System.Double"),
+                        Value::String(_) => ("String", "System.String"),
+                        Value::Boolean(_) => ("Boolean", "System.Boolean"),
+                        Value::Byte(_) => ("Byte", "System.Byte"),
+                        Value::Char(_) => ("Char", "System.Char"),
+                        Value::Date(_) => ("DateTime", "System.DateTime"),
+                        Value::Array(_) => ("Array", "System.Array"),
+                        Value::Nothing => ("Object", "System.Object"),
+                        Value::Object(rc) => {
+                            let cn = rc.borrow().class_name.clone();
+                            let full = format!("System.{}", cn);
+                            let mut fields = std::collections::HashMap::new();
+                            fields.insert("name".to_string(), Value::String(cn.clone()));
+                            fields.insert("fullname".to_string(), Value::String(full));
+                            fields.insert("namespace".to_string(), Value::String("System".to_string()));
+                            fields.insert("__type".to_string(), Value::String("Type".to_string()));
+                            let type_obj = crate::value::ObjectData {
+                                class_name: "Type".to_string(),
+                                fields,
+                            };
+                            return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(type_obj))));
+                        }
+                        _ => ("Object", "System.Object"),
                     };
-                    return Ok(Value::String(type_str.to_string()));
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("name".to_string(), Value::String(type_name.to_string()));
+                    fields.insert("fullname".to_string(), Value::String(full_name.to_string()));
+                    fields.insert("namespace".to_string(), Value::String("System".to_string()));
+                    fields.insert("__type".to_string(), Value::String("Type".to_string()));
+                    let type_obj = crate::value::ObjectData {
+                        class_name: "Type".to_string(),
+                        fields,
+                    };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(type_obj))));
                 }
                 "equals" => {
                     let arg_values: Result<Vec<Value>, RuntimeError> = args.iter()
@@ -4287,6 +4683,584 @@ impl Interpreter {
                                 let input = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
                                 let args_for_fn = vec![Value::String(input), Value::String(full_pattern)];
                                 return crate::builtins::text_fns::regex_split_fn(&args_for_fn);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== Task instance methods =====
+                    if type_name == "Task" {
+                        match method_name.as_str() {
+                            "wait" => { return Ok(Value::Nothing); } // Already completed
+                            "getawaiter" => { return Ok(obj_val.clone()); } // Return self
+                            "getresult" => {
+                                return Ok(obj_ref.borrow().fields.get("result").cloned().unwrap_or(Value::Nothing));
+                            }
+                            "continueWith" | "continuewith" => {
+                                let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                                let arg_values = arg_values?;
+                                if let Some(lambda) = arg_values.get(0) {
+                                    let result = self.call_lambda(lambda.clone(), &[obj_val.clone()])?;
+                                    let mut fields = std::collections::HashMap::new();
+                                    fields.insert("__type".to_string(), Value::String("Task".to_string()));
+                                    fields.insert("result".to_string(), result);
+                                    fields.insert("iscompleted".to_string(), Value::Boolean(true));
+                                    fields.insert("isfaulted".to_string(), Value::Boolean(false));
+                                    fields.insert("iscanceled".to_string(), Value::Boolean(false));
+                                    fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
+                                    let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "configureawait" => { return Ok(obj_val.clone()); } // No-op, return self
+                            _ => {}
+                        }
+                    }
+
+                    // ===== Mutex instance methods =====
+                    if type_name == "Mutex" {
+                        match method_name.as_str() {
+                            "waitone" => {
+                                obj_ref.borrow_mut().fields.insert("__owned".to_string(), Value::Boolean(true));
+                                return Ok(Value::Boolean(true));
+                            }
+                            "releasemutex" => {
+                                obj_ref.borrow_mut().fields.insert("__owned".to_string(), Value::Boolean(false));
+                                return Ok(Value::Nothing);
+                            }
+                            "close" | "dispose" => { return Ok(Value::Nothing); }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== Semaphore instance methods =====
+                    if type_name == "Semaphore" {
+                        match method_name.as_str() {
+                            "wait" | "waitone" => {
+                                let count = obj_ref.borrow().fields.get("__count").and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                if count > 0 {
+                                    obj_ref.borrow_mut().fields.insert("__count".to_string(), Value::Integer(count - 1));
+                                    obj_ref.borrow_mut().fields.insert("currentcount".to_string(), Value::Integer(count - 1));
+                                }
+                                return Ok(Value::Boolean(true));
+                            }
+                            "release" => {
+                                let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                                let arg_values = arg_values?;
+                                let release_count = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(1);
+                                let count = obj_ref.borrow().fields.get("__count").and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                let max = obj_ref.borrow().fields.get("__max").and_then(|v| v.as_integer().ok()).unwrap_or(i32::MAX);
+                                let new_count = (count + release_count).min(max);
+                                let prev = count;
+                                obj_ref.borrow_mut().fields.insert("__count".to_string(), Value::Integer(new_count));
+                                obj_ref.borrow_mut().fields.insert("currentcount".to_string(), Value::Integer(new_count));
+                                return Ok(Value::Integer(prev));
+                            }
+                            "close" | "dispose" => { return Ok(Value::Nothing); }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== Timer instance methods =====
+                    if type_name == "Timer" {
+                        match method_name.as_str() {
+                            "start" => {
+                                obj_ref.borrow_mut().fields.insert("enabled".to_string(), Value::Boolean(true));
+                                return Ok(Value::Nothing);
+                            }
+                            "stop" => {
+                                obj_ref.borrow_mut().fields.insert("enabled".to_string(), Value::Boolean(false));
+                                return Ok(Value::Nothing);
+                            }
+                            "close" | "dispose" => {
+                                obj_ref.borrow_mut().fields.insert("enabled".to_string(), Value::Boolean(false));
+                                return Ok(Value::Nothing);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== FileStream instance methods =====
+                    if type_name == "FileStream" {
+                        let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                        let arg_values = arg_values?;
+                        match method_name.as_str() {
+                            "read" => {
+                                // Read(buffer, offset, count) -> int
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    let count = arg_values.get(2).and_then(|v| v.as_integer().ok()).unwrap_or(arr.len() as i32) as usize;
+                                    let end = (pos + count).min(arr.len());
+                                    let bytes_read = end - pos;
+                                    obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long(end as i64));
+                                    obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Long(end as i64));
+                                    return Ok(Value::Integer(bytes_read as i32));
+                                }
+                                return Ok(Value::Integer(0));
+                            }
+                            "readbyte" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    if pos < arr.len() {
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long((pos + 1) as i64));
+                                        obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Long((pos + 1) as i64));
+                                        return Ok(arr[pos].clone());
+                                    }
+                                }
+                                return Ok(Value::Integer(-1));
+                            }
+                            "write" => {
+                                // Write(buffer, offset, count)
+                                if let Some(Value::Array(buf)) = arg_values.get(0) {
+                                    let offset = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0) as usize;
+                                    let count = arg_values.get(2).and_then(|v| v.as_integer().ok()).unwrap_or(buf.len() as i32) as usize;
+                                    let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                    if let Value::Array(mut arr) = data {
+                                        for i in offset..(offset + count).min(buf.len()) {
+                                            arr.push(buf[i].clone());
+                                        }
+                                        let len = arr.len() as i64;
+                                        obj_ref.borrow_mut().fields.insert("__data".to_string(), Value::Array(arr));
+                                        obj_ref.borrow_mut().fields.insert("length".to_string(), Value::Long(len));
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long(len));
+                                        obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Long(len));
+                                    }
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "writebyte" => {
+                                let byte_val = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                if let Value::Array(mut arr) = data {
+                                    arr.push(Value::Integer(byte_val));
+                                    let len = arr.len() as i64;
+                                    obj_ref.borrow_mut().fields.insert("__data".to_string(), Value::Array(arr));
+                                    obj_ref.borrow_mut().fields.insert("length".to_string(), Value::Long(len));
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "seek" => {
+                                let offset = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0) as i64;
+                                let origin = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0); // 0=Begin, 1=Current, 2=End
+                                let len = obj_ref.borrow().fields.get("length").and_then(|v| if let Value::Long(l) = v { Some(*l) } else { None }).unwrap_or(0);
+                                let cur_pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l) } else { None }).unwrap_or(0);
+                                let new_pos = match origin {
+                                    0 => offset,
+                                    1 => cur_pos + offset,
+                                    2 => len + offset,
+                                    _ => offset,
+                                }.max(0);
+                                obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long(new_pos));
+                                obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Long(new_pos));
+                                return Ok(Value::Long(new_pos));
+                            }
+                            "flush" => { return Ok(Value::Nothing); }
+                            "close" | "dispose" => {
+                                // Write data to file before closing
+                                let path = obj_ref.borrow().fields.get("__path").map(|v| v.as_string()).unwrap_or_default();
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                if let Value::Array(ref arr) = data {
+                                    let bytes: Vec<u8> = arr.iter().map(|v| v.as_integer().unwrap_or(0) as u8).collect();
+                                    let _ = std::fs::write(&path, &bytes);
+                                }
+                                obj_ref.borrow_mut().fields.insert("__closed".to_string(), Value::Boolean(true));
+                                return Ok(Value::Nothing);
+                            }
+                            "toarray" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                return Ok(data);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== MemoryStream instance methods =====
+                    if type_name == "MemoryStream" {
+                        let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                        let arg_values = arg_values?;
+                        match method_name.as_str() {
+                            "read" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    let count = arg_values.get(2).and_then(|v| v.as_integer().ok()).unwrap_or(arr.len() as i32) as usize;
+                                    let end = (pos + count).min(arr.len());
+                                    let bytes_read = end - pos;
+                                    obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Long(end as i64));
+                                    return Ok(Value::Integer(bytes_read as i32));
+                                }
+                                return Ok(Value::Integer(0));
+                            }
+                            "readbyte" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    if pos < arr.len() {
+                                        obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Long((pos + 1) as i64));
+                                        return Ok(arr[pos].clone());
+                                    }
+                                }
+                                return Ok(Value::Integer(-1));
+                            }
+                            "write" => {
+                                if let Some(Value::Array(buf)) = arg_values.get(0) {
+                                    let offset = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0) as usize;
+                                    let count = arg_values.get(2).and_then(|v| v.as_integer().ok()).unwrap_or(buf.len() as i32) as usize;
+                                    let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                    if let Value::Array(mut arr) = data {
+                                        for i in offset..(offset + count).min(buf.len()) {
+                                            arr.push(buf[i].clone());
+                                        }
+                                        let len = arr.len() as i64;
+                                        obj_ref.borrow_mut().fields.insert("__data".to_string(), Value::Array(arr));
+                                        obj_ref.borrow_mut().fields.insert("length".to_string(), Value::Long(len));
+                                    }
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "writebyte" => {
+                                let byte_val = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                if let Value::Array(mut arr) = data {
+                                    arr.push(Value::Integer(byte_val));
+                                    let len = arr.len() as i64;
+                                    obj_ref.borrow_mut().fields.insert("__data".to_string(), Value::Array(arr));
+                                    obj_ref.borrow_mut().fields.insert("length".to_string(), Value::Long(len));
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "seek" => {
+                                let offset = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0) as i64;
+                                let origin = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                let len = obj_ref.borrow().fields.get("length").and_then(|v| if let Value::Long(l) = v { Some(*l) } else { None }).unwrap_or(0);
+                                let cur = obj_ref.borrow().fields.get("position").and_then(|v| if let Value::Long(l) = v { Some(*l) } else { None }).unwrap_or(0);
+                                let new_pos = match origin {
+                                    0 => offset, 1 => cur + offset, 2 => len + offset, _ => offset,
+                                }.max(0);
+                                obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Long(new_pos));
+                                return Ok(Value::Long(new_pos));
+                            }
+                            "toarray" | "getbuffer" => {
+                                return Ok(obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new())));
+                            }
+                            "setlength" => {
+                                let new_len = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0) as usize;
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                if let Value::Array(mut arr) = data {
+                                    arr.resize(new_len, Value::Integer(0));
+                                    obj_ref.borrow_mut().fields.insert("__data".to_string(), Value::Array(arr));
+                                    obj_ref.borrow_mut().fields.insert("length".to_string(), Value::Long(new_len as i64));
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "flush" | "close" | "dispose" => { return Ok(Value::Nothing); }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== BinaryReader instance methods =====
+                    if type_name == "BinaryReader" {
+                        match method_name.as_str() {
+                            "readbyte" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    if pos < arr.len() {
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long((pos + 1) as i64));
+                                        return Ok(arr[pos].clone());
+                                    }
+                                }
+                                return Err(RuntimeError::Custom("BinaryReader: end of stream".to_string()));
+                            }
+                            "readint16" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    if pos + 2 <= arr.len() {
+                                        let b0 = arr[pos].as_integer().unwrap_or(0) as u8;
+                                        let b1 = arr[pos+1].as_integer().unwrap_or(0) as u8;
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long((pos + 2) as i64));
+                                        return Ok(Value::Integer(i16::from_le_bytes([b0, b1]) as i32));
+                                    }
+                                }
+                                return Err(RuntimeError::Custom("BinaryReader: end of stream".to_string()));
+                            }
+                            "readint32" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    if pos + 4 <= arr.len() {
+                                        let bytes: Vec<u8> = arr[pos..pos+4].iter().map(|v| v.as_integer().unwrap_or(0) as u8).collect();
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long((pos + 4) as i64));
+                                        return Ok(Value::Integer(i32::from_le_bytes([bytes[0],bytes[1],bytes[2],bytes[3]])));
+                                    }
+                                }
+                                return Err(RuntimeError::Custom("BinaryReader: end of stream".to_string()));
+                            }
+                            "readint64" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    if pos + 8 <= arr.len() {
+                                        let bytes: Vec<u8> = arr[pos..pos+8].iter().map(|v| v.as_integer().unwrap_or(0) as u8).collect();
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long((pos + 8) as i64));
+                                        return Ok(Value::Long(i64::from_le_bytes([bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7]])));
+                                    }
+                                }
+                                return Err(RuntimeError::Custom("BinaryReader: end of stream".to_string()));
+                            }
+                            "readdouble" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    if pos + 8 <= arr.len() {
+                                        let bytes: Vec<u8> = arr[pos..pos+8].iter().map(|v| v.as_integer().unwrap_or(0) as u8).collect();
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long((pos + 8) as i64));
+                                        return Ok(Value::Double(f64::from_le_bytes([bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7]])));
+                                    }
+                                }
+                                return Err(RuntimeError::Custom("BinaryReader: end of stream".to_string()));
+                            }
+                            "readboolean" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    if pos < arr.len() {
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long((pos + 1) as i64));
+                                        return Ok(Value::Boolean(arr[pos].as_integer().unwrap_or(0) != 0));
+                                    }
+                                }
+                                return Err(RuntimeError::Custom("BinaryReader: end of stream".to_string()));
+                            }
+                            "readstring" => {
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    // Read 7-bit encoded length, then that many bytes
+                                    if pos < arr.len() {
+                                        let str_len = arr[pos].as_integer().unwrap_or(0) as usize;
+                                        let start = pos + 1;
+                                        let end = (start + str_len).min(arr.len());
+                                        let bytes: Vec<u8> = arr[start..end].iter().map(|v| v.as_integer().unwrap_or(0) as u8).collect();
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long(end as i64));
+                                        return Ok(Value::String(String::from_utf8_lossy(&bytes).to_string()));
+                                    }
+                                }
+                                return Err(RuntimeError::Custom("BinaryReader: end of stream".to_string()));
+                            }
+                            "readbytes" => {
+                                let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                                let arg_values = arg_values?;
+                                let count = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0) as usize;
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                let pos = obj_ref.borrow().fields.get("__position").and_then(|v| if let Value::Long(l) = v { Some(*l as usize) } else { None }).unwrap_or(0);
+                                if let Value::Array(ref arr) = data {
+                                    let end = (pos + count).min(arr.len());
+                                    let result: Vec<Value> = arr[pos..end].to_vec();
+                                    obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Long(end as i64));
+                                    return Ok(Value::Array(result));
+                                }
+                                return Ok(Value::Array(Vec::new()));
+                            }
+                            "close" | "dispose" => {
+                                obj_ref.borrow_mut().fields.insert("__closed".to_string(), Value::Boolean(true));
+                                return Ok(Value::Nothing);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== BinaryWriter instance methods =====
+                    if type_name == "BinaryWriter" {
+                        let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                        let arg_values = arg_values?;
+                        match method_name.as_str() {
+                            "write" => {
+                                let val = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
+                                let bytes: Vec<Value> = match &val {
+                                    Value::Integer(i) => i.to_le_bytes().iter().map(|b| Value::Integer(*b as i32)).collect(),
+                                    Value::Long(l) => l.to_le_bytes().iter().map(|b| Value::Integer(*b as i32)).collect(),
+                                    Value::Double(d) => d.to_le_bytes().iter().map(|b| Value::Integer(*b as i32)).collect(),
+                                    Value::Single(f) => f.to_le_bytes().iter().map(|b| Value::Integer(*b as i32)).collect(),
+                                    Value::Boolean(b) => vec![Value::Integer(if *b { 1 } else { 0 })],
+                                    Value::String(s) => {
+                                        let mut v = vec![Value::Integer(s.len() as i32)]; // length prefix
+                                        for b in s.bytes() { v.push(Value::Integer(b as i32)); }
+                                        v
+                                    }
+                                    Value::Array(arr) => arr.clone(),
+                                    _ => vec![],
+                                };
+                                let data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                if let Value::Array(mut arr) = data {
+                                    arr.extend(bytes);
+                                    obj_ref.borrow_mut().fields.insert("__data".to_string(), Value::Array(arr));
+                                }
+                                // Also write to underlying stream if present
+                                if let Some(Value::Object(stream_ref)) = obj_ref.borrow().fields.get("__stream") {
+                                    let sdata = stream_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                    if let Value::Array(mut sarr) = sdata {
+                                        let writer_data = obj_ref.borrow().fields.get("__data").cloned().unwrap_or(Value::Array(Vec::new()));
+                                        if let Value::Array(wd) = writer_data { sarr = wd; }
+                                        let len = sarr.len() as i64;
+                                        stream_ref.borrow_mut().fields.insert("__data".to_string(), Value::Array(sarr));
+                                        stream_ref.borrow_mut().fields.insert("length".to_string(), Value::Long(len));
+                                    }
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "flush" => { return Ok(Value::Nothing); }
+                            "close" | "dispose" => {
+                                obj_ref.borrow_mut().fields.insert("__closed".to_string(), Value::Boolean(true));
+                                return Ok(Value::Nothing);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== TcpClient instance methods =====
+                    if type_name == "TcpClient" {
+                        let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                        let arg_values = arg_values?;
+                        match method_name.as_str() {
+                            "connect" => {
+                                let host = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                                let port = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                obj_ref.borrow_mut().fields.insert("__host".to_string(), Value::String(host));
+                                obj_ref.borrow_mut().fields.insert("__port".to_string(), Value::Integer(port));
+                                obj_ref.borrow_mut().fields.insert("connected".to_string(), Value::Boolean(true));
+                                return Ok(Value::Nothing);
+                            }
+                            "getstream" => {
+                                // Return a NetworkStream-like object (MemoryStream proxy)
+                                let mut fields = std::collections::HashMap::new();
+                                fields.insert("__type".to_string(), Value::String("NetworkStream".to_string()));
+                                fields.insert("__data".to_string(), Value::Array(Vec::new()));
+                                fields.insert("canread".to_string(), Value::Boolean(true));
+                                fields.insert("canwrite".to_string(), Value::Boolean(true));
+                                fields.insert("position".to_string(), Value::Long(0));
+                                fields.insert("length".to_string(), Value::Long(0));
+                                fields.insert("dataavailable".to_string(), Value::Boolean(false));
+                                let obj = crate::value::ObjectData { class_name: "NetworkStream".to_string(), fields };
+                                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                            }
+                            "close" | "dispose" => {
+                                obj_ref.borrow_mut().fields.insert("connected".to_string(), Value::Boolean(false));
+                                return Ok(Value::Nothing);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== TcpListener instance methods =====
+                    if type_name == "TcpListener" {
+                        match method_name.as_str() {
+                            "start" => {
+                                obj_ref.borrow_mut().fields.insert("__active".to_string(), Value::Boolean(true));
+                                return Ok(Value::Nothing);
+                            }
+                            "stop" => {
+                                obj_ref.borrow_mut().fields.insert("__active".to_string(), Value::Boolean(false));
+                                return Ok(Value::Nothing);
+                            }
+                            "accepttcpclient" => {
+                                // Return a new TcpClient stub
+                                let mut fields = std::collections::HashMap::new();
+                                fields.insert("__type".to_string(), Value::String("TcpClient".to_string()));
+                                fields.insert("connected".to_string(), Value::Boolean(true));
+                                fields.insert("__host".to_string(), Value::String("127.0.0.1".to_string()));
+                                fields.insert("__port".to_string(), Value::Integer(0));
+                                fields.insert("receivebuffersize".to_string(), Value::Integer(8192));
+                                fields.insert("sendbuffersize".to_string(), Value::Integer(8192));
+                                fields.insert("__recv_buffer".to_string(), Value::Array(Vec::new()));
+                                let obj = crate::value::ObjectData { class_name: "TcpClient".to_string(), fields };
+                                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                            }
+                            "pending" => {
+                                return Ok(Value::Boolean(false));
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== UdpClient instance methods =====
+                    if type_name == "UdpClient" {
+                        let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                        let arg_values = arg_values?;
+                        match method_name.as_str() {
+                            "send" => {
+                                // send(bytes, length, hostname, port)
+                                let _length = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                return Ok(Value::Integer(_length));
+                            }
+                            "receive" => {
+                                // Return empty byte array (stub)
+                                return Ok(Value::Array(Vec::new()));
+                            }
+                            "close" | "dispose" => { return Ok(Value::Nothing); }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== SmtpClient instance methods =====
+                    if type_name == "SmtpClient" {
+                        let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                        let arg_values = arg_values?;
+                        match method_name.as_str() {
+                            "send" => {
+                                // SmtpClient.Send(MailMessage) — use system mail command if available
+                                if let Some(Value::Object(msg_ref)) = arg_values.get(0) {
+                                    let msg = msg_ref.borrow();
+                                    let from = msg.fields.get("from").map(|v| v.as_string()).unwrap_or_default();
+                                    let to = msg.fields.get("to").map(|v| v.as_string()).unwrap_or_default();
+                                    let subject = msg.fields.get("subject").map(|v| v.as_string()).unwrap_or_default();
+                                    let body = msg.fields.get("body").map(|v| v.as_string()).unwrap_or_default();
+                                    let host = obj_ref.borrow().fields.get("host").map(|v| v.as_string()).unwrap_or_default();
+                                    let port = obj_ref.borrow().fields.get("port").and_then(|v| v.as_integer().ok()).unwrap_or(25);
+                                    // Use curl to send email via SMTP
+                                    let smtp_url = format!("smtp://{}:{}", host, port);
+                                    let status = std::process::Command::new("curl")
+                                        .args(&[
+                                            "--mail-from", &from,
+                                            "--mail-rcpt", &to,
+                                            "--url", &smtp_url,
+                                            "-T", "-",
+                                        ])
+                                        .stdin(std::process::Stdio::piped())
+                                        .spawn()
+                                        .and_then(|mut child| {
+                                            if let Some(ref mut stdin) = child.stdin {
+                                                use std::io::Write;
+                                                let _ = write!(stdin, "From: {}\r\nTo: {}\r\nSubject: {}\r\n\r\n{}", from, to, subject, body);
+                                            }
+                                            child.wait()
+                                        });
+                                    match status {
+                                        Ok(s) if s.success() => return Ok(Value::Nothing),
+                                        _ => return Err(RuntimeError::Custom("SmtpClient.Send failed".to_string())),
+                                    }
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "dispose" | "close" => { return Ok(Value::Nothing); }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== Nullable instance methods =====
+                    if type_name == "Nullable" {
+                        match method_name.as_str() {
+                            "getvalueordefault" => {
+                                let has = obj_ref.borrow().fields.get("hasvalue").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+                                if has {
+                                    return Ok(obj_ref.borrow().fields.get("value").cloned().unwrap_or(Value::Nothing));
+                                }
+                                let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                                let arg_values = arg_values?;
+                                return Ok(arg_values.get(0).cloned().unwrap_or(Value::Nothing));
                             }
                             _ => {}
                         }
@@ -6249,6 +7223,205 @@ impl Interpreter {
                 let ms = arg_values.get(0).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0);
                 std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
                 return Ok(Value::Nothing);
+            }
+
+            // ===== TASK STATIC METHODS =====
+            "task.run" | "system.threading.tasks.task.run" => {
+                // Task.Run(action) — runs lambda synchronously (single-threaded interpreter)
+                // and wraps result in a Task object
+                let result = if let Some(lambda) = arg_values.get(0) {
+                    self.call_lambda(lambda.clone(), &[])?
+                } else {
+                    Value::Nothing
+                };
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("Task".to_string()));
+                fields.insert("result".to_string(), result);
+                fields.insert("iscompleted".to_string(), Value::Boolean(true));
+                fields.insert("isfaulted".to_string(), Value::Boolean(false));
+                fields.insert("iscanceled".to_string(), Value::Boolean(false));
+                fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
+                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+            "task.delay" | "system.threading.tasks.task.delay" => {
+                let ms = arg_values.get(0).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0);
+                std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("Task".to_string()));
+                fields.insert("result".to_string(), Value::Nothing);
+                fields.insert("iscompleted".to_string(), Value::Boolean(true));
+                fields.insert("isfaulted".to_string(), Value::Boolean(false));
+                fields.insert("iscanceled".to_string(), Value::Boolean(false));
+                fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
+                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+            "task.fromresult" | "system.threading.tasks.task.fromresult" => {
+                let val = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("Task".to_string()));
+                fields.insert("result".to_string(), val);
+                fields.insert("iscompleted".to_string(), Value::Boolean(true));
+                fields.insert("isfaulted".to_string(), Value::Boolean(false));
+                fields.insert("iscanceled".to_string(), Value::Boolean(false));
+                fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
+                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+            "task.whenall" | "system.threading.tasks.task.whenall" => {
+                // All tasks are already completed (synchronous), just return completed task
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("Task".to_string()));
+                fields.insert("result".to_string(), Value::Nothing);
+                fields.insert("iscompleted".to_string(), Value::Boolean(true));
+                fields.insert("isfaulted".to_string(), Value::Boolean(false));
+                fields.insert("iscanceled".to_string(), Value::Boolean(false));
+                fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
+                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+            "task.whenany" | "system.threading.tasks.task.whenany" => {
+                let first = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("Task".to_string()));
+                fields.insert("result".to_string(), first);
+                fields.insert("iscompleted".to_string(), Value::Boolean(true));
+                fields.insert("isfaulted".to_string(), Value::Boolean(false));
+                fields.insert("iscanceled".to_string(), Value::Boolean(false));
+                fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
+                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+            "task.completedtask" | "system.threading.tasks.task.completedtask" => {
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("Task".to_string()));
+                fields.insert("result".to_string(), Value::Nothing);
+                fields.insert("iscompleted".to_string(), Value::Boolean(true));
+                fields.insert("isfaulted".to_string(), Value::Boolean(false));
+                fields.insert("iscanceled".to_string(), Value::Boolean(false));
+                fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
+                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+
+            // ===== THREADPOOL =====
+            "threadpool.queueuserworkitem" | "system.threading.threadpool.queueuserworkitem" => {
+                // Execute callback synchronously
+                if let Some(lambda) = arg_values.get(0) {
+                    let state = arg_values.get(1).cloned().unwrap_or(Value::Nothing);
+                    self.call_lambda(lambda.clone(), &[state])?;
+                }
+                return Ok(Value::Boolean(true));
+            }
+            "threadpool.setminthreads" | "system.threading.threadpool.setminthreads" => {
+                return Ok(Value::Boolean(true)); // No-op, always succeed
+            }
+            "threadpool.setmaxthreads" | "system.threading.threadpool.setmaxthreads" => {
+                return Ok(Value::Boolean(true));
+            }
+
+            // ===== TUPLE.CREATE =====
+            "tuple.create" | "system.tuple.create" => {
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("Tuple".to_string()));
+                for (i, val) in arg_values.iter().enumerate() {
+                    fields.insert(format!("item{}", i + 1), val.clone());
+                }
+                fields.insert("length".to_string(), Value::Integer(arg_values.len() as i32));
+                let obj = crate::value::ObjectData { class_name: "Tuple".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+
+            // ===== ZIPFILE STATIC METHODS =====
+            "zipfile.createfromdirectory" | "system.io.compression.zipfile.createfromdirectory" => {
+                let src_dir = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                let dest_zip = arg_values.get(1).map(|v| v.as_string()).unwrap_or_default();
+                // Use system zip command
+                let status = std::process::Command::new("zip")
+                    .args(&["-r", &dest_zip, "."])
+                    .current_dir(&src_dir)
+                    .status();
+                match status {
+                    Ok(s) if s.success() => return Ok(Value::Nothing),
+                    _ => return Err(RuntimeError::Custom(format!("ZipFile.CreateFromDirectory failed"))),
+                }
+            }
+            "zipfile.extracttodirectory" | "system.io.compression.zipfile.extracttodirectory" => {
+                let src_zip = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                let dest_dir = arg_values.get(1).map(|v| v.as_string()).unwrap_or_default();
+                let _ = std::fs::create_dir_all(&dest_dir);
+                let status = std::process::Command::new("unzip")
+                    .args(&["-o", &src_zip, "-d", &dest_dir])
+                    .status();
+                match status {
+                    Ok(s) if s.success() => return Ok(Value::Nothing),
+                    _ => return Err(RuntimeError::Custom(format!("ZipFile.ExtractToDirectory failed"))),
+                }
+            }
+            "zipfile.open" | "system.io.compression.zipfile.open" => {
+                let path = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                let mode = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("__type".to_string(), Value::String("ZipArchive".to_string()));
+                fields.insert("__path".to_string(), Value::String(path));
+                fields.insert("__mode".to_string(), Value::Integer(mode));
+                let obj = crate::value::ObjectData { class_name: "ZipArchive".to_string(), fields };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+
+            // ===== BITCONVERTER STATIC METHODS =====
+            "bitconverter.getbytes" | "system.bitconverter.getbytes" => {
+                let val = &arg_values[0];
+                let bytes = match val {
+                    Value::Integer(i) => i.to_le_bytes().to_vec(),
+                    Value::Long(l) => l.to_le_bytes().to_vec(),
+                    Value::Double(d) => d.to_le_bytes().to_vec(),
+                    Value::Single(f) => f.to_le_bytes().to_vec(),
+                    Value::Boolean(b) => vec![if *b { 1u8 } else { 0u8 }],
+                    _ => vec![],
+                };
+                return Ok(Value::Array(bytes.iter().map(|b| Value::Integer(*b as i32)).collect()));
+            }
+            "bitconverter.toint32" | "system.bitconverter.toint32" => {
+                if let Value::Array(arr) = &arg_values[0] {
+                    let start = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0) as usize;
+                    let bytes: Vec<u8> = arr[start..start+4.min(arr.len()-start)].iter()
+                        .map(|v| v.as_integer().unwrap_or(0) as u8).collect();
+                    if bytes.len() >= 4 {
+                        return Ok(Value::Integer(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])));
+                    }
+                }
+                return Ok(Value::Integer(0));
+            }
+            "bitconverter.toint64" | "system.bitconverter.toint64" => {
+                if let Value::Array(arr) = &arg_values[0] {
+                    let start = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0) as usize;
+                    let bytes: Vec<u8> = arr[start..start+8.min(arr.len()-start)].iter()
+                        .map(|v| v.as_integer().unwrap_or(0) as u8).collect();
+                    if bytes.len() >= 8 {
+                        return Ok(Value::Long(i64::from_le_bytes([bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7]])));
+                    }
+                }
+                return Ok(Value::Long(0));
+            }
+            "bitconverter.todouble" | "system.bitconverter.todouble" => {
+                if let Value::Array(arr) = &arg_values[0] {
+                    let start = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0) as usize;
+                    let bytes: Vec<u8> = arr[start..start+8.min(arr.len()-start)].iter()
+                        .map(|v| v.as_integer().unwrap_or(0) as u8).collect();
+                    if bytes.len() >= 8 {
+                        return Ok(Value::Double(f64::from_le_bytes([bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7]])));
+                    }
+                }
+                return Ok(Value::Double(0.0));
+            }
+            "bitconverter.tostring" | "system.bitconverter.tostring" => {
+                if let Value::Array(arr) = &arg_values[0] {
+                    let hex: Vec<String> = arr.iter().map(|v| format!("{:02X}", v.as_integer().unwrap_or(0) as u8)).collect();
+                    return Ok(Value::String(hex.join("-")));
+                }
+                return Ok(Value::String(String::new()));
             }
 
             // ---- Process.Start ----

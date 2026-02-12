@@ -124,6 +124,9 @@ pub enum Statement {
         finally: Option<Vec<Statement>>,
     },
 
+    // Throw exception
+    Throw(Option<Expression>),
+
     // Continue
     Continue(ContinueType),
 
