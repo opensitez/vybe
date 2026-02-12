@@ -30,6 +30,17 @@ pub fn Toolbox() -> Element {
         ("MenuStrip", Some(ControlType::MenuStrip)),
         ("ContextMenuStrip", Some(ControlType::ContextMenuStrip)),
         ("StatusStrip", Some(ControlType::StatusStrip)),
+        ("DateTimePicker", Some(ControlType::DateTimePicker)),
+        ("LinkLabel", Some(ControlType::LinkLabel)),
+        ("ToolStrip", Some(ControlType::ToolStrip)),
+        ("TrackBar", Some(ControlType::TrackBar)),
+        ("MaskedTextBox", Some(ControlType::MaskedTextBox)),
+        ("SplitContainer", Some(ControlType::SplitContainer)),
+        ("FlowLayoutPanel", Some(ControlType::FlowLayoutPanel)),
+        ("TableLayoutPanel", Some(ControlType::TableLayoutPanel)),
+        ("MonthCalendar", Some(ControlType::MonthCalendar)),
+        ("HScrollBar", Some(ControlType::HScrollBar)),
+        ("VScrollBar", Some(ControlType::VScrollBar)),
     ];
 
     let data_controls = vec![

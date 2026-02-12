@@ -322,6 +322,102 @@ impl Interpreter {
     fn init_control_type_defaults(base_name: &str, fields: &mut std::collections::HashMap<String, Value>) {
         let base_lower = base_name.to_lowercase();
         match base_lower.as_str() {
+            "button" => {
+                fields.insert("flatstyle".to_string(), Value::String("Standard".to_string()));
+                fields.insert("dialogresult".to_string(), Value::Integer(0));
+                fields.insert("autosize".to_string(), Value::Boolean(false));
+                fields.insert("autosizemode".to_string(), Value::String("GrowOnly".to_string()));
+                fields.insert("image".to_string(), Value::Nothing);
+                fields.insert("imagealign".to_string(), Value::String("MiddleCenter".to_string()));
+                fields.insert("imageindex".to_string(), Value::Integer(-1));
+                fields.insert("imagelist".to_string(), Value::Nothing);
+                fields.insert("textalign".to_string(), Value::String("MiddleCenter".to_string()));
+                fields.insert("textimagerelation".to_string(), Value::String("Overlay".to_string()));
+                fields.insert("usevisualstyleback".to_string(), Value::Boolean(true));
+                fields.insert("usemnemonic".to_string(), Value::Boolean(true));
+                fields.insert("autoellipsis".to_string(), Value::Boolean(false));
+            }
+            "label" => {
+                fields.insert("autosize".to_string(), Value::Boolean(true));
+                fields.insert("textalign".to_string(), Value::String("TopLeft".to_string()));
+                fields.insert("flatstyle".to_string(), Value::String("Standard".to_string()));
+                fields.insert("borderstyle".to_string(), Value::String("None".to_string()));
+                fields.insert("image".to_string(), Value::Nothing);
+                fields.insert("imagealign".to_string(), Value::String("MiddleCenter".to_string()));
+                fields.insert("imageindex".to_string(), Value::Integer(-1));
+                fields.insert("imagelist".to_string(), Value::Nothing);
+                fields.insert("autoellipsis".to_string(), Value::Boolean(false));
+                fields.insert("usemnemonic".to_string(), Value::Boolean(true));
+            }
+            "checkbox" => {
+                fields.insert("checked".to_string(), Value::Boolean(false));
+                fields.insert("checkstate".to_string(), Value::String("Unchecked".to_string()));
+                fields.insert("threestate".to_string(), Value::Boolean(false));
+                fields.insert("autocheck".to_string(), Value::Boolean(true));
+                fields.insert("checkalign".to_string(), Value::String("MiddleLeft".to_string()));
+                fields.insert("textalign".to_string(), Value::String("MiddleLeft".to_string()));
+                fields.insert("flatstyle".to_string(), Value::String("Standard".to_string()));
+                fields.insert("appearance".to_string(), Value::String("Normal".to_string()));
+                fields.insert("autosize".to_string(), Value::Boolean(true));
+                fields.insert("image".to_string(), Value::Nothing);
+                fields.insert("imagealign".to_string(), Value::String("MiddleCenter".to_string()));
+                fields.insert("imageindex".to_string(), Value::Integer(-1));
+                fields.insert("imagelist".to_string(), Value::Nothing);
+            }
+            "radiobutton" => {
+                fields.insert("checked".to_string(), Value::Boolean(false));
+                fields.insert("autocheck".to_string(), Value::Boolean(true));
+                fields.insert("checkalign".to_string(), Value::String("MiddleLeft".to_string()));
+                fields.insert("textalign".to_string(), Value::String("MiddleLeft".to_string()));
+                fields.insert("flatstyle".to_string(), Value::String("Standard".to_string()));
+                fields.insert("appearance".to_string(), Value::String("Normal".to_string()));
+                fields.insert("autosize".to_string(), Value::Boolean(true));
+                fields.insert("image".to_string(), Value::Nothing);
+                fields.insert("imagealign".to_string(), Value::String("MiddleCenter".to_string()));
+                fields.insert("imageindex".to_string(), Value::Integer(-1));
+                fields.insert("imagelist".to_string(), Value::Nothing);
+            }
+            "groupbox" | "frame" => {
+                fields.insert("flatstyle".to_string(), Value::String("Standard".to_string()));
+                fields.insert("autosize".to_string(), Value::Boolean(false));
+                fields.insert("autosizemode".to_string(), Value::String("GrowOnly".to_string()));
+                fields.insert("padding".to_string(), Value::Integer(3));
+                fields.insert("controls".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+            }
+            "panel" => {
+                fields.insert("borderstyle".to_string(), Value::String("None".to_string()));
+                fields.insert("autosize".to_string(), Value::Boolean(false));
+                fields.insert("autosizemode".to_string(), Value::String("GrowOnly".to_string()));
+                fields.insert("autoscroll".to_string(), Value::Boolean(false));
+                fields.insert("autoscrollminsize".to_string(), Value::Nothing);
+                fields.insert("autoscrollmargin".to_string(), Value::Nothing);
+                fields.insert("padding".to_string(), Value::Integer(0));
+                fields.insert("controls".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+            }
+            "picturebox" => {
+                fields.insert("image".to_string(), Value::Nothing);
+                fields.insert("imagelocation".to_string(), Value::String(String::new()));
+                fields.insert("sizemode".to_string(), Value::String("Normal".to_string()));
+                fields.insert("borderstyle".to_string(), Value::String("None".to_string()));
+                fields.insert("errorimage".to_string(), Value::Nothing);
+                fields.insert("initialimage".to_string(), Value::Nothing);
+                fields.insert("waitonload".to_string(), Value::Boolean(false));
+            }
+            "webbrowser" => {
+                fields.insert("url".to_string(), Value::Nothing);
+                fields.insert("documenttext".to_string(), Value::String(String::new()));
+                fields.insert("documenttitle".to_string(), Value::String(String::new()));
+                fields.insert("cangoback".to_string(), Value::Boolean(false));
+                fields.insert("cangoforward".to_string(), Value::Boolean(false));
+                fields.insert("isbusy".to_string(), Value::Boolean(false));
+                fields.insert("readystate".to_string(), Value::String("Uninitialized".to_string()));
+                fields.insert("scriptErrorsSuppressed".to_lowercase(), Value::Boolean(false));
+                fields.insert("allownavigation".to_string(), Value::Boolean(true));
+                fields.insert("allowWebBrowserDrop".to_lowercase(), Value::Boolean(true));
+                fields.insert("scrollbarsenabled".to_string(), Value::Boolean(true));
+                fields.insert("webbrowsershortcutsenabled".to_string(), Value::Boolean(true));
+                fields.insert("iswebbrowsercontextmenuenabled".to_string(), Value::Boolean(true));
+            }
             "textbox" => {
                 fields.insert("readonly".to_string(), Value::Boolean(false));
                 fields.insert("multiline".to_string(), Value::Boolean(false));
@@ -329,18 +425,56 @@ impl Interpreter {
                 fields.insert("maxlength".to_string(), Value::Integer(32767));
                 fields.insert("scrollbars".to_string(), Value::Integer(0));
                 fields.insert("wordwrap".to_string(), Value::Boolean(true));
+                fields.insert("textalign".to_string(), Value::String("Left".to_string()));
+                fields.insert("acceptsreturn".to_string(), Value::Boolean(false));
+                fields.insert("acceptstab".to_string(), Value::Boolean(false));
+                fields.insert("charactercasing".to_string(), Value::String("Normal".to_string()));
+                fields.insert("selectionstart".to_string(), Value::Integer(0));
+                fields.insert("selectionlength".to_string(), Value::Integer(0));
+                fields.insert("selectedtext".to_string(), Value::String(String::new()));
+                fields.insert("lines".to_string(), Value::Array(vec![]));
+                fields.insert("modified".to_string(), Value::Boolean(false));
+                fields.insert("hideselection".to_string(), Value::Boolean(true));
+                fields.insert("borderstyle".to_string(), Value::String("Fixed3D".to_string()));
+                fields.insert("textlength".to_string(), Value::Integer(0));
+                fields.insert("useSystemPasswordChar".to_lowercase(), Value::Boolean(false));
+                fields.insert("placeholdertext".to_string(), Value::String(String::new()));
             }
             "combobox" => {
                 fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
                 fields.insert("selectedindex".to_string(), Value::Integer(-1));
                 fields.insert("selecteditem".to_string(), Value::Nothing);
                 fields.insert("dropdownstyle".to_string(), Value::Integer(0));
+                fields.insert("selectedvalue".to_string(), Value::Nothing);
+                fields.insert("selectedtext".to_string(), Value::String(String::new()));
+                fields.insert("maxdropdownitems".to_string(), Value::Integer(8));
+                fields.insert("dropdownwidth".to_string(), Value::Integer(121));
+                fields.insert("dropdownheight".to_string(), Value::Integer(106));
+                fields.insert("maxlength".to_string(), Value::Integer(0));
+                fields.insert("sorted".to_string(), Value::Boolean(false));
+                fields.insert("flatstyle".to_string(), Value::String("Standard".to_string()));
+                fields.insert("datasource".to_string(), Value::Nothing);
+                fields.insert("displaymember".to_string(), Value::String(String::new()));
+                fields.insert("valuemember".to_string(), Value::String(String::new()));
+                fields.insert("autocompletemode".to_string(), Value::Integer(0));
+                fields.insert("autocompletesource".to_string(), Value::Integer(0));
             }
             "listbox" => {
                 fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
                 fields.insert("selectedindex".to_string(), Value::Integer(-1));
                 fields.insert("selecteditem".to_string(), Value::Nothing);
                 fields.insert("selectionmode".to_string(), Value::Integer(1));
+                fields.insert("selectedindices".to_string(), Value::Array(vec![]));
+                fields.insert("selecteditems".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("sorted".to_string(), Value::Boolean(false));
+                fields.insert("topindex".to_string(), Value::Integer(0));
+                fields.insert("columnwidth".to_string(), Value::Integer(0));
+                fields.insert("multicolumn".to_string(), Value::Boolean(false));
+                fields.insert("horizontalscrollbar".to_string(), Value::Boolean(false));
+                fields.insert("integralheight".to_string(), Value::Boolean(true));
+                fields.insert("datasource".to_string(), Value::Nothing);
+                fields.insert("displaymember".to_string(), Value::String(String::new()));
+                fields.insert("valuemember".to_string(), Value::String(String::new()));
             }
             "progressbar" => {
                 fields.insert("value".to_string(), Value::Integer(0));
@@ -348,6 +482,8 @@ impl Interpreter {
                 fields.insert("maximum".to_string(), Value::Integer(100));
                 fields.insert("step".to_string(), Value::Integer(10));
                 fields.insert("style".to_string(), Value::Integer(0));
+                fields.insert("marqueeanimationspeed".to_string(), Value::Integer(100));
+                fields.insert("righttoleftlayout".to_string(), Value::Boolean(false));
             }
             "numericupdown" => {
                 fields.insert("value".to_string(), Value::Integer(0));
@@ -356,6 +492,11 @@ impl Interpreter {
                 fields.insert("increment".to_string(), Value::Integer(1));
                 fields.insert("decimalplaces".to_string(), Value::Integer(0));
                 fields.insert("readonly".to_string(), Value::Boolean(false));
+                fields.insert("hexadecimal".to_string(), Value::Boolean(false));
+                fields.insert("thousandsseparator".to_string(), Value::Boolean(false));
+                fields.insert("textalign".to_string(), Value::String("Left".to_string()));
+                fields.insert("updownalign".to_string(), Value::String("Right".to_string()));
+                fields.insert("interceptarrowkeys".to_string(), Value::Boolean(true));
             }
             "treeview" => {
                 fields.insert("nodes".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
@@ -364,6 +505,21 @@ impl Interpreter {
                 fields.insert("checkboxes".to_string(), Value::Boolean(false));
                 fields.insert("showlines".to_string(), Value::Boolean(true));
                 fields.insert("showrootlines".to_string(), Value::Boolean(true));
+                fields.insert("showplusminus".to_string(), Value::Boolean(true));
+                fields.insert("shownodetoolTips".to_lowercase(), Value::Boolean(false));
+                fields.insert("fullrowselect".to_string(), Value::Boolean(false));
+                fields.insert("hideselection".to_string(), Value::Boolean(true));
+                fields.insert("hottracking".to_string(), Value::Boolean(false));
+                fields.insert("labeledit".to_string(), Value::Boolean(false));
+                fields.insert("scrollable".to_string(), Value::Boolean(true));
+                fields.insert("sorted".to_string(), Value::Boolean(false));
+                fields.insert("indent".to_string(), Value::Integer(19));
+                fields.insert("itemheight".to_string(), Value::Integer(16));
+                fields.insert("imagelist".to_string(), Value::Nothing);
+                fields.insert("imageindex".to_string(), Value::Integer(-1));
+                fields.insert("selectedimageindex".to_string(), Value::Integer(-1));
+                fields.insert("topnode".to_string(), Value::Nothing);
+                fields.insert("visiblecount".to_string(), Value::Integer(0));
             }
             "listview" => {
                 fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
@@ -374,6 +530,27 @@ impl Interpreter {
                 fields.insert("checkboxes".to_string(), Value::Boolean(false));
                 fields.insert("multiselect".to_string(), Value::Boolean(true));
                 fields.insert("selecteditems".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("selectedindices".to_string(), Value::Array(vec![]));
+                fields.insert("groups".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("showgroups".to_string(), Value::Boolean(false));
+                fields.insert("sorting".to_string(), Value::String("None".to_string()));
+                fields.insert("labeledit".to_string(), Value::Boolean(false));
+                fields.insert("labelwrap".to_string(), Value::Boolean(true));
+                fields.insert("allowcolumnreorder".to_string(), Value::Boolean(false));
+                fields.insert("headerStyle".to_lowercase(), Value::String("Clickable".to_string()));
+                fields.insert("hideselection".to_string(), Value::Boolean(true));
+                fields.insert("hottracking".to_string(), Value::Boolean(false));
+                fields.insert("hoveroSelection".to_lowercase(), Value::Boolean(false));
+                fields.insert("activation".to_string(), Value::String("Standard".to_string()));
+                fields.insert("scrollable".to_string(), Value::Boolean(true));
+                fields.insert("showitemtooltips".to_string(), Value::Boolean(false));
+                fields.insert("tilelayout".to_string(), Value::Nothing);
+                fields.insert("topitem".to_string(), Value::Nothing);
+                fields.insert("focuseditem".to_string(), Value::Nothing);
+                fields.insert("imagelist".to_string(), Value::Nothing);
+                fields.insert("smallimagelist".to_string(), Value::Nothing);
+                fields.insert("largeimagelist".to_string(), Value::Nothing);
+                fields.insert("stateimagelist".to_string(), Value::Nothing);
             }
             "datagridview" => {
                 fields.insert("rows".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
@@ -382,29 +559,287 @@ impl Interpreter {
                 fields.insert("allowusertoaddrows".to_string(), Value::Boolean(true));
                 fields.insert("allowusertodeleterows".to_string(), Value::Boolean(true));
                 fields.insert("readonly".to_string(), Value::Boolean(false));
+                fields.insert("datasource".to_string(), Value::Nothing);
+                fields.insert("datamember".to_string(), Value::String(String::new()));
+                fields.insert("autogeneratecolumns".to_string(), Value::Boolean(true));
+                fields.insert("multiselect".to_string(), Value::Boolean(true));
+                fields.insert("selectionmode".to_string(), Value::String("RowHeaderSelect".to_string()));
+                fields.insert("autosizecolumnsmode".to_string(), Value::String("None".to_string()));
+                fields.insert("autosizerowsmode".to_string(), Value::String("None".to_string()));
+                fields.insert("allowusertoresizecolumns".to_string(), Value::Boolean(true));
+                fields.insert("allowusertoresizerows".to_string(), Value::Boolean(true));
+                fields.insert("allowusertoordercolumns".to_string(), Value::Boolean(false));
+                fields.insert("columnheadersborderstyle".to_string(), Value::String("Raised".to_string()));
+                fields.insert("columnheadersvisible".to_string(), Value::Boolean(true));
+                fields.insert("rowheadersborderstyle".to_string(), Value::String("Raised".to_string()));
+                fields.insert("rowheadersvisible".to_string(), Value::Boolean(true));
+                fields.insert("rowheaderswidth".to_string(), Value::Integer(43));
+                fields.insert("editmode".to_string(), Value::String("EditOnKeystrokeOrF2".to_string()));
+                fields.insert("gridcolor".to_string(), Value::String(String::new()));
+                fields.insert("borderstyle".to_string(), Value::String("FixedSingle".to_string()));
+                fields.insert("cellborderstyle".to_string(), Value::String("Single".to_string()));
+                fields.insert("clipboardcopymode".to_string(), Value::String("EnableWithAutoHeaderText".to_string()));
+                fields.insert("scrollbars".to_string(), Value::String("Both".to_string()));
+                fields.insert("currentcell".to_string(), Value::Nothing);
+                fields.insert("currentrow".to_string(), Value::Nothing);
+                fields.insert("selectedcells".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("selectedcolumns".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("firstdisplayedcell".to_string(), Value::Nothing);
+                fields.insert("firstdisplayedscrollingrowindex".to_string(), Value::Integer(0));
+                fields.insert("firstdisplayedscrollingcolumnindex".to_string(), Value::Integer(0));
+                fields.insert("newrowindex".to_string(), Value::Integer(-1));
+                fields.insert("sortedcolumn".to_string(), Value::Nothing);
+                fields.insert("sortorder".to_string(), Value::String("None".to_string()));
             }
             "tabcontrol" => {
                 fields.insert("tabpages".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
                 fields.insert("selectedindex".to_string(), Value::Integer(0));
                 fields.insert("selectedtab".to_string(), Value::Nothing);
+                fields.insert("alignment".to_string(), Value::String("Top".to_string()));
+                fields.insert("appearance".to_string(), Value::String("Normal".to_string()));
+                fields.insert("multiline".to_string(), Value::Boolean(false));
+                fields.insert("sizemode".to_string(), Value::String("Normal".to_string()));
+                fields.insert("hottrack".to_string(), Value::Boolean(false));
+                fields.insert("itemsize".to_string(), Value::Nothing);
+                fields.insert("padding".to_string(), Value::Nothing);
+                fields.insert("showtooltips".to_string(), Value::Boolean(false));
+                fields.insert("imagelist".to_string(), Value::Nothing);
             }
-            "tabpage" => {}
-            "menustrip" | "contextmenustrip" | "statusstrip" => {
+            "tabpage" => {
+                fields.insert("text".to_string(), Value::String(String::new()));
+                fields.insert("tooltip".to_string(), Value::String(String::new()));
+                fields.insert("imageindex".to_string(), Value::Integer(-1));
+                fields.insert("imagekey".to_string(), Value::String(String::new()));
+                fields.insert("borderstyle".to_string(), Value::String("None".to_string()));
+                fields.insert("autosize".to_string(), Value::Boolean(false));
+                fields.insert("autoscroll".to_string(), Value::Boolean(false));
+                fields.insert("usevisualstylebackcolor".to_string(), Value::Boolean(true));
+                fields.insert("padding".to_string(), Value::Integer(3));
+                fields.insert("controls".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+            }
+            "menustrip" | "contextmenustrip" => {
                 fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("dock".to_string(), Value::Integer(1)); // Top
+                fields.insert("rendermode".to_string(), Value::String("ManagerRenderMode".to_string()));
+                fields.insert("showitemtooltips".to_string(), Value::Boolean(false));
+                fields.insert("grabrendermode".to_string(), Value::String("VisualStyles".to_string()));
+                fields.insert("stretch".to_string(), Value::Boolean(true));
+                fields.insert("layoutstyle".to_string(), Value::String("HorizontalStackWithOverflow".to_string()));
+                fields.insert("imagescalingsize".to_string(), Value::String("16, 16".to_string()));
+            }
+            "statusstrip" => {
+                fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("dock".to_string(), Value::Integer(2)); // Bottom
+                fields.insert("rendermode".to_string(), Value::String("ManagerRenderMode".to_string()));
+                fields.insert("showitemtooltips".to_string(), Value::Boolean(false));
+                fields.insert("sizinggrip".to_string(), Value::Boolean(true));
+                fields.insert("stretch".to_string(), Value::Boolean(true));
+                fields.insert("layoutstyle".to_string(), Value::String("Table".to_string()));
             }
             "toolstripstatuslabel" => {
                 fields.insert("text".to_string(), Value::String(String::new()));
                 fields.insert("spring".to_string(), Value::Boolean(false));
                 fields.insert("autosize".to_string(), Value::Boolean(true));
+                fields.insert("bordersides".to_string(), Value::String("None".to_string()));
+                fields.insert("borderstyle".to_string(), Value::String("None".to_string()));
+                fields.insert("islink".to_string(), Value::Boolean(false));
+                fields.insert("alignment".to_string(), Value::String("Left".to_string()));
+                fields.insert("image".to_string(), Value::Nothing);
+                fields.insert("imagealign".to_string(), Value::String("MiddleLeft".to_string()));
+                fields.insert("imageindex".to_string(), Value::Integer(-1));
+                fields.insert("tooltip".to_string(), Value::String(String::new()));
             }
             "toolstripmenuitem" => {
                 fields.insert("dropdownitems".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
                 fields.insert("checked".to_string(), Value::Boolean(false));
                 fields.insert("shortcutkeys".to_string(), Value::Integer(0));
+                fields.insert("checkstate".to_string(), Value::String("Unchecked".to_string()));
+                fields.insert("checkonclick".to_string(), Value::Boolean(false));
+                fields.insert("showshortcutkeys".to_string(), Value::Boolean(true));
+                fields.insert("shortcutkeyDisplayString".to_lowercase(), Value::String(String::new()));
+                fields.insert("image".to_string(), Value::Nothing);
+                fields.insert("imagealign".to_string(), Value::String("MiddleLeft".to_string()));
+                fields.insert("imageindex".to_string(), Value::Integer(-1));
+                fields.insert("imagescaling".to_string(), Value::String("SizeToFit".to_string()));
+                fields.insert("tooltip".to_string(), Value::String(String::new()));
+                fields.insert("alignment".to_string(), Value::String("Left".to_string()));
+                fields.insert("autosize".to_string(), Value::Boolean(true));
+                fields.insert("displaystyle".to_string(), Value::String("ImageAndText".to_string()));
+                fields.insert("textalign".to_string(), Value::String("MiddleLeft".to_string()));
             }
             "richtextbox" => {
                 fields.insert("readonly".to_string(), Value::Boolean(false));
                 fields.insert("scrollbars".to_string(), Value::Integer(3));
+                fields.insert("multiline".to_string(), Value::Boolean(true));
+                fields.insert("wordwrap".to_string(), Value::Boolean(true));
+                fields.insert("maxlength".to_string(), Value::Integer(2147483647));
+                fields.insert("rtf".to_string(), Value::String(String::new()));
+                fields.insert("selectedtext".to_string(), Value::String(String::new()));
+                fields.insert("selectionstart".to_string(), Value::Integer(0));
+                fields.insert("selectionlength".to_string(), Value::Integer(0));
+                fields.insert("selectioncolor".to_string(), Value::String(String::new()));
+                fields.insert("selectionfont".to_string(), Value::Nothing);
+                fields.insert("selectionbullet".to_string(), Value::Boolean(false));
+                fields.insert("selectionindent".to_string(), Value::Integer(0));
+                fields.insert("selectionalignment".to_string(), Value::String("Left".to_string()));
+                fields.insert("selectionhangingindent".to_string(), Value::Integer(0));
+                fields.insert("selectionbackcolor".to_string(), Value::String(String::new()));
+                fields.insert("zoomfactor".to_string(), Value::Double(1.0));
+                fields.insert("modified".to_string(), Value::Boolean(false));
+                fields.insert("detecturls".to_string(), Value::Boolean(true));
+                fields.insert("hideselection".to_string(), Value::Boolean(true));
+                fields.insert("acceptstab".to_string(), Value::Boolean(false));
+                fields.insert("bulletindent".to_string(), Value::Integer(0));
+                fields.insert("autowordselection".to_string(), Value::Boolean(false));
+                fields.insert("textlength".to_string(), Value::Integer(0));
+                fields.insert("lines".to_string(), Value::Array(vec![]));
+            }
+            "datetimepicker" => {
+                fields.insert("value".to_string(), Value::String(String::new()));
+                fields.insert("format".to_string(), Value::String("Long".to_string()));
+                fields.insert("customformat".to_string(), Value::String(String::new()));
+                fields.insert("mindate".to_string(), Value::String("1/1/1753".to_string()));
+                fields.insert("maxdate".to_string(), Value::String("12/31/9998".to_string()));
+                fields.insert("showcheckbox".to_string(), Value::Boolean(false));
+                fields.insert("checked".to_string(), Value::Boolean(true));
+                fields.insert("showupdown".to_string(), Value::Boolean(false));
+                fields.insert("calendarforecolor".to_string(), Value::String(String::new()));
+                fields.insert("calendarmonthbackground".to_string(), Value::String(String::new()));
+                fields.insert("calendartitlebackcolor".to_string(), Value::String(String::new()));
+                fields.insert("calendartitleforecolor".to_string(), Value::String(String::new()));
+                fields.insert("calendartrailingforecolor".to_string(), Value::String(String::new()));
+                fields.insert("righttoLeft".to_lowercase(), Value::String("No".to_string()));
+                fields.insert("dropdownalign".to_string(), Value::String("Left".to_string()));
+            }
+            "linklabel" => {
+                fields.insert("linkcolor".to_string(), Value::String("#0066cc".to_string()));
+                fields.insert("visitedlinkcolor".to_string(), Value::String("#800080".to_string()));
+                fields.insert("activelinkcolor".to_string(), Value::String("Red".to_string()));
+                fields.insert("disabledlinkcolor".to_string(), Value::String(String::new()));
+                fields.insert("linkvisited".to_string(), Value::Boolean(false));
+                fields.insert("linkbehavior".to_string(), Value::String("SystemDefault".to_string()));
+                fields.insert("linkarea".to_string(), Value::Nothing);
+                fields.insert("links".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("textalign".to_string(), Value::String("TopLeft".to_string()));
+                fields.insert("autosize".to_string(), Value::Boolean(true));
+            }
+            "toolstrip" => {
+                fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("dock".to_string(), Value::Integer(1)); // Top
+                fields.insert("grabrendermode".to_string(), Value::String("VisualStyles".to_string()));
+                fields.insert("rendermode".to_string(), Value::String("ManagerRenderMode".to_string()));
+                fields.insert("stretch".to_string(), Value::Boolean(true));
+                fields.insert("showitemtooltips".to_string(), Value::Boolean(true));
+                fields.insert("imageScalingSize".to_lowercase(), Value::String("16, 16".to_string()));
+                fields.insert("layoutstyle".to_string(), Value::String("HorizontalStackWithOverflow".to_string()));
+            }
+            "trackbar" => {
+                fields.insert("value".to_string(), Value::Integer(0));
+                fields.insert("minimum".to_string(), Value::Integer(0));
+                fields.insert("maximum".to_string(), Value::Integer(10));
+                fields.insert("tickfrequency".to_string(), Value::Integer(1));
+                fields.insert("smallchange".to_string(), Value::Integer(1));
+                fields.insert("largechange".to_string(), Value::Integer(5));
+                fields.insert("orientation".to_string(), Value::String("Horizontal".to_string()));
+                fields.insert("tickstyle".to_string(), Value::String("BottomRight".to_string()));
+                fields.insert("righttoleft".to_string(), Value::String("No".to_string()));
+                fields.insert("righttoleftlayout".to_string(), Value::Boolean(false));
+            }
+            "maskedtextbox" => {
+                fields.insert("mask".to_string(), Value::String(String::new()));
+                fields.insert("promptchar".to_string(), Value::String("_".to_string()));
+                fields.insert("maskcompleted".to_string(), Value::Boolean(false));
+                fields.insert("maskfull".to_string(), Value::Boolean(false));
+                fields.insert("readonly".to_string(), Value::Boolean(false));
+                fields.insert("hidepromptonleave".to_string(), Value::Boolean(false));
+                fields.insert("beepOnError".to_lowercase(), Value::Boolean(false));
+                fields.insert("allowpromptasInput".to_lowercase(), Value::Boolean(true));
+                fields.insert("asciionly".to_string(), Value::Boolean(false));
+                fields.insert("cutcopymaskinclprompt".to_string(), Value::Boolean(false));
+                fields.insert("insertkeymode".to_string(), Value::String("Default".to_string()));
+                fields.insert("rejectstringoncontroltext".to_string(), Value::Boolean(false));
+                fields.insert("resetonprompt".to_string(), Value::Boolean(true));
+                fields.insert("resetonspace".to_string(), Value::Boolean(true));
+                fields.insert("skipliterals".to_string(), Value::Boolean(true));
+                fields.insert("textalign".to_string(), Value::String("Left".to_string()));
+                fields.insert("textmaskformat".to_string(), Value::String("IncludeLiterals".to_string()));
+                fields.insert("validatingtype".to_string(), Value::Nothing);
+            }
+            "splitcontainer" => {
+                fields.insert("orientation".to_string(), Value::String("Vertical".to_string()));
+                fields.insert("splitterdistance".to_string(), Value::Integer(100));
+                fields.insert("panel1".to_string(), Value::Nothing);
+                fields.insert("panel2".to_string(), Value::Nothing);
+                fields.insert("splitterincrement".to_string(), Value::Integer(1));
+                fields.insert("splitterwidth".to_string(), Value::Integer(4));
+                fields.insert("fixedpanel".to_string(), Value::String("None".to_string()));
+                fields.insert("issplitterfixed".to_string(), Value::Boolean(false));
+                fields.insert("panel1collapsed".to_string(), Value::Boolean(false));
+                fields.insert("panel2collapsed".to_string(), Value::Boolean(false));
+                fields.insert("panel1minsize".to_string(), Value::Integer(25));
+                fields.insert("panel2minsize".to_string(), Value::Integer(25));
+                fields.insert("borderstyle".to_string(), Value::String("None".to_string()));
+            }
+            "flowlayoutpanel" => {
+                fields.insert("flowdirection".to_string(), Value::String("LeftToRight".to_string()));
+                fields.insert("wrapcontents".to_string(), Value::Boolean(true));
+                fields.insert("autosize".to_string(), Value::Boolean(false));
+                fields.insert("autosizemode".to_string(), Value::String("GrowOnly".to_string()));
+                fields.insert("autoscroll".to_string(), Value::Boolean(false));
+                fields.insert("borderstyle".to_string(), Value::String("None".to_string()));
+                fields.insert("padding".to_string(), Value::Integer(0));
+            }
+            "tablelayoutpanel" => {
+                fields.insert("columncount".to_string(), Value::Integer(2));
+                fields.insert("rowcount".to_string(), Value::Integer(2));
+                fields.insert("autosize".to_string(), Value::Boolean(false));
+                fields.insert("autoscroll".to_string(), Value::Boolean(false));
+                fields.insert("borderstyle".to_string(), Value::String("None".to_string()));
+                fields.insert("cellborderstyle".to_string(), Value::String("None".to_string()));
+                fields.insert("columnstyles".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("rowstyles".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("growstyle".to_string(), Value::String("AddRows".to_string()));
+                fields.insert("padding".to_string(), Value::Integer(0));
+            }
+            "monthcalendar" => {
+                fields.insert("selectionstart".to_string(), Value::String(String::new()));
+                fields.insert("selectionend".to_string(), Value::String(String::new()));
+                fields.insert("todaydate".to_string(), Value::String(String::new()));
+                fields.insert("maxselectioncount".to_string(), Value::Integer(7));
+                fields.insert("showtoday".to_string(), Value::Boolean(true));
+                fields.insert("showtodaycircle".to_string(), Value::Boolean(true));
+                fields.insert("showweeknumbers".to_string(), Value::Boolean(false));
+                fields.insert("firstdayofweek".to_string(), Value::String("Default".to_string()));
+                fields.insert("calendarmonth".to_string(), Value::Integer(1));
+                fields.insert("calendaryear".to_string(), Value::Integer(2026));
+                fields.insert("mindate".to_string(), Value::String(String::new()));
+                fields.insert("maxdate".to_string(), Value::String(String::new()));
+                fields.insert("selectionrange".to_string(), Value::Nothing);
+                fields.insert("bolddates".to_string(), Value::Array(vec![]));
+                fields.insert("annuallyboldeddates".to_string(), Value::Array(vec![]));
+                fields.insert("monthlyboldeddates".to_string(), Value::Array(vec![]));
+                fields.insert("scrollchange".to_string(), Value::Integer(1));
+            }
+            "hscrollbar" | "vscrollbar" => {
+                fields.insert("value".to_string(), Value::Integer(0));
+                fields.insert("minimum".to_string(), Value::Integer(0));
+                fields.insert("maximum".to_string(), Value::Integer(100));
+                fields.insert("smallchange".to_string(), Value::Integer(1));
+                fields.insert("largechange".to_string(), Value::Integer(10));
+            }
+            "tooltip" => {
+                fields.insert("active".to_string(), Value::Boolean(true));
+                fields.insert("autopopdelay".to_string(), Value::Integer(5000));
+                fields.insert("initialdelay".to_string(), Value::Integer(500));
+                fields.insert("reshowdelay".to_string(), Value::Integer(100));
+                fields.insert("showalways".to_string(), Value::Boolean(false));
+                fields.insert("istooltipon".to_string(), Value::Boolean(false));
+                fields.insert("usefading".to_string(), Value::Boolean(true));
+                fields.insert("useanimation".to_string(), Value::Boolean(true));
+                fields.insert("tooltipicon".to_string(), Value::Integer(0));
+                fields.insert("tooltiptitle".to_string(), Value::String(String::new()));
+                fields.insert("stripampersands".to_string(), Value::Boolean(false));
+                fields.insert("__tooltips".to_string(), Value::Nothing);
             }
             _ => {}
         }
@@ -974,6 +1409,7 @@ impl Interpreter {
                                     s_lower == "propertygrid" ||
                                     s_lower == "domainupdown" ||
                                     s_lower == "maskedtextbox" ||
+                                    s_lower == "linklabel" ||
                                     s_lower == "printdocument" ||
                                     s_lower == "printpreviewcontrol" ||
                                     s_lower == "printpreviewdialog" ||
@@ -1283,7 +1719,7 @@ impl Interpreter {
                                 "datagridview" | "bindingnavigator" | "bindingsource" |
                                 "flowlayoutpanel" | "tablelayoutpanel" | "splitcontainer" |
                                 "maskedtextbox" | "domainupdown" | "contextmenustrip" |
-                                "toolstripstatuslabel"
+                                "toolstripstatuslabel" | "linklabel" | "hscrollbar" | "vscrollbar"
                             );
                             if is_winforms {
                                 Value::String(prop_name.clone())
@@ -2864,9 +3300,22 @@ impl Interpreter {
                     return crate::builtins::text_fns::stringbuilder_new_fn(&arg_values);
                 }
 
-                if class_name.starts_with("system.windows.forms.")
+                // Check if this is a short WinForms control name
+                let is_short_winforms = matches!(class_name.as_str(),
+                    "datetimepicker" | "linklabel" | "toolstrip" | "trackbar" |
+                    "maskedtextbox" | "splitcontainer" | "flowlayoutpanel" | "tablelayoutpanel" |
+                    "monthcalendar" | "hscrollbar" | "vscrollbar" | "tooltip" |
+                    "textbox" | "label" | "button" | "checkbox" | "radiobutton" |
+                    "groupbox" | "panel" | "combobox" | "listbox" | "picturebox" |
+                    "richtextbox" | "webbrowser" | "treeview" | "listview" |
+                    "datagridview" | "tabcontrol" | "tabpage" | "progressbar" |
+                    "numericupdown" | "menustrip" | "contextmenustrip" | "statusstrip" |
+                    "toolstripmenuitem" | "toolstripstatuslabel"
+                );
+
+                if is_short_winforms || (class_name.starts_with("system.windows.forms.")
                     && class_name != "system.windows.forms.bindingsource"
-                    && class_name != "system.windows.forms.bindingnavigator"
+                    && class_name != "system.windows.forms.bindingnavigator")
                 {
                     // Create a proper control object with fields that mimic WinForms properties
                     let base_name = class_id.as_str().split('.').last().unwrap_or(class_id.as_str()).to_string();
@@ -9538,6 +9987,97 @@ impl Interpreter {
             }
             "getitemat" | "hittest" => {
                 // Hit testing — return Nothing
+                Ok(Value::Nothing)
+            }
+            "settooltip" => {
+                // ToolTip.SetToolTip(control, text) — store tooltip text for a control
+                if arg_values.len() >= 2 {
+                    if let Ok(obj_val) = self.evaluate_expr(obj) {
+                        if let Value::Object(obj_ref) = &obj_val {
+                            let text = arg_values[1].as_string();
+                            let ctrl_name = match &arg_values[0] {
+                                Value::Object(c) => c.borrow().fields.get("name").map(|v| v.as_string()).unwrap_or_default(),
+                                Value::String(s) => s.clone(),
+                                _ => String::new(),
+                            };
+                            let mut b = obj_ref.borrow_mut();
+                            let tooltips = b.fields.entry("__tooltips".to_string()).or_insert_with(|| Value::Nothing);
+                            if let Value::Object(map_ref) = tooltips {
+                                map_ref.borrow_mut().fields.insert(ctrl_name.to_lowercase(), Value::String(text));
+                            } else {
+                                let mut fields = std::collections::HashMap::new();
+                                fields.insert(ctrl_name.to_lowercase(), Value::String(text));
+                                let map_obj = crate::value::ObjectData { class_name: "__TooltipMap".to_string(), fields };
+                                *tooltips = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(map_obj)));
+                            }
+                        }
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "gettooltip" => {
+                // ToolTip.GetToolTip(control) — retrieve tooltip text for a control
+                if !arg_values.is_empty() {
+                    if let Ok(obj_val) = self.evaluate_expr(obj) {
+                        if let Value::Object(obj_ref) = &obj_val {
+                            let ctrl_name = match &arg_values[0] {
+                                Value::Object(c) => c.borrow().fields.get("name").map(|v| v.as_string()).unwrap_or_default(),
+                                Value::String(s) => s.clone(),
+                                _ => String::new(),
+                            };
+                            let b = obj_ref.borrow();
+                            if let Some(Value::Object(map_ref)) = b.fields.get("__tooltips") {
+                                let map = map_ref.borrow();
+                                if let Some(val) = map.fields.get(&ctrl_name.to_lowercase()) {
+                                    return Ok(val.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Value::String(String::new()))
+            }
+            "removeall" => {
+                // ToolTip.RemoveAll() — clear all tooltip associations
+                if let Ok(obj_val) = self.evaluate_expr(obj) {
+                    if let Value::Object(obj_ref) = &obj_val {
+                        let mut b = obj_ref.borrow_mut();
+                        b.fields.insert("__tooltips".to_string(), Value::Nothing);
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "setrange" => {
+                // MonthCalendar.SetSelectionRange(start, end) or scrollbar range
+                if arg_values.len() >= 2 {
+                    if let Ok(obj_val) = self.evaluate_expr(obj) {
+                        if let Value::Object(obj_ref) = &obj_val {
+                            let mut b = obj_ref.borrow_mut();
+                            b.fields.insert("selectionstart".to_string(), arg_values[0].clone());
+                            b.fields.insert("selectionend".to_string(), arg_values[1].clone());
+                        }
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "setselectionrange" => {
+                // MonthCalendar.SetSelectionRange(date1, date2)
+                if arg_values.len() >= 2 {
+                    if let Ok(obj_val) = self.evaluate_expr(obj) {
+                        if let Value::Object(obj_ref) = &obj_val {
+                            let mut b = obj_ref.borrow_mut();
+                            b.fields.insert("selectionstart".to_string(), arg_values[0].clone());
+                            b.fields.insert("selectionend".to_string(), arg_values[1].clone());
+                        }
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "setcalendarmonthlybolddates" | "setcalendarannuallybolddates" | "removeallboldeddates" |
+            "removeallannuallybolddates" | "removeallmonthlybolddates" | "addboldeddate" |
+            "addannuallyboldeddate" | "addmonthlyboldeddate" | "removeboldeddate" |
+            "removeannuallyboldeddate" | "removemonthlyboldeddate" | "updateboldeddates" => {
+                // MonthCalendar bold date management — no-op for now
                 Ok(Value::Nothing)
             }
             _ => Err(RuntimeError::Custom(format!("Unknown method: {}", method_name))),

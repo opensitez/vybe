@@ -1842,6 +1842,112 @@ pub fn FormRunner() -> Element {
                                                             "{text}"
                                                         }
                                                     },
+                                                    ControlType::DateTimePicker => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; border: 1px solid #adb5bd; background: white; padding: 2px 4px; font-size: 12px;",
+                                                            span { style: "flex: 1;", "{text}" }
+                                                            span { style: "padding: 0 4px; border-left: 1px solid #ccc; cursor: pointer;", "▼" }
+                                                        }
+                                                    },
+                                                    ControlType::LinkLabel => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; font-size: 12px; color: #0066cc; text-decoration: underline; cursor: pointer;",
+                                                            "{caption}"
+                                                        }
+                                                    },
+                                                    ControlType::ToolStrip => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; padding: 0 4px; font-size: 12px;",
+                                                            "ToolStrip"
+                                                        }
+                                                    },
+                                                    ControlType::TrackBar => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 4px;",
+                                                            input {
+                                                                r#type: "range",
+                                                                style: "width: 100%;",
+                                                                min: "0",
+                                                                max: "10",
+                                                                value: "0",
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::MaskedTextBox => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: center;",
+                                                            input {
+                                                                r#type: "text",
+                                                                style: "width: 100%; height: 100%; border: 1px solid #adb5bd; padding: 2px 4px; font-size: 12px; outline: none; {style_back} {style_font} {style_fore};",
+                                                                value: "{text}",
+                                                                placeholder: "___-__-____",
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::SplitContainer => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; border: 1px solid #adb5bd;",
+                                                            div { style: "flex: 1; background: #f8f8f8; border-right: 3px solid #ccc;" }
+                                                            div { style: "flex: 1; background: #f8f8f8;" }
+                                                        }
+                                                    },
+                                                    ControlType::FlowLayoutPanel => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; border: 1px dashed #adb5bd; display: flex; flex-wrap: wrap; align-content: flex-start; padding: 2px;",
+                                                        }
+                                                    },
+                                                    ControlType::TableLayoutPanel => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; border: 1px dashed #adb5bd; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;",
+                                                            div { style: "border: 1px dotted #ccc;" }
+                                                            div { style: "border: 1px dotted #ccc;" }
+                                                            div { style: "border: 1px dotted #ccc;" }
+                                                            div { style: "border: 1px dotted #ccc;" }
+                                                        }
+                                                    },
+                                                    ControlType::MonthCalendar => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; border: 1px solid #adb5bd; background: white; display: flex; flex-direction: column; font-size: 11px;",
+                                                            div {
+                                                                style: "background: #0078d4; color: white; text-align: center; padding: 4px; font-weight: bold;",
+                                                                "January 2026"
+                                                            }
+                                                            div {
+                                                                style: "flex: 1; display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; padding: 2px; gap: 1px;",
+                                                                span { style: "font-weight: bold;", "Su" }
+                                                                span { style: "font-weight: bold;", "Mo" }
+                                                                span { style: "font-weight: bold;", "Tu" }
+                                                                span { style: "font-weight: bold;", "We" }
+                                                                span { style: "font-weight: bold;", "Th" }
+                                                                span { style: "font-weight: bold;", "Fr" }
+                                                                span { style: "font-weight: bold;", "Sa" }
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::HScrollBar => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: center;",
+                                                            input {
+                                                                r#type: "range",
+                                                                style: "width: 100%; height: 100%;",
+                                                                min: "0",
+                                                                max: "100",
+                                                                value: "0",
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::VScrollBar => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: center;",
+                                                            input {
+                                                                r#type: "range",
+                                                                style: "width: 17px; height: 100%; writing-mode: vertical-lr; direction: rtl;",
+                                                                min: "0",
+                                                                max: "100",
+                                                                value: "0",
+                                                            }
+                                                        }
+                                                    },
                                                     _ => rsx! {
                                                         div { style: "border: 1px dotted red;", "Unknown Control" }
                                                     }

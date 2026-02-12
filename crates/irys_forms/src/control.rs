@@ -56,6 +56,18 @@ pub enum ControlType {
     ContextMenuStrip,
     StatusStrip,
     ToolStripStatusLabel,
+    DateTimePicker,
+    LinkLabel,
+    ToolStrip,
+    TrackBar,
+    MaskedTextBox,
+    SplitContainer,
+    FlowLayoutPanel,
+    TableLayoutPanel,
+    MonthCalendar,
+    HScrollBar,
+    VScrollBar,
+    ToolTip,
     // Non-visual data components (appear in component tray)
     BindingSourceComponent,
     DataSetComponent,
@@ -92,6 +104,18 @@ impl ControlType {
             "contextmenustrip" => Some(ControlType::ContextMenuStrip),
             "statusstrip" => Some(ControlType::StatusStrip),
             "toolstripstatuslabel" => Some(ControlType::ToolStripStatusLabel),
+            "datetimepicker" => Some(ControlType::DateTimePicker),
+            "linklabel" => Some(ControlType::LinkLabel),
+            "toolstrip" => Some(ControlType::ToolStrip),
+            "trackbar" => Some(ControlType::TrackBar),
+            "maskedtextbox" => Some(ControlType::MaskedTextBox),
+            "splitcontainer" => Some(ControlType::SplitContainer),
+            "flowlayoutpanel" => Some(ControlType::FlowLayoutPanel),
+            "tablelayoutpanel" => Some(ControlType::TableLayoutPanel),
+            "monthcalendar" => Some(ControlType::MonthCalendar),
+            "hscrollbar" => Some(ControlType::HScrollBar),
+            "vscrollbar" => Some(ControlType::VScrollBar),
+            "tooltip" => Some(ControlType::ToolTip),
             _ => None,
         }
     }
@@ -123,6 +147,18 @@ impl ControlType {
             ControlType::ContextMenuStrip => "ContextMenuStrip",
             ControlType::StatusStrip => "StatusStrip",
             ControlType::ToolStripStatusLabel => "ToolStripStatusLabel",
+            ControlType::DateTimePicker => "DateTimePicker",
+            ControlType::LinkLabel => "LinkLabel",
+            ControlType::ToolStrip => "ToolStrip",
+            ControlType::TrackBar => "TrackBar",
+            ControlType::MaskedTextBox => "MaskedTextBox",
+            ControlType::SplitContainer => "SplitContainer",
+            ControlType::FlowLayoutPanel => "FlowLayoutPanel",
+            ControlType::TableLayoutPanel => "TableLayoutPanel",
+            ControlType::MonthCalendar => "MonthCalendar",
+            ControlType::HScrollBar => "HScrollBar",
+            ControlType::VScrollBar => "VScrollBar",
+            ControlType::ToolTip => "ToolTip",
             ControlType::BindingSourceComponent => "BindingSource",
             ControlType::DataSetComponent => "DataSet",
             ControlType::DataTableComponent => "DataTable",
@@ -178,6 +214,18 @@ impl ControlType {
             ControlType::ContextMenuStrip => "cms",
             ControlType::StatusStrip => "ss",
             ControlType::ToolStripStatusLabel => "tssl",
+            ControlType::DateTimePicker => "dtp",
+            ControlType::LinkLabel => "lnk",
+            ControlType::ToolStrip => "ts",
+            ControlType::TrackBar => "trk",
+            ControlType::MaskedTextBox => "mtxt",
+            ControlType::SplitContainer => "sc",
+            ControlType::FlowLayoutPanel => "flp",
+            ControlType::TableLayoutPanel => "tlp",
+            ControlType::MonthCalendar => "mc",
+            ControlType::HScrollBar => "hsb",
+            ControlType::VScrollBar => "vsb",
+            ControlType::ToolTip => "tt",
             ControlType::BindingSourceComponent => "bs",
             ControlType::DataSetComponent => "ds",
             ControlType::DataTableComponent => "dt",
@@ -212,6 +260,18 @@ impl ControlType {
             ControlType::ContextMenuStrip => (150, 24),
             ControlType::StatusStrip => (300, 22),
             ControlType::ToolStripStatusLabel => (100, 22),
+            ControlType::DateTimePicker => (200, 23),
+            ControlType::LinkLabel => (100, 20),
+            ControlType::ToolStrip => (300, 25),
+            ControlType::TrackBar => (200, 45),
+            ControlType::MaskedTextBox => (150, 23),
+            ControlType::SplitContainer => (300, 200),
+            ControlType::FlowLayoutPanel => (200, 150),
+            ControlType::TableLayoutPanel => (200, 150),
+            ControlType::MonthCalendar => (227, 164),
+            ControlType::HScrollBar => (200, 17),
+            ControlType::VScrollBar => (17, 200),
+            ControlType::ToolTip => (32, 32),
             ControlType::BindingSourceComponent => (32, 32),
             ControlType::DataSetComponent => (32, 32),
             ControlType::DataTableComponent => (32, 32),
@@ -368,6 +428,92 @@ impl Control {
                 properties.set("Text", name.clone());
                 properties.set("Enabled", true);
                 properties.set("Visible", true);
+            }
+            ControlType::DateTimePicker => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                properties.set("Format", "Long");
+                properties.set("CustomFormat", "");
+                properties.set("ShowCheckBox", false);
+                properties.set("Checked", true);
+            }
+            ControlType::LinkLabel => {
+                properties.set("Text", name.clone());
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                properties.set("LinkColor", "#0066cc");
+                properties.set("VisitedLinkColor", "#800080");
+                properties.set("LinkVisited", false);
+            }
+            ControlType::ToolStrip => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+            }
+            ControlType::TrackBar => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                use crate::properties::PropertyValue;
+                properties.set_raw("Value", PropertyValue::Integer(0));
+                properties.set_raw("Minimum", PropertyValue::Integer(0));
+                properties.set_raw("Maximum", PropertyValue::Integer(10));
+                properties.set_raw("TickFrequency", PropertyValue::Integer(1));
+                properties.set_raw("SmallChange", PropertyValue::Integer(1));
+                properties.set_raw("LargeChange", PropertyValue::Integer(5));
+                properties.set("Orientation", "Horizontal");
+            }
+            ControlType::MaskedTextBox => {
+                properties.set("Text", "");
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                properties.set("Mask", "");
+                properties.set("PromptChar", "_");
+            }
+            ControlType::SplitContainer => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                properties.set("Orientation", "Vertical");
+                use crate::properties::PropertyValue;
+                properties.set_raw("SplitterDistance", PropertyValue::Integer(100));
+            }
+            ControlType::FlowLayoutPanel => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                properties.set("FlowDirection", "LeftToRight");
+                properties.set("WrapContents", true);
+                properties.set("BorderStyle", "None");
+            }
+            ControlType::TableLayoutPanel => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                use crate::properties::PropertyValue;
+                properties.set_raw("ColumnCount", PropertyValue::Integer(2));
+                properties.set_raw("RowCount", PropertyValue::Integer(2));
+                properties.set("BorderStyle", "None");
+            }
+            ControlType::MonthCalendar => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                properties.set("ShowToday", true);
+                properties.set("ShowTodayCircle", true);
+                properties.set("ShowWeekNumbers", false);
+            }
+            ControlType::HScrollBar | ControlType::VScrollBar => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                use crate::properties::PropertyValue;
+                properties.set_raw("Value", PropertyValue::Integer(0));
+                properties.set_raw("Minimum", PropertyValue::Integer(0));
+                properties.set_raw("Maximum", PropertyValue::Integer(100));
+                properties.set_raw("SmallChange", PropertyValue::Integer(1));
+                properties.set_raw("LargeChange", PropertyValue::Integer(10));
+            }
+            ControlType::ToolTip => {
+                properties.set("Active", true);
+                use crate::properties::PropertyValue;
+                properties.set_raw("AutoPopDelay", PropertyValue::Integer(5000));
+                properties.set_raw("InitialDelay", PropertyValue::Integer(500));
+                properties.set_raw("ReshowDelay", PropertyValue::Integer(100));
+                properties.set("ShowAlways", false);
             }
             ControlType::BindingSourceComponent => {
                 properties.set("DataSource", "");
