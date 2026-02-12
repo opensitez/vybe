@@ -1,20 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <RootNamespace>Project1</RootNamespace>
+    <AssemblyName>Project1</AssemblyName>
     <TargetFramework>net6.0-windows</TargetFramework>
-    <StartupObject>TodoList.Form1</StartupObject>
     <UseWindowsForms>true</UseWindowsForms>
-    <MyType>WindowsForms</MyType>
-    <AssemblyName>TodoList</AssemblyName>
+    <StartupObject>Project1.Form1</StartupObject>
   </PropertyGroup>
-
-  <ItemGroup>
-    <Import Include="System.Data" />
-    <Import Include="System.Drawing" />
-    <Import Include="System.Windows.Forms" />
-  </ItemGroup>
-
   <ItemGroup>
     <Compile Include="Form1.vb">
       <SubType>Form</SubType>
@@ -23,5 +15,4 @@
       <DependentUpon>Form1.vb</DependentUpon>
     </Compile>
   </ItemGroup>
-
 </Project>
