@@ -686,6 +686,7 @@ pub fn FormRunner() -> Element {
     let mut runtime_form = use_signal(|| None::<Form>);
     let mut msgbox_content = use_signal(|| None::<String>);
     let mut parse_error = use_signal(|| None::<String>);
+    let mut handling_event = use_signal(|| false);
 
     // ── Console mode state ──────────────────────────────────────────────
     let mut console_output = use_signal(String::new);
@@ -903,6 +904,12 @@ pub fn FormRunner() -> Element {
         if msgbox_content.read().is_some() {
             return;
         }
+        // Re-entrancy guard: if we're already handling an event (e.g. a modal
+        // dialog is pumping the macOS event loop), reject new events to avoid
+        // deadlocking on the interpreter write lock.
+        if *handling_event.read() {
+            return;
+        }
 
         // Passive mouse-tracking events: dispatch to handler if one exists
         // but skip the full UI sync / side-effects to avoid infinite
@@ -913,6 +920,9 @@ pub fn FormRunner() -> Element {
         );
 
         if is_passive_mouse {
+            if *handling_event.read() {
+                return;
+            }
             if let Some(interp) = interpreter.write().as_mut() {
                 if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
                     let form_class = runtime_form.peek().as_ref()
@@ -928,6 +938,7 @@ pub fn FormRunner() -> Element {
             return;
         }
 
+        handling_event.set(true);
         if let Some(interp) = interpreter.write().as_mut() {
             // ── Pre-event sync: push UI state → instance ──────────
             if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
@@ -1017,6 +1028,7 @@ pub fn FormRunner() -> Element {
 
             process_side_effects(interp, rp, &mut runtime_form, &mut msgbox_content);
         }
+        handling_event.set(false);
     };
 
     // ── Console message polling ─────────────────────────────────────────

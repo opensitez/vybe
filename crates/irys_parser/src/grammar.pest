@@ -24,8 +24,11 @@ extension_attribute = { "<" ~ (^"Runtime.CompilerServices.")? ~ ^"Extension" ~ "
 attribute = _{ "<" ~ (!(">" ~ WHITESPACE* ~ ("_" ~ WHITESPACE* ~ (NEWLINE | EOI))?) ~ ANY)* ~ ">" ~ (WHITESPACE* ~ "_" ~ WHITESPACE* ~ (NEWLINE | EOI))? }
 attribute_line = _{ (extension_attribute ~ (NEWLINE | EOI)?) | (attribute ~ (NEWLINE | EOI)?) }
 
-// Imports statement (skipped)
-imports_statement = _{ ^"Imports" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }
+// Imports statement — captured for namespace resolution
+// Supports: Imports System.IO
+//           Imports IO = System.IO  (alias)
+imports_alias = { identifier ~ "=" }
+imports_statement = { ^"Imports" ~ imports_alias? ~ dotted_identifier ~ (NEWLINE | EOI) }
 
 // Statements
 statement = _{
@@ -192,7 +195,7 @@ with_statement = {
 with_end = { ^"End" ~ ^"With" }
 
 using_statement = {
-    ^"Using" ~ identifier ~ (^"As" ~ type_name)? ~ "=" ~ expression ~ (NEWLINE | EOI)
+    ^"Using" ~ identifier ~ (^"As" ~ (new_expression | type_name ~ "=" ~ expression) | "=" ~ expression) ~ (NEWLINE | EOI)
     ~ (!using_end ~ line)*
     ~ using_end
 }
@@ -283,7 +286,7 @@ class_decl = {
     class_modifier* ~ ^"Class" ~ identifier ~ (NEWLINE | EOI)
     ~ inherits_line?
     ~ implements_line?
-    ~ (!class_end ~ (property_decl | sub_decl | function_decl | event_line | delegate_line | field_line | dim_line | enum_decl | imports_statement | attribute_line | NEWLINE | COMMENT))*
+    ~ (!class_end ~ (property_decl | auto_property_line | sub_decl | function_decl | event_line | delegate_line | field_line | dim_line | enum_decl | imports_statement | attribute_line | NEWLINE | COMMENT))*
     ~ class_end
 }
 class_modifier = _{ partial_keyword | must_inherit_keyword | not_inheritable_keyword | visibility_modifier }
@@ -313,7 +316,7 @@ interface_event = { ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_lis
 structure_decl = {
     (^"Public" | ^"Private" | ^"Friend")? ~ ^"Structure" ~ identifier ~ (NEWLINE | EOI)
     ~ implements_line?
-    ~ (!structure_end ~ (property_decl | sub_decl | function_decl | field_line | dim_line | NEWLINE | COMMENT))*
+    ~ (!structure_end ~ (property_decl | auto_property_line | sub_decl | function_decl | field_line | dim_line | NEWLINE | COMMENT))*
     ~ structure_end
 }
 structure_end = { ^"End" ~ ^"Structure" }
@@ -348,6 +351,12 @@ enum_end = { ^"End" ~ ^"Enum" }
 withevents_keyword = { ^"WithEvents" }
 field_decl = { (^"Public" | ^"Private" | ^"Protected" | ^"Friend") ~ withevents_keyword? ~ identifier ~ ("(" ~ array_bounds? ~ ")")? ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ (array_literal | expression))? }
 field_line = _{ field_decl ~ (NEWLINE | EOI) }
+
+// Auto-implemented property: Public Property Name As String [= defaultValue]
+auto_property_decl = {
+    (^"Public" | ^"Private" | ^"Protected")? ~ (^"ReadOnly" | ^"WriteOnly")? ~ ^"Property" ~ identifier ~ (^"As" ~ type_name)? ~ ("=" ~ expression)?
+}
+auto_property_line = _{ auto_property_decl ~ (NEWLINE | EOI) }
 
 property_decl = {
     (^"Public" | ^"Private")? ~ ^"Property" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI)

@@ -33,6 +33,9 @@ pub fn parse_program(source: &str) -> ParseResult<Program> {
             Rule::program => {
                 for inner in pair.into_inner() {
                     match inner.as_rule() {
+                        Rule::imports_statement => {
+                            declarations.push(parse_imports_statement(inner)?);
+                        }
                         Rule::statement_line => {
                             for stmt_pair in inner.into_inner() {
                                 if stmt_pair.as_rule() == Rule::NEWLINE || stmt_pair.as_rule() == Rule::EOI {
@@ -41,6 +44,8 @@ pub fn parse_program(source: &str) -> ParseResult<Program> {
                                 if stmt_pair.as_rule() == Rule::module_decl {
                                     // Flatten module contents into top-level declarations
                                     declarations.extend(parse_module_decl(stmt_pair)?);
+                                } else if stmt_pair.as_rule() == Rule::namespace_decl {
+                                    declarations.push(parse_namespace_decl(stmt_pair)?);
                                 } else if let Some(decl) = try_parse_declaration(stmt_pair.clone())? {
                                     declarations.push(decl);
                                 } else {
@@ -81,6 +86,8 @@ fn try_parse_declaration(pair: Pair<Rule>) -> ParseResult<Option<Declaration>> {
         Rule::function_decl => Ok(Some(Declaration::Function(parse_function_decl(pair)?))),
         Rule::class_decl => Ok(Some(Declaration::Class(parse_class_decl(pair)?))),
         Rule::enum_decl => Ok(Some(Declaration::Enum(parse_enum_decl(pair)?))),
+        Rule::namespace_decl => Ok(Some(parse_namespace_decl(pair)?)),
+        Rule::imports_statement => Ok(Some(parse_imports_statement(pair)?)),
         _ => Ok(None),
     }
 }
@@ -466,6 +473,91 @@ fn parse_module_decl(pair: Pair<Rule>) -> ParseResult<Vec<Declaration>> {
     Ok(declarations)
 }
 
+/// Parse `Imports [alias =] dotted.path`
+fn parse_imports_statement(pair: Pair<Rule>) -> ParseResult<Declaration> {
+    let mut alias: Option<String> = None;
+    let mut path = String::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::imports_alias => {
+                // imports_alias = { identifier ~ "=" }
+                if let Some(id) = p.into_inner().next() {
+                    alias = Some(id.as_str().to_string());
+                }
+            }
+            Rule::dotted_identifier => {
+                path = p.as_str().to_string();
+            }
+            Rule::NEWLINE => {}
+            _ => {}
+        }
+    }
+
+    Ok(Declaration::Imports(ImportsDecl { path, alias }))
+}
+
+/// Parse `Namespace dotted.name ... End Namespace`
+/// Extracts nested declarations (classes, modules, enums, nested namespaces).
+fn parse_namespace_decl(pair: Pair<Rule>) -> ParseResult<Declaration> {
+    let mut name = String::new();
+    let mut declarations = Vec::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::dotted_identifier => {
+                name = p.as_str().to_string();
+            }
+            Rule::class_decl => {
+                declarations.push(Declaration::Class(parse_class_decl(p)?));
+            }
+            Rule::module_decl => {
+                // Flatten module into declarations (module members are implicitly shared)
+                declarations.extend(parse_module_decl(p)?);
+            }
+            Rule::enum_decl => {
+                declarations.push(Declaration::Enum(parse_enum_decl(p)?));
+            }
+            Rule::namespace_decl => {
+                // Nested namespace
+                declarations.push(parse_namespace_decl(p)?);
+            }
+            Rule::interface_decl | Rule::structure_decl => {
+                // Not yet implemented as full AST nodes — skip
+            }
+            Rule::NEWLINE | Rule::namespace_end => {}
+            _ => {}
+        }
+    }
+
+    Ok(Declaration::Namespace(NamespaceDecl { name, declarations }))
+}
+
+/// Parse an auto-implemented property (`Public Property Name As String = "default"`)
+/// into a VariableDecl (field), since it's syntactic sugar for a backing field.
+fn parse_auto_property_as_field(pair: Pair<Rule>) -> ParseResult<VariableDecl> {
+    let mut name = Identifier::new("");
+    let mut var_type = None;
+    let mut initializer = None;
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::identifier => name = Identifier::new(p.as_str()),
+            Rule::type_name => var_type = Some(VBType::from_str(p.as_str())),
+            Rule::expression => initializer = Some(parse_expression(p)?),
+            // Skip visibility, ReadOnly, WriteOnly keywords
+            _ => {}
+        }
+    }
+
+    Ok(VariableDecl {
+        name,
+        var_type,
+        array_bounds: None,
+        initializer,
+    })
+}
+
 fn parse_class_decl(pair: Pair<Rule>) -> ParseResult<ClassDecl> {
     let inner = pair.into_inner();
     let mut name = Identifier::new("");
@@ -508,6 +600,10 @@ fn parse_class_decl(pair: Pair<Rule>) -> ParseResult<ClassDecl> {
             }
             Rule::identifier => name = Identifier::new(p.as_str()),
             Rule::property_decl => properties.push(parse_property_decl(p)?),
+            Rule::auto_property_decl => {
+                // Auto-implemented property → treat as a field
+                fields.push(parse_auto_property_as_field(p)?);
+            }
             Rule::sub_decl => methods.push(MethodDecl::Sub(parse_sub_decl(p)?)),
             Rule::function_decl => methods.push(MethodDecl::Function(parse_function_decl(p)?)),
             Rule::dim_statement => {
@@ -965,10 +1061,16 @@ fn parse_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
             Ok(Statement::RemoveHandler { event_target, handler })
         }
         // New declarations — parse gracefully as no-op statements for now
-        Rule::interface_decl | Rule::structure_decl | Rule::namespace_decl |
+        Rule::interface_decl | Rule::structure_decl |
         Rule::event_decl | Rule::delegate_sub_decl | Rule::delegate_function_decl => {
             // These are parsed by the grammar but the runtime doesn't execute them yet.
             // Return an expression statement with Nothing to avoid breaking parsing.
+            Ok(Statement::ExpressionStatement(Expression::Nothing))
+        }
+        Rule::namespace_decl => {
+            // Namespace encountered as a statement (e.g. inside module or at top level).
+            // We shouldn't get here normally — it's handled as a declaration in parse_program.
+            // But if we do, just return Nothing to not break.
             Ok(Statement::ExpressionStatement(Expression::Nothing))
         }
         _ => Err(ParseError::UnexpectedRule(pair.as_rule())),
@@ -1875,13 +1977,21 @@ fn parse_using_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
     // Collect remaining pairs
     let remaining: Vec<_> = inner.collect();
     
-    // Find the expression (resource)
+    // Find the expression (resource) - supports both:
+    //   Using x As New Type()        -> new_expression is the resource
+    //   Using x As Type = expr       -> expression is the resource
+    //   Using x = expr               -> expression is the resource
     let mut resource_expr = None;
     let mut body_start_idx = 0;
     
     for (idx, p) in remaining.iter().enumerate() {
         match p.as_rule() {
             Rule::type_name => {}, // Skip type annotation
+            Rule::new_expression => {
+                resource_expr = Some(parse_expression(p.clone())?);
+                body_start_idx = idx + 1;
+                break;
+            }
             Rule::expression => {
                 resource_expr = Some(parse_expression(p.clone())?);
                 body_start_idx = idx + 1;

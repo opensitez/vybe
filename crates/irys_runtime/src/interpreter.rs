@@ -32,6 +32,22 @@ pub struct Interpreter {
     /// When true, console output goes directly to stdout (CLI mode).
     /// When false (default), output is buffered in side_effects (tests/form mode).
     pub direct_console: bool,
+    /// Active Imports statements — maps short names to fully-qualified paths.
+    /// E.g. Imports System.IO → allows using "File" to resolve "System.IO.File".
+    /// Also stores aliases: Imports IO = System.IO → ("IO", "System.IO").
+    pub imports: Vec<ImportEntry>,
+    /// Maps fully-qualified class name → key in self.classes.
+    /// E.g. "myapp.models.customer" → "customer" (the actual key in self.classes).
+    pub namespace_map: HashMap<String, String>,
+}
+
+/// An active Imports entry.
+#[derive(Debug, Clone)]
+pub struct ImportEntry {
+    /// The full path, e.g. "System.IO"
+    pub path: String,
+    /// Optional alias, e.g. Some("IO") for `Imports IO = System.IO`
+    pub alias: Option<String>,
 }
 
 impl Interpreter {
@@ -53,6 +69,8 @@ impl Interpreter {
             console_tx: None,
             console_input_rx: None,
             direct_console: false,
+            imports: Vec::new(),
+            namespace_map: HashMap::new(),
         };
         interp.register_builtin_constants();
         interp.init_namespaces();
@@ -1321,7 +1339,102 @@ impl Interpreter {
                 }
                 Ok(())
             }
+            Declaration::Namespace(ns_decl) => {
+                self.declare_namespace(&ns_decl.name, &ns_decl.declarations)
+            }
+            Declaration::Imports(imp_decl) => {
+                self.imports.push(ImportEntry {
+                    path: imp_decl.path.clone(),
+                    alias: imp_decl.alias.clone(),
+                });
+                // If the import has an alias, register it as an env variable
+                // so `alias.Member` works like a member access.
+                if let Some(alias) = &imp_decl.alias {
+                    // Try to find an existing namespace object for the path
+                    let path_lower = imp_decl.path.to_lowercase();
+                    if let Ok(val) = self.env.get(&path_lower) {
+                        self.env.define(&alias.to_lowercase(), val);
+                    }
+                }
+                Ok(())
+            }
         }
+    }
+
+    /// Register all declarations inside a Namespace block, prefixing them
+    /// with the fully-qualified namespace name.
+    fn declare_namespace(&mut self, ns_name: &str, declarations: &[irys_parser::Declaration]) -> Result<(), RuntimeError> {
+        let prev_module = self.current_module.clone();
+        // Set current_module to the namespace so nested declare() calls prefix correctly
+        let full_ns = if let Some(ref outer) = prev_module {
+            format!("{}.{}", outer, ns_name)
+        } else {
+            ns_name.to_string()
+        };
+        self.current_module = Some(full_ns.clone());
+
+        for decl in declarations {
+            match decl {
+                Declaration::Namespace(inner_ns) => {
+                    // Nested namespace: append to current
+                    self.declare_namespace(&inner_ns.name, &inner_ns.declarations)?;
+                }
+                Declaration::Class(class_decl) => {
+                    // Register with fully-qualified key AND short name
+                    let short_key = class_decl.name.as_str().to_lowercase();
+                    let qualified_key = format!("{}.{}", full_ns.to_lowercase(), short_key);
+
+                    // Store in classes under the qualified key
+                    if let Some(existing) = self.classes.get_mut(&qualified_key) {
+                        if existing.is_partial || class_decl.is_partial {
+                            existing.fields.extend(class_decl.fields.clone());
+                            existing.methods.extend(class_decl.methods.clone());
+                            existing.properties.extend(class_decl.properties.clone());
+                            if existing.inherits.is_none() {
+                                existing.inherits = class_decl.inherits.clone();
+                            }
+                            if existing.implements.is_empty() && !class_decl.implements.is_empty() {
+                                existing.implements = class_decl.implements.clone();
+                            }
+                        } else {
+                            *existing = class_decl.clone();
+                        }
+                    } else {
+                        self.classes.insert(qualified_key.clone(), class_decl.clone());
+                    }
+
+                    // Also register under the short name if not already taken (convenience)
+                    if !self.classes.contains_key(&short_key) {
+                        self.classes.insert(short_key.clone(), class_decl.clone());
+                    }
+
+                    // Record the FQ → key mapping
+                    self.namespace_map.insert(qualified_key.clone(), qualified_key.clone());
+                    self.namespace_map.insert(short_key.clone(), qualified_key.clone());
+
+                    // Register class methods
+                    for method in &class_decl.methods {
+                        match method {
+                            irys_parser::ast::MethodDecl::Sub(sub_decl) => {
+                                let sub_key = format!("{}.{}", qualified_key, sub_decl.name.as_str().to_lowercase());
+                                self.subs.insert(sub_key, sub_decl.clone());
+                            }
+                            irys_parser::ast::MethodDecl::Function(func_decl) => {
+                                let func_key = format!("{}.{}", qualified_key, func_decl.name.as_str().to_lowercase());
+                                self.functions.insert(func_key, func_decl.clone());
+                            }
+                        }
+                    }
+                }
+                other => {
+                    // Subs, Functions, Variables, Constants, Enums — use normal declare()
+                    self.declare(other)?;
+                }
+            }
+        }
+
+        self.current_module = prev_module;
+        Ok(())
     }
 
     /// Resolve a class name to the key actually stored in `self.classes`.
@@ -1329,20 +1442,43 @@ impl Interpreter {
     /// Tries, in order:
     ///   1. exact match (already lowercased)
     ///   2. current-module-qualified  (`module.classname`)
-    ///   3. any key whose last segment matches (`*.classname`)
+    ///   3. namespace_map lookup (fully-qualified from namespace declarations)
+    ///   4. imports-qualified (`imported_ns.classname`)
+    ///   5. any key whose last segment matches (`*.classname`)
     fn resolve_class_key(&self, class_name: &str) -> Option<String> {
         let lower = class_name.to_lowercase();
+
+        // 1. Exact match
         if self.classes.contains_key(&lower) {
             return Some(lower);
         }
-        // Try module-qualified
+
+        // 2. Try module/namespace-qualified
         if let Some(module) = &self.current_module {
             let qualified = format!("{}.{}", module.to_lowercase(), lower);
             if self.classes.contains_key(&qualified) {
                 return Some(qualified);
             }
         }
-        // Fallback: search for any key ending with `.classname`
+
+        // 3. Check namespace_map
+        if let Some(fq_key) = self.namespace_map.get(&lower) {
+            if self.classes.contains_key(fq_key) {
+                return Some(fq_key.clone());
+            }
+        }
+
+        // 4. Try each imported namespace as prefix
+        for imp in &self.imports {
+            if imp.alias.is_none() {
+                let qualified = format!("{}.{}", imp.path.to_lowercase(), lower);
+                if self.classes.contains_key(&qualified) {
+                    return Some(qualified);
+                }
+            }
+        }
+
+        // 5. Fallback: search for any key ending with `.classname`
         let suffix = format!(".{}", lower);
         self.classes.keys()
             .find(|k| k.ends_with(&suffix))
@@ -2377,6 +2513,11 @@ impl Interpreter {
             }
 
             Statement::ExpressionStatement(expr) => {
+                if let Expression::MethodCall(_, m, _) = expr {
+                    if m.as_str().eq_ignore_ascii_case("add") {
+                        eprintln!("[ExprStmt] MethodCall with add: {:?}", expr);
+                    }
+                }
                 self.evaluate_expr(expr)?;
                 Ok(())
             }
@@ -5012,12 +5153,15 @@ impl Interpreter {
                             let mut flds = std::collections::HashMap::new();
                             flds.insert("__type".to_string(), Value::String("DataBindings".to_string()));
                             flds.insert("__parent".to_string(), Value::Object(obj_ref.clone()));
-                            flds.insert("__parent_name".to_string(), {
+                            let parent_name_val = {
                                 let borrow = obj_ref.borrow();
-                                borrow.fields.get("name")
+                                let n = borrow.fields.get("name")
                                     .cloned()
-                                    .unwrap_or(Value::String(class_name_str.clone()))
-                            });
+                                    .unwrap_or(Value::String(class_name_str.clone()));
+                                eprintln!("[DB proxy OBJ] class={} name={}", class_name_str, n.as_string());
+                                n
+                            };
+                            flds.insert("__parent_name".to_string(), parent_name_val);
                             let proxy = crate::value::ObjectData { class_name: "DataBindings".to_string(), fields: flds };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(proxy))));
                         }
@@ -5059,6 +5203,7 @@ impl Interpreter {
                     let member_lower = member.as_str().to_lowercase();
                     // DataBindings proxy for string-proxy controls
                     if member_lower == "databindings" {
+                        eprintln!("[DB string-proxy] obj_name={}", obj_name);
                         let mut flds = std::collections::HashMap::new();
                         flds.insert("__type".to_string(), Value::String("DataBindings".to_string()));
                         flds.insert("__parent_name".to_string(), Value::String(obj_name.clone()));
@@ -5174,7 +5319,19 @@ impl Interpreter {
                      }
                 }
 
-                // 5. Fallback: implicit function call without parentheses (e.g. "Now", "Date")
+                // 5. Check imports aliases: `Imports IO = System.IO` → IO resolves to the namespace
+                for imp in &self.imports {
+                    if let Some(alias) = &imp.alias {
+                        if alias.eq_ignore_ascii_case(var_name) {
+                            // Try to resolve the path as an env value (namespace object)
+                            if let Ok(val) = self.env.get(&imp.path.to_lowercase()) {
+                                return Ok(val);
+                            }
+                        }
+                    }
+                }
+
+                // 6. Fallback: implicit function call without parentheses (e.g. "Now", "Date")
                 match self.call_procedure(name, &[]) {
                     Ok(val) => return Ok(val),
                     Err(_) => return Err(RuntimeError::UndefinedVariable(var_name.to_string())),
@@ -5257,8 +5414,16 @@ impl Interpreter {
                 return self.call_user_function_exprs(&func, args, None);
             }
         }
-        
-        // Try 3: Global search - look for any function with matching unqualified name
+        // Try 3: Check imports-qualified names
+        for imp in &self.imports {
+            if imp.alias.is_none() {
+                let qualified = format!("{}.{}", imp.path.to_lowercase(), name_str);
+                if let Some(func) = self.functions.get(&qualified).cloned() {
+                    return self.call_user_function_exprs(&func, args, None);
+                }
+            }
+        }
+        // Try 4: Global search - look for any function with matching unqualified name
         // This makes BAS module functions globally accessible
         for (key, func) in &self.functions {
             if key.ends_with(&format!(".{}", name_str)) || key == &name_str {
@@ -5279,8 +5444,16 @@ impl Interpreter {
                 return self.call_user_sub_exprs(&sub, args, None);
             }
         }
-        
-        // Try 3: Global search for subs
+        // Try 3: Check imports-qualified names
+        for imp in &self.imports {
+            if imp.alias.is_none() {
+                let qualified = format!("{}.{}", imp.path.to_lowercase(), name_str);
+                if let Some(sub) = self.subs.get(&qualified).cloned() {
+                    return self.call_user_sub_exprs(&sub, args, None);
+                }
+            }
+        }
+        // Try 4: Global search for subs
         for (key, sub) in &self.subs {
             if key.ends_with(&format!(".{}", name_str)) || key == &name_str {
                 return self.call_user_sub_exprs(&sub.clone(), args, None);
@@ -5680,7 +5853,11 @@ impl Interpreter {
         }
 
         // Evaluate object to check if it's a Collection or Dialog
-        if let Ok(obj_val) = self.evaluate_expr(obj) {
+        let eval_result = self.evaluate_expr(obj);
+        if method_name == "add" {
+            eprintln!("[call_method::add] obj_expr={:?} eval={}", obj, match &eval_result { Ok(Value::Object(r)) => format!("Object({})", r.borrow().fields.get("__type").map(|v|v.as_string()).unwrap_or_default()), Ok(Value::String(s)) => format!("String({})", s), Ok(Value::Nothing) => "Nothing".to_string(), Ok(_) => "other".to_string(), Err(e) => format!("ERR: {:?}", e) });
+        }
+        if let Ok(obj_val) = eval_result {
             // Universal value methods (works on any type: Integer, String, Double, Boolean, etc.)
             match method_name.as_str() {
                 "tostring" => {

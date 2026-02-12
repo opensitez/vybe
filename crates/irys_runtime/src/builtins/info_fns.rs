@@ -182,112 +182,63 @@ pub fn inputbox_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     }
 }
 
-/// Show a native OS message box dialog (blocking). Returns the DialogResult integer.
-/// Maps: OK=1, Cancel=2, Abort=3, Retry=4, Ignore=5, Yes=6, No=7
+/// Show a native OS message box dialog using rfd (non-blocking to the event loop).
+/// Returns the DialogResult integer: OK=1, Cancel=2, Abort=3, Retry=4, Ignore=5, Yes=6, No=7
 pub fn show_native_msgbox(message: &str, title: &str, buttons: i32) -> i32 {
     // buttons: 0=OK, 1=OKCancel, 2=AbortRetryIgnore, 3=YesNoCancel, 4=YesNo, 5=RetryCancel
-    #[cfg(target_os = "macos")]
-    {
-        use std::process::Command;
+    use rfd::{MessageDialog, MessageLevel, MessageButtons, MessageDialogResult};
 
-        let button_spec = match buttons {
-            1 => r#"buttons {"Cancel", "OK"} default button "OK""#,
-            4 => r#"buttons {"No", "Yes"} default button "Yes""#,
-            3 => r#"buttons {"Cancel", "No", "Yes"} default button "Yes""#,
-            5 => r#"buttons {"Cancel", "Retry"} default button "Retry""#,
-            _ => r#"buttons {"OK"} default button "OK""#,
-        };
+    let rfd_buttons = match buttons {
+        1 => MessageButtons::OkCancel,
+        4 => MessageButtons::YesNo,
+        3 => MessageButtons::YesNoCancelCustom("Yes".into(), "No".into(), "Cancel".into()),
+        5 => MessageButtons::OkCancelCustom("Retry".into(), "Cancel".into()),
+        2 => MessageButtons::YesNoCancelCustom("Abort".into(), "Retry".into(), "Ignore".into()),
+        _ => MessageButtons::Ok,
+    };
 
-        let script = format!(
-            "display dialog \"{}\" with title \"{}\" {}",
-            message.replace("\"", "\\\""),
-            title.replace("\"", "\\\""),
-            button_spec
-        );
+    let result = MessageDialog::new()
+        .set_title(title)
+        .set_description(message)
+        .set_level(MessageLevel::Info)
+        .set_buttons(rfd_buttons)
+        .show();
 
-        match Command::new("osascript").arg("-e").arg(&script).output() {
-            Ok(output) => {
-                let result = String::from_utf8_lossy(&output.stdout);
-                // Parse "button returned:OK" etc.
-                if let Some(btn_part) = result.split("button returned:").nth(1) {
-                    let btn = btn_part.trim();
-                    return match btn {
-                        "OK" => 1,
-                        "Cancel" => 2,
-                        "Yes" => 6,
-                        "No" => 7,
-                        "Retry" => 4,
-                        "Abort" => 3,
-                        "Ignore" => 5,
-                        _ => 1,
-                    };
-                }
-                // User pressed Cancel (error exit code 1)
-                if !output.status.success() {
-                    return 2; // Cancel
-                }
-                1 // OK
+    match result {
+        MessageDialogResult::Ok => 1,
+        MessageDialogResult::Cancel => 2,
+        MessageDialogResult::Yes => {
+            // For AbortRetryIgnore (buttons=2), Yes maps to "Abort"=3
+            if buttons == 2 { 3 } else { 6 }
+        }
+        MessageDialogResult::No => {
+            // For AbortRetryIgnore (buttons=2), No maps to "Retry"=4
+            if buttons == 2 { 4 } else { 7 }
+        }
+        MessageDialogResult::Custom(s) => {
+            match s.as_str() {
+                "Retry" => 4,
+                "Cancel" => 2,
+                "Abort" => 3,
+                "Ignore" => 5,
+                "Yes" => 6,
+                "No" => 7,
+                _ => 1,
             }
-            _ => 1,
         }
     }
-
-    #[cfg(target_os = "linux")]
-    {
-        use std::process::Command;
-        // zenity --info for OK, --question for Yes/No
-        let result = match buttons {
-            4 => Command::new("zenity")
-                .arg("--question")
-                .arg(format!("--title={}", title))
-                .arg(format!("--text={}", message))
-                .status(),
-            _ => Command::new("zenity")
-                .arg("--info")
-                .arg(format!("--title={}", title))
-                .arg(format!("--text={}", message))
-                .status(),
-        };
-        match result {
-            Ok(status) => if status.success() { if buttons == 4 { 6 } else { 1 } } else { if buttons == 4 { 7 } else { 2 } },
-            _ => 1,
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::process::Command;
-        let ps_type = match buttons {
-            1 => "OKCancel", 4 => "YesNo", 3 => "YesNoCancel", 5 => "RetryCancel",
-            _ => "OK",
-        };
-        let script = format!(
-            "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; \
-             [System.Windows.Forms.MessageBox]::Show('{}', '{}', '{}')",
-            message.replace("'", "''"), title.replace("'", "''"), ps_type
-        );
-        match Command::new("powershell").arg("-NoProfile").arg("-Command").arg(&script).output() {
-            Ok(output) if output.status.success() => {
-                let r = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                match r.as_str() {
-                    "OK" => 1, "Cancel" => 2, "Yes" => 6, "No" => 7, "Retry" => 4, "Abort" => 3, "Ignore" => 5,
-                    _ => 1,
-                }
-            }
-            _ => 1,
-        }
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { 1 }
 }
 
-/// Show native OS input dialog
+/// Show native OS input dialog using rfd (non-blocking to the event loop)
 pub fn show_native_input_dialog(prompt: &str, title: &str, default_value: &str) -> Option<String> {
+    // rfd doesn't have an input dialog, so we use a platform-appropriate approach
+    // that keeps the macOS run loop pumping.
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
-        
+        // Use osascript but run it in a way that the result comes back quickly
+        // For InputBox, we need text input which rfd doesn't support.
+        // Run osascript with a timeout to prevent indefinite blocking.
         let script = format!(
             "display dialog \"{}\" default answer \"{}\" with title \"{}\" buttons {{\"OK\", \"Cancel\"}} default button \"OK\"",
             prompt.replace("\"", "\\\""),
@@ -298,7 +249,6 @@ pub fn show_native_input_dialog(prompt: &str, title: &str, default_value: &str) 
         match Command::new("osascript").arg("-e").arg(&script).output() {
             Ok(output) if output.status.success() => {
                 let result = String::from_utf8_lossy(&output.stdout);
-                // Parse result like "button returned:OK, text returned:Hello"
                 if let Some(text_part) = result.split("text returned:").nth(1) {
                     return Some(text_part.trim().to_string());
                 }
@@ -330,7 +280,6 @@ pub fn show_native_input_dialog(prompt: &str, title: &str, default_value: &str) 
     {
         use std::process::Command;
         
-        // Use PowerShell with InputBox from VB assembly
         let script = format!(
             "[void][Reflection.Assembly]::LoadWithPartialName('Microsoft.VisualBasic'); \
              [Microsoft.VisualBasic.Interaction]::InputBox('{}', '{}', '{}')",

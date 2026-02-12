@@ -9,6 +9,28 @@ pub enum Declaration {
     Function(FunctionDecl),
     Class(ClassDecl),
     Enum(EnumDecl),
+    /// `Namespace MyApp.Models ... End Namespace`
+    Namespace(NamespaceDecl),
+    /// `Imports System.IO` or `Imports alias = Some.Namespace`
+    Imports(ImportsDecl),
+}
+
+/// A VB.NET Namespace block containing nested declarations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NamespaceDecl {
+    /// Dotted name, e.g. "MyApp.Models"
+    pub name: String,
+    /// Declarations nested inside this namespace (classes, modules, enums, nested namespaces)
+    pub declarations: Vec<Declaration>,
+}
+
+/// A VB.NET Imports statement.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportsDecl {
+    /// The fully qualified namespace/type path, e.g. "System.IO"
+    pub path: String,
+    /// Optional alias: `Imports IO = System.IO` → alias = Some("IO")
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -232,9 +232,11 @@ pub fn dialog_showdialog(dialog: &Value) -> Result<Value, RuntimeError> {
                     if let Some(path) = dialog.pick_file() {
                         obj_ref.borrow_mut().fields.insert("FileName".to_string(), 
                             Value::String(path.to_string_lossy().to_string()));
-                        return Ok(Value::Boolean(true));
+                        // DialogResult.OK = 1
+                        return Ok(Value::Integer(1));
                     }
-                    Ok(Value::Boolean(false))
+                    // DialogResult.Cancel = 2
+                    Ok(Value::Integer(2))
                 }
                 
                 "SaveFileDialog" => {
@@ -282,9 +284,11 @@ pub fn dialog_showdialog(dialog: &Value) -> Result<Value, RuntimeError> {
                     if let Some(path) = dialog.save_file() {
                         obj_ref.borrow_mut().fields.insert("FileName".to_string(), 
                             Value::String(path.to_string_lossy().to_string()));
-                        return Ok(Value::Boolean(true));
+                        // DialogResult.OK = 1
+                        return Ok(Value::Integer(1));
                     }
-                    Ok(Value::Boolean(false))
+                    // DialogResult.Cancel = 2
+                    Ok(Value::Integer(2))
                 }
                 
                 "FolderBrowserDialog" => {
@@ -304,9 +308,9 @@ pub fn dialog_showdialog(dialog: &Value) -> Result<Value, RuntimeError> {
                     if let Some(path) = dialog.pick_folder() {
                         obj_ref.borrow_mut().fields.insert("SelectedPath".to_string(), 
                             Value::String(path.to_string_lossy().to_string()));
-                        return Ok(Value::Boolean(true));
+                        return Ok(Value::Integer(1));
                     }
-                    Ok(Value::Boolean(false))
+                    Ok(Value::Integer(2))
                 }
                 
                 "ColorDialog" => {
@@ -318,9 +322,9 @@ pub fn dialog_showdialog(dialog: &Value) -> Result<Value, RuntimeError> {
                     if let Some(selected_color) = show_native_color_picker(&current_color) {
                         obj_ref.borrow_mut().fields.insert("Color".to_string(), 
                             Value::String(selected_color));
-                        Ok(Value::Boolean(true))
+                        Ok(Value::Integer(1)) // DialogResult.OK
                     } else {
-                        Ok(Value::Boolean(false))
+                        Ok(Value::Integer(2)) // DialogResult.Cancel
                     }
                 }
                 
@@ -343,13 +347,13 @@ pub fn dialog_showdialog(dialog: &Value) -> Result<Value, RuntimeError> {
                             Value::String(font_name));
                         obj_ref.borrow_mut().fields.insert("FontSize".to_string(), 
                             Value::Double(font_size));
-                        Ok(Value::Boolean(true))
+                        Ok(Value::Integer(1)) // DialogResult.OK
                     } else {
-                        Ok(Value::Boolean(false))
+                        Ok(Value::Integer(2)) // DialogResult.Cancel
                     }
                 }
                 
-                _ => Ok(Value::Boolean(false))
+                _ => Ok(Value::Integer(2)) // DialogResult.Cancel
             }
         }
         _ => Err(RuntimeError::Custom("ShowDialog called on non-dialog object".to_string()))
