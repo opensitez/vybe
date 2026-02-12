@@ -316,6 +316,100 @@ impl Interpreter {
         })))
     }
 
+    /// Initialize type-specific default fields for WinForms control objects.
+    /// Extracted to a separate function to keep `evaluate_expr` stack frame small.
+    #[inline(never)]
+    fn init_control_type_defaults(base_name: &str, fields: &mut std::collections::HashMap<String, Value>) {
+        let base_lower = base_name.to_lowercase();
+        match base_lower.as_str() {
+            "textbox" => {
+                fields.insert("readonly".to_string(), Value::Boolean(false));
+                fields.insert("multiline".to_string(), Value::Boolean(false));
+                fields.insert("passwordchar".to_string(), Value::String(String::new()));
+                fields.insert("maxlength".to_string(), Value::Integer(32767));
+                fields.insert("scrollbars".to_string(), Value::Integer(0));
+                fields.insert("wordwrap".to_string(), Value::Boolean(true));
+            }
+            "combobox" => {
+                fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("selectedindex".to_string(), Value::Integer(-1));
+                fields.insert("selecteditem".to_string(), Value::Nothing);
+                fields.insert("dropdownstyle".to_string(), Value::Integer(0));
+            }
+            "listbox" => {
+                fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("selectedindex".to_string(), Value::Integer(-1));
+                fields.insert("selecteditem".to_string(), Value::Nothing);
+                fields.insert("selectionmode".to_string(), Value::Integer(1));
+            }
+            "progressbar" => {
+                fields.insert("value".to_string(), Value::Integer(0));
+                fields.insert("minimum".to_string(), Value::Integer(0));
+                fields.insert("maximum".to_string(), Value::Integer(100));
+                fields.insert("step".to_string(), Value::Integer(10));
+                fields.insert("style".to_string(), Value::Integer(0));
+            }
+            "numericupdown" => {
+                fields.insert("value".to_string(), Value::Integer(0));
+                fields.insert("minimum".to_string(), Value::Integer(0));
+                fields.insert("maximum".to_string(), Value::Integer(100));
+                fields.insert("increment".to_string(), Value::Integer(1));
+                fields.insert("decimalplaces".to_string(), Value::Integer(0));
+                fields.insert("readonly".to_string(), Value::Boolean(false));
+            }
+            "treeview" => {
+                fields.insert("nodes".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("selectednode".to_string(), Value::Nothing);
+                fields.insert("pathseparator".to_string(), Value::String("\\".to_string()));
+                fields.insert("checkboxes".to_string(), Value::Boolean(false));
+                fields.insert("showlines".to_string(), Value::Boolean(true));
+                fields.insert("showrootlines".to_string(), Value::Boolean(true));
+            }
+            "listview" => {
+                fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("columns".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("view".to_string(), Value::Integer(1));
+                fields.insert("fullrowselect".to_string(), Value::Boolean(false));
+                fields.insert("gridlines".to_string(), Value::Boolean(false));
+                fields.insert("checkboxes".to_string(), Value::Boolean(false));
+                fields.insert("multiselect".to_string(), Value::Boolean(true));
+                fields.insert("selecteditems".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+            }
+            "datagridview" => {
+                fields.insert("rows".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("columns".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("selectedrows".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("allowusertoaddrows".to_string(), Value::Boolean(true));
+                fields.insert("allowusertodeleterows".to_string(), Value::Boolean(true));
+                fields.insert("readonly".to_string(), Value::Boolean(false));
+            }
+            "tabcontrol" => {
+                fields.insert("tabpages".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("selectedindex".to_string(), Value::Integer(0));
+                fields.insert("selectedtab".to_string(), Value::Nothing);
+            }
+            "tabpage" => {}
+            "menustrip" | "contextmenustrip" | "statusstrip" => {
+                fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+            }
+            "toolstripstatuslabel" => {
+                fields.insert("text".to_string(), Value::String(String::new()));
+                fields.insert("spring".to_string(), Value::Boolean(false));
+                fields.insert("autosize".to_string(), Value::Boolean(true));
+            }
+            "toolstripmenuitem" => {
+                fields.insert("dropdownitems".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("checked".to_string(), Value::Boolean(false));
+                fields.insert("shortcutkeys".to_string(), Value::Integer(0));
+            }
+            "richtextbox" => {
+                fields.insert("readonly".to_string(), Value::Boolean(false));
+                fields.insert("scrollbars".to_string(), Value::Integer(3));
+            }
+            _ => {}
+        }
+    }
+
     /// Create a System.Windows.Forms.MouseEventArgs object.
     pub fn make_mouse_event_args(button: i32, clicks: i32, x: i32, y: i32, delta: i32) -> Value {
         let mut fields = std::collections::HashMap::new();
@@ -1085,9 +1179,53 @@ impl Interpreter {
 
                                 return Ok(());
                             }
-                            // Store other BindingSource properties directly
+                            // Store other BindingSource properties and trigger appropriate side effects
                             if member_lower == "datamember" || member_lower == "filter" || member_lower == "sort" || member_lower == "position" {
                                 obj_ref.borrow_mut().fields.insert(member_lower.clone(), val.clone());
+
+                                if member_lower == "position" {
+                                    // Position changed → refresh all bound controls
+                                    let ds = obj_ref.borrow().fields.get("__datasource").cloned().unwrap_or(Value::Nothing);
+                                    let new_pos = val.as_integer().unwrap_or(0);
+                                    let count = self.binding_source_row_count_filtered(&Value::Object(obj_ref.clone()));
+                                    let bs_name = obj_ref.borrow().fields.get("name")
+                                        .map(|v| v.as_string()).unwrap_or_default();
+                                    self.side_effects.push_back(crate::RuntimeSideEffect::BindingPositionChanged {
+                                        binding_source_name: bs_name,
+                                        position: new_pos,
+                                        count,
+                                    });
+                                    self.refresh_bindings_filtered(&obj_ref, &ds, new_pos);
+                                } else if member_lower == "filter" || member_lower == "sort" {
+                                    // Filter/Sort changed → re-emit DataSourceChanged for all bound controls + refresh bindings
+                                    let bound: Vec<String> = obj_ref.borrow()
+                                        .fields.get("__bound_controls")
+                                        .and_then(|v| if let Value::Array(arr) = v {
+                                            Some(arr.iter().filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).collect())
+                                        } else { None })
+                                        .unwrap_or_default();
+                                    let bs_val = Value::Object(obj_ref.clone());
+                                    for ctrl_name in bound {
+                                        let (columns, rows) = self.get_datasource_table_data_filtered(&bs_val);
+                                        self.side_effects.push_back(crate::RuntimeSideEffect::DataSourceChanged {
+                                            control_name: ctrl_name,
+                                            columns,
+                                            rows,
+                                        });
+                                    }
+                                    // Reset position to 0 and refresh bindings
+                                    obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Integer(0));
+                                    let ds = obj_ref.borrow().fields.get("__datasource").cloned().unwrap_or(Value::Nothing);
+                                    let count = self.binding_source_row_count_filtered(&Value::Object(obj_ref.clone()));
+                                    let bs_name = obj_ref.borrow().fields.get("name")
+                                        .map(|v| v.as_string()).unwrap_or_default();
+                                    self.side_effects.push_back(crate::RuntimeSideEffect::BindingPositionChanged {
+                                        binding_source_name: bs_name,
+                                        position: 0,
+                                        count,
+                                    });
+                                    self.refresh_bindings_filtered(&obj_ref, &ds, 0);
+                                }
                                 return Ok(());
                             }
                         }
@@ -1144,7 +1282,8 @@ impl Interpreter {
                                 "webbrowser" | "errorprovider" | "tooltip" | "backgroundworker" |
                                 "datagridview" | "bindingnavigator" | "bindingsource" |
                                 "flowlayoutpanel" | "tablelayoutpanel" | "splitcontainer" |
-                                "maskedtextbox" | "domainupdown" | "contextmenustrip"
+                                "maskedtextbox" | "domainupdown" | "contextmenustrip" |
+                                "toolstripstatuslabel"
                             );
                             if is_winforms {
                                 Value::String(prop_name.clone())
@@ -2748,6 +2887,12 @@ impl Interpreter {
                     fields.insert("backcolor".to_string(), Value::String(String::new()));
                     fields.insert("forecolor".to_string(), Value::String(String::new()));
                     fields.insert("font".to_string(), Value::Nothing);
+                    fields.insert("anchor".to_string(), Value::Integer(5)); // Top | Left
+                    fields.insert("dock".to_string(), Value::Integer(0)); // None
+
+                    // Type-specific default fields
+                    Self::init_control_type_defaults(&base_name, &mut fields);
+
                     let obj = crate::value::ObjectData { class_name: base_name, fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
@@ -4005,13 +4150,46 @@ impl Interpreter {
                                     let h = b.fields.get("height").and_then(|v| v.as_integer().ok()).unwrap_or(0);
                                     return Ok(Self::make_rectangle(x, y, w, h));
                                 }
+                                // Computed count properties derived from collections
+                                "tabcount" => {
+                                    let b = obj_ref.borrow();
+                                    if let Some(Value::Collection(coll)) = b.fields.get("tabpages") {
+                                        return Ok(Value::Integer(coll.borrow().items.len() as i32));
+                                    }
+                                    return Ok(Value::Integer(0));
+                                }
+                                "rowcount" => {
+                                    let b = obj_ref.borrow();
+                                    if let Some(Value::Collection(coll)) = b.fields.get("rows") {
+                                        return Ok(Value::Integer(coll.borrow().items.len() as i32));
+                                    }
+                                    return Ok(Value::Integer(0));
+                                }
+                                "columncount" => {
+                                    let b = obj_ref.borrow();
+                                    if let Some(Value::Collection(coll)) = b.fields.get("columns") {
+                                        return Ok(Value::Integer(coll.borrow().items.len() as i32));
+                                    }
+                                    return Ok(Value::Integer(0));
+                                }
                                 _ => {}
                             }
                         }
                     }
 
                     match member_lower.as_str() {
-                        "controls" | "components" => return Ok(Value::Nothing),
+                        "controls" => {
+                            // Return a Controls collection proxy — allows Controls.Add/Count
+                            let b = obj_ref.borrow();
+                            if let Some(coll) = b.fields.get("__controls") {
+                                return Ok(coll.clone());
+                            }
+                            drop(b);
+                            let coll = Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new())));
+                            obj_ref.borrow_mut().fields.insert("__controls".to_string(), coll.clone());
+                            return Ok(coll);
+                        }
+                        "components" => return Ok(Value::Nothing),
                         "databindings" => {
                             // Return a DataBindings proxy for this control object
                             let mut flds = std::collections::HashMap::new();
@@ -4079,7 +4257,30 @@ impl Interpreter {
                         if let Ok(val) = self.env.get(&key) {
                             return Ok(val);
                         }
-                        return Ok(Value::Array(Vec::new()));
+                        // Auto-create a collection and store it
+                        let coll = Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new())));
+                        self.env.define_global(&key, coll.clone());
+                        return Ok(coll);
+                    }
+                    // Items/Nodes/TabPages/DropDownItems — auto-create Collection for string-proxy controls
+                    if member_lower == "items" || member_lower == "nodes" || member_lower == "tabpages" || member_lower == "dropdownitems" {
+                        let key = format!("{}.__{}", obj_name, member_lower);
+                        if let Ok(val) = self.env.get(&key) {
+                            return Ok(val);
+                        }
+                        let coll = Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new())));
+                        self.env.define_global(&key, coll.clone());
+                        return Ok(coll);
+                    }
+                    // SelectedItems/SelectedRows for string-proxy controls
+                    if member_lower == "selecteditems" || member_lower == "selectedrows" {
+                        let key = format!("{}.__{}", obj_name, member_lower);
+                        if let Ok(val) = self.env.get(&key) {
+                            return Ok(val);
+                        }
+                        let coll = Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new())));
+                        self.env.define_global(&key, coll.clone());
+                        return Ok(coll);
                     }
                     let key = format!("{}.{}", obj_name, member.as_str());
                     if let Ok(val) = self.env.get(&key) {
@@ -7421,8 +7622,9 @@ impl Interpreter {
                         .map(|v| v.as_string()).unwrap_or_default();
                     match method_name.as_str() {
                         "movenext" => {
+                            let bs_val = Value::Object(obj_ref.clone());
                             let ds = obj_ref.borrow().fields.get("__datasource").cloned().unwrap_or(Value::Nothing);
-                            let count = self.binding_source_row_count(&ds);
+                            let count = self.binding_source_row_count_filtered(&bs_val);
                             let pos = obj_ref.borrow().fields.get("position")
                                 .and_then(|v| if let Value::Integer(i) = v { Some(*i) } else { None })
                                 .unwrap_or(0);
@@ -7433,12 +7635,13 @@ impl Interpreter {
                                 position: new_pos,
                                 count,
                             });
-                            self.refresh_bindings(obj_ref, &ds, new_pos);
+                            self.refresh_bindings_filtered(&obj_ref, &ds, new_pos);
                             return Ok(Value::Nothing);
                         }
                         "moveprevious" => {
+                            let bs_val = Value::Object(obj_ref.clone());
                             let ds = obj_ref.borrow().fields.get("__datasource").cloned().unwrap_or(Value::Nothing);
-                            let count = self.binding_source_row_count(&ds);
+                            let count = self.binding_source_row_count_filtered(&bs_val);
                             let pos = obj_ref.borrow().fields.get("position")
                                 .and_then(|v| if let Value::Integer(i) = v { Some(*i) } else { None })
                                 .unwrap_or(0);
@@ -7449,24 +7652,26 @@ impl Interpreter {
                                 position: new_pos,
                                 count,
                             });
-                            self.refresh_bindings(obj_ref, &ds, new_pos);
+                            self.refresh_bindings_filtered(&obj_ref, &ds, new_pos);
                             return Ok(Value::Nothing);
                         }
                         "movefirst" => {
+                            let bs_val = Value::Object(obj_ref.clone());
                             let ds = obj_ref.borrow().fields.get("__datasource").cloned().unwrap_or(Value::Nothing);
-                            let count = self.binding_source_row_count(&ds);
+                            let count = self.binding_source_row_count_filtered(&bs_val);
                             obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Integer(0));
                             self.side_effects.push_back(crate::RuntimeSideEffect::BindingPositionChanged {
                                 binding_source_name: bs_name.clone(),
                                 position: 0,
                                 count,
                             });
-                            self.refresh_bindings(obj_ref, &ds, 0);
+                            self.refresh_bindings_filtered(&obj_ref, &ds, 0);
                             return Ok(Value::Nothing);
                         }
                         "movelast" => {
+                            let bs_val = Value::Object(obj_ref.clone());
                             let ds = obj_ref.borrow().fields.get("__datasource").cloned().unwrap_or(Value::Nothing);
-                            let count = self.binding_source_row_count(&ds);
+                            let count = self.binding_source_row_count_filtered(&bs_val);
                             let last = if count > 0 { count - 1 } else { 0 };
                             obj_ref.borrow_mut().fields.insert("position".to_string(), Value::Integer(last));
                             self.side_effects.push_back(crate::RuntimeSideEffect::BindingPositionChanged {
@@ -7474,7 +7679,7 @@ impl Interpreter {
                                 position: last,
                                 count,
                             });
-                            self.refresh_bindings(obj_ref, &ds, last);
+                            self.refresh_bindings_filtered(&obj_ref, &ds, last);
                             return Ok(Value::Nothing);
                         }
                         "removecurrent" => {
@@ -9177,12 +9382,19 @@ impl Interpreter {
             }
         }
 
-        // Handle form methods
-        match method_name.as_str() {
+        // Handle form methods (extracted to keep call_method stack frame small)
+        self.dispatch_form_control_method(obj, &method_name, &object_name, &arg_values)
+    }
+
+    /// Dispatch form/control methods like Show, Hide, Close, PerformStep, etc.
+    /// Extracted from `call_method` to reduce stack frame size.
+    #[inline(never)]
+    fn dispatch_form_control_method(&mut self, obj: &Expression, method_name: &str, object_name: &str, arg_values: &[Value]) -> Result<Value, RuntimeError> {
+        match method_name {
             "show" => {
                 // Show the form
                 self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
-                    object: object_name.clone(),
+                    object: object_name.to_string(),
                     property: "Visible".to_string(),
                     value: Value::Boolean(true),
                 });
@@ -9191,7 +9403,7 @@ impl Interpreter {
             "hide" => {
                 // Hide the form
                 self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
-                    object: object_name.clone(),
+                    object: object_name.to_string(),
                     property: "Visible".to_string(),
                     value: Value::Boolean(false),
                 });
@@ -9201,25 +9413,25 @@ impl Interpreter {
                 // Move form: .Move(left, top, width, height)
                 if arg_values.len() >= 2 {
                     self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
-                        object: object_name.clone(),
+                        object: object_name.to_string(),
                         property: "Left".to_string(),
                         value: arg_values[0].clone(),
                     });
                     self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
-                        object: object_name.clone(),
+                        object: object_name.to_string(),
                         property: "Top".to_string(),
                         value: arg_values[1].clone(),
                     });
                     if arg_values.len() >= 3 {
                         self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
-                            object: object_name.clone(),
+                            object: object_name.to_string(),
                             property: "Width".to_string(),
                             value: arg_values[2].clone(),
                         });
                     }
                     if arg_values.len() >= 4 {
                         self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
-                            object: object_name.clone(),
+                            object: object_name.to_string(),
                             property: "Height".to_string(),
                             value: arg_values[3].clone(),
                         });
@@ -9231,7 +9443,7 @@ impl Interpreter {
                 // Navigate WebBrowser: .Navigate(url)
                 if !arg_values.is_empty() {
                     self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
-                        object: object_name.clone(),
+                        object: object_name.to_string(),
                         property: "URL".to_string(),
                         value: arg_values[0].clone(),
                     });
@@ -9241,14 +9453,14 @@ impl Interpreter {
             "close" | "dispose" => {
                 // Form.Close() — fire FormClosing, then FormClosed, then hide
                 self.side_effects.push_back(crate::RuntimeSideEffect::FormClose {
-                    form_name: object_name.clone(),
+                    form_name: object_name.to_string(),
                 });
                 Ok(Value::Nothing)
             }
             "showdialog" => {
                 // Form.ShowDialog() — show form as modal dialog
                 self.side_effects.push_back(crate::RuntimeSideEffect::FormShowDialog {
-                    form_name: object_name.clone(),
+                    form_name: object_name.to_string(),
                 });
                 // Return DialogResult.OK (1) as default
                 Ok(Value::Integer(1))
@@ -9264,6 +9476,68 @@ impl Interpreter {
                 Ok(Value::Nothing)
             }
             "centertoscreen" | "centertoparent" => {
+                Ok(Value::Nothing)
+            }
+            "performstep" => {
+                // ProgressBar.PerformStep() — increment Value by Step
+                if let Ok(obj_val) = self.evaluate_expr(obj) {
+                    if let Value::Object(obj_ref) = &obj_val {
+                        let mut b = obj_ref.borrow_mut();
+                        let step = b.fields.get("step").and_then(|v| v.as_integer().ok()).unwrap_or(10);
+                        let max = b.fields.get("maximum").and_then(|v| v.as_integer().ok()).unwrap_or(100);
+                        let cur = b.fields.get("value").and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                        let new_val = std::cmp::min(cur + step, max);
+                        b.fields.insert("value".to_string(), Value::Integer(new_val));
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "increment" => {
+                // NumericUpDown.Increment-like: UpButton/DownButton
+                Ok(Value::Nothing)
+            }
+            "upbutton" => {
+                // NumericUpDown.UpButton() — increment Value by Increment
+                if let Ok(obj_val) = self.evaluate_expr(obj) {
+                    if let Value::Object(obj_ref) = &obj_val {
+                        let mut b = obj_ref.borrow_mut();
+                        let inc = b.fields.get("increment").and_then(|v| v.as_integer().ok()).unwrap_or(1);
+                        let max = b.fields.get("maximum").and_then(|v| v.as_integer().ok()).unwrap_or(100);
+                        let cur = b.fields.get("value").and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                        let new_val = std::cmp::min(cur + inc, max);
+                        b.fields.insert("value".to_string(), Value::Integer(new_val));
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "downbutton" => {
+                // NumericUpDown.DownButton() — decrement Value by Increment
+                if let Ok(obj_val) = self.evaluate_expr(obj) {
+                    if let Value::Object(obj_ref) = &obj_val {
+                        let mut b = obj_ref.borrow_mut();
+                        let inc = b.fields.get("increment").and_then(|v| v.as_integer().ok()).unwrap_or(1);
+                        let min = b.fields.get("minimum").and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                        let cur = b.fields.get("value").and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                        let new_val = std::cmp::max(cur - inc, min);
+                        b.fields.insert("value".to_string(), Value::Integer(new_val));
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "selectall" | "clear" | "copy" | "cut" | "paste" | "undo" | "redo" => {
+                // TextBox/RichTextBox edit methods — no-op in interpreter
+                Ok(Value::Nothing)
+            }
+            "expandall" | "collapseall" => {
+                // TreeView.ExpandAll/CollapseAll — no-op
+                Ok(Value::Nothing)
+            }
+            "beginupdate" | "endupdate" => {
+                // ListView/TreeView begin/end update for batch operations — no-op
+                Ok(Value::Nothing)
+            }
+            "getitemat" | "hittest" => {
+                // Hit testing — return Nothing
                 Ok(Value::Nothing)
             }
             _ => Err(RuntimeError::Custom(format!("Unknown method: {}", method_name))),
@@ -9649,6 +9923,318 @@ impl Interpreter {
                     });
                 }
             }
+        }
+    }
+
+    /// Like `refresh_bindings` but applies filter/sort from the BindingSource.
+    /// `position` is the index into the filtered/sorted results.
+    fn refresh_bindings_filtered(
+        &mut self,
+        bs_ref: &std::rc::Rc<std::cell::RefCell<crate::value::ObjectData>>,
+        datasource: &Value,
+        position: i32,
+    ) {
+        let bindings: Vec<String> = bs_ref.borrow()
+            .fields.get("__bindings")
+            .and_then(|v| if let Value::Array(arr) = v {
+                Some(arr.iter().filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).collect())
+            } else { None })
+            .unwrap_or_default();
+
+        if bindings.is_empty() { return; }
+
+        let filter = bs_ref.borrow().fields.get("filter")
+            .map(|v| v.as_string()).unwrap_or_default();
+        let sort = bs_ref.borrow().fields.get("sort")
+            .map(|v| v.as_string()).unwrap_or_default();
+
+        // Get all rows, apply filter/sort, then pick by position
+        let all_rows = self.get_all_data_rows(datasource);
+        let filtered = Self::apply_filter_sort(&all_rows, &filter, &sort);
+
+        if let Some(row_ref) = filtered.get(position as usize) {
+            if let Value::Object(r) = row_ref {
+                for entry in &bindings {
+                    let parts: Vec<&str> = entry.split('|').collect();
+                    if parts.len() >= 3 {
+                        let ctrl_name = parts[0];
+                        let prop_name = parts[1];
+                        let data_member = parts[2].to_lowercase();
+                        let cell_val = r.borrow().fields.get(&data_member)
+                            .cloned().unwrap_or(Value::String(String::new()));
+                        self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
+                            object: ctrl_name.to_string(),
+                            property: prop_name.to_string(),
+                            value: cell_val,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get the row count from a BindingSource, applying its filter.
+    pub fn binding_source_row_count_filtered(&self, datasource: &Value) -> i32 {
+        if let Value::Object(obj_ref) = datasource {
+            let obj = obj_ref.borrow();
+            let dt_type = obj.fields.get("__type")
+                .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                .unwrap_or_default();
+            if dt_type == "BindingSource" {
+                let inner_ds = obj.fields.get("__datasource").cloned().unwrap_or(Value::Nothing);
+                let filter = obj.fields.get("filter").map(|v| v.as_string()).unwrap_or_default();
+                let sort = obj.fields.get("sort").map(|v| v.as_string()).unwrap_or_default();
+                let dm = obj.fields.get("datamember").map(|v| v.as_string()).unwrap_or_default();
+                drop(obj);
+                Self::inject_select_from_data_member(&inner_ds, &dm);
+                if filter.is_empty() && sort.is_empty() {
+                    return self.binding_source_row_count(&inner_ds);
+                }
+                let all_rows = self.get_all_data_rows(&inner_ds);
+                let filtered = Self::apply_filter_sort(&all_rows, &filter, &sort);
+                return filtered.len() as i32;
+            }
+        }
+        self.binding_source_row_count(datasource)
+    }
+
+    /// Get all DataRows from a datasource as Value::Object(DataRow) objects.
+    fn get_all_data_rows(&self, datasource: &Value) -> Vec<Value> {
+        let count = self.binding_source_row_count(datasource);
+        let mut rows = Vec::new();
+        for i in 0..count {
+            let row = self.binding_source_get_row(datasource, i);
+            if !matches!(row, Value::Nothing) {
+                rows.push(row);
+            }
+        }
+        rows
+    }
+
+    /// Get columns+rows for DataGridView, applying BindingSource filter/sort.
+    fn get_datasource_table_data_filtered(&self, datasource: &Value) -> (Vec<String>, Vec<Vec<String>>) {
+        if let Value::Object(obj_ref) = datasource {
+            let obj = obj_ref.borrow();
+            let dt_type = obj.fields.get("__type")
+                .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                .unwrap_or_default();
+            if dt_type == "BindingSource" {
+                let inner_ds = obj.fields.get("__datasource").cloned().unwrap_or(Value::Nothing);
+                let filter = obj.fields.get("filter").map(|v| v.as_string()).unwrap_or_default();
+                let sort = obj.fields.get("sort").map(|v| v.as_string()).unwrap_or_default();
+                let dm = obj.fields.get("datamember").map(|v| v.as_string()).unwrap_or_default();
+                drop(obj);
+                Self::inject_select_from_data_member(&inner_ds, &dm);
+
+                if filter.is_empty() && sort.is_empty() {
+                    return self.get_datasource_table_data(&inner_ds);
+                }
+
+                // Get full data, filter, sort, return
+                let (columns, all_rows) = self.get_datasource_table_data(&inner_ds);
+                if columns.is_empty() { return (columns, all_rows); }
+
+                let col_lower: Vec<String> = columns.iter().map(|c| c.to_lowercase()).collect();
+                let filtered_rows = Self::apply_filter_sort_raw(&columns, &col_lower, &all_rows, &filter, &sort);
+                return (columns, filtered_rows);
+            }
+        }
+        self.get_datasource_table_data(datasource)
+    }
+
+    /// Apply a VB.NET-style Filter string and Sort string to a list of DataRow objects.
+    /// Filter example: "Name = 'John'" or "Age > 30"
+    /// Sort example: "Name ASC" or "Age DESC, Name ASC"
+    #[inline(never)]
+    fn apply_filter_sort(rows: &[Value], filter: &str, sort: &str) -> Vec<Value> {
+        let mut result: Vec<Value> = if filter.trim().is_empty() {
+            rows.to_vec()
+        } else {
+            rows.iter().filter(|row| {
+                if let Value::Object(r) = row {
+                    Self::row_matches_filter(&r.borrow().fields, filter)
+                } else {
+                    true
+                }
+            }).cloned().collect()
+        };
+
+        if !sort.trim().is_empty() {
+            let sort_specs = Self::parse_sort_spec(sort);
+            result.sort_by(|a, b| {
+                for (col, ascending) in &sort_specs {
+                    let va = if let Value::Object(r) = a { r.borrow().fields.get(col).cloned().unwrap_or(Value::Nothing) } else { Value::Nothing };
+                    let vb = if let Value::Object(r) = b { r.borrow().fields.get(col).cloned().unwrap_or(Value::Nothing) } else { Value::Nothing };
+                    let cmp = va.as_string().cmp(&vb.as_string());
+                    let cmp = if *ascending { cmp } else { cmp.reverse() };
+                    if cmp != std::cmp::Ordering::Equal { return cmp; }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+        result
+    }
+
+    /// Apply filter/sort to raw string rows (Vec<Vec<String>>) for DataGridView rendering.
+    #[inline(never)]
+    fn apply_filter_sort_raw(columns: &[String], col_lower: &[String], rows: &[Vec<String>], filter: &str, sort: &str) -> Vec<Vec<String>> {
+        let mut result: Vec<Vec<String>> = if filter.trim().is_empty() {
+            rows.to_vec()
+        } else {
+            rows.iter().filter(|row| {
+                // Build a temporary fields map for the filter check
+                let mut fields = std::collections::HashMap::new();
+                for (i, col) in col_lower.iter().enumerate() {
+                    if let Some(val) = row.get(i) {
+                        fields.insert(col.clone(), Value::String(val.clone()));
+                    }
+                }
+                Self::row_matches_filter(&fields, filter)
+            }).cloned().collect()
+        };
+
+        if !sort.trim().is_empty() {
+            let sort_specs = Self::parse_sort_spec(sort);
+            result.sort_by(|a, b| {
+                for (col, ascending) in &sort_specs {
+                    let idx = col_lower.iter().position(|c| c == col).unwrap_or(usize::MAX);
+                    let va = a.get(idx).cloned().unwrap_or_default();
+                    let vb = b.get(idx).cloned().unwrap_or_default();
+                    // Try numeric comparison first
+                    let cmp = match (va.parse::<f64>(), vb.parse::<f64>()) {
+                        (Ok(na), Ok(nb)) => na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal),
+                        _ => va.cmp(&vb),
+                    };
+                    let cmp = if *ascending { cmp } else { cmp.reverse() };
+                    if cmp != std::cmp::Ordering::Equal { return cmp; }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+        result
+    }
+
+    /// Parse sort spec like "Name ASC, Age DESC" → vec![("name", true), ("age", false)]
+    fn parse_sort_spec(sort: &str) -> Vec<(String, bool)> {
+        sort.split(',')
+            .filter_map(|part| {
+                let tokens: Vec<&str> = part.trim().split_whitespace().collect();
+                if tokens.is_empty() { return None; }
+                let col = tokens[0].to_lowercase();
+                let ascending = tokens.get(1)
+                    .map(|d| !d.eq_ignore_ascii_case("desc"))
+                    .unwrap_or(true);
+                Some((col, ascending))
+            })
+            .collect()
+    }
+
+    /// Check if a row's fields match a simple VB.NET filter expression.
+    /// Supports: col = 'val', col <> 'val', col > val, col < val, col >= val, col <= val,
+    /// col LIKE 'pattern%', and AND/OR combinators.
+    fn row_matches_filter(fields: &std::collections::HashMap<String, Value>, filter: &str) -> bool {
+        let filter = filter.trim();
+        if filter.is_empty() { return true; }
+
+        // Handle AND/OR (simple split — doesn't handle nested parens)
+        let filter_upper = filter.to_uppercase();
+        if let Some(pos) = Self::find_logical_op(&filter_upper, " AND ") {
+            let left = &filter[..pos];
+            let right = &filter[pos + 5..];
+            return Self::row_matches_filter(fields, left) && Self::row_matches_filter(fields, right);
+        }
+        if let Some(pos) = Self::find_logical_op(&filter_upper, " OR ") {
+            let left = &filter[..pos];
+            let right = &filter[pos + 4..];
+            return Self::row_matches_filter(fields, left) || Self::row_matches_filter(fields, right);
+        }
+
+        // Parse single condition: column op value
+        // Operators: =, <>, !=, >, <, >=, <=, LIKE
+        let ops = ["<>", "!=", ">=", "<=", ">", "<", "="];
+        for op in &ops {
+            if let Some(idx) = filter.find(op) {
+                let col = filter[..idx].trim().to_lowercase();
+                let val_str = filter[idx + op.len()..].trim();
+                let val_str = Self::unquote(val_str);
+                let field_val = fields.get(&col).map(|v| v.as_string()).unwrap_or_default();
+                return Self::compare_filter_values(&field_val, op, &val_str);
+            }
+        }
+        // LIKE operator
+        if let Some(idx) = filter_upper.find(" LIKE ") {
+            let col = filter[..idx].trim().to_lowercase();
+            let pattern = filter[idx + 6..].trim();
+            let pattern = Self::unquote(pattern);
+            let field_val = fields.get(&col).map(|v| v.as_string()).unwrap_or_default();
+            return Self::like_match(&field_val, &pattern);
+        }
+        true // unrecognized filter → pass through
+    }
+
+    /// Find position of a logical operator not inside quotes.
+    fn find_logical_op(s: &str, op: &str) -> Option<usize> {
+        let mut in_quote = false;
+        let bytes = s.as_bytes();
+        for i in 0..s.len() {
+            if bytes[i] == b'\'' { in_quote = !in_quote; }
+            if !in_quote && s[i..].starts_with(op) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Remove surrounding quotes from a filter value.
+    fn unquote(s: &str) -> String {
+        let s = s.trim();
+        if (s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')) {
+            s[1..s.len()-1].to_string()
+        } else {
+            s.to_string()
+        }
+    }
+
+    /// Compare a field value against a filter value using the given operator.
+    fn compare_filter_values(field_val: &str, op: &str, filter_val: &str) -> bool {
+        // Try numeric comparison
+        if let (Ok(fv), Ok(rv)) = (field_val.parse::<f64>(), filter_val.parse::<f64>()) {
+            return match op {
+                "=" => (fv - rv).abs() < f64::EPSILON,
+                "<>" | "!=" => (fv - rv).abs() >= f64::EPSILON,
+                ">" => fv > rv,
+                "<" => fv < rv,
+                ">=" => fv >= rv,
+                "<=" => fv <= rv,
+                _ => false,
+            };
+        }
+        // String comparison (case-insensitive)
+        let fv = field_val.to_lowercase();
+        let rv = filter_val.to_lowercase();
+        match op {
+            "=" => fv == rv,
+            "<>" | "!=" => fv != rv,
+            ">" => fv > rv,
+            "<" => fv < rv,
+            ">=" => fv >= rv,
+            "<=" => fv <= rv,
+            _ => false,
+        }
+    }
+
+    /// Simple LIKE pattern matching with % wildcards.
+    fn like_match(value: &str, pattern: &str) -> bool {
+        let val = value.to_lowercase();
+        let pat = pattern.to_lowercase();
+        if pat.starts_with('%') && pat.ends_with('%') && pat.len() > 1 {
+            val.contains(&pat[1..pat.len()-1])
+        } else if pat.starts_with('%') {
+            val.ends_with(&pat[1..])
+        } else if pat.ends_with('%') {
+            val.starts_with(&pat[..pat.len()-1])
+        } else {
+            val == pat
         }
     }
 

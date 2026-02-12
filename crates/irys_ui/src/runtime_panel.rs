@@ -1797,6 +1797,51 @@ pub fn FormRunner() -> Element {
                                                             },
                                                         }
                                                     },
+                                                    ControlType::TabControl => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; border: 1px solid #adb5bd; display: flex; flex-direction: column;",
+                                                            div {
+                                                                style: "display: flex; background: #e9ecef; border-bottom: 1px solid #adb5bd;",
+                                                                div {
+                                                                    style: "padding: 4px 12px; background: white; border: 1px solid #adb5bd; border-bottom: none; cursor: pointer; font-size: 12px;",
+                                                                    "Tab 1"
+                                                                }
+                                                            }
+                                                            div {
+                                                                style: "flex: 1; padding: 8px; background: white;",
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::ProgressBar => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; background: #e9ecef; border: 1px solid #adb5bd; overflow: hidden;",
+                                                            div {
+                                                                style: "height: 100%; background: #0d6efd; width: 0%; transition: width 0.3s;",
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::NumericUpDown => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; border: 1px solid #adb5bd;",
+                                                            input {
+                                                                r#type: "number",
+                                                                style: "flex: 1; border: none; padding: 2px 4px; font-size: 12px; outline: none;",
+                                                                value: "0",
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::MenuStrip | ControlType::ContextMenuStrip => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; padding: 0 4px; font-size: 12px;",
+                                                            "Menu"
+                                                        }
+                                                    },
+                                                    ControlType::StatusStrip => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; background: #007acc; border-top: 1px solid #005a9e; display: flex; align-items: center; padding: 0 8px; font-size: 12px; color: white;",
+                                                            "{text}"
+                                                        }
+                                                    },
                                                     _ => rsx! {
                                                         div { style: "border: 1px dotted red;", "Unknown Control" }
                                                     }

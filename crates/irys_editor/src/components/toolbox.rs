@@ -24,6 +24,12 @@ pub fn Toolbox() -> Element {
         ("DataGridView", Some(ControlType::DataGridView)),
         ("Panel", Some(ControlType::Panel)),
         ("ListView", Some(ControlType::ListView)),
+        ("TabControl", Some(ControlType::TabControl)),
+        ("ProgressBar", Some(ControlType::ProgressBar)),
+        ("NumericUpDown", Some(ControlType::NumericUpDown)),
+        ("MenuStrip", Some(ControlType::MenuStrip)),
+        ("ContextMenuStrip", Some(ControlType::ContextMenuStrip)),
+        ("StatusStrip", Some(ControlType::StatusStrip)),
     ];
 
     let data_controls = vec![

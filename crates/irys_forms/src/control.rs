@@ -47,6 +47,15 @@ pub enum ControlType {
     Panel,
     ListView,
     BindingNavigator,
+    TabControl,
+    TabPage,
+    ProgressBar,
+    NumericUpDown,
+    MenuStrip,
+    ToolStripMenuItem,
+    ContextMenuStrip,
+    StatusStrip,
+    ToolStripStatusLabel,
     // Non-visual data components (appear in component tray)
     BindingSourceComponent,
     DataSetComponent,
@@ -74,6 +83,15 @@ impl ControlType {
             "panel" => Some(ControlType::Panel),
             "listview" => Some(ControlType::ListView),
             "bindingnavigator" => Some(ControlType::BindingNavigator),
+            "tabcontrol" => Some(ControlType::TabControl),
+            "tabpage" => Some(ControlType::TabPage),
+            "progressbar" => Some(ControlType::ProgressBar),
+            "numericupdown" => Some(ControlType::NumericUpDown),
+            "menustrip" => Some(ControlType::MenuStrip),
+            "toolstripmenuitem" => Some(ControlType::ToolStripMenuItem),
+            "contextmenustrip" => Some(ControlType::ContextMenuStrip),
+            "statusstrip" => Some(ControlType::StatusStrip),
+            "toolstripstatuslabel" => Some(ControlType::ToolStripStatusLabel),
             _ => None,
         }
     }
@@ -96,6 +114,15 @@ impl ControlType {
             ControlType::Panel => "Panel",
             ControlType::ListView => "ListView",
             ControlType::BindingNavigator => "BindingNavigator",
+            ControlType::TabControl => "TabControl",
+            ControlType::TabPage => "TabPage",
+            ControlType::ProgressBar => "ProgressBar",
+            ControlType::NumericUpDown => "NumericUpDown",
+            ControlType::MenuStrip => "MenuStrip",
+            ControlType::ToolStripMenuItem => "ToolStripMenuItem",
+            ControlType::ContextMenuStrip => "ContextMenuStrip",
+            ControlType::StatusStrip => "StatusStrip",
+            ControlType::ToolStripStatusLabel => "ToolStripStatusLabel",
             ControlType::BindingSourceComponent => "BindingSource",
             ControlType::DataSetComponent => "DataSet",
             ControlType::DataTableComponent => "DataTable",
@@ -142,6 +169,15 @@ impl ControlType {
             ControlType::Panel => "pnl",
             ControlType::ListView => "lvw",
             ControlType::BindingNavigator => "bnav",
+            ControlType::TabControl => "tab",
+            ControlType::TabPage => "tp",
+            ControlType::ProgressBar => "pb",
+            ControlType::NumericUpDown => "nud",
+            ControlType::MenuStrip => "ms",
+            ControlType::ToolStripMenuItem => "tsmi",
+            ControlType::ContextMenuStrip => "cms",
+            ControlType::StatusStrip => "ss",
+            ControlType::ToolStripStatusLabel => "tssl",
             ControlType::BindingSourceComponent => "bs",
             ControlType::DataSetComponent => "ds",
             ControlType::DataTableComponent => "dt",
@@ -167,6 +203,15 @@ impl ControlType {
             ControlType::Panel => (200, 150),
             ControlType::ListView => (250, 200),
             ControlType::BindingNavigator => (300, 25),
+            ControlType::TabControl => (300, 200),
+            ControlType::TabPage => (300, 200),
+            ControlType::ProgressBar => (200, 23),
+            ControlType::NumericUpDown => (120, 23),
+            ControlType::MenuStrip => (300, 24),
+            ControlType::ToolStripMenuItem => (100, 22),
+            ControlType::ContextMenuStrip => (150, 24),
+            ControlType::StatusStrip => (300, 22),
+            ControlType::ToolStripStatusLabel => (100, 22),
             ControlType::BindingSourceComponent => (32, 32),
             ControlType::DataSetComponent => (32, 32),
             ControlType::DataTableComponent => (32, 32),
@@ -272,6 +317,57 @@ impl Control {
                 properties.set("Enabled", true);
                 properties.set("Visible", true);
                 properties.set("BindingSource", "");
+            }
+            ControlType::TabControl => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                properties.set("SelectedIndex", 0);
+            }
+            ControlType::TabPage => {
+                properties.set("Text", name.clone());
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+            }
+            ControlType::ProgressBar => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                use crate::properties::PropertyValue;
+                properties.set_raw("Value", PropertyValue::Integer(0));
+                properties.set_raw("Minimum", PropertyValue::Integer(0));
+                properties.set_raw("Maximum", PropertyValue::Integer(100));
+                properties.set_raw("Step", PropertyValue::Integer(10));
+            }
+            ControlType::NumericUpDown => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+                use crate::properties::PropertyValue;
+                properties.set_raw("Value", PropertyValue::Integer(0));
+                properties.set_raw("Minimum", PropertyValue::Integer(0));
+                properties.set_raw("Maximum", PropertyValue::Integer(100));
+                properties.set_raw("Increment", PropertyValue::Integer(1));
+                properties.set_raw("DecimalPlaces", PropertyValue::Integer(0));
+            }
+            ControlType::MenuStrip => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+            }
+            ControlType::ToolStripMenuItem => {
+                properties.set("Text", name.clone());
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+            }
+            ControlType::ContextMenuStrip => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+            }
+            ControlType::StatusStrip => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
+            }
+            ControlType::ToolStripStatusLabel => {
+                properties.set("Text", name.clone());
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
             }
             ControlType::BindingSourceComponent => {
                 properties.set("DataSource", "");
