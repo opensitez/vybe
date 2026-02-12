@@ -202,6 +202,7 @@ fn ShellApp() -> Element {
 
     use_context_provider(|| RuntimeProject {
         project: Signal::new(Some(project)),
+        finished: Signal::new(false),
     });
 
     rsx! { FormRunner {} }
@@ -211,7 +212,11 @@ fn ShellApp() -> Element {
 fn drain_console_effects(interp: &mut Interpreter) {
     while let Some(effect) = interp.side_effects.pop_front() {
         match effect {
-            RuntimeSideEffect::ConsoleOutput(msg) => println!("{msg}"),
+            RuntimeSideEffect::ConsoleOutput(msg) => {
+                print!("{msg}");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
             RuntimeSideEffect::ConsoleClear => {}
             RuntimeSideEffect::MsgBox(msg) => println!("[MsgBox] {msg}"),
             RuntimeSideEffect::PropertyChange { .. } => {}

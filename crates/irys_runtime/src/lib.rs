@@ -55,6 +55,24 @@ pub enum RuntimeSideEffect {
     },
 }
 
+// ---------------------------------------------------------------------------
+// Thread-safe console I/O channel types (used for interactive console apps)
+// ---------------------------------------------------------------------------
+
+/// Messages sent from the interpreter thread to the UI.
+#[derive(Debug, Clone)]
+pub enum ConsoleMessage {
+    /// Console output with color information (fg/bg use .NET ConsoleColor values 0-15).
+    Output { text: String, fg: i32, bg: i32 },
+    Clear,
+    /// The interpreter is waiting for user input (Console.ReadLine).
+    InputRequest,
+    /// Sub Main finished successfully.
+    Finished,
+    /// Sub Main ended with an error.
+    Error(String),
+}
+
 pub use interpreter::*;
 pub use evaluator::*;
 pub use environment::*;

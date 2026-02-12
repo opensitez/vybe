@@ -7,6 +7,7 @@ use crate::value::{ExitType, RuntimeError, Value, ObjectData};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::sync::mpsc;
 use irys_parser::{CaseCondition, Declaration, Expression, FunctionDecl, Identifier, Program, Statement, SubDecl};
 
 pub struct Interpreter {
@@ -23,6 +24,10 @@ pub struct Interpreter {
     pub resources: HashMap<String, String>,
     pub resource_entries: Vec<crate::ResourceEntry>,
     pub command_line_args: Vec<String>,
+    /// Optional channel for sending console output to the UI (interactive console mode).
+    pub console_tx: Option<mpsc::Sender<crate::ConsoleMessage>>,
+    /// Optional channel for receiving console input from the UI (Console.ReadLine).
+    pub console_input_rx: Option<mpsc::Receiver<String>>,
 }
 
 impl Interpreter {
@@ -41,6 +46,8 @@ impl Interpreter {
             resources: HashMap::new(),
             resource_entries: Vec::new(),
             command_line_args: Vec::new(),
+            console_tx: None,
+            console_input_rx: None,
         };
         interp.register_builtin_constants();
         interp.init_namespaces();
@@ -62,12 +69,46 @@ impl Interpreter {
         };
         let path_obj = Value::Object(Rc::new(RefCell::new(path_obj_data)));
 
-        // Create System.Console object
+        // Create System.Console object with default properties
+        let mut console_fields = HashMap::new();
+        console_fields.insert("foregroundcolor".to_string(), Value::Integer(7));  // Gray
+        console_fields.insert("backgroundcolor".to_string(), Value::Integer(0)); // Black
+        console_fields.insert("title".to_string(), Value::String(String::new()));
+        console_fields.insert("cursorleft".to_string(), Value::Integer(0));
+        console_fields.insert("cursortop".to_string(), Value::Integer(0));
+        console_fields.insert("cursorvisible".to_string(), Value::Boolean(true));
+        console_fields.insert("windowwidth".to_string(), Value::Integer(80));
+        console_fields.insert("windowheight".to_string(), Value::Integer(25));
+        console_fields.insert("bufferwidth".to_string(), Value::Integer(80));
+        console_fields.insert("bufferheight".to_string(), Value::Integer(300));
+        console_fields.insert("keyavailable".to_string(), Value::Boolean(false));
         let console_obj_data = ObjectData {
             class_name: "System.Console".to_string(),
-            fields: HashMap::new(),
+            fields: console_fields,
         };
         let console_obj = Value::Object(Rc::new(RefCell::new(console_obj_data)));
+
+        // Create ConsoleColor "enum" with named color constants
+        let mut cc_fields = HashMap::new();
+        cc_fields.insert("black".to_string(), Value::Integer(0));
+        cc_fields.insert("darkblue".to_string(), Value::Integer(1));
+        cc_fields.insert("darkgreen".to_string(), Value::Integer(2));
+        cc_fields.insert("darkcyan".to_string(), Value::Integer(3));
+        cc_fields.insert("darkred".to_string(), Value::Integer(4));
+        cc_fields.insert("darkmagenta".to_string(), Value::Integer(5));
+        cc_fields.insert("darkyellow".to_string(), Value::Integer(6));
+        cc_fields.insert("gray".to_string(), Value::Integer(7));
+        cc_fields.insert("darkgray".to_string(), Value::Integer(8));
+        cc_fields.insert("blue".to_string(), Value::Integer(9));
+        cc_fields.insert("green".to_string(), Value::Integer(10));
+        cc_fields.insert("cyan".to_string(), Value::Integer(11));
+        cc_fields.insert("red".to_string(), Value::Integer(12));
+        cc_fields.insert("magenta".to_string(), Value::Integer(13));
+        cc_fields.insert("yellow".to_string(), Value::Integer(14));
+        cc_fields.insert("white".to_string(), Value::Integer(15));
+        let cc_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+            class_name: "ConsoleColor".to_string(), fields: cc_fields,
+        })));
 
         // Create System.Math object
         let math_obj_data = ObjectData {
@@ -114,6 +155,94 @@ impl Interpreter {
         self.env.define("math", math_obj);
         // Also register DBNull globally
         self.env.define("dbnull", dbnull_obj);
+        // Register ConsoleColor enum globally
+        self.env.define("consolecolor", cc_obj);
+    }
+
+    // ── Console helpers ──────────────────────────────────────────────────
+
+    /// Read the current foreground/background colors from the Console object.
+    fn get_console_colors(&self) -> (i32, i32) {
+        if let Ok(Value::Object(ref obj)) = self.env.get("console") {
+            let fields = obj.borrow();
+            let fg = fields.fields.get("foregroundcolor")
+                .and_then(|v| v.as_integer().ok())
+                .unwrap_or(7);
+            let bg = fields.fields.get("backgroundcolor")
+                .and_then(|v| v.as_integer().ok())
+                .unwrap_or(0);
+            (fg, bg)
+        } else {
+            (7, 0)
+        }
+    }
+
+    /// Map .NET ConsoleColor (0-15) to ANSI escape code.
+    fn console_color_to_ansi_fg(color: i32) -> &'static str {
+        match color {
+            0  => "\x1b[30m",    // Black
+            1  => "\x1b[34m",    // DarkBlue
+            2  => "\x1b[32m",    // DarkGreen
+            3  => "\x1b[36m",    // DarkCyan
+            4  => "\x1b[31m",    // DarkRed
+            5  => "\x1b[35m",    // DarkMagenta
+            6  => "\x1b[33m",    // DarkYellow
+            7  => "\x1b[37m",    // Gray
+            8  => "\x1b[90m",    // DarkGray
+            9  => "\x1b[94m",    // Blue
+            10 => "\x1b[92m",    // Green
+            11 => "\x1b[96m",    // Cyan
+            12 => "\x1b[91m",    // Red
+            13 => "\x1b[95m",    // Magenta
+            14 => "\x1b[93m",    // Yellow
+            15 => "\x1b[97m",    // White
+            _  => "\x1b[37m",
+        }
+    }
+
+    fn console_color_to_ansi_bg(color: i32) -> &'static str {
+        match color {
+            0  => "\x1b[40m",
+            1  => "\x1b[44m",
+            2  => "\x1b[42m",
+            3  => "\x1b[46m",
+            4  => "\x1b[41m",
+            5  => "\x1b[45m",
+            6  => "\x1b[43m",
+            7  => "\x1b[47m",
+            8  => "\x1b[100m",
+            9  => "\x1b[104m",
+            10 => "\x1b[102m",
+            11 => "\x1b[106m",
+            12 => "\x1b[101m",
+            13 => "\x1b[105m",
+            14 => "\x1b[103m",
+            15 => "\x1b[107m",
+            _  => "\x1b[40m",
+        }
+    }
+
+    /// Send console output through the channel (with colors) or the side-effects queue.
+    fn send_console_output(&mut self, text: String) {
+        let (fg, bg) = self.get_console_colors();
+        if let Some(tx) = &self.console_tx {
+            let _ = tx.send(crate::ConsoleMessage::Output { text, fg, bg });
+        } else {
+            // CLI mode: wrap text in ANSI escape codes for terminal colors
+            let ansi_fg = Self::console_color_to_ansi_fg(fg);
+            let ansi_bg = Self::console_color_to_ansi_bg(bg);
+            let colored = format!("{}{}{}\x1b[0m", ansi_fg, ansi_bg, text);
+            self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(colored));
+        }
+    }
+
+    /// Send debug output (always uses default colors).
+    fn send_debug_output(&mut self, text: String) {
+        if let Some(tx) = &self.console_tx {
+            let _ = tx.send(crate::ConsoleMessage::Output { text, fg: 7, bg: 0 });
+        } else {
+            self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(text));
+        }
     }
 
     /// Legacy: register resources as simple string map (backward compat)
@@ -3292,12 +3421,34 @@ impl Interpreter {
             "syd" => return syd_fn(&arg_values),
 
             // Debug/Output
-            "debug.print" | "console.writeline" | "console.write" => {
+            "debug.print" => {
                 let msg = arg_values.iter().map(|v| v.as_string()).collect::<Vec<_>>().join(" ");
-                let with_newline = name_str.ends_with("writeline");
-                let final_msg = if with_newline { format!("{}\n", msg) } else { msg };
-                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(final_msg));
+                self.send_debug_output(format!("{}\n", msg));
                 return Ok(Value::Nothing);
+            }
+            "console.writeline" => {
+                return self.dispatch_console_method("writeline", &arg_values);
+            }
+            "console.write" => {
+                return self.dispatch_console_method("write", &arg_values);
+            }
+            "console.readline" => {
+                return self.dispatch_console_method("readline", &arg_values);
+            }
+            "console.read" => {
+                return self.dispatch_console_method("read", &arg_values);
+            }
+            "console.clear" => {
+                return self.dispatch_console_method("clear", &arg_values);
+            }
+            "console.resetcolor" => {
+                return self.dispatch_console_method("resetcolor", &arg_values);
+            }
+            "console.beep" => {
+                return self.dispatch_console_method("beep", &arg_values);
+            }
+            "console.setcursorposition" => {
+                return self.dispatch_console_method("setcursorposition", &arg_values);
             }
 
             _ => {}
@@ -5870,12 +6021,16 @@ impl Interpreter {
         // Try dispatching as a builtin qualified function call (e.g., Console.WriteLine)
         let qualified_call_name = format!("{}.{}", object_name.to_lowercase(), method_name);
         match qualified_call_name.as_str() {
-            "debug.print" | "console.writeline" | "console.write" => {
+            "debug.print" => {
                 let msg = arg_values.iter().map(|v| v.as_string()).collect::<Vec<_>>().join(" ");
-                let with_newline = qualified_call_name.ends_with("writeline");
-                let final_msg = if with_newline { format!("{}\n", msg) } else { msg };
-                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(final_msg));
+                self.send_debug_output(format!("{}\n", msg));
                 return Ok(Value::Nothing);
+            }
+            "console.writeline" | "console.write" | "console.readline" | "console.read"
+            | "console.clear" | "console.resetcolor" | "console.beep"
+            | "console.setcursorposition" => {
+                let method_part = qualified_call_name.strip_prefix("console.").unwrap();
+                return self.dispatch_console_method(method_part, &arg_values);
             }
 
             // ---- Convert class ----
@@ -6124,19 +6279,19 @@ impl Interpreter {
             // ---- Debug.Write / Debug.WriteLine / Debug.Assert ----
             "debug.write" | "system.diagnostics.debug.write" => {
                 let msg = arg_values.iter().map(|v| v.as_string()).collect::<Vec<_>>().join(" ");
-                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(msg));
+                self.send_debug_output(msg);
                 return Ok(Value::Nothing);
             }
             "debug.writeline" | "system.diagnostics.debug.writeline" => {
                 let msg = arg_values.iter().map(|v| v.as_string()).collect::<Vec<_>>().join(" ");
-                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(format!("{}\n", msg)));
+                self.send_debug_output(format!("{}\n", msg));
                 return Ok(Value::Nothing);
             }
             "debug.assert" | "system.diagnostics.debug.assert" => {
                 let condition = arg_values.get(0).map(|v| v.is_truthy()).unwrap_or(true);
                 if !condition {
                     let msg = arg_values.get(1).map(|v| v.as_string()).unwrap_or_else(|| "Debug.Assert failed".to_string());
-                    self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(format!("ASSERT FAILED: {}\n", msg)));
+                    self.send_debug_output(format!("ASSERT FAILED: {}\n", msg));
                 }
                 return Ok(Value::Nothing);
             }
@@ -7825,15 +7980,97 @@ impl Interpreter {
                 } else {
                     msg
                 };
-                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(final_msg));
+                self.send_console_output(final_msg);
                 Ok(Value::Nothing)
             }
-            "readline" => {
-                // Console.ReadLine stub: no stdin, return empty string
-                Ok(crate::builtins::console_fns::console_readline_fn())
+            "readline" | "readkey" => {
+                // Interactive Console.ReadLine: send request, block for response
+                if let Some(tx) = &self.console_tx {
+                    let _ = tx.send(crate::ConsoleMessage::InputRequest);
+                    if let Some(rx) = &self.console_input_rx {
+                        match rx.recv() {
+                            Ok(input) => Ok(Value::String(input)),
+                            Err(_) => Ok(Value::String(String::new())),
+                        }
+                    } else {
+                        Ok(Value::String(String::new()))
+                    }
+                } else {
+                    // Fallback (CLI): read from real stdin
+                    let mut line = String::new();
+                    match std::io::stdin().read_line(&mut line) {
+                        Ok(_) => {
+                            if line.ends_with('\n') { line.pop(); }
+                            if line.ends_with('\r') { line.pop(); }
+                            Ok(Value::String(line))
+                        }
+                        Err(_) => Ok(Value::String(String::new())),
+                    }
+                }
+            }
+            "read" => {
+                // Console.Read() — returns a single character as an integer
+                if let Some(tx) = &self.console_tx {
+                    let _ = tx.send(crate::ConsoleMessage::InputRequest);
+                    if let Some(rx) = &self.console_input_rx {
+                        match rx.recv() {
+                            Ok(input) => {
+                                if let Some(ch) = input.chars().next() {
+                                    Ok(Value::Integer(ch as i32))
+                                } else {
+                                    Ok(Value::Integer(-1))
+                                }
+                            }
+                            Err(_) => Ok(Value::Integer(-1)),
+                        }
+                    } else {
+                        Ok(Value::Integer(-1))
+                    }
+                } else {
+                    let mut buf = [0u8; 1];
+                    match std::io::Read::read(&mut std::io::stdin(), &mut buf) {
+                        Ok(1) => Ok(Value::Integer(buf[0] as i32)),
+                        _ => Ok(Value::Integer(-1)),
+                    }
+                }
             }
             "clear" => {
-                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleClear);
+                if let Some(tx) = &self.console_tx {
+                    let _ = tx.send(crate::ConsoleMessage::Clear);
+                } else {
+                    self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleClear);
+                }
+                Ok(Value::Nothing)
+            }
+            "resetcolor" => {
+                // Reset Console colors to defaults (Gray on Black)
+                if let Ok(Value::Object(ref obj)) = self.env.get("console") {
+                    let mut fields = obj.borrow_mut();
+                    fields.fields.insert("foregroundcolor".to_string(), Value::Integer(7));
+                    fields.fields.insert("backgroundcolor".to_string(), Value::Integer(0));
+                }
+                Ok(Value::Nothing)
+            }
+            "setcursorposition" => {
+                // Console.SetCursorPosition(left, top)
+                let left = args.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                let top = args.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                if let Ok(Value::Object(ref obj)) = self.env.get("console") {
+                    let mut fields = obj.borrow_mut();
+                    fields.fields.insert("cursorleft".to_string(), Value::Integer(left));
+                    fields.fields.insert("cursortop".to_string(), Value::Integer(top));
+                }
+                Ok(Value::Nothing)
+            }
+            "beep" => {
+                // Console.Beep() — best-effort; no-op in UI, print BEL in CLI
+                if self.console_tx.is_none() {
+                    print!("\x07");
+                }
+                Ok(Value::Nothing)
+            }
+            "opensandardinput" | "openstandardoutput" | "openstandarderror" => {
+                // Stub — return Nothing for stream methods
                 Ok(Value::Nothing)
             }
             _ => Err(RuntimeError::UndefinedFunction(format!("System.Console.{}", method_name)))

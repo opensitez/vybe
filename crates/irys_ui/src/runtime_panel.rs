@@ -1,11 +1,47 @@
 use dioxus::prelude::*;
 use irys_forms::{ControlType, Form, EventType};
 use irys_project::Project;
-use irys_runtime::{Interpreter, RuntimeSideEffect, Value, ObjectData};
+use irys_runtime::{Interpreter, RuntimeSideEffect, Value, ObjectData, ConsoleMessage};
 use std::collections::HashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc;
 use irys_parser::parse_program;
+
+// ---------------------------------------------------------------------------
+// Console color helpers
+// ---------------------------------------------------------------------------
+
+/// Map .NET ConsoleColor value (0-15) to a CSS color string.
+fn console_color_to_css(color: i32) -> &'static str {
+    match color {
+        0  => "#0c0c0c",  // Black
+        1  => "#0037da",  // DarkBlue
+        2  => "#13a10e",  // DarkGreen
+        3  => "#3a96dd",  // DarkCyan
+        4  => "#c50f1f",  // DarkRed
+        5  => "#881798",  // DarkMagenta
+        6  => "#c19c00",  // DarkYellow
+        7  => "#cccccc",  // Gray
+        8  => "#767676",  // DarkGray
+        9  => "#3b78ff",  // Blue
+        10 => "#16c60c",  // Green
+        11 => "#61d6d6",  // Cyan
+        12 => "#e74856",  // Red
+        13 => "#b4009e",  // Magenta
+        14 => "#f9f1a5",  // Yellow
+        15 => "#f2f2f2",  // White
+        _  => "#cccccc",  // default Gray
+    }
+}
+
+/// Escape HTML special characters.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('<', "&lt;")
+     .replace('>', "&gt;")
+     .replace('"', "&quot;")
+}
 
 // ---------------------------------------------------------------------------
 // Public context wrapper – both the editor and the CLI provide this via
@@ -18,6 +54,10 @@ use irys_parser::parse_program;
 #[derive(Clone, Copy)]
 pub struct RuntimeProject {
     pub project: Signal<Option<Project>>,
+    /// Set to `true` by the FormRunner when a console (Sub Main) project
+    /// finishes executing.  The editor watches this to leave run-mode
+    /// automatically; the standalone shell can ignore it.
+    pub finished: Signal<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -273,64 +313,87 @@ fn process_side_effects(
 
 #[component]
 pub fn FormRunner() -> Element {
-    let rp = use_context::<RuntimeProject>();
+    let mut rp = use_context::<RuntimeProject>();
 
     let mut interpreter = use_signal(|| None::<Interpreter>);
     let mut runtime_form = use_signal(|| None::<Form>);
     let mut msgbox_content = use_signal(|| None::<String>);
     let mut parse_error = use_signal(|| None::<String>);
 
+    // ── Console mode state ──────────────────────────────────────────────
+    let mut console_output = use_signal(String::new);
+    let mut console_waiting_input = use_signal(|| false);
+    let mut console_finished = use_signal(|| false);
+    let mut console_input_line = use_signal(String::new);
+    let mut is_console_mode = use_signal(|| false);
+
+    // Channel endpoints wrapped so they can live in signals.
+    type TxWrap = Rc<RefCell<Option<mpsc::Sender<String>>>>;
+    type RxWrap = Rc<RefCell<Option<mpsc::Receiver<ConsoleMessage>>>>;
+    let mut console_input_tx: Signal<Option<TxWrap>> = use_signal(|| None);
+    let mut console_rx: Signal<Option<RxWrap>> = use_signal(|| None);
+
     // ── Initialize Runtime ──────────────────────────────────────────────
     use_effect(move || {
-        if interpreter.read().is_none() {
+        if interpreter.read().is_none() && !*is_console_mode.read() {
             let project_read = rp.project.read();
             if let Some(proj) = project_read.as_ref() {
-                // ── Sub Main mode ───────────────────────────────────────
+                // ── Sub Main mode (interactive console) ─────────────────
                 if proj.starts_with_main() {
+                    // Collect all code + resources as owned Strings so we can
+                    // move them to the background thread.
+                    let resource_entries = crate::runner::collect_resource_entries(proj);
+                    let code_files: Vec<String> = proj.code_files.iter()
+                        .map(|cf| cf.code.clone())
+                        .collect();
+                    let form_sources: Vec<(String, String)> = proj.forms.iter()
+                        .map(|fm| {
+                            let code = if fm.is_vbnet() {
+                                format!("{}\n{}", fm.get_designer_code(), fm.get_user_code())
+                            } else {
+                                fm.get_user_code().to_string()
+                            };
+                            (fm.form.name.clone(), code)
+                        })
+                        .collect();
                     drop(project_read);
 
-                    let mut interp = Interpreter::new();
+                    // Set up channels
+                    let (msg_tx, msg_rx) = mpsc::channel::<ConsoleMessage>();
+                    let (input_tx, input_rx) = mpsc::channel::<String>();
 
-                    // Register resources from all project resource files + form resources
-                    if let Some(proj) = rp.project.read().as_ref() {
-                        let entries = crate::runner::collect_resource_entries(proj);
-                        interp.register_resource_entries(entries);
-                    }
+                    // Store channel endpoints for the UI
+                    console_rx.set(Some(Rc::new(RefCell::new(Some(msg_rx)))));
+                    console_input_tx.set(Some(Rc::new(RefCell::new(Some(input_tx)))));
+                    is_console_mode.set(true);
 
-                    // Load all code files (global scope — VB.NET modules are flattened)
-                    let project_read2 = rp.project.read();
-                    if let Some(proj) = project_read2.as_ref() {
-                        for code_file in &proj.code_files {
-                            if let Ok(program) = parse_program(&code_file.code) {
+                    // Spawn the interpreter on a background thread
+                    std::thread::spawn(move || {
+                        let mut interp = Interpreter::new();
+                        interp.console_tx = Some(msg_tx.clone());
+                        interp.console_input_rx = Some(input_rx);
+                        interp.register_resource_entries(resource_entries);
+
+                        // Load all code files
+                        for code in &code_files {
+                            if let Ok(program) = parse_program(code) {
                                 let _ = interp.load_code_file(&program);
                             }
                         }
-
-                        // Load all forms code too (even though not showing them)
-                        for form_module in &proj.forms {
-                            let form_code = if form_module.is_vbnet() {
-                                format!("{}\n{}", form_module.get_designer_code(), form_module.get_user_code())
-                            } else {
-                                form_module.get_user_code().to_string()
-                            };
-                            if let Ok(program) = parse_program(&form_code) {
-                                let _ = interp.load_module(&form_module.form.name, &program);
+                        // Load form modules
+                        for (name, code) in &form_sources {
+                            if let Ok(program) = parse_program(code) {
+                                let _ = interp.load_module(name, &program);
                             }
                         }
-                    }
-                    drop(project_read2);
 
-                    println!("=== Calling Sub Main ===");
-                    match interp.call_procedure(&irys_parser::ast::Identifier::new("main"), &[]) {
-                        Ok(_) => println!("Sub Main completed successfully"),
-                        Err(e) => {
-                            parse_error.set(Some(format!("Sub Main Error: {:?}", e)));
-                            println!("Sub Main Error: {:?}", e);
+                        // Run Sub Main
+                        match interp.call_procedure(&irys_parser::ast::Identifier::new("main"), &[]) {
+                            Ok(_) => { let _ = msg_tx.send(ConsoleMessage::Finished); }
+                            Err(e) => { let _ = msg_tx.send(ConsoleMessage::Error(format!("{:?}", e))); }
                         }
-                    }
+                    });
 
-                    process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content);
-                    interpreter.set(Some(interp));
                     return;
                 }
 
@@ -713,6 +776,70 @@ pub fn FormRunner() -> Element {
         }
     };
 
+    // ── Console message polling ─────────────────────────────────────────
+    // In console mode, poll the channel from the interpreter thread every
+    // 50 ms and update signals accordingly.
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if !*is_console_mode.read() { continue; }
+
+            // Drain all available messages
+            let rx_opt = console_rx.read().clone();
+            if let Some(rx_rc) = rx_opt {
+                let rx_ref = rx_rc.borrow();
+                if let Some(rx) = rx_ref.as_ref() {
+                    loop {
+                        match rx.try_recv() {
+                            Ok(ConsoleMessage::Output { text, fg, bg }) => {
+                                let escaped = html_escape(&text);
+                                // Convert newlines to <br> since we use innerHTML
+                                let with_br = escaped.replace('\n', "<br>");
+                                let fg_css = console_color_to_css(fg);
+                                if bg == 0 {
+                                    // No background (transparent) for default
+                                    console_output.write().push_str(
+                                        &format!("<span style=\"color:{}\">{}</span>", fg_css, with_br)
+                                    );
+                                } else {
+                                    let bg_css = console_color_to_css(bg);
+                                    console_output.write().push_str(
+                                        &format!("<span style=\"color:{};background:{}\">{}</span>", fg_css, bg_css, with_br)
+                                    );
+                                }
+                            }
+                            Ok(ConsoleMessage::Clear) => {
+                                console_output.set(String::new());
+                            }
+                            Ok(ConsoleMessage::InputRequest) => {
+                                console_waiting_input.set(true);
+                            }
+                            Ok(ConsoleMessage::Finished) => {
+                                console_finished.set(true);
+                                rp.finished.set(true);
+                                break;
+                            }
+                            Ok(ConsoleMessage::Error(e)) => {
+                                console_output.write().push_str(
+                                    &format!("<br><span style=\"color:#e74856\">--- Error: {} ---</span><br>", html_escape(&e))
+                                );
+                                console_finished.set(true);
+                                rp.finished.set(true);
+                                break;
+                            }
+                            Err(mpsc::TryRecvError::Empty) => break,
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                console_finished.set(true);
+                                rp.finished.set(true);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // ── Render ───────────────────────────────────────────────────────────
     let form_opt = runtime_form.read().clone();
     let msgbox_visible = msgbox_content.read().is_some();
@@ -725,7 +852,121 @@ pub fn FormRunner() -> Element {
             style: "flex: 1; background: #e0e0e0; display: flex; align-items: center; justify-content: center; overflow: auto; position: relative;",
 
             {
-                if let Some(err) = error_text {
+                if *is_console_mode.read() {
+                    // ── Interactive Console UI ──────────────────────────
+                    let output_text = console_output.read().clone();
+                    let waiting = *console_waiting_input.read();
+                    let finished = *console_finished.read();
+                    let input_val = console_input_line.read().clone();
+
+                    rsx! {
+                        div {
+                            style: "
+                                width: 700px;
+                                height: 480px;
+                                background: #1e1e1e;
+                                color: #d4d4d4;
+                                border: 1px solid #444;
+                                box-shadow: 0 0 10px rgba(0,0,0,0.5);
+                                display: flex;
+                                flex-direction: column;
+                                font-family: 'Consolas', 'Courier New', monospace;
+                                font-size: 14px;
+                            ",
+
+                            // Title bar
+                            div {
+                                style: "
+                                    background: #2d2d2d;
+                                    color: #ccc;
+                                    padding: 4px 10px;
+                                    font-size: 12px;
+                                    border-bottom: 1px solid #444;
+                                    user-select: none;
+                                ",
+                                "Console Output"
+                            }
+
+                            // Output area
+                            div {
+                                id: "console-output",
+                                style: "
+                                    flex: 1;
+                                    overflow-y: auto;
+                                    padding: 8px 10px;
+                                    white-space: pre-wrap;
+                                    word-break: break-all;
+                                ",
+                                dangerous_inner_html: "{output_text}",
+                            }
+
+                            // Input area (shown when waiting for input, or always visible with prompt)
+                            if waiting && !finished {
+                                div {
+                                    style: "
+                                        display: flex;
+                                        border-top: 1px solid #444;
+                                        background: #252526;
+                                    ",
+                                    span {
+                                        style: "padding: 6px 4px 6px 10px; color: #569cd6;",
+                                        ">"
+                                    }
+                                    input {
+                                        id: "console-input",
+                                        style: "
+                                            flex: 1;
+                                            background: #252526;
+                                            color: #d4d4d4;
+                                            border: none;
+                                            outline: none;
+                                            padding: 6px 8px;
+                                            font-family: 'Consolas', 'Courier New', monospace;
+                                            font-size: 14px;
+                                        ",
+                                        value: "{input_val}",
+                                        autofocus: true,
+                                        oninput: move |evt| {
+                                            console_input_line.set(evt.value().clone());
+                                        },
+                                        onkeypress: move |evt: KeyboardEvent| {
+                                            if evt.key() == Key::Enter {
+                                                let line = console_input_line.read().clone();
+                                                // Echo the input to the output
+                                                console_output.write().push_str(&format!("{}\n", line));
+                                                // Send to the interpreter thread
+                                                if let Some(tx_rc) = console_input_tx.read().as_ref() {
+                                                    if let Some(tx) = tx_rc.borrow().as_ref() {
+                                                        let _ = tx.send(line);
+                                                    }
+                                                }
+                                                console_input_line.set(String::new());
+                                                console_waiting_input.set(false);
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+
+                            // Status bar
+                            div {
+                                style: "
+                                    background: #007acc;
+                                    color: white;
+                                    padding: 2px 10px;
+                                    font-size: 11px;
+                                ",
+                                if finished {
+                                    "Program finished"
+                                } else if waiting {
+                                    "Waiting for input..."
+                                } else {
+                                    "Running..."
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(err) = error_text {
                     rsx! {
                         div {
                             style: "color: red; padding: 20px; background: #fee; border: 1px solid red;",
