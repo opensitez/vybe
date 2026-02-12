@@ -148,10 +148,9 @@ pub fn generate_designer_code(form: &Form) -> String {
             continue;
         }
 
-        // Text/Caption property
+        // Text property
         let text = control
             .get_text()
-            .or_else(|| control.get_caption())
             .unwrap_or(control.name.as_str());
         code.push_str(&format!("        Me.{}.Text = \"{}\"\n", field_name, text));
 
@@ -258,7 +257,7 @@ pub fn generate_designer_code(form: &Form) -> String {
         "        Me.ClientSize = New System.Drawing.Size({}, {})\n",
         form.width, form.height
     ));
-    code.push_str(&format!("        Me.Text = \"{}\"\n", form.caption));
+    code.push_str(&format!("        Me.Text = \"{}\"\n", form.text));
     code.push_str(&format!("        Me.Name = \"{}\"\n", form.name));
     if let Some(bc) = &form.back_color {
         code.push_str(&format!(

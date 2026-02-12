@@ -85,7 +85,7 @@ fn App() -> Element {
                 Ok(project) => {
                     eprintln!("[DEBUG] CLI project loaded: '{}' with {} forms", project.name, project.forms.len());
                     for f in &project.forms {
-                        eprintln!("[DEBUG]   Form '{}': {} controls, caption='{}'", f.form.name, f.form.controls.len(), f.form.caption);
+                        eprintln!("[DEBUG]   Form '{}': {} controls, text='{}'", f.form.name, f.form.controls.len(), f.form.text);
                         for c in &f.form.controls {
                             eprintln!("[DEBUG]     Control: {} ({:?}) at ({},{}) {}x{}", c.name, c.control_type, c.bounds.x, c.bounds.y, c.bounds.width, c.bounds.height);
                         }
@@ -105,7 +105,7 @@ fn App() -> Element {
         // Create default project (fallback) with VB.NET form
         let mut project = Project::new("Project1");
         let mut form = Form::new("Form1");
-        form.caption = "Form1".to_string();
+        form.text = "Form1".to_string();
         form.width = 640;
         form.height = 480;
         

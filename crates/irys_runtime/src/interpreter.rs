@@ -1,7 +1,6 @@
 use crate::builtins::*;
 use crate::environment::Environment;
 use crate::evaluator::{evaluate, values_equal, value_in_range, compare_values};
-use crate::data_access::DataAccessManager;
 use crate::event_system::EventSystem;
 use crate::value::{ExitType, RuntimeError, Value, ObjectData};
 use crate::EventData;
@@ -1885,14 +1884,40 @@ impl Interpreter {
                     // Get existing array and resize preserving data
                     let mut arr = self.env.get(array.as_str())?;
                     if let Value::Array(ref mut vec) = arr {
-                        vec.resize(new_size, Value::Nothing);
+                        // Infer element type default from existing elements
+                        let default_val = vec.iter().find(|v| !matches!(v, Value::Nothing))
+                            .map(|v| match v {
+                                Value::Integer(_) => Value::Integer(0),
+                                Value::Long(_) => Value::Long(0),
+                                Value::Single(_) => Value::Single(0.0),
+                                Value::Double(_) => Value::Double(0.0),
+                                Value::String(_) => Value::String(String::new()),
+                                Value::Boolean(_) => Value::Boolean(false),
+                                _ => Value::Nothing,
+                            })
+                            .unwrap_or(Value::Integer(0));
+                        vec.resize(new_size, default_val);
                         self.env.set(array.as_str(), arr)?;
                     } else {
                         return Err(RuntimeError::Custom(format!("{} is not an array", array.as_str())));
                     }
                 } else {
-                    // Create new array
-                    let new_arr = Value::Array(vec![Value::Nothing; new_size]);
+                    // Without Preserve: try to infer type from existing array, default to Integer(0)
+                    let default_val = self.env.get(array.as_str()).ok()
+                        .and_then(|v| if let Value::Array(vec) = v {
+                            vec.iter().find(|el| !matches!(el, Value::Nothing)).cloned()
+                        } else { None })
+                        .map(|v| match v {
+                            Value::Integer(_) => Value::Integer(0),
+                            Value::Long(_) => Value::Long(0),
+                            Value::Single(_) => Value::Single(0.0),
+                            Value::Double(_) => Value::Double(0.0),
+                            Value::String(_) => Value::String(String::new()),
+                            Value::Boolean(_) => Value::Boolean(false),
+                            _ => Value::Integer(0),
+                        })
+                        .unwrap_or(Value::Integer(0));
+                    let new_arr = Value::Array(vec![default_val; new_size]);
                     self.env.set(array.as_str(), new_arr)?;
                 }
                 Ok(())
@@ -2917,16 +2942,17 @@ impl Interpreter {
             }
             Expression::TypeOf { expr, type_name } => {
                 let val = self.evaluate_expr(expr)?;
+                let tn = type_name.trim();
                 let result = match &val {
                     Value::Object(obj) => {
                         let b = obj.borrow();
-                        b.class_name.eq_ignore_ascii_case(type_name)
+                        b.class_name.eq_ignore_ascii_case(tn)
                     }
-                    Value::String(_) => type_name.eq_ignore_ascii_case("String"),
-                    Value::Integer(_) => type_name.eq_ignore_ascii_case("Integer") || type_name.eq_ignore_ascii_case("Int32"),
-                    Value::Long(_) => type_name.eq_ignore_ascii_case("Long") || type_name.eq_ignore_ascii_case("Int64"),
-                    Value::Double(_) => type_name.eq_ignore_ascii_case("Double"),
-                    Value::Boolean(_) => type_name.eq_ignore_ascii_case("Boolean"),
+                    Value::String(_) => tn.eq_ignore_ascii_case("String"),
+                    Value::Integer(_) => tn.eq_ignore_ascii_case("Integer") || tn.eq_ignore_ascii_case("Int32"),
+                    Value::Long(_) => tn.eq_ignore_ascii_case("Long") || tn.eq_ignore_ascii_case("Int64"),
+                    Value::Double(_) => tn.eq_ignore_ascii_case("Double"),
+                    Value::Boolean(_) => tn.eq_ignore_ascii_case("Boolean"),
                     Value::Nothing => false,
                     _ => false,
                 };
@@ -3511,7 +3537,6 @@ impl Interpreter {
                     fields.insert("__is_control".to_string(), Value::Boolean(true));
                     fields.insert("name".to_string(), Value::String(String::new()));
                     fields.insert("text".to_string(), Value::String(String::new()));
-                    fields.insert("caption".to_string(), Value::String(String::new()));
                     fields.insert("visible".to_string(), Value::Boolean(true));
                     fields.insert("enabled".to_string(), Value::Boolean(true));
                     fields.insert("left".to_string(), Value::Integer(0));
@@ -5437,7 +5462,7 @@ impl Interpreter {
                                     });
                                 }
                             }
-                            Value::String(proxy_name) => {
+                            Value::String(_proxy_name) => {
                                 // Legacy string proxy fallback — just a no-op
                             }
                             _ => {}
@@ -9041,7 +9066,6 @@ impl Interpreter {
 
             // ---- Convert Base64 ----
             "convert.tobase64string" => {
-                use std::io::Write;
                 let input = &arg_values[0];
                 let bytes: Vec<u8> = match input {
                     Value::Array(arr) => arr.iter().map(|v| match v {
@@ -10524,23 +10548,87 @@ impl Interpreter {
     pub fn call_instance_method(&mut self, instance_name: &str, method_name: &str, args: &[Value]) -> Result<(), RuntimeError> {
         let instance_val = self.env.get(instance_name)?;
         if let Value::Object(obj_ref) = instance_val {
-            let class_name = obj_ref.borrow().class_name.clone();
-            if let Some(method) = self.find_method(&class_name, method_name) {
-                match method {
-                    irys_parser::ast::decl::MethodDecl::Sub(s) => {
-                        self.call_user_sub(&s, args, Some(obj_ref.clone()))?;
-                        return Ok(());
-                    }
-                    irys_parser::ast::decl::MethodDecl::Function(f) => {
-                        let _ = self.call_user_function(&f, args, Some(obj_ref.clone()))?;
-                        return Ok(());
-                    }
-                }
-            }
-            Err(RuntimeError::UndefinedFunction(method_name.to_string()))
+            self.call_method_on_object(&obj_ref, method_name, args)
         } else {
             Err(RuntimeError::TypeError { expected: "Object".to_string(), got: format!("{:?}", instance_val) })
         }
+    }
+
+    /// Call a method on an object reference directly (no environment lookup needed).
+    pub fn call_method_on_object(
+        &mut self,
+        obj_ref: &std::rc::Rc<std::cell::RefCell<crate::value::ObjectData>>,
+        method_name: &str,
+        args: &[Value],
+    ) -> Result<(), RuntimeError> {
+        let class_name = obj_ref.borrow().class_name.clone();
+        if let Some(method) = self.find_method(&class_name, method_name) {
+            match method {
+                irys_parser::ast::decl::MethodDecl::Sub(s) => {
+                    self.call_user_sub(&s, args, Some(obj_ref.clone()))?;
+                    Ok(())
+                }
+                irys_parser::ast::decl::MethodDecl::Function(f) => {
+                    let _ = self.call_user_function(&f, args, Some(obj_ref.clone()))?;
+                    Ok(())
+                }
+            }
+        } else {
+            Err(RuntimeError::UndefinedFunction(method_name.to_string()))
+        }
+    }
+
+    /// Create an instance of a registered class and optionally call Sub New / InitializeComponent.
+    /// This is the Rust-side equivalent of `New ClassName()` without needing to parse VB code.
+    /// Returns the Rc-wrapped object so the caller can store it in the environment.
+    pub fn create_class_instance(&mut self, class_name: &str) -> Result<std::rc::Rc<std::cell::RefCell<crate::value::ObjectData>>, RuntimeError> {
+        let resolved_key = self.resolve_class_key(class_name);
+        let class_decl = resolved_key
+            .as_ref()
+            .and_then(|k| self.classes.get(k).cloned())
+            .ok_or_else(|| RuntimeError::Custom(format!("Class '{}' not found", class_name)))?;
+
+        let fields = self.collect_fields(class_name);
+        let obj_data = crate::value::ObjectData {
+            class_name: class_decl.name.as_str().to_string(),
+            fields,
+        };
+        let obj_ref = std::rc::Rc::new(std::cell::RefCell::new(obj_data));
+
+        // Call Sub New if it exists (which typically calls InitializeComponent)
+        let new_method = self.find_method(class_name, "new");
+        if let Some(method) = new_method {
+            match method {
+                irys_parser::ast::decl::MethodDecl::Sub(s) => {
+                    self.call_user_sub(&s, &[], Some(obj_ref.clone()))?;
+                }
+                irys_parser::ast::decl::MethodDecl::Function(f) => {
+                    let _ = self.call_user_function(&f, &[], Some(obj_ref.clone()))?;
+                }
+            }
+        } else {
+            // No Sub New: auto-call InitializeComponent for form classes
+            let inherits_form = class_decl.inherits.as_ref().map_or(false, |t| {
+                match t {
+                    irys_parser::VBType::Custom(n) => n.to_lowercase().contains("form"),
+                    _ => false,
+                }
+            });
+            if inherits_form {
+                if let Some(init_method) = self.find_method(class_name, "InitializeComponent") {
+                    match init_method {
+                        irys_parser::ast::decl::MethodDecl::Sub(s) => {
+                            let _ = self.call_user_sub(&s, &[], Some(obj_ref.clone()));
+                        }
+                        irys_parser::ast::decl::MethodDecl::Function(f) => {
+                            let _ = self.call_user_function(&f, &[], Some(obj_ref.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(obj_ref)
     }
 
     /// Find a class method that has a Handles clause matching the given control.event pattern.
@@ -10617,6 +10705,7 @@ impl Interpreter {
     /// Refresh all controls bound to a BindingSource after the position has changed.
     /// Reads the __bindings array (entries: "controlName|propertyName|dataMember")
     /// and pushes PropertyChange side effects for each.
+    #[allow(dead_code)]
     fn refresh_bindings(
         &mut self,
         bs_ref: &std::rc::Rc<std::cell::RefCell<crate::value::ObjectData>>,
@@ -10804,7 +10893,7 @@ impl Interpreter {
 
     /// Apply filter/sort to raw string rows (Vec<Vec<String>>) for DataGridView rendering.
     #[inline(never)]
-    fn apply_filter_sort_raw(columns: &[String], col_lower: &[String], rows: &[Vec<String>], filter: &str, sort: &str) -> Vec<Vec<String>> {
+    fn apply_filter_sort_raw(_columns: &[String], col_lower: &[String], rows: &[Vec<String>], filter: &str, sort: &str) -> Vec<Vec<String>> {
         let mut result: Vec<Vec<String>> = if filter.trim().is_empty() {
             rows.to_vec()
         } else {
@@ -11381,7 +11470,7 @@ impl Interpreter {
                  let meta = std::fs::metadata(&path).map_err(|e| RuntimeError::Custom(format!("Error accessing file: {}", e)))?;
                  let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                  let secs = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
-                 let ndt = chrono::NaiveDateTime::from_timestamp_opt(secs, 0).unwrap_or_default();
+                 let ndt = chrono::DateTime::from_timestamp(secs, 0).map(|dt| dt.naive_utc()).unwrap_or_default();
                  Ok(Value::Date(date_to_ole(ndt)))
             }
             "getcreationtime" => {
@@ -11389,7 +11478,7 @@ impl Interpreter {
                  let meta = std::fs::metadata(&path).map_err(|e| RuntimeError::Custom(format!("Error accessing file: {}", e)))?;
                  let created = meta.created().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                  let secs = created.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
-                 let ndt = chrono::NaiveDateTime::from_timestamp_opt(secs, 0).unwrap_or_default();
+                 let ndt = chrono::DateTime::from_timestamp(secs, 0).map(|dt| dt.naive_utc()).unwrap_or_default();
                  Ok(Value::Date(date_to_ole(ndt)))
             }
             _ => Err(RuntimeError::UndefinedFunction(format!("System.IO.File.{}", method_name)))

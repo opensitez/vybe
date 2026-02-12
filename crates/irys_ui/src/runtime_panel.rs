@@ -64,6 +64,7 @@ pub struct RuntimeProject {
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn event_type_from_name(name: &str) -> Option<EventType> {
     match name.to_lowercase().as_str() {
         "click" => Some(EventType::Click),
@@ -181,6 +182,212 @@ fn dioxus_key_to_vk(key: &dioxus::prelude::Key) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Control Sync Helpers
+//
+// The Form struct (irys_forms) is the UI source of truth — the renderer reads
+// from it.  The interpreter's form instance object is the code source of
+// truth — VB handlers read/write to it via `Me.ctrl.Prop`.  These two helpers
+// synchronise the two representations cleanly:
+//
+//   sync_ui_to_instance    – before event dispatch (push UI state into interp)
+//   sync_instance_to_ui    – after  event dispatch (pull code changes into UI)
+// ---------------------------------------------------------------------------
+
+/// Push current UI state (text-box values, checkbox states …) from the Form
+/// struct into the interpreter's form instance object so VB code sees the
+/// latest values.
+fn sync_ui_to_instance(
+    form: &Form,
+    form_obj: &Rc<RefCell<irys_runtime::value::ObjectData>>,
+) {
+    let form_ref = form_obj.borrow();
+    for ctrl in &form.controls {
+        let key = ctrl.name.to_lowercase();
+        if let Some(Value::Object(ctrl_obj)) = form_ref.fields.get(&key) {
+            let mut ctrl_ref = ctrl_obj.borrow_mut();
+            // Text  (textbox input, label changes, …)
+            if let Some(text) = ctrl.get_text() {
+                ctrl_ref.fields.insert("text".to_string(), Value::String(text.to_string()));
+            }
+            // Enabled
+            ctrl_ref.fields.insert("enabled".to_string(), Value::Boolean(ctrl.is_enabled()));
+            // Visible
+            ctrl_ref.fields.insert("visible".to_string(), Value::Boolean(ctrl.is_visible()));
+            // Checked
+            if let Some(ck) = ctrl.properties.get_bool("Checked") {
+                ctrl_ref.fields.insert("checked".to_string(), Value::Boolean(ck));
+            }
+            // Value (trackbar, numeric up-down, …)
+            if let Some(v) = ctrl.properties.get_int("Value") {
+                ctrl_ref.fields.insert("value".to_string(), Value::Integer(v));
+            }
+            // SelectedIndex
+            if let Some(si) = ctrl.properties.get_int("SelectedIndex") {
+                ctrl_ref.fields.insert("selectedindex".to_string(), Value::Integer(si));
+            }
+        }
+    }
+}
+
+/// Pull property changes made by VB code from the interpreter's form
+/// instance object back into the Form struct so the renderer shows them.
+fn sync_instance_to_ui(
+    form: &mut Form,
+    form_obj: &Rc<RefCell<irys_runtime::value::ObjectData>>,
+) {
+    let form_ref = form_obj.borrow();
+
+    // Sync form-level Text/Caption
+    if let Some(Value::String(s)) = form_ref.fields.get("text") {
+        form.text = s.clone();
+    }
+
+    for ctrl in form.controls.iter_mut() {
+        let key = ctrl.name.to_lowercase();
+        if let Some(Value::Object(ctrl_obj)) = form_ref.fields.get(&key) {
+            let ctrl_fields = ctrl_obj.borrow();
+            // Text
+            if let Some(Value::String(s)) = ctrl_fields.fields.get("text") {
+                ctrl.set_text(s.clone());
+            }
+            // Enabled
+            if let Some(val) = ctrl_fields.fields.get("enabled") {
+                let en = match val {
+                    Value::Boolean(b) => *b,
+                    Value::Integer(i) => *i != 0,
+                    _ => true,
+                };
+                ctrl.properties.set_raw("Enabled", irys_forms::PropertyValue::Boolean(en));
+            }
+            // Visible
+            if let Some(val) = ctrl_fields.fields.get("visible") {
+                let vis = match val {
+                    Value::Boolean(b) => *b,
+                    Value::Integer(i) => *i != 0,
+                    _ => true,
+                };
+                ctrl.properties.set_raw("Visible", irys_forms::PropertyValue::Boolean(vis));
+            }
+            // BackColor
+            if let Some(Value::String(s)) = ctrl_fields.fields.get("backcolor") {
+                if !s.is_empty() { ctrl.set_back_color(s.clone()); }
+            }
+            // ForeColor
+            if let Some(Value::String(s)) = ctrl_fields.fields.get("forecolor") {
+                if !s.is_empty() { ctrl.set_fore_color(s.clone()); }
+            }
+            // Checked
+            if let Some(Value::Boolean(b)) = ctrl_fields.fields.get("checked") {
+                ctrl.properties.set_raw("Checked", irys_forms::PropertyValue::Boolean(*b));
+            }
+            // SelectedIndex
+            if let Some(Value::Integer(i)) = ctrl_fields.fields.get("selectedindex") {
+                ctrl.properties.set_raw("SelectedIndex", irys_forms::PropertyValue::Integer(*i));
+            }
+            // Value
+            if let Some(Value::Integer(i)) = ctrl_fields.fields.get("value") {
+                ctrl.properties.set_raw("Value", irys_forms::PropertyValue::Integer(*i));
+            }
+        }
+    }
+}
+
+/// After the interpreter creates the form instance (via Sub New /
+/// InitializeComponent), some controls may not have been created properly
+/// (e.g. the interpreter couldn't evaluate all designer expressions).
+/// This ensures every control from the designer-parsed Form has a
+/// corresponding object field on the instance with correct values.
+fn ensure_controls_on_instance(
+    form: &Form,
+    form_obj: &Rc<RefCell<irys_runtime::value::ObjectData>>,
+) {
+    let mut form_ref = form_obj.borrow_mut();
+    for ctrl in &form.controls {
+        let key = ctrl.name.to_lowercase();
+        let existing = form_ref.fields.get(&key);
+
+        // If the field is missing, Nothing, or still a plain String placeholder,
+        // create a proper control object from the designer data.
+        let needs_create = match existing {
+            None | Some(Value::Nothing) | Some(Value::String(_)) => true,
+            _ => false,
+        };
+
+        if needs_create {
+            let ctrl_obj = build_control_object(ctrl);
+            form_ref.fields.insert(key, ctrl_obj);
+        } else if let Some(Value::Object(ctrl_obj)) = existing {
+            // The object exists (created by InitializeComponent).
+            // Fill in any missing properties from the designer data
+            // but do NOT overwrite properties that InitializeComponent set.
+            let mut cr = ctrl_obj.borrow_mut();
+            if !cr.fields.contains_key("name") {
+                cr.fields.insert("name".to_string(), Value::String(ctrl.name.clone()));
+            }
+            if !cr.fields.contains_key("__is_control") {
+                cr.fields.insert("__is_control".to_string(), Value::Boolean(true));
+            }
+            // If InitializeComponent created the control but text is empty while
+            // designer has a value, prefer the designer value. This handles the
+            // case where InitializeComponent did `Me.btn = New Button()` but the
+            // interpreter skipped the `Me.btn.Text = "1"` line.
+            let has_empty_text = cr.fields.get("text")
+                .map(|v| matches!(v, Value::String(s) if s.is_empty()))
+                .unwrap_or(true);
+            if has_empty_text {
+                if let Some(text) = ctrl.get_text() {
+                    if !text.is_empty() {
+                        cr.fields.insert("text".to_string(), Value::String(text.to_string()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Build a Value::Object representing a single control from its designer data.
+fn build_control_object(ctrl: &irys_forms::Control) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("__type".to_string(), Value::String(ctrl.control_type.as_str().to_string()));
+    fields.insert("__is_control".to_string(), Value::Boolean(true));
+    fields.insert("name".to_string(), Value::String(ctrl.name.clone()));
+    fields.insert("text".to_string(), Value::String(
+        ctrl.get_text().unwrap_or("").to_string()
+    ));
+    fields.insert("enabled".to_string(), Value::Boolean(ctrl.is_enabled()));
+    fields.insert("visible".to_string(), Value::Boolean(ctrl.is_visible()));
+    fields.insert("left".to_string(), Value::Integer(ctrl.bounds.x));
+    fields.insert("top".to_string(), Value::Integer(ctrl.bounds.y));
+    fields.insert("width".to_string(), Value::Integer(ctrl.bounds.width));
+    fields.insert("height".to_string(), Value::Integer(ctrl.bounds.height));
+    fields.insert("tag".to_string(), Value::Nothing);
+    fields.insert("tabindex".to_string(), Value::Integer(ctrl.tab_index as i32));
+    if let Some(bc) = ctrl.get_back_color() {
+        fields.insert("backcolor".to_string(), Value::String(bc.to_string()));
+    }
+    if let Some(fc) = ctrl.get_fore_color() {
+        fields.insert("forecolor".to_string(), Value::String(fc.to_string()));
+    }
+    if let Some(fnt) = ctrl.get_font() {
+        fields.insert("font".to_string(), Value::String(fnt.to_string()));
+    }
+    if let Some(ck) = ctrl.properties.get_bool("Checked") {
+        fields.insert("checked".to_string(), Value::Boolean(ck));
+    }
+    if let Some(v) = ctrl.properties.get_int("Value") {
+        fields.insert("value".to_string(), Value::Integer(v));
+    }
+    if let Some(si) = ctrl.properties.get_int("SelectedIndex") {
+        fields.insert("selectedindex".to_string(), Value::Integer(si));
+    }
+
+    Value::Object(Rc::new(RefCell::new(ObjectData {
+        class_name: ctrl.control_type.as_str().to_string(),
+        fields,
+    })))
+}
+
 fn process_side_effects(
     interp: &mut Interpreter,
     rp: RuntimeProject,
@@ -247,8 +454,8 @@ fn process_side_effects(
                             if control_part.eq_ignore_ascii_case(&frm.name)
                                 || (form_part.is_empty() && object.eq_ignore_ascii_case(&frm.name))
                             {
-                                if property.eq_ignore_ascii_case("Caption") {
-                                    frm.caption = value.as_string();
+                                if property.eq_ignore_ascii_case("Caption") || property.eq_ignore_ascii_case("Text") {
+                                    frm.text = value.as_string();
                                 }
                             } else {
                                 if let Some(ctrl) = frm.get_control_by_name_mut(control_part) {
@@ -267,7 +474,10 @@ fn process_side_effects(
                                                 }
                                             }
                                         }
-                                        "caption" => ctrl.set_caption(value.as_string()),
+                                        "caption" => {
+                                            // VB6 compat: Caption maps to Text in .NET
+                                            ctrl.set_text(value.as_string());
+                                        }
                                         "left" => { if let irys_runtime::Value::Integer(v) = &value { ctrl.bounds.x = *v; } },
                                         "top" => { if let irys_runtime::Value::Integer(v) = &value { ctrl.bounds.y = *v; } },
                                         "width" => { if let irys_runtime::Value::Integer(v) = &value { ctrl.bounds.width = *v; } },
@@ -415,52 +625,49 @@ fn process_side_effects(
         }
     }
 
-    // Sync Step: Poll interpreter for control state changes to reflect code updates in UI
-    if let Some(frm) = runtime_form.write().as_mut() {
-        let instance_name = format!("{}Instance", frm.name);
-
-        if let Ok(irys_runtime::Value::Object(form_obj)) = interp.env.get(&instance_name) {
+    // ── Sync interpreter → UI after side effects ────────────────────────
+    // The form instance key is stored as `__form_instance__` in the
+    // interpreter's global env.  Read from it and push changes into the
+    // Form struct that drives the renderer.
+    if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+        let needs_sync = if let Some(frm) = runtime_form.peek().as_ref() {
             let form_borrow = form_obj.borrow();
-
-            for control in frm.controls.iter_mut() {
-                if let Some(irys_runtime::Value::Object(ctrl_obj)) =
+            let mut changed = false;
+            for control in &frm.controls {
+                if let Some(Value::Object(ctrl_obj)) =
                     form_borrow.fields.get(&control.name.to_lowercase())
                 {
-                    let ctrl_fields = &ctrl_obj.borrow().fields;
-
-                    if let Some(irys_runtime::Value::String(s)) = ctrl_fields.get("caption") {
-                        control.properties.set_raw("Caption", irys_forms::PropertyValue::String(s.clone()));
-                        control.properties.set_raw("Text", irys_forms::PropertyValue::String(s.clone()));
+                    let ctrl_fields = ctrl_obj.borrow();
+                    if let Some(Value::String(s)) = ctrl_fields.fields.get("text") {
+                        let current = control.get_text().map(|t| t.to_string()).unwrap_or_default();
+                        if *s != current { changed = true; break; }
                     }
-
-                    if let Some(irys_runtime::Value::String(s)) = ctrl_fields.get("text") {
-                        control.properties.set_raw("Text", irys_forms::PropertyValue::String(s.clone()));
+                    if let Some(val) = ctrl_fields.fields.get("enabled") {
+                        let new_en = match val {
+                            Value::Boolean(b) => *b,
+                            Value::Integer(i) => *i != 0,
+                            _ => true,
+                        };
+                        if new_en != control.is_enabled() { changed = true; break; }
                     }
-
-                    if let Some(val) = ctrl_fields.get("enabled") {
-                        match val {
-                            irys_runtime::Value::Boolean(b) => {
-                                control.properties.set_raw("Enabled", irys_forms::PropertyValue::Boolean(*b));
-                            }
-                            irys_runtime::Value::Integer(i) => {
-                                control.properties.set_raw("Enabled", irys_forms::PropertyValue::Boolean(*i != 0));
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    if let Some(val) = ctrl_fields.get("visible") {
-                        match val {
-                            irys_runtime::Value::Boolean(b) => {
-                                control.properties.set_raw("Visible", irys_forms::PropertyValue::Boolean(*b));
-                            }
-                            irys_runtime::Value::Integer(i) => {
-                                control.properties.set_raw("Visible", irys_forms::PropertyValue::Boolean(*i != 0));
-                            }
-                            _ => {}
-                        }
+                    if let Some(val) = ctrl_fields.fields.get("visible") {
+                        let new_vis = match val {
+                            Value::Boolean(b) => *b,
+                            Value::Integer(i) => *i != 0,
+                            _ => true,
+                        };
+                        if new_vis != control.is_visible() { changed = true; break; }
                     }
                 }
+            }
+            changed
+        } else {
+            false
+        };
+
+        if needs_sync {
+            if let Some(frm) = runtime_form.write().as_mut() {
+                sync_instance_to_ui(frm, &form_obj);
             }
         }
     }
@@ -565,7 +772,6 @@ pub fn FormRunner() -> Element {
                     } else {
                         startup_form_module.get_user_code().to_string()
                     };
-                    let is_vbnet_form = startup_form_module.is_vbnet();
                     drop(project_read);
 
                     runtime_form.set(Some(form.clone()));
@@ -589,178 +795,91 @@ pub fn FormRunner() -> Element {
                     }
                     drop(project_read);
 
-                    // Now load the startup form code
+                    // Now load the startup form code (registers the class)
                     match parse_program(&form_code) {
                         Ok(program) => {
                             parse_error.set(None);
                             if let Err(e) = interp.run(&program) {
                                 parse_error.set(Some(format!("Runtime Load Error: {:?}", e)));
                             } else {
-                                // Register form controls as variables
-                                if let Some(runtime_form_data) = runtime_form.read().as_ref() {
-                                    for control in &runtime_form_data.controls {
-                                        let control_var = irys_runtime::Value::String(control.name.clone());
-                                        interp.env.define(&control.name, control_var);
-                                    }
-                                }
+                                // ── Clean .NET-style form initialization ─────
+                                // 1. Create the form instance via the interpreter.
+                                //    This calls Sub New → InitializeComponent,
+                                //    populating the instance fields with controls.
+                                let form_class = form.name.clone();
+                                let form_name_lower = form.name.to_lowercase();
 
-                                // For VB.NET, create an instance of the form
-                                if is_vbnet_form {
-                                    let runtime_controls = r#"
-                                        Module RuntimeControls
-                                            Public Class Control
-                                                Public Name As String
-                                                Public Caption As String
-                                                Public Text As String
-                                                Public Value As Integer
-                                                Public Enabled As Boolean
-                                                Public Visible As Boolean
+                                match interp.create_class_instance(&form_class) {
+                                    Ok(form_obj) => {
+                                        // 2. Store the instance as __form_instance__
+                                        //    in the global env so process_side_effects
+                                        //    and event dispatch can find it.
+                                        interp.env.define_global(
+                                            "__form_instance__",
+                                            Value::Object(form_obj.clone()),
+                                        );
 
-                                                Public Sub Click()
-                                                End Sub
-                                            End Class
-                                        End Module
-                                    "#;
-                                    if let Ok(prog) = parse_program(runtime_controls) {
-                                        interp.load_module("RuntimeControls", &prog).ok();
-                                    }
-
-                                    let global_module = format!(
-                                        r#"
-                                        Module RuntimeGlobals
-                                            Public {}Instance As New {}
-
-                                            Public Sub InitControls()
-                                                ' Auto-generated control initialization
-                                                {}
-                                            End Sub
-                                        End Module
-                                    "#,
-                                        form.name,
-                                        form.name,
-                                        if let Some(runtime_form_data) = runtime_form.read().as_ref() {
-                                            runtime_form_data
-                                                .controls
-                                                .iter()
-                                                .map(|c| {
-                                                    let cap = c
-                                                        .get_caption()
-                                                        .map(|s| s.to_string())
-                                                        .unwrap_or_else(|| c.name.clone());
-                                                    let en = c.is_enabled();
-                                                    format!(
-                                                    "RuntimeGlobals.{0}Instance.{1} = New RuntimeControls.Control\nRuntimeGlobals.{0}Instance.{1}.Name = \"{1}\"\nRuntimeGlobals.{0}Instance.{1}.Caption = \"{2}\"\nRuntimeGlobals.{0}Instance.{1}.Enabled = {3}\n",
-                                                    form.name,
-                                                    c.name,
-                                                    cap.replace("\"", "\"\""),
-                                                    if en { "True" } else { "False" }
-                                                )
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .join("\n")
-                                        } else {
-                                            String::new()
+                                        // 3. Fill in any controls that the interpreter
+                                        //    couldn't fully build from designer code.
+                                        if let Some(frm) = runtime_form.read().as_ref() {
+                                            ensure_controls_on_instance(frm, &form_obj);
                                         }
-                                    );
-                                    if let Ok(prog) = parse_program(&global_module) {
-                                        if let Err(e) = interp.load_module("RuntimeGlobals", &prog) {
-                                            println!("Error creating runtime globals: {:?}", e);
-                                        } else {
-                                            let _ = interp.call_procedure(
-                                                &irys_parser::ast::Identifier::new("InitControls"),
-                                                &[],
-                                            );
-                                        }
-                                    }
 
-                                    let instance_name = format!("RuntimeGlobals.{}Instance", form.name);
-                                    let form_name_lower = form.name.to_lowercase();
-
-                                    match interp.call_instance_method(&instance_name, "InitializeComponent", &[]) {
-                                        Ok(_) => {
-                                            if let Some(Value::Object(form_obj)) =
-                                                interp.env.get_global(&instance_name)
-                                            {
-                                                let mut form_ref = form_obj.borrow_mut();
-                                                if let Some(runtime_form_data) = runtime_form.read().as_ref() {
-                                                    for ctrl in &runtime_form_data.controls {
-                                                        let key = ctrl.name.to_lowercase();
-                                                        let needs_create = matches!(
-                                                            form_ref.fields.get(&key),
-                                                            None | Some(Value::Nothing) | Some(Value::String(_))
-                                                        );
-                                                        if needs_create {
-                                                            let mut ctrl_fields = HashMap::new();
-                                                            ctrl_fields.insert(
-                                                                "name".to_string(),
-                                                                Value::String(ctrl.name.clone()),
-                                                            );
-                                                            let caption = ctrl
-                                                                .get_caption()
-                                                                .map(|s| s.to_string())
-                                                                .unwrap_or_else(|| ctrl.name.clone());
-                                                            ctrl_fields.insert(
-                                                                "caption".to_string(),
-                                                                Value::String(caption),
-                                                            );
-                                                            let text = ctrl
-                                                                .get_text()
-                                                                .map(|s| s.to_string())
-                                                                .unwrap_or_default();
-                                                            ctrl_fields.insert(
-                                                                "text".to_string(),
-                                                                Value::String(text),
-                                                            );
-                                                            ctrl_fields.insert(
-                                                                "enabled".to_string(),
-                                                                Value::Boolean(ctrl.is_enabled()),
-                                                            );
-                                                            let ctrl_obj = Value::Object(Rc::new(
-                                                                RefCell::new(ObjectData {
-                                                                    class_name: "RuntimeControls.Control".to_string(),
-                                                                    fields: ctrl_fields,
-                                                                }),
-                                                            ));
-                                                            form_ref.fields.insert(key.clone(), ctrl_obj.clone());
-                                                        }
-                                                    }
+                                        // 4. Register each control as an env variable
+                                        //    pointing to the SAME Rc, so `btn1.Text`
+                                        //    (without `Me.`) also resolves correctly.
+                                        {
+                                            let obj_borrow = form_obj.borrow();
+                                            for ctrl in &form.controls {
+                                                let key = ctrl.name.to_lowercase();
+                                                if let Some(ctrl_val) = obj_borrow.fields.get(&key) {
+                                                    interp.env.define_global(&ctrl.name, ctrl_val.clone());
                                                 }
                                             }
                                         }
-                                        Err(e) => println!("InitializeComponent error: {:?}", e),
-                                    }
 
-                                    let load_args = interp.make_event_handler_args(&form.name, "Load");
-                                    if let Some(load_handler) =
-                                        interp.find_handles_method(&form_name_lower, "Me", "Load")
-                                    {
-                                        let _ = interp.call_instance_method(&instance_name, &load_handler, &load_args);
-                                    } else {
-                                        let _ = interp.call_instance_method(
-                                            &instance_name,
-                                            &format!("{}_Load", form.name),
-                                            &load_args,
-                                        );
-                                        let _ = interp.call_instance_method(&instance_name, "Form_Load", &load_args);
-                                    }
+                                        // 5. Pull instance state into the Form struct
+                                        //    so the UI renders initial values correctly.
+                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                            sync_instance_to_ui(frm, &form_obj);
+                                        }
 
-                                    let _ = interp.call_event_handler("Form_Load", &load_args);
-                                } else {
-                                    let load_args = interp.make_event_handler_args("Form", "Load");
-                                    match interp.call_event_handler("Form_Load", &load_args) {
-                                        Ok(_) => {}
-                                        Err(irys_runtime::RuntimeError::UndefinedFunction(_)) => {}
-                                        Err(e) => println!("Form_Load Error: {:?}", e),
+                                        // 6. Fire Form_Load / Me.Load handler
+                                        let load_args = interp.make_event_handler_args(&form_class, "Load");
+                                        if let Some(handler) =
+                                            interp.find_handles_method(&form_name_lower, "Me", "Load")
+                                        {
+                                            let _ = interp.call_method_on_object(&form_obj, &handler, &load_args);
+                                        } else {
+                                            // Fallback: try Form1_Load convention
+                                            let conv = format!("{}_Load", form_class);
+                                            let _ = interp.call_method_on_object(&form_obj, &conv, &load_args);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Form instance creation error: {:?}", e);
+                                        // Fallback: still try Form_Load as a free sub
+                                        let load_args = interp.make_event_handler_args("Form", "Load");
+                                        let _ = interp.call_event_handler("Form_Load", &load_args);
                                     }
                                 }
+
+                                // 7. Process side-effects (MsgBox, form switches, etc.)
                                 process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content);
 
-                                // Fire Shown event after the form is first displayed
-                                let shown_form_name = runtime_form.read().as_ref().map(|frm| frm.name.clone());
-                                if let Some(fname) = shown_form_name {
-                                    let shown_args = interp.make_event_handler_args(&fname, "Shown");
-                                    let _ = interp.call_event_handler(&format!("{}_Shown", fname), &shown_args);
-                                    process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content);
+                                // 8. Fire Shown event
+                                if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+                                    let shown_form_name = runtime_form.read().as_ref().map(|f| f.name.clone());
+                                    if let Some(fname) = shown_form_name {
+                                        let shown_args = interp.make_event_handler_args(&fname, "Shown");
+                                        let fname_lower = fname.to_lowercase();
+                                        if let Some(handler) = interp.find_handles_method(&fname_lower, "Me", "Shown") {
+                                            let _ = interp.call_method_on_object(&form_obj, &handler, &shown_args);
+                                        } else {
+                                            let _ = interp.call_method_on_object(&form_obj, &format!("{}_Shown", fname), &shown_args);
+                                        }
+                                        process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content);
+                                    }
                                 }
                             }
                         }
@@ -785,158 +904,93 @@ pub fn FormRunner() -> Element {
             return;
         }
 
-        if let Some(interp) = interpreter.write().as_mut() {
-            if let Some(frm) = runtime_form.read().as_ref() {
-                let is_vbnet = rp
-                    .project
-                    .read()
-                    .as_ref()
-                    .and_then(|p| p.get_startup_form())
-                    .map(|f| f.is_vbnet())
-                    .unwrap_or(false);
+        // Passive mouse-tracking events: dispatch to handler if one exists
+        // but skip the full UI sync / side-effects to avoid infinite
+        // mousemove → re-render → mousemove loops.
+        let is_passive_mouse = matches!(
+            event_name.as_str(),
+            "MouseMove" | "MouseEnter" | "MouseLeave"
+        );
 
-                // Common global sync
-                interp
-                    .env
-                    .set(&format!("{}.Caption", frm.name), irys_runtime::Value::String(frm.caption.clone()))
-                    .ok();
-                for ctrl in &frm.controls {
-                    let ctrl_name = ctrl.name.clone();
-                    let caption = ctrl.get_caption().map(|s| s.to_string()).unwrap_or(ctrl_name.clone());
-                    let text = ctrl.get_text().map(|s| s.to_string()).unwrap_or_default();
-                    let val = ctrl.properties.get_int("Value").unwrap_or(0);
-                    let selected_index = ctrl.properties.get_int("SelectedIndex").unwrap_or(-1);
-                    let checked = ctrl.properties.get_bool("Checked").unwrap_or(false);
-
-                    interp
-                        .env
-                        .set(&format!("{}.Caption", ctrl_name), irys_runtime::Value::String(caption.clone()))
-                        .ok();
-                    interp
-                        .env
-                        .set(&format!("{}.Text", ctrl_name), irys_runtime::Value::String(text.clone()))
-                        .ok();
-                    interp
-                        .env
-                        .set(&format!("{}.Value", ctrl_name), irys_runtime::Value::Integer(val))
-                        .ok();
-                    interp
-                        .env
-                        .set(&format!("{}.SelectedIndex", ctrl_name), irys_runtime::Value::Integer(selected_index))
-                        .ok();
-                    interp
-                        .env
-                        .set(&format!("{}.Checked", ctrl_name), irys_runtime::Value::Boolean(checked))
-                        .ok();
-                    let check_state = ctrl.properties.get_int("CheckState").unwrap_or(if checked { 1 } else { 0 });
-                    interp
-                        .env
-                        .set(&format!("{}.CheckState", ctrl_name), irys_runtime::Value::Integer(check_state))
-                        .ok();
-
-                    if is_vbnet {
-                        let instance_name = format!("RuntimeGlobals.{}Instance", frm.name);
-                        let sync_script = format!(
-                            r#"
-                            {}.{}.Caption = "{}"
-                            {}.{}.Text = "{}"
-                         "#,
-                            instance_name,
-                            ctrl_name,
-                            caption.replace("\"", "\"\""),
-                            instance_name,
-                            ctrl_name,
-                            text.replace("\"", "\"\"")
-                        );
-                        if let Ok(prog) = parse_program(&sync_script) {
-                            interp.load_module("SyncState", &prog).ok();
-                        }
-                    }
-                }
-            }
-
-            let handler_name = if let Some(frm) = runtime_form.read().as_ref() {
-                if let Some(event_type) = event_type_from_name(&event_name) {
-                    if control_name.eq_ignore_ascii_case(&frm.name) {
-                        if let Some(handler) = frm.get_event_handler(&control_name, &event_type) {
-                            handler.to_string()
-                        } else {
-                            format!("{}_{}", frm.name, event_name)
-                        }
-                    } else {
-                        if let Some(handler) = frm.get_event_handler(&control_name, &event_type) {
-                            handler.to_string()
-                        } else {
-                            format!("{}_{}", control_name, event_name)
-                        }
-                    }
-                } else {
-                    format!("{}_{}", control_name, event_name)
-                }
-            } else {
-                format!("{}_{}", control_name, event_name)
-            };
-
-            let handler_lower = handler_name.trim().to_lowercase();
-
-            let mut executed = false;
-
-            let is_vbnet = rp
-                .project
-                .read()
-                .as_ref()
-                .and_then(|p| p.get_startup_form())
-                .map(|f| f.is_vbnet())
-                .unwrap_or(false);
-
-            if is_vbnet {
-                if let Some(frm) = runtime_form.read().as_ref() {
-                    let instance_name = format!("RuntimeGlobals.{}Instance", frm.name);
-                    let form_class = frm.name.to_lowercase();
-
+        if is_passive_mouse {
+            if let Some(interp) = interpreter.write().as_mut() {
+                if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+                    let form_class = runtime_form.peek().as_ref()
+                        .map(|f| f.name.to_lowercase()).unwrap_or_default();
                     let event_args = interp.make_event_handler_args_with_data(&control_name, &event_name, event_data.as_ref());
-
                     if let Some(method_name) =
                         interp.find_handles_method(&form_class, &control_name, &event_name)
                     {
-                        match interp.call_instance_method(&instance_name, &method_name, &event_args) {
-                            Ok(_) => executed = true,
-                            Err(_) => {}
-                        }
+                        let _ = interp.call_method_on_object(&form_obj, &method_name, &event_args);
                     }
+                }
+            }
+            return;
+        }
 
-                    if !executed {
-                        match interp.call_instance_method(&instance_name, &handler_name, &event_args) {
-                            Ok(_) => executed = true,
-                            Err(_) => {}
-                        }
+        if let Some(interp) = interpreter.write().as_mut() {
+            // ── Pre-event sync: push UI state → instance ──────────
+            if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+                if let Some(frm) = runtime_form.read().as_ref() {
+                    sync_ui_to_instance(frm, &form_obj);
+                }
+            }
+
+            // ── Dispatch event ─────────────────────────────────────
+            let mut executed = false;
+
+            if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+                let form_class = runtime_form.read().as_ref()
+                    .map(|f| f.name.to_lowercase()).unwrap_or_default();
+                let event_args = interp.make_event_handler_args_with_data(
+                    &control_name, &event_name, event_data.as_ref(),
+                );
+
+                // 1. Try Handles clause (e.g. `Handles btn1.Click`)
+                if let Some(method_name) =
+                    interp.find_handles_method(&form_class, &control_name, &event_name)
+                {
+                    if interp.call_method_on_object(&form_obj, &method_name, &event_args).is_ok() {
+                        executed = true;
                     }
-                    if !executed && control_name.eq_ignore_ascii_case(&frm.name) {
-                        let conv_name = format!("{}_{}", frm.name, event_name);
-                        match interp.call_instance_method(&instance_name, &conv_name, &event_args) {
-                            Ok(_) => executed = true,
-                            Err(_) => {}
+                }
+
+                // 2. Try conventional name (e.g. `btn1_Click`)
+                if !executed {
+                    let conv_name = format!("{}_{}", control_name, event_name);
+                    if interp.call_method_on_object(&form_obj, &conv_name, &event_args).is_ok() {
+                        executed = true;
+                    }
+                }
+
+                // 3. For form-level events, also try Form1_Load style
+                if !executed {
+                    if let Some(frm) = runtime_form.read().as_ref() {
+                        if control_name.eq_ignore_ascii_case(&frm.name) {
+                            let alt = format!("{}_{}", frm.name, event_name);
+                            if interp.call_method_on_object(&form_obj, &alt, &event_args).is_ok() {
+                                executed = true;
+                            }
                         }
                     }
                 }
             }
 
+            // 4. Fallback: try as a free sub (non-class handler)
             if !executed {
+                let handler_lower = format!("{}_{}", control_name, event_name).to_lowercase();
                 let handler_key = interp
                     .subs
                     .keys()
                     .find(|key| *key == &handler_lower || key.ends_with(&format!(".{}", handler_lower)))
                     .cloned();
-
                 if let Some(key) = handler_key {
                     let event_args = interp.make_event_handler_args_with_data(&control_name, &event_name, event_data.as_ref());
                     let _ = interp.call_event_handler(&key, &event_args);
                 }
             }
 
-            // BindingNavigator auto-delegation: if the event is a navigation
-            // action (MoveFirst, MoveNext, …) and the control is a BindingNavigator,
-            // forward the call to its BindingSource.
+            // ── BindingNavigator auto-delegation ──────────────────
             if let Some(frm) = runtime_form.read().as_ref() {
                 let is_nav_event = matches!(
                     event_name.as_str(),
@@ -947,12 +1001,13 @@ pub fn FormRunner() -> Element {
                         if matches!(ctrl.control_type, irys_forms::ControlType::BindingNavigator) {
                             let bs_name = ctrl.properties.get_string("BindingSource").unwrap_or_default();
                             if !bs_name.is_empty() {
-                                let instance_name = format!("RuntimeGlobals.{}Instance", frm.name);
-                                // Call bs.MoveFirst() etc. through the interpreter
-                                let nav_script = format!("{}.{}.{}()", instance_name, bs_name, event_name);
-                                eprintln!("[Nav] script: {}", nav_script);
-                                if let Ok(prog) = parse_program(&nav_script) {
-                                    let _ = interp.load_module("NavAction", &prog);
+                                if let Ok(Value::Object(_form_obj)) = interp.env.get("__form_instance__") {
+                                    // Navigate via the form instance
+                                    let nav_script = format!("__form_instance__.{}.{}()", bs_name, event_name);
+                                    eprintln!("[Nav] script: {}", nav_script);
+                                    if let Ok(prog) = parse_program(&nav_script) {
+                                        let _ = interp.load_module("NavAction", &prog);
+                                    }
                                 }
                             }
                         }
@@ -1164,7 +1219,7 @@ pub fn FormRunner() -> Element {
                 } else if let Some(form) = form_opt {
                     let width = form.width;
                     let height = form.height;
-                    let caption = form.caption.clone();
+                    let caption = form.text.clone();
                     let form_back = form.back_color.clone().unwrap_or_else(|| "#f8fafc".to_string());
                     let form_fore = form.fore_color.clone().unwrap_or_else(|| "#0f172a".to_string());
                     let form_font = form.font.clone().unwrap_or_else(|| "Segoe UI, 12px".to_string());
@@ -1228,8 +1283,7 @@ pub fn FormRunner() -> Element {
                                     let name_focusin = name.clone();
                                     let name_focusout = name.clone();
 
-                                    let caption = control.get_caption().map(|s| s.to_string()).unwrap_or(name.clone());
-                                    let text = control.get_text().map(|s| s.to_string()).unwrap_or_default();
+                                    let text = control.get_text().map(|s| s.to_string()).unwrap_or_else(|| name.clone());
                                     let is_enabled = control.is_enabled();
                                     let is_visible = control.is_visible();
 
@@ -1299,7 +1353,7 @@ pub fn FormRunner() -> Element {
                                                     };
                                                     handle_event(name_mouseenter.clone(), "MouseEnter".to_string(), Some(data));
                                                 },
-                                                onmouseleave: move |evt: MouseEvent| {
+                                                onmouseleave: move |_evt: MouseEvent| {
                                                     handle_event(name_mouseleave.clone(), "MouseLeave".to_string(), None);
                                                 },
                                                 onmousedown: move |evt: MouseEvent| {
@@ -1401,7 +1455,7 @@ pub fn FormRunner() -> Element {
                                                                 };
                                                                 handle_event(name_clone.clone(), "Click".to_string(), Some(data));
                                                             },
-                                                            "{caption}"
+                                                            "{text}"
                                                         }
                                                     },
                                                     ControlType::TextBox => rsx! {
@@ -1432,7 +1486,7 @@ pub fn FormRunner() -> Element {
                                                                 };
                                                                 handle_event(name_clone.clone(), "Click".to_string(), Some(data));
                                                             },
-                                                            "{caption}"
+                                                            "{text}"
                                                         }
                                                     },
                                                     ControlType::CheckBox => rsx! {
@@ -1465,7 +1519,7 @@ pub fn FormRunner() -> Element {
                                                                     handle_event(name_clone.clone(), "Click".to_string(), Some(data));
                                                                 }
                                                             }
-                                                            span { "{caption}" }
+                                                            span { "{text}" }
                                                         }
                                                     },
                                                     ControlType::RadioButton => rsx! {
@@ -1495,7 +1549,7 @@ pub fn FormRunner() -> Element {
                                                                     handle_event(name_clone.clone(), "Click".to_string(), Some(data));
                                                                 }
                                                             }
-                                                            span { "{caption}" }
+                                                            span { "{text}" }
                                                         }
                                                     },
                                                     ControlType::Frame => rsx! {
@@ -1510,7 +1564,7 @@ pub fn FormRunner() -> Element {
                                                                 };
                                                                 handle_event(name_clone.clone(), "Click".to_string(), Some(data));
                                                             },
-                                                            legend { "{caption}" }
+                                                            legend { "{text}" }
                                                         }
                                                     },
                                                     ControlType::ListBox => rsx! {
@@ -2036,7 +2090,7 @@ pub fn FormRunner() -> Element {
                                                                 handle_event(name_clone.clone(), "LinkClicked".to_string(), Some(data));
                                                                 handle_event(name_clone.clone(), "Click".to_string(), Some(data2));
                                                             },
-                                                            "{caption}"
+                                                            "{text}"
                                                         }
                                                     },
                                                     ControlType::ToolStrip => {
@@ -2245,7 +2299,7 @@ pub fn FormRunner() -> Element {
                                                         }
                                                     },
                                                     _ => rsx! {
-                                                        div { style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #666; {style_back}", "{caption}" }
+                                                        div { style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #666; {style_back}", "{text}" }
                                                     }
                                                 }}
                                             }

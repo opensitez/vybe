@@ -171,10 +171,10 @@ fn run_form_project(project: Project) {
     let title = project
         .get_startup_form()
         .map(|f| {
-            if f.form.caption.is_empty() {
+            if f.form.text.is_empty() {
                 f.form.name.clone()
             } else {
-                f.form.caption.clone()
+                f.form.text.clone()
             }
         })
         .unwrap_or_else(|| project.name.clone());

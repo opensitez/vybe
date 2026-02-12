@@ -37,5 +37,5 @@ fn test_load_tictactoe() {
     
     let lbl = form.controls.iter().find(|c| c.name == "lblStatus").expect("lblStatus missing");
     assert_eq!(lbl.control_type.as_str(), "Label");
-    assert_eq!(lbl.get_caption(), Some("Player X Turn"));
+    assert_eq!(lbl.get_text(), Some("Player X Turn"));
 }

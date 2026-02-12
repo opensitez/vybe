@@ -92,7 +92,7 @@ raiseevent_statement = { ^"RaiseEvent" ~ identifier ~ ("(" ~ argument_list? ~ ")
 
 // Array support
 array_bounds = { expression ~ ("," ~ expression)* }
-array_literal = { "{" ~ expression ~ ("," ~ expression)* ~ "}" }
+array_literal = { "{" ~ (expression ~ ("," ~ expression)*)? ~ "}" }
 
 // Control flow
 single_line_if_statement = {
@@ -259,7 +259,8 @@ func_end = { ^"End" ~ ^"Function" }
 
 param_list = { param ~ ("," ~ param)* }
 pass_type_keyword = { ^"ByVal" | ^"ByRef" }
-param = { (^"Optional")? ~ pass_type_keyword? ~ (^"Optional")? ~ identifier ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
+optional_keyword = { ^"Optional" }
+param = { optional_keyword? ~ pass_type_keyword? ~ optional_keyword? ~ identifier ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
 nullable_marker = { "?" }
 
 // Module declarations (VB.NET style - members are implicitly shared)
@@ -401,7 +402,7 @@ shift_op = { "<<" | ">>" }
 add_op = { "+" | "-" | "&" }
 mult_op = { "*" | "/" | "\\" | ^"Mod" }
 exp_op = { "^" }
-not_op = { ^"Not" } // Removed "Nothing" lookahead check, might be fragile but standard parsing should distinguish identifier vs keyword
+not_op = @{ ^"Not" ~ !(ASCII_ALPHANUMERIC | "_") } // Atomic: No implicit whitespace before lookahead
 neg_op = { "-" }
 await_op = { ^"Await" }
 
@@ -442,7 +443,7 @@ primary = _{
 }
 
 // TypeOf...Is expression
-typeof_expression = { ^"TypeOf" ~ expression ~ ^"Is" ~ type_name }
+typeof_expression = { ^"TypeOf" ~ postfix ~ ^"Is" ~ type_name }
 
 // Inline If expression: If(cond, true, false) or If(value, default)
 if_expression = { ^"If" ~ "(" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" }
@@ -518,6 +519,6 @@ member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{
-    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random")
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }

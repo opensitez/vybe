@@ -272,7 +272,7 @@ pub fn FormDesigner() -> Element {
                 {
                     let form_width = form.width;
                     let form_height = form.height;
-                    let form_caption = form.caption.clone();
+                    let form_caption = form.text.clone();
                     let form_back = form.back_color.clone().unwrap_or_else(|| "#f8fafc".to_string());
                     let form_fore = form.fore_color.clone().unwrap_or_else(|| "#0f172a".to_string());
                     let form_font = form.font.clone().unwrap_or_else(|| "Segoe UI, 12px".to_string());
@@ -614,7 +614,7 @@ fn ControlContent(
     let _state = use_context::<AppState>();
     let control_id = control.id;
     let control_type = control.control_type;
-    let caption = control.get_caption().map(|s| s.to_string()).unwrap_or(control.name.clone());
+    let text = control.get_text().map(|s| s.to_string()).unwrap_or(control.name.clone());
 
     match control_type {
         ControlType::RichTextBox => rsx! {
@@ -648,7 +648,7 @@ fn ControlContent(
                     if control_type == ControlType::Frame {
                         div {
                             style: "position: absolute; top: -8px; left: 8px; background: {back}; padding: 0 4px; font-size: 11px; color: {fore};",
-                            "{caption}"
+                            "{text}"
                         }
                     }
                     RecursiveControls {
@@ -674,8 +674,7 @@ fn ControlContent(
 
 #[component]
 fn ControlVisuals(control: Control) -> Element {
-    let caption = control.get_caption().map(|s| s.to_string()).unwrap_or(control.name.clone());
-    let text = control.get_text().map(|s| s.to_string()).unwrap_or_default();
+    let text = control.get_text().map(|s| s.to_string()).unwrap_or_else(|| control.name.clone());
     let back = control.get_back_color().map(|s| s.to_string()).unwrap_or_else(|| "#f8fafc".to_string());
     let fore = control.get_fore_color().map(|s| s.to_string()).unwrap_or_else(|| "#0f172a".to_string());
     let font = control.get_font().map(|s| s.to_string()).unwrap_or_else(|| "Segoe UI, 12px".to_string());
@@ -684,13 +683,13 @@ fn ControlVisuals(control: Control) -> Element {
         ControlType::Button => rsx! {
             div {
                 style: "width: 100%; height: 100%; border: 1px outset #999; display: flex; align-items: center; justify-content: center; padding: 4px 6px; font: {font}; color: {fore}; background: {back};",
-                "{caption}"
+                "{text}"
             }
         },
         ControlType::Label => rsx! {
             div {
                  style: "width: 100%; height: 100%; padding: 2px; font: {font}; color: {fore}; overflow: hidden; background: {back};",
-                "{caption}"
+                "{text}"
             }
         },
         ControlType::TextBox => rsx! {
@@ -703,14 +702,14 @@ fn ControlVisuals(control: Control) -> Element {
              div {
                 style: "display: flex; align-items: center; gap: 6px; font: {font}; color: {fore}; background: {back}; padding: 2px 4px;",
                 div { style: "width: 13px; height: 13px; border: 1px solid #999; background: white;" }
-                "{caption}"
+                "{text}"
              }
         },
         ControlType::RadioButton => rsx! {
              div {
                 style: "display: flex; align-items: center; gap: 6px; font: {font}; color: {fore}; background: {back}; padding: 2px 4px;",
                 div { style: "width: 13px; height: 13px; border: 1px solid #999; border-radius: 50%; background: white;" }
-                "{caption}"
+                "{text}"
              }
         },
         ControlType::ListBox => rsx! {
@@ -830,7 +829,7 @@ fn ControlVisuals(control: Control) -> Element {
         ControlType::TabPage => rsx! {
             div {
                 style: "width: 100%; height: 100%; border: 1px solid #999; background: white; padding: 4px; font: {font}; color: {fore};",
-                "{caption}"
+                "{text}"
             }
         },
         // ── ProgressBar ──
@@ -882,13 +881,13 @@ fn ControlVisuals(control: Control) -> Element {
         ControlType::ToolStripStatusLabel => rsx! {
             div {
                 style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 0 4px; font: {font}; font-size: 11px; color: {fore}; background: {back};",
-                "{caption}"
+                "{text}"
             }
         },
         ControlType::ToolStripMenuItem => rsx! {
             div {
                 style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 2px 8px; font: {font}; font-size: 12px; color: {fore}; background: {back};",
-                "{caption}"
+                "{text}"
             }
         },
         // ── DateTimePicker ──
@@ -903,7 +902,7 @@ fn ControlVisuals(control: Control) -> Element {
         ControlType::LinkLabel => rsx! {
             div {
                 style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 2px; font: {font}; color: #0066cc; text-decoration: underline; cursor: pointer;",
-                "{caption}"
+                "{text}"
             }
         },
         // ── ToolStrip ──
@@ -1020,7 +1019,7 @@ fn ControlVisuals(control: Control) -> Element {
         ControlType::Frame => rsx! {
             fieldset {
                 style: "width: 100%; height: 100%; border: 1px solid #999; padding: 4px; font: {font}; color: {fore}; background: {back};",
-                legend { "{caption}" }
+                legend { "{text}" }
             }
         },
         // ── PictureBox ──
@@ -1052,7 +1051,7 @@ fn ControlVisuals(control: Control) -> Element {
         _ => rsx! {
             div {
                 style: "width: 100%; height: 100%; border: 1px dotted #999; background: #f8f8f8; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #666;",
-                "{caption}"
+                "{text}"
             }
         }
     }

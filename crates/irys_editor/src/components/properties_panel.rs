@@ -388,7 +388,7 @@ pub fn PropertiesPanel() -> Element {
                                     let w = control.bounds.width;
                                     let h = control.bounds.height;
                                     
-                                    let caption = control.get_caption().map(|s| s.to_string()).unwrap_or_default();
+                                    let caption = control.get_text().map(|s| s.to_string()).unwrap_or_default();
                                     let text = control.get_text().map(|s| s.to_string()).unwrap_or_default();
                                     let back_color = control.get_back_color().map(|s| s.to_string()).unwrap_or_else(|| "#f8fafc".to_string());
                                     let fore_color = control.get_fore_color().map(|s| s.to_string()).unwrap_or_else(|| "#0f172a".to_string());
@@ -399,10 +399,10 @@ pub fn PropertiesPanel() -> Element {
                                     let font_family = font_parts.next().unwrap_or("Segoe UI").to_string();
                                     let font_size_part = font_parts.next().unwrap_or("12px");
                                     let font_size_num: String = font_size_part.trim_end_matches("px").trim_end_matches("pt").to_string();
-                                    let font_family_sel = font_family.clone();
+                                    let _font_family_sel = font_family.clone();
                                     let font_family_sel2 = font_family.clone();
                                     let font_size_sel = font_size_num.clone();
-                                    let font_size_sel2 = font_size_num.clone();
+                                    let _font_size_sel2 = font_size_num.clone();
                                     
                                     let index_str = control.index.map(|i| i.to_string()).unwrap_or_default();
                                     let has_caption = matches!(control.control_type,
@@ -499,12 +499,12 @@ pub fn PropertiesPanel() -> Element {
                                             }
                                             
                                             if has_caption {
-                                                div { style: "font-weight: bold;", "Caption" }
+                                                div { style: "font-weight: bold;", "Text" }
                                                 input { 
                                                     style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
                                                     value: "{caption}",
                                                     oninput: move |evt| {
-                                                        state.update_control_property(cid, "Caption", evt.value());
+                                                        state.update_control_property(cid, "Text", evt.value());
                                                     }
                                                 }
                                             }
@@ -2125,7 +2125,7 @@ pub fn PropertiesPanel() -> Element {
                     } else {
                         if let Some(form) = form_opt.as_ref() {
                             {
-                                let form_caption = form.caption.clone();
+                                let form_caption = form.text.clone();
                                 let form_width = form.width;
                                 let form_height = form.height;
                                 let back_color = form.back_color.clone().unwrap_or_else(|| "#f8fafc".to_string());
@@ -2137,22 +2137,22 @@ pub fn PropertiesPanel() -> Element {
                                 let font_family = font_parts.next().unwrap_or("Segoe UI").to_string();
                                 let font_size_part = font_parts.next().unwrap_or("12px");
                                 let font_size_num: String = font_size_part.trim_end_matches("px").trim_end_matches("pt").to_string();
-                                let font_family_sel = font_family.clone();
+                                let _font_family_sel = font_family.clone();
                                 let font_family_sel2 = font_family.clone();
                                 let font_size_sel = font_size_num.clone();
-                                let font_size_sel2 = font_size_num.clone();
+                                let _font_size_sel2 = font_size_num.clone();
 
                                 rsx! {
                                     div { style: "display: grid; grid-template-columns: 90px 1fr; gap: 4px; align-items: center;",
                                         div { style: "font-weight: bold;", "Form" }
                                         div { style: "font-size: 12px; color: #555;", "{form_caption}" }
 
-                                        div { style: "font-weight: bold;", "Caption" }
+                                        div { style: "font-weight: bold;", "Text" }
                                         input {
                                             style: "width: 100%; border: 1px solid #ccc; padding: 2px 4px; font-size: 12px;",
                                             value: "{form_caption}",
                                             oninput: move |evt| {
-                                                state.update_form_property("Caption", evt.value());
+                                                state.update_form_property("Text", evt.value());
                                             }
                                         }
 

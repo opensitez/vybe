@@ -548,13 +548,11 @@ fn parse_parameter(pair: Pair<Rule>) -> ParseResult<Parameter> {
                     pass_type = ParameterPassType::ByRef;
                 }
             }
+            Rule::optional_keyword => {
+                is_optional = true;
+            }
             Rule::identifier => {
-                let text = p.as_str().to_lowercase();
-                if text == "optional" {
-                    is_optional = true;
-                } else {
-                    name = Identifier::new(p.as_str());
-                }
+                name = Identifier::new(p.as_str());
             }
             Rule::type_name => param_type = Some(VBType::from_str(p.as_str())),
             Rule::nullable_marker => is_nullable = true,
@@ -1060,7 +1058,20 @@ fn parse_do_loop_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
                     body.push(parse_statement(stmt_pair)?);
                 }
             }
-            Rule::NEWLINE | Rule::do_end => {}
+            Rule::do_end => {
+                // Parse post-condition from do_end children (Loop While/Until)
+                for dp in p.into_inner() {
+                    match dp.as_rule() {
+                        Rule::do_while_kw => current_loop_type = LoopConditionType::While,
+                        Rule::do_until_kw => current_loop_type = LoopConditionType::Until,
+                        Rule::expression => {
+                            post_condition = Some((current_loop_type, parse_expression(dp)?));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Rule::NEWLINE => {}
             _ => {}
         }
     }
@@ -1096,7 +1107,7 @@ fn parse_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
         Rule::typeof_expression => {
             let mut inner = pair.into_inner();
             let expr = parse_expression(inner.next().unwrap())?;
-            let type_name = inner.next().unwrap().as_str().to_string();
+            let type_name = inner.next().unwrap().as_str().trim().to_string();
             Ok(Expression::TypeOf {
                 expr: Box::new(expr),
                 type_name,
@@ -1507,7 +1518,7 @@ fn parse_postfix_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
     Ok(expr)
 }
 
-fn parse_member_chain_node(chain: Pair<Rule>, mut expr: Expression) -> ParseResult<Expression> {
+fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> ParseResult<Expression> {
     match chain.as_rule() {
         Rule::member_chain_call => {
             let mut chain_inner = chain.into_inner();

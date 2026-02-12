@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Form {
     pub name: String,
-    pub caption: String,
+    pub text: String,
     pub width: i32,
     pub height: i32,
     pub controls: Vec<Control>,
@@ -23,7 +23,7 @@ impl Form {
         let name = name.into();
         Self {
             name: name.clone(),
-            caption: name,
+            text: name,
             width: 640,
             height: 480,
             controls: Vec::new(),

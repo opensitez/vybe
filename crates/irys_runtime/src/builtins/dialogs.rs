@@ -552,6 +552,7 @@ fn applescript_rgb_to_hex(output: &str) -> Option<String> {
 }
 
 /// Parse font string like "Arial 12" to (name, size)
+#[allow(dead_code)]
 fn parse_font_string(font_str: &str) -> Option<(String, f64)> {
     let parts: Vec<&str> = font_str.trim().rsplitn(2, ' ').collect();
     if parts.len() == 2 {

@@ -292,7 +292,7 @@ pub fn Toolbar() -> Element {
                                 state.add_existing_form();
                                 show_add_existing_dropdown.set(false);
                             },
-                            "📋 Existing Form (.frm, .vb)"
+                            "📋 Existing Form (.vb)"
                         }
                         div {
                             style: "padding: 6px 12px; cursor: pointer;",

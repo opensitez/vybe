@@ -16,7 +16,7 @@ pub struct FormSnapshot {
     pub controls: Vec<irys_forms::Control>,
     pub width: i32,
     pub height: i32,
-    pub caption: String,
+    pub text: String,
     pub back_color: Option<String>,
     pub fore_color: Option<String>,
     pub font: Option<String>,
@@ -125,7 +125,7 @@ impl AppState {
                     controls: fm.form.controls.clone(),
                     width: fm.form.width,
                     height: fm.form.height,
-                    caption: fm.form.caption.clone(),
+                    text: fm.form.text.clone(),
                     back_color: fm.form.back_color.clone(),
                     fore_color: fm.form.fore_color.clone(),
                     font: fm.form.font.clone(),
@@ -173,7 +173,7 @@ impl AppState {
                         controls: fm.form.controls.clone(),
                         width: fm.form.width,
                         height: fm.form.height,
-                        caption: fm.form.caption.clone(),
+                        text: fm.form.text.clone(),
                         back_color: fm.form.back_color.clone(),
                         fore_color: fm.form.fore_color.clone(),
                         font: fm.form.font.clone(),
@@ -216,7 +216,7 @@ impl AppState {
                         controls: fm.form.controls.clone(),
                         width: fm.form.width,
                         height: fm.form.height,
-                        caption: fm.form.caption.clone(),
+                        text: fm.form.text.clone(),
                         back_color: fm.form.back_color.clone(),
                         fore_color: fm.form.fore_color.clone(),
                         font: fm.form.font.clone(),
@@ -265,7 +265,7 @@ impl AppState {
                 form_module.form.controls = snapshot.controls;
                 form_module.form.width = snapshot.width;
                 form_module.form.height = snapshot.height;
-                form_module.form.caption = snapshot.caption;
+                form_module.form.text = snapshot.text;
                 form_module.form.back_color = snapshot.back_color;
                 form_module.form.fore_color = snapshot.fore_color;
                 form_module.form.font = snapshot.font;
@@ -288,7 +288,7 @@ impl AppState {
 
         let mut project = Project::new("Project1");
         let mut form = Form::new("Form1");
-        form.caption = "Form1".to_string();
+        form.text = "Form1".to_string();
         form.width = 640;
         form.height = 480;
         
@@ -314,7 +314,7 @@ impl AppState {
                 Ok(project) => {
                     eprintln!("[DEBUG] Project loaded: '{}' with {} forms", project.name, project.forms.len());
                     for f in &project.forms {
-                        eprintln!("[DEBUG]   Form '{}': {} controls, caption='{}'", f.form.name, f.form.controls.len(), f.form.caption);
+                        eprintln!("[DEBUG]   Form '{}': {} controls, text='{}'", f.form.name, f.form.controls.len(), f.form.text);
                         for c in &f.form.controls {
                             eprintln!("[DEBUG]     Control: {} ({:?}) at ({},{}) {}x{}", c.name, c.control_type, c.bounds.x, c.bounds.y, c.bounds.width, c.bounds.height);
                         }
@@ -532,7 +532,6 @@ impl AppState {
                         "Name" => {
                             control.name = value.trim().to_string();
                         }
-                        "Caption" => control.set_caption(value),
                         "Text" => control.set_text(value),
                         "BackColor" => control.set_back_color(value),
                         "ForeColor" => control.set_fore_color(value),
@@ -718,7 +717,7 @@ impl AppState {
             }
 
             let mut form = Form::new(&name);
-            form.caption = name.clone();
+            form.text = name.clone();
             form.width = 640;
             form.height = 480;
 
@@ -747,7 +746,7 @@ impl AppState {
             }
             
             let mut form = Form::new(&name);
-            form.caption = name.clone();
+            form.text = name.clone();
             form.width = 400;
             form.height = 300;
             
@@ -769,7 +768,7 @@ impl AppState {
         if let (Some(proj), Some(name)) = (project_write.as_mut(), form_name.as_ref()) {
             if let Some(form_module) = proj.get_form_mut(name) {
                 match property {
-                    "Caption" => form_module.form.caption = value,
+                    "Text" | "Caption" => form_module.form.text = value,
                     "Width" => {
                         if let Ok(w) = value.parse::<i32>() { form_module.form.width = w; }
                     }
@@ -813,14 +812,11 @@ impl AppState {
         }
     }
 
-    /// Add an existing form file (.frm or .vb) from disk into the project.
-    /// For .frm files, parses the VB6 classic form format.
-    /// For .vb files, looks for a matching .Designer.vb and loads as VB.NET WinForms.
+    /// Add an existing VB.NET form file (.vb) from disk into the project.
+    /// Looks for a matching .Designer.vb and loads as VB.NET WinForms.
     pub fn add_existing_form(&self) {
         let picked = FileDialog::new()
             .set_title("Add Existing Form")
-            .add_filter("Form Files", &["frm", "vb"])
-            .add_filter("Classic Forms (.frm)", &["frm"])
             .add_filter("VB.NET Forms (.vb)", &["vb"])
             .pick_files();
 
@@ -832,7 +828,6 @@ impl AppState {
                     .to_lowercase();
 
                 let result = match ext.as_str() {
-                    "frm" => irys_project::load_form_frm(&path),
                     "vb" => irys_project::load_form_vb(&path),
                     _ => continue,
                 };

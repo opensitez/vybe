@@ -92,15 +92,8 @@ impl ControlBuilder {
             }
         }
         if let Some(text) = self.text {
-            match self.control_type {
-                ControlType::Label | ControlType::Button | ControlType::CheckBox
-                | ControlType::RadioButton | ControlType::Frame => {
-                    ctrl.set_caption(text);
-                }
-                _ => {
-                    ctrl.set_text(text);
-                }
-            }
+            // In .NET WinForms, ALL controls use the Text property (Caption is VB6-only)
+            ctrl.set_text(text);
         }
         if let Some(bc) = self.back_color {
             ctrl.set_back_color(bc);
@@ -155,7 +148,7 @@ pub fn extract_form_from_designer(class_decl: &ClassDecl) -> Option<Form> {
                     }
                 } else if member_name.eq_ignore_ascii_case("Text") {
                     if let Expression::StringLiteral(s) = value {
-                        form.caption = s.clone();
+                        form.text = s.clone();
                     }
                 } else if member_name.eq_ignore_ascii_case("Name") {
                     if let Expression::StringLiteral(s) = value {

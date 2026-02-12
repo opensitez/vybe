@@ -302,12 +302,12 @@ impl Control {
         // Set default properties based on control type
         match control_type {
             ControlType::Button => {
-                properties.set("Caption", name.clone());
+                properties.set("Text", name.clone());
                 properties.set("Enabled", true);
                 properties.set("Visible", true);
             }
             ControlType::Label => {
-                properties.set("Caption", name.clone());
+                properties.set("Text", name.clone());
                 properties.set("Visible", true);
             }
             ControlType::TextBox => {
@@ -316,7 +316,7 @@ impl Control {
                 properties.set("Visible", true);
             }
             ControlType::CheckBox => {
-                properties.set("Caption", name.clone());
+                properties.set("Text", name.clone());
                 properties.set("Checked", false);
                 use crate::properties::PropertyValue;
                 properties.set_raw("CheckState", PropertyValue::Integer(0));
@@ -325,7 +325,7 @@ impl Control {
                 properties.set("Visible", true);
             }
             ControlType::RadioButton => {
-                properties.set("Caption", name.clone());
+                properties.set("Text", name.clone());
                 properties.set("Checked", false);
                 use crate::properties::PropertyValue;
                 properties.set_raw("Value", PropertyValue::Integer(0));
@@ -561,14 +561,6 @@ impl Control {
             parent_id: None,
             index: None,
         }
-    }
-
-    pub fn get_caption(&self) -> Option<&str> {
-        self.properties.get_string("Caption")
-    }
-
-    pub fn set_caption(&mut self, caption: impl Into<String>) {
-        self.properties.set("Caption", caption.into());
     }
 
     pub fn get_text(&self) -> Option<&str> {
