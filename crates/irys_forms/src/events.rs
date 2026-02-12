@@ -4,17 +4,46 @@ use serde::{Deserialize, Serialize};
 pub enum EventType {
     Click,
     DblClick,
+    DoubleClick,
     Load,
     Unload,
     Change,
+    TextChanged,
+    SelectedIndexChanged,
+    CheckedChanged,
+    ValueChanged,
     KeyPress,
     KeyDown,
     KeyUp,
+    MouseClick,
+    MouseDoubleClick,
     MouseDown,
     MouseUp,
     MouseMove,
+    MouseEnter,
+    MouseLeave,
+    MouseWheel,
     GotFocus,
     LostFocus,
+    Enter,
+    Leave,
+    Validated,
+    Validating,
+    Resize,
+    Paint,
+    FormClosing,
+    FormClosed,
+    Shown,
+    Activated,
+    Deactivate,
+    Tick,
+    Elapsed,
+    Scroll,
+    SelectedValueChanged,
+    CellClick,
+    CellDoubleClick,
+    CellValueChanged,
+    SelectionChanged,
 }
 
 impl EventType {
@@ -22,27 +51,72 @@ impl EventType {
         match self {
             EventType::Click => "Click",
             EventType::DblClick => "DblClick",
+            EventType::DoubleClick => "DoubleClick",
             EventType::Load => "Load",
             EventType::Unload => "Unload",
             EventType::Change => "Change",
+            EventType::TextChanged => "TextChanged",
+            EventType::SelectedIndexChanged => "SelectedIndexChanged",
+            EventType::CheckedChanged => "CheckedChanged",
+            EventType::ValueChanged => "ValueChanged",
             EventType::KeyPress => "KeyPress",
             EventType::KeyDown => "KeyDown",
             EventType::KeyUp => "KeyUp",
+            EventType::MouseClick => "MouseClick",
+            EventType::MouseDoubleClick => "MouseDoubleClick",
             EventType::MouseDown => "MouseDown",
             EventType::MouseUp => "MouseUp",
             EventType::MouseMove => "MouseMove",
+            EventType::MouseEnter => "MouseEnter",
+            EventType::MouseLeave => "MouseLeave",
+            EventType::MouseWheel => "MouseWheel",
             EventType::GotFocus => "GotFocus",
             EventType::LostFocus => "LostFocus",
+            EventType::Enter => "Enter",
+            EventType::Leave => "Leave",
+            EventType::Validated => "Validated",
+            EventType::Validating => "Validating",
+            EventType::Resize => "Resize",
+            EventType::Paint => "Paint",
+            EventType::FormClosing => "FormClosing",
+            EventType::FormClosed => "FormClosed",
+            EventType::Shown => "Shown",
+            EventType::Activated => "Activated",
+            EventType::Deactivate => "Deactivate",
+            EventType::Tick => "Tick",
+            EventType::Elapsed => "Elapsed",
+            EventType::Scroll => "Scroll",
+            EventType::SelectedValueChanged => "SelectedValueChanged",
+            EventType::CellClick => "CellClick",
+            EventType::CellDoubleClick => "CellDoubleClick",
+            EventType::CellValueChanged => "CellValueChanged",
+            EventType::SelectionChanged => "SelectionChanged",
         }
     }
 
+    /// Return the .NET-compatible parameter signature for event handlers.
     pub fn parameters(&self) -> &'static str {
         match self {
-            EventType::KeyPress => "KeyAscii As Integer",
-            EventType::KeyDown | EventType::KeyUp => "KeyCode As Integer, Shift As Integer",
-            EventType::MouseDown | EventType::MouseUp => "Button As Integer, Shift As Integer, X As Single, Y As Single",
-            EventType::MouseMove => "Button As Integer, Shift As Integer, X As Single, Y As Single",
-            _ => "",
+            // Mouse events use MouseEventArgs
+            EventType::MouseClick | EventType::MouseDoubleClick |
+            EventType::MouseDown | EventType::MouseUp | EventType::MouseMove |
+            EventType::MouseWheel =>
+                "sender As Object, e As MouseEventArgs",
+            // Key events
+            EventType::KeyDown | EventType::KeyUp =>
+                "sender As Object, e As KeyEventArgs",
+            EventType::KeyPress =>
+                "sender As Object, e As KeyPressEventArgs",
+            // Form closing
+            EventType::FormClosing =>
+                "sender As Object, e As FormClosingEventArgs",
+            EventType::FormClosed =>
+                "sender As Object, e As FormClosedEventArgs",
+            // Paint
+            EventType::Paint =>
+                "sender As Object, e As PaintEventArgs",
+            // All other events use base EventArgs
+            _ => "sender As Object, e As EventArgs",
         }
     }
 
@@ -51,10 +125,11 @@ impl EventType {
         
         match self {
             // Form-only events
-            EventType::Load | EventType::Unload => control_type.is_none(),
+            EventType::Load | EventType::Unload | EventType::FormClosing | EventType::FormClosed
+            | EventType::Shown | EventType::Activated | EventType::Deactivate => control_type.is_none(),
             
-            // Change is for TextBox, ComboBox, ListBox, etc.
-            EventType::Change => matches!(
+            // Text change events: TextBox, ComboBox, ListBox, etc.
+            EventType::Change | EventType::TextChanged => matches!(
                 control_type,
                 Some(ControlType::TextBox)
                     | Some(ControlType::Label)
@@ -62,17 +137,47 @@ impl EventType {
                     | Some(ControlType::ListBox)
             ),
             
-            // Most controls support these
-            EventType::Click | EventType::DblClick => true,
+            // Selection events
+            EventType::SelectedIndexChanged | EventType::SelectedValueChanged => matches!(
+                control_type,
+                Some(ControlType::ComboBox) | Some(ControlType::ListBox)
+            ),
+
+            // Checked state
+            EventType::CheckedChanged => matches!(
+                control_type,
+                Some(ControlType::CheckBox) | Some(ControlType::RadioButton)
+            ),
+
+            // Value changed
+            EventType::ValueChanged => true,
             
-            // Keyboard events - most controls
+            // Timer events - handled at runtime level, not via visual controls
+            EventType::Tick | EventType::Elapsed => true,
+
+            // DataGridView events
+            EventType::CellClick | EventType::CellDoubleClick | EventType::CellValueChanged
+            | EventType::SelectionChanged => matches!(
+                control_type,
+                Some(ControlType::DataGridView)
+            ),
+            
+            // Most controls support click/double-click
+            EventType::Click | EventType::DblClick | EventType::DoubleClick | EventType::MouseClick | EventType::MouseDoubleClick => true,
+            
+            // Keyboard events
             EventType::KeyPress | EventType::KeyDown | EventType::KeyUp => true,
             
             // Mouse events - all controls
-            EventType::MouseDown | EventType::MouseUp | EventType::MouseMove => true,
+            EventType::MouseDown | EventType::MouseUp | EventType::MouseMove
+            | EventType::MouseEnter | EventType::MouseLeave | EventType::MouseWheel => true,
             
-            // Focus events - most controls
-            EventType::GotFocus | EventType::LostFocus => control_type.is_some(),
+            // Focus events
+            EventType::GotFocus | EventType::LostFocus | EventType::Enter | EventType::Leave
+            | EventType::Validated | EventType::Validating => control_type.is_some(),
+
+            // Layout/paint
+            EventType::Resize | EventType::Paint | EventType::Scroll => true,
         }
     }
 
@@ -80,17 +185,46 @@ impl EventType {
         vec![
             EventType::Click,
             EventType::DblClick,
+            EventType::DoubleClick,
             EventType::Load,
             EventType::Unload,
             EventType::Change,
+            EventType::TextChanged,
+            EventType::SelectedIndexChanged,
+            EventType::CheckedChanged,
+            EventType::ValueChanged,
             EventType::KeyPress,
             EventType::KeyDown,
             EventType::KeyUp,
+            EventType::MouseClick,
+            EventType::MouseDoubleClick,
             EventType::MouseDown,
             EventType::MouseUp,
             EventType::MouseMove,
+            EventType::MouseEnter,
+            EventType::MouseLeave,
+            EventType::MouseWheel,
             EventType::GotFocus,
             EventType::LostFocus,
+            EventType::Enter,
+            EventType::Leave,
+            EventType::Validated,
+            EventType::Validating,
+            EventType::Resize,
+            EventType::Paint,
+            EventType::FormClosing,
+            EventType::FormClosed,
+            EventType::Shown,
+            EventType::Activated,
+            EventType::Deactivate,
+            EventType::Tick,
+            EventType::Elapsed,
+            EventType::Scroll,
+            EventType::SelectedValueChanged,
+            EventType::CellClick,
+            EventType::CellDoubleClick,
+            EventType::CellValueChanged,
+            EventType::SelectionChanged,
         ]
     }
 }

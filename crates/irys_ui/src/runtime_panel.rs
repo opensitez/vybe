@@ -68,18 +68,109 @@ fn event_type_from_name(name: &str) -> Option<EventType> {
     match name.to_lowercase().as_str() {
         "click" => Some(EventType::Click),
         "dblclick" => Some(EventType::DblClick),
+        "doubleclick" => Some(EventType::DoubleClick),
         "load" => Some(EventType::Load),
         "unload" => Some(EventType::Unload),
         "change" => Some(EventType::Change),
+        "textchanged" => Some(EventType::TextChanged),
+        "selectedindexchanged" => Some(EventType::SelectedIndexChanged),
+        "checkedchanged" => Some(EventType::CheckedChanged),
+        "valuechanged" => Some(EventType::ValueChanged),
         "keypress" => Some(EventType::KeyPress),
         "keydown" => Some(EventType::KeyDown),
         "keyup" => Some(EventType::KeyUp),
+        "mouseclick" => Some(EventType::MouseClick),
+        "mousedoubleclick" => Some(EventType::MouseDoubleClick),
         "mousedown" => Some(EventType::MouseDown),
         "mouseup" => Some(EventType::MouseUp),
         "mousemove" => Some(EventType::MouseMove),
+        "mouseenter" => Some(EventType::MouseEnter),
+        "mouseleave" => Some(EventType::MouseLeave),
+        "mousewheel" => Some(EventType::MouseWheel),
         "gotfocus" => Some(EventType::GotFocus),
         "lostfocus" => Some(EventType::LostFocus),
+        "enter" => Some(EventType::Enter),
+        "leave" => Some(EventType::Leave),
+        "validated" => Some(EventType::Validated),
+        "validating" => Some(EventType::Validating),
+        "resize" => Some(EventType::Resize),
+        "paint" => Some(EventType::Paint),
+        "formclosing" => Some(EventType::FormClosing),
+        "formclosed" => Some(EventType::FormClosed),
+        "shown" => Some(EventType::Shown),
+        "activated" => Some(EventType::Activated),
+        "deactivate" => Some(EventType::Deactivate),
+        "tick" => Some(EventType::Tick),
+        "elapsed" => Some(EventType::Elapsed),
+        "scroll" => Some(EventType::Scroll),
+        "selectedvaluechanged" => Some(EventType::SelectedValueChanged),
+        "cellclick" => Some(EventType::CellClick),
+        "celldoubleclick" => Some(EventType::CellDoubleClick),
+        "cellvaluechanged" => Some(EventType::CellValueChanged),
+        "selectionchanged" => Some(EventType::SelectionChanged),
         _ => None,
+    }
+}
+
+/// Map Dioxus keyboard Key to Windows Forms Virtual Key code (VK_*).
+fn dioxus_key_to_vk(key: &dioxus::prelude::Key) -> i32 {
+    use dioxus::prelude::Key;
+    match key {
+        Key::Backspace => 8,
+        Key::Tab => 9,
+        Key::Enter => 13,
+        Key::Shift => 16,
+        Key::Control => 17,
+        Key::Alt => 18,
+        Key::Pause => 19,
+        Key::CapsLock => 20,
+        Key::Escape => 27,
+        Key::PageUp => 33,
+        Key::PageDown => 34,
+        Key::End => 35,
+        Key::Home => 36,
+        Key::ArrowLeft => 37,
+        Key::ArrowUp => 38,
+        Key::ArrowRight => 39,
+        Key::ArrowDown => 40,
+        Key::Insert => 45,
+        Key::Delete => 46,
+        Key::Character(c) => {
+            let ch = c.chars().next().unwrap_or('\0');
+            match ch {
+                '0'..='9' => ch as i32,              // 0x30–0x39
+                'a'..='z' => (ch as i32) - 32,       // VK uses uppercase: 0x41–0x5A
+                'A'..='Z' => ch as i32,
+                ' ' => 32,
+                '+' | '=' => 187,  // VK_OEM_PLUS
+                '-' | '_' => 189,  // VK_OEM_MINUS
+                ',' | '<' => 188,  // VK_OEM_COMMA
+                '.' | '>' => 190,  // VK_OEM_PERIOD
+                '/' | '?' => 191,  // VK_OEM_2
+                ';' | ':' => 186,  // VK_OEM_1
+                '\'' | '"' => 222, // VK_OEM_7
+                '[' | '{' => 219,  // VK_OEM_4
+                ']' | '}' => 221,  // VK_OEM_6
+                '\\' | '|' => 220, // VK_OEM_5
+                '`' | '~' => 192, // VK_OEM_3
+                _ => ch as i32,
+            }
+        }
+        Key::F1 => 112,
+        Key::F2 => 113,
+        Key::F3 => 114,
+        Key::F4 => 115,
+        Key::F5 => 116,
+        Key::F6 => 117,
+        Key::F7 => 118,
+        Key::F8 => 119,
+        Key::F9 => 120,
+        Key::F10 => 121,
+        Key::F11 => 122,
+        Key::F12 => 123,
+        Key::NumLock => 144,
+        Key::ScrollLock => 145,
+        _ => 0,
     }
 }
 
@@ -120,7 +211,8 @@ fn process_side_effects(
                                         if let Err(e) = interp.load_module(&other_form_module.form.name, &prog) {
                                             println!("Error loading new form code: {:?}", e);
                                         } else {
-                                            let _ = interp.call_event_handler(&format!("{}_Load", other_form_module.form.name), &[]);
+                                            let load_args = interp.make_event_handler_args(&other_form_module.form.name, "Load");
+                            let _ = interp.call_event_handler(&format!("{}_Load", other_form_module.form.name), &load_args);
                                             runtime_form.set(Some(other_form_module.form.clone()));
                                             switched = true;
                                         }
@@ -570,22 +662,24 @@ pub fn FormRunner() -> Element {
                                         Err(e) => println!("InitializeComponent error: {:?}", e),
                                     }
 
+                                    let load_args = interp.make_event_handler_args(&form.name, "Load");
                                     if let Some(load_handler) =
                                         interp.find_handles_method(&form_name_lower, "Me", "Load")
                                     {
-                                        let _ = interp.call_instance_method(&instance_name, &load_handler, &[]);
+                                        let _ = interp.call_instance_method(&instance_name, &load_handler, &load_args);
                                     } else {
                                         let _ = interp.call_instance_method(
                                             &instance_name,
                                             &format!("{}_Load", form.name),
-                                            &[],
+                                            &load_args,
                                         );
-                                        let _ = interp.call_instance_method(&instance_name, "Form_Load", &[]);
+                                        let _ = interp.call_instance_method(&instance_name, "Form_Load", &load_args);
                                     }
 
-                                    let _ = interp.call_event_handler("Form_Load", &[]);
+                                    let _ = interp.call_event_handler("Form_Load", &load_args);
                                 } else {
-                                    match interp.call_event_handler("Form_Load", &[]) {
+                                    let load_args = interp.make_event_handler_args("Form", "Load");
+                                    match interp.call_event_handler("Form_Load", &load_args) {
                                         Ok(_) => {}
                                         Err(irys_runtime::RuntimeError::UndefinedFunction(_)) => {}
                                         Err(e) => println!("Form_Load Error: {:?}", e),
@@ -607,7 +701,7 @@ pub fn FormRunner() -> Element {
     });
 
     // ── Event handler ───────────────────────────────────────────────────
-    let mut handle_event = move |control_name: String, event_name: String| {
+    let mut handle_event = move |control_name: String, event_name: String, event_data: Option<irys_runtime::EventData>| {
         if parse_error.read().is_some() {
             return;
         }
@@ -709,24 +803,26 @@ pub fn FormRunner() -> Element {
                     let instance_name = format!("RuntimeGlobals.{}Instance", frm.name);
                     let form_class = frm.name.to_lowercase();
 
+                    let event_args = interp.make_event_handler_args_with_data(&control_name, &event_name, event_data.as_ref());
+
                     if let Some(method_name) =
                         interp.find_handles_method(&form_class, &control_name, &event_name)
                     {
-                        match interp.call_instance_method(&instance_name, &method_name, &[]) {
+                        match interp.call_instance_method(&instance_name, &method_name, &event_args) {
                             Ok(_) => executed = true,
                             Err(_) => {}
                         }
                     }
 
                     if !executed {
-                        match interp.call_instance_method(&instance_name, &handler_name, &[]) {
+                        match interp.call_instance_method(&instance_name, &handler_name, &event_args) {
                             Ok(_) => executed = true,
                             Err(_) => {}
                         }
                     }
                     if !executed && control_name.eq_ignore_ascii_case(&frm.name) {
                         let conv_name = format!("{}_{}", frm.name, event_name);
-                        match interp.call_instance_method(&instance_name, &conv_name, &[]) {
+                        match interp.call_instance_method(&instance_name, &conv_name, &event_args) {
                             Ok(_) => executed = true,
                             Err(_) => {}
                         }
@@ -742,7 +838,8 @@ pub fn FormRunner() -> Element {
                     .cloned();
 
                 if let Some(key) = handler_key {
-                    let _ = interp.call_event_handler(&key, &[]);
+                    let event_args = interp.make_event_handler_args_with_data(&control_name, &event_name, event_data.as_ref());
+                    let _ = interp.call_event_handler(&key, &event_args);
                 }
             }
 
@@ -1018,6 +1115,16 @@ pub fn FormRunner() -> Element {
                                     let h = control.bounds.height;
                                     let name = control.name.clone();
                                     let name_clone = name.clone();
+                                    let name_mousemove = name.clone();
+                                    let name_mouseenter = name.clone();
+                                    let name_mouseleave = name.clone();
+                                    let name_mousedown = name.clone();
+                                    let name_mouseup = name.clone();
+                                    let name_wheel = name.clone();
+                                    let name_keydown = name.clone();
+                                    let name_keyup = name.clone();
+                                    let name_keypress = name.clone();
+                                    let name_dblclick = name.clone();
 
                                     let caption = control.get_caption().map(|s| s.to_string()).unwrap_or(name.clone());
                                     let text = control.get_text().map(|s| s.to_string()).unwrap_or_default();
@@ -1059,14 +1166,108 @@ pub fn FormRunner() -> Element {
                                     rsx! {
                                         if is_visible {
                                             div {
-                                                style: "position: absolute; left: {x}px; top: {y}px; width: {w}px; height: {h}px;",
+                                                tabindex: "0",
+                                                style: "position: absolute; left: {x}px; top: {y}px; width: {w}px; height: {h}px; outline: none;",
+                                                onmousemove: move |evt: MouseEvent| {
+                                                    let data = irys_runtime::EventData::Mouse {
+                                                        button: 0, clicks: 0,
+                                                        x: evt.client_coordinates().x as i32,
+                                                        y: evt.client_coordinates().y as i32,
+                                                        delta: 0,
+                                                    };
+                                                    handle_event(name_mousemove.clone(), "MouseMove".to_string(), Some(data));
+                                                },
+                                                onmouseenter: move |evt: MouseEvent| {
+                                                    let data = irys_runtime::EventData::Mouse {
+                                                        button: 0, clicks: 0,
+                                                        x: evt.client_coordinates().x as i32,
+                                                        y: evt.client_coordinates().y as i32,
+                                                        delta: 0,
+                                                    };
+                                                    handle_event(name_mouseenter.clone(), "MouseEnter".to_string(), Some(data));
+                                                },
+                                                onmouseleave: move |evt: MouseEvent| {
+                                                    handle_event(name_mouseleave.clone(), "MouseLeave".to_string(), None);
+                                                },
+                                                onmousedown: move |evt: MouseEvent| {
+                                                    let btn = match evt.trigger_button() {
+                                                        Some(dioxus::html::input_data::MouseButton::Primary) => 0x100000,
+                                                        Some(dioxus::html::input_data::MouseButton::Secondary) => 0x200000,
+                                                        Some(dioxus::html::input_data::MouseButton::Auxiliary) => 0x400000,
+                                                        _ => 0,
+                                                    };
+                                                    let data = irys_runtime::EventData::Mouse {
+                                                        button: btn, clicks: 1,
+                                                        x: evt.client_coordinates().x as i32,
+                                                        y: evt.client_coordinates().y as i32,
+                                                        delta: 0,
+                                                    };
+                                                    handle_event(name_mousedown.clone(), "MouseDown".to_string(), Some(data));
+                                                },
+                                                onmouseup: move |evt: MouseEvent| {
+                                                    let btn = match evt.trigger_button() {
+                                                        Some(dioxus::html::input_data::MouseButton::Primary) => 0x100000,
+                                                        Some(dioxus::html::input_data::MouseButton::Secondary) => 0x200000,
+                                                        Some(dioxus::html::input_data::MouseButton::Auxiliary) => 0x400000,
+                                                        _ => 0,
+                                                    };
+                                                    let data = irys_runtime::EventData::Mouse {
+                                                        button: btn, clicks: 1,
+                                                        x: evt.client_coordinates().x as i32,
+                                                        y: evt.client_coordinates().y as i32,
+                                                        delta: 0,
+                                                    };
+                                                    handle_event(name_mouseup.clone(), "MouseUp".to_string(), Some(data));
+                                                },
+                                                ondoubleclick: move |evt: MouseEvent| {
+                                                    let data = irys_runtime::EventData::Mouse {
+                                                        button: 0x100000, clicks: 2,
+                                                        x: evt.client_coordinates().x as i32,
+                                                        y: evt.client_coordinates().y as i32,
+                                                        delta: 0,
+                                                    };
+                                                    handle_event(name_dblclick.clone(), "DoubleClick".to_string(), Some(data));
+                                                },
+                                                onwheel: move |evt: WheelEvent| {
+                                                    let data = irys_runtime::EventData::Mouse {
+                                                        button: 0, clicks: 0, x: 0, y: 0,
+                                                        delta: evt.delta().strip_units().y as i32,
+                                                    };
+                                                    handle_event(name_wheel.clone(), "MouseWheel".to_string(), Some(data));
+                                                },
+                                                onkeydown: move |evt: KeyboardEvent| {
+                                                    let data = irys_runtime::EventData::Key {
+                                                        key_code: dioxus_key_to_vk(&evt.key()),
+                                                        shift: evt.modifiers().shift(),
+                                                        ctrl: evt.modifiers().ctrl(),
+                                                        alt: evt.modifiers().alt(),
+                                                    };
+                                                    handle_event(name_keydown.clone(), "KeyDown".to_string(), Some(data));
+                                                },
+                                                onkeyup: move |evt: KeyboardEvent| {
+                                                    let data = irys_runtime::EventData::Key {
+                                                        key_code: dioxus_key_to_vk(&evt.key()),
+                                                        shift: evt.modifiers().shift(),
+                                                        ctrl: evt.modifiers().ctrl(),
+                                                        alt: evt.modifiers().alt(),
+                                                    };
+                                                    handle_event(name_keyup.clone(), "KeyUp".to_string(), Some(data));
+                                                },
 
                                                 {match control_type {
                                                     ControlType::Button => rsx! {
                                                         button {
                                                             style: "width: 100%; height: 100%; padding: 6px 10px; {button_bg} {style_font}; border-radius: 6px; box-shadow: 0 2px 4px rgba(37,99,235,0.12);",
                                                             disabled: !is_enabled,
-                                                            onclick: move |_| handle_event(name_clone.clone(), "Click".to_string()),
+                                                            onclick: move |evt: MouseEvent| {
+                                                                let data = irys_runtime::EventData::Mouse {
+                                                                    button: 0x100000, clicks: 1,
+                                                                    x: evt.client_coordinates().x as i32,
+                                                                    y: evt.client_coordinates().y as i32,
+                                                                    delta: 0,
+                                                                };
+                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                                            },
                                                             "{caption}"
                                                         }
                                                     },
@@ -1081,13 +1282,22 @@ pub fn FormRunner() -> Element {
                                                                         ctrl.set_text(evt.value());
                                                                     }
                                                                 }
-                                                                handle_event(name_clone.clone(), "Change".to_string());
+                                                                handle_event(name_clone.clone(), "Change".to_string(), None);
                                                             }
                                                         }
                                                     },
                                                     ControlType::Label => rsx! {
                                                         div {
                                                             style: "width: 100%; height: 100%; padding: 4px 2px; {style_font} {style_fore} {style_back};",
+                                                            onclick: move |evt: MouseEvent| {
+                                                                let data = irys_runtime::EventData::Mouse {
+                                                                    button: 0x100000, clicks: 1,
+                                                                    x: evt.client_coordinates().x as i32,
+                                                                    y: evt.client_coordinates().y as i32,
+                                                                    delta: 0,
+                                                                };
+                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                                            },
                                                             "{caption}"
                                                         }
                                                     },
@@ -1098,7 +1308,15 @@ pub fn FormRunner() -> Element {
                                                                 r#type: "checkbox",
                                                                 disabled: !is_enabled,
                                                                 checked: control.properties.get_int("Value").unwrap_or(0) == 1,
-                                                                onclick: move |_| handle_event(name_clone.clone(), "Click".to_string())
+                                                                onclick: move |evt: MouseEvent| {
+                                                                    let data = irys_runtime::EventData::Mouse {
+                                                                        button: 0x100000, clicks: 1,
+                                                                        x: evt.client_coordinates().x as i32,
+                                                                        y: evt.client_coordinates().y as i32,
+                                                                        delta: 0,
+                                                                    };
+                                                                    handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                                                }
                                                             }
                                                             span { "{caption}" }
                                                         }
@@ -1111,7 +1329,15 @@ pub fn FormRunner() -> Element {
                                                                 name: "radio_group",
                                                                 disabled: !is_enabled,
                                                                 checked: control.properties.get_int("Value").unwrap_or(0) == 1,
-                                                                onclick: move |_| handle_event(name_clone.clone(), "Click".to_string())
+                                                                onclick: move |evt: MouseEvent| {
+                                                                    let data = irys_runtime::EventData::Mouse {
+                                                                        button: 0x100000, clicks: 1,
+                                                                        x: evt.client_coordinates().x as i32,
+                                                                        y: evt.client_coordinates().y as i32,
+                                                                        delta: 0,
+                                                                    };
+                                                                    handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                                                }
                                                             }
                                                             span { "{caption}" }
                                                         }
@@ -1119,6 +1345,15 @@ pub fn FormRunner() -> Element {
                                                     ControlType::Frame => rsx! {
                                                         fieldset {
                                                             style: "width: 100%; height: 100%; {base_frame_border} margin: 0; padding: 0; border-radius: 8px; {style_back} {style_font} {style_fore};",
+                                                            onclick: move |evt: MouseEvent| {
+                                                                let data = irys_runtime::EventData::Mouse {
+                                                                    button: 0x100000, clicks: 1,
+                                                                    x: evt.client_coordinates().x as i32,
+                                                                    y: evt.client_coordinates().y as i32,
+                                                                    delta: 0,
+                                                                };
+                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                                            },
                                                             legend { "{caption}" }
                                                         }
                                                     },
@@ -1127,7 +1362,7 @@ pub fn FormRunner() -> Element {
                                                             style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 8px; {base_field_bg} {style_back} {style_font} {style_fore};",
                                                             multiple: true,
                                                             disabled: !is_enabled,
-                                                            onchange: move |_| handle_event(name_clone.clone(), "Click".to_string()),
+                                                            onchange: move |_| handle_event(name_clone.clone(), "Click".to_string(), None),
                                                             {
                                                                 let mut items = control.get_list_items();
                                                                 if items.is_empty() {
@@ -1159,7 +1394,7 @@ pub fn FormRunner() -> Element {
                                                                         ctrl.set_text(evt.value());
                                                                     }
                                                                 }
-                                                                handle_event(name_clone.clone(), "Change".to_string());
+                                                                handle_event(name_clone.clone(), "Change".to_string(), None);
                                                             },
                                                             {
                                                                 let items = control.get_list_items();
@@ -1381,13 +1616,13 @@ pub fn FormRunner() -> Element {
                                                                     button {
                                                                         style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
                                                                         title: "Move first",
-                                                                        onclick: move |_| handle_event(nav_first.clone(), "MoveFirst".to_string()),
+                                                                        onclick: move |_| handle_event(nav_first.clone(), "MoveFirst".to_string(), None),
                                                                         "⏮"
                                                                     }
                                                                     button {
                                                                         style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
                                                                         title: "Move previous",
-                                                                        onclick: move |_| handle_event(nav_prev.clone(), "MovePrevious".to_string()),
+                                                                        onclick: move |_| handle_event(nav_prev.clone(), "MovePrevious".to_string(), None),
                                                                         "◀"
                                                                     }
                                                                     span {
@@ -1397,26 +1632,26 @@ pub fn FormRunner() -> Element {
                                                                     button {
                                                                         style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
                                                                         title: "Move next",
-                                                                        onclick: move |_| handle_event(nav_next.clone(), "MoveNext".to_string()),
+                                                                        onclick: move |_| handle_event(nav_next.clone(), "MoveNext".to_string(), None),
                                                                         "▶"
                                                                     }
                                                                     button {
                                                                         style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
                                                                         title: "Move last",
-                                                                        onclick: move |_| handle_event(nav_last.clone(), "MoveLast".to_string()),
+                                                                        onclick: move |_| handle_event(nav_last.clone(), "MoveLast".to_string(), None),
                                                                         "⏭"
                                                                     }
                                                                     div { style: "width: 1px; height: 16px; background: #aaa; margin: 0 2px;" }
                                                                     button {
                                                                         style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
                                                                         title: "Add new",
-                                                                        onclick: move |_| handle_event(nav_add.clone(), "AddNew".to_string()),
+                                                                        onclick: move |_| handle_event(nav_add.clone(), "AddNew".to_string(), None),
                                                                         "➕"
                                                                     }
                                                                     button {
                                                                         style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
                                                                         title: "Delete",
-                                                                        onclick: move |_| handle_event(nav_del.clone(), "Delete".to_string()),
+                                                                        onclick: move |_| handle_event(nav_del.clone(), "Delete".to_string(), None),
                                                                         "❌"
                                                                     }
                                                                 }
@@ -1426,6 +1661,29 @@ pub fn FormRunner() -> Element {
                                                     ControlType::Panel => rsx! {
                                                         div {
                                                             style: "width: 100%; height: 100%; border: 1px solid #ccc; overflow: hidden; {style_back} {style_font} {style_fore};",
+                                                            onclick: move |evt: MouseEvent| {
+                                                                let data = irys_runtime::EventData::Mouse {
+                                                                    button: 0x100000, clicks: 1,
+                                                                    x: evt.client_coordinates().x as i32,
+                                                                    y: evt.client_coordinates().y as i32,
+                                                                    delta: 0,
+                                                                };
+                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                                            },
+                                                        }
+                                                    },
+                                                    ControlType::PictureBox => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; overflow: hidden; {style_back};",
+                                                            onclick: move |evt: MouseEvent| {
+                                                                let data = irys_runtime::EventData::Mouse {
+                                                                    button: 0x100000, clicks: 1,
+                                                                    x: evt.client_coordinates().x as i32,
+                                                                    y: evt.client_coordinates().y as i32,
+                                                                    delta: 0,
+                                                                };
+                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                                            },
                                                         }
                                                     },
                                                     _ => rsx! {

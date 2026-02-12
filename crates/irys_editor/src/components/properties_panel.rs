@@ -157,7 +157,28 @@ pub fn PropertiesPanel() -> Element {
                                                                 key: "{event_name}",
                                                                 style: "padding: 4px; border-bottom: 1px solid #eee; cursor: pointer;",
                                                                 onclick: move |_| {
-                                                                    let params = if is_arr { "Index As Integer" } else { "" };
+                                                                    // .NET-compatible event parameter signatures
+                                                                    let params = if is_arr {
+                                                                        "sender As Object, e As EventArgs, Index As Integer".to_string()
+                                                                    } else {
+                                                                        // Determine EventArgs type based on event name
+                                                                        let e_type = match evt.to_lowercase().as_str() {
+                                                                            "mouseclick" | "mousedoubleclick" | "mousedown" | "mouseup" | "mousemove" | "mousewheel" =>
+                                                                                "MouseEventArgs",
+                                                                            "keydown" | "keyup" =>
+                                                                                "KeyEventArgs",
+                                                                            "keypress" =>
+                                                                                "KeyPressEventArgs",
+                                                                            "formclosing" =>
+                                                                                "FormClosingEventArgs",
+                                                                            "formclosed" =>
+                                                                                "FormClosedEventArgs",
+                                                                            "paint" =>
+                                                                                "PaintEventArgs",
+                                                                            _ => "EventArgs",
+                                                                        };
+                                                                        format!("sender As Object, e As {}", e_type)
+                                                                    };
                                                                     let current_code = state.get_current_code();
 
                                                                     if is_vbnet_form {

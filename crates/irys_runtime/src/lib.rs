@@ -73,6 +73,17 @@ pub enum ConsoleMessage {
     Error(String),
 }
 
+/// Event data passed from the UI layer to the interpreter for populating EventArgs fields.
+#[derive(Debug, Clone)]
+pub enum EventData {
+    /// Mouse event data: button (0x100000=Left, 0x200000=Right, 0x400000=Middle), clicks, x, y, scroll delta
+    Mouse { button: i32, clicks: i32, x: i32, y: i32, delta: i32 },
+    /// Key down/up event data
+    Key { key_code: i32, shift: bool, ctrl: bool, alt: bool },
+    /// KeyPress event data (character input)
+    KeyPress { key_char: char },
+}
+
 pub use interpreter::*;
 pub use evaluator::*;
 pub use environment::*;

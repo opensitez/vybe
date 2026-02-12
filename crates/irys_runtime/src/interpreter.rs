@@ -4,6 +4,7 @@ use crate::evaluator::{evaluate, values_equal, value_in_range, compare_values};
 use crate::data_access::DataAccessManager;
 use crate::event_system::EventSystem;
 use crate::value::{ExitType, RuntimeError, Value, ObjectData};
+use crate::EventData;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -247,6 +248,176 @@ impl Interpreter {
         } else {
             self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(text));
         }
+    }
+
+    // ── .NET-compatible EventArgs object factories ───────────────────────
+
+    /// Create a System.EventArgs object (empty, base class for all events).
+    pub fn make_event_args() -> Value {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("__type".to_string(), Value::String("EventArgs".to_string()));
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+            class_name: "EventArgs".to_string(),
+            fields,
+        })))
+    }
+
+    /// Create a System.Windows.Forms.MouseEventArgs object.
+    pub fn make_mouse_event_args(button: i32, clicks: i32, x: i32, y: i32, delta: i32) -> Value {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("__type".to_string(), Value::String("MouseEventArgs".to_string()));
+        fields.insert("button".to_string(), Value::Integer(button));
+        fields.insert("clicks".to_string(), Value::Integer(clicks));
+        fields.insert("x".to_string(), Value::Integer(x));
+        fields.insert("y".to_string(), Value::Integer(y));
+        fields.insert("delta".to_string(), Value::Integer(delta));
+        fields.insert("location".to_string(), Value::String(format!("{{X={},Y={}}}", x, y)));
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+            class_name: "MouseEventArgs".to_string(),
+            fields,
+        })))
+    }
+
+    /// Create a System.Windows.Forms.KeyEventArgs object.
+    pub fn make_key_event_args(key_code: i32, shift: bool, ctrl: bool, alt: bool) -> Value {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("__type".to_string(), Value::String("KeyEventArgs".to_string()));
+        fields.insert("keycode".to_string(), Value::Integer(key_code));
+        fields.insert("keyvalue".to_string(), Value::Integer(key_code));
+        fields.insert("keydata".to_string(), Value::Integer(key_code));
+        fields.insert("shift".to_string(), Value::Boolean(shift));
+        fields.insert("control".to_string(), Value::Boolean(ctrl));
+        fields.insert("alt".to_string(), Value::Boolean(alt));
+        fields.insert("handled".to_string(), Value::Boolean(false));
+        fields.insert("suppresskeypress".to_string(), Value::Boolean(false));
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+            class_name: "KeyEventArgs".to_string(),
+            fields,
+        })))
+    }
+
+    /// Create a System.Windows.Forms.KeyPressEventArgs object.
+    pub fn make_key_press_event_args(key_char: char) -> Value {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("__type".to_string(), Value::String("KeyPressEventArgs".to_string()));
+        fields.insert("keychar".to_string(), Value::Char(key_char));
+        fields.insert("handled".to_string(), Value::Boolean(false));
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+            class_name: "KeyPressEventArgs".to_string(),
+            fields,
+        })))
+    }
+
+    /// Create a System.Windows.Forms.FormClosingEventArgs object.
+    pub fn make_form_closing_event_args(close_reason: i32) -> Value {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("__type".to_string(), Value::String("FormClosingEventArgs".to_string()));
+        fields.insert("cancel".to_string(), Value::Boolean(false));
+        // CloseReason enum: 0=None, 1=WindowsShutDown, 2=MdiFormClosing, 3=UserClosing, 4=TaskManagerClosing, 5=FormOwnerClosing, 6=ApplicationExitCall
+        fields.insert("closereason".to_string(), Value::Integer(close_reason));
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+            class_name: "FormClosingEventArgs".to_string(),
+            fields,
+        })))
+    }
+
+    /// Create a System.Windows.Forms.FormClosedEventArgs object.
+    pub fn make_form_closed_event_args(close_reason: i32) -> Value {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("__type".to_string(), Value::String("FormClosedEventArgs".to_string()));
+        fields.insert("closereason".to_string(), Value::Integer(close_reason));
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+            class_name: "FormClosedEventArgs".to_string(),
+            fields,
+        })))
+    }
+
+    /// Create a System.Windows.Forms.PaintEventArgs stub.
+    pub fn make_paint_event_args() -> Value {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("__type".to_string(), Value::String("PaintEventArgs".to_string()));
+        // Graphics and ClipRectangle are stubs
+        fields.insert("cliprectangle".to_string(), Value::String("0, 0, 0, 0".to_string()));
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+            class_name: "PaintEventArgs".to_string(),
+            fields,
+        })))
+    }
+
+    /// Build standard .NET event args: returns (sender, e) pair for a given event name.
+    /// sender is the control object (or Nothing if not found), e is the appropriate EventArgs subclass.
+    /// `event_data` provides real values from the UI framework when available.
+    pub fn make_event_handler_args(&self, control_name: &str, event_name: &str) -> Vec<Value> {
+        self.make_event_handler_args_with_data(control_name, event_name, None)
+    }
+
+    /// Build event args with optional concrete event data from the UI layer.
+    pub fn make_event_handler_args_with_data(&self, control_name: &str, event_name: &str, data: Option<&EventData>) -> Vec<Value> {
+        let sender = self.resolve_control_as_sender(control_name);
+
+        let event_lower = event_name.to_lowercase();
+        let e = match event_lower.as_str() {
+            "mouseclick" | "mousedown" | "mouseup" | "mousemove" | "mousedoubleclick" | "mouseenter" | "mouseleave" | "mousewheel" => {
+                if let Some(EventData::Mouse { button, clicks, x, y, delta }) = data {
+                    Self::make_mouse_event_args(*button, *clicks, *x, *y, *delta)
+                } else {
+                    Self::make_mouse_event_args(0, 1, 0, 0, 0)
+                }
+            }
+            "click" | "doubleclick" | "dblclick" => {
+                // Click uses EventArgs but if we have mouse data, embed it anyway
+                if let Some(EventData::Mouse { button, clicks, x, y, delta }) = data {
+                    Self::make_mouse_event_args(*button, *clicks, *x, *y, *delta)
+                } else {
+                    Self::make_event_args()
+                }
+            }
+            "keydown" | "keyup" => {
+                if let Some(EventData::Key { key_code, shift, ctrl, alt }) = data {
+                    Self::make_key_event_args(*key_code, *shift, *ctrl, *alt)
+                } else {
+                    Self::make_key_event_args(0, false, false, false)
+                }
+            }
+            "keypress" => {
+                if let Some(EventData::KeyPress { key_char }) = data {
+                    Self::make_key_press_event_args(*key_char)
+                } else {
+                    Self::make_key_press_event_args('\0')
+                }
+            }
+            "formclosing" =>
+                Self::make_form_closing_event_args(3), // UserClosing
+            "formclosed" =>
+                Self::make_form_closed_event_args(3),
+            "paint" =>
+                Self::make_paint_event_args(),
+            // All other events use base EventArgs
+            _ => Self::make_event_args(),
+        };
+
+        vec![sender, e]
+    }
+
+    /// Resolve a control name to a Value suitable for `sender` in event handler args.
+    fn resolve_control_as_sender(&self, control_name: &str) -> Value {
+        // Try looking up "Me.ControlName" field on the form instance
+        // or "control_name" as a standalone variable
+        if let Ok(val) = self.env.get(control_name) {
+            if matches!(val, Value::Object(_)) {
+                return val;
+            }
+        }
+        // Try with the form instance field
+        if let Some(obj) = &self.current_object {
+            let borrowed = obj.borrow();
+            let key = control_name.to_lowercase();
+            if let Some(val) = borrowed.fields.get(&key) {
+                return val.clone();
+            }
+        }
+        // Return Nothing if we can't find the control
+        Value::Nothing
     }
 
     /// Legacy: register resources as simple string map (backward compat)
@@ -1856,6 +2027,56 @@ impl Interpreter {
                     return Ok(crate::builtins::dialogs::create_folderbrowserdialog());
                 }
 
+                // ===== EVENTARGS TYPE CONSTRUCTORS =====
+                {
+                    let ea_lower = class_name.to_lowercase();
+                    match ea_lower.as_str() {
+                        "eventargs" | "system.eventargs" => {
+                            return Ok(Self::make_event_args());
+                        }
+                        "mouseeventargs" | "system.windows.forms.mouseeventargs" => {
+                            let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                            let arg_values = arg_values?;
+                            let button = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                            let clicks = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(1);
+                            let x = arg_values.get(2).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                            let y = arg_values.get(3).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                            let delta = arg_values.get(4).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                            return Ok(Self::make_mouse_event_args(button, clicks, x, y, delta));
+                        }
+                        "keyeventargs" | "system.windows.forms.keyeventargs" => {
+                            let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                            let arg_values = arg_values?;
+                            let key_code = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                            return Ok(Self::make_key_event_args(key_code, false, false, false));
+                        }
+                        "keypresseventargs" | "system.windows.forms.keypresseventargs" => {
+                            let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                            let arg_values = arg_values?;
+                            let key_char = arg_values.get(0)
+                                .and_then(|v| if let Value::Char(c) = v { Some(*c) } else { None })
+                                .unwrap_or('\0');
+                            return Ok(Self::make_key_press_event_args(key_char));
+                        }
+                        "formclosingeventargs" | "system.windows.forms.formclosingeventargs" => {
+                            let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                            let arg_values = arg_values?;
+                            let reason = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(3);
+                            return Ok(Self::make_form_closing_event_args(reason));
+                        }
+                        "formclosedeventargs" | "system.windows.forms.formclosedeventargs" => {
+                            let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                            let arg_values = arg_values?;
+                            let reason = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(3);
+                            return Ok(Self::make_form_closed_event_args(reason));
+                        }
+                        "painteventargs" | "system.windows.forms.painteventargs" => {
+                            return Ok(Self::make_paint_event_args());
+                        }
+                        _ => {}
+                    }
+                }
+
                 // ===== EXCEPTION TYPE CONSTRUCTORS =====
                 {
                     let exception_types = [
@@ -2817,6 +3038,8 @@ impl Interpreter {
                     }
                     // String static properties
                     "string.empty" | "system.string.empty" => return Ok(Value::String(String::new())),
+                    // EventArgs.Empty
+                    "eventargs.empty" | "system.eventargs.empty" => return Ok(Self::make_event_args()),
                     // Int32/Double limits
                     "integer.maxvalue" | "int32.maxvalue" | "system.int32.maxvalue" => return Ok(Value::Integer(i32::MAX)),
                     "integer.minvalue" | "int32.minvalue" | "system.int32.minvalue" => return Ok(Value::Integer(i32::MIN)),
@@ -2847,6 +3070,112 @@ impl Interpreter {
                         };
                         return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
                     }
+
+                    // ===== WinForms Enum Constants =====
+                    // MouseButtons
+                    "mousebuttons.left" | "system.windows.forms.mousebuttons.left" => return Ok(Value::Integer(0x100000)),
+                    "mousebuttons.right" | "system.windows.forms.mousebuttons.right" => return Ok(Value::Integer(0x200000)),
+                    "mousebuttons.middle" | "system.windows.forms.mousebuttons.middle" => return Ok(Value::Integer(0x400000)),
+                    "mousebuttons.none" | "system.windows.forms.mousebuttons.none" => return Ok(Value::Integer(0)),
+                    // DialogResult
+                    "dialogresult.ok" | "system.windows.forms.dialogresult.ok" | "windows.forms.dialogresult.ok" => return Ok(Value::Integer(1)),
+                    "dialogresult.cancel" | "system.windows.forms.dialogresult.cancel" | "windows.forms.dialogresult.cancel" => return Ok(Value::Integer(2)),
+                    "dialogresult.abort" | "system.windows.forms.dialogresult.abort" => return Ok(Value::Integer(3)),
+                    "dialogresult.retry" | "system.windows.forms.dialogresult.retry" => return Ok(Value::Integer(4)),
+                    "dialogresult.ignore" | "system.windows.forms.dialogresult.ignore" => return Ok(Value::Integer(5)),
+                    "dialogresult.yes" | "system.windows.forms.dialogresult.yes" | "windows.forms.dialogresult.yes" => return Ok(Value::Integer(6)),
+                    "dialogresult.no" | "system.windows.forms.dialogresult.no" | "windows.forms.dialogresult.no" => return Ok(Value::Integer(7)),
+                    "dialogresult.none" | "system.windows.forms.dialogresult.none" => return Ok(Value::Integer(0)),
+                    // MessageBoxButtons
+                    "messageboxbuttons.ok" | "system.windows.forms.messageboxbuttons.ok" => return Ok(Value::Integer(0)),
+                    "messageboxbuttons.okcancel" | "system.windows.forms.messageboxbuttons.okcancel" => return Ok(Value::Integer(1)),
+                    "messageboxbuttons.abortretryignore" | "system.windows.forms.messageboxbuttons.abortretryignore" => return Ok(Value::Integer(2)),
+                    "messageboxbuttons.yesnocancel" | "system.windows.forms.messageboxbuttons.yesnocancel" => return Ok(Value::Integer(3)),
+                    "messageboxbuttons.yesno" | "system.windows.forms.messageboxbuttons.yesno" => return Ok(Value::Integer(4)),
+                    "messageboxbuttons.retrycancel" | "system.windows.forms.messageboxbuttons.retrycancel" => return Ok(Value::Integer(5)),
+                    // MessageBoxIcon
+                    "messageboxicon.none" | "system.windows.forms.messageboxicon.none" => return Ok(Value::Integer(0)),
+                    "messageboxicon.error" | "system.windows.forms.messageboxicon.error" => return Ok(Value::Integer(16)),
+                    "messageboxicon.warning" | "system.windows.forms.messageboxicon.warning" => return Ok(Value::Integer(48)),
+                    "messageboxicon.information" | "system.windows.forms.messageboxicon.information" => return Ok(Value::Integer(64)),
+                    "messageboxicon.question" | "system.windows.forms.messageboxicon.question" => return Ok(Value::Integer(32)),
+                    // DockStyle
+                    "dockstyle.none" | "system.windows.forms.dockstyle.none" => return Ok(Value::Integer(0)),
+                    "dockstyle.top" | "system.windows.forms.dockstyle.top" => return Ok(Value::Integer(1)),
+                    "dockstyle.bottom" | "system.windows.forms.dockstyle.bottom" => return Ok(Value::Integer(2)),
+                    "dockstyle.left" | "system.windows.forms.dockstyle.left" => return Ok(Value::Integer(3)),
+                    "dockstyle.right" | "system.windows.forms.dockstyle.right" => return Ok(Value::Integer(4)),
+                    "dockstyle.fill" | "system.windows.forms.dockstyle.fill" => return Ok(Value::Integer(5)),
+                    // AnchorStyles
+                    "anchorstyles.none" | "system.windows.forms.anchorstyles.none" => return Ok(Value::Integer(0)),
+                    "anchorstyles.top" | "system.windows.forms.anchorstyles.top" => return Ok(Value::Integer(1)),
+                    "anchorstyles.bottom" | "system.windows.forms.anchorstyles.bottom" => return Ok(Value::Integer(2)),
+                    "anchorstyles.left" | "system.windows.forms.anchorstyles.left" => return Ok(Value::Integer(4)),
+                    "anchorstyles.right" | "system.windows.forms.anchorstyles.right" => return Ok(Value::Integer(8)),
+                    // FormBorderStyle
+                    "formborderstyle.none" | "system.windows.forms.formborderstyle.none" => return Ok(Value::Integer(0)),
+                    "formborderstyle.fixedsingle" | "system.windows.forms.formborderstyle.fixedsingle" => return Ok(Value::Integer(1)),
+                    "formborderstyle.fixed3d" | "system.windows.forms.formborderstyle.fixed3d" => return Ok(Value::Integer(2)),
+                    "formborderstyle.fixeddialog" | "system.windows.forms.formborderstyle.fixeddialog" => return Ok(Value::Integer(3)),
+                    "formborderstyle.sizable" | "system.windows.forms.formborderstyle.sizable" => return Ok(Value::Integer(4)),
+                    "formborderstyle.fixedtoolwindow" | "system.windows.forms.formborderstyle.fixedtoolwindow" => return Ok(Value::Integer(5)),
+                    "formborderstyle.sizabletoolwindow" | "system.windows.forms.formborderstyle.sizabletoolwindow" => return Ok(Value::Integer(6)),
+                    // FormStartPosition
+                    "formstartposition.manual" | "system.windows.forms.formstartposition.manual" => return Ok(Value::Integer(0)),
+                    "formstartposition.centerscreen" | "system.windows.forms.formstartposition.centerscreen" => return Ok(Value::Integer(1)),
+                    "formstartposition.windowsdefaultlocation" | "system.windows.forms.formstartposition.windowsdefaultlocation" => return Ok(Value::Integer(2)),
+                    "formstartposition.windowsdefaultbounds" | "system.windows.forms.formstartposition.windowsdefaultbounds" => return Ok(Value::Integer(3)),
+                    "formstartposition.centerparent" | "system.windows.forms.formstartposition.centerparent" => return Ok(Value::Integer(4)),
+                    // FormWindowState
+                    "formwindowstate.normal" | "system.windows.forms.formwindowstate.normal" => return Ok(Value::Integer(0)),
+                    "formwindowstate.minimized" | "system.windows.forms.formwindowstate.minimized" => return Ok(Value::Integer(1)),
+                    "formwindowstate.maximized" | "system.windows.forms.formwindowstate.maximized" => return Ok(Value::Integer(2)),
+                    // Keys enum (common keys)
+                    "keys.none" | "system.windows.forms.keys.none" => return Ok(Value::Integer(0)),
+                    "keys.enter" | "system.windows.forms.keys.enter" | "keys.return" | "system.windows.forms.keys.return" => return Ok(Value::Integer(13)),
+                    "keys.escape" | "system.windows.forms.keys.escape" => return Ok(Value::Integer(27)),
+                    "keys.space" | "system.windows.forms.keys.space" => return Ok(Value::Integer(32)),
+                    "keys.back" | "system.windows.forms.keys.back" => return Ok(Value::Integer(8)),
+                    "keys.tab" | "system.windows.forms.keys.tab" => return Ok(Value::Integer(9)),
+                    "keys.delete" | "system.windows.forms.keys.delete" => return Ok(Value::Integer(46)),
+                    "keys.insert" | "system.windows.forms.keys.insert" => return Ok(Value::Integer(45)),
+                    "keys.up" | "system.windows.forms.keys.up" => return Ok(Value::Integer(38)),
+                    "keys.down" | "system.windows.forms.keys.down" => return Ok(Value::Integer(40)),
+                    "keys.left" | "system.windows.forms.keys.left" => return Ok(Value::Integer(37)),
+                    "keys.right" | "system.windows.forms.keys.right" => return Ok(Value::Integer(39)),
+                    "keys.f1" | "system.windows.forms.keys.f1" => return Ok(Value::Integer(112)),
+                    "keys.f2" | "system.windows.forms.keys.f2" => return Ok(Value::Integer(113)),
+                    "keys.f3" | "system.windows.forms.keys.f3" => return Ok(Value::Integer(114)),
+                    "keys.f4" | "system.windows.forms.keys.f4" => return Ok(Value::Integer(115)),
+                    "keys.f5" | "system.windows.forms.keys.f5" => return Ok(Value::Integer(116)),
+                    "keys.control" | "system.windows.forms.keys.control" | "keys.controlkey" | "system.windows.forms.keys.controlkey" => return Ok(Value::Integer(17)),
+                    "keys.shift" | "system.windows.forms.keys.shift" | "keys.shiftkey" | "system.windows.forms.keys.shiftkey" => return Ok(Value::Integer(16)),
+                    "keys.alt" | "system.windows.forms.keys.alt" | "keys.menu" | "system.windows.forms.keys.menu" => return Ok(Value::Integer(18)),
+                    // Color constants
+                    "color.red" | "system.drawing.color.red" => return Ok(Value::Integer(0xFF0000)),
+                    "color.green" | "system.drawing.color.green" => return Ok(Value::Integer(0x008000)),
+                    "color.blue" | "system.drawing.color.blue" => return Ok(Value::Integer(0x0000FF)),
+                    "color.white" | "system.drawing.color.white" => return Ok(Value::Integer(0xFFFFFF)),
+                    "color.black" | "system.drawing.color.black" => return Ok(Value::Integer(0x000000)),
+                    "color.yellow" | "system.drawing.color.yellow" => return Ok(Value::Integer(0xFFFF00)),
+                    "color.gray" | "system.drawing.color.gray" => return Ok(Value::Integer(0x808080)),
+                    "color.transparent" | "system.drawing.color.transparent" => return Ok(Value::Integer(0)),
+                    // ContentAlignment
+                    "contentalignment.middlecenter" | "system.drawing.contentalignment.middlecenter" => return Ok(Value::Integer(32)),
+                    "contentalignment.middleleft" | "system.drawing.contentalignment.middleleft" => return Ok(Value::Integer(16)),
+                    "contentalignment.middleright" | "system.drawing.contentalignment.middleright" => return Ok(Value::Integer(64)),
+                    "contentalignment.topcenter" | "system.drawing.contentalignment.topcenter" => return Ok(Value::Integer(2)),
+                    "contentalignment.topleft" | "system.drawing.contentalignment.topleft" => return Ok(Value::Integer(1)),
+                    "contentalignment.topright" | "system.drawing.contentalignment.topright" => return Ok(Value::Integer(4)),
+                    "contentalignment.bottomcenter" | "system.drawing.contentalignment.bottomcenter" => return Ok(Value::Integer(512)),
+                    "contentalignment.bottomleft" | "system.drawing.contentalignment.bottomleft" => return Ok(Value::Integer(256)),
+                    "contentalignment.bottomright" | "system.drawing.contentalignment.bottomright" => return Ok(Value::Integer(1024)),
+                    // CloseReason
+                    "closereason.none" | "system.windows.forms.closereason.none" => return Ok(Value::Integer(0)),
+                    "closereason.windowsshutdown" | "system.windows.forms.closereason.windowsshutdown" => return Ok(Value::Integer(1)),
+                    "closereason.userclosing" | "system.windows.forms.closereason.userclosing" => return Ok(Value::Integer(3)),
+                    "closereason.applicationexitcall" | "system.windows.forms.closereason.applicationexitcall" => return Ok(Value::Integer(6)),
+
                     _ => {}
                 }
 
@@ -7522,6 +7851,9 @@ impl Interpreter {
             "string.empty" | "system.string.empty" => {
                 return Ok(Value::String(String::new()));
             }
+            "eventargs.empty" | "system.eventargs.empty" => {
+                return Ok(Self::make_event_args());
+            }
             "string.isnullorempty" | "system.string.isnullorempty" => {
                 let s = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
                 let is_empty = match &s {
@@ -8501,9 +8833,11 @@ impl Interpreter {
             // Check if it's a valid sub before calling
             if self.subs.contains_key(&handler_name.to_lowercase()) {
                 let args: Vec<Value> = if let Some(idx) = index {
+                    // VB6 control array: pass Index As Integer
                     vec![Value::Integer(idx)]
                 } else {
-                    vec![]
+                    // .NET style: pass (sender As Object, e As EventArgs)
+                    self.make_event_handler_args(control_name, event_type.as_str())
                 };
                 self.call_event_handler(&handler_name, &args)?;
             }
