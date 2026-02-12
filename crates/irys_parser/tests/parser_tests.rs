@@ -118,3 +118,86 @@ fn test_fifty_empty_lines() {
     let result = parse_program(&code);
     assert!(result.is_ok(), "Failed to parse with 50+ empty lines: {:?}", result.err());
 }
+
+#[test]
+fn test_interpolated_string_basic() {
+    let code = r#"
+        Sub Test()
+            Dim name As String = "World"
+            Dim result As String = $"Hello {name}!"
+        End Sub
+    "#;
+    let result = parse_program(code);
+    assert!(result.is_ok(), "Failed to parse basic interpolated string: {:?}", result.err());
+}
+
+#[test]
+fn test_interpolated_string_expression() {
+    let code = r#"
+        Sub Test()
+            Dim x As Integer = 5
+            Dim y As Integer = 3
+            Dim result As String = $"Sum is {x + y}"
+        End Sub
+    "#;
+    let result = parse_program(code);
+    assert!(result.is_ok(), "Failed to parse interpolated string with expression: {:?}", result.err());
+}
+
+#[test]
+fn test_interpolated_string_multiple() {
+    let code = r#"
+        Sub Test()
+            Dim a As String = "A"
+            Dim b As String = "B"
+            Dim result As String = $"{a} and {b}"
+        End Sub
+    "#;
+    let result = parse_program(code);
+    assert!(result.is_ok(), "Failed to parse interpolated string with multiple exprs: {:?}", result.err());
+}
+
+#[test]
+fn test_interpolated_string_method_call() {
+    let code = r#"
+        Sub Test()
+            Dim s As String = "hello"
+            Dim result As String = $"Upper: {s.ToUpper()}"
+        End Sub
+    "#;
+    let result = parse_program(code);
+    assert!(result.is_ok(), "Failed to parse interpolated string with method call: {:?}", result.err());
+}
+
+#[test]
+fn test_if_expression_ternary() {
+    let code = r#"
+        Sub Test()
+            Dim x As Integer = If(True, 1, 0)
+        End Sub
+    "#;
+    let result = parse_program(code);
+    assert!(result.is_ok(), "Failed to parse ternary If expression: {:?}", result.err());
+}
+
+#[test]
+fn test_if_expression_coalesce() {
+    let code = r#"
+        Sub Test()
+            Dim x As String = If(Nothing, "default")
+        End Sub
+    "#;
+    let result = parse_program(code);
+    assert!(result.is_ok(), "Failed to parse coalesce If expression: {:?}", result.err());
+}
+
+#[test]
+fn test_nullable_type_param() {
+    let code = r#"
+        Function Test(Optional timeout? As Integer = Nothing) As String
+            Return "ok"
+        End Function
+    "#;
+    let result = parse_program(code);
+    assert!(result.is_ok(), "Failed to parse nullable type param: {:?}", result.err());
+}

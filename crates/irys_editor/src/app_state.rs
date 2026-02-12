@@ -336,6 +336,12 @@ impl AppState {
                         }
                     }
                     *path_write = Some(path);
+                    
+                    // Reset view state so user sees the form designer
+                    let mut code_sig = self.show_code_editor;
+                    let mut res_sig = self.show_resources;
+                    code_sig.set(false);
+                    res_sig.set(false);
                 }
                 Err(e) => {
                     eprintln!("Failed to load project: {}", e);
@@ -413,6 +419,19 @@ impl AppState {
         if let (Some(proj), Some(name)) = (project.as_ref(), form_name.as_ref()) {
             if let Some(fm) = proj.get_form(name) {
                 return fm.is_vbnet();
+            }
+        }
+        false
+    }
+
+    /// Returns true if the currently selected form has an associated .resx file.
+    pub fn current_form_has_resources(&self) -> bool {
+        let project = self.project.read();
+        let form_name = self.current_form.read();
+
+        if let (Some(proj), Some(name)) = (project.as_ref(), form_name.as_ref()) {
+            if let Some(fm) = proj.get_form(name) {
+                return fm.resources.file_path.is_some();
             }
         }
         false
@@ -807,7 +826,7 @@ impl AppState {
                     .to_string_lossy()
                     .to_string();
 
-                let code = match std::fs::read_to_string(&path) {
+                let code = match irys_project::read_text_file(&path) {
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("[ERROR] Failed to read code file {:?}: {}", path, e);

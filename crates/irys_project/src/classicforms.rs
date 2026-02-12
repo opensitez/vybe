@@ -3,9 +3,10 @@ use crate::project::{FormFormat, FormModule};
 use irys_forms::{Control, ControlType, Form};
 use std::fs;
 use std::path::Path;
+use crate::encoding::read_text_file;
 
 pub fn load_form_frm(path: &Path) -> SaveResult<FormModule> {
-    let content = fs::read_to_string(path)?;
+    let content = read_text_file(path)?;
     let lines: Vec<&str> = content.lines().collect();
 
     let mut form_name = String::new();

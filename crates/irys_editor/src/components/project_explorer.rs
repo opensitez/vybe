@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use crate::app_state::{AppState, ResourceTarget};
+use std::collections::BTreeMap;
 
 #[component]
 pub fn ProjectExplorer() -> Element {
@@ -8,6 +9,8 @@ pub fn ProjectExplorer() -> Element {
     let mut current_form = state.current_form;
     // Context menu state: (x, y, item_name)
     let mut context_menu = use_signal(|| None::<(f64, f64, String)>);
+    // Track which folders are collapsed (default: expanded)
+    let mut collapsed_folders: Signal<Vec<String>> = use_signal(|| Vec::new());
     // Confirm removal dialog
     let mut confirm_remove = use_signal(|| None::<String>);
     
@@ -33,12 +36,28 @@ pub fn ProjectExplorer() -> Element {
                             div {
                                 style: "margin-left: 16px;",
                                 
-                                // Forms section
-                                div {
-                                    style: "font-weight: bold; margin-bottom: 4px;",
-                                    "📋 Forms"
+                                // Forms section (collapsible)
+                                {
+                                    let forms_collapsed = collapsed_folders.read().contains(&"_section_forms".to_string());
+                                    let forms_arrow = if forms_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+                                    rsx! {
+                                        div {
+                                            style: "font-weight: bold; margin-bottom: 4px; cursor: pointer; user-select: none;",
+                                            onclick: move |_| {
+                                                let mut cf = collapsed_folders.write();
+                                                let key = "_section_forms".to_string();
+                                                if let Some(pos) = cf.iter().position(|f| f == &key) {
+                                                    cf.remove(pos);
+                                                } else {
+                                                    cf.push(key);
+                                                }
+                                            },
+                                            "{forms_arrow} 📋 Forms"
+                                        }
+                                    }
                                 }
                                 
+                                if !collapsed_folders.read().contains(&"_section_forms".to_string()) {
                                 for form_module in &proj.forms {
                                     {
                                         let form_name = form_module.form.name.clone();
@@ -47,7 +66,7 @@ pub fn ProjectExplorer() -> Element {
                                         let is_showing_res = *state.show_resources.read();
                                         let is_form_selected = *current_form.read() == Some(form_name.clone()) && !is_showing_res;
                                         let bg_color = if is_form_selected { "#e3f2fd" } else { "transparent" };
-                                        let has_form_res = !form_module.resources.resources.is_empty();
+                                        let has_form_res = form_module.resources.file_path.is_some();
                                         let form_res_count = form_module.resources.resources.len();
                                         let is_form_res_selected = is_showing_res && current_target == Some(ResourceTarget::Form(form_name_res.clone()));
                                         let form_res_bg = if is_form_res_selected { "#e3f2fd" } else { "transparent" };
@@ -83,97 +102,224 @@ pub fn ProjectExplorer() -> Element {
                                         }
                                     }
                                 }
+                                }
                                 
-                                // Code files section
+                                // Code files section — grouped by folder (collapsible)
                                 if !proj.code_files.is_empty() {
-                                    div {
-                                        style: "font-weight: bold; margin-top: 12px; margin-bottom: 4px;",
-                                        "\u{1F4C4} Code"
-                                    }
-                                    for code_file in &proj.code_files {
-                                        {
-                                            let cf_name = code_file.name.clone();
-                                            let cf_name_ctx = code_file.name.clone();
-                                            let is_selected = *current_form.read() == Some(cf_name.clone()) && !*state.show_resources.read();
-                                            let bg_color = if is_selected { "#e3f2fd" } else { "transparent" };
-
-                                            rsx! {
-                                                div {
-                                                    key: "{cf_name}",
-                                                    style: "padding: 4px 8px; cursor: pointer; background: {bg_color}; border-radius: 3px; margin-bottom: 2px;",
-                                                    onclick: move |_| {
-                                                        current_form.set(Some(cf_name.clone()));
-                                                        state.show_code_editor.set(true);
-                                                        state.show_resources.set(false);
-                                                    },
-                                                    oncontextmenu: move |e: Event<MouseData>| {
-                                                        e.prevent_default();
-                                                        let coords = e.page_coordinates();
-                                                        context_menu.set(Some((coords.x, coords.y, cf_name_ctx.clone())));
-                                                    },
-                                                    "  {cf_name}"
-                                                }
+                                    {
+                                        let code_collapsed = collapsed_folders.read().contains(&"_section_code".to_string());
+                                        let code_arrow = if code_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+                                        rsx! {
+                                            div {
+                                                style: "font-weight: bold; margin-top: 12px; margin-bottom: 4px; cursor: pointer; user-select: none;",
+                                                onclick: move |_| {
+                                                    let mut cf = collapsed_folders.write();
+                                                    let key = "_section_code".to_string();
+                                                    if let Some(pos) = cf.iter().position(|f| f == &key) {
+                                                        cf.remove(pos);
+                                                    } else {
+                                                        cf.push(key);
+                                                    }
+                                                },
+                                                "{code_arrow} \u{1F4C4} Code"
                                             }
                                         }
                                     }
-                                }
-
-                                // Project Resources section
-                                div {
-                                    style: "font-weight: bold; margin-top: 12px; margin-bottom: 4px;",
-                                    "⚙️ Resources"
-                                }
-                                
-                                // Show each project-level resource file
-                                if proj.resource_files.is_empty() {
-                                    // No resource files yet — show default "Resources" entry
+                                    if !collapsed_folders.read().contains(&"_section_code".to_string()) {
+                                    // Group code files by folder
                                     {
-                                        let is_res_selected = *state.show_resources.read() && current_target == Some(ResourceTarget::Project(0));
-                                        let bg_color = if is_res_selected { "#e3f2fd" } else { "transparent" };
+                                        let mut folders: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                                        for cf in &proj.code_files {
+                                            let name = &cf.name;
+                                            if let Some(slash) = name.rfind('/') {
+                                                let folder = name[..slash].to_string();
+                                                folders.entry(folder).or_default().push(name.clone());
+                                            } else {
+                                                folders.entry(String::new()).or_default().push(name.clone());
+                                            }
+                                        }
+                                        let collapsed_read = collapsed_folders.read().clone();
                                         rsx! {
-                                            div {
-                                                style: "padding: 4px 8px; cursor: pointer; background: {bg_color}; border-radius: 3px; margin-bottom: 2px;",
-                                                onclick: move |_| {
-                                                    // Create the default Resources.resx on first click
+                                            // Root-level files first
+                                            for cf_name in folders.get("").unwrap_or(&Vec::new()).iter() {
+                                                {
+                                                    let cf_name = cf_name.clone();
+                                                    let cf_name_click = cf_name.clone();
+                                                    let cf_name_ctx = cf_name.clone();
+                                                    let is_selected = *current_form.read() == Some(cf_name.clone()) && !*state.show_resources.read();
+                                                    let bg_color = if is_selected { "#e3f2fd" } else { "transparent" };
+                                                    rsx! {
+                                                        div {
+                                                            key: "{cf_name}",
+                                                            style: "padding: 4px 8px; cursor: pointer; background: {bg_color}; border-radius: 3px; margin-bottom: 2px;",
+                                                            onclick: move |_| {
+                                                                current_form.set(Some(cf_name_click.clone()));
+                                                                state.show_code_editor.set(true);
+                                                                state.show_resources.set(false);
+                                                            },
+                                                            oncontextmenu: move |e: Event<MouseData>| {
+                                                                e.prevent_default();
+                                                                let coords = e.page_coordinates();
+                                                                context_menu.set(Some((coords.x, coords.y, cf_name_ctx.clone())));
+                                                            },
+                                                            "  {cf_name}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // Folder groups
+                                            for (folder, files) in folders.iter() {
+                                                if !folder.is_empty() {
                                                     {
-                                                        let mut proj_w = state.project.write();
-                                                        if let Some(p) = proj_w.as_mut() {
-                                                            if p.resource_files.is_empty() {
-                                                                p.resource_files.push(irys_project::ResourceManager::new());
+                                                        let folder = folder.clone();
+                                                        let folder_click = folder.clone();
+                                                        let is_collapsed = collapsed_read.contains(&folder);
+                                                        let arrow = if is_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+                                                        rsx! {
+                                                            div {
+                                                                key: "folder_{folder}",
+                                                                // Folder header
+                                                                div {
+                                                                    style: "padding: 4px 8px; cursor: pointer; font-weight: bold; color: #555; border-radius: 3px; margin-bottom: 2px; user-select: none;",
+                                                                    onclick: move |_| {
+                                                                        let mut cf = collapsed_folders.write();
+                                                                        if let Some(pos) = cf.iter().position(|f| f == &folder_click) {
+                                                                            cf.remove(pos);
+                                                                        } else {
+                                                                            cf.push(folder_click.clone());
+                                                                        }
+                                                                    },
+                                                                    "{arrow} \u{1F4C1} {folder}"
+                                                                }
+                                                                // Files in this folder
+                                                                if !is_collapsed {
+                                                                    for cf_name in files.iter() {
+                                                                        {
+                                                                            let cf_name = cf_name.clone();
+                                                                            let display_name = cf_name.rsplit('/').next().unwrap_or(&cf_name).to_string();
+                                                                            let cf_name_click = cf_name.clone();
+                                                                            let cf_name_ctx = cf_name.clone();
+                                                                            let is_selected = *current_form.read() == Some(cf_name.clone()) && !*state.show_resources.read();
+                                                                            let bg_color = if is_selected { "#e3f2fd" } else { "transparent" };
+                                                                            rsx! {
+                                                                                div {
+                                                                                    key: "{cf_name}",
+                                                                                    style: "padding: 4px 8px 4px 24px; cursor: pointer; background: {bg_color}; border-radius: 3px; margin-bottom: 2px;",
+                                                                                    onclick: move |_| {
+                                                                                        current_form.set(Some(cf_name_click.clone()));
+                                                                                        state.show_code_editor.set(true);
+                                                                                        state.show_resources.set(false);
+                                                                                    },
+                                                                                    oncontextmenu: move |e: Event<MouseData>| {
+                                                                                        e.prevent_default();
+                                                                                        let coords = e.page_coordinates();
+                                                                                        context_menu.set(Some((coords.x, coords.y, cf_name_ctx.clone())));
+                                                                                    },
+                                                                                    "  {display_name}"
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
-                                                    state.show_resources.set(true);
-                                                    state.show_code_editor.set(false);
-                                                    state.current_resource_target.set(Some(ResourceTarget::Project(0)));
-                                                },
-                                                "  Resources.resx"
+                                                }
                                             }
                                         }
                                     }
-                                } else {
-                                    for (idx, res_file) in proj.resource_files.iter().enumerate() {
+                                    }
+                                }
+
+                                // Project References section (collapsible)
+                                if !proj.project_references.is_empty() {
+                                    {
+                                        let refs_collapsed = collapsed_folders.read().contains(&"_section_refs".to_string());
+                                        let refs_arrow = if refs_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+                                        rsx! {
+                                            div {
+                                                style: "font-weight: bold; margin-top: 12px; margin-bottom: 4px; cursor: pointer; user-select: none;",
+                                                onclick: move |_| {
+                                                    let mut cf = collapsed_folders.write();
+                                                    let key = "_section_refs".to_string();
+                                                    if let Some(pos) = cf.iter().position(|f| f == &key) {
+                                                        cf.remove(pos);
+                                                    } else {
+                                                        cf.push(key);
+                                                    }
+                                                },
+                                                "{refs_arrow} \u{1F517} References"
+                                            }
+                                        }
+                                    }
+                                    if !collapsed_folders.read().contains(&"_section_refs".to_string()) {
+                                    for ref_name in &proj.project_references {
                                         {
-                                            let res_name = res_file.name.clone();
-                                            let res_count = res_file.resources.len();
-                                            let is_res_selected = *state.show_resources.read() && current_target == Some(ResourceTarget::Project(idx));
-                                            let bg_color = if is_res_selected { "#e3f2fd" } else { "transparent" };
-                                            let label = if res_count > 0 {
-                                                format!("  {res_name}.resx ({res_count})")
-                                            } else {
-                                                format!("  {res_name}.resx")
-                                            };
+                                            let rn = ref_name.clone();
                                             rsx! {
                                                 div {
-                                                    key: "res_{idx}",
-                                                    style: "padding: 4px 8px; cursor: pointer; background: {bg_color}; border-radius: 3px; margin-bottom: 2px;",
-                                                    onclick: move |_| {
-                                                        state.show_resources.set(true);
-                                                        state.show_code_editor.set(false);
-                                                        state.current_resource_target.set(Some(ResourceTarget::Project(idx)));
-                                                    },
-                                                    "{label}"
+                                                    key: "ref_{rn}",
+                                                    style: "padding: 4px 8px; color: #666; border-radius: 3px; margin-bottom: 2px;",
+                                                    "  {rn}"
                                                 }
+                                            }
+                                        }
+                                    }
+                                    }
+                                }
+
+                                // Project Resources section (collapsible)
+                                {
+                                    let has_any_resources = proj.resource_files.iter().any(|r| r.file_path.is_some());
+                                    rsx! {
+                                        if has_any_resources {
+                                            {
+                                                let res_collapsed = collapsed_folders.read().contains(&"_section_resources".to_string());
+                                                let res_arrow = if res_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+                                                rsx! {
+                                                    div {
+                                                        style: "font-weight: bold; margin-top: 12px; margin-bottom: 4px; cursor: pointer; user-select: none;",
+                                                        onclick: move |_| {
+                                                            let mut cf = collapsed_folders.write();
+                                                            let key = "_section_resources".to_string();
+                                                            if let Some(pos) = cf.iter().position(|f| f == &key) {
+                                                                cf.remove(pos);
+                                                            } else {
+                                                                cf.push(key);
+                                                            }
+                                                        },
+                                                        "{res_arrow} ⚙️ Resources"
+                                                    }
+                                                }
+                                            }
+                                            if !collapsed_folders.read().contains(&"_section_resources".to_string()) {
+                                            for (idx, res_file) in proj.resource_files.iter().enumerate() {
+                                                if res_file.file_path.is_some() {
+                                                    {
+                                                        let res_name = res_file.name.clone();
+                                                        let res_count = res_file.resources.len();
+                                                        let is_res_selected = *state.show_resources.read() && current_target == Some(ResourceTarget::Project(idx));
+                                                        let bg_color = if is_res_selected { "#e3f2fd" } else { "transparent" };
+                                                        let label = if res_count > 0 {
+                                                            format!("  {res_name}.resx ({res_count})")
+                                                        } else {
+                                                            format!("  {res_name}.resx")
+                                                        };
+                                                        rsx! {
+                                                            div {
+                                                                key: "res_{idx}",
+                                                                style: "padding: 4px 8px; cursor: pointer; background: {bg_color}; border-radius: 3px; margin-bottom: 2px;",
+                                                                onclick: move |_| {
+                                                                    state.show_resources.set(true);
+                                                                    state.show_code_editor.set(false);
+                                                                    state.current_resource_target.set(Some(ResourceTarget::Project(idx)));
+                                                                },
+                                                                "{label}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             }
                                         }
                                     }

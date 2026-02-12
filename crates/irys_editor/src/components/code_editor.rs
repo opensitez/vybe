@@ -1,10 +1,10 @@
 use dioxus::prelude::*;
-use crate::app_state::AppState;
+use crate::app_state::{AppState, ResourceTarget};
 use irys_forms::EventType;
 
 #[component]
 pub fn CodeEditor() -> Element {
-    let state = use_context::<AppState>();
+    let mut state = use_context::<AppState>();
 
     // Dropdown state
     let mut selected_object = use_signal(|| "(General)".to_string());
@@ -328,6 +328,26 @@ pub fn CodeEditor() -> Element {
                                     let _ = document::eval("if(window.monacoEditor) window.monacoEditor.updateOptions({readOnly: true});");
                                 },
                                 "Designer"
+                            }
+                            // Show Resources tab if this form has form-level resources
+                            {
+                                let has_form_resources = state.current_form_has_resources();
+                                rsx! {
+                                    if has_form_resources {
+                                        button {
+                                            style: if *code_tab.read() == "resources" { "font-weight: bold; padding: 2px 8px; border: 1px solid #999; background: white;" } else { "padding: 2px 8px; border: 1px solid #ccc; background: #e0e0e0; cursor: pointer;" },
+                                            onclick: move |_| {
+                                                code_tab.set("resources".to_string());
+                                                // Switch to resource view for this form
+                                                let form_name = state.current_form.read().clone().unwrap_or_default();
+                                                state.show_resources.set(true);
+                                                state.show_code_editor.set(true); // stay in code editor panel
+                                                state.current_resource_target.set(Some(ResourceTarget::Form(form_name)));
+                                            },
+                                            "Resources"
+                                        }
+                                    }
+                                }
                             }
                         } else {
                             span { "Code" }

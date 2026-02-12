@@ -160,18 +160,31 @@ pub fn Toolbar() -> Element {
                 },
                 title: "View Resources",
                 onclick: move |_| {
-                    // Ensure default resource file exists
-                    {
-                        let mut proj_w = state.project.write();
-                        if let Some(p) = proj_w.as_mut() {
-                            if p.resource_files.is_empty() {
-                                p.resource_files.push(irys_project::ResourceManager::new());
-                            }
+                    // Find the first resource file with actual items, or create one on demand
+                    let target_idx = {
+                        let proj_r = state.project.read();
+                        if let Some(p) = proj_r.as_ref() {
+                            p.resource_files.iter().position(|r| !r.resources.is_empty())
+                        } else {
+                            None
                         }
-                    }
+                    };
+                    let idx = match target_idx {
+                        Some(i) => i,
+                        None => {
+                            // No resource files with items — create one on demand
+                            let mut proj_w = state.project.write();
+                            if let Some(p) = proj_w.as_mut() {
+                                if p.resource_files.is_empty() {
+                                    p.resource_files.push(irys_project::ResourceManager::new());
+                                }
+                            }
+                            0
+                        }
+                    };
                     state.show_resources.set(true);
                     state.show_code_editor.set(false);
-                    state.current_resource_target.set(Some(ResourceTarget::Project(0)));
+                    state.current_resource_target.set(Some(ResourceTarget::Project(idx)));
                 },
                 // Resource Icon (Table-like)
                 svg {

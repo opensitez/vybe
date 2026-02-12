@@ -133,7 +133,7 @@ impl ResourceManager {
     }
 
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(&path)?;
+        let content = crate::encoding::read_text_file(&path)?;
         let mut manager = Self::parse_resx(&content)?;
         manager.file_path = Some(path.as_ref().to_path_buf());
         Ok(manager)

@@ -151,6 +151,9 @@ pub struct Project {
     /// Multiple resource files (.resx) — e.g. Resources.resx, Strings.resx, Images.resx
     #[serde(default)]
     pub resource_files: Vec<ResourceManager>,
+    /// Names of referenced sub-projects (from <ProjectReference> in .vbproj)
+    #[serde(default)]
+    pub project_references: Vec<String>,
     /// Deprecated: single resource manager. Kept for backward compat deserialization.
     #[serde(skip_serializing)]
     pub resources: ResourceManager,
@@ -171,6 +174,7 @@ impl Project {
             forms: Vec::new(),
             code_files: Vec::new(),
             resource_files: Vec::new(),
+            project_references: Vec::new(),
             resources: ResourceManager::new(),
         }
     }
@@ -300,6 +304,7 @@ impl<'de> Deserialize<'de> for Project {
             forms: helper.forms,
             code_files,
             resource_files,
+            project_references: Vec::new(),
             resources: helper.resources,
         })
     }

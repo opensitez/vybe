@@ -68,6 +68,12 @@ pub enum Expression {
 
     // With block implicit target (for .Property syntax)
     WithTarget,
+
+    // Inline If expression: If(cond, true, false) or If(value, default)
+    IfExpression(Box<Expression>, Box<Expression>, Option<Box<Expression>>),
+
+    // AddressOf (delegate reference - stored as string for now)
+    AddressOf(String),
 }
 
 impl Expression {

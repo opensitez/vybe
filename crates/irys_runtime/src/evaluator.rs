@@ -291,7 +291,7 @@ pub fn evaluate(expr: &Expression, env: &Environment) -> Result<Value, RuntimeEr
             arr.get_array_element(index)
         }
 
-        Expression::Call(_, _) | Expression::MethodCall(_, _, _) | Expression::New(_, _) | Expression::Me | Expression::WithTarget => {
+        Expression::Call(_, _) | Expression::MethodCall(_, _, _) | Expression::New(_, _) | Expression::Me | Expression::WithTarget | Expression::IfExpression(_, _, _) | Expression::AddressOf(_) => {
             // These are handled in the interpreter
             Err(RuntimeError::Custom("Function calls must be evaluated in interpreter context".to_string()))
         }

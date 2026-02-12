@@ -3,6 +3,7 @@ use crate::project::{FormFormat, FormModule};
 use irys_forms::{EventBinding, EventType, Form};
 use std::fs;
 use std::path::Path;
+use crate::encoding::read_text_file;
 
 fn event_type_from_name(name: &str) -> Option<EventType> {
     match name.to_lowercase().as_str() {
@@ -75,14 +76,14 @@ fn apply_vbnet_handles(form: &mut Form, cls: &irys_parser::ClassDecl) {
 }
 
 pub fn load_form_vb(form_path: &Path) -> SaveResult<FormModule> {
-    let user_code = fs::read_to_string(form_path)?;
+    let user_code = read_text_file(form_path)?;
 
     let stem = form_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
     let parent = form_path.parent().unwrap_or(Path::new("."));
     let designer_path = parent.join(format!("{}.Designer.vb", stem));
 
     let designer_code = if designer_path.exists() {
-        fs::read_to_string(&designer_path)?
+        read_text_file(&designer_path)?
     } else {
         String::new()
     };

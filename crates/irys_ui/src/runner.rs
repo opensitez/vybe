@@ -74,6 +74,7 @@ fn run_vb_file(path: &Path, extra_args: &[String]) {
     };
 
     let mut interp = Interpreter::new();
+    interp.direct_console = true;
     interp.set_command_line_args(extra_args.to_vec());
 
     if let Err(e) = interp.run(&program) {
@@ -134,6 +135,7 @@ fn run_project(path: &Path, extra_args: &[String]) {
 /// Run a console-only project (Sub Main, no forms).
 fn run_console_project(project: &Project, extra_args: &[String]) {
     let mut interp = Interpreter::new();
+    interp.direct_console = true;
     interp.set_command_line_args(extra_args.to_vec());
 
     let entries = collect_resource_entries(project);

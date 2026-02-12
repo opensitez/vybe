@@ -10,7 +10,7 @@ NEWLINE = { "\r\n" | "\n" | "\r" }
 line_continuation = _{ "_" ~ (" " | "\t")* ~ ("\r\n" | "\n" | "\r") }
 
 // Program structure
-program = { SOI ~ "\u{feff}"? ~ line* ~ EOI }
+program = { SOI ~ line* ~ EOI }
 line = _{ imports_statement | attribute_line | statement_line | NEWLINE | COMMENT }
 statement_line = {
     (
@@ -245,7 +245,8 @@ func_end = { ^"End" ~ ^"Function" }
 
 param_list = { param ~ ("," ~ param)* }
 pass_type_keyword = { ^"ByVal" | ^"ByRef" }
-param = { pass_type_keyword? ~ (^"Optional")? ~ identifier ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
+param = { (^"Optional")? ~ pass_type_keyword? ~ (^"Optional")? ~ identifier ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
+nullable_marker = { "?" }
 
 // Module declarations (VB.NET style - members are implicitly shared)
 module_decl = {
@@ -333,8 +334,8 @@ unary = { (await_op | neg_op)? ~ postfix }
 postfix = { primary ~ member_chain* }
 
 xor_op = { ^"Xor" }
-or_op = { ^"Or" | ^"OrElse" }
-and_op = { ^"And" | ^"AndAlso" }
+or_op = { ^"OrElse" | ^"Or" }
+and_op = { ^"AndAlso" | ^"And" }
 eq_op = { ^"=" | ^"<>" | ^"IsNot" | ^"Is" }
 comp_op = { ^"<=" | ^">=" | "<" | ">" }
 shift_op = { "<<" | ">>" }
@@ -351,6 +352,12 @@ me_member_call = { me_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ argument_list
 me_member_access = { me_keyword ~ ("." ~ member_identifier)+ }
 me_assign_statement = { me_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ expression }
 
+// MyBase keyword rules
+mybase_keyword = { ^"MyBase" }
+mybase_member_call = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ argument_list? ~ ")" }
+mybase_member_access = { mybase_keyword ~ ("." ~ member_identifier)+ }
+mybase_assign_statement = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ expression }
+
 // Dotted identifier: System.Windows.Forms.Button
 dotted_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("." ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*)* }
 
@@ -358,19 +365,28 @@ primary = _{
     new_expression
     | literal
     | lambda_expression
+    | if_expression
     | me_member_call
     | me_member_access
     | me_keyword
+    | mybase_member_call
+    | mybase_member_access
+    | mybase_keyword
     | member_call
     | call_expression
     | member_access
+    | addressof_expr
     | identifier
     | "(" ~ expression ~ ")"
 }
 
+// Inline If expression: If(cond, true, false) or If(value, default)
+if_expression = { ^"If" ~ "(" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" }
+
 // New expression: supports dotted identifiers like New System.Windows.Forms.Button()
-// New expression: allow leading indentation by not atomizing the keyword
-new_expression = { "New" ~ WHITESPACE* ~ dotted_identifier ~ ("(" ~ argument_list? ~ ")")? }
+// Also supports generic types like New List(Of String), New Dictionary(Of String, Integer)
+// Also supports array initializers: New Task() {task1, task2}
+new_expression = { "New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ argument_list? ~ ")")? ~ array_literal? }
 
 call_expression = { identifier ~ "(" ~ argument_list? ~ ")" }
 member_chain_call = { "." ~ member_identifier ~ "(" ~ argument_list? ~ ")" }
@@ -380,6 +396,7 @@ member_call = { identifier ~ member_chain+ }
 call_statement = {
     ^"Call"? ~ (
         me_member_call
+        | mybase_member_call
         | member_call
         | member_access
         | call_expression
@@ -387,7 +404,7 @@ call_statement = {
         | identifier
     )
 }
-expression_statement = { dot_call_statement | me_member_call | member_call | call_expression | member_access | dot_member_access }
+expression_statement = { dot_call_statement | me_member_call | mybase_member_call | member_call | call_expression | member_access | dot_member_access }
 
 // AddHandler / RemoveHandler
 addressof_expr = { ^"AddressOf" ~ dotted_identifier }
@@ -401,6 +418,7 @@ argument_list = { expression ~ ("," ~ expression)* }
 literal = _{
     array_literal
     | date_literal
+    | interpolated_string
     | string_literal
     | numeric_literal
     | boolean_literal
@@ -410,6 +428,8 @@ literal = _{
 nothing_literal = { ^"Nothing" }
 
 date_literal = @{ "#" ~ (!"#" ~ ANY)+ ~ "#" }
+// Interpolated string: $"text {expr} text" — captured as raw token, decomposed in Rust parser
+interpolated_string = @{ "$\"" ~ ("\"\"" | (!("\"") ~ ANY))* ~ "\"" }
 string_literal = @{ "\"" ~ ("\"\"" | (!"\"" ~ ANY))* ~ "\"" }
 // Numeric literals: support optional type suffix (F, D, L, S, US, UI, UL, R, !)
 numeric_literal = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"F" | ^"D" | ^"L" | ^"R" | ^"S" | ^"US" | ^"UI" | ^"UL" | "!" | "#" | "@" | "%")? }
@@ -421,7 +441,7 @@ type_name = {
         (^"Integer" | ^"Long" | ^"Single" | ^"Double" | ^"String" | ^"Boolean" | ^"Variant" | ^"Object")
         ~ !(ASCII_ALPHANUMERIC | "_")
         | dotted_identifier
-    ) ~ (generic_suffix | array_type_suffix)?
+    ) ~ (generic_suffix | array_type_suffix)? ~ "?"?
 }
 
 array_type_suffix = { "(" ~ ")" }

@@ -6,6 +6,7 @@ use crate::event_system::EventSystem;
 use crate::value::{ExitType, RuntimeError, Value, ObjectData};
 use crate::EventData;
 use std::collections::{HashMap, VecDeque};
+use std::io::BufRead;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::mpsc;
@@ -29,6 +30,9 @@ pub struct Interpreter {
     pub console_tx: Option<mpsc::Sender<crate::ConsoleMessage>>,
     /// Optional channel for receiving console input from the UI (Console.ReadLine).
     pub console_input_rx: Option<mpsc::Receiver<String>>,
+    /// When true, console output goes directly to stdout (CLI mode).
+    /// When false (default), output is buffered in side_effects (tests/form mode).
+    pub direct_console: bool,
 }
 
 impl Interpreter {
@@ -49,6 +53,7 @@ impl Interpreter {
             command_line_args: Vec::new(),
             console_tx: None,
             console_input_rx: None,
+            direct_console: false,
         };
         interp.register_builtin_constants();
         interp.init_namespaces();
@@ -223,21 +228,26 @@ impl Interpreter {
         }
     }
 
-    /// Send console output through the channel (with colors) or the side-effects queue.
+    /// Send console output through the channel (with colors), directly to stdout (CLI),
+    /// or buffered in side_effects (tests/form mode).
     fn send_console_output(&mut self, text: String) {
         let (fg, bg) = self.get_console_colors();
         if let Some(tx) = &self.console_tx {
             let _ = tx.send(crate::ConsoleMessage::Output { text, fg, bg });
-        } else {
-            // CLI mode: only wrap in ANSI escape codes if colors differ from defaults
+        } else if self.direct_console {
+            // CLI mode: print directly to stdout for immediate/interactive output
+            use std::io::Write;
             if fg != 7 || bg != 0 {
                 let ansi_fg = Self::console_color_to_ansi_fg(fg);
                 let ansi_bg = Self::console_color_to_ansi_bg(bg);
-                let colored = format!("{}{}{}\x1b[0m", ansi_fg, ansi_bg, text);
-                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(colored));
+                print!("{}{}{}\x1b[0m", ansi_fg, ansi_bg, text);
             } else {
-                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(text));
+                print!("{}", text);
             }
+            let _ = std::io::stdout().flush();
+        } else {
+            // Test/form mode: buffer for later inspection
+            self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(text));
         }
     }
 
@@ -245,6 +255,10 @@ impl Interpreter {
     fn send_debug_output(&mut self, text: String) {
         if let Some(tx) = &self.console_tx {
             let _ = tx.send(crate::ConsoleMessage::Output { text, fg: 7, bg: 0 });
+        } else if self.direct_console {
+            use std::io::Write;
+            print!("{}", text);
+            let _ = std::io::stdout().flush();
         } else {
             self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(text));
         }
@@ -2160,6 +2174,28 @@ impl Interpreter {
                 } else {
                     Err(RuntimeError::Custom("'.' used outside of With block".to_string()))
                 }
+            }
+            Expression::IfExpression(first, second, third) => {
+                if let Some(false_expr) = third {
+                    // Ternary: If(condition, trueValue, falseValue)
+                    let cond = self.evaluate_expr(first)?;
+                    if cond.is_truthy() {
+                        self.evaluate_expr(second)
+                    } else {
+                        self.evaluate_expr(false_expr)
+                    }
+                } else {
+                    // Coalesce: If(value, default) — return value if not Nothing, else default
+                    let val = self.evaluate_expr(first)?;
+                    match &val {
+                        Value::Nothing => self.evaluate_expr(second),
+                        _ => Ok(val),
+                    }
+                }
+            }
+            Expression::AddressOf(name) => {
+                // For now, store as a string value — delegates are not fully supported
+                Ok(Value::String(format!("AddressOf:{}", name)))
             }
             Expression::New(class_id, ctor_args) => {
                 let class_name = class_id.as_str().to_lowercase();
@@ -4183,8 +4219,22 @@ impl Interpreter {
                 } else {
                     arg_values[0].as_string()
                 };
-                self.side_effects.push_back(crate::RuntimeSideEffect::MsgBox(msg));
-                return Ok(Value::Integer(1)); // vbOK
+                let buttons = if arg_values.len() >= 2 {
+                    match &arg_values[1] {
+                        Value::Integer(i) => *i,
+                        _ => 0,
+                    }
+                } else {
+                    0
+                };
+                let title = if arg_values.len() >= 3 {
+                    arg_values[2].as_string()
+                } else {
+                    "Irys Basic".to_string()
+                };
+                // Use native OS dialog that blocks synchronously
+                let result = crate::builtins::info_fns::show_native_msgbox(&msg, &title, buttons);
+                return Ok(Value::Integer(result));
             }
             "inputbox" => return inputbox_fn(&arg_values),
 
@@ -7919,6 +7969,17 @@ impl Interpreter {
                 self.send_debug_output(format!("{}\n", msg));
                 return Ok(Value::Nothing);
             }
+            // ---- MessageBox.Show ----
+            "messagebox.show" => {
+                let msg = if !arg_values.is_empty() { arg_values[0].as_string() } else { String::new() };
+                let title = if arg_values.len() >= 2 { arg_values[1].as_string() } else { "Irys Basic".to_string() };
+                let buttons = if arg_values.len() >= 3 {
+                    match &arg_values[2] { Value::Integer(i) => *i, _ => 0 }
+                } else { 0 };
+                let result = crate::builtins::info_fns::show_native_msgbox(&msg, &title, buttons);
+                // Return as DialogResult enum value
+                return Ok(Value::Integer(result));
+            }
             "console.writeline" | "console.write" | "console.readline" | "console.read"
             | "console.clear" | "console.resetcolor" | "console.beep"
             | "console.setcursorposition" => {
@@ -10121,15 +10182,36 @@ impl Interpreter {
                         Ok(Value::String(String::new()))
                     }
                 } else {
-                    // Fallback (CLI): read from real stdin
-                    let mut line = String::new();
-                    match std::io::stdin().read_line(&mut line) {
-                        Ok(_) => {
-                            if line.ends_with('\n') { line.pop(); }
-                            if line.ends_with('\r') { line.pop(); }
-                            Ok(Value::String(line))
+                    // Check if stdin is a TTY (CLI with real terminal)
+                    use std::io::IsTerminal;
+                    if std::io::stdin().is_terminal() {
+                        // Real terminal: read from stdin
+                        let mut line = String::new();
+                        match std::io::stdin().read_line(&mut line) {
+                            Ok(_) => {
+                                if line.ends_with('\n') { line.pop(); }
+                                if line.ends_with('\r') { line.pop(); }
+                                Ok(Value::String(line))
+                            }
+                            Err(_) => Ok(Value::String(String::new())),
                         }
-                        Err(_) => Ok(Value::String(String::new())),
+                    } else if std::io::stdin().lock().fill_buf().map(|b| !b.is_empty()).unwrap_or(false) {
+                        // Piped stdin with data available
+                        let mut line = String::new();
+                        match std::io::stdin().read_line(&mut line) {
+                            Ok(_) => {
+                                if line.ends_with('\n') { line.pop(); }
+                                if line.ends_with('\r') { line.pop(); }
+                                Ok(Value::String(line))
+                            }
+                            Err(_) => Ok(Value::String(String::new())),
+                        }
+                    } else {
+                        // GUI mode: no console channel, no real terminal — use native input dialog 
+                        match crate::builtins::info_fns::show_native_input_dialog("Console.ReadLine", "Input", "") {
+                            Some(input) => Ok(Value::String(input)),
+                            None => Ok(Value::String(String::new())),
+                        }
                     }
                 }
             }

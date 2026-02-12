@@ -182,8 +182,108 @@ pub fn inputbox_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     }
 }
 
+/// Show a native OS message box dialog (blocking). Returns the DialogResult integer.
+/// Maps: OK=1, Cancel=2, Abort=3, Retry=4, Ignore=5, Yes=6, No=7
+pub fn show_native_msgbox(message: &str, title: &str, buttons: i32) -> i32 {
+    // buttons: 0=OK, 1=OKCancel, 2=AbortRetryIgnore, 3=YesNoCancel, 4=YesNo, 5=RetryCancel
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+
+        let button_spec = match buttons {
+            1 => r#"buttons {"Cancel", "OK"} default button "OK""#,
+            4 => r#"buttons {"No", "Yes"} default button "Yes""#,
+            3 => r#"buttons {"Cancel", "No", "Yes"} default button "Yes""#,
+            5 => r#"buttons {"Cancel", "Retry"} default button "Retry""#,
+            _ => r#"buttons {"OK"} default button "OK""#,
+        };
+
+        let script = format!(
+            "display dialog \"{}\" with title \"{}\" {}",
+            message.replace("\"", "\\\""),
+            title.replace("\"", "\\\""),
+            button_spec
+        );
+
+        match Command::new("osascript").arg("-e").arg(&script).output() {
+            Ok(output) => {
+                let result = String::from_utf8_lossy(&output.stdout);
+                // Parse "button returned:OK" etc.
+                if let Some(btn_part) = result.split("button returned:").nth(1) {
+                    let btn = btn_part.trim();
+                    return match btn {
+                        "OK" => 1,
+                        "Cancel" => 2,
+                        "Yes" => 6,
+                        "No" => 7,
+                        "Retry" => 4,
+                        "Abort" => 3,
+                        "Ignore" => 5,
+                        _ => 1,
+                    };
+                }
+                // User pressed Cancel (error exit code 1)
+                if !output.status.success() {
+                    return 2; // Cancel
+                }
+                1 // OK
+            }
+            _ => 1,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        // zenity --info for OK, --question for Yes/No
+        let result = match buttons {
+            4 => Command::new("zenity")
+                .arg("--question")
+                .arg(format!("--title={}", title))
+                .arg(format!("--text={}", message))
+                .status(),
+            _ => Command::new("zenity")
+                .arg("--info")
+                .arg(format!("--title={}", title))
+                .arg(format!("--text={}", message))
+                .status(),
+        };
+        match result {
+            Ok(status) => if status.success() { if buttons == 4 { 6 } else { 1 } } else { if buttons == 4 { 7 } else { 2 } },
+            _ => 1,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let ps_type = match buttons {
+            1 => "OKCancel", 4 => "YesNo", 3 => "YesNoCancel", 5 => "RetryCancel",
+            _ => "OK",
+        };
+        let script = format!(
+            "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; \
+             [System.Windows.Forms.MessageBox]::Show('{}', '{}', '{}')",
+            message.replace("'", "''"), title.replace("'", "''"), ps_type
+        );
+        match Command::new("powershell").arg("-NoProfile").arg("-Command").arg(&script).output() {
+            Ok(output) if output.status.success() => {
+                let r = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                match r.as_str() {
+                    "OK" => 1, "Cancel" => 2, "Yes" => 6, "No" => 7, "Retry" => 4, "Abort" => 3, "Ignore" => 5,
+                    _ => 1,
+                }
+            }
+            _ => 1,
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    { 1 }
+}
+
 /// Show native OS input dialog
-fn show_native_input_dialog(prompt: &str, title: &str, default_value: &str) -> Option<String> {
+pub fn show_native_input_dialog(prompt: &str, title: &str, default_value: &str) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;

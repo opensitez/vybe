@@ -22,6 +22,8 @@ pub enum ParseError {
 pub type ParseResult<T> = Result<T, ParseError>;
 
 pub fn parse_program(source: &str) -> ParseResult<Program> {
+    // Strip BOM from any source — single place for all callers
+    let source = source.trim_start_matches('\u{feff}');
     let pairs = VBParser::parse(Rule::program, source)?;
     let mut declarations = Vec::new();
     let mut statements = Vec::new();
@@ -612,6 +614,34 @@ fn parse_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
                 value,
             })
         }
+        Rule::mybase_assign_statement => {
+            // MyBase.prop = value — treat MyBase as Me
+            let mut inner = pair.into_inner();
+            let _mybase = inner.next().unwrap(); // mybase_keyword
+            let mut members = Vec::new();
+            let mut value_expr = None;
+            for p in inner {
+                match p.as_rule() {
+                    Rule::identifier | Rule::member_identifier => members.push(Identifier::new(p.as_str())),
+                    Rule::expression => value_expr = Some(parse_expression(p)?),
+                    _ => {}
+                }
+            }
+            let value = value_expr.ok_or_else(|| ParseError::Custom("mybase_assign_statement missing value".to_string()))?;
+            if members.is_empty() {
+                return Err(ParseError::Custom("mybase_assign_statement needs at least one member".to_string()));
+            }
+            let last = members.pop().unwrap();
+            let mut obj: Expression = Expression::Me;
+            for m in members {
+                obj = Expression::MemberAccess(Box::new(obj), m);
+            }
+            Ok(Statement::MemberAssignment {
+                object: obj,
+                member: last,
+                value,
+            })
+        }
         Rule::assign_statement => {
             let mut inner = pair.into_inner();
             let target = Identifier::new(inner.next().unwrap().as_str());
@@ -726,7 +756,7 @@ fn parse_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
 
             // Check if it's a member_call, member_access, call_expression, me_member_call, or simple identifier
             match first.as_rule() {
-                Rule::me_member_call | Rule::member_call | Rule::member_access | Rule::call_expression => {
+                Rule::me_member_call | Rule::mybase_member_call | Rule::member_call | Rule::member_access | Rule::call_expression => {
                     // Parse as expression and convert to statement
                     let expr = parse_expression(first)?;
                     Ok(Statement::ExpressionStatement(expr))
@@ -1010,6 +1040,97 @@ fn parse_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
             Ok(expr)
         }
         Rule::identifier => Ok(Expression::Variable(Identifier::new(pair.as_str()))),
+        Rule::interpolated_string => {
+            // $"text {expr} text {expr} text" → concatenation
+            let s = pair.as_str();
+            // Strip $" prefix and " suffix
+            let inner = &s[2..s.len()-1];
+            // Replace VB doubled quotes
+            let inner = inner.replace("\"\"", "\"");
+            
+            // Split into text parts and {expression} parts
+            let mut parts: Vec<Expression> = Vec::new();
+            let mut current_text = String::new();
+            let mut chars = inner.chars().peekable();
+            
+            while let Some(ch) = chars.next() {
+                if ch == '{' {
+                    // Check for {{ escape (literal brace)
+                    if chars.peek() == Some(&'{') {
+                        chars.next();
+                        current_text.push('{');
+                        continue;
+                    }
+                    // Flush text so far
+                    if !current_text.is_empty() {
+                        parts.push(Expression::StringLiteral(current_text.clone()));
+                        current_text.clear();
+                    }
+                    // Collect expression until matching }
+                    let mut expr_text = String::new();
+                    let mut depth = 1;
+                    while let Some(c) = chars.next() {
+                        if c == '{' { depth += 1; }
+                        if c == '}' { depth -= 1; if depth == 0 { break; } }
+                        expr_text.push(c);
+                    }
+                    // Parse the expression text as a VB expression
+                    let expr_code = format!("Sub _Tmp()\nDim _x = {}\nEnd Sub", expr_text);
+                    match crate::parse_program(&expr_code) {
+                        Ok(program) => {
+                            // Extract the expression from Dim _x = <expr>
+                            let mut found = false;
+                            for decl in &program.declarations {
+                                if let Declaration::Sub(sub_decl) = decl {
+                                    if let Some(Statement::Dim(dim_decl)) = sub_decl.body.first() {
+                                        if let Some(expr) = &dim_decl.initializer {
+                                            parts.push(expr.clone());
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if !found {
+                                parts.push(Expression::Variable(Identifier::new(expr_text.trim())));
+                            }
+                        }
+                        Err(_) => {
+                            // Fallback: treat as simple variable reference
+                            parts.push(Expression::Variable(Identifier::new(expr_text.trim())));
+                        }
+                    }
+                } else if ch == '}' {
+                    // Check for }} escape (literal brace)
+                    if chars.peek() == Some(&'}') {
+                        chars.next();
+                        current_text.push('}');
+                    }
+                } else {
+                    current_text.push(ch);
+                }
+            }
+            // Flush remaining text
+            if !current_text.is_empty() {
+                parts.push(Expression::StringLiteral(current_text));
+            }
+            
+            // Build concatenation chain
+            if parts.is_empty() {
+                Ok(Expression::StringLiteral(String::new()))
+            } else if parts.len() == 1 {
+                Ok(parts.into_iter().next().unwrap())
+            } else {
+                let mut result = parts.remove(0);
+                for part in parts {
+                    result = Expression::Concatenate(
+                        Box::new(result),
+                        Box::new(part),
+                    );
+                }
+                Ok(result)
+            }
+        }
         Rule::string_literal => {
             let s = pair.as_str();
             // Strip outer quotes, then unescape VB-style doubled quotes ("" -> ")
@@ -1041,12 +1162,43 @@ fn parse_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
         Rule::nothing_literal => Ok(Expression::Nothing),
         Rule::new_expression => {
             let mut inner = pair.into_inner();
-            let id = Identifier::new(inner.next().unwrap().as_str());
-            let args = inner.next()
-                .map(parse_argument_list)
-                .transpose()?
-                .unwrap_or_default();
-            Ok(Expression::New(id, args))
+            let id_pair = inner.next().unwrap();
+            let mut class_name = id_pair.as_str().to_string();
+            // Check for generic_suffix: List(Of String) -> "List(Of String)"
+            let mut args = Vec::new();
+            for p in inner {
+                match p.as_rule() {
+                    Rule::generic_suffix => {
+                        class_name.push_str(p.as_str());
+                    }
+                    Rule::argument_list => {
+                        args = parse_argument_list(p)?;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Expression::New(Identifier::new(&class_name), args))
+        }
+        Rule::if_expression => {
+            let mut inner = pair.into_inner();
+            let first = parse_expression(inner.next().unwrap())?;
+            let second = parse_expression(inner.next().unwrap())?;
+            let third = inner.next().map(|p| parse_expression(p)).transpose()?;
+            Ok(Expression::IfExpression(
+                Box::new(first),
+                Box::new(second),
+                third.map(Box::new),
+            ))
+        }
+        Rule::addressof_expr => {
+            let inner = pair.into_inner();
+            let mut name = String::new();
+            for p in inner {
+                if p.as_rule() == Rule::dotted_identifier {
+                    name = p.as_str().to_string();
+                }
+            }
+            Ok(Expression::AddressOf(name))
         }
         Rule::me_keyword => {
             Ok(Expression::Me)
@@ -1095,6 +1247,18 @@ fn parse_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
             }
             Ok(expr)
         }
+        Rule::mybase_member_access => {
+            // MyBase.Property — treat as Me.Property
+            let mut inner = pair.into_inner();
+            let _mybase = inner.next().unwrap(); // mybase_keyword
+            let mut expr = Expression::Me;
+            for p in inner {
+                if p.as_rule() == Rule::identifier || p.as_rule() == Rule::member_identifier {
+                    expr = Expression::MemberAccess(Box::new(expr), Identifier::new(p.as_str()));
+                }
+            }
+            Ok(expr)
+        }
         Rule::me_member_call => {
             let inner = pair.into_inner();
             let mut identifiers = vec![];
@@ -1116,6 +1280,32 @@ fn parse_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
             let method_name = Identifier::new(identifiers.last().unwrap().clone());
 
             // Build object expression: Me.a.b... (all except last)
+            let mut expr = Expression::Me;
+            for i in 0..identifiers.len() - 1 {
+                expr = Expression::MemberAccess(Box::new(expr), Identifier::new(identifiers[i].clone()));
+            }
+
+            Ok(Expression::MethodCall(Box::new(expr), method_name, arguments))
+        }
+        Rule::mybase_member_call => {
+            // MyBase.Method() — treat as Me.Method()
+            let inner = pair.into_inner();
+            let mut identifiers = vec![];
+            let mut arguments = vec![];
+            for p in inner {
+                match p.as_rule() {
+                    Rule::mybase_keyword => {},
+                    Rule::identifier | Rule::member_identifier => identifiers.push(p.as_str().to_string()),
+                    Rule::argument_list => arguments = parse_argument_list(p)?,
+                    _ => {}
+                }
+            }
+
+            if identifiers.is_empty() {
+                return Err(ParseError::Custom("mybase_member_call needs at least one identifier".to_string()));
+            }
+
+            let method_name = Identifier::new(identifiers.last().unwrap().clone());
             let mut expr = Expression::Me;
             for i in 0..identifiers.len() - 1 {
                 expr = Expression::MemberAccess(Box::new(expr), Identifier::new(identifiers[i].clone()));

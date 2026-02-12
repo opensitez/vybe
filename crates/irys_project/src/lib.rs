@@ -6,6 +6,7 @@ pub mod classicforms;
 pub mod winforms;
 pub mod errors;
 pub mod resources;
+pub mod encoding;
 
 pub use project::*;
 pub use file_format::*;
@@ -14,3 +15,4 @@ pub use classicforms::*;
 pub use winforms::*;
 pub use errors::*;
 pub use resources::*;
+pub use encoding::*;
