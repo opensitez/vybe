@@ -34,8 +34,10 @@ fn test_file_io_execution() {
 
     // Check side effects for Console output
     while let Some(effect) = interpreter.side_effects.pop_front() {
-        if let irys_runtime::RuntimeSideEffect::MsgBox(msg) = effect {
-            outputs.push(msg);
+        match effect {
+            irys_runtime::RuntimeSideEffect::MsgBox(msg) => outputs.push(msg),
+            irys_runtime::RuntimeSideEffect::ConsoleOutput(msg) => outputs.push(msg),
+            _ => {}
         }
     }
 
@@ -45,7 +47,7 @@ fn test_file_io_execution() {
 
     assert!(output_str.contains("NetRead: Hello from .NET I/O"));
     assert!(output_str.contains("NetExists: True"));
-    assert!(output_str.contains("PathExt: txt")); // GetExtension returns "txt" or ".txt"? Rust returns "txt"
+    assert!(output_str.contains("PathExt: .txt")); // GetExtension returns ".txt" with dot
     assert!(output_str.contains("LegacyRead1: Line 1"));
     assert!(output_str.contains("LegacyRead2: Line 2"));
 }

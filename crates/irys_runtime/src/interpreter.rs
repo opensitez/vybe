@@ -1776,6 +1776,152 @@ impl Interpreter {
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
+                // System.DateTime
+                if class_name == "datetime" || class_name == "system.datetime" || class_name == "date" {
+                    // New DateTime(year, month, day) or New DateTime(year, month, day, hour, minute, second)
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let year = arg_values.get(0).map(|v| v.as_integer().unwrap_or(1)).unwrap_or(1) as i32;
+                    let month = arg_values.get(1).map(|v| v.as_integer().unwrap_or(1)).unwrap_or(1) as u32;
+                    let day = arg_values.get(2).map(|v| v.as_integer().unwrap_or(1)).unwrap_or(1) as u32;
+                    let hour = arg_values.get(3).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0) as u32;
+                    let minute = arg_values.get(4).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0) as u32;
+                    let second = arg_values.get(5).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0) as u32;
+                    let dt = chrono::NaiveDate::from_ymd_opt(year, month, day)
+                        .and_then(|d| d.and_hms_opt(hour, minute, second))
+                        .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap());
+                    return Ok(Value::Date(date_to_ole(dt)));
+                }
+
+                // New TimeSpan(hours, minutes, seconds) or New TimeSpan(days, hours, minutes, seconds, ms)
+                if class_name == "timespan" || class_name == "system.timespan" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let (days, hours, minutes, seconds, ms) = match arg_values.len() {
+                        1 => {
+                            // New TimeSpan(ticks)
+                            let ticks = arg_values[0].as_double().unwrap_or(0.0);
+                            let total_ms = ticks / 10000.0;
+                            (0, 0, 0, 0, total_ms as i32)
+                        }
+                        3 => {
+                            // New TimeSpan(hours, minutes, seconds)
+                            let h = arg_values[0].as_integer().unwrap_or(0);
+                            let m = arg_values[1].as_integer().unwrap_or(0);
+                            let s = arg_values[2].as_integer().unwrap_or(0);
+                            (0, h, m, s, 0)
+                        }
+                        4 => {
+                            // New TimeSpan(days, hours, minutes, seconds)
+                            let d = arg_values[0].as_integer().unwrap_or(0);
+                            let h = arg_values[1].as_integer().unwrap_or(0);
+                            let m = arg_values[2].as_integer().unwrap_or(0);
+                            let s = arg_values[3].as_integer().unwrap_or(0);
+                            (d, h, m, s, 0)
+                        }
+                        5 => {
+                            // New TimeSpan(days, hours, minutes, seconds, ms)
+                            let d = arg_values[0].as_integer().unwrap_or(0);
+                            let h = arg_values[1].as_integer().unwrap_or(0);
+                            let m = arg_values[2].as_integer().unwrap_or(0);
+                            let s = arg_values[3].as_integer().unwrap_or(0);
+                            let ms = arg_values[4].as_integer().unwrap_or(0);
+                            (d, h, m, s, ms)
+                        }
+                        _ => (0, 0, 0, 0, 0),
+                    };
+                    let total_seconds = (days as f64) * 86400.0 + (hours as f64) * 3600.0 + (minutes as f64) * 60.0 + (seconds as f64) + (ms as f64) / 1000.0;
+                    let obj_data = crate::value::ObjectData {
+                        class_name: "TimeSpan".to_string(),
+                        fields: {
+                            let mut f = std::collections::HashMap::new();
+                            f.insert("days".to_string(), Value::Integer(days));
+                            f.insert("hours".to_string(), Value::Integer(hours));
+                            f.insert("minutes".to_string(), Value::Integer(minutes));
+                            f.insert("seconds".to_string(), Value::Integer(seconds));
+                            f.insert("milliseconds".to_string(), Value::Integer(ms));
+                            f.insert("totaldays".to_string(), Value::Double(total_seconds / 86400.0));
+                            f.insert("totalhours".to_string(), Value::Double(total_seconds / 3600.0));
+                            f.insert("totalminutes".to_string(), Value::Double(total_seconds / 60.0));
+                            f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                            f.insert("totalmilliseconds".to_string(), Value::Double(total_seconds * 1000.0));
+                            f
+                        },
+                    };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+                }
+
+                // New Uri(string)
+                if class_name == "uri" || class_name == "system.uri" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let url = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("Uri".to_string()));
+                    fields.insert("absoluteuri".to_string(), Value::String(url.clone()));
+                    fields.insert("originalstring".to_string(), Value::String(url.clone()));
+                    // Parse components
+                    if let Some(scheme_end) = url.find("://") {
+                        fields.insert("scheme".to_string(), Value::String(url[..scheme_end].to_string()));
+                        let rest = &url[scheme_end + 3..];
+                        let (host_port, path) = rest.split_once('/').unwrap_or((rest, ""));
+                        let (host, port_str) = host_port.split_once(':').unwrap_or((host_port, ""));
+                        fields.insert("host".to_string(), Value::String(host.to_string()));
+                        fields.insert("port".to_string(), Value::Integer(port_str.parse().unwrap_or(if url.starts_with("https") { 443 } else { 80 })));
+                        fields.insert("absolutepath".to_string(), Value::String(format!("/{}", path)));
+                        fields.insert("pathandquery".to_string(), Value::String(format!("/{}", path)));
+                    } else {
+                        fields.insert("scheme".to_string(), Value::String(String::new()));
+                        fields.insert("host".to_string(), Value::String(String::new()));
+                        fields.insert("port".to_string(), Value::Integer(0));
+                        fields.insert("absolutepath".to_string(), Value::String(url.clone()));
+                        fields.insert("pathandquery".to_string(), Value::String(url.clone()));
+                    }
+                    let obj = crate::value::ObjectData { class_name: "Uri".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // New FileInfo(path)
+                if class_name == "fileinfo" || class_name == "system.io.fileinfo" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let path = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                    let p = std::path::Path::new(&path);
+                    let meta = std::fs::metadata(&path);
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("FileInfo".to_string()));
+                    fields.insert("fullname".to_string(), Value::String(std::fs::canonicalize(&path).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_string()));
+                    fields.insert("name".to_string(), Value::String(p.file_name().unwrap_or_default().to_string_lossy().to_string()));
+                    fields.insert("extension".to_string(), Value::String(p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default()));
+                    fields.insert("directoryname".to_string(), Value::String(p.parent().unwrap_or(std::path::Path::new("")).to_string_lossy().to_string()));
+                    fields.insert("exists".to_string(), Value::Boolean(p.exists() && p.is_file()));
+                    if let Ok(m) = &meta {
+                        fields.insert("length".to_string(), Value::Long(m.len() as i64));
+                        fields.insert("isreadonly".to_string(), Value::Boolean(m.permissions().readonly()));
+                    } else {
+                        fields.insert("length".to_string(), Value::Long(0));
+                        fields.insert("isreadonly".to_string(), Value::Boolean(false));
+                    }
+                    let obj = crate::value::ObjectData { class_name: "FileInfo".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // New DirectoryInfo(path)
+                if class_name == "directoryinfo" || class_name == "system.io.directoryinfo" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let path = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                    let p = std::path::Path::new(&path);
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("DirectoryInfo".to_string()));
+                    fields.insert("fullname".to_string(), Value::String(std::fs::canonicalize(&path).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_string()));
+                    fields.insert("name".to_string(), Value::String(p.file_name().unwrap_or_default().to_string_lossy().to_string()));
+                    fields.insert("exists".to_string(), Value::Boolean(p.is_dir()));
+                    fields.insert("parent".to_string(), Value::String(p.parent().unwrap_or(std::path::Path::new("")).to_string_lossy().to_string()));
+                    let obj = crate::value::ObjectData { class_name: "DirectoryInfo".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
                 // System.Random
                 if class_name == "random" || class_name == "system.random" {
                     let seed = if !ctor_args.is_empty() {
@@ -2156,6 +2302,48 @@ impl Interpreter {
                     "addate" | "adodb.datatypeenum.addate" => return Ok(Value::Integer(7)),
                     // DBNull.Value
                     "dbnull.value" | "system.dbnull.value" => return Ok(Value::Nothing),
+                    // DateTime static properties
+                    "datetime.now" | "system.datetime.now" => return Ok(Value::Date(now_ole())),
+                    "datetime.today" | "system.datetime.today" => return Ok(Value::Date(today_ole())),
+                    "datetime.utcnow" | "system.datetime.utcnow" => return Ok(Value::Date(utcnow_ole())),
+                    "datetime.minvalue" | "system.datetime.minvalue" => {
+                        return Ok(Value::Date(ymd_to_ole(1, 1, 1, 0, 0, 0)));
+                    }
+                    "datetime.maxvalue" | "system.datetime.maxvalue" => {
+                        return Ok(Value::Date(ymd_to_ole(9999, 12, 31, 23, 59, 59)));
+                    }
+                    // String static properties
+                    "string.empty" | "system.string.empty" => return Ok(Value::String(String::new())),
+                    // Int32/Double limits
+                    "integer.maxvalue" | "int32.maxvalue" | "system.int32.maxvalue" => return Ok(Value::Integer(i32::MAX)),
+                    "integer.minvalue" | "int32.minvalue" | "system.int32.minvalue" => return Ok(Value::Integer(i32::MIN)),
+                    "long.maxvalue" | "int64.maxvalue" | "system.int64.maxvalue" => return Ok(Value::Long(i64::MAX)),
+                    "long.minvalue" | "int64.minvalue" | "system.int64.minvalue" => return Ok(Value::Long(i64::MIN)),
+                    "double.maxvalue" | "system.double.maxvalue" => return Ok(Value::Double(f64::MAX)),
+                    "double.minvalue" | "system.double.minvalue" => return Ok(Value::Double(f64::MIN)),
+                    "double.nan" | "system.double.nan" => return Ok(Value::Double(f64::NAN)),
+                    "double.positiveinfinity" | "system.double.positiveinfinity" => return Ok(Value::Double(f64::INFINITY)),
+                    "double.negativeinfinity" | "system.double.negativeinfinity" => return Ok(Value::Double(f64::NEG_INFINITY)),
+                    "single.maxvalue" | "system.single.maxvalue" => return Ok(Value::Single(f32::MAX)),
+                    "single.minvalue" | "system.single.minvalue" => return Ok(Value::Single(f32::MIN)),
+                    // TimeSpan.Zero
+                    "timespan.zero" | "system.timespan.zero" => {
+                        let obj_data = crate::value::ObjectData {
+                            class_name: "TimeSpan".to_string(),
+                            fields: {
+                                let mut f = std::collections::HashMap::new();
+                                f.insert("days".to_string(), Value::Integer(0));
+                                f.insert("hours".to_string(), Value::Integer(0));
+                                f.insert("minutes".to_string(), Value::Integer(0));
+                                f.insert("seconds".to_string(), Value::Integer(0));
+                                f.insert("milliseconds".to_string(), Value::Integer(0));
+                                f.insert("totalseconds".to_string(), Value::Double(0.0));
+                                f.insert("totalmilliseconds".to_string(), Value::Double(0.0));
+                                f
+                            },
+                        };
+                        return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+                    }
                     _ => {}
                 }
 
@@ -2220,6 +2408,50 @@ impl Interpreter {
                     let m = member.as_str().to_lowercase();
                     if m == "length" {
                         return Ok(Value::Integer(s.len() as i32));
+                    }
+                }
+
+                // DateTime Properties (Year, Month, Day, etc.) — OLE f64
+                if let Value::Date(ole_val) = &obj_val {
+                    let ndt = ole_to_dt(*ole_val);
+                    use chrono::{Datelike, Timelike, NaiveDate};
+                    let m = member.as_str().to_lowercase();
+                    match m.as_str() {
+                        "year" => return Ok(Value::Integer(ndt.year())),
+                        "month" => return Ok(Value::Integer(ndt.month() as i32)),
+                        "day" => return Ok(Value::Integer(ndt.day() as i32)),
+                        "hour" => return Ok(Value::Integer(ndt.hour() as i32)),
+                        "minute" => return Ok(Value::Integer(ndt.minute() as i32)),
+                        "second" => return Ok(Value::Integer(ndt.second() as i32)),
+                        "millisecond" => return Ok(Value::Integer((ndt.nanosecond() / 1_000_000) as i32)),
+                        "dayofweek" => return Ok(Value::Integer(ndt.weekday().num_days_from_sunday() as i32)),
+                        "dayofyear" => return Ok(Value::Integer(ndt.ordinal() as i32)),
+                        "date" => {
+                            let d = ndt.date().and_hms_opt(0, 0, 0).unwrap();
+                            return Ok(Value::Date(date_to_ole(d)));
+                        }
+                        "timeofday" => {
+                            let total_seconds = (ndt.hour() as f64) * 3600.0 + (ndt.minute() as f64) * 60.0 + (ndt.second() as f64);
+                            let obj_data = crate::value::ObjectData {
+                                class_name: "TimeSpan".to_string(),
+                                fields: {
+                                    let mut f = std::collections::HashMap::new();
+                                    f.insert("hours".to_string(), Value::Integer(ndt.hour() as i32));
+                                    f.insert("minutes".to_string(), Value::Integer(ndt.minute() as i32));
+                                    f.insert("seconds".to_string(), Value::Integer(ndt.second() as i32));
+                                    f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                                    f.insert("totalmilliseconds".to_string(), Value::Double(total_seconds * 1000.0));
+                                    f
+                                },
+                            };
+                            return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+                        }
+                        "ticks" => {
+                            let epoch = NaiveDate::from_ymd_opt(1, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap();
+                            let diff = ndt.signed_duration_since(epoch);
+                            return Ok(Value::Long(diff.num_milliseconds() * 10_000));
+                        }
+                        _ => {}
                     }
                 }
 
@@ -3188,6 +3420,156 @@ impl Interpreter {
                         }
                         _ => {}
                     }
+                }
+            }
+
+            // Handle DateTime instance methods (Value::Date(f64) - OLE Automation Date)
+            if let Value::Date(ole_val) = &obj_val {
+                let arg_values: Result<Vec<Value>, RuntimeError> = args.iter()
+                    .map(|arg| self.evaluate_expr(arg))
+                    .collect();
+                let arg_values = arg_values?;
+                let ndt = ole_to_dt(*ole_val);
+                use chrono::{Datelike, Timelike, NaiveDate};
+                match method_name.as_str() {
+                    // Properties (accessed as methods with no args)
+                    "year" => return Ok(Value::Integer(ndt.year())),
+                    "month" => return Ok(Value::Integer(ndt.month() as i32)),
+                    "day" => return Ok(Value::Integer(ndt.day() as i32)),
+                    "hour" => return Ok(Value::Integer(ndt.hour() as i32)),
+                    "minute" => return Ok(Value::Integer(ndt.minute() as i32)),
+                    "second" => return Ok(Value::Integer(ndt.second() as i32)),
+                    "millisecond" => return Ok(Value::Integer((ndt.nanosecond() / 1_000_000) as i32)),
+                    "dayofweek" => return Ok(Value::Integer(ndt.weekday().num_days_from_sunday() as i32)),
+                    "dayofyear" => return Ok(Value::Integer(ndt.ordinal() as i32)),
+                    "date" => {
+                        let d = ndt.date().and_hms_opt(0, 0, 0).unwrap();
+                        return Ok(Value::Date(date_to_ole(d)));
+                    }
+                    "timeofday" => {
+                        let total_seconds = (ndt.hour() as f64) * 3600.0 + (ndt.minute() as f64) * 60.0 + (ndt.second() as f64);
+                        let obj_data = crate::value::ObjectData {
+                            class_name: "TimeSpan".to_string(),
+                            fields: {
+                                let mut f = std::collections::HashMap::new();
+                                f.insert("days".to_string(), Value::Integer(0));
+                                f.insert("hours".to_string(), Value::Integer(ndt.hour() as i32));
+                                f.insert("minutes".to_string(), Value::Integer(ndt.minute() as i32));
+                                f.insert("seconds".to_string(), Value::Integer(ndt.second() as i32));
+                                f.insert("milliseconds".to_string(), Value::Integer(0));
+                                f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                                f.insert("totalmilliseconds".to_string(), Value::Double(total_seconds * 1000.0));
+                                f.insert("totalminutes".to_string(), Value::Double(total_seconds / 60.0));
+                                f.insert("totalhours".to_string(), Value::Double(total_seconds / 3600.0));
+                                f.insert("totaldays".to_string(), Value::Double(total_seconds / 86400.0));
+                                f
+                            },
+                        };
+                        return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+                    }
+                    "ticks" => {
+                        let epoch = NaiveDate::from_ymd_opt(1, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap();
+                        let diff = ndt.signed_duration_since(epoch);
+                        let ticks = diff.num_milliseconds() * 10_000;
+                        return Ok(Value::Long(ticks));
+                    }
+                    // Add methods — manipulate OLE f64 directly where possible
+                    "adddays" => {
+                        let n = arg_values.get(0).map(|v| v.as_double().unwrap_or(0.0)).unwrap_or(0.0);
+                        return Ok(Value::Date(*ole_val + n));
+                    }
+                    "addhours" => {
+                        let n = arg_values.get(0).map(|v| v.as_double().unwrap_or(0.0)).unwrap_or(0.0);
+                        return Ok(Value::Date(*ole_val + n / 24.0));
+                    }
+                    "addminutes" => {
+                        let n = arg_values.get(0).map(|v| v.as_double().unwrap_or(0.0)).unwrap_or(0.0);
+                        return Ok(Value::Date(*ole_val + n / 1440.0));
+                    }
+                    "addseconds" => {
+                        let n = arg_values.get(0).map(|v| v.as_double().unwrap_or(0.0)).unwrap_or(0.0);
+                        return Ok(Value::Date(*ole_val + n / 86400.0));
+                    }
+                    "addmilliseconds" => {
+                        let n = arg_values.get(0).map(|v| v.as_double().unwrap_or(0.0)).unwrap_or(0.0);
+                        return Ok(Value::Date(*ole_val + n / 86400000.0));
+                    }
+                    "addmonths" => {
+                        let n = arg_values.get(0).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0);
+                        let total_months = (ndt.year() * 12 + ndt.month() as i32 - 1) + n;
+                        let new_year = total_months / 12;
+                        let new_month = (total_months % 12 + 1) as u32;
+                        let max_day = if new_month == 12 {
+                            31
+                        } else {
+                            match (NaiveDate::from_ymd_opt(new_year, new_month, 1), NaiveDate::from_ymd_opt(if new_month == 12 { new_year + 1 } else { new_year }, if new_month == 12 { 1 } else { new_month + 1 }, 1)) {
+                                (Some(a), Some(b)) => (b - a).num_days() as u32,
+                                _ => 30,
+                            }
+                        };
+                        let new_day = std::cmp::min(ndt.day(), max_day);
+                        let new_dt = NaiveDate::from_ymd_opt(new_year, new_month, new_day)
+                            .unwrap_or(ndt.date())
+                            .and_hms_opt(ndt.hour(), ndt.minute(), ndt.second())
+                            .unwrap_or(ndt);
+                        return Ok(Value::Date(date_to_ole(new_dt)));
+                    }
+                    "addyears" => {
+                        let n = arg_values.get(0).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0);
+                        let new_year = ndt.year() + n;
+                        let max_day = if ndt.month() == 2 && ndt.day() == 29 {
+                            if NaiveDate::from_ymd_opt(new_year, 2, 29).is_some() { 29 } else { 28 }
+                        } else {
+                            ndt.day()
+                        };
+                        let new_dt = NaiveDate::from_ymd_opt(new_year, ndt.month(), max_day)
+                            .unwrap_or(ndt.date())
+                            .and_hms_opt(ndt.hour(), ndt.minute(), ndt.second())
+                            .unwrap_or(ndt);
+                        return Ok(Value::Date(date_to_ole(new_dt)));
+                    }
+                    // Subtract — returns TimeSpan
+                    "subtract" => {
+                        if let Some(Value::Date(other_ole)) = arg_values.get(0) {
+                            let diff_days = *ole_val - *other_ole;
+                            let total_seconds = diff_days * 86400.0;
+                            let obj_data = crate::value::ObjectData {
+                                class_name: "TimeSpan".to_string(),
+                                fields: {
+                                    let mut f = std::collections::HashMap::new();
+                                    f.insert("days".to_string(), Value::Integer(diff_days.trunc() as i32));
+                                    f.insert("hours".to_string(), Value::Integer(((total_seconds % 86400.0) / 3600.0) as i32));
+                                    f.insert("minutes".to_string(), Value::Integer(((total_seconds % 3600.0) / 60.0) as i32));
+                                    f.insert("seconds".to_string(), Value::Integer((total_seconds % 60.0) as i32));
+                                    f.insert("milliseconds".to_string(), Value::Integer(((total_seconds * 1000.0) % 1000.0) as i32));
+                                    f.insert("totaldays".to_string(), Value::Double(diff_days));
+                                    f.insert("totalhours".to_string(), Value::Double(total_seconds / 3600.0));
+                                    f.insert("totalminutes".to_string(), Value::Double(total_seconds / 60.0));
+                                    f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                                    f.insert("totalmilliseconds".to_string(), Value::Double(total_seconds * 1000.0));
+                                    f
+                                },
+                            };
+                            return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+                        }
+                        return Err(RuntimeError::Custom("DateTime.Subtract requires a DateTime argument".to_string()));
+                    }
+                    // ToString with format
+                    "tostring" => {
+                        let fmt = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                        return Ok(Value::String(format_ole_date(*ole_val, &fmt)));
+                    }
+                    "toshortdatestring" => return Ok(Value::String(ole_to_dt(*ole_val).format("%m/%d/%Y").to_string())),
+                    "tolongdatestring" => return Ok(Value::String(ole_to_dt(*ole_val).format("%A, %B %d, %Y").to_string())),
+                    "toshorttimestring" => return Ok(Value::String(ole_to_dt(*ole_val).format("%H:%M").to_string())),
+                    "tolongtimestring" => return Ok(Value::String(ole_to_dt(*ole_val).format("%H:%M:%S").to_string())),
+                    "tofiletime" => {
+                        // File time = 100-nanosecond intervals since 1601-01-01
+                        let epoch_1601 = NaiveDate::from_ymd_opt(1601, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap();
+                        let diff = ndt.signed_duration_since(epoch_1601);
+                        return Ok(Value::Long(diff.num_milliseconds() * 10_000));
+                    }
+                    _ => {} // Fall through to other dispatch
                 }
             }
 
@@ -5460,6 +5842,8 @@ impl Interpreter {
 
                 if class_name_lower == "system.io.file" {
                     return self.dispatch_file_method(&method_name, &arg_values);
+                } else if class_name_lower == "system.io.directory" {
+                    return self.dispatch_directory_method(&method_name, &arg_values);
                 } else if class_name_lower == "system.io.path" {
                     return self.dispatch_path_method(&method_name, &arg_values);
                 } else if class_name_lower == "system.console" {
@@ -5499,12 +5883,33 @@ impl Interpreter {
                 return crate::builtins::cdate_fn(&arg_values);
             }
             "convert.toint32" | "convert.toint16" | "convert.toint64" => {
+                if arg_values.len() >= 2 {
+                    // Convert.ToInt32(value, base) — e.g. Convert.ToInt32("FF", 16)
+                    let val_str = arg_values[0].as_string();
+                    let base = arg_values[1].as_integer().unwrap_or(10);
+                    match i64::from_str_radix(val_str.trim().trim_start_matches("0x").trim_start_matches("0X").trim_start_matches("&H").trim_start_matches("&h"), base as u32) {
+                        Ok(n) => return Ok(Value::Integer(n as i32)),
+                        Err(_) => return Err(RuntimeError::Custom(format!("Convert.ToInt32: cannot convert '{}' with base {}", val_str, base))),
+                    }
+                }
                 return crate::builtins::cint_fn(&arg_values);
             }
             "convert.todouble" | "convert.tosingle" | "convert.todecimal" => {
                 return crate::builtins::cdbl_fn(&arg_values);
             }
             "convert.tostring" => {
+                if arg_values.len() >= 2 {
+                    // Convert.ToString(value, base) — e.g. Convert.ToString(255, 16)
+                    let val = arg_values[0].as_integer().unwrap_or(0) as i64;
+                    let base = arg_values[1].as_integer().unwrap_or(10);
+                    let result = match base {
+                        2 => format!("{:b}", val),
+                        8 => format!("{:o}", val),
+                        16 => format!("{:x}", val),
+                        _ => format!("{}", val),
+                    };
+                    return Ok(Value::String(result));
+                }
                 return crate::builtins::cstr_fn(&arg_values);
             }
             "convert.toboolean" => {
@@ -5682,6 +6087,465 @@ impl Interpreter {
                 fields.insert("__accumulated_ms".to_string(), Value::Long(0));
                 let obj = crate::value::ObjectData { class_name: "Stopwatch".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+            }
+
+            // ---- Thread.Sleep ----
+            "thread.sleep" | "system.threading.thread.sleep" => {
+                let ms = arg_values.get(0).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0);
+                std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
+                return Ok(Value::Nothing);
+            }
+
+            // ---- Process.Start ----
+            "process.start" | "system.diagnostics.process.start" => {
+                let file = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                let process_args = arg_values.get(1).map(|v| v.as_string()).unwrap_or_default();
+                let mut cmd = std::process::Command::new(&file);
+                if !process_args.is_empty() {
+                    // Split args by space (simple split)
+                    for a in process_args.split_whitespace() {
+                        cmd.arg(a);
+                    }
+                }
+                match cmd.spawn() {
+                    Ok(child) => {
+                        // Return a Process object with Id
+                        let mut fields = std::collections::HashMap::new();
+                        fields.insert("__type".to_string(), Value::String("Process".to_string()));
+                        fields.insert("id".to_string(), Value::Integer(child.id() as i32));
+                        fields.insert("hasexited".to_string(), Value::Boolean(false));
+                        let obj = crate::value::ObjectData { class_name: "Process".to_string(), fields };
+                        return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                    }
+                    Err(e) => return Err(RuntimeError::Custom(format!("Process.Start failed: {}", e))),
+                }
+            }
+
+            // ---- Debug.Write / Debug.WriteLine / Debug.Assert ----
+            "debug.write" | "system.diagnostics.debug.write" => {
+                let msg = arg_values.iter().map(|v| v.as_string()).collect::<Vec<_>>().join(" ");
+                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(msg));
+                return Ok(Value::Nothing);
+            }
+            "debug.writeline" | "system.diagnostics.debug.writeline" => {
+                let msg = arg_values.iter().map(|v| v.as_string()).collect::<Vec<_>>().join(" ");
+                self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(format!("{}\n", msg)));
+                return Ok(Value::Nothing);
+            }
+            "debug.assert" | "system.diagnostics.debug.assert" => {
+                let condition = arg_values.get(0).map(|v| v.is_truthy()).unwrap_or(true);
+                if !condition {
+                    let msg = arg_values.get(1).map(|v| v.as_string()).unwrap_or_else(|| "Debug.Assert failed".to_string());
+                    self.side_effects.push_back(crate::RuntimeSideEffect::ConsoleOutput(format!("ASSERT FAILED: {}\n", msg)));
+                }
+                return Ok(Value::Nothing);
+            }
+
+            // ---- String static methods ----
+            "string.format" | "system.string.format" => {
+                // String.Format("{0} is {1}", arg0, arg1)
+                let fmt = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                let mut result = fmt;
+                for (i, arg) in arg_values.iter().skip(1).enumerate() {
+                    result = result.replace(&format!("{{{}}}", i), &arg.as_string());
+                }
+                return Ok(Value::String(result));
+            }
+            "string.join" | "system.string.join" => {
+                // String.Join(separator, array_or_items...)
+                let sep = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                if let Some(Value::Array(arr)) = arg_values.get(1) {
+                    let joined = arr.iter().map(|v| v.as_string()).collect::<Vec<_>>().join(&sep);
+                    return Ok(Value::String(joined));
+                } else {
+                    // Join remaining args
+                    let joined = arg_values.iter().skip(1).map(|v| v.as_string()).collect::<Vec<_>>().join(&sep);
+                    return Ok(Value::String(joined));
+                }
+            }
+            "string.isnullorwhitespace" | "system.string.isnullorwhitespace" => {
+                let s = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
+                let is_empty = match &s {
+                    Value::Nothing => true,
+                    Value::String(st) => st.trim().is_empty(),
+                    _ => false,
+                };
+                return Ok(Value::Boolean(is_empty));
+            }
+            "string.concat" | "system.string.concat" => {
+                let result: String = arg_values.iter().map(|v| v.as_string()).collect();
+                return Ok(Value::String(result));
+            }
+            "string.compare" | "system.string.compare" => {
+                let a = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                let b = arg_values.get(1).map(|v| v.as_string()).unwrap_or_default();
+                let ignore_case = arg_values.get(2).map(|v| v.is_truthy()).unwrap_or(false);
+                let cmp = if ignore_case {
+                    a.to_lowercase().cmp(&b.to_lowercase())
+                } else {
+                    a.cmp(&b)
+                };
+                return Ok(Value::Integer(match cmp {
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }));
+            }
+            "string.empty" | "system.string.empty" => {
+                return Ok(Value::String(String::new()));
+            }
+            "string.isnullorempty" | "system.string.isnullorempty" => {
+                let s = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
+                let is_empty = match &s {
+                    Value::Nothing => true,
+                    Value::String(st) => st.is_empty(),
+                    _ => false,
+                };
+                return Ok(Value::Boolean(is_empty));
+            }
+
+            // ---- Type.Parse static methods ----
+            "integer.parse" | "int32.parse" | "system.int32.parse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                match s.trim().parse::<i32>() {
+                    Ok(n) => return Ok(Value::Integer(n)),
+                    Err(_) => return Err(RuntimeError::Custom(format!("Integer.Parse: '{}' is not a valid integer", s))),
+                }
+            }
+            "integer.tryparse" | "int32.tryparse" | "system.int32.tryparse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                return Ok(Value::Boolean(s.trim().parse::<i32>().is_ok()));
+            }
+            "long.parse" | "int64.parse" | "system.int64.parse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                match s.trim().parse::<i64>() {
+                    Ok(n) => return Ok(Value::Long(n)),
+                    Err(_) => return Err(RuntimeError::Custom(format!("Long.Parse: '{}' is not a valid long", s))),
+                }
+            }
+            "long.tryparse" | "int64.tryparse" | "system.int64.tryparse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                return Ok(Value::Boolean(s.trim().parse::<i64>().is_ok()));
+            }
+            "double.parse" | "system.double.parse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                match s.trim().parse::<f64>() {
+                    Ok(n) => return Ok(Value::Double(n)),
+                    Err(_) => return Err(RuntimeError::Custom(format!("Double.Parse: '{}' is not a valid double", s))),
+                }
+            }
+            "double.tryparse" | "system.double.tryparse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                return Ok(Value::Boolean(s.trim().parse::<f64>().is_ok()));
+            }
+            "single.parse" | "system.single.parse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                match s.trim().parse::<f32>() {
+                    Ok(n) => return Ok(Value::Single(n)),
+                    Err(_) => return Err(RuntimeError::Custom(format!("Single.Parse: '{}' is not a valid single", s))),
+                }
+            }
+            "decimal.parse" | "system.decimal.parse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                match s.trim().parse::<f64>() {
+                    Ok(n) => return Ok(Value::Double(n)),
+                    Err(_) => return Err(RuntimeError::Custom(format!("Decimal.Parse: '{}' is not a valid decimal", s))),
+                }
+            }
+            "boolean.parse" | "system.boolean.parse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                match s.trim().to_lowercase().as_str() {
+                    "true" => return Ok(Value::Boolean(true)),
+                    "false" => return Ok(Value::Boolean(false)),
+                    _ => return Err(RuntimeError::Custom(format!("Boolean.Parse: '{}' is not a valid Boolean", s))),
+                }
+            }
+
+            // ---- Array static methods ----
+            "array.sort" | "system.array.sort" => {
+                if let Some(Value::Array(arr)) = arg_values.get(0) {
+                    let mut sorted = arr.clone();
+                    sorted.sort_by(|a, b| a.as_string().cmp(&b.as_string()));
+                    return Ok(Value::Array(sorted));
+                }
+                return Err(RuntimeError::Custom("Array.Sort requires an array argument".to_string()));
+            }
+            "array.reverse" | "system.array.reverse" => {
+                if let Some(Value::Array(arr)) = arg_values.get(0) {
+                    let mut reversed = arr.clone();
+                    reversed.reverse();
+                    return Ok(Value::Array(reversed));
+                }
+                return Err(RuntimeError::Custom("Array.Reverse requires an array argument".to_string()));
+            }
+            "array.indexof" | "system.array.indexof" => {
+                if let Some(Value::Array(arr)) = arg_values.get(0) {
+                    let needle = arg_values.get(1).cloned().unwrap_or(Value::Nothing);
+                    let needle_str = needle.as_string();
+                    let idx = arr.iter().position(|v| v.as_string() == needle_str);
+                    return Ok(Value::Integer(idx.map(|i| i as i32).unwrap_or(-1)));
+                }
+                return Err(RuntimeError::Custom("Array.IndexOf requires an array argument".to_string()));
+            }
+            "array.find" | "system.array.find" => {
+                // Array.Find(array, predicate) — for now, just return Nothing as lambdas need special handling
+                // Try to execute lambda if provided
+                if let (Some(Value::Array(arr)), Some(lambda_val)) = (arg_values.get(0), arg_values.get(1)) {
+                    if matches!(lambda_val, Value::Lambda { .. }) {
+                        for item in arr {
+                            let result = self.call_lambda(lambda_val.clone(), &[item.clone()])?;
+                            if result.is_truthy() {
+                                return Ok(item.clone());
+                            }
+                        }
+                        return Ok(Value::Nothing);
+                    }
+                }
+                return Ok(Value::Nothing);
+            }
+            "array.findall" | "system.array.findall" => {
+                if let (Some(Value::Array(arr)), Some(lambda_val)) = (arg_values.get(0), arg_values.get(1)) {
+                    if matches!(lambda_val, Value::Lambda { .. }) {
+                        let mut results = Vec::new();
+                        for item in arr {
+                            let result = self.call_lambda(lambda_val.clone(), &[item.clone()])?;
+                            if result.is_truthy() {
+                                results.push(item.clone());
+                            }
+                        }
+                        return Ok(Value::Array(results));
+                    }
+                }
+                return Ok(Value::Array(Vec::new()));
+            }
+            "array.copy" | "system.array.copy" => {
+                // Array.Copy(source, dest, length) — returns new array with copied elements
+                if let Some(Value::Array(src)) = arg_values.get(0) {
+                    let len = arg_values.get(2).map(|v| v.as_integer().unwrap_or(src.len() as i32)).unwrap_or(src.len() as i32) as usize;
+                    let copied: Vec<Value> = src.iter().take(len).cloned().collect();
+                    return Ok(Value::Array(copied));
+                }
+                return Err(RuntimeError::Custom("Array.Copy requires a source array".to_string()));
+            }
+            "array.resize" | "system.array.resize" => {
+                // Array.Resize(ByRef array, newSize) — returns new array
+                if let Some(Value::Array(arr)) = arg_values.get(0) {
+                    let new_size = arg_values.get(1).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0) as usize;
+                    let mut resized = arr.clone();
+                    resized.resize(new_size, Value::Nothing);
+                    return Ok(Value::Array(resized));
+                }
+                return Err(RuntimeError::Custom("Array.Resize requires an array argument".to_string()));
+            }
+            "array.clear" | "system.array.clear" => {
+                // Array.Clear(array, index, length) — returns array with portion cleared
+                if let Some(Value::Array(arr)) = arg_values.get(0) {
+                    let start = arg_values.get(1).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0) as usize;
+                    let length = arg_values.get(2).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0) as usize;
+                    let mut cleared = arr.clone();
+                    for i in start..std::cmp::min(start + length, cleared.len()) {
+                        cleared[i] = Value::Nothing;
+                    }
+                    return Ok(Value::Array(cleared));
+                }
+                return Err(RuntimeError::Custom("Array.Clear requires an array argument".to_string()));
+            }
+            "array.exists" | "system.array.exists" => {
+                if let (Some(Value::Array(arr)), Some(lambda_val)) = (arg_values.get(0), arg_values.get(1)) {
+                    if matches!(lambda_val, Value::Lambda { .. }) {
+                        for item in arr {
+                            let result = self.call_lambda(lambda_val.clone(), &[item.clone()])?;
+                            if result.is_truthy() {
+                                return Ok(Value::Boolean(true));
+                            }
+                        }
+                    }
+                }
+                return Ok(Value::Boolean(false));
+            }
+
+            // ---- DateTime static methods ----
+            "datetime.now" | "system.datetime.now" => {
+                return Ok(Value::Date(now_ole()));
+            }
+            "datetime.today" | "system.datetime.today" => {
+                return Ok(Value::Date(today_ole()));
+            }
+            "datetime.utcnow" | "system.datetime.utcnow" => {
+                return Ok(Value::Date(utcnow_ole()));
+            }
+            "datetime.parse" | "system.datetime.parse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                match parse_date_to_ole(&s) {
+                    Some(ole) => return Ok(Value::Date(ole)),
+                    None => return Err(RuntimeError::Custom(format!("DateTime.Parse: cannot parse '{}'", s))),
+                }
+            }
+            "datetime.tryparse" | "system.datetime.tryparse" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                return Ok(Value::Boolean(parse_date_to_ole(&s).is_some()));
+            }
+            "datetime.daysinmonth" | "system.datetime.daysinmonth" => {
+                let year = arg_values.get(0).map(|v| v.as_integer().unwrap_or(2024)).unwrap_or(2024);
+                let month = arg_values.get(1).map(|v| v.as_integer().unwrap_or(1)).unwrap_or(1);
+                // Calculate days in month
+                let days = if month == 12 {
+                    31
+                } else {
+                    let d1 = chrono::NaiveDate::from_ymd_opt(year, month as u32, 1);
+                    let d2 = chrono::NaiveDate::from_ymd_opt(if month == 12 { year + 1 } else { year }, if month == 12 { 1 } else { (month + 1) as u32 }, 1);
+                    match (d1, d2) {
+                        (Some(a), Some(b)) => (b - a).num_days() as i32,
+                        _ => 30,
+                    }
+                };
+                return Ok(Value::Integer(days));
+            }
+            "datetime.isleapyear" | "system.datetime.isleapyear" => {
+                let year = arg_values.get(0).map(|v| v.as_integer().unwrap_or(2024)).unwrap_or(2024);
+                let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+                return Ok(Value::Boolean(leap));
+            }
+
+            // ---- TimeSpan additional factory methods ----
+            "timespan.frommilliseconds" => {
+                let ms = arg_values[0].as_double()?;
+                let total_seconds = ms / 1000.0;
+                let obj_data = crate::value::ObjectData {
+                    class_name: "TimeSpan".to_string(),
+                    fields: {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("days".to_string(), Value::Integer(0));
+                        f.insert("hours".to_string(), Value::Integer(0));
+                        f.insert("minutes".to_string(), Value::Integer(0));
+                        f.insert("seconds".to_string(), Value::Integer(0));
+                        f.insert("milliseconds".to_string(), Value::Integer(ms as i32));
+                        f.insert("totaldays".to_string(), Value::Double(total_seconds / 86400.0));
+                        f.insert("totalhours".to_string(), Value::Double(total_seconds / 3600.0));
+                        f.insert("totalminutes".to_string(), Value::Double(total_seconds / 60.0));
+                        f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                        f.insert("totalmilliseconds".to_string(), Value::Double(ms));
+                        f
+                    },
+                };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+            }
+            "timespan.fromticks" => {
+                let ticks = arg_values[0].as_double()?;
+                let ms = ticks / 10000.0;
+                let total_seconds = ms / 1000.0;
+                let obj_data = crate::value::ObjectData {
+                    class_name: "TimeSpan".to_string(),
+                    fields: {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("days".to_string(), Value::Integer(0));
+                        f.insert("hours".to_string(), Value::Integer(0));
+                        f.insert("minutes".to_string(), Value::Integer(0));
+                        f.insert("seconds".to_string(), Value::Integer(0));
+                        f.insert("milliseconds".to_string(), Value::Integer(ms as i32));
+                        f.insert("ticks".to_string(), Value::Long(ticks as i64));
+                        f.insert("totaldays".to_string(), Value::Double(total_seconds / 86400.0));
+                        f.insert("totalhours".to_string(), Value::Double(total_seconds / 3600.0));
+                        f.insert("totalminutes".to_string(), Value::Double(total_seconds / 60.0));
+                        f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                        f.insert("totalmilliseconds".to_string(), Value::Double(ms));
+                        f
+                    },
+                };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+            }
+            "timespan.parse" | "system.timespan.parse" => {
+                // Parse "hh:mm:ss" or "d.hh:mm:ss" format
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                let parts: Vec<&str> = s.split(':').collect();
+                let (hours, minutes, seconds) = match parts.len() {
+                    3 => {
+                        let h: f64 = parts[0].parse().unwrap_or(0.0);
+                        let m: f64 = parts[1].parse().unwrap_or(0.0);
+                        let sec: f64 = parts[2].parse().unwrap_or(0.0);
+                        (h, m, sec)
+                    }
+                    2 => {
+                        let m: f64 = parts[0].parse().unwrap_or(0.0);
+                        let sec: f64 = parts[1].parse().unwrap_or(0.0);
+                        (0.0, m, sec)
+                    }
+                    _ => (0.0, 0.0, 0.0),
+                };
+                let total_seconds = hours * 3600.0 + minutes * 60.0 + seconds;
+                let obj_data = crate::value::ObjectData {
+                    class_name: "TimeSpan".to_string(),
+                    fields: {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("days".to_string(), Value::Integer((total_seconds / 86400.0) as i32));
+                        f.insert("hours".to_string(), Value::Integer(hours as i32));
+                        f.insert("minutes".to_string(), Value::Integer(minutes as i32));
+                        f.insert("seconds".to_string(), Value::Integer(seconds as i32));
+                        f.insert("milliseconds".to_string(), Value::Integer(0));
+                        f.insert("totaldays".to_string(), Value::Double(total_seconds / 86400.0));
+                        f.insert("totalhours".to_string(), Value::Double(total_seconds / 3600.0));
+                        f.insert("totalminutes".to_string(), Value::Double(total_seconds / 60.0));
+                        f.insert("totalseconds".to_string(), Value::Double(total_seconds));
+                        f.insert("totalmilliseconds".to_string(), Value::Double(total_seconds * 1000.0));
+                        f
+                    },
+                };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+            }
+            "timespan.zero" | "system.timespan.zero" => {
+                let obj_data = crate::value::ObjectData {
+                    class_name: "TimeSpan".to_string(),
+                    fields: {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("days".to_string(), Value::Integer(0));
+                        f.insert("hours".to_string(), Value::Integer(0));
+                        f.insert("minutes".to_string(), Value::Integer(0));
+                        f.insert("seconds".to_string(), Value::Integer(0));
+                        f.insert("milliseconds".to_string(), Value::Integer(0));
+                        f.insert("totaldays".to_string(), Value::Double(0.0));
+                        f.insert("totalhours".to_string(), Value::Double(0.0));
+                        f.insert("totalminutes".to_string(), Value::Double(0.0));
+                        f.insert("totalseconds".to_string(), Value::Double(0.0));
+                        f.insert("totalmilliseconds".to_string(), Value::Double(0.0));
+                        f
+                    },
+                };
+                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
+            }
+
+            // ---- Uri class ----
+            "uri.iswell formeduristring" | "uri.iswellformeduristring" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                let is_valid = s.starts_with("http://") || s.starts_with("https://") || s.starts_with("ftp://") || s.starts_with("file://");
+                return Ok(Value::Boolean(is_valid));
+            }
+            "uri.escapedatastring" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                let encoded: String = s.chars().map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
+                        c.to_string()
+                    } else {
+                        format!("%{:02X}", c as u32)
+                    }
+                }).collect();
+                return Ok(Value::String(encoded));
+            }
+            "uri.unescapedatastring" => {
+                let s = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                // Simple percent-decode
+                let mut result = String::new();
+                let mut chars = s.chars();
+                while let Some(c) = chars.next() {
+                    if c == '%' {
+                        let hex: String = chars.by_ref().take(2).collect();
+                        if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                            result.push(byte as char);
+                        }
+                    } else {
+                        result.push(c);
+                    }
+                }
+                return Ok(Value::String(result));
             }
 
             // ---- Console.ReadKey ----
@@ -5951,7 +6815,7 @@ impl Interpreter {
                 } else if qualified_call_name.starts_with("file.") || qualified_call_name.starts_with("system.io.file.") {
                     return self.dispatch_file_method(&method_name, &arg_values);
                 } else if qualified_call_name.starts_with("directory.") || qualified_call_name.starts_with("system.io.directory.") {
-                    return self.dispatch_file_method(&method_name, &arg_values);
+                    return self.dispatch_directory_method(&method_name, &arg_values);
                 }
             }
         }
@@ -6742,7 +7606,147 @@ impl Interpreter {
                  std::fs::rename(&src, &dest).map_err(|e| RuntimeError::Custom(format!("Error moving file: {}", e)))?;
                  Ok(Value::Nothing)
             }
+            "readalllines" => {
+                 let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                 let content = std::fs::read_to_string(&path).map_err(|e| RuntimeError::Custom(format!("Error reading file: {}", e)))?;
+                 let lines: Vec<Value> = content.lines().map(|l| Value::String(l.to_string())).collect();
+                 Ok(Value::Array(lines))
+            }
+            "writealllines" => {
+                 let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                 let lines = match args.get(1) {
+                     Some(Value::Array(arr)) => arr.iter().map(|v| v.as_string()).collect::<Vec<_>>().join("\n"),
+                     _ => return Err(RuntimeError::Custom("WriteAllLines requires an array argument".to_string())),
+                 };
+                 std::fs::write(&path, lines).map_err(|e| RuntimeError::Custom(format!("Error writing file: {}", e)))?;
+                 Ok(Value::Nothing)
+            }
+            "readallbytes" => {
+                 let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                 let bytes = std::fs::read(&path).map_err(|e| RuntimeError::Custom(format!("Error reading file: {}", e)))?;
+                 let arr: Vec<Value> = bytes.into_iter().map(|b| Value::Byte(b)).collect();
+                 Ok(Value::Array(arr))
+            }
+            "writeallbytes" => {
+                 let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                 let bytes: Vec<u8> = match args.get(1) {
+                     Some(Value::Array(arr)) => arr.iter().map(|v| match v {
+                         Value::Byte(b) => *b,
+                         Value::Integer(i) => *i as u8,
+                         _ => 0u8,
+                     }).collect(),
+                     _ => return Err(RuntimeError::Custom("WriteAllBytes requires a byte array argument".to_string())),
+                 };
+                 std::fs::write(&path, &bytes).map_err(|e| RuntimeError::Custom(format!("Error writing file: {}", e)))?;
+                 Ok(Value::Nothing)
+            }
+            "getlastwritetime" => {
+                 let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                 let meta = std::fs::metadata(&path).map_err(|e| RuntimeError::Custom(format!("Error accessing file: {}", e)))?;
+                 let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                 let secs = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                 let ndt = chrono::NaiveDateTime::from_timestamp_opt(secs, 0).unwrap_or_default();
+                 Ok(Value::Date(date_to_ole(ndt)))
+            }
+            "getcreationtime" => {
+                 let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                 let meta = std::fs::metadata(&path).map_err(|e| RuntimeError::Custom(format!("Error accessing file: {}", e)))?;
+                 let created = meta.created().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                 let secs = created.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                 let ndt = chrono::NaiveDateTime::from_timestamp_opt(secs, 0).unwrap_or_default();
+                 Ok(Value::Date(date_to_ole(ndt)))
+            }
             _ => Err(RuntimeError::UndefinedFunction(format!("System.IO.File.{}", method_name)))
+        }
+    }
+
+    fn dispatch_directory_method(&mut self, method_name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+        match method_name.to_lowercase().as_str() {
+            "exists" => {
+                let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                Ok(Value::Boolean(std::path::Path::new(&path).is_dir()))
+            }
+            "createdirectory" => {
+                let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                std::fs::create_dir_all(&path).map_err(|e| RuntimeError::Custom(format!("Directory.CreateDirectory: {}", e)))?;
+                Ok(Value::Nothing)
+            }
+            "delete" => {
+                let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                let recursive = args.get(1).map(|v| v.is_truthy()).unwrap_or(false);
+                if recursive {
+                    std::fs::remove_dir_all(&path).map_err(|e| RuntimeError::Custom(format!("Directory.Delete: {}", e)))?;
+                } else {
+                    std::fs::remove_dir(&path).map_err(|e| RuntimeError::Custom(format!("Directory.Delete: {}", e)))?;
+                }
+                Ok(Value::Nothing)
+            }
+            "getfiles" => {
+                let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                let pattern = args.get(1).map(|v| v.as_string()).unwrap_or_default();
+                match std::fs::read_dir(&path) {
+                    Ok(entries) => {
+                        let files: Vec<Value> = entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.path().is_file())
+                            .filter(|e| {
+                                if pattern.is_empty() { return true; }
+                                let name = e.file_name().to_string_lossy().to_lowercase();
+                                let pat = pattern.replace("*.", ".").to_lowercase();
+                                name.ends_with(&pat)
+                            })
+                            .map(|e| Value::String(e.path().to_string_lossy().to_string()))
+                            .collect();
+                        Ok(Value::Array(files))
+                    }
+                    Err(e) => Err(RuntimeError::Custom(format!("Directory.GetFiles: {}", e))),
+                }
+            }
+            "getdirectories" => {
+                let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                match std::fs::read_dir(&path) {
+                    Ok(entries) => {
+                        let dirs: Vec<Value> = entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.path().is_dir())
+                            .map(|e| Value::String(e.path().to_string_lossy().to_string()))
+                            .collect();
+                        Ok(Value::Array(dirs))
+                    }
+                    Err(e) => Err(RuntimeError::Custom(format!("Directory.GetDirectories: {}", e))),
+                }
+            }
+            "getcurrentdirectory" => {
+                let cwd = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
+                Ok(Value::String(cwd))
+            }
+            "setcurrentdirectory" => {
+                let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                std::env::set_current_dir(&path).map_err(|e| RuntimeError::Custom(format!("Directory.SetCurrentDirectory: {}", e)))?;
+                Ok(Value::Nothing)
+            }
+            "move" => {
+                let src = args.get(0).ok_or(RuntimeError::Custom("Missing source argument".to_string()))?.as_string();
+                let dest = args.get(1).ok_or(RuntimeError::Custom("Missing destination argument".to_string()))?.as_string();
+                std::fs::rename(&src, &dest).map_err(|e| RuntimeError::Custom(format!("Directory.Move: {}", e)))?;
+                Ok(Value::Nothing)
+            }
+            "getparent" => {
+                let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                let parent = std::path::Path::new(&path).parent().unwrap_or(std::path::Path::new("")).to_string_lossy().to_string();
+                Ok(Value::String(parent))
+            }
+            "getdirectoryroot" => {
+                let path = args.get(0).ok_or(RuntimeError::Custom("Missing path argument".to_string()))?.as_string();
+                // On Unix, root is always "/"; on Windows it's "C:\"
+                let root = if cfg!(target_os = "windows") {
+                    path.get(..3).unwrap_or("C:\\").to_string()
+                } else {
+                    "/".to_string()
+                };
+                Ok(Value::String(root))
+            }
+            _ => Err(RuntimeError::UndefinedFunction(format!("System.IO.Directory.{}", method_name)))
         }
     }
 
@@ -6843,7 +7847,11 @@ impl Interpreter {
             "min" => crate::builtins::math_fns::min_fn(args),
             "sqrt" | "sqr" => crate::builtins::math_fns::sqr_fn(args),
             "round" => crate::builtins::math_fns::round_fn(args),
-            "floor" | "truncate" => crate::builtins::math_fns::floor_fn(args),
+            "floor" => crate::builtins::math_fns::floor_fn(args),
+            "truncate" => {
+                let val = args.get(0).ok_or(RuntimeError::Custom("Math.Truncate requires an argument".to_string()))?.as_double()?;
+                Ok(Value::Double(val.trunc()))
+            }
             "ceiling" => crate::builtins::math_fns::ceiling_fn(args),
             "pow" => crate::builtins::math_fns::pow_fn(args),
             "exp" => crate::builtins::math_fns::exp_fn(args),
@@ -6958,6 +7966,85 @@ fn default_value_for_type(_name: &str, var_type: &Option<irys_parser::VBType>) -
         Some(irys_parser::VBType::Variant) => Value::Nothing,
         _ => Value::Nothing,
     }
+}
+
+// ===== OLE Automation Date helpers =====
+// OLE Automation Date: f64 representing days since 1899-12-30
+// Integer part = days, fractional part = time of day
+
+fn date_to_ole(dt: chrono::NaiveDateTime) -> f64 {
+    let base = chrono::NaiveDate::from_ymd_opt(1899, 12, 30).unwrap().and_hms_opt(0, 0, 0).unwrap();
+    let dur = dt.signed_duration_since(base);
+    let days = dur.num_days() as f64;
+    let secs = (dur.num_seconds() % 86400) as f64;
+    days + (secs / 86400.0)
+}
+
+fn ole_to_dt(ole: f64) -> chrono::NaiveDateTime {
+    let base = chrono::NaiveDate::from_ymd_opt(1899, 12, 30).unwrap().and_hms_opt(0, 0, 0).unwrap();
+    let days = ole.trunc() as i64;
+    let frac = ole.fract();
+    let secs = (frac * 86400.0).round() as i64;
+    base.checked_add_signed(chrono::Duration::days(days))
+        .and_then(|d| d.checked_add_signed(chrono::Duration::seconds(secs)))
+        .unwrap_or(base)
+}
+
+fn ymd_to_ole(y: i32, m: u32, d: u32, h: u32, min: u32, s: u32) -> f64 {
+    let dt = chrono::NaiveDate::from_ymd_opt(y, m, d)
+        .and_then(|date| date.and_hms_opt(h, min, s))
+        .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap());
+    date_to_ole(dt)
+}
+
+fn now_ole() -> f64 {
+    date_to_ole(chrono::Local::now().naive_local())
+}
+
+fn today_ole() -> f64 {
+    let now = chrono::Local::now().naive_local();
+    let today = now.date().and_hms_opt(0, 0, 0).unwrap();
+    date_to_ole(today)
+}
+
+fn utcnow_ole() -> f64 {
+    date_to_ole(chrono::Utc::now().naive_utc())
+}
+
+fn parse_date_to_ole(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let formats = [
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M", "%Y-%m-%d %H:%M", "%m/%d/%Y", "%Y-%m-%d",
+        "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%dT%H:%M:%S%.f", "%m/%d/%Y %I:%M:%S %p",
+    ];
+    for fmt in &formats {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(date_to_ole(dt));
+        }
+    }
+    for fmt in &["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"] {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, fmt) {
+            return Some(date_to_ole(d.and_hms_opt(0, 0, 0).unwrap()));
+        }
+    }
+    None
+}
+
+fn format_ole_date(ole: f64, fmt: &str) -> String {
+    let dt = ole_to_dt(ole);
+    if fmt.is_empty() {
+        return dt.format("%m/%d/%Y %H:%M:%S").to_string();
+    }
+    // Convert .NET format strings to chrono format
+    let chrono_fmt = fmt
+        .replace("yyyy", "%Y").replace("yy", "%y")
+        .replace("MMMM", "%B").replace("MMM", "%b").replace("MM", "%m")
+        .replace("dddd", "%A").replace("ddd", "%a").replace("dd", "%d")
+        .replace("HH", "%H").replace("hh", "%I")
+        .replace("mm", "%M").replace("ss", "%S")
+        .replace("tt", "%p").replace("fff", "%3f");
+    dt.format(&chrono_fmt).to_string()
 }
 
 // Helper: get a folder path with env var fallback

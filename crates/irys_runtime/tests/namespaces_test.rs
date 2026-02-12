@@ -28,8 +28,10 @@ fn test_namespaces_execution() {
 
     // Check side effects
     while let Some(effect) = interpreter.side_effects.pop_front() {
-        if let irys_runtime::RuntimeSideEffect::MsgBox(msg) = effect {
-            outputs.push(msg);
+        match effect {
+            irys_runtime::RuntimeSideEffect::MsgBox(msg) => outputs.push(msg),
+            irys_runtime::RuntimeSideEffect::ConsoleOutput(msg) => outputs.push(msg),
+            _ => {}
         }
     }
 
@@ -37,9 +39,9 @@ fn test_namespaces_execution() {
     let output_str = outputs.join("\n");
     println!("Interpreter Output:\n{}", output_str);
 
-    assert!(output_str.contains("[Console] Hello from System.Console"));
-    assert!(output_str.contains("[Console] Max(10, 20) = 20"));
-    assert!(output_str.contains("[Console] Sqrt(16) = 4"));
-    assert!(output_str.contains("[Console] myMath.Min(10, 20) = 10"));
-    assert!(output_str.contains("[Console] Hello from myConsole"));
+    assert!(output_str.contains("Hello from System.Console"));
+    assert!(output_str.contains("Max(10, 20) = 20"));
+    assert!(output_str.contains("Sqrt(16) = 4"));
+    assert!(output_str.contains("myMath.Min(10, 20) = 10"));
+    assert!(output_str.contains("Hello from myConsole"));
 }
