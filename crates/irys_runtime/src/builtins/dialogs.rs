@@ -205,38 +205,51 @@ pub fn dialog_showdialog(dialog: &Value) -> Result<Value, RuntimeError> {
                         .map(|v| v.as_string().to_string())
                         .unwrap_or_default();
                     
-                    let mut dialog = rfd::FileDialog::new().set_title(&title);
-                    
-                    if !initial_dir.is_empty() {
-                        dialog = dialog.set_directory(&initial_dir);
+                    #[cfg(target_os = "macos")]
+                    {
+                        if let Some(path) = show_native_open_file_dialog(&title, &filter, &initial_dir) {
+                            obj_ref.borrow_mut().fields.insert("FileName".to_string(), 
+                                Value::String(path));
+                            return Ok(Value::Integer(1));
+                        }
+                        return Ok(Value::Integer(2));
                     }
-                    
-                    // Parse filter: "Text Files|*.txt|All Files|*.*"
-                    if !filter.is_empty() {
-                        let parts: Vec<&str> = filter.split('|').collect();
-                        for i in (0..parts.len()).step_by(2) {
-                            if i + 1 < parts.len() {
-                                let name = parts[i];
-                                let pattern = parts[i + 1];
-                                let exts: Vec<&str> = pattern.split(';')
-                                    .map(|p| p.trim().trim_start_matches("*.").trim_start_matches('*'))
-                                    .filter(|e| !e.is_empty() && *e != ".*")
-                                    .collect();
-                                if !exts.is_empty() {
-                                    dialog = dialog.add_filter(name, &exts);
+
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let mut dialog = rfd::FileDialog::new().set_title(&title);
+                        
+                        if !initial_dir.is_empty() {
+                            dialog = dialog.set_directory(&initial_dir);
+                        }
+                        
+                        // Parse filter: "Text Files|*.txt|All Files|*.*"
+                        if !filter.is_empty() {
+                            let parts: Vec<&str> = filter.split('|').collect();
+                            for i in (0..parts.len()).step_by(2) {
+                                if i + 1 < parts.len() {
+                                    let name = parts[i];
+                                    let pattern = parts[i + 1];
+                                    let exts: Vec<&str> = pattern.split(';')
+                                        .map(|p| p.trim().trim_start_matches("*.").trim_start_matches('*'))
+                                        .filter(|e| !e.is_empty() && *e != ".*")
+                                        .collect();
+                                    if !exts.is_empty() {
+                                        dialog = dialog.add_filter(name, &exts);
+                                    }
                                 }
                             }
                         }
+                        
+                        if let Some(path) = dialog.pick_file() {
+                            obj_ref.borrow_mut().fields.insert("FileName".to_string(), 
+                                Value::String(path.to_string_lossy().to_string()));
+                            // DialogResult.OK = 1
+                            return Ok(Value::Integer(1));
+                        }
+                        // DialogResult.Cancel = 2
+                        Ok(Value::Integer(2))
                     }
-                    
-                    if let Some(path) = dialog.pick_file() {
-                        obj_ref.borrow_mut().fields.insert("FileName".to_string(), 
-                            Value::String(path.to_string_lossy().to_string()));
-                        // DialogResult.OK = 1
-                        return Ok(Value::Integer(1));
-                    }
-                    // DialogResult.Cancel = 2
-                    Ok(Value::Integer(2))
                 }
                 
                 "SaveFileDialog" => {
@@ -253,42 +266,55 @@ pub fn dialog_showdialog(dialog: &Value) -> Result<Value, RuntimeError> {
                         .map(|v| v.as_string().to_string())
                         .unwrap_or_default();
                     
-                    let mut dialog = rfd::FileDialog::new().set_title(&title);
-                    
-                    if !initial_dir.is_empty() {
-                        dialog = dialog.set_directory(&initial_dir);
+                    #[cfg(target_os = "macos")]
+                    {
+                        if let Some(path) = show_native_save_file_dialog(&title, &filter, &initial_dir, &file_name) {
+                            obj_ref.borrow_mut().fields.insert("FileName".to_string(), 
+                                Value::String(path));
+                            return Ok(Value::Integer(1));
+                        }
+                        return Ok(Value::Integer(2));
                     }
-                    
-                    if !file_name.is_empty() {
-                        dialog = dialog.set_file_name(&file_name);
-                    }
-                    
-                    // Parse filter
-                    if !filter.is_empty() {
-                        let parts: Vec<&str> = filter.split('|').collect();
-                        for i in (0..parts.len()).step_by(2) {
-                            if i + 1 < parts.len() {
-                                let name = parts[i];
-                                let pattern = parts[i + 1];
-                                let exts: Vec<&str> = pattern.split(';')
-                                    .map(|p| p.trim().trim_start_matches("*.").trim_start_matches('*'))
-                                    .filter(|e| !e.is_empty() && *e != ".*")
-                                    .collect();
-                                if !exts.is_empty() {
-                                    dialog = dialog.add_filter(name, &exts);
+
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let mut dialog = rfd::FileDialog::new().set_title(&title);
+                        
+                        if !initial_dir.is_empty() {
+                            dialog = dialog.set_directory(&initial_dir);
+                        }
+                        
+                        if !file_name.is_empty() {
+                            dialog = dialog.set_file_name(&file_name);
+                        }
+                        
+                        // Parse filter
+                        if !filter.is_empty() {
+                            let parts: Vec<&str> = filter.split('|').collect();
+                            for i in (0..parts.len()).step_by(2) {
+                                if i + 1 < parts.len() {
+                                    let name = parts[i];
+                                    let pattern = parts[i + 1];
+                                    let exts: Vec<&str> = pattern.split(';')
+                                        .map(|p| p.trim().trim_start_matches("*.").trim_start_matches('*'))
+                                        .filter(|e| !e.is_empty() && *e != ".*")
+                                        .collect();
+                                    if !exts.is_empty() {
+                                        dialog = dialog.add_filter(name, &exts);
+                                    }
                                 }
                             }
                         }
+                        
+                        if let Some(path) = dialog.save_file() {
+                            obj_ref.borrow_mut().fields.insert("FileName".to_string(), 
+                                Value::String(path.to_string_lossy().to_string()));
+                            // DialogResult.OK = 1
+                            return Ok(Value::Integer(1));
+                        }
+                        // DialogResult.Cancel = 2
+                        Ok(Value::Integer(2))
                     }
-                    
-                    if let Some(path) = dialog.save_file() {
-                        obj_ref.borrow_mut().fields.insert("FileName".to_string(), 
-                            Value::String(path.to_string_lossy().to_string()));
-                        // DialogResult.OK = 1
-                        return Ok(Value::Integer(1));
-                    }
-                    // DialogResult.Cancel = 2
-                    Ok(Value::Integer(2))
                 }
                 
                 "FolderBrowserDialog" => {
@@ -299,18 +325,31 @@ pub fn dialog_showdialog(dialog: &Value) -> Result<Value, RuntimeError> {
                         .map(|v| v.as_string().to_string())
                         .unwrap_or_default();
                     
-                    let mut dialog = rfd::FileDialog::new().set_title(&description);
-                    
-                    if !initial_dir.is_empty() {
-                        dialog = dialog.set_directory(&initial_dir);
+                    #[cfg(target_os = "macos")]
+                    {
+                        if let Some(path) = show_native_folder_browser_dialog(&description, &initial_dir) {
+                            obj_ref.borrow_mut().fields.insert("SelectedPath".to_string(), 
+                                Value::String(path));
+                            return Ok(Value::Integer(1));
+                        }
+                        return Ok(Value::Integer(2));
                     }
-                    
-                    if let Some(path) = dialog.pick_folder() {
-                        obj_ref.borrow_mut().fields.insert("SelectedPath".to_string(), 
-                            Value::String(path.to_string_lossy().to_string()));
-                        return Ok(Value::Integer(1));
+
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let mut dialog = rfd::FileDialog::new().set_title(&description);
+                        
+                        if !initial_dir.is_empty() {
+                            dialog = dialog.set_directory(&initial_dir);
+                        }
+                        
+                        if let Some(path) = dialog.pick_folder() {
+                            obj_ref.borrow_mut().fields.insert("SelectedPath".to_string(), 
+                                Value::String(path.to_string_lossy().to_string()));
+                            return Ok(Value::Integer(1));
+                        }
+                        Ok(Value::Integer(2))
                     }
-                    Ok(Value::Integer(2))
                 }
                 
                 "ColorDialog" => {
@@ -565,4 +604,85 @@ fn parse_font_string(font_str: &str) -> Option<(String, f64)> {
         }
     }
     None
+}
+
+/// Show native macOS open file dialog and return selected path
+#[cfg(target_os = "macos")]
+fn show_native_open_file_dialog(title: &str, _filter: &str, initial_dir: &str) -> Option<String> {
+    use std::process::Command;
+    
+    let mut script = format!("choose file with prompt \"{}\"", title);
+    
+    if !initial_dir.is_empty() {
+        script.push_str(&format!(" default location POSIX file \"{}\"", initial_dir));
+    }
+    
+    match Command::new("osascript").arg("-e").arg(&script).output() {
+        Ok(output) if output.status.success() => {
+            let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            parse_applescript_path(&result)
+        }
+        _ => None,
+    }
+}
+
+/// Show native macOS save file dialog and return selected path
+#[cfg(target_os = "macos")]
+fn show_native_save_file_dialog(title: &str, _filter: &str, initial_dir: &str, default_name: &str) -> Option<String> {
+    use std::process::Command;
+    
+    let mut script = format!("choose file name with prompt \"{}\"", title);
+    
+    if !default_name.is_empty() {
+        script.push_str(&format!(" default name \"{}\"", default_name));
+    }
+    
+    if !initial_dir.is_empty() {
+        script.push_str(&format!(" default location POSIX file \"{}\"", initial_dir));
+    }
+    
+    match Command::new("osascript").arg("-e").arg(&script).output() {
+        Ok(output) if output.status.success() => {
+            let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            parse_applescript_path(&result)
+        }
+        _ => None,
+    }
+}
+
+/// Show native macOS folder browser dialog and return selected path
+#[cfg(target_os = "macos")]
+fn show_native_folder_browser_dialog(description: &str, initial_dir: &str) -> Option<String> {
+    use std::process::Command;
+    
+    let mut script = format!("choose folder with prompt \"{}\"", description);
+    
+    if !initial_dir.is_empty() {
+        script.push_str(&format!(" default location POSIX file \"{}\"", initial_dir));
+    }
+    
+    match Command::new("osascript").arg("-e").arg(&script).output() {
+        Ok(output) if output.status.success() => {
+            let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            parse_applescript_path(&result)
+        }
+        _ => None,
+    }
+}
+
+/// Helper to convert AppleScript path (alias ...) to POSIX path
+#[cfg(target_os = "macos")]
+fn parse_applescript_path(as_path: &str) -> Option<String> {
+    use std::process::Command;
+    
+    // as_path is like "alias Macintosh HD:Users:youness:file.txt"
+    // We use another osascript to convert it to POSIX path
+    let script = format!("POSIX path of {}", as_path);
+    
+    match Command::new("osascript").arg("-e").arg(&script).output() {
+        Ok(output) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+        _ => None,
+    }
 }
