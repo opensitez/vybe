@@ -20,14 +20,14 @@ Module Program
         ' --- 3. WebClient with Headers ---
         Console.WriteLine("--- WebClient with Headers ---")
         Dim client2 As New WebClient()
-        client2.Headers.Add("X-Custom-Header", "IrysTest")
+        client2.Headers.Add("X-Custom-Header", "vybeTest")
         client2.Headers.Add("Accept", "application/json")
         Dim headerResult As String = client2.DownloadString("https://httpbin.org/headers")
         Console.WriteLine(headerResult)
 
         ' --- 4. WebClient.UploadString (POST) ---
         Console.WriteLine("--- WebClient.UploadString ---")
-        Dim postData As String = "{""name"":""irys""}"
+        Dim postData As String = "{""name"":""vybe""}"
         Dim postResult As String = client.UploadString("https://httpbin.org/post", postData)
         Console.WriteLine("POST response length: " & postResult.Length)
 

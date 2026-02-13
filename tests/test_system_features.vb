@@ -58,9 +58,9 @@ Module TestSystemFeatures
         Dim nl As String = Environment.NewLine
         Console.WriteLine("NewLine length: " & nl.Length.ToString())
 
-        Environment.SetEnvironmentVariable("IRYS_TEST_VAR", "hello_irys")
-        Dim tv As String = Environment.GetEnvironmentVariable("IRYS_TEST_VAR")
-        Console.WriteLine("GetEnvVar(IRYS_TEST_VAR): " & tv)
+        Environment.SetEnvironmentVariable("vybe_TEST_VAR", "hello_vybe")
+        Dim tv As String = Environment.GetEnvironmentVariable("vybe_TEST_VAR")
+        Console.WriteLine("GetEnvVar(vybe_TEST_VAR): " & tv)
 
         Dim desktop As String = Environment.GetFolderPath(0)
         Console.WriteLine("GetFolderPath(Desktop): " & desktop)
@@ -133,7 +133,7 @@ Module TestSystemFeatures
 
         ' ---- StreamReader / StreamWriter ----
         Console.WriteLine("--- StreamReader / StreamWriter ---")
-        Dim testFile As String = "/tmp/irys_stream_test.txt"
+        Dim testFile As String = "/tmp/vybe_stream_test.txt"
         Dim writer As New StreamWriter(testFile)
         writer.WriteLine("Line one")
         writer.WriteLine("Line two")

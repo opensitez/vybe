@@ -1,0 +1,547 @@
+// vybe Grammar for pest parser
+// Case-insensitive parsing
+
+WHITESPACE = _{ " " | "\t" | line_continuation }
+COMMENT = _{ ("'" | (^"REM" ~ !(ASCII_ALPHANUMERIC | "_"))) ~ (!NEWLINE ~ ANY)* }
+NEWLINE = { "\r\n" | "\n" | "\r" }
+
+// Line continuation: underscore at end of line joins the next line
+// Must NOT match identifiers containing "_" — only matches "_" followed by optional whitespace and newline
+line_continuation = _{ "_" ~ (" " | "\t")* ~ ("\r\n" | "\n" | "\r") }
+
+// Program structure
+program = { SOI ~ line* ~ EOI }
+line = _{ imports_statement | statement_line | attribute_line | NEWLINE | COMMENT }
+statement_line = {
+    (
+        (sub_decl | function_decl)
+        | (statement ~ (":" ~ statement)*)
+    ) ~ (NEWLINE | EOI)
+}
+
+// Attributes: <Extension()> is captured; all other attributes are silently consumed
+extension_attribute = { "<" ~ (^"Runtime.CompilerServices.")? ~ ^"Extension" ~ "(" ~ ")" ~ ">" ~ (WHITESPACE* ~ "_" ~ WHITESPACE* ~ (NEWLINE | EOI))? }
+attribute = _{ "<" ~ (!(">" ~ WHITESPACE* ~ ("_" ~ WHITESPACE* ~ (NEWLINE | EOI))?) ~ ANY)* ~ ">" ~ (WHITESPACE* ~ "_" ~ WHITESPACE* ~ (NEWLINE | EOI))? }
+attribute_line = _{ (extension_attribute ~ (NEWLINE | EOI)?) | (attribute ~ (NEWLINE | EOI)?) }
+
+// Imports statement — captured for namespace resolution
+// Supports: Imports System.IO
+//           Imports IO = System.IO  (alias)
+imports_alias = { identifier ~ "=" }
+imports_statement = { ^"Imports" ~ imports_alias? ~ dotted_identifier ~ (NEWLINE | EOI) }
+
+// Statements
+statement = _{
+    namespace_decl
+    | module_decl
+    | class_decl
+    | interface_decl
+    | structure_decl
+    | enum_decl
+    | delegate_sub_decl
+    | delegate_function_decl
+    | sub_decl
+    | function_decl
+    | const_statement
+    | dim_statement
+    | redim_statement
+    | set_statement
+    | dot_assign_statement
+    | me_assign_statement
+    | compound_assign_statement
+    | assign_statement
+    | single_line_if_statement
+    | if_statement
+    | for_each_statement
+    | for_statement
+    | while_statement
+    | do_loop_statement
+    | select_statement
+    | with_statement
+    | using_statement
+    | try_statement
+    | continue_statement
+    | exit_statement
+    | throw_statement
+    | return_statement
+    | line_input_statement
+    | open_statement
+    | close_statement
+    | print_file_statement
+    | write_file_statement
+    | input_file_statement
+    | call_statement
+    | addhandler_statement
+    | removehandler_statement
+    | raiseevent_statement
+    | expression_statement
+}
+dim_new_keyword = { ^"New" }
+dim_statement = {
+    ^"Dim" ~ identifier ~
+    ("(" ~ array_bounds? ~ ")")? ~
+    (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer)?)? ~
+    ("=" ~ (array_literal | expression))?
+}
+
+const_statement = { visibility_modifier? ~ ^"Const" ~ identifier ~ ^"As" ~ type_name ~ "=" ~ expression }
+set_statement = { ^"Set" ~ identifier ~ "=" ~ expression }
+compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "\\=" | "&=" | "^=" | "<<=" | ">>=" }
+compound_assign_statement = { identifier ~ ("." ~ identifier)* ~ ("(" ~ expression ~ ("," ~ expression)* ~ ")")? ~ compound_assign_op ~ expression }
+assign_statement = { identifier ~ ("." ~ identifier)* ~ ("(" ~ expression ~ ("," ~ expression)* ~ ")")? ~ "=" ~ expression }
+preserve_keyword = { ^"Preserve" }
+redim_statement = { ^"ReDim" ~ preserve_keyword? ~ identifier ~ "(" ~ array_bounds ~ ")" }
+raiseevent_statement = { ^"RaiseEvent" ~ identifier ~ ("(" ~ argument_list? ~ ")")? }
+
+// Array support
+array_bounds = { expression ~ ("," ~ expression)* }
+array_literal = { "{" ~ (expression ~ ("," ~ expression)*)? ~ "}" }
+
+// Control flow
+single_line_if_statement = {
+    ^"If" ~ expression ~ ^"Then" ~ single_line_then_body ~ (^"Else" ~ single_line_then_body)?
+}
+single_line_then_body = { single_line_stmt ~ (":" ~ single_line_stmt)* }
+single_line_stmt = _{
+    return_statement
+    | exit_statement
+    | set_statement
+    | dot_assign_statement
+    | me_assign_statement
+    | compound_assign_statement
+    | assign_statement
+    | addhandler_statement
+    | removehandler_statement
+    | call_statement
+    | expression_statement
+}
+
+if_statement = {
+    ^"If" ~ expression ~ ^"Then" ~ (NEWLINE | EOI)
+    ~ if_body
+    ~ elseif_block*
+    ~ else_block?
+    ~ if_end
+}
+if_body = { (!if_control ~ line)* }
+if_control = { ^"ElseIf" | ^"Else" | if_end }
+elseif_block = { ^"ElseIf" ~ expression ~ ^"Then" ~ (NEWLINE | EOI) ~ if_body }
+else_block = { ^"Else" ~ (NEWLINE | EOI) ~ if_body }
+if_end = { ^"End" ~ ^"If" }
+
+for_statement = {
+    ^"For" ~ identifier ~ (^"As" ~ type_name)? ~ "=" ~ expression ~ ^"To" ~ expression ~ (^"Step" ~ expression)? ~ (NEWLINE | EOI)
+    ~ (!for_end ~ line)*
+    ~ for_end
+}
+for_end = { ^"Next" ~ identifier? }
+
+for_each_statement = {
+    ^"For" ~ ^"Each" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression ~ (NEWLINE | EOI)
+    ~ (!for_end ~ line)*
+    ~ for_end
+}
+
+while_statement = {
+    ^"While" ~ expression ~ (NEWLINE | EOI)
+    ~ (!while_end ~ line)*
+    ~ while_end
+}
+while_end = { ^"Wend" | ^"End" ~ ^"While" }
+
+do_loop_statement = {
+    ^"Do" ~ (do_while_kw ~ expression | do_until_kw ~ expression)? ~ (NEWLINE | EOI)
+    ~ (!do_end ~ line)*
+    ~ do_end
+}
+do_end = { ^"Loop" ~ (do_while_kw ~ expression | do_until_kw ~ expression)? }
+do_while_kw = { ^"While" }
+do_until_kw = { ^"Until" }
+
+select_statement = {
+    ^"Select" ~ ^"Case" ~ expression ~ (NEWLINE | EOI)
+    ~ case_block*
+    ~ case_else?
+    ~ select_end
+}
+
+case_block = {
+    ^"Case" ~ case_conditions ~ (NEWLINE | EOI)
+    ~ (!case_control ~ line)*
+}
+
+case_conditions = { case_condition ~ ("," ~ case_condition)* }
+
+case_condition = {
+    ^"Is" ~ comp_op ~ expression           // Case Is > 10
+    | expression ~ ^"To" ~ expression      // Case 1 To 10
+    | expression                           // Case 5
+}
+
+case_else = {
+    ^"Case" ~ ^"Else" ~ (NEWLINE | EOI)
+    ~ (!select_end ~ line)*
+}
+
+case_control = _{ ^"Case" | select_end }
+select_end = { ^"End" ~ ^"Select" }
+
+// With...End With
+with_statement = {
+    ^"With" ~ expression ~ (NEWLINE | EOI)
+    ~ (!with_end ~ line)*
+    ~ with_end
+}
+with_end = { ^"End" ~ ^"With" }
+
+using_statement = {
+    ^"Using" ~ identifier ~ (^"As" ~ (new_expression | type_name ~ "=" ~ expression) | "=" ~ expression) ~ (NEWLINE | EOI)
+    ~ (!using_end ~ line)*
+    ~ using_end
+}
+using_end = { ^"End" ~ ^"Using" }
+
+// Dot-member access for With blocks: .Property = value, .Method(args)
+dot_assign_statement = { "." ~ member_identifier ~ ("." ~ member_identifier)* ~ "=" ~ expression }
+dot_call_statement = { "." ~ member_identifier ~ ("." ~ member_identifier)* ~ "(" ~ argument_list? ~ ")" }
+dot_member_access = { "." ~ member_identifier ~ ("." ~ member_identifier)* }
+
+// Try-Catch-Finally
+try_statement = {
+    ^"Try" ~ (NEWLINE | EOI)
+    ~ try_body
+    ~ catch_block*
+    ~ finally_block?
+    ~ try_end
+}
+try_body = { (!try_control ~ line)* }
+catch_block = { ^"Catch" ~ (identifier ~ ^"As" ~ type_name)? ~ (^"When" ~ expression)? ~ (NEWLINE | EOI) ~ try_body }
+finally_block = { ^"Finally" ~ (NEWLINE | EOI) ~ try_body }
+try_end = { ^"End" ~ ^"Try" }
+try_control = _{ ^"Catch" | ^"Finally" | try_end }
+
+throw_statement = { ^"Throw" ~ expression? }
+continue_statement = { ^"Continue" ~ (^"Do" | ^"For" | ^"While") }
+
+exit_statement = { ^"Exit" ~ exit_type }
+exit_type = { ^"Sub" | ^"Function" | ^"For" | ^"Do" | ^"Select" | ^"Try" | ^"Property" | ^"While" }
+return_statement = { ^"Return" ~ expression? }
+
+// VB6 File I/O statements
+open_statement = { ^"Open" ~ expression ~ ^"For" ~ file_mode ~ ^"As" ~ "#"? ~ expression }
+file_mode = { ^"Input" | ^"Output" | ^"Append" | ^"Binary" | ^"Random" }
+close_statement = { ^"Close" ~ ("#"? ~ expression ~ ("," ~ "#"? ~ expression)*)? }
+print_file_statement = { ^"Print" ~ "#" ~ expression ~ "," ~ argument_list? }
+write_file_statement = { ^"Write" ~ "#" ~ expression ~ "," ~ argument_list? }
+input_file_statement = { ^"Input" ~ "#" ~ expression ~ "," ~ identifier ~ ("," ~ identifier)* }
+line_input_statement = { ^"Line" ~ ^"Input" ~ "#" ~ expression ~ "," ~ identifier }
+
+// Procedure declarations
+// sub_modifier covers: Public, Private, Protected, Friend, Overrides, Overloads, Shared, etc.
+sub_modifier_keyword = { ^"Overrides" | ^"Overloads" | ^"Shared" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" }
+sub_modifier = _{ visibility_modifier | sub_modifier_keyword | async_kw }
+sub_name = { identifier | ^"New" }
+handles_clause = { ^"Handles" ~ dotted_identifier ~ ("," ~ dotted_identifier)* }
+sub_decl = {
+    attribute_line* ~
+    sub_modifier* ~ ^"Sub" ~ sub_name ~ "(" ~ param_list? ~ ")" ~ handles_clause?
+    ~ (sub_inline_body | sub_block_body)
+}
+sub_inline_body = { ":" ~ statement? ~ (":" ~ statement)* ~ ":" ~ sub_end }
+sub_block_body = { (NEWLINE | EOI) ~ (!sub_end ~ line)* ~ sub_end }
+sub_end = { ^"End" ~ ^"Sub" }
+
+function_decl = {
+    attribute_line* ~
+    sub_modifier* ~ ^"Function" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)?
+    ~ (func_inline_body | func_block_body)
+}
+func_inline_body = { ":" ~ statement? ~ (":" ~ statement)* ~ ":" ~ func_end }
+func_block_body = { (NEWLINE | EOI) ~ (!func_end ~ line)* ~ func_end }
+func_end = { ^"End" ~ ^"Function" }
+
+param_list = { param ~ ("," ~ param)* }
+pass_type_keyword = { ^"ByVal" | ^"ByRef" }
+optional_keyword = { ^"Optional" }
+param = { optional_keyword? ~ pass_type_keyword? ~ optional_keyword? ~ identifier ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
+nullable_marker = { "?" }
+
+// Module declarations (VB.NET style - members are implicitly shared)
+module_decl = {
+    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Module" ~ identifier ~ (NEWLINE | EOI)
+    ~ (!module_end ~ (sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | class_decl | interface_decl | structure_decl | enum_decl | NEWLINE | COMMENT))*
+    ~ module_end
+}
+module_end = { ^"End" ~ ^"Module" }
+const_statement_line = _{ const_statement ~ (NEWLINE | EOI) }
+
+// Class declarations
+partial_keyword = { ^"Partial" }
+inherits_statement = { ^"Inherits" ~ type_name }
+inherits_line = _{ inherits_statement ~ (NEWLINE | EOI) }
+visibility_modifier = { ^"Public" | ^"Private" | ^"Protected" | ^"Friend" }
+
+class_decl = {
+    attribute_line* ~
+    class_modifier* ~ ^"Class" ~ identifier ~ (NEWLINE | EOI)
+    ~ inherits_line?
+    ~ implements_line?
+    ~ (!class_end ~ (property_decl | auto_property_line | sub_decl | function_decl | event_line | delegate_line | field_line | dim_line | enum_decl | imports_statement | attribute_line | NEWLINE | COMMENT))*
+    ~ class_end
+}
+class_modifier = _{ partial_keyword | must_inherit_keyword | not_inheritable_keyword | visibility_modifier }
+must_inherit_keyword = { ^"MustInherit" }
+not_inheritable_keyword = { ^"NotInheritable" }
+
+class_end = { ^"End" ~ ^"Class" }
+dim_line = _{ dim_statement ~ (NEWLINE | EOI) }
+
+// Interface declarations
+implements_statement = { ^"Implements" ~ type_name ~ ("," ~ type_name)* }
+implements_line = _{ implements_statement ~ (NEWLINE | EOI) }
+
+interface_decl = {
+    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Interface" ~ identifier ~ (NEWLINE | EOI)
+    ~ inherits_line?
+    ~ (!interface_end ~ (interface_sub | interface_function | interface_property | interface_event | NEWLINE | COMMENT))*
+    ~ interface_end
+}
+interface_end = { ^"End" ~ ^"Interface" }
+interface_sub = { ^"Sub" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (NEWLINE | EOI) }
+interface_function = { ^"Function" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI) }
+interface_property = { (^"ReadOnly" | ^"WriteOnly")? ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI) }
+interface_event = { ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_list? ~ ")")? ~ (NEWLINE | EOI) }
+
+// Structure declarations
+structure_decl = {
+    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Structure" ~ identifier ~ (NEWLINE | EOI)
+    ~ implements_line?
+    ~ (!structure_end ~ (property_decl | auto_property_line | sub_decl | function_decl | field_line | dim_line | NEWLINE | COMMENT))*
+    ~ structure_end
+}
+structure_end = { ^"End" ~ ^"Structure" }
+
+// Namespace blocks
+namespace_decl = {
+    ^"Namespace" ~ dotted_identifier ~ (NEWLINE | EOI)
+    ~ (!namespace_end ~ (class_decl | module_decl | interface_decl | structure_decl | enum_decl | namespace_decl | NEWLINE | COMMENT))*
+    ~ namespace_end
+}
+namespace_end = { ^"End" ~ ^"Namespace" }
+
+// Event declarations
+event_decl = { (^"Public" | ^"Private" | ^"Protected" | ^"Friend")? ~ ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_list? ~ ")")? }
+event_line = _{ event_decl ~ (NEWLINE | EOI) }
+
+// Delegate declarations
+delegate_sub_decl = { (^"Public" | ^"Private" | ^"Friend")? ~ ^"Delegate" ~ ^"Sub" ~ identifier ~ "(" ~ param_list? ~ ")" }
+delegate_function_decl = { (^"Public" | ^"Private" | ^"Friend")? ~ ^"Delegate" ~ ^"Function" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? }
+delegate_line = _{ (delegate_sub_decl | delegate_function_decl) ~ (NEWLINE | EOI) }
+
+// Enum declarations
+enum_decl = {
+    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Enum" ~ identifier ~ (NEWLINE | EOI)
+    ~ (!enum_end ~ (enum_member | NEWLINE | COMMENT))*
+    ~ enum_end
+}
+enum_member = { identifier ~ ("=" ~ expression)? ~ (NEWLINE | EOI) }
+enum_end = { ^"End" ~ ^"Enum" }
+
+// Field declarations: now support Friend, WithEvents, and dotted type names
+withevents_keyword = { ^"WithEvents" }
+field_decl = { (^"Public" | ^"Private" | ^"Protected" | ^"Friend") ~ withevents_keyword? ~ identifier ~ ("(" ~ array_bounds? ~ ")")? ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ (array_literal | expression))? }
+field_line = _{ field_decl ~ (NEWLINE | EOI) }
+
+// Auto-implemented property: Public Property Name As String [= defaultValue]
+auto_property_decl = {
+    (^"Public" | ^"Private" | ^"Protected")? ~ (^"ReadOnly" | ^"WriteOnly")? ~ ^"Property" ~ identifier ~ (^"As" ~ type_name)? ~ ("=" ~ expression)?
+}
+auto_property_line = _{ auto_property_decl ~ (NEWLINE | EOI) }
+
+property_decl = {
+    (^"Public" | ^"Private")? ~ ^"Property" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI)
+    ~ (property_get | property_set | NEWLINE)*
+    ~ property_end
+}
+
+property_get = {
+    ^"Get" ~ (NEWLINE | EOI)
+    ~ (!get_end ~ line)*
+    ~ get_end
+}
+
+property_set = {
+    ^"Set" ~ "(" ~ param ~ ")" ~ (NEWLINE | EOI)
+    ~ (!set_end ~ line)*
+    ~ set_end
+}
+
+property_end = { ^"End" ~ ^"Property" }
+get_end = { ^"End" ~ ^"Get" }
+set_end = { ^"End" ~ ^"Set" }
+
+// Expressions
+
+// Lambda Expressions
+lambda_expression = {
+    (^"Function" ~ "(" ~ param_list? ~ ")" ~ expression)
+    | (^"Sub" ~ "(" ~ param_list? ~ ")" ~ statement)
+}
+
+expression = { logical_xor }
+
+logical_xor = { logical_or ~ (xor_op ~ logical_or)* }
+logical_or = { logical_and ~ (or_op ~ logical_and)* }
+logical_and = { not_condition ~ (and_op ~ not_condition)* }
+not_condition = { not_op? ~ equality } // Not binds tighter than And
+equality = { comparison ~ (eq_op ~ comparison)* }
+comparison = { bit_shift ~ (comp_op ~ bit_shift | like_op ~ bit_shift)* }
+bit_shift = { additive ~ (shift_op ~ additive)* }
+additive = { multiplicative ~ (add_op ~ multiplicative)* }
+multiplicative = { unary ~ (mult_op ~ unary)* }
+unary = { (await_op | neg_op)? ~ exponent }
+exponent = { postfix ~ (exp_op ~ postfix)* }
+postfix = { primary ~ member_chain* }
+
+xor_op = { ^"Xor" }
+or_op = { ^"OrElse" | ^"Or" }
+and_op = { ^"AndAlso" | ^"And" }
+eq_op = { ^"=" | ^"<>" | ^"IsNot" | ^"Is" }
+comp_op = { ^"<=" | ^">=" | "<" | ">" }
+like_op = { ^"Like" }
+shift_op = { "<<" | ">>" }
+add_op = { "+" | "-" | "&" }
+mult_op = { "*" | "/" | "\\" | ^"Mod" }
+exp_op = { "^" }
+not_op = @{ ^"Not" ~ !(ASCII_ALPHANUMERIC | "_") } // Atomic: No implicit whitespace before lookahead
+neg_op = { "-" }
+await_op = { ^"Await" }
+
+// Me keyword rules
+me_keyword = { ^"Me" }
+async_kw = { ^"Async" }
+me_member_call = { me_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ argument_list? ~ ")" }
+me_member_access = { me_keyword ~ ("." ~ member_identifier)+ }
+me_assign_statement = { me_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ expression }
+
+// MyBase keyword rules
+mybase_keyword = { ^"MyBase" }
+mybase_member_call = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ argument_list? ~ ")" }
+mybase_member_access = { mybase_keyword ~ ("." ~ member_identifier)+ }
+mybase_assign_statement = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ expression }
+
+// Dotted identifier: System.Windows.Forms.Button
+dotted_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("." ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*)* }
+
+primary = _{
+    typeof_expression
+    | cast_expression
+    | new_expression
+    | literal
+    | lambda_expression
+    | if_expression
+    | me_member_call
+    | me_member_access
+    | me_keyword
+    | mybase_member_call
+    | mybase_member_access
+    | mybase_keyword
+    | member_call
+    | call_expression
+    | member_access
+    | addressof_expr
+    | identifier
+    | "(" ~ expression ~ ")"
+}
+
+// TypeOf...Is expression
+typeof_expression = { ^"TypeOf" ~ postfix ~ ^"Is" ~ type_name }
+
+// Type cast expressions: CType(expr, Type), DirectCast(expr, Type), TryCast(expr, Type)
+cast_expression = { (^"CType" | ^"DirectCast" | ^"TryCast") ~ "(" ~ expression ~ "," ~ type_name ~ ")" }
+// CType(...).Method() as a statement
+cast_member_call = { cast_expression ~ member_chain+ }
+
+// Inline If expression: If(cond, true, false) or If(value, default)
+if_expression = { ^"If" ~ "(" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" }
+
+// New expression: supports dotted identifiers like New System.Windows.Forms.Button()
+// Also supports generic types like New List(Of String), New Dictionary(Of String, Integer)
+// Also supports array initializers: New Task() {task1, task2}
+// Also supports collection initializers: New List(Of T) From { expr, ... }
+// Also supports object initializers: New Type() With { .Prop = expr, ... }
+new_expression = { "New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer | array_literal)? }
+from_initializer = { ^"From" ~ "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
+with_initializer = { ^"With" ~ "{" ~ NEWLINE* ~ (member_initializer ~ (NEWLINE* ~ "," ~ NEWLINE* ~ member_initializer)*)? ~ NEWLINE* ~ "}" }
+member_initializer = { "." ~ member_identifier ~ "=" ~ expression }
+
+call_expression = { identifier ~ "(" ~ argument_list? ~ ")" }
+member_chain_call = { "." ~ member_identifier ~ "(" ~ argument_list? ~ ")" }
+member_chain_access = { "." ~ member_identifier }
+member_chain = { member_chain_call | member_chain_access }
+member_call = { identifier ~ member_chain+ }
+call_statement = {
+    ^"Call"? ~ (
+        cast_member_call
+        | me_member_call
+        | mybase_member_call
+        | member_call
+        | member_access
+        | call_expression
+        | identifier ~ argument_list
+        | identifier
+    )
+}
+expression_statement = { cast_member_call | dot_call_statement | me_member_call | mybase_member_call | member_call | call_expression | member_access | dot_member_access }
+
+// AddHandler / RemoveHandler
+addressof_expr = { ^"AddressOf" ~ dotted_identifier }
+addhandler_statement = { ^"AddHandler" ~ dotted_identifier ~ "," ~ addressof_expr }
+removehandler_statement = { ^"RemoveHandler" ~ dotted_identifier ~ "," ~ addressof_expr }
+
+member_access = { identifier ~ ("." ~ member_identifier)+ }
+argument_list = { expression ~ ("," ~ expression)* }
+
+// Literals
+literal = _{
+    array_literal
+    | date_literal
+    | interpolated_string
+    | string_literal
+    | numeric_literal
+    | boolean_literal
+    | nothing_literal
+}
+
+nothing_literal = { ^"Nothing" }
+
+date_literal = @{ "#" ~ (!"#" ~ ANY)+ ~ "#" }
+// Interpolated string: $"text {expr} text" — captured as raw token, decomposed in Rust parser
+interpolated_string = @{ "$\"" ~ ("\"\"" | (!("\"") ~ ANY))* ~ "\"" }
+string_literal = @{ "\"" ~ ("\"\"" | (!"\"" ~ ANY))* ~ "\"" }
+// Numeric literals: support optional type suffix (F, D, L, S, US, UI, UL, R, !)
+numeric_literal = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"F" | ^"D" | ^"L" | ^"R" | ^"S" | ^"US" | ^"UI" | ^"UL" | "!" | "#" | "@" | "%")? }
+boolean_literal = { ^"True" | ^"False" }
+
+// Types: support dotted type names like System.Windows.Forms.Form
+type_name = {
+    (
+        (^"Integer" | ^"Long" | ^"Single" | ^"Double" | ^"String" | ^"Boolean" | ^"Variant" | ^"Object")
+        ~ !(ASCII_ALPHANUMERIC | "_")
+        | dotted_identifier
+    ) ~ (generic_suffix | array_type_suffix)? ~ "?"?
+}
+
+array_type_suffix = { "(" ~ ")" }
+generic_suffix = { "(" ~ ^"Of" ~ type_name ~ ("," ~ type_name)* ~ ")" }
+
+// Identifiers
+identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+// Member identifier: allows keywords like Next, Close, Open, etc. as method/property names after a dot
+member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// Keywords
+keyword = _{
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}

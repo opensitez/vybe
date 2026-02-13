@@ -1,0 +1,13 @@
+[package]
+name = "vybe_cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vybe"
+path = "src/main.rs"
+
+[dependencies]
+vybe_ui = { workspace = true }

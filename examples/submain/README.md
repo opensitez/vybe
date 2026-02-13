@@ -24,4 +24,4 @@ This example also tests the newly implemented VB functions:
 
 ## Running
 
-Open the project in the Irys editor and click Run. The output will appear in the console.
+Open the project in the vybe editor and click Run. The output will appear in the console.

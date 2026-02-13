@@ -1,0 +1,26 @@
+[package]
+name = "vybe_editor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vybe_editor"
+path = "src/main.rs"
+
+[dependencies]
+vybe_parser = { workspace = true }
+vybe_runtime = { workspace = true }
+vybe_forms = { workspace = true }
+vybe_project = { workspace = true }
+vybe_ui = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+
+# Dioxus for GUI
+dioxus = { version = "0.7.3", features = ["desktop"] }
+serde_json = "1.0"
+rfd = "0.14"
+include_dir = "0.7"
+wry = "0.53.5"

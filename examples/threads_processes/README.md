@@ -1,6 +1,6 @@
 # Threads & Processes Demo
 
-Demonstrates the `System.Threading` and `System.Diagnostics` namespace features available in Irys Basic.
+Demonstrates the `System.Threading` and `System.Diagnostics` namespace features available in vybe Basic.
 
 ## Features Shown
 
@@ -14,8 +14,8 @@ Demonstrates the `System.Threading` and `System.Diagnostics` namespace features 
 
 ## Running
 
-Open this project in the Irys IDE and press Run, or from the command line:
+Open this project in the vybe IDE and press Run, or from the command line:
 
 ```
-cargo run -p irys_cli -- examples/threads_processes/Module1.bas
+cargo run -p vybe_cli -- examples/threads_processes/Module1.bas
 ```

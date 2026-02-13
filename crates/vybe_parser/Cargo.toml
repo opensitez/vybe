@@ -1,0 +1,12 @@
+[package]
+name = "vybe_parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+pest = { workspace = true }
+pest_derive = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

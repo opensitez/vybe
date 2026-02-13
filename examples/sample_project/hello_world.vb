@@ -1,4 +1,4 @@
-' Simple Hello World irys Program
+' Simple Hello World vybe Program
 
 Sub btnHello_Click()
     MsgBox("Hello, World!")

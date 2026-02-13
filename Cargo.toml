@@ -1,19 +1,19 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/irys_parser",
-    "crates/irys_runtime",
-    "crates/irys_forms",
-    "crates/irys_editor",
-    "crates/irys_project",
-    "crates/irys_cli",
-    "crates/irys_ui",
+    "crates/vybe_parser",
+    "crates/vybe_runtime",
+    "crates/vybe_forms",
+    "crates/vybe_editor",
+    "crates/vybe_project",
+    "crates/vybe_cli",
+    "crates/vybe_ui",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = ["irys Rust Team"]
+authors = ["vybe Rust Team"]
 license = "MIT"
 
 [workspace.dependencies]
@@ -33,8 +33,8 @@ thiserror = "1.0"
 rfd = "0.14"
 
 # Internal crates
-irys_parser = { path = "crates/irys_parser" }
-irys_runtime = { path = "crates/irys_runtime" }
-irys_forms = { path = "crates/irys_forms" }
-irys_project = { path = "crates/irys_project" }
-irys_ui = { path = "crates/irys_ui" }
+vybe_parser = { path = "crates/vybe_parser" }
+vybe_runtime = { path = "crates/vybe_runtime" }
+vybe_forms = { path = "crates/vybe_forms" }
+vybe_project = { path = "crates/vybe_project" }
+vybe_ui = { path = "crates/vybe_ui" }

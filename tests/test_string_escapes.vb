@@ -1,7 +1,7 @@
 Module Program
     Sub Main()
         ' Test 1: JSON with escaped quotes
-        Dim json As String = "{""name"":""irys"",""version"":""1.0""}"
+        Dim json As String = "{""name"":""vybe"",""version"":""1.0""}"
         Console.WriteLine(json)
 
         ' Test 2: Empty string

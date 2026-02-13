@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "/Users/youness/Documents/irys/tictactoeconsole/tictactoe.vbproj": {}
+    "/Users/youness/Documents/vybe/tictactoeconsole/tictactoe.vbproj": {}
   },
   "projects": {
-    "/Users/youness/Documents/irys/tictactoeconsole/tictactoe.vbproj": {
+    "/Users/youness/Documents/vybe/tictactoeconsole/tictactoe.vbproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "/Users/youness/Documents/irys/tictactoeconsole/tictactoe.vbproj",
+        "projectUniqueName": "/Users/youness/Documents/vybe/tictactoeconsole/tictactoe.vbproj",
         "projectName": "tictactoe",
-        "projectPath": "/Users/youness/Documents/irys/tictactoeconsole/tictactoe.vbproj",
+        "projectPath": "/Users/youness/Documents/vybe/tictactoeconsole/tictactoe.vbproj",
         "packagesPath": "/Users/youness/.nuget/packages/",
-        "outputPath": "/Users/youness/Documents/irys/tictactoeconsole/obj/",
+        "outputPath": "/Users/youness/Documents/vybe/tictactoeconsole/obj/",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "/Users/youness/.nuget/NuGet/NuGet.Config"

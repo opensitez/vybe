@@ -1,0 +1,19 @@
+[package]
+name = "vybe_ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_parser = { workspace = true }
+vybe_runtime = { workspace = true }
+vybe_forms = { workspace = true }
+vybe_project = { workspace = true }
+serde = { workspace = true }
+
+# Dioxus for GUI rendering
+dioxus = { version = "0.7.3", features = ["desktop"] }
+
+# Tokio for async timers in console polling
+tokio = { version = "1", features = ["time"] }

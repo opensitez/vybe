@@ -2,7 +2,7 @@ Module Program
 
     Sub Main()
         ' ── Title ────────────────────────────────────────────────
-        Console.Title = "Irys Console Demo"
+        Console.Title = "vybe Console Demo"
 
         ' ── Color Palette ────────────────────────────────────────
         Console.WriteLine("=== Console Color Palette ===")
@@ -137,7 +137,7 @@ Module Program
 
         ' ── Goodbye ──────────────────────────────────────────────
         Console.ForegroundColor = ConsoleColor.Magenta
-        Console.WriteLine("Thanks for trying the Irys Console Demo!")
+        Console.WriteLine("Thanks for trying the vybe Console Demo!")
         Console.ResetColor()
     End Sub
 

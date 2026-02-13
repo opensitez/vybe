@@ -1,10 +1,10 @@
-# IRYS Compiler/Interpreter with Visual Form Editor
+# Vybe Compiler/Interpreter with Visual Form Editor
 
 A Visual Basic-style development environment built from scratch in Rust, featuring a parser, interpreter, and visual form designer.
 
 ## Features
 
-- **IRYS Basic Parser**: Full support for Basic syntax including:
+- **Vybe Basic Parser**: Full support for Basic syntax including:
   - Variables, assignments, and expressions
   - Control flow (If/Then/Else, For/Next, While/Wend, Do/Loop)
   - Procedures (Sub/Function) with parameters
@@ -35,12 +35,12 @@ A Visual Basic-style development environment built from scratch in Rust, featuri
 ```
 vb/
 ├── crates/
-│   ├── irys_parser/      # PEG parser using pest
-│   ├── irys_runtime/     # Tree-walking interpreter
-│   ├── irys_forms/       # Form model and controls
-│   ├── irys_editor/      # Visual editor (iced GUI)
-│   └── irys_project/     # Project file management
-└── examples/            # Sample Irys programs
+│   ├── vybe_parser/      # PEG parser using pest
+│   ├── vybe_runtime/     # Tree-walking interpreter
+│   ├── vybe_forms/       # Form model and controls
+│   ├── vybe_editor/      # Visual editor (iced GUI)
+│   └── vybe_project/     # Project file management
+└── examples/            # Sample vybe programs
 ```
 
 ## Building
@@ -53,7 +53,7 @@ cargo build --release
 ## Running the Editor
 
 ```bash
-cargo run --bin irys_editor
+cargo run --bin vybe_editor
 ```
 
 ## Running Example Code
@@ -66,13 +66,13 @@ cargo run --example parse_and_run examples/hello_world.vb
 
 ## Usage
 
-1. **Create a New Project**: Click "New" to create a new Irys Basic project
+1. **Create a New Project**: Click "New" to create a new vybe Basic project
 2. **Add Controls**: Click a control type from the toolbox, then click on the form to place it
 3. **Edit Properties**: Select a control to view and edit its properties
 4. **Write Code**: Click "View Code" to write event handlers
 5. **Run**: Click "Run" to execute your program
 
-## Example IRYS Code
+## Example vybe Code
 
 ```vb
 ' Button click event handler

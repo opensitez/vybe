@@ -45,12 +45,12 @@ This example demonstrates the new System.Collections.Generic types:
 ## Running the Demo
 
 ```bash
-cargo run --bin irys_editor -- run examples/collections_demo/CollectionsDemo.vbproj
+cargo run --bin vybe_editor -- run examples/collections_demo/CollectionsDemo.vbproj
 ```
 
 Or from the test suite:
 ```bash
-cargo run --bin irys_editor -- run tests/test_generic_collections.vb
+cargo run --bin vybe_editor -- run tests/test_generic_collections.vb
 ```
 
 ## Expected Output

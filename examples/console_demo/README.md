@@ -1,6 +1,6 @@
 # Console Demo
 
-Demonstrates the full interactive console features of Irys Basic:
+Demonstrates the full interactive console features of vybe Basic:
 
 - **16 ConsoleColor values** — ForegroundColor / BackgroundColor
 - **Colored output** — status messages with [OK], [WARN], [ERR] prefixes
@@ -12,7 +12,7 @@ Demonstrates the full interactive console features of Irys Basic:
 
 ## Run in Editor
 
-Open `ConsoleDemo.vbproj` in the Irys editor and press ▶ Run.
+Open `ConsoleDemo.vbproj` in the vybe editor and press ▶ Run.
 
 ## Run from CLI
 
