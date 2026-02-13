@@ -18,6 +18,9 @@ quick-xml = "0.31"
 tokio = { version = "1", features = ["rt"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "mysql", "any"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_System_Console"] }
+
 [dev-dependencies]
 pest = { workspace = true }
 pest_derive = { workspace = true }
