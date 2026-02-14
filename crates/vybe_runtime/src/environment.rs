@@ -115,6 +115,54 @@ impl Environment {
         let name_lower = name.to_lowercase();
         self.scopes.first().and_then(|s| s.get(&name_lower)).cloned()
     }
+
+    /// Deep clone the environment for snapshot threading.
+    pub fn deep_clone(&self) -> Self {
+        let new_scopes = self.scopes.iter().map(|scope| {
+            let mut new_scope = HashMap::new();
+            for (k, v) in scope {
+                new_scope.insert(k.clone(), v.deep_clone());
+            }
+            new_scope
+        }).collect();
+        
+        Self {
+            scopes: new_scopes,
+            constants: self.constants.clone(),
+        }
+    }
+
+    pub fn to_shared(&self) -> crate::value::SharedEnvironment {
+        let new_scopes = self.scopes.iter().map(|scope| {
+            let mut new_scope = HashMap::new();
+            for (k, v) in scope {
+                new_scope.insert(k.clone(), v.to_shared());
+            }
+            new_scope
+        }).collect();
+        
+        crate::value::SharedEnvironment {
+            scopes: new_scopes,
+            constants: self.constants.clone(),
+        }
+    }
+}
+
+impl crate::value::SharedEnvironment {
+    pub fn to_environment(&self) -> Environment {
+        let new_scopes = self.scopes.iter().map(|scope| {
+            let mut new_scope = HashMap::new();
+            for (k, v) in scope {
+                new_scope.insert(k.clone(), v.to_value());
+            }
+            new_scope
+        }).collect();
+        
+        Environment {
+            scopes: new_scopes,
+            constants: self.constants.clone(),
+        }
+    }
 }
 
 impl Default for Environment {

@@ -71,6 +71,10 @@ impl Queue {
         Self { items: VecDeque::new() }
     }
 
+    pub fn from_vecdeque(items: VecDeque<Value>) -> Self {
+        Self { items }
+    }
+
     /// Add to the back.
     pub fn enqueue(&mut self, value: Value) {
         self.items.push_back(value);
@@ -115,6 +119,10 @@ pub struct Stack {
 impl Stack {
     pub fn new() -> Self {
         Self { items: Vec::new() }
+    }
+
+    pub fn from_vec(items: Vec<Value>) -> Self {
+        Self { items }
     }
 
     /// Push onto the top.
@@ -162,6 +170,10 @@ pub struct VBHashSet {
 impl VBHashSet {
     pub fn new() -> Self {
         Self { items: Vec::new() }
+    }
+
+    pub fn from_vec(items: Vec<Value>) -> Self {
+        Self { items }
     }
 
     /// Add a value. Returns true if the value was new, false if it already existed.
@@ -214,6 +226,10 @@ pub struct VBDictionary {
 impl VBDictionary {
     pub fn new() -> Self {
         Self { keys: Vec::new(), values: Vec::new() }
+    }
+
+    pub fn from_parts(keys: Vec<Value>, values: Vec<Value>) -> Self {
+        Self { keys, values }
     }
 
     fn find_key(&self, key: &Value) -> Option<usize> {

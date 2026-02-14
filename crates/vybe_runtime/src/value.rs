@@ -1,13 +1,46 @@
-use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use chrono::{NaiveDate, Duration};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectData {
     pub class_name: String,
     pub fields: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SharedObjectData {
+    pub class_name: String,
+    pub fields: HashMap<String, SharedValue>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SharedEnvironment {
+    pub scopes: Vec<HashMap<String, SharedValue>>,
+    pub constants: std::collections::HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SharedValue {
+    Byte(u8),
+    Char(char),
+    Integer(i32),
+    Long(i64),
+    Single(f32),
+    Double(f64),
+    Date(f64),
+    String(String),
+    Boolean(bool),
+    Array(Vec<SharedValue>),
+    Nothing,
+    Object(std::sync::Arc<std::sync::Mutex<SharedObjectData>>),
+    Lambda {
+        params: Vec<vybe_parser::ast::decl::Parameter>,
+        body: Box<vybe_parser::ast::expr::LambdaBody>,
+        env: SharedEnvironment,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -346,6 +379,144 @@ impl Value {
                 expected: "Array, Collection, Dictionary, or other enumerable".to_string(),
                 got: format!("{:?}", self),
             }),
+        }
+    }
+
+    /// Recursively clone the value and all its contents.
+    /// Used for snapshotting environment in background threads.
+    pub fn deep_clone(&self) -> Self {
+        match self {
+            Value::Array(arr) => Value::Array(arr.iter().map(|v| v.deep_clone()).collect()),
+            Value::Collection(c) => {
+                let new_items = c.borrow().items.iter().map(|v| v.deep_clone()).collect();
+                Value::Collection(Rc::new(RefCell::new(crate::collections::ArrayList { items: new_items })))
+            }
+            Value::Queue(q) => {
+                let items: VecDeque<Value> = q.borrow().to_array().into_iter().map(|v| v.deep_clone()).collect();
+                Value::Queue(Rc::new(RefCell::new(crate::collections::Queue::from_vecdeque(items))))
+            }
+            Value::Stack(s) => {
+                let items = s.borrow().to_array().into_iter().rev().map(|v| v.deep_clone()).collect();
+                Value::Stack(Rc::new(RefCell::new(crate::collections::Stack::from_vec(items))))
+            }
+            Value::HashSet(h) => {
+                let items = h.borrow().to_array().into_iter().map(|v| v.deep_clone()).collect();
+                Value::HashSet(Rc::new(RefCell::new(crate::collections::VBHashSet::from_vec(items))))
+            }
+            Value::Dictionary(d) => {
+                let db = d.borrow();
+                let keys = db.keys().into_iter().map(|v| v.deep_clone()).collect();
+                let values = db.values().into_iter().map(|v| v.deep_clone()).collect();
+                Value::Dictionary(Rc::new(RefCell::new(crate::collections::VBDictionary::from_parts(keys, values))))
+            }
+            Value::Object(obj) => {
+                let b = obj.borrow();
+                let mut new_fields = HashMap::new();
+                for (k, v) in &b.fields {
+                    new_fields.insert(k.clone(), v.deep_clone());
+                }
+                Value::Object(Rc::new(RefCell::new(ObjectData {
+                    class_name: b.class_name.clone(),
+                    fields: new_fields,
+                })))
+            }
+            Value::Lambda { params, body, env } => {
+                // For Snapshot threading, we also need to deep clone the captured environment
+                Value::Lambda {
+                    params: params.clone(),
+                    body: body.clone(),
+                    env: Rc::new(RefCell::new(env.borrow().deep_clone())),
+                }
+            }
+            _ => self.clone(), // Primitive types are shallow cloned
+        }
+    }
+
+    pub fn to_shared(&self) -> SharedValue {
+        match self {
+            Value::Byte(b) => SharedValue::Byte(*b),
+            Value::Char(c) => SharedValue::Char(*c),
+            Value::Integer(i) => SharedValue::Integer(*i),
+            Value::Long(l) => SharedValue::Long(*l),
+            Value::Single(f) => SharedValue::Single(*f),
+            Value::Double(d) => SharedValue::Double(*d),
+            Value::Date(d) => SharedValue::Date(*d),
+            Value::String(s) => SharedValue::String(s.clone()),
+            Value::Boolean(b) => SharedValue::Boolean(*b),
+            Value::Array(arr) => SharedValue::Array(arr.iter().map(|v| v.to_shared()).collect()),
+            Value::Nothing => SharedValue::Nothing,
+            Value::Object(obj) => {
+                let b = obj.borrow();
+                let mut shared_fields = HashMap::new();
+                for (k, v) in &b.fields {
+                    shared_fields.insert(k.clone(), v.to_shared());
+                }
+                let shared_obj = SharedObjectData {
+                    class_name: b.class_name.clone(),
+                    fields: shared_fields,
+                };
+                SharedValue::Object(std::sync::Arc::new(std::sync::Mutex::new(shared_obj)))
+            }
+            Value::Lambda { params, body, env } => {
+                SharedValue::Lambda {
+                    params: params.clone(),
+                    body: body.clone(),
+                    env: env.borrow().to_shared(),
+                }
+            }
+            // For now, collections are converted to arrays in shared mode
+            Value::Collection(c) => SharedValue::Array(c.borrow().items.iter().map(|v| v.to_shared()).collect()),
+            Value::Queue(q) => SharedValue::Array(q.borrow().to_array().into_iter().map(|v| v.to_shared()).collect()),
+            Value::Stack(s) => SharedValue::Array(s.borrow().to_array().into_iter().map(|v| v.to_shared()).collect()),
+            Value::HashSet(h) => SharedValue::Array(h.borrow().to_array().into_iter().map(|v| v.to_shared()).collect()),
+            Value::Dictionary(d) => {
+                let db = d.borrow();
+                let keys = db.keys();
+                let values = db.values();
+                let mut shared_items = Vec::new();
+                for (k, v) in keys.into_iter().zip(values) {
+                    shared_items.push(k.to_shared());
+                    shared_items.push(v.to_shared());
+                }
+                SharedValue::Array(shared_items) // Specialized handling would be better, but Array is safe
+            }
+        }
+    }
+}
+
+impl SharedValue {
+    pub fn to_value(&self) -> Value {
+        match self {
+            SharedValue::Byte(b) => Value::Byte(*b),
+            SharedValue::Char(c) => Value::Char(*c),
+            SharedValue::Integer(i) => Value::Integer(*i),
+            SharedValue::Long(l) => Value::Long(*l),
+            SharedValue::Single(f) => Value::Single(*f),
+            SharedValue::Double(d) => Value::Double(*d),
+            SharedValue::Date(d) => Value::Date(*d),
+            SharedValue::String(s) => Value::String(s.clone()),
+            SharedValue::Boolean(b) => Value::Boolean(*b),
+            SharedValue::Array(arr) => Value::Array(arr.iter().map(|v| v.to_value()).collect()),
+            SharedValue::Nothing => Value::Nothing,
+            SharedValue::Object(obj) => {
+                let b = obj.lock().unwrap();
+                let mut fields = HashMap::new();
+                for (k, v) in &b.fields {
+                    fields.insert(k.clone(), v.to_value());
+                }
+                let obj_data = ObjectData {
+                    class_name: b.class_name.clone(),
+                    fields,
+                };
+                Value::Object(Rc::new(RefCell::new(obj_data)))
+            }
+            SharedValue::Lambda { params, body, env } => {
+                Value::Lambda {
+                    params: params.clone(),
+                    body: body.clone(),
+                    env: Rc::new(RefCell::new(env.to_environment())),
+                }
+            }
         }
     }
 }

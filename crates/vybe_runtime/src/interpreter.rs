@@ -98,6 +98,20 @@ impl Interpreter {
         interp
     }
 
+    pub fn new_background(
+        functions: HashMap<String, vybe_parser::ast::decl::FunctionDecl>,
+        subs: HashMap<String, vybe_parser::ast::decl::SubDecl>,
+        classes: HashMap<String, vybe_parser::ast::decl::ClassDecl>,
+        namespace_map: HashMap<String, String>,
+    ) -> Self {
+        let mut interp = Self::new();
+        interp.functions = functions;
+        interp.subs = subs;
+        interp.classes = classes;
+        interp.namespace_map = namespace_map;
+        interp
+    }
+
     pub fn init_namespaces(&mut self) {
         // Create System.IO.File object
         let file_obj_data = ObjectData {
@@ -3519,6 +3533,33 @@ impl Interpreter {
                     class_name_full
                 };
 
+                // ===== XML CONSTRUCTORS: XDocument, XElement, XAttribute =====
+                if class_name == "xelement" || class_name == "system.xml.linq.xelement" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    return Ok(crate::builtins::xml::create_xelement(&arg_values));
+                }
+                if class_name == "xattribute" || class_name == "system.xml.linq.xattribute" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    return Ok(crate::builtins::xml::create_xattribute(&arg_values));
+                }
+                if class_name == "xdocument" || class_name == "system.xml.linq.xdocument" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    return Ok(crate::builtins::xml::create_xdocument(&arg_values));
+                }
+                if class_name == "xcomment" || class_name == "system.xml.linq.xcomment" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    return Ok(crate::builtins::xml::create_xcomment(&arg_values));
+                }
+                if class_name == "xdeclaration" || class_name == "system.xml.linq.xdeclaration" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    return Ok(crate::builtins::xml::create_xdeclaration(&arg_values));
+                }
+
                 // Handle Common Dialogs
                 if class_name == "openfiledialog" || class_name.ends_with(".openfiledialog") {
                     return Ok(crate::builtins::dialogs::create_openfiledialog());
@@ -3663,6 +3704,21 @@ impl Interpreter {
                     fields.insert("value".to_string(), inner_val);
                     fields.insert("hasvalue".to_string(), Value::Boolean(has_value));
                     let obj = crate::value::ObjectData { class_name: "Nullable".to_string(), fields };
+                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                }
+
+                // ===== SYSTEM.THREADING.THREAD =====
+                if class_name == "thread" || class_name == "system.threading.thread" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("Thread".to_string()));
+                    if let Some(task) = arg_values.get(0) {
+                        fields.insert("__task".to_string(), task.clone());
+                    }
+                    fields.insert("isalive".to_string(), Value::Boolean(false));
+                    fields.insert("managedthreadid".to_string(), Value::Integer(0));
+                    let obj = crate::value::ObjectData { class_name: "Thread".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -5040,6 +5096,11 @@ impl Interpreter {
                 // Boolean Properties (via string)
                 // Integer/Long/Double properties - fallback to env lookup below
 
+                // XML object property access (XmlDocument, XmlElement, XmlAttribute, etc.)
+                if crate::builtins::xml::is_xml_object(&obj_val) {
+                    return crate::builtins::xml::xml_property_access(&obj_val, member.as_str());
+                }
+
                 if let Value::Object(obj_ref) = &obj_val {
                     let class_name_str;
                     {
@@ -6025,8 +6086,10 @@ impl Interpreter {
             "jsonserializer.deserialize" | "json.deserialize" => return json_deserialize_fn(&arg_values),
             
             // XML functions
-            "xdocument.parse" | "xml.parse" => return xml_parse_fn(&arg_values),
+            "xdocument.parse" | "xml.parse" => return crate::builtins::xml::xdocument_parse(&arg_values),
+            "xdocument.load" | "xml.load" => return crate::builtins::xml::xdocument_load(&arg_values),
             "xdocument.save" | "xml.save" => return xml_save_fn(&arg_values),
+            "xelement.parse" => return crate::builtins::xml::xelement_parse(&arg_values),
 
             // Financial functions
             "pmt" => return pmt_fn(&arg_values),
@@ -6206,6 +6269,43 @@ impl Interpreter {
                         _ => return Err(RuntimeError::UndefinedFunction(format!("Path.{}", method_name))),
                     }
                 }
+                "md5" | "system.security.cryptography.md5" => {
+                    match method_name.as_str() {
+                        "create" => {
+                            let mut fields = HashMap::new();
+                            fields.insert("__type".to_string(), Value::String("MD5".to_string()));
+                            let obj = crate::value::ObjectData { class_name: "MD5".to_string(), fields };
+                            return Ok(Value::Object(Rc::new(RefCell::new(obj))));
+                        }
+                        _ => return Err(RuntimeError::UndefinedFunction(format!("MD5.{}", method_name))),
+                    }
+                }
+                "sha256" | "system.security.cryptography.sha256" => {
+                    match method_name.as_str() {
+                        "create" => {
+                            let mut fields = HashMap::new();
+                            fields.insert("__type".to_string(), Value::String("SHA256".to_string()));
+                            let obj = crate::value::ObjectData { class_name: "SHA256".to_string(), fields };
+                            return Ok(Value::Object(Rc::new(RefCell::new(obj))));
+                        }
+                        _ => return Err(RuntimeError::UndefinedFunction(format!("SHA256.{}", method_name))),
+                    }
+                }
+                "xdocument" | "system.xml.linq.xdocument" => {
+                    let arg_values: Vec<Value> = args.iter().map(|a| self.evaluate_expr(a)).collect::<Result<_,_>>()?;
+                    match method_name.as_str() {
+                        "parse" => return crate::builtins::xml::xdocument_parse(&arg_values),
+                        "load" => return crate::builtins::xml::xdocument_load(&arg_values),
+                        _ => return Err(RuntimeError::UndefinedFunction(format!("XDocument.{}", method_name))),
+                    }
+                }
+                "xelement" | "system.xml.linq.xelement" => {
+                    let arg_values: Vec<Value> = args.iter().map(|a| self.evaluate_expr(a)).collect::<Result<_,_>>()?;
+                    match method_name.as_str() {
+                        "parse" => return crate::builtins::xml::xelement_parse(&arg_values),
+                        _ => return Err(RuntimeError::UndefinedFunction(format!("XElement.{}", method_name))),
+                    }
+                }
                 _ => {}
             }
         }
@@ -6342,6 +6442,10 @@ impl Interpreter {
                             return stringbuilder_method_fn("tostring", &obj_val, &arg_values);
                         }
                         }
+                    // XML objects: delegate to xml module for proper serialization
+                    if crate::builtins::xml::is_xml_object(&obj_val) {
+                        return crate::builtins::xml::xml_method_call(&obj_val, "tostring", &[]);
+                    }
                     if let Value::Date(ole) = &obj_val {
                          let arg_values: Vec<Value> = args.iter().map(|a| self.evaluate_expr(a)).collect::<Result<_,_>>()?;
                          let fmt = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
@@ -6424,6 +6528,15 @@ impl Interpreter {
                     }));
                 }
                 _ => {}
+            }
+
+            // Handle XML object methods: Element(), Elements(), Attribute(), Add(), etc.
+            if crate::builtins::xml::is_xml_object(&obj_val) {
+                let arg_values: Result<Vec<Value>, RuntimeError> = args.iter()
+                    .map(|arg| self.evaluate_expr(arg))
+                    .collect();
+                let arg_values = arg_values?;
+                return crate::builtins::xml::xml_method_call(&obj_val, &method_name, &arg_values);
             }
 
             // Handle ResourceManager methods: GetString(key), GetObject(key)
@@ -9881,6 +9994,43 @@ impl Interpreter {
                     return self.dispatch_console_method(&method_name, &arg_values);
                 } else if class_name_lower == "system.math" {
                     return self.dispatch_math_method(&method_name, &arg_values);
+                } else if class_name_lower == "md5" {
+                    if method_name == "computehash" {
+                        return crate::builtins::cryptography_fns::md5_hash_fn(&arg_values);
+                    }
+                } else if class_name_lower == "sha256" {
+                    if method_name == "computehash" {
+                        return crate::builtins::cryptography_fns::sha256_hash_fn(&arg_values);
+                    }
+                } else if class_name_lower == "thread" {
+                    match method_name.as_str() {
+                        "start" => {
+                            let task = obj_ref.borrow().fields.get("__task").cloned();
+                            if let Some(lambda) = task {
+                                let shared_lambda = lambda.to_shared();
+                                // Clone static state for the thread
+                                let functions = self.functions.clone();
+                                let subs = self.subs.clone();
+                                let classes = self.classes.clone();
+                                let namespace_map = self.namespace_map.clone();
+                                
+                                std::thread::spawn(move || {
+                                    let mut bg_interpreter = Interpreter::new_background(functions, subs, classes, namespace_map);
+                                    let lambda_val = shared_lambda.to_value();
+                                    let _ = bg_interpreter.call_lambda(lambda_val, &[]);
+                                });
+                                obj_ref.borrow_mut().fields.insert("isalive".to_string(), Value::Boolean(true));
+                            }
+                            return Ok(Value::Nothing);
+                        }
+                        "join" => {
+                            // Join is tricky without a real handle. 
+                            // For MVP, we can just sleep a bit or return.
+                            // Real Join would need Arc<Mutex<bool>> for completion.
+                            return Ok(Value::Nothing);
+                        }
+                        _ => {}
+                    }
                 }
                 
                 // Use helper to find method in hierarchy
