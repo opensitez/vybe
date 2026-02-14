@@ -1,4 +1,71 @@
 #[test]
+fn test_new_control_types_roundtrip() {
+    // Test that newly added ControlType variants (Timer, ImageList, ErrorProvider,
+    // dialogs, CheckedListBox, DomainUpDown, BackgroundWorker, etc.) round-trip correctly
+    let code = r#"Partial Class TestForm
+    Inherits System.Windows.Forms.Form
+    Private Sub InitializeComponent()
+        Me.tmr1 = New System.Windows.Forms.Timer()
+        Me.il1 = New System.Windows.Forms.ImageList()
+        Me.ep1 = New System.Windows.Forms.ErrorProvider()
+        Me.bgw1 = New System.ComponentModel.BackgroundWorker()
+        Me.ofd1 = New System.Windows.Forms.OpenFileDialog()
+        Me.sfd1 = New System.Windows.Forms.SaveFileDialog()
+        Me.clb1 = New System.Windows.Forms.CheckedListBox()
+        Me.dud1 = New System.Windows.Forms.DomainUpDown()
+        Me.SuspendLayout()
+        Me.tmr1.Name = "tmr1"
+        Me.il1.Name = "il1"
+        Me.ep1.Name = "ep1"
+        Me.bgw1.Name = "bgw1"
+        Me.ofd1.Name = "ofd1"
+        Me.sfd1.Name = "sfd1"
+        Me.clb1.Location = New System.Drawing.Point(10, 10)
+        Me.clb1.Size = New System.Drawing.Size(150, 100)
+        Me.clb1.Name = "clb1"
+        Me.dud1.Location = New System.Drawing.Point(10, 120)
+        Me.dud1.Size = New System.Drawing.Size(150, 23)
+        Me.dud1.Name = "dud1"
+        Me.ClientSize = New System.Drawing.Size(400, 300)
+        Me.Text = "Test"
+        Me.Name = "TestForm"
+        Me.ResumeLayout(False)
+    End Sub
+End Class"#;
+
+    let program = vybe_parser::parse_program(code).expect("Failed to parse");
+    let cls = program.declarations.into_iter().find_map(|d| {
+        if let vybe_parser::Declaration::Class(c) = d { Some(c) } else { None }
+    }).expect("No class found");
+
+    let form = vybe_forms::serialization::designer_parser::extract_form_from_designer(&cls)
+        .expect("Failed to extract form");
+
+    assert_eq!(form.controls.len(), 8, "Should have 8 controls");
+
+    let tmr = form.controls.iter().find(|c| c.name == "tmr1").expect("tmr1 missing");
+    assert!(matches!(tmr.control_type, vybe_forms::ControlType::Timer), "tmr1 should be Timer, got {:?}", tmr.control_type);
+    assert!(tmr.control_type.is_non_visual(), "Timer should be non-visual");
+
+    let bgw = form.controls.iter().find(|c| c.name == "bgw1").expect("bgw1 missing");
+    assert!(matches!(bgw.control_type, vybe_forms::ControlType::BackgroundWorker), "bgw1 should be BackgroundWorker, got {:?}", bgw.control_type);
+
+    let clb = form.controls.iter().find(|c| c.name == "clb1").expect("clb1 missing");
+    assert!(matches!(clb.control_type, vybe_forms::ControlType::CheckedListBox), "clb1 should be CheckedListBox, got {:?}", clb.control_type);
+    assert!(!clb.control_type.is_non_visual(), "CheckedListBox should be visual");
+
+    let dud = form.controls.iter().find(|c| c.name == "dud1").expect("dud1 missing");
+    assert!(matches!(dud.control_type, vybe_forms::ControlType::DomainUpDown), "dud1 should be DomainUpDown, got {:?}", dud.control_type);
+
+    // Round-trip through codegen
+    let generated = vybe_forms::serialization::designer_codegen::generate_designer_code(&form);
+    assert!(generated.contains("System.Windows.Forms.Timer"), "Generated code should contain Timer type");
+    assert!(generated.contains("System.ComponentModel.BackgroundWorker"), "Generated code should contain BackgroundWorker type");
+    assert!(generated.contains("System.Windows.Forms.CheckedListBox"), "Generated code should contain CheckedListBox type");
+    assert!(generated.contains("System.Windows.Forms.DomainUpDown"), "Generated code should contain DomainUpDown type");
+}
+
+#[test]
 fn test_nonvisual_types_roundtrip() {
     let code = r#"Partial Class TestForm
     Inherits System.Windows.Forms.Form

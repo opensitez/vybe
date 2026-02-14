@@ -1991,29 +1991,95 @@ pub fn FormRunner() -> Element {
                                                             }
                                                         }
                                                     },
-                                                    ControlType::ListView => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px inset #999; background: white; overflow: auto; {style_back} {style_font} {style_fore};",
-                                                            table {
-                                                                style: "width: 100%; border-collapse: collapse; font-size: 12px; {style_font}; {style_fore};",
-                                                                thead {
-                                                                    tr {
-                                                                        th { style: "border: 1px solid #ccc; padding: 2px; background: #f0f0f0; text-align: left; {style_fore}; {style_font};", "ColumnHeader" }
+                                                    ControlType::ListView => {
+                                                        let lv_items = control.get_list_items();
+                                                        let lv_selected = control.properties.get_int("SelectedIndex").unwrap_or(-1);
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; border: 1px inset #999; overflow: auto; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                                                table {
+                                                                    style: "width: 100%; border-collapse: collapse; font-size: 12px;",
+                                                                    thead {
+                                                                        tr {
+                                                                            th { style: "border-bottom: 2px solid #aaa; padding: 3px 6px; background: #f0f0f0; text-align: left;", "Item" }
+                                                                        }
                                                                     }
-                                                                }
-                                                                tbody {
-                                                                    tr {
-                                                                        td { style: "border: 1px solid #eee; padding: 2px; {style_font}; {style_fore};", "ListItem" }
+                                                                    tbody {
+                                                                        if lv_items.is_empty() {
+                                                                            tr {
+                                                                                td { style: "padding: 4px 6px; color: #aaa; font-style: italic;", "(empty)" }
+                                                                            }
+                                                                        } else {
+                                                                            for (idx, item) in lv_items.iter().enumerate() {
+                                                                                {
+                                                                                    let item_str = item.clone();
+                                                                                    let item_name = name_clone.clone();
+                                                                                    let item_idx = idx as i32;
+                                                                                    let row_style = if item_idx == lv_selected {
+                                                                                        "background: #cce5ff; cursor: pointer; border-bottom: 1px solid #eee; padding: 3px 6px;"
+                                                                                    } else {
+                                                                                        "cursor: pointer; border-bottom: 1px solid #eee; padding: 3px 6px;"
+                                                                                    };
+                                                                                    rsx! {
+                                                                                        tr {
+                                                                                            key: "{idx}",
+                                                                                            onclick: move |_| {
+                                                                                                if let Some(frm) = runtime_form.write().as_mut() {
+                                                                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&item_name) {
+                                                                                                        ctrl.properties.set("SelectedIndex", item_idx);
+                                                                                                    }
+                                                                                                }
+                                                                                                handle_event(item_name.clone(), "SelectedIndexChanged".to_string(), None);
+                                                                                                handle_event(item_name.clone(), "ItemActivate".to_string(), None);
+                                                                                            },
+                                                                                            td { style: "{row_style}", "{item_str}" }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                             }
                                                         }
                                                     },
-                                                    ControlType::TreeView => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px inset #999; background: white; overflow: auto; padding: 4px; {style_back} {style_font} {style_fore};",
-                                                            div { style: "{style_font} {style_fore};", "Node0" }
-                                                            div { style: "padding-left: 20px; {style_font} {style_fore};", "Node1" }
+                                                    ControlType::TreeView => {
+                                                        // Nodes stored as flat list in "List" property; indent via "  " prefix
+                                                        let tv_nodes = control.get_list_items();
+                                                        let tv_selected = control.properties.get_string("SelectedNode").map(|s| s.to_string()).unwrap_or_default();
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; border: 1px inset #999; overflow-y: auto; padding: 2px; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                                                if tv_nodes.is_empty() {
+                                                                    div { style: "padding: 4px; color: #aaa; font-style: italic;", "(no nodes)" }
+                                                                } else {
+                                                                    for node_text in &tv_nodes {
+                                                                        {
+                                                                            let node_str = node_text.clone();
+                                                                            let node_name = name_clone.clone();
+                                                                            let indent = node_str.chars().take_while(|c| *c == ' ').count();
+                                                                            let label = node_str.trim_start().to_string();
+                                                                            let is_selected = node_str == tv_selected;
+                                                                            let bg = if is_selected { "background: #cce5ff;" } else { "" };
+                                                                            rsx! {
+                                                                                div {
+                                                                                    style: "padding: 2px 4px; padding-left: {indent * 12 + 4}px; cursor: pointer; {bg}",
+                                                                                    onclick: move |_| {
+                                                                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&node_name) {
+                                                                                                ctrl.properties.set("SelectedNode", node_str.clone());
+                                                                                            }
+                                                                                        }
+                                                                                        handle_event(node_name.clone(), "AfterSelect".to_string(), None);
+                                                                                        handle_event(node_name.clone(), "NodeMouseClick".to_string(), None);
+                                                                                    },
+                                                                                    "▸ {label}"
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                     },
                                                     ControlType::DataGridView => rsx! {
@@ -2030,6 +2096,7 @@ pub fn FormRunner() -> Element {
                                                                 .collect();
                                                             let has_data = !grid_columns.is_empty();
 
+                                                            let dgv_selected_row = control.properties.get_int("CurrentRowIndex").unwrap_or(-1);
                                                             rsx! {
                                                                 div {
                                                                     style: "width: 100%; height: 100%; border: 1px solid #999; background: #f0f0f0; padding: 1px; overflow: auto;",
@@ -2051,10 +2118,30 @@ pub fn FormRunner() -> Element {
                                                                         tbody {
                                                                             if has_data {
                                                                                 for (ri, row) in grid_rows.iter().enumerate() {
-                                                                                    tr {
-                                                                                        td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; color: #333; width: 30px; height: 22px;", "{ri}" }
-                                                                                        for cell in row {
-                                                                                            td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; white-space: nowrap; height: 22px;", "{cell}" }
+                                                                                    {
+                                                                                        let row_idx = ri as i32;
+                                                                                        let dgv_name = name_clone.clone();
+                                                                                        let row_bg = if row_idx == dgv_selected_row { "background: #cce5ff;" } else { "" };
+                                                                                        rsx! {
+                                                                                            tr {
+                                                                                                key: "{ri}",
+                                                                                                style: "{row_bg} cursor: pointer;",
+                                                                                                onclick: move |_| {
+                                                                                                    if let Some(frm) = runtime_form.write().as_mut() {
+                                                                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&dgv_name) {
+                                                                                                            ctrl.properties.set("CurrentRowIndex", row_idx);
+                                                                                                        }
+                                                                                                    }
+                                                                                                    handle_event(dgv_name.clone(), "CellClick".to_string(), None);
+                                                                                                    handle_event(dgv_name.clone(), "RowEnter".to_string(), None);
+                                                                                                    handle_event(dgv_name.clone(), "SelectionChanged".to_string(), None);
+                                                                                                    handle_event(dgv_name.clone(), "CurrentCellChanged".to_string(), None);
+                                                                                                },
+                                                                                                td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; color: #333; width: 30px; height: 22px;", "{ri}" }
+                                                                                                for cell in row {
+                                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; white-space: nowrap; height: 22px; {row_bg}", "{cell}" }
+                                                                                                }
+                                                                                            }
                                                                                         }
                                                                                     }
                                                                                 }
@@ -2528,6 +2615,180 @@ pub fn FormRunner() -> Element {
                                                                             handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
                                                                         }
                                                                     }
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    // ── CheckedListBox ──────────────────────────────────────────────
+                                                    ControlType::CheckedListBox => {
+                                                        let items = control.get_list_items();
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 4px; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                                                for (idx, item) in items.iter().enumerate() {
+                                                                    {
+                                                                        let item_name = name_clone.clone();
+                                                                        let item_idx = idx;
+                                                                        let item_str = item.clone();
+                                                                        rsx! {
+                                                                            div {
+                                                                                key: "{item_idx}",
+                                                                                style: "display: flex; align-items: center; gap: 6px; padding: 2px 6px; cursor: pointer;",
+                                                                                onclick: move |_| {
+                                                                                    handle_event(item_name.clone(), "ItemCheck".to_string(), None);
+                                                                                    handle_event(item_name.clone(), "SelectedIndexChanged".to_string(), None);
+                                                                                },
+                                                                                input {
+                                                                                    r#type: "checkbox",
+                                                                                    disabled: !is_enabled,
+                                                                                }
+                                                                                span { "{item_str}" }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    // ── DomainUpDown ────────────────────────────────────────────────
+                                                    ControlType::DomainUpDown => rsx! {
+                                                        div {
+                                                            style: "display: flex; align-items: center; width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 4px; {base_field_bg} {style_back};",
+                                                            input {
+                                                                style: "flex: 1; border: none; outline: none; background: transparent; padding: 0 4px; {style_font} {style_fore};",
+                                                                disabled: !is_enabled,
+                                                                value: "{text}",
+                                                                oninput: move |evt| {
+                                                                    if let Some(frm) = runtime_form.write().as_mut() {
+                                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                            ctrl.set_text(evt.value());
+                                                                        }
+                                                                    }
+                                                                    handle_event(name_clone.clone(), "SelectedItemChanged".to_string(), None);
+                                                                }
+                                                            }
+                                                            div {
+                                                                style: "display: flex; flex-direction: column; border-left: 1px solid #cbd5e1;",
+                                                                button { style: "padding: 0 4px; border: none; background: #f1f5f9; cursor: pointer; font-size: 8px; line-height: 1;", disabled: !is_enabled, "▲" }
+                                                                button { style: "padding: 0 4px; border: none; background: #f1f5f9; cursor: pointer; font-size: 8px; line-height: 1;", disabled: !is_enabled, "▼" }
+                                                            }
+                                                        }
+                                                    },
+                                                    // ── PropertyGrid ────────────────────────────────────────────────
+                                                    ControlType::PropertyGrid => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; overflow: auto; {base_field_bg} {style_back} {style_font};",
+                                                            div {
+                                                                style: "padding: 4px 6px; background: #e2e8f0; border-bottom: 1px solid #cbd5e1; font-size: 11px; font-weight: bold; color: #475569;",
+                                                                "Properties"
+                                                            }
+                                                            div {
+                                                                style: "padding: 8px; font-size: 11px; color: #64748b;",
+                                                                "[ PropertyGrid ]"
+                                                            }
+                                                        }
+                                                    },
+                                                    // ── Splitter ────────────────────────────────────────────────────
+                                                    ControlType::Splitter => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; background: #e2e8f0; cursor: col-resize; border-left: 1px solid #cbd5e1; border-right: 1px solid #cbd5e1;",
+                                                        }
+                                                    },
+                                                    // ── DataGrid (legacy) ────────────────────────────────────────────
+                                                    ControlType::DataGrid => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; overflow: auto; {base_field_bg} {style_back} {style_font};",
+                                                            table {
+                                                                style: "width: 100%; border-collapse: collapse; font-size: 12px;",
+                                                                tbody {
+                                                                    tr {
+                                                                        td {
+                                                                            style: "padding: 6px 8px; border: 1px solid #e2e8f0; color: #64748b; text-align: center;",
+                                                                            "[ DataGrid ]"
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    // ── UserControl (container) ──────────────────────────────────────
+                                                    ControlType::UserControl => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; position: relative; border: 1px dashed #94a3b8; {style_back};",
+                                                        }
+                                                    },
+                                                    // ── PrintPreviewControl ──────────────────────────────────────────
+                                                    ControlType::PrintPreviewControl => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; background: #f1f5f9; display: flex; align-items: center; justify-content: center; {style_font};",
+                                                            div {
+                                                                style: "text-align: center; color: #64748b;",
+                                                                div { style: "font-size: 32px; margin-bottom: 8px;", "🖨" }
+                                                                div { style: "font-size: 11px;", "Print Preview" }
+                                                            }
+                                                        }
+                                                    },
+                                                    // ── ToolStrip sub-components (standalone rendering) ──────────────
+                                                    ControlType::ToolStripSeparator => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;",
+                                                            div { style: "width: 1px; height: 80%; background: #cbd5e1;" }
+                                                        }
+                                                    },
+                                                    ControlType::ToolStripButton => rsx! {
+                                                        button {
+                                                            style: "width: 100%; height: 100%; border: 1px solid transparent; background: transparent; cursor: pointer; border-radius: 3px; {style_font} {style_fore}; padding: 2px 4px;",
+                                                            disabled: !is_enabled,
+                                                            onclick: move |_| { handle_event(name_clone.clone(), "Click".to_string(), None); },
+                                                            "{text}"
+                                                        }
+                                                    },
+                                                    ControlType::ToolStripLabel => rsx! {
+                                                        div {
+                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 0 4px; {style_font} {style_fore} {style_back};",
+                                                            "{text}"
+                                                        }
+                                                    },
+                                                    ControlType::ToolStripComboBox => rsx! {
+                                                        select {
+                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 3px; {base_field_bg} {style_back} {style_font} {style_fore}; padding: 0 2px;",
+                                                            disabled: !is_enabled,
+                                                        }
+                                                    },
+                                                    ControlType::ToolStripDropDownButton | ControlType::ToolStripSplitButton => rsx! {
+                                                        button {
+                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; border-radius: 3px; {style_font} {style_fore}; padding: 2px 4px; display: flex; align-items: center; gap: 2px;",
+                                                            disabled: !is_enabled,
+                                                            onclick: move |_| { handle_event(name_clone.clone(), "Click".to_string(), None); },
+                                                            span { "{text}" }
+                                                            span { style: "font-size: 8px;", "▼" }
+                                                        }
+                                                    },
+                                                    ControlType::ToolStripTextBox => rsx! {
+                                                        input {
+                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 3px; {base_field_bg} {style_back} {style_font} {style_fore}; padding: 0 4px;",
+                                                            disabled: !is_enabled,
+                                                            value: "{text}",
+                                                            oninput: move |evt| {
+                                                                if let Some(frm) = runtime_form.write().as_mut() {
+                                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                        ctrl.set_text(evt.value());
+                                                                    }
+                                                                }
+                                                                handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                                            }
+                                                        }
+                                                    },
+                                                    ControlType::ToolStripProgressBar => {
+                                                        let ts_val = control.properties.get_int("Value").unwrap_or(0);
+                                                        let ts_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                                        let ts_pct = if ts_max > 0 { (ts_val * 100) / ts_max } else { 0 };
+                                                        let ts_pct_str = format!("{}%", ts_pct);
+                                                        rsx! {
+                                                            div {
+                                                                style: "width: 100%; height: 100%; background: #e2e8f0; border: 1px solid #cbd5e1; border-radius: 3px; overflow: hidden;",
+                                                                div {
+                                                                    style: "height: 100%; background: #2563eb; width: {ts_pct_str}; transition: width 0.3s;",
                                                                 }
                                                             }
                                                         }

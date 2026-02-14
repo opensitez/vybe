@@ -87,6 +87,32 @@ pub enum ControlType {
     PrintDocument,
     // Notification / system tray
     NotifyIcon,
+    // Additional visual controls
+    CheckedListBox,
+    DomainUpDown,
+    PropertyGrid,
+    Splitter,
+    DataGrid,           // Legacy DataGrid (pre-DataGridView)
+    UserControl,        // Custom user control (container, renders like Panel)
+    // ToolStrip sub-components (appear inside ToolStrip/MenuStrip containers)
+    ToolStripSeparator,
+    ToolStripButton,
+    ToolStripLabel,
+    ToolStripComboBox,
+    ToolStripDropDownButton,
+    ToolStripSplitButton,
+    ToolStripTextBox,
+    ToolStripProgressBar,
+    // Additional dialog components
+    PrintPreviewDialog,
+    PageSetupDialog,
+    PrintPreviewControl,
+    // Additional non-visual / infrastructure components
+    HelpProvider,
+    BackgroundWorker,
+    SqlConnection,
+    OleDbConnection,
+    DataView,
     // Arbitrary custom control type (fully qualified name)
     Custom(String),
 }
@@ -145,6 +171,32 @@ impl ControlType {
             "printdialog" => Some(ControlType::PrintDialog),
             "printdocument" => Some(ControlType::PrintDocument),
             "notifyicon" => Some(ControlType::NotifyIcon),
+            // Additional visual controls
+            "checkedlistbox" => Some(ControlType::CheckedListBox),
+            "domainupdown" => Some(ControlType::DomainUpDown),
+            "propertygrid" => Some(ControlType::PropertyGrid),
+            "splitter" => Some(ControlType::Splitter),
+            "datagrid" => Some(ControlType::DataGrid),
+            "usercontrol" => Some(ControlType::UserControl),
+            // ToolStrip sub-components
+            "toolstripseparator" => Some(ControlType::ToolStripSeparator),
+            "toolstripbutton" => Some(ControlType::ToolStripButton),
+            "toolstriplabel" => Some(ControlType::ToolStripLabel),
+            "toolstripcombobox" => Some(ControlType::ToolStripComboBox),
+            "toolstripdropdownbutton" => Some(ControlType::ToolStripDropDownButton),
+            "toolstripsplitbutton" => Some(ControlType::ToolStripSplitButton),
+            "toolstriptextbox" => Some(ControlType::ToolStripTextBox),
+            "toolstripprogressbar" => Some(ControlType::ToolStripProgressBar),
+            // Additional dialogs
+            "printpreviewdialog" => Some(ControlType::PrintPreviewDialog),
+            "pagesetupdialog" => Some(ControlType::PageSetupDialog),
+            "printpreviewcontrol" => Some(ControlType::PrintPreviewControl),
+            // Non-visual infrastructure
+            "helpprovider" => Some(ControlType::HelpProvider),
+            "backgroundworker" => Some(ControlType::BackgroundWorker),
+            "sqlconnection" => Some(ControlType::SqlConnection),
+            "oledbconnection" => Some(ControlType::OleDbConnection),
+            "dataview" => Some(ControlType::DataView),
             _ => Some(ControlType::Custom(name.to_string())),
         }
     }
@@ -203,6 +255,28 @@ impl ControlType {
             ControlType::PrintDialog => "PrintDialog",
             ControlType::PrintDocument => "PrintDocument",
             ControlType::NotifyIcon => "NotifyIcon",
+            ControlType::CheckedListBox => "CheckedListBox",
+            ControlType::DomainUpDown => "DomainUpDown",
+            ControlType::PropertyGrid => "PropertyGrid",
+            ControlType::Splitter => "Splitter",
+            ControlType::DataGrid => "DataGrid",
+            ControlType::UserControl => "UserControl",
+            ControlType::ToolStripSeparator => "ToolStripSeparator",
+            ControlType::ToolStripButton => "ToolStripButton",
+            ControlType::ToolStripLabel => "ToolStripLabel",
+            ControlType::ToolStripComboBox => "ToolStripComboBox",
+            ControlType::ToolStripDropDownButton => "ToolStripDropDownButton",
+            ControlType::ToolStripSplitButton => "ToolStripSplitButton",
+            ControlType::ToolStripTextBox => "ToolStripTextBox",
+            ControlType::ToolStripProgressBar => "ToolStripProgressBar",
+            ControlType::PrintPreviewDialog => "PrintPreviewDialog",
+            ControlType::PageSetupDialog => "PageSetupDialog",
+            ControlType::PrintPreviewControl => "PrintPreviewControl",
+            ControlType::HelpProvider => "HelpProvider",
+            ControlType::BackgroundWorker => "BackgroundWorker",
+            ControlType::SqlConnection => "SqlConnection",
+            ControlType::OleDbConnection => "OleDbConnection",
+            ControlType::DataView => "DataView",
             ControlType::Custom(s) => s.as_str(),
         }
     }
@@ -224,7 +298,14 @@ impl ControlType {
             ControlType::ColorDialog |
             ControlType::PrintDialog |
             ControlType::PrintDocument |
-            ControlType::NotifyIcon
+            ControlType::NotifyIcon |
+            ControlType::PrintPreviewDialog |
+            ControlType::PageSetupDialog |
+            ControlType::HelpProvider |
+            ControlType::BackgroundWorker |
+            ControlType::SqlConnection |
+            ControlType::OleDbConnection |
+            ControlType::DataView
         )
     }
 
@@ -293,6 +374,28 @@ impl ControlType {
             ControlType::PrintDialog => "pd",
             ControlType::PrintDocument => "pdoc",
             ControlType::NotifyIcon => "ni",
+            ControlType::CheckedListBox => "clb",
+            ControlType::DomainUpDown => "dud",
+            ControlType::PropertyGrid => "pg",
+            ControlType::Splitter => "spl",
+            ControlType::DataGrid => "dg",
+            ControlType::UserControl => "uc",
+            ControlType::ToolStripSeparator => "tss",
+            ControlType::ToolStripButton => "tsb",
+            ControlType::ToolStripLabel => "tsl",
+            ControlType::ToolStripComboBox => "tscb",
+            ControlType::ToolStripDropDownButton => "tsddb",
+            ControlType::ToolStripSplitButton => "tsspb",
+            ControlType::ToolStripTextBox => "tstb",
+            ControlType::ToolStripProgressBar => "tspb",
+            ControlType::PrintPreviewDialog => "ppd",
+            ControlType::PageSetupDialog => "psd",
+            ControlType::PrintPreviewControl => "ppc",
+            ControlType::HelpProvider => "hp",
+            ControlType::BackgroundWorker => "bgw",
+            ControlType::SqlConnection => "sqlcon",
+            ControlType::OleDbConnection => "olecon",
+            ControlType::DataView => "dv",
             ControlType::Custom(_) => "ctrl",
         }
     }
@@ -351,6 +454,28 @@ impl ControlType {
             ControlType::PrintDialog => (32, 32),
             ControlType::PrintDocument => (32, 32),
             ControlType::NotifyIcon => (32, 32),
+            ControlType::CheckedListBox => (150, 100),
+            ControlType::DomainUpDown => (150, 23),
+            ControlType::PropertyGrid => (200, 300),
+            ControlType::Splitter => (4, 100),
+            ControlType::DataGrid => (300, 200),
+            ControlType::UserControl => (200, 150),
+            ControlType::ToolStripSeparator => (6, 25),
+            ControlType::ToolStripButton => (23, 22),
+            ControlType::ToolStripLabel => (50, 22),
+            ControlType::ToolStripComboBox => (100, 22),
+            ControlType::ToolStripDropDownButton => (23, 22),
+            ControlType::ToolStripSplitButton => (23, 22),
+            ControlType::ToolStripTextBox => (100, 22),
+            ControlType::ToolStripProgressBar => (100, 22),
+            ControlType::PrintPreviewDialog => (32, 32),
+            ControlType::PageSetupDialog => (32, 32),
+            ControlType::PrintPreviewControl => (400, 300),
+            ControlType::HelpProvider => (32, 32),
+            ControlType::BackgroundWorker => (32, 32),
+            ControlType::SqlConnection => (32, 32),
+            ControlType::OleDbConnection => (32, 32),
+            ControlType::DataView => (32, 32),
             ControlType::Custom(_) => (100, 100),
         }
     }

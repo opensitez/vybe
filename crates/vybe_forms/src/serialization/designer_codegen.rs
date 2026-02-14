@@ -67,6 +67,32 @@ pub fn control_type_to_vbnet(ct: &ControlType) -> &str {
         ControlType::PrintDialog => "System.Windows.Forms.PrintDialog",
         ControlType::PrintDocument => "System.Drawing.Printing.PrintDocument",
         ControlType::NotifyIcon => "System.Windows.Forms.NotifyIcon",
+        // Additional visual controls
+        ControlType::CheckedListBox => "System.Windows.Forms.CheckedListBox",
+        ControlType::DomainUpDown => "System.Windows.Forms.DomainUpDown",
+        ControlType::PropertyGrid => "System.Windows.Forms.PropertyGrid",
+        ControlType::Splitter => "System.Windows.Forms.Splitter",
+        ControlType::DataGrid => "System.Windows.Forms.DataGrid",
+        ControlType::UserControl => "System.Windows.Forms.UserControl",
+        // ToolStrip sub-components
+        ControlType::ToolStripSeparator => "System.Windows.Forms.ToolStripSeparator",
+        ControlType::ToolStripButton => "System.Windows.Forms.ToolStripButton",
+        ControlType::ToolStripLabel => "System.Windows.Forms.ToolStripLabel",
+        ControlType::ToolStripComboBox => "System.Windows.Forms.ToolStripComboBox",
+        ControlType::ToolStripDropDownButton => "System.Windows.Forms.ToolStripDropDownButton",
+        ControlType::ToolStripSplitButton => "System.Windows.Forms.ToolStripSplitButton",
+        ControlType::ToolStripTextBox => "System.Windows.Forms.ToolStripTextBox",
+        ControlType::ToolStripProgressBar => "System.Windows.Forms.ToolStripProgressBar",
+        // Additional dialogs
+        ControlType::PrintPreviewDialog => "System.Windows.Forms.PrintPreviewDialog",
+        ControlType::PageSetupDialog => "System.Windows.Forms.PageSetupDialog",
+        ControlType::PrintPreviewControl => "System.Windows.Forms.PrintPreviewControl",
+        // Non-visual infrastructure
+        ControlType::HelpProvider => "System.Windows.Forms.HelpProvider",
+        ControlType::BackgroundWorker => "System.ComponentModel.BackgroundWorker",
+        ControlType::SqlConnection => "System.Data.SqlClient.SqlConnection",
+        ControlType::OleDbConnection => "System.Data.OleDb.OleDbConnection",
+        ControlType::DataView => "System.Data.DataView",
         ControlType::Custom(s) => s.as_str(),
     }
 }

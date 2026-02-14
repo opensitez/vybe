@@ -661,7 +661,7 @@ impl Interpreter {
                 fields.insert("autocompletemode".to_string(), Value::Integer(0));
                 fields.insert("autocompletesource".to_string(), Value::Integer(0));
             }
-            "listbox" => {
+            "listbox" | "checkedlistbox" => {
                 fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
                 fields.insert("selectedindex".to_string(), Value::Integer(-1));
                 fields.insert("selecteditem".to_string(), Value::Nothing);
@@ -677,6 +677,18 @@ impl Interpreter {
                 fields.insert("datasource".to_string(), Value::Nothing);
                 fields.insert("displaymember".to_string(), Value::String(String::new()));
                 fields.insert("valuemember".to_string(), Value::String(String::new()));
+                // CheckedListBox extra
+                fields.insert("checkeditems".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("checkonclick".to_string(), Value::Boolean(false));
+            }
+            "domainupdown" => {
+                fields.insert("items".to_string(), Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))));
+                fields.insert("selectedindex".to_string(), Value::Integer(-1));
+                fields.insert("selecteditem".to_string(), Value::Nothing);
+                fields.insert("text".to_string(), Value::String(String::new()));
+                fields.insert("readonly".to_string(), Value::Boolean(false));
+                fields.insert("wrap".to_string(), Value::Boolean(false));
+                fields.insert("sorted".to_string(), Value::Boolean(false));
             }
             "progressbar" => {
                 fields.insert("value".to_string(), Value::Integer(0));
@@ -1799,11 +1811,26 @@ impl Interpreter {
                                     s_lower == "printpreviewcontrol" ||
                                     s_lower == "printpreviewdialog" ||
                                     s_lower == "pagesetupdialog" ||
+                                    s_lower == "printdialog" ||
                                     s_lower == "colordialog" ||
                                     s_lower == "fontdialog" ||
                                     s_lower == "folderbrowserdialog" ||
-                                    s_lower == "opendialog" ||
-                                    s_lower == "savefiledialog"
+                                    s_lower == "openfiledialog" ||
+                                    s_lower == "savefiledialog" ||
+                                    s_lower == "checkedlistbox" ||
+                                    s_lower == "splitter" ||
+                                    s_lower == "datagrid" ||
+                                    s_lower == "usercontrol" ||
+                                    s_lower == "toolstripseparator" ||
+                                    s_lower == "toolstripbutton" ||
+                                    s_lower == "toolstriplabel" ||
+                                    s_lower == "toolstripcombobox" ||
+                                    s_lower == "toolstripdropdownbutton" ||
+                                    s_lower == "toolstripsplitbutton" ||
+                                    s_lower == "toolstriptextbox" ||
+                                    s_lower == "toolstripprogressbar" ||
+                                    s_lower == "helpprovider" ||
+                                    s_lower == "dataview"
                                  {
                                      Value::String(field.name.as_str().to_string())
                                  } else {
@@ -2171,7 +2198,16 @@ impl Interpreter {
                                 "datagridview" | "bindingnavigator" | "bindingsource" |
                                 "flowlayoutpanel" | "tablelayoutpanel" | "splitcontainer" |
                                 "maskedtextbox" | "domainupdown" | "contextmenustrip" |
-                                "toolstripstatuslabel" | "linklabel" | "hscrollbar" | "vscrollbar"
+                                "toolstripstatuslabel" | "linklabel" | "hscrollbar" | "vscrollbar" |
+                                "checkedlistbox" | "propertygrid" | "splitter" | "datagrid" |
+                                "usercontrol" | "toolstripseparator" | "toolstripbutton" |
+                                "toolstriplabel" | "toolstripcombobox" | "toolstripdropdownbutton" |
+                                "toolstripsplitbutton" | "toolstriptextbox" | "toolstripprogressbar" |
+                                "printpreviewcontrol" | "printdialog" | "printpreviewdialog" |
+                                "pagesetupdialog" | "helpprovider" | "dataview" |
+                                "openfiledialog" | "savefiledialog" | "folderbrowserdialog" |
+                                "colordialog" | "fontdialog" | "notifyicon" | "imagelist" |
+                                "backgroundworker" | "sqlconnection" | "oledbconnection"
                             );
                             if is_winforms {
                                 Value::String(prop_name.clone())
@@ -3757,6 +3793,18 @@ impl Interpreter {
                 }
                 if class_name == "folderbrowserdialog" || class_name.ends_with(".folderbrowserdialog") {
                     return Ok(crate::builtins::dialogs::create_folderbrowserdialog());
+                }
+                if class_name == "printdialog" || class_name.ends_with(".printdialog") {
+                    return Ok(crate::builtins::dialogs::create_printdialog());
+                }
+                if class_name == "printpreviewdialog" || class_name.ends_with(".printpreviewdialog") {
+                    return Ok(crate::builtins::dialogs::create_printpreviewdialog());
+                }
+                if class_name == "pagesetupdialog" || class_name.ends_with(".pagesetupdialog") {
+                    return Ok(crate::builtins::dialogs::create_pagesetupdialog());
+                }
+                if class_name == "helpprovider" || class_name.ends_with(".helpprovider") {
+                    return Ok(crate::builtins::dialogs::create_helpprovider());
                 }
 
                 // ===== EVENTARGS TYPE CONSTRUCTORS =====
@@ -13022,29 +13070,169 @@ impl Interpreter {
                 Ok(Value::Nothing)
             }
             "upbutton" => {
-                // NumericUpDown.UpButton() — increment Value by Increment
                 if let Ok(obj_val) = self.evaluate_expr(obj) {
                     if let Value::Object(obj_ref) = &obj_val {
-                        let mut b = obj_ref.borrow_mut();
-                        let inc = b.fields.get("increment").and_then(|v| v.as_integer().ok()).unwrap_or(1);
-                        let max = b.fields.get("maximum").and_then(|v| v.as_integer().ok()).unwrap_or(100);
-                        let cur = b.fields.get("value").and_then(|v| v.as_integer().ok()).unwrap_or(0);
-                        let new_val = std::cmp::min(cur + inc, max);
-                        b.fields.insert("value".to_string(), Value::Integer(new_val));
+                        let class_name = obj_ref.borrow().class_name.to_lowercase();
+                        if class_name == "domainupdown" {
+                            // DomainUpDown.UpButton() — move to previous item in Items list
+                            let mut b = obj_ref.borrow_mut();
+                            let count = b.fields.get("items")
+                                .and_then(|v| if let Value::Collection(c) = v { Some(c.borrow().count()) } else { None })
+                                .unwrap_or(0i32);
+                            let cur = b.fields.get("selectedindex").and_then(|v| v.as_integer().ok()).unwrap_or(-1);
+                            if count > 0 {
+                                let new_idx = if cur <= 0 { 0i32 } else { cur - 1 };
+                                b.fields.insert("selectedindex".to_string(), Value::Integer(new_idx));
+                                // Update text to match selected item
+                                let item_text = b.fields.get("items")
+                                    .and_then(|v| if let Value::Collection(c) = v {
+                                        c.borrow().item(new_idx as usize).ok().map(|i| i.as_string())
+                                    } else { None })
+                                    .unwrap_or_default();
+                                b.fields.insert("text".to_string(), Value::String(item_text));
+                            }
+                        } else {
+                            // NumericUpDown.UpButton() — increment Value by Increment
+                            let mut b = obj_ref.borrow_mut();
+                            let inc = b.fields.get("increment").and_then(|v| v.as_integer().ok()).unwrap_or(1);
+                            let max = b.fields.get("maximum").and_then(|v| v.as_integer().ok()).unwrap_or(100);
+                            let cur = b.fields.get("value").and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                            let new_val = std::cmp::min(cur + inc, max);
+                            b.fields.insert("value".to_string(), Value::Integer(new_val));
+                        }
                     }
                 }
                 Ok(Value::Nothing)
             }
             "downbutton" => {
-                // NumericUpDown.DownButton() — decrement Value by Increment
                 if let Ok(obj_val) = self.evaluate_expr(obj) {
                     if let Value::Object(obj_ref) = &obj_val {
-                        let mut b = obj_ref.borrow_mut();
-                        let inc = b.fields.get("increment").and_then(|v| v.as_integer().ok()).unwrap_or(1);
-                        let min = b.fields.get("minimum").and_then(|v| v.as_integer().ok()).unwrap_or(0);
-                        let cur = b.fields.get("value").and_then(|v| v.as_integer().ok()).unwrap_or(0);
-                        let new_val = std::cmp::max(cur - inc, min);
-                        b.fields.insert("value".to_string(), Value::Integer(new_val));
+                        let class_name = obj_ref.borrow().class_name.to_lowercase();
+                        if class_name == "domainupdown" {
+                            // DomainUpDown.DownButton() — move to next item in Items list
+                            let mut b = obj_ref.borrow_mut();
+                            let count = b.fields.get("items")
+                                .and_then(|v| if let Value::Collection(c) = v { Some(c.borrow().count()) } else { None })
+                                .unwrap_or(0i32);
+                            let cur = b.fields.get("selectedindex").and_then(|v| v.as_integer().ok()).unwrap_or(-1);
+                            if count > 0 {
+                                let new_idx = if cur < 0 { 0i32 } else { std::cmp::min(cur + 1, count - 1) };
+                                b.fields.insert("selectedindex".to_string(), Value::Integer(new_idx));
+                                let item_text = b.fields.get("items")
+                                    .and_then(|v| if let Value::Collection(c) = v {
+                                        c.borrow().item(new_idx as usize).ok().map(|i| i.as_string())
+                                    } else { None })
+                                    .unwrap_or_default();
+                                b.fields.insert("text".to_string(), Value::String(item_text));
+                            }
+                        } else {
+                            // NumericUpDown.DownButton() — decrement Value by Increment
+                            let mut b = obj_ref.borrow_mut();
+                            let inc = b.fields.get("increment").and_then(|v| v.as_integer().ok()).unwrap_or(1);
+                            let min = b.fields.get("minimum").and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                            let cur = b.fields.get("value").and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                            let new_val = std::cmp::max(cur - inc, min);
+                            b.fields.insert("value".to_string(), Value::Integer(new_val));
+                        }
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "setitemchecked" => {
+                // CheckedListBox.SetItemChecked(index, checked)
+                if arg_values.len() >= 2 {
+                    if let Ok(obj_val) = self.evaluate_expr(obj) {
+                        if let Value::Object(obj_ref) = &obj_val {
+                            let idx = arg_values[0].as_integer().unwrap_or(-1);
+                            let checked = match &arg_values[1] {
+                                Value::Boolean(b) => *b,
+                                Value::Integer(i) => *i != 0,
+                                _ => false,
+                            };
+                            let mut b = obj_ref.borrow_mut();
+                            // Store checked states as a simple array in __checked_states
+                            let states_key = "__checked_states".to_string();
+                            if let Some(Value::Array(states)) = b.fields.get_mut(&states_key) {
+                                let idx_u = idx as usize;
+                                if idx_u >= states.len() {
+                                    states.resize(idx_u + 1, Value::Boolean(false));
+                                }
+                                states[idx_u] = Value::Boolean(checked);
+                            } else {
+                                let mut states = vec![];
+                                let idx_u = idx as usize;
+                                states.resize(idx_u + 1, Value::Boolean(false));
+                                states[idx_u] = Value::Boolean(checked);
+                                b.fields.insert(states_key, Value::Array(states));
+                            }
+                        }
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "getitemchecked" => {
+                // CheckedListBox.GetItemChecked(index) → Boolean
+                if let Some(idx_val) = arg_values.first() {
+                    if let Ok(obj_val) = self.evaluate_expr(obj) {
+                        if let Value::Object(obj_ref) = &obj_val {
+                            let idx = idx_val.as_integer().unwrap_or(-1) as usize;
+                            let b = obj_ref.borrow();
+                            if let Some(Value::Array(states)) = b.fields.get("__checked_states") {
+                                if idx < states.len() {
+                                    return Ok(states[idx].clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Value::Boolean(false))
+            }
+            "getitemcheckstate" => {
+                // CheckedListBox.GetItemCheckState(index) → CheckState (0=Unchecked, 1=Checked, 2=Indeterminate)
+                if let Some(idx_val) = arg_values.first() {
+                    if let Ok(obj_val) = self.evaluate_expr(obj) {
+                        if let Value::Object(obj_ref) = &obj_val {
+                            let idx = idx_val.as_integer().unwrap_or(-1) as usize;
+                            let b = obj_ref.borrow();
+                            if let Some(Value::Array(states)) = b.fields.get("__checked_states") {
+                                if idx < states.len() {
+                                    return match &states[idx] {
+                                        Value::Boolean(true) => Ok(Value::Integer(1)),
+                                        Value::Integer(i) => Ok(Value::Integer(*i)),
+                                        _ => Ok(Value::Integer(0)),
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Value::Integer(0))
+            }
+            "setitemcheckstate" => {
+                // CheckedListBox.SetItemCheckState(index, checkState)
+                if arg_values.len() >= 2 {
+                    if let Ok(obj_val) = self.evaluate_expr(obj) {
+                        if let Value::Object(obj_ref) = &obj_val {
+                            let idx = arg_values[0].as_integer().unwrap_or(-1);
+                            let state = arg_values[1].as_integer().unwrap_or(0);
+                            let mut b = obj_ref.borrow_mut();
+                            let states_key = "__checked_states".to_string();
+                            if let Some(Value::Array(states)) = b.fields.get_mut(&states_key) {
+                                let idx_u = idx as usize;
+                                if idx_u >= states.len() {
+                                    states.resize(idx_u + 1, Value::Boolean(false));
+                                }
+                                states[idx_u] = Value::Integer(state);
+                            } else {
+                                let mut states = vec![];
+                                let idx_u = idx as usize;
+                                states.resize(idx_u + 1, Value::Integer(0));
+                                states[idx_u] = Value::Integer(state);
+                                b.fields.insert(states_key, Value::Array(states));
+                            }
+                            // Also update checkeditems collection
+                            drop(b);
+                        }
                     }
                 }
                 Ok(Value::Nothing)

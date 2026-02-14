@@ -170,6 +170,58 @@ pub fn create_fontdialog() -> Value {
     })))
 }
 
+/// Creates a PrintDialog object
+pub fn create_printdialog() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("AllowPrintToFile".to_string(), Value::Boolean(true));
+    fields.insert("AllowSelection".to_string(), Value::Boolean(false));
+    fields.insert("AllowSomePages".to_string(), Value::Boolean(false));
+    fields.insert("PrintToFile".to_string(), Value::Boolean(false));
+    fields.insert("ShowHelp".to_string(), Value::Boolean(false));
+    fields.insert("ShowNetwork".to_string(), Value::Boolean(true));
+    fields.insert("_dialog_type".to_string(), Value::String("PrintDialog".to_string()));
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+        class_name: "PrintDialog".to_string(),
+        fields,
+    })))
+}
+
+/// Creates a PrintPreviewDialog object
+pub fn create_printpreviewdialog() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("_dialog_type".to_string(), Value::String("PrintPreviewDialog".to_string()));
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+        class_name: "PrintPreviewDialog".to_string(),
+        fields,
+    })))
+}
+
+/// Creates a PageSetupDialog object
+pub fn create_pagesetupdialog() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("AllowMargins".to_string(), Value::Boolean(true));
+    fields.insert("AllowOrientation".to_string(), Value::Boolean(true));
+    fields.insert("AllowPaper".to_string(), Value::Boolean(true));
+    fields.insert("AllowPrinter".to_string(), Value::Boolean(false));
+    fields.insert("MinMargins".to_string(), Value::Nothing);
+    fields.insert("_dialog_type".to_string(), Value::String("PageSetupDialog".to_string()));
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+        class_name: "PageSetupDialog".to_string(),
+        fields,
+    })))
+}
+
+/// Creates a HelpProvider object
+pub fn create_helpprovider() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("HelpNamespace".to_string(), Value::String(String::new()));
+    fields.insert("_dialog_type".to_string(), Value::String("HelpProvider".to_string()));
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+        class_name: "HelpProvider".to_string(),
+        fields,
+    })))
+}
+
 /// Creates a FolderBrowserDialog object
 pub fn create_folderbrowserdialog() -> Value {
     let data = FolderBrowserDialogData::default();
@@ -291,6 +343,12 @@ pub fn dialog_showdialog(dialog: &Value) -> Result<Value, RuntimeError> {
                     }
                 }
                 
+                // PrintDialog, PrintPreviewDialog, PageSetupDialog, HelpProvider
+                // — these show native dialogs or are no-ops in headless mode
+                "PrintDialog" | "PrintPreviewDialog" | "PageSetupDialog" | "HelpProvider" => {
+                    // No native equivalent — return Cancel so VB code can handle gracefully
+                    Ok(Value::Integer(2)) // DialogResult.Cancel
+                }
                 _ => Ok(Value::Integer(2)) // DialogResult.Cancel
             }
         }

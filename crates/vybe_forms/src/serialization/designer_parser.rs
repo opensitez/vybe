@@ -69,6 +69,32 @@ pub fn vbnet_type_to_control_type(name: &str) -> Option<ControlType> {
         "printdocument" => Some(ControlType::PrintDocument),
         // Notification / system tray
         "notifyicon" => Some(ControlType::NotifyIcon),
+        // Additional visual controls
+        "checkedlistbox" => Some(ControlType::CheckedListBox),
+        "domainupdown" => Some(ControlType::DomainUpDown),
+        "propertygrid" => Some(ControlType::PropertyGrid),
+        "splitter" => Some(ControlType::Splitter),
+        "datagrid" => Some(ControlType::DataGrid),
+        "usercontrol" => Some(ControlType::UserControl),
+        // ToolStrip sub-components
+        "toolstripseparator" => Some(ControlType::ToolStripSeparator),
+        "toolstripbutton" => Some(ControlType::ToolStripButton),
+        "toolstriplabel" => Some(ControlType::ToolStripLabel),
+        "toolstripcombobox" => Some(ControlType::ToolStripComboBox),
+        "toolstripdropdownbutton" => Some(ControlType::ToolStripDropDownButton),
+        "toolstripsplitbutton" => Some(ControlType::ToolStripSplitButton),
+        "toolstriptextbox" => Some(ControlType::ToolStripTextBox),
+        "toolstripprogressbar" => Some(ControlType::ToolStripProgressBar),
+        // Additional dialogs (non-visual)
+        "printpreviewdialog" => Some(ControlType::PrintPreviewDialog),
+        "pagesetupdialog" => Some(ControlType::PageSetupDialog),
+        "printpreviewcontrol" => Some(ControlType::PrintPreviewControl),
+        // Non-visual infrastructure
+        "helpprovider" => Some(ControlType::HelpProvider),
+        "backgroundworker" => Some(ControlType::BackgroundWorker),
+        "sqlconnection" => Some(ControlType::SqlConnection),
+        "oledbconnection" => Some(ControlType::OleDbConnection),
+        "dataview" => Some(ControlType::DataView),
         _ => Some(ControlType::Custom(name.to_string())),
     }
 }
