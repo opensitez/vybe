@@ -64,6 +64,28 @@ pub struct ImportEntry {
     pub alias: Option<String>,
 }
 
+struct RuntimeRegistry {
+    threads: HashMap<String, std::thread::JoinHandle<()>>,
+    processes: HashMap<String, std::process::Child>,
+    shared_objects: HashMap<String, std::sync::Arc<std::sync::Mutex<crate::value::SharedObjectData>>>,
+}
+
+static REGISTRY: std::sync::OnceLock<std::sync::Mutex<RuntimeRegistry>> = std::sync::OnceLock::new();
+
+fn get_registry() -> &'static std::sync::Mutex<RuntimeRegistry> {
+    REGISTRY.get_or_init(|| std::sync::Mutex::new(RuntimeRegistry {
+        threads: HashMap::new(),
+        processes: HashMap::new(),
+        shared_objects: HashMap::new(),
+    }))
+}
+
+fn generate_runtime_id() -> String {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(1);
+    format!("rt_{}", COUNTER.fetch_add(1, Ordering::SeqCst))
+}
+
 impl Interpreter {
     pub fn new() -> Self {
         let mut interp = Self {
@@ -5221,6 +5243,73 @@ impl Interpreter {
                             }
                         }
 
+                        // Task properties
+                        if db_type == "Task" {
+                            let m = member.as_str().to_lowercase();
+                            let handle_id = obj_data.fields.get("__handle").map(|v| v.as_string()).unwrap_or_default();
+                            if !handle_id.is_empty() {
+                                let shared_obj_opt = get_registry().lock().unwrap().shared_objects.get(&handle_id).cloned();
+                                if let Some(shared_obj) = shared_obj_opt {
+                                    match m.as_str() {
+                                        "result" => {
+                                            loop {
+                                                {
+                                                    let lock = shared_obj.lock().unwrap();
+                                                    if let Some(crate::value::SharedValue::Boolean(true)) = lock.fields.get("iscompleted") {
+                                                        break;
+                                                    }
+                                                }
+                                                std::thread::sleep(std::time::Duration::from_millis(10));
+                                            }
+                                            let lock = shared_obj.lock().unwrap();
+                                            return Ok(lock.fields.get("result").cloned().unwrap_or(crate::value::SharedValue::Nothing).to_value());
+                                        }
+                                        "iscompleted" => {
+                                            let lock = shared_obj.lock().unwrap();
+                                            return Ok(lock.fields.get("iscompleted").cloned().unwrap_or(crate::value::SharedValue::Boolean(false)).to_value());
+                                        }
+                                        "status" => {
+                                            let lock = shared_obj.lock().unwrap();
+                                            return Ok(lock.fields.get("status").cloned().unwrap_or(crate::value::SharedValue::String("Unknown".to_string())).to_value());
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+
+                        // Thread properties
+                        if class_name_str == "Thread" {
+                            let m = member.as_str().to_lowercase();
+                            let handle_id = obj_data.fields.get("__handle").map(|v| v.as_string()).unwrap_or_default();
+                            if !handle_id.is_empty() {
+                                let shared_obj_opt = get_registry().lock().unwrap().shared_objects.get(&handle_id).cloned();
+                                if let Some(shared_obj) = shared_obj_opt {
+                                    match m.as_str() {
+                                        "isalive" => {
+                                            let lock = shared_obj.lock().unwrap();
+                                            return Ok(lock.fields.get("isalive").cloned().unwrap_or(crate::value::SharedValue::Boolean(false)).to_value());
+                                        }
+                                        "managedthreadid" => {
+                                            return Ok(Value::Integer(handle_id.len() as i32));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+
+                        // Process properties (basic)
+                        if class_name_str == "Process" {
+                            let m = member.as_str().to_lowercase();
+                            if m == "exitcode" {
+                                return Ok(obj_data.fields.get("exitcode").cloned().unwrap_or(Value::Integer(0)));
+                            }
+                            if m == "hasexited" {
+                                return Ok(obj_data.fields.get("hasexited").cloned().unwrap_or(Value::Boolean(false)));
+                            }
+                        }
+
                         // DbReader properties (ADO.NET)
                         if db_type == "DbReader" {
                             let m = member.as_str().to_lowercase();
@@ -7543,10 +7632,27 @@ impl Interpreter {
                     if type_name.eq_ignore_ascii_case("Process") || type_name.eq_ignore_ascii_case("System.Diagnostics.Process") {
                         match method_name.as_str() {
                             "waitforexit" => {
-                                // In sync mode, the process was spawned and detached. No-op.
+                                let handle_id = obj_ref.borrow().fields.get("__handle").map(|v| v.as_string()).unwrap_or_default();
+                                if !handle_id.is_empty() {
+                                    let mut reg = get_registry().lock().unwrap();
+                                    if let Some(mut child) = reg.processes.remove(&handle_id) {
+                                        if let Ok(status) = child.wait() {
+                                            let code = status.code().unwrap_or(0);
+                                            obj_ref.borrow_mut().fields.insert("exitcode".to_string(), Value::Integer(code));
+                                        }
+                                    }
+                                }
+                                obj_ref.borrow_mut().fields.insert("hasexited".to_string(), Value::Boolean(true));
                                 return Ok(Value::Nothing);
                             }
                             "kill" | "close" | "dispose" => {
+                                let handle_id = obj_ref.borrow().fields.get("__handle").map(|v| v.as_string()).unwrap_or_default();
+                                if !handle_id.is_empty() {
+                                    let mut reg = get_registry().lock().unwrap();
+                                    if let Some(mut child) = reg.processes.remove(&handle_id) {
+                                        let _ = child.kill();
+                                    }
+                                }
                                 obj_ref.borrow_mut().fields.insert("hasexited".to_string(), Value::Boolean(true));
                                 return Ok(Value::Nothing);
                             }
@@ -7568,12 +7674,11 @@ impl Interpreter {
                                         // Spawn process
                                         match cmd.spawn() {
                                             Ok(child) => {
-                                                // Store Id
+                                                let handle_id = generate_runtime_id();
+                                                obj_ref.borrow_mut().fields.insert("__handle".to_string(), Value::String(handle_id.clone()));
                                                 obj_ref.borrow_mut().fields.insert("id".to_string(), Value::Integer(child.id() as i32));
-                                                // Since we cannot store Child handle in Value enum currently, we cannot wait or get real exit code.
-                                                // Mock it as if it finished successfully immediately (detached).
-                                                obj_ref.borrow_mut().fields.insert("exitcode".to_string(), Value::Integer(0));
-                                                obj_ref.borrow_mut().fields.insert("hasexited".to_string(), Value::Boolean(true));
+                                                get_registry().lock().unwrap().processes.insert(handle_id, child);
+                                                obj_ref.borrow_mut().fields.insert("hasexited".to_string(), Value::Boolean(false));
                                                 return Ok(Value::Boolean(true));
                                             }
                                             Err(e) => return Err(RuntimeError::Custom(format!("Process.Start failed: {}", e))),
@@ -10074,6 +10179,28 @@ impl Interpreter {
                         let hex: Vec<String> = bytes.iter().map(|b| format!("{:02X}", b)).collect();
                         return Ok(Value::String(hex.join("-")));
                     }
+                } else if class_name_lower == "task" {
+                    match method_name.as_str() {
+                        "wait" => {
+                            let handle_id = obj_ref.borrow().fields.get("__handle").map(|v| v.as_string()).unwrap_or_default();
+                            if !handle_id.is_empty() {
+                                let shared_obj_opt = get_registry().lock().unwrap().shared_objects.get(&handle_id).cloned();
+                                if let Some(shared_obj) = shared_obj_opt {
+                                    loop {
+                                        {
+                                            let lock = shared_obj.lock().unwrap();
+                                            if let Some(crate::value::SharedValue::Boolean(true)) = lock.fields.get("iscompleted") {
+                                                break;
+                                            }
+                                        }
+                                        std::thread::sleep(std::time::Duration::from_millis(10));
+                                    }
+                                }
+                            }
+                            return Ok(Value::Nothing);
+                        }
+                        _ => {}
+                    }
                 } else if class_name_lower == "md5" {
                     if method_name == "computehash" {
                         return crate::builtins::cryptography_fns::md5_hash_fn(&arg_values);
@@ -10087,26 +10214,58 @@ impl Interpreter {
                         "start" => {
                             let task = obj_ref.borrow().fields.get("__task").cloned();
                             if let Some(lambda) = task {
+                                let handle_id = generate_runtime_id();
+                                obj_ref.borrow_mut().fields.insert("__handle".to_string(), Value::String(handle_id.clone()));
+                                
                                 let shared_lambda = lambda.to_shared();
+                                
+                                // Create shared object for thread state
+                                let shared_thread_obj = std::sync::Arc::new(std::sync::Mutex::new(crate::value::SharedObjectData {
+                                    class_name: "Thread".to_string(),
+                                    fields: {
+                                        let mut f = HashMap::new();
+                                        f.insert("isalive".to_string(), crate::value::SharedValue::Boolean(true));
+                                        f
+                                    },
+                                }));
+                                
+                                let thread_clone = shared_thread_obj.clone();
+                                
                                 // Clone static state for the thread
                                 let functions = self.functions.clone();
                                 let subs = self.subs.clone();
                                 let classes = self.classes.clone();
                                 let namespace_map = self.namespace_map.clone();
                                 
-                                std::thread::spawn(move || {
+                                let join_handle = std::thread::spawn(move || {
                                     let mut bg_interpreter = Interpreter::new_background(functions, subs, classes, namespace_map);
                                     let lambda_val = shared_lambda.to_value();
                                     let _ = bg_interpreter.call_lambda(lambda_val, &[]);
+                                    
+                                    // Update isalive
+                                    let mut lock = thread_clone.lock().unwrap();
+                                    lock.fields.insert("isalive".to_string(), crate::value::SharedValue::Boolean(false));
                                 });
+                                
+                                {
+                                    let mut reg = get_registry().lock().unwrap();
+                                    reg.threads.insert(handle_id.clone(), join_handle);
+                                    reg.shared_objects.insert(handle_id, shared_thread_obj);
+                                }
+                                
                                 obj_ref.borrow_mut().fields.insert("isalive".to_string(), Value::Boolean(true));
                             }
                             return Ok(Value::Nothing);
                         }
                         "join" => {
-                            // Join is tricky without a real handle. 
-                            // For MVP, we can just sleep a bit or return.
-                            // Real Join would need Arc<Mutex<bool>> for completion.
+                            let handle_id = obj_ref.borrow().fields.get("__handle").map(|v| v.as_string()).unwrap_or_default();
+                            if !handle_id.is_empty() {
+                                let handle = get_registry().lock().unwrap().threads.remove(&handle_id);
+                                if let Some(h) = handle {
+                                    let _ = h.join();
+                                }
+                            }
+                            obj_ref.borrow_mut().fields.insert("isalive".to_string(), Value::Boolean(false));
                             return Ok(Value::Nothing);
                         }
                         _ => {}
@@ -10373,35 +10532,82 @@ impl Interpreter {
 
             // ===== TASK STATIC METHODS =====
             "task.run" | "system.threading.tasks.task.run" => {
-                // Task.Run(action) — runs lambda synchronously (single-threaded interpreter)
-                // and wraps result in a Task object
-                let result = if let Some(lambda) = arg_values.get(0) {
-                    self.call_lambda(lambda.clone(), &[])?
-                } else {
-                    Value::Nothing
-                };
-                let mut fields = std::collections::HashMap::new();
-                fields.insert("__type".to_string(), Value::String("Task".to_string()));
-                fields.insert("result".to_string(), result);
-                fields.insert("iscompleted".to_string(), Value::Boolean(true));
-                fields.insert("isfaulted".to_string(), Value::Boolean(false));
-                fields.insert("iscanceled".to_string(), Value::Boolean(false));
-                fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
-                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
-                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                let lambda = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
+                let handle_id = generate_runtime_id();
+                
+                // Create shared task object
+                let mut fields = HashMap::new();
+                fields.insert("__type".to_string(), crate::value::SharedValue::String("Task".to_string()));
+                fields.insert("iscompleted".to_string(), crate::value::SharedValue::Boolean(false));
+                fields.insert("result".to_string(), crate::value::SharedValue::Nothing);
+                fields.insert("__handle".to_string(), crate::value::SharedValue::String(handle_id.clone()));
+                fields.insert("status".to_string(), crate::value::SharedValue::String("WaitingToRun".to_string()));
+                
+                let shared_task_obj = std::sync::Arc::new(std::sync::Mutex::new(crate::value::SharedObjectData {
+                    class_name: "Task".to_string(),
+                    fields,
+                }));
+                
+                let shared_lambda = lambda.to_shared();
+                let functions = self.functions.clone();
+                let subs = self.subs.clone();
+                let classes = self.classes.clone();
+                let namespace_map = self.namespace_map.clone();
+                
+                let task_clone = shared_task_obj.clone();
+                
+                let join_handle = std::thread::spawn(move || {
+                    let mut bg_interpreter = Interpreter::new_background(functions, subs, classes, namespace_map);
+                    let result = match bg_interpreter.call_lambda(shared_lambda.to_value(), &[]) {
+                        Ok(v) => v.to_shared(),
+                        Err(_) => crate::value::SharedValue::Nothing,
+                    };
+                    
+                    let mut lock = task_clone.lock().unwrap();
+                    lock.fields.insert("iscompleted".to_string(), crate::value::SharedValue::Boolean(true));
+                    lock.fields.insert("result".to_string(), result);
+                    lock.fields.insert("status".to_string(), crate::value::SharedValue::String("RanToCompletion".to_string()));
+                });
+                
+                {
+                    let mut reg = get_registry().lock().unwrap();
+                    reg.threads.insert(handle_id.clone(), join_handle);
+                    reg.shared_objects.insert(handle_id, shared_task_obj.clone());
+                }
+                
+                return Ok(crate::value::SharedValue::Object(shared_task_obj).to_value());
             }
             "task.delay" | "system.threading.tasks.task.delay" => {
-                let ms = arg_values.get(0).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0);
-                std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
-                let mut fields = std::collections::HashMap::new();
-                fields.insert("__type".to_string(), Value::String("Task".to_string()));
-                fields.insert("result".to_string(), Value::Nothing);
-                fields.insert("iscompleted".to_string(), Value::Boolean(true));
-                fields.insert("isfaulted".to_string(), Value::Boolean(false));
-                fields.insert("iscanceled".to_string(), Value::Boolean(false));
-                fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
-                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
-                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                let ms = arg_values.get(0).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0) as u64;
+                let handle_id = generate_runtime_id();
+                
+                let shared_task_obj = std::sync::Arc::new(std::sync::Mutex::new(crate::value::SharedObjectData {
+                    class_name: "Task".to_string(),
+                    fields: {
+                        let mut f = HashMap::new();
+                        f.insert("__handle".to_string(), crate::value::SharedValue::String(handle_id.clone()));
+                        f.insert("iscompleted".to_string(), crate::value::SharedValue::Boolean(false));
+                        f.insert("status".to_string(), crate::value::SharedValue::String("Running".to_string()));
+                        f.insert("result".to_string(), crate::value::SharedValue::Nothing);
+                        f
+                    },
+                }));
+                
+                let task_clone = shared_task_obj.clone();
+                let join_handle = std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    let mut lock = task_clone.lock().unwrap();
+                    lock.fields.insert("iscompleted".to_string(), crate::value::SharedValue::Boolean(true));
+                    lock.fields.insert("status".to_string(), crate::value::SharedValue::String("RanToCompletion".to_string()));
+                });
+                
+                {
+                    let mut reg = get_registry().lock().unwrap();
+                    reg.threads.insert(handle_id.clone(), join_handle);
+                    reg.shared_objects.insert(handle_id, shared_task_obj.clone());
+                }
+                
+                return Ok(crate::value::SharedValue::Object(shared_task_obj).to_value());
             }
             "task.fromresult" | "system.threading.tasks.task.fromresult" => {
                 let val = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
@@ -10453,12 +10659,24 @@ impl Interpreter {
 
             // ===== THREADPOOL =====
             "threadpool.queueuserworkitem" | "system.threading.threadpool.queueuserworkitem" => {
-                // Execute callback synchronously
-                if let Some(lambda) = arg_values.get(0) {
+                if let Some(lambda) = arg_values.get(0).cloned() {
                     let state = arg_values.get(1).cloned().unwrap_or(Value::Nothing);
-                    self.call_lambda(lambda.clone(), &[state])?;
+                    
+                    let shared_lambda = lambda.to_shared();
+                    let shared_state = state.to_shared();
+                    
+                    let functions = self.functions.clone();
+                    let subs = self.subs.clone();
+                    let classes = self.classes.clone();
+                    let namespace_map = self.namespace_map.clone();
+                    
+                    std::thread::spawn(move || {
+                        let mut bg_interpreter = Interpreter::new_background(functions, subs, classes, namespace_map);
+                        let _ = bg_interpreter.call_lambda(shared_lambda.to_value(), &[shared_state.to_value()]);
+                    });
+                    return Ok(Value::Boolean(true));
                 }
-                return Ok(Value::Boolean(true));
+                return Ok(Value::Boolean(false));
             }
             "threadpool.setminthreads" | "system.threading.threadpool.setminthreads" => {
                 return Ok(Value::Boolean(true)); // No-op, always succeed
@@ -13912,14 +14130,28 @@ impl Interpreter {
                     self.evaluate_expr(expr)
                 }
                 vybe_parser::ast::expr::LambdaBody::Statement(stmt) => {
-                    self.execute(stmt)?;
-                    Ok(Value::Nothing)
+                    match self.execute(stmt) {
+                        Ok(_) => Ok(Value::Nothing),
+                        Err(RuntimeError::Return(val)) => Ok(val.unwrap_or(Value::Nothing)),
+                        Err(e) => Err(e),
+                    }
                 }
                 vybe_parser::ast::expr::LambdaBody::Block(stmts) => {
+                    let mut final_res = Ok(Value::Nothing);
                     for stmt in stmts {
-                        self.execute(stmt)?;
+                        match self.execute(stmt) {
+                            Ok(_) => {},
+                            Err(RuntimeError::Return(val)) => {
+                                final_res = Ok(val.unwrap_or(Value::Nothing));
+                                break;
+                            }
+                            Err(e) => {
+                                final_res = Err(e);
+                                break;
+                            }
+                        }
                     }
-                    Ok(Value::Nothing)
+                    final_res
                 }
             };
             
