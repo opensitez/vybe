@@ -463,6 +463,15 @@ fn process_side_effects(
                                         "text" => {
                                             let text_val = value.as_string();
                                             ctrl.set_text(text_val.clone());
+                                            // Mirror the new text back into form_obj so
+                                            // needs_sync doesn't detect a stale mismatch
+                                            // and overwrite this binding-driven update.
+                                            if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+                                                let form_borrow = form_obj.borrow();
+                                                if let Some(Value::Object(ctrl_obj)) = form_borrow.fields.get(&control_part.to_lowercase()) {
+                                                    ctrl_obj.borrow_mut().fields.insert("text".to_string(), Value::String(text_val.clone()));
+                                                }
+                                            }
                                             if ctrl.control_type == vybe_forms::ControlType::ListBox {
                                                 let items: Vec<String> = text_val
                                                     .split('|')
@@ -476,7 +485,14 @@ fn process_side_effects(
                                         }
                                         "caption" => {
                                             // VB6 compat: Caption maps to Text in .NET
-                                            ctrl.set_text(value.as_string());
+                                            let cap_val = value.as_string();
+                                            ctrl.set_text(cap_val.clone());
+                                            if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+                                                let form_borrow = form_obj.borrow();
+                                                if let Some(Value::Object(ctrl_obj)) = form_borrow.fields.get(&control_part.to_lowercase()) {
+                                                    ctrl_obj.borrow_mut().fields.insert("text".to_string(), Value::String(cap_val));
+                                                }
+                                            }
                                         }
                                         "left" => { if let vybe_runtime::Value::Integer(v) = &value { ctrl.bounds.x = *v; } },
                                         "top" => { if let vybe_runtime::Value::Integer(v) = &value { ctrl.bounds.y = *v; } },
@@ -558,13 +574,26 @@ fn process_side_effects(
             }
             RuntimeSideEffect::BindingPositionChanged { binding_source_name, position, count } => {
                 // Update BindingNavigator display for navigators linked to this BindingSource
+                let mut updated_navs: Vec<(String, String)> = Vec::new();
                 if let Some(frm) = runtime_form.write().as_mut() {
                     for ctrl in &mut frm.controls {
                         if matches!(ctrl.control_type, vybe_forms::ControlType::BindingNavigator) {
                             let ctrl_bs = ctrl.properties.get_string("BindingSource").unwrap_or_default();
                             if ctrl_bs.eq_ignore_ascii_case(&binding_source_name) {
                                 let count_text = format!("{} of {}", position + 1, count);
-                                ctrl.set_text(count_text);
+                                ctrl.set_text(count_text.clone());
+                                updated_navs.push((ctrl.name.clone(), count_text));
+                            }
+                        }
+                    }
+                }
+                // Mirror nav text back into form_obj so needs_sync doesn't overwrite it
+                if !updated_navs.is_empty() {
+                    if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+                        let form_borrow = form_obj.borrow();
+                        for (nav_name, nav_text) in updated_navs {
+                            if let Some(Value::Object(ctrl_obj)) = form_borrow.fields.get(&nav_name.to_lowercase()) {
+                                ctrl_obj.borrow_mut().fields.insert("text".to_string(), Value::String(nav_text));
                             }
                         }
                     }
