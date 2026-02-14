@@ -105,6 +105,7 @@ single_line_then_body = { single_line_stmt ~ (":" ~ single_line_stmt)* }
 single_line_stmt = _{
     return_statement
     | exit_statement
+    | continue_statement
     | set_statement
     | dot_assign_statement
     | me_assign_statement

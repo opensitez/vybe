@@ -302,6 +302,52 @@ impl Value {
             }),
         }
     }
+
+    /// Convert any iterable Value into a Vec<Value> for For Each loops.
+    /// Dictionary yields KeyValuePair objects with Key/Value fields.
+    /// Strings yield individual character strings.
+    pub fn to_iterable(&self) -> Result<Vec<Value>, RuntimeError> {
+        match self {
+            Value::Array(items) => Ok(items.clone()),
+            Value::Collection(c) => Ok(c.borrow().items.clone()),
+            Value::Queue(q) => Ok(q.borrow().to_array()),
+            Value::Stack(s) => Ok(s.borrow().to_array()),
+            Value::HashSet(h) => Ok(h.borrow().to_array()),
+            Value::Dictionary(d) => {
+                let d = d.borrow();
+                let keys = d.keys();
+                let vals = d.values();
+                Ok(keys.into_iter().zip(vals).map(|(k, v)| {
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("key".to_string(), k);
+                    fields.insert("value".to_string(), v);
+                    fields.insert("__type".to_string(), Value::String("KeyValuePair".to_string()));
+                    Value::Object(Rc::new(RefCell::new(ObjectData {
+                        class_name: "KeyValuePair".to_string(),
+                        fields,
+                    })))
+                }).collect())
+            }
+            Value::String(s) => Ok(s.chars().map(|c| Value::String(c.to_string())).collect()),
+            Value::Object(obj) => {
+                // If the object has an items/rows array field, iterate that
+                let b = obj.borrow();
+                if let Some(Value::Array(arr)) = b.fields.get("items").or(b.fields.get("rows")) {
+                    Ok(arr.clone())
+                } else {
+                    Err(RuntimeError::Custom(format!(
+                        "Object of type '{}' is not enumerable",
+                        b.class_name
+                    )))
+                }
+            }
+            Value::Nothing => Ok(Vec::new()),
+            _ => Err(RuntimeError::TypeError {
+                expected: "Array, Collection, Dictionary, or other enumerable".to_string(),
+                got: format!("{:?}", self),
+            }),
+        }
+    }
 }
 
 impl fmt::Display for Value {

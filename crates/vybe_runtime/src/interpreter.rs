@@ -2524,58 +2524,20 @@ impl Interpreter {
 
             Statement::ForEach { variable, collection, body } => {
                 let coll_val = self.evaluate_expr(collection)?;
-                match coll_val {
-                    Value::Array(items) => {
-                        self.env.define(variable.as_str(), Value::Nothing);
-                        for item in &items {
-                            self.env.set(variable.as_str(), item.clone())?;
-                            let mut should_exit = false;
-                            for s in body {
-                                match self.execute(s) {
-                                    Err(RuntimeError::Exit(ExitType::For)) => { should_exit = true; break; }
-                                    Err(RuntimeError::Continue(vybe_parser::ast::stmt::ContinueType::For)) => break,
-                                    Err(e) => return Err(e),
-                                    Ok(()) => {}
-                                }
-                            }
-                            if should_exit { break; }
+                let items = coll_val.to_iterable()?;
+                self.env.define(variable.as_str(), Value::Nothing);
+                for item in &items {
+                    self.env.set(variable.as_str(), item.clone())?;
+                    let mut should_exit = false;
+                    for s in body {
+                        match self.execute(s) {
+                            Err(RuntimeError::Exit(ExitType::For)) => { should_exit = true; break; }
+                            Err(RuntimeError::Continue(vybe_parser::ast::stmt::ContinueType::For)) => break,
+                            Err(e) => return Err(e),
+                            Ok(()) => {}
                         }
                     }
-                    Value::Collection(coll_rc) => {
-                        // Support Collection/ArrayList iteration
-                        let coll = coll_rc.borrow();
-                        self.env.define(variable.as_str(), Value::Nothing);
-                        for item in &coll.items {
-                            self.env.set(variable.as_str(), item.clone())?;
-                            let mut should_exit = false;
-                            for s in body {
-                                match self.execute(s) {
-                                    Err(RuntimeError::Exit(ExitType::For)) => { should_exit = true; break; }
-                                    Err(RuntimeError::Continue(vybe_parser::ast::stmt::ContinueType::For)) => break,
-                                    Err(e) => return Err(e),
-                                    Ok(()) => {}
-                                }
-                            }
-                            if should_exit { break; }
-                        }
-                    }
-                    Value::String(s) => {
-                        self.env.define(variable.as_str(), Value::String(String::new()));
-                        for ch in s.chars() {
-                            self.env.set(variable.as_str(), Value::String(ch.to_string()))?;
-                            let mut should_exit = false;
-                            for stmt in body {
-                                match self.execute(stmt) {
-                                    Err(RuntimeError::Exit(ExitType::For)) => { should_exit = true; break; }
-                                    Err(RuntimeError::Continue(vybe_parser::ast::stmt::ContinueType::For)) => break,
-                                    Err(e) => return Err(e),
-                                    Ok(()) => {}
-                                }
-                            }
-                            if should_exit { break; }
-                        }
-                    }
-                    _ => return Err(RuntimeError::Custom("For Each requires an array, collection, or string".to_string())),
+                    if should_exit { break; }
                 }
                 Ok(())
             }
@@ -5856,7 +5818,7 @@ impl Interpreter {
         if method_name == "add" {
             eprintln!("[call_method::add] obj_expr={:?} eval={}", obj, match &eval_result { Ok(Value::Object(r)) => format!("Object({})", r.borrow().fields.get("__type").map(|v|v.as_string()).unwrap_or_default()), Ok(Value::String(s)) => format!("String({})", s), Ok(Value::Nothing) => "Nothing".to_string(), Ok(_) => "other".to_string(), Err(e) => format!("ERR: {:?}", e) });
         }
-        if let Ok(obj_val) = eval_result {
+        if let Ok(ref obj_val) = eval_result {
             // Universal value methods (works on any type: Integer, String, Double, Boolean, etc.)
             match method_name.as_str() {
                 "tostring" => {
@@ -6140,7 +6102,7 @@ impl Interpreter {
             }
 
             // ===== .NET String instance methods =====
-            if let Value::String(ref s_val) = obj_val {
+            if let Value::String(s_val) = obj_val {
                 let arg_values: Result<Vec<Value>, RuntimeError> = args.iter()
                     .map(|arg| self.evaluate_expr(arg))
                     .collect();
@@ -6334,7 +6296,7 @@ impl Interpreter {
             }
 
             // ===== Array instance methods =====
-            if let Value::Array(ref arr_val) = obj_val {
+            if let Value::Array(arr_val) = obj_val {
                 let arg_values: Result<Vec<Value>, RuntimeError> = args.iter()
                     .map(|arg| self.evaluate_expr(arg))
                     .collect();
@@ -8847,7 +8809,7 @@ impl Interpreter {
             // Array properties accessed as method calls
             if let Value::Array(arr) = &obj_val {
                 match method_name.as_str() {
-                    "length" | "count" => {
+                    "length" | "count" if args.is_empty() => {
                         return Ok(Value::Integer(arr.len() as i32));
                     }
                     _ => {}
@@ -9215,7 +9177,7 @@ impl Interpreter {
         let object_name = match obj {
             Expression::Variable(id) => id.as_str().to_string(),
             Expression::MemberAccess(_, id) => id.as_str().to_string(),
-            _ => return Err(RuntimeError::Custom("Invalid object reference".to_string())),
+            _ => String::new(), // MethodCall or other expression (e.g. LINQ chaining)
         };
 
         // Check if this is a qualified procedure call (e.g., Form2.QuickTest)
@@ -10437,6 +10399,364 @@ impl Interpreter {
                     return self.dispatch_file_method(&method_name, &arg_values);
                 } else if qualified_call_name.starts_with("directory.") || qualified_call_name.starts_with("system.io.directory.") {
                     return self.dispatch_directory_method(&method_name, &arg_values);
+                }
+            }
+        }
+
+        // ── LINQ-style extension methods ────────────────────────────────────
+        // These work on any iterable value (Array, Collection, Dictionary,
+        // Queue, Stack, HashSet, String) via to_iterable().
+        // Re-use the already-evaluated obj_val from above to avoid double evaluation
+        // (which breaks chaining like .Where().Select()).
+        if let Ok(ref val) = eval_result {
+            if let Ok(items) = val.to_iterable() {
+                match method_name.as_str() {
+                    // .Select(Function(x) expr)
+                    "select" => {
+                        let selector = self.evaluate_expr(&args[0])?;
+                        let mut result = Vec::new();
+                        for item in &items {
+                            result.push(self.call_lambda(selector.clone(), &[item.clone()])?);
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    // .Where(Function(x) bool_expr)
+                    "where" => {
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let mut result = Vec::new();
+                        for item in &items {
+                            let r = self.call_lambda(predicate.clone(), &[item.clone()])?;
+                            if r.is_truthy() {
+                                result.push(item.clone());
+                            }
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    // .First() / .First(Function(x) bool)
+                    "first" => {
+                        if args.is_empty() {
+                            return items.first().cloned().ok_or_else(|| {
+                                RuntimeError::Custom("Sequence contains no elements".to_string())
+                            });
+                        }
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        for item in &items {
+                            if self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                return Ok(item.clone());
+                            }
+                        }
+                        return Err(RuntimeError::Custom("Sequence contains no matching element".to_string()));
+                    }
+                    // .FirstOrDefault() / .FirstOrDefault(Function(x) bool)
+                    "firstordefault" => {
+                        if args.is_empty() {
+                            return Ok(items.first().cloned().unwrap_or(Value::Nothing));
+                        }
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        for item in &items {
+                            if self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                return Ok(item.clone());
+                            }
+                        }
+                        return Ok(Value::Nothing);
+                    }
+                    // .Last() / .Last(Function(x) bool)
+                    "last" => {
+                        if args.is_empty() {
+                            return items.last().cloned().ok_or_else(|| {
+                                RuntimeError::Custom("Sequence contains no elements".to_string())
+                            });
+                        }
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let mut found = None;
+                        for item in &items {
+                            if self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                found = Some(item.clone());
+                            }
+                        }
+                        return found.ok_or_else(|| RuntimeError::Custom("Sequence contains no matching element".to_string()));
+                    }
+                    // .LastOrDefault()
+                    "lastordefault" => {
+                        if args.is_empty() {
+                            return Ok(items.last().cloned().unwrap_or(Value::Nothing));
+                        }
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let mut found = Value::Nothing;
+                        for item in &items {
+                            if self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                found = item.clone();
+                            }
+                        }
+                        return Ok(found);
+                    }
+                    // .Single() / .Single(Function(x) bool)
+                    "single" => {
+                        let filtered: Vec<_> = if args.is_empty() {
+                            items.clone()
+                        } else {
+                            let predicate = self.evaluate_expr(&args[0])?;
+                            let mut r = Vec::new();
+                            for item in &items {
+                                if self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                    r.push(item.clone());
+                                }
+                            }
+                            r
+                        };
+                        match filtered.len() {
+                            0 => return Err(RuntimeError::Custom("Sequence contains no matching element".to_string())),
+                            1 => return Ok(filtered[0].clone()),
+                            _ => return Err(RuntimeError::Custom("Sequence contains more than one matching element".to_string())),
+                        }
+                    }
+                    "singleordefault" => {
+                        let filtered: Vec<_> = if args.is_empty() {
+                            items.clone()
+                        } else {
+                            let predicate = self.evaluate_expr(&args[0])?;
+                            let mut r = Vec::new();
+                            for item in &items {
+                                if self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                    r.push(item.clone());
+                                }
+                            }
+                            r
+                        };
+                        match filtered.len() {
+                            0 => return Ok(Value::Nothing),
+                            1 => return Ok(filtered[0].clone()),
+                            _ => return Err(RuntimeError::Custom("Sequence contains more than one matching element".to_string())),
+                        }
+                    }
+                    // .Count() / .Count(Function(x) bool)
+                    "count" if !matches!(val, Value::Object(_)) => {
+                        if args.is_empty() {
+                            return Ok(Value::Integer(items.len() as i32));
+                        }
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let mut count = 0i32;
+                        for item in &items {
+                            if self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                count += 1;
+                            }
+                        }
+                        return Ok(Value::Integer(count));
+                    }
+                    // .Any() / .Any(Function(x) bool)
+                    "any" => {
+                        if args.is_empty() {
+                            return Ok(Value::Boolean(!items.is_empty()));
+                        }
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        for item in &items {
+                            if self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                return Ok(Value::Boolean(true));
+                            }
+                        }
+                        return Ok(Value::Boolean(false));
+                    }
+                    // .All(Function(x) bool)
+                    "all" => {
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        for item in &items {
+                            if !self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                return Ok(Value::Boolean(false));
+                            }
+                        }
+                        return Ok(Value::Boolean(true));
+                    }
+                    // .OrderBy(Function(x) key) / .OrderByDescending(Function(x) key)
+                    "orderby" | "orderbydescending" => {
+                        let selector = self.evaluate_expr(&args[0])?;
+                        let mut keyed: Vec<(Value, String)> = Vec::new();
+                        for item in &items {
+                            let key = self.call_lambda(selector.clone(), &[item.clone()])?;
+                            keyed.push((item.clone(), key.as_string()));
+                        }
+                        keyed.sort_by(|a, b| a.1.cmp(&b.1));
+                        if method_name == "orderbydescending" {
+                            keyed.reverse();
+                        }
+                        return Ok(Value::Array(keyed.into_iter().map(|(v, _)| v).collect()));
+                    }
+                    // .Skip(n)
+                    "skip" => {
+                        let n = self.evaluate_expr(&args[0])?.as_integer()?.max(0) as usize;
+                        return Ok(Value::Array(items.into_iter().skip(n).collect()));
+                    }
+                    // .Take(n)
+                    "take" => {
+                        let n = self.evaluate_expr(&args[0])?.as_integer()?.max(0) as usize;
+                        return Ok(Value::Array(items.into_iter().take(n).collect()));
+                    }
+                    // .Distinct()
+                    "distinct" => {
+                        let mut seen = Vec::new();
+                        let mut result = Vec::new();
+                        for item in &items {
+                            let key = item.as_string();
+                            if !seen.contains(&key) {
+                                seen.push(key);
+                                result.push(item.clone());
+                            }
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    // .Sum() / .Sum(Function(x) num)
+                    "sum" => {
+                        let mut total = 0.0f64;
+                        if args.is_empty() {
+                            for item in &items { total += item.as_double().unwrap_or(0.0); }
+                        } else {
+                            let selector = self.evaluate_expr(&args[0])?;
+                            for item in &items {
+                                let v = self.call_lambda(selector.clone(), &[item.clone()])?;
+                                total += v.as_double().unwrap_or(0.0);
+                            }
+                        }
+                        return Ok(Value::Double(total));
+                    }
+                    // .Min() / .Max()
+                    "min" => {
+                        if items.is_empty() { return Err(RuntimeError::Custom("Sequence contains no elements".to_string())); }
+                        if args.is_empty() {
+                            let mut min_val = items[0].as_double().unwrap_or(f64::MAX);
+                            for item in &items[1..] { min_val = min_val.min(item.as_double().unwrap_or(f64::MAX)); }
+                            return Ok(Value::Double(min_val));
+                        }
+                        let selector = self.evaluate_expr(&args[0])?;
+                        let mut min_val = f64::MAX;
+                        for item in &items {
+                            let v = self.call_lambda(selector.clone(), &[item.clone()])?.as_double().unwrap_or(f64::MAX);
+                            min_val = min_val.min(v);
+                        }
+                        return Ok(Value::Double(min_val));
+                    }
+                    "max" => {
+                        if items.is_empty() { return Err(RuntimeError::Custom("Sequence contains no elements".to_string())); }
+                        if args.is_empty() {
+                            let mut max_val = items[0].as_double().unwrap_or(f64::MIN);
+                            for item in &items[1..] { max_val = max_val.max(item.as_double().unwrap_or(f64::MIN)); }
+                            return Ok(Value::Double(max_val));
+                        }
+                        let selector = self.evaluate_expr(&args[0])?;
+                        let mut max_val = f64::MIN;
+                        for item in &items {
+                            let v = self.call_lambda(selector.clone(), &[item.clone()])?.as_double().unwrap_or(f64::MIN);
+                            max_val = max_val.max(v);
+                        }
+                        return Ok(Value::Double(max_val));
+                    }
+                    // .Average() / .Average(Function(x) num)
+                    "average" => {
+                        if items.is_empty() { return Err(RuntimeError::Custom("Sequence contains no elements".to_string())); }
+                        let mut total = 0.0f64;
+                        if args.is_empty() {
+                            for item in &items { total += item.as_double().unwrap_or(0.0); }
+                        } else {
+                            let selector = self.evaluate_expr(&args[0])?;
+                            for item in &items {
+                                let v = self.call_lambda(selector.clone(), &[item.clone()])?;
+                                total += v.as_double().unwrap_or(0.0);
+                            }
+                        }
+                        return Ok(Value::Double(total / items.len() as f64));
+                    }
+                    // .Aggregate(seed, Function(acc, x) expr)
+                    "aggregate" => {
+                        if args.len() >= 2 {
+                            let mut acc = self.evaluate_expr(&args[0])?;
+                            let func = self.evaluate_expr(&args[1])?;
+                            for item in &items {
+                                acc = self.call_lambda(func.clone(), &[acc, item.clone()])?;
+                            }
+                            return Ok(acc);
+                        } else if args.len() == 1 && !items.is_empty() {
+                            let func = self.evaluate_expr(&args[0])?;
+                            let mut acc = items[0].clone();
+                            for item in &items[1..] {
+                                acc = self.call_lambda(func.clone(), &[acc, item.clone()])?;
+                            }
+                            return Ok(acc);
+                        }
+                        return Err(RuntimeError::Custom("Aggregate requires at least one argument".to_string()));
+                    }
+                    // .Reverse()
+                    "reverse" => {
+                        let mut rev = items;
+                        rev.reverse();
+                        return Ok(Value::Array(rev));
+                    }
+                    // .Contains(value) — generic LINQ Contains
+                    "contains" if !matches!(val, Value::Object(_)) => {
+                        let target = self.evaluate_expr(&args[0])?;
+                        let target_str = target.as_string();
+                        let found = items.iter().any(|v| v.as_string() == target_str);
+                        return Ok(Value::Boolean(found));
+                    }
+                    // .ToList() — returns Collection/ArrayList
+                    "tolist" => {
+                        let al = crate::collections::ArrayList { items };
+                        return Ok(Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(al))));
+                    }
+                    // .ToArray()
+                    "toarray" if !matches!(val, Value::Object(_)) => {
+                        return Ok(Value::Array(items));
+                    }
+                    // .ToDictionary(Function(x) key, Function(x) val)
+                    "todictionary" => {
+                        let key_sel = self.evaluate_expr(&args[0])?;
+                        let val_sel = if args.len() > 1 { self.evaluate_expr(&args[1])? } else { Value::Nothing };
+                        let mut dict = crate::collections::VBDictionary::new();
+                        for item in &items {
+                            let k = self.call_lambda(key_sel.clone(), &[item.clone()])?;
+                            let v = if matches!(val_sel, Value::Nothing) {
+                                item.clone()
+                            } else {
+                                self.call_lambda(val_sel.clone(), &[item.clone()])?
+                            };
+                            let _ = dict.add(k, v);
+                        }
+                        return Ok(Value::Dictionary(std::rc::Rc::new(std::cell::RefCell::new(dict))));
+                    }
+                    // .SelectMany(Function(x) array)
+                    "selectmany" => {
+                        let selector = self.evaluate_expr(&args[0])?;
+                        let mut result = Vec::new();
+                        for item in &items {
+                            let sub = self.call_lambda(selector.clone(), &[item.clone()])?;
+                            if let Ok(sub_items) = sub.to_iterable() {
+                                result.extend(sub_items);
+                            } else {
+                                result.push(sub);
+                            }
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    // .Zip(other, Function(a, b) expr)
+                    "zip" => {
+                        let other_val = self.evaluate_expr(&args[0])?;
+                        let other_items = other_val.to_iterable()?;
+                        let combiner = if args.len() > 1 { Some(self.evaluate_expr(&args[1])?) } else { None };
+                        let mut result = Vec::new();
+                        for (a, b) in items.iter().zip(other_items.iter()) {
+                            if let Some(ref func) = combiner {
+                                result.push(self.call_lambda(func.clone(), &[a.clone(), b.clone()])?);
+                            } else {
+                                // Return as tuple-like object
+                                let mut fields = std::collections::HashMap::new();
+                                fields.insert("item1".to_string(), a.clone());
+                                fields.insert("item2".to_string(), b.clone());
+                                fields.insert("__type".to_string(), Value::String("Tuple".to_string()));
+                                result.push(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
+                                    crate::value::ObjectData { class_name: "Tuple".to_string(), fields }
+                                ))));
+                            }
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    _ => {}
                 }
             }
         }
