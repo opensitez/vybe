@@ -88,6 +88,11 @@ fn try_parse_declaration(pair: Pair<Rule>) -> ParseResult<Option<Declaration>> {
         Rule::enum_decl => Ok(Some(Declaration::Enum(parse_enum_decl(pair)?))),
         Rule::namespace_decl => Ok(Some(parse_namespace_decl(pair)?)),
         Rule::imports_statement => Ok(Some(parse_imports_statement(pair)?)),
+        Rule::interface_decl => Ok(Some(Declaration::Interface(parse_interface_decl(pair)?))),
+        Rule::structure_decl => Ok(Some(Declaration::Structure(parse_structure_decl(pair)?))),
+        Rule::delegate_sub_decl => Ok(Some(Declaration::Delegate(parse_delegate_decl(pair, true)?))),
+        Rule::delegate_function_decl => Ok(Some(Declaration::Delegate(parse_delegate_decl(pair, false)?))),
+        Rule::event_decl => Ok(Some(Declaration::Event(parse_event_decl(pair)?))),
         _ => Ok(None),
     }
 }
@@ -522,8 +527,11 @@ fn parse_namespace_decl(pair: Pair<Rule>) -> ParseResult<Declaration> {
                 // Nested namespace
                 declarations.push(parse_namespace_decl(p)?);
             }
-            Rule::interface_decl | Rule::structure_decl => {
-                // Not yet implemented as full AST nodes — skip
+            Rule::interface_decl => {
+                declarations.push(Declaration::Interface(parse_interface_decl(p)?));
+            }
+            Rule::structure_decl => {
+                declarations.push(Declaration::Structure(parse_structure_decl(p)?));
             }
             Rule::NEWLINE | Rule::namespace_end => {}
             _ => {}
@@ -713,6 +721,7 @@ fn parse_parameter(pair: Pair<Rule>) -> ParseResult<Parameter> {
     let mut is_optional = false;
     let mut default_value = None;
     let mut is_nullable = false;
+    let mut is_param_array = false;
 
     for p in inner {
         match p.as_rule() {
@@ -726,6 +735,10 @@ fn parse_parameter(pair: Pair<Rule>) -> ParseResult<Parameter> {
             }
             Rule::optional_keyword => {
                 is_optional = true;
+            }
+            Rule::paramarray_keyword => {
+                is_param_array = true;
+                pass_type = ParameterPassType::ByVal; // ParamArray is always ByVal
             }
             Rule::identifier => {
                 name = Identifier::new(p.as_str());
@@ -744,6 +757,7 @@ fn parse_parameter(pair: Pair<Rule>) -> ParseResult<Parameter> {
         is_optional,
         default_value,
         is_nullable,
+        is_param_array,
     })
 }
 
@@ -1064,6 +1078,52 @@ fn parse_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
             let addressof = inner.next().unwrap(); // addressof_expr
             let handler = addressof.into_inner().next().unwrap().as_str().to_string();
             Ok(Statement::RemoveHandler { event_target, handler })
+        }
+        Rule::static_statement => {
+            let mut name = Identifier::new("");
+            let mut var_type = None;
+            let mut initializer = None;
+            for p in pair.into_inner() {
+                match p.as_rule() {
+                    Rule::identifier => name = Identifier::new(p.as_str()),
+                    Rule::type_name => var_type = Some(VBType::from_str(p.as_str())),
+                    Rule::expression => initializer = Some(parse_expression(p)?),
+                    _ => {}
+                }
+            }
+            Ok(Statement::StaticVar { name, var_type, initializer })
+        }
+        Rule::goto_statement => {
+            let label = pair.into_inner().next().unwrap().as_str().to_string();
+            Ok(Statement::GoTo(label))
+        }
+        Rule::label_statement => {
+            let label = pair.into_inner().next().unwrap().as_str().to_string();
+            Ok(Statement::Label(label))
+        }
+        Rule::on_error_statement => {
+            let text = pair.as_str().to_lowercase();
+            if text.contains("resume") && text.contains("next") {
+                Ok(Statement::OnErrorResumeNext)
+            } else {
+                // On Error GoTo <label> or On Error GoTo 0
+                let inner = pair.into_inner();
+                let target = inner.last().map(|p| p.as_str().to_string()).unwrap_or_else(|| "0".to_string());
+                Ok(Statement::OnErrorGoTo(target))
+            }
+        }
+        Rule::resume_statement => {
+            let text = pair.as_str().to_lowercase();
+            if text.contains("next") {
+                Ok(Statement::Resume(crate::ast::ResumeTarget::Next))
+            } else {
+                let mut inner = pair.into_inner();
+                if let Some(label) = inner.next() {
+                    Ok(Statement::Resume(crate::ast::ResumeTarget::Label(label.as_str().to_string())))
+                } else {
+                    Ok(Statement::Resume(crate::ast::ResumeTarget::Implicit))
+                }
+            }
         }
         // New declarations — parse gracefully as no-op statements for now
         Rule::interface_decl | Rule::structure_decl |
@@ -2294,4 +2354,206 @@ fn parse_select_statement(pair: Pair<Rule>) -> Result<Statement, ParseError> {
         cases,
         else_block,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Interface / Structure / Delegate / Event parsers
+// ---------------------------------------------------------------------------
+
+fn parse_interface_decl(pair: Pair<Rule>) -> ParseResult<InterfaceDecl> {
+    let inner = pair.into_inner();
+    let mut visibility = Visibility::Public;
+    let mut name = Identifier::new("");
+    let mut inherits = Vec::new();
+    let mut methods = Vec::new();
+
+    for p in inner {
+        match p.as_rule() {
+            Rule::identifier => name = Identifier::new(p.as_str()),
+            Rule::inherits_statement => {
+                for tp in p.into_inner() {
+                    if tp.as_rule() == Rule::type_name {
+                        inherits.push(VBType::from_str(tp.as_str()));
+                    }
+                }
+            }
+            Rule::interface_sub => {
+                let mut sname = Identifier::new("");
+                let mut params = Vec::new();
+                for sp in p.into_inner() {
+                    match sp.as_rule() {
+                        Rule::identifier => sname = Identifier::new(sp.as_str()),
+                        Rule::param_list => params = parse_param_list(sp)?,
+                        _ => {}
+                    }
+                }
+                methods.push(InterfaceMember::Sub { name: sname, parameters: params });
+            }
+            Rule::interface_function => {
+                let mut fname = Identifier::new("");
+                let mut params = Vec::new();
+                let mut ret = None;
+                for fp in p.into_inner() {
+                    match fp.as_rule() {
+                        Rule::identifier => fname = Identifier::new(fp.as_str()),
+                        Rule::param_list => params = parse_param_list(fp)?,
+                        Rule::type_name => ret = Some(VBType::from_str(fp.as_str())),
+                        _ => {}
+                    }
+                }
+                methods.push(InterfaceMember::Function { name: fname, parameters: params, return_type: ret });
+            }
+            Rule::interface_property => {
+                let mut pname = Identifier::new("");
+                let mut ptype = None;
+                let mut is_readonly = false;
+                let mut is_writeonly = false;
+                let txt = p.as_str().to_lowercase();
+                if txt.starts_with("readonly") { is_readonly = true; }
+                if txt.starts_with("writeonly") { is_writeonly = true; }
+                for pp in p.into_inner() {
+                    match pp.as_rule() {
+                        Rule::identifier => pname = Identifier::new(pp.as_str()),
+                        Rule::type_name => ptype = Some(VBType::from_str(pp.as_str())),
+                        _ => {}
+                    }
+                }
+                methods.push(InterfaceMember::Property { name: pname, property_type: ptype, is_readonly, is_writeonly });
+            }
+            Rule::interface_event => {
+                let mut ename = Identifier::new("");
+                let mut etype = None;
+                for ep in p.into_inner() {
+                    match ep.as_rule() {
+                        Rule::identifier => ename = Identifier::new(ep.as_str()),
+                        Rule::type_name => etype = Some(VBType::from_str(ep.as_str())),
+                        _ => {}
+                    }
+                }
+                methods.push(InterfaceMember::Event { name: ename, event_type: etype });
+            }
+            Rule::visibility_modifier => {
+                let s = p.as_str().to_lowercase();
+                match s.as_str() {
+                    "public" => visibility = Visibility::Public,
+                    "private" => visibility = Visibility::Private,
+                    "protected" => visibility = Visibility::Protected,
+                    "friend" => visibility = Visibility::Friend,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(InterfaceDecl { visibility, name, inherits, methods })
+}
+
+fn parse_structure_decl(pair: Pair<Rule>) -> ParseResult<StructureDecl> {
+    let inner = pair.into_inner();
+    let mut visibility = Visibility::Public;
+    let mut name = Identifier::new("");
+    let mut implements = Vec::new();
+    let mut properties = Vec::new();
+    let mut methods = Vec::new();
+    let mut fields = Vec::new();
+
+    for p in inner {
+        match p.as_rule() {
+            Rule::identifier => name = Identifier::new(p.as_str()),
+            Rule::implements_statement => {
+                for tp in p.into_inner() {
+                    if tp.as_rule() == Rule::type_name {
+                        implements.push(VBType::from_str(tp.as_str()));
+                    }
+                }
+            }
+            Rule::property_decl => properties.push(parse_property_decl(p)?),
+            Rule::auto_property_decl => {
+                fields.push(parse_auto_property_as_field(p)?);
+            }
+            Rule::sub_decl => methods.push(MethodDecl::Sub(parse_sub_decl(p)?)),
+            Rule::function_decl => methods.push(MethodDecl::Function(parse_function_decl(p)?)),
+            Rule::dim_statement => {
+                if let Ok(Statement::Dim(decl)) = parse_statement(p) {
+                    fields.push(decl);
+                }
+            }
+            Rule::field_decl => {
+                fields.push(parse_field_decl(p)?);
+            }
+            Rule::visibility_modifier => {
+                let s = p.as_str().to_lowercase();
+                match s.as_str() {
+                    "public" => visibility = Visibility::Public,
+                    "private" => visibility = Visibility::Private,
+                    "protected" => visibility = Visibility::Protected,
+                    "friend" => visibility = Visibility::Friend,
+                    _ => {}
+                }
+            }
+            Rule::NEWLINE | Rule::structure_end => {}
+            _ => {}
+        }
+    }
+
+    Ok(StructureDecl { visibility, name, implements, properties, methods, fields })
+}
+
+fn parse_delegate_decl(pair: Pair<Rule>, is_sub: bool) -> ParseResult<DelegateDecl> {
+    let inner = pair.into_inner();
+    let mut visibility = Visibility::Public;
+    let mut name = Identifier::new("");
+    let mut parameters = Vec::new();
+    let mut return_type = None;
+
+    for p in inner {
+        match p.as_rule() {
+            Rule::identifier => name = Identifier::new(p.as_str()),
+            Rule::param_list => parameters = parse_param_list(p)?,
+            Rule::type_name => return_type = Some(VBType::from_str(p.as_str())),
+            Rule::visibility_modifier => {
+                let s = p.as_str().to_lowercase();
+                match s.as_str() {
+                    "public" => visibility = Visibility::Public,
+                    "private" => visibility = Visibility::Private,
+                    "protected" => visibility = Visibility::Protected,
+                    "friend" => visibility = Visibility::Friend,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(DelegateDecl { visibility, name, parameters, return_type, is_sub })
+}
+
+fn parse_event_decl(pair: Pair<Rule>) -> ParseResult<EventDecl> {
+    let inner = pair.into_inner();
+    let mut visibility = Visibility::Public;
+    let mut name = Identifier::new("");
+    let mut parameters = Vec::new();
+    let mut event_type = None;
+
+    for p in inner {
+        match p.as_rule() {
+            Rule::identifier => name = Identifier::new(p.as_str()),
+            Rule::param_list => parameters = parse_param_list(p)?,
+            Rule::type_name => event_type = Some(VBType::from_str(p.as_str())),
+            Rule::visibility_modifier => {
+                let s = p.as_str().to_lowercase();
+                match s.as_str() {
+                    "public" => visibility = Visibility::Public,
+                    "private" => visibility = Visibility::Private,
+                    "protected" => visibility = Visibility::Protected,
+                    "friend" => visibility = Visibility::Friend,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(EventDecl { visibility, name, parameters, event_type })
 }

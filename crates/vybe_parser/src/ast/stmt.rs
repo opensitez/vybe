@@ -1,4 +1,4 @@
-use super::{Expression, Identifier};
+use super::{Expression, Identifier, VBType};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -157,6 +157,22 @@ pub enum Statement {
     // Continue
     Continue(ContinueType),
 
+    /// `Static x As Integer = 0` — local but persists across calls
+    StaticVar {
+        name: Identifier,
+        var_type: Option<VBType>,
+        initializer: Option<Expression>,
+    },
+
+    // GoTo / Labels
+    GoTo(String),
+    Label(String),
+
+    // VB6/VB.NET error handling
+    OnErrorResumeNext,
+    OnErrorGoTo(String),    // Label name, or "0" to disable
+    Resume(ResumeTarget),
+
     // VB6 File I/O
     Open {
         file_path: Expression,
@@ -248,4 +264,13 @@ pub enum CompoundOp {
     ExponentAssign,  // ^=
     ShiftLeftAssign, // <<=
     ShiftRightAssign,// >>=
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ResumeTarget {
+    /// Resume (retry the statement that caused the error)
+    Implicit,
+    /// Resume Next (continue from the next statement)
+    Next,
+    /// Resume <label> (jump to the label)
+    Label(String),
 }

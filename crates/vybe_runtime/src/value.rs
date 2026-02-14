@@ -385,6 +385,10 @@ pub enum RuntimeError {
     
     #[error("Continue")]
     Continue(vybe_parser::ast::stmt::ContinueType),
+
+    /// GoTo control flow: jump to the named label.
+    #[error("GoTo {0}")]
+    GoTo(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]

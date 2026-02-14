@@ -13,6 +13,14 @@ pub enum Declaration {
     Namespace(NamespaceDecl),
     /// `Imports System.IO` or `Imports alias = Some.Namespace`
     Imports(ImportsDecl),
+    /// `Interface IFoo ... End Interface`
+    Interface(InterfaceDecl),
+    /// `Structure Point ... End Structure`
+    Structure(StructureDecl),
+    /// `Delegate Sub/Function ...`
+    Delegate(DelegateDecl),
+    /// `Event DataChanged(...)` at class/module level
+    Event(EventDecl),
 }
 
 /// A VB.NET Namespace block containing nested declarations.
@@ -138,6 +146,9 @@ pub struct Parameter {
     pub default_value: Option<Expression>,
     #[serde(default)]
     pub is_nullable: bool,
+    /// ParamArray — last parameter receives remaining args as an array
+    #[serde(default)]
+    pub is_param_array: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -171,6 +182,69 @@ pub struct EnumDecl {
     pub visibility: Visibility,
     pub name: Identifier,
     pub members: Vec<EnumMember>,
+}
+
+/// A VB.NET Interface declaration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceDecl {
+    pub visibility: Visibility,
+    pub name: Identifier,
+    pub inherits: Vec<VBType>,
+    pub methods: Vec<InterfaceMember>,
+}
+
+/// A member declared inside an Interface block.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum InterfaceMember {
+    Sub {
+        name: Identifier,
+        parameters: Vec<Parameter>,
+    },
+    Function {
+        name: Identifier,
+        parameters: Vec<Parameter>,
+        return_type: Option<VBType>,
+    },
+    Property {
+        name: Identifier,
+        property_type: Option<VBType>,
+        is_readonly: bool,
+        is_writeonly: bool,
+    },
+    Event {
+        name: Identifier,
+        event_type: Option<VBType>,
+    },
+}
+
+/// A VB.NET Structure declaration (value type — treated like a class).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructureDecl {
+    pub visibility: Visibility,
+    pub name: Identifier,
+    pub implements: Vec<VBType>,
+    pub properties: Vec<PropertyDecl>,
+    pub methods: Vec<MethodDecl>,
+    pub fields: Vec<VariableDecl>,
+}
+
+/// A VB.NET Delegate declaration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DelegateDecl {
+    pub visibility: Visibility,
+    pub name: Identifier,
+    pub parameters: Vec<Parameter>,
+    pub return_type: Option<VBType>,
+    pub is_sub: bool,
+}
+
+/// A VB.NET Event declaration (inside a class/module).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventDecl {
+    pub visibility: Visibility,
+    pub name: Identifier,
+    pub parameters: Vec<Parameter>,
+    pub event_type: Option<VBType>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

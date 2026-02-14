@@ -39,6 +39,20 @@ pub struct Interpreter {
     /// Maps fully-qualified class name → key in self.classes.
     /// E.g. "myapp.models.customer" → "customer" (the actual key in self.classes).
     pub namespace_map: HashMap<String, String>,
+    /// Registered interfaces (name → InterfaceDecl).
+    pub interfaces: HashMap<String, vybe_parser::InterfaceDecl>,
+    /// Registered structures (treated like value-type classes).
+    pub structures: HashMap<String, vybe_parser::StructureDecl>,
+    /// Registered delegates (name → DelegateDecl).
+    pub delegates: HashMap<String, vybe_parser::DelegateDecl>,
+    /// On Error Resume Next active?
+    pub on_error_resume_next: bool,
+    /// On Error GoTo <label> — the label to jump to on error (None = disabled).
+    pub on_error_goto_label: Option<String>,
+    /// Static local variables: key = "module.proc.var_name" → Value.
+    pub static_locals: HashMap<String, Value>,
+    /// Track which Sub/Function is currently executing (for static locals).
+    current_procedure: Option<String>,
 }
 
 /// An active Imports entry.
@@ -71,6 +85,13 @@ impl Interpreter {
             direct_console: false,
             imports: Vec::new(),
             namespace_map: HashMap::new(),
+            interfaces: HashMap::new(),
+            structures: HashMap::new(),
+            delegates: HashMap::new(),
+            on_error_resume_next: false,
+            on_error_goto_label: None,
+            static_locals: HashMap::new(),
+            current_procedure: None,
         };
         interp.register_builtin_constants();
         interp.init_namespaces();
@@ -1358,6 +1379,53 @@ impl Interpreter {
                 }
                 Ok(())
             }
+            Declaration::Interface(iface_decl) => {
+                let key = if let Some(module) = &self.current_module {
+                    format!("{}.{}", module.to_lowercase(), iface_decl.name.as_str().to_lowercase())
+                } else {
+                    iface_decl.name.as_str().to_lowercase()
+                };
+                self.interfaces.insert(key, iface_decl.clone());
+                Ok(())
+            }
+            Declaration::Structure(struct_decl) => {
+                let key = if let Some(module) = &self.current_module {
+                    format!("{}.{}", module.to_lowercase(), struct_decl.name.as_str().to_lowercase())
+                } else {
+                    struct_decl.name.as_str().to_lowercase()
+                };
+                // Register structure like a class (value type semantics)
+                let class = vybe_parser::ClassDecl {
+                    visibility: struct_decl.visibility.clone(),
+                    name: struct_decl.name.clone(),
+                    is_partial: false,
+                    inherits: None,
+                    implements: struct_decl.implements.clone(),
+                    properties: struct_decl.properties.clone(),
+                    methods: struct_decl.methods.clone(),
+                    fields: struct_decl.fields.clone(),
+                    is_must_inherit: false,
+                    is_not_inheritable: true, // structs can't be inherited
+                };
+                self.classes.insert(key.clone(), class);
+                self.structures.insert(key, struct_decl.clone());
+                Ok(())
+            }
+            Declaration::Delegate(del_decl) => {
+                let key = if let Some(module) = &self.current_module {
+                    format!("{}.{}", module.to_lowercase(), del_decl.name.as_str().to_lowercase())
+                } else {
+                    del_decl.name.as_str().to_lowercase()
+                };
+                self.delegates.insert(key, del_decl.clone());
+                Ok(())
+            }
+            Declaration::Event(event_decl) => {
+                // Events are registered in the class context — for now just acknowledge
+                // The event system already handles AddHandler/RaiseEvent at runtime.
+                let _name = event_decl.name.as_str();
+                Ok(())
+            }
         }
     }
 
@@ -1688,11 +1756,21 @@ impl Interpreter {
         match stmt {
             Statement::Dim(decl) => {
                 if let Some(bounds) = &decl.array_bounds {
-                    // Array declaration with bounds: Dim arr(10) As Integer
-                    let size = (self.evaluate_expr(&bounds[0])?.as_integer()? + 1) as usize; // VB arrays are 0-based but size is bound+1
-                    let default_val = default_value_for_type("", &decl.var_type);
-                    let arr = Value::Array(vec![default_val; size]);
-                    self.env.define(decl.name.as_str(), arr);
+                    if bounds.len() == 1 {
+                        // 1-D array: Dim arr(10) As Integer
+                        let size = (self.evaluate_expr(&bounds[0])?.as_integer()? + 1) as usize;
+                        let default_val = default_value_for_type("", &decl.var_type);
+                        let arr = Value::Array(vec![default_val; size]);
+                        self.env.define(decl.name.as_str(), arr);
+                    } else {
+                        // Multi-dimensional: Dim arr(3, 4) → nested arrays
+                        let dims: Vec<usize> = bounds.iter()
+                            .map(|b| self.evaluate_expr(b).and_then(|v| v.as_integer()).map(|i| (i + 1) as usize))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let default_val = default_value_for_type("", &decl.var_type);
+                        let arr = create_multi_dim_array(&dims, &default_val);
+                        self.env.define(decl.name.as_str(), arr);
+                    }
                 } else if let Some(init) = &decl.initializer {
                     // Variable with initializer: Dim x As Integer = 10 or Dim arr() = {1,2,3}
                     let val = self.evaluate_expr(init)?;
@@ -1869,6 +1947,19 @@ impl Interpreter {
                             let mut obj_name: Option<String> = None;
                             if let Some(Value::String(name_val)) = obj_ref.borrow().fields.get("name") {
                                 obj_name = Some(name_val.clone());
+                            }
+                            // Fallback: infer control name from the assignment target expression
+                            // when Me.ctrl.Name hasn't been set yet (designer sets DataSource before Name)
+                            // e.g. `Me.dgv1.DataSource = Me.bs1` → infer "dgv1" from MemberAccess(Me, "dgv1")
+                            if obj_name.is_none() {
+                                if let Expression::MemberAccess(inner, ctrl_member) = object {
+                                    if matches!(inner.as_ref(), Expression::Me) {
+                                        let inferred = ctrl_member.as_str().to_string();
+                                        // Store on the object so later assignments can find the name
+                                        obj_ref.borrow_mut().fields.insert("name".to_string(), Value::String(inferred.clone()));
+                                        obj_name = Some(inferred);
+                                    }
+                                }
                             }
                             // If the value is a BindingSource, register this control as a subscriber
                             if let Value::Object(bs_ref) = &val {
@@ -2055,23 +2146,31 @@ impl Interpreter {
 
             Statement::ArrayAssignment { array, indices, value } => {
                 let val = self.evaluate_expr(value)?;
-                let index = self.evaluate_expr(&indices[0])?.as_integer()? as usize;
                 let array_lower = array.as_str().to_lowercase();
 
-                // Get the array, modify it, and store it back
-                // Try current object fields first
-                if let Some(obj_rc) = &self.current_object {
-                    let mut obj = obj_rc.borrow_mut();
-                    if let Some(arr_val) = obj.fields.get_mut(&array_lower) {
-                        arr_val.set_array_element(index, val.clone())?;
-                        return Ok(());
+                if indices.len() == 1 {
+                    // 1-D array assignment
+                    let index = self.evaluate_expr(&indices[0])?.as_integer()? as usize;
+                    // Try current object fields first
+                    if let Some(obj_rc) = &self.current_object {
+                        let mut obj = obj_rc.borrow_mut();
+                        if let Some(arr_val) = obj.fields.get_mut(&array_lower) {
+                            arr_val.set_array_element(index, val.clone())?;
+                            return Ok(());
+                        }
                     }
+                    let mut arr = self.env.get(array.as_str())?;
+                    arr.set_array_element(index, val)?;
+                    self.env.set(array.as_str(), arr)?;
+                } else {
+                    // Multi-dimensional assignment: drill into nested arrays
+                    let idx_vals: Vec<usize> = indices.iter()
+                        .map(|e| self.evaluate_expr(e).and_then(|v| v.as_integer()).map(|i| i as usize))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let mut arr = self.env.get(array.as_str())?;
+                    set_multi_dim_element(&mut arr, &idx_vals, val)?;
+                    self.env.set(array.as_str(), arr)?;
                 }
-
-                // Fallback to environment
-                let mut arr = self.env.get(array.as_str())?;
-                arr.set_array_element(index, val)?;
-                self.env.set(array.as_str(), arr)?;
                 Ok(())
             }
 
@@ -2828,6 +2927,121 @@ impl Interpreter {
                 }
                 Ok(())
             }
+            // --- Static local variables ---
+            Statement::StaticVar { name, var_type, initializer } => {
+                // Static variables persist across calls. Key by module + procedure + var name.
+                let module = self.current_module.clone().unwrap_or_else(|| "__global__".to_string());
+                let proc = self.current_procedure.clone().unwrap_or_else(|| "__main__".to_string());
+                let key = format!("{}.{}.{}", module, proc, name.as_str()).to_lowercase();
+                if !self.static_locals.contains_key(&key) {
+                    let val = if let Some(init) = initializer {
+                        self.evaluate_expr(init)?
+                    } else {
+                        default_value_for_type(name.as_str(), var_type)
+                    };
+                    self.static_locals.insert(key.clone(), val.clone());
+                    self.env.define(name.as_str(), val);
+                } else {
+                    // Already initialized — just define in current scope with persisted value
+                    let val = self.static_locals.get(&key).cloned().unwrap_or(Value::Nothing);
+                    self.env.define(name.as_str(), val);
+                }
+                Ok(())
+            }
+            // --- GoTo / Label / On Error ---
+            Statement::GoTo(label) => {
+                Err(RuntimeError::GoTo(label.clone()))
+            }
+            Statement::Label(_label) => {
+                // Labels are markers — execution just passes through them.
+                Ok(())
+            }
+            Statement::OnErrorResumeNext => {
+                self.on_error_resume_next = true;
+                self.on_error_goto_label = None;
+                Ok(())
+            }
+            Statement::OnErrorGoTo(label) => {
+                if label == "0" {
+                    // On Error GoTo 0 → disable error handling
+                    self.on_error_resume_next = false;
+                    self.on_error_goto_label = None;
+                } else {
+                    self.on_error_resume_next = false;
+                    self.on_error_goto_label = Some(label.clone());
+                }
+                Ok(())
+            }
+            Statement::Resume(target) => {
+                // Resume is only meaningful inside an error handler.
+                // For now, just return Ok — the GoTo mechanism handles jumps.
+                match target {
+                    vybe_parser::ast::stmt::ResumeTarget::Next => Ok(()),
+                    vybe_parser::ast::stmt::ResumeTarget::Label(lbl) => Err(RuntimeError::GoTo(lbl.clone())),
+                    vybe_parser::ast::stmt::ResumeTarget::Implicit => Ok(()),
+                }
+            }
+        }
+    }
+
+    /// Execute a block of statements with GoTo jump support and On Error handling.
+    /// When a GoTo is encountered, finds the target Label in the body and resumes
+    /// execution from there. Also handles On Error Resume Next (swallow errors).
+    fn execute_body_with_goto(&mut self, body: &[Statement]) -> Result<(), RuntimeError> {
+        let mut pc = 0; // program counter — index into body
+        while pc < body.len() {
+            let stmt = &body[pc];
+            match self.execute(stmt) {
+                Ok(_) => {
+                    pc += 1;
+                }
+                Err(RuntimeError::GoTo(label)) => {
+                    // Find the label in the body and jump to it
+                    if let Some(idx) = body.iter().position(|s| matches!(s, Statement::Label(l) if l.eq_ignore_ascii_case(&label))) {
+                        pc = idx + 1; // resume after the label
+                    } else {
+                        return Err(RuntimeError::Custom(format!("Label '{}' not found", label)));
+                    }
+                }
+                Err(e) => {
+                    // On Error Resume Next: swallow the error and continue
+                    if self.on_error_resume_next {
+                        pc += 1;
+                        continue;
+                    }
+                    // On Error GoTo <label>: jump to error handler label
+                    if let Some(ref lbl) = self.on_error_goto_label.clone() {
+                        if let Some(idx) = body.iter().position(|s| matches!(s, Statement::Label(l) if l.eq_ignore_ascii_case(lbl))) {
+                            // Disable error handling to avoid infinite loops in the handler
+                            self.on_error_goto_label = None;
+                            pc = idx + 1;
+                            continue;
+                        }
+                    }
+                    // Propagate other errors (Exit Sub/Function, Return, etc.)
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Persist any static local variables from the current scope back into
+    /// `self.static_locals` so they survive across calls.
+    fn persist_static_locals(&mut self) {
+        let module = self.current_module.clone().unwrap_or_else(|| "__global__".to_string());
+        let proc = self.current_procedure.clone().unwrap_or_else(|| "__main__".to_string());
+        let prefix = format!("{}.{}.", module, proc).to_lowercase();
+        let keys: Vec<String> = self.static_locals.keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in keys {
+            // Extract var name from key
+            let var_name = &key[prefix.len()..];
+            if let Ok(val) = self.env.get(var_name) {
+                self.static_locals.insert(key, val);
+            }
         }
     }
 
@@ -2853,12 +3067,24 @@ impl Interpreter {
                            return self.call_lambda(val, &arg_values?);
                        }
                        Value::Array(arr) => {
-                           // Array access via Call syntax
-                           if args.len() != 1 {
-                               return Err(RuntimeError::Custom("Array index must be 1 dimension".to_string()));
+                           // Array access via Call syntax — supports multi-dimensional
+                           if args.len() == 1 {
+                               let index = self.evaluate_expr(&args[0])?.as_integer()? as usize;
+                               return arr.get(index).cloned().ok_or_else(|| RuntimeError::Custom("Array index out of bounds".to_string()));
+                           } else {
+                               // Multi-dim: drill into nested arrays
+                               let mut current = Value::Array(arr);
+                               for idx_expr in args.iter() {
+                                   let idx = self.evaluate_expr(idx_expr)?.as_integer()? as usize;
+                                   current = match current {
+                                       Value::Array(inner) => inner.get(idx).cloned().ok_or_else(|| {
+                                           RuntimeError::Custom("Array index out of bounds".to_string())
+                                       })?,
+                                       _ => return Err(RuntimeError::Custom("Cannot index non-array dimension".to_string())),
+                                   };
+                               }
+                               return Ok(current);
                            }
-                           let index = self.evaluate_expr(&args[0])?.as_integer()? as usize;
-                           return arr.get(index).cloned().ok_or_else(|| RuntimeError::Custom("Array index out of bounds".to_string()));
                        }
                        Value::Dictionary(dict) => {
                            // Dictionary access via Call syntax (e.g. dict("key"))
@@ -2908,8 +3134,23 @@ impl Interpreter {
                 let arr_val = self.env.get(array.as_str())?;
                 match arr_val {
                     Value::Array(arr) => {
-                        let index = self.evaluate_expr(&indices[0])?.as_integer()? as usize;
-                        arr.get(index).cloned().ok_or_else(|| RuntimeError::Custom("Array index out of bounds".to_string()))
+                        if indices.len() == 1 {
+                            let index = self.evaluate_expr(&indices[0])?.as_integer()? as usize;
+                            arr.get(index).cloned().ok_or_else(|| RuntimeError::Custom("Array index out of bounds".to_string()))
+                        } else {
+                            // Multi-dimensional: drill into nested arrays
+                            let mut current = Value::Array(arr);
+                            for idx_expr in indices {
+                                let idx = self.evaluate_expr(idx_expr)?.as_integer()? as usize;
+                                current = match current {
+                                    Value::Array(inner) => inner.get(idx).cloned().ok_or_else(|| {
+                                        RuntimeError::Custom("Array index out of bounds".to_string())
+                                    })?,
+                                    _ => return Err(RuntimeError::Custom("Cannot index non-array dimension".to_string())),
+                                };
+                            }
+                            Ok(current)
+                        }
                     }
                     Value::Collection(col) => {
                         let index = self.evaluate_expr(&indices[0])?.as_integer()? as usize;
@@ -11174,12 +11415,12 @@ impl Interpreter {
                     // .OrderBy(Function(x) key) / .OrderByDescending(Function(x) key)
                     "orderby" | "orderbydescending" => {
                         let selector = self.evaluate_expr(&args[0])?;
-                        let mut keyed: Vec<(Value, String)> = Vec::new();
+                        let mut keyed: Vec<(Value, Value)> = Vec::new();
                         for item in &items {
                             let key = self.call_lambda(selector.clone(), &[item.clone()])?;
-                            keyed.push((item.clone(), key.as_string()));
+                            keyed.push((item.clone(), key));
                         }
-                        keyed.sort_by(|a, b| a.1.cmp(&b.1));
+                        keyed.sort_by(|a, b| compare_values_ordering(&a.1, &b.1));
                         if method_name == "orderbydescending" {
                             keyed.reverse();
                         }
@@ -11360,6 +11601,158 @@ impl Interpreter {
                             }
                         }
                         return Ok(Value::Array(result));
+                    }
+                    // .GroupBy(Function(x) key) → array of group objects {Key, Items}
+                    "groupby" => {
+                        let key_sel = self.evaluate_expr(&args[0])?;
+                        let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
+                        for item in &items {
+                            let key = self.call_lambda(key_sel.clone(), &[item.clone()])?.as_string();
+                            if let Some(g) = groups.iter_mut().find(|(k, _)| k == &key) {
+                                g.1.push(item.clone());
+                            } else {
+                                groups.push((key, vec![item.clone()]));
+                            }
+                        }
+                        let mut result = Vec::new();
+                        for (key, group_items) in groups {
+                            let mut fields = std::collections::HashMap::new();
+                            fields.insert("key".to_string(), Value::String(key));
+                            fields.insert("items".to_string(), Value::Array(group_items.clone()));
+                            fields.insert("count".to_string(), Value::Integer(group_items.len() as i32));
+                            fields.insert("__type".to_string(), Value::String("Grouping".to_string()));
+                            result.push(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
+                                crate::value::ObjectData { class_name: "Grouping".to_string(), fields }
+                            ))));
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    // .Union(other) — set union preserving order
+                    "union" => {
+                        let other = self.evaluate_expr(&args[0])?;
+                        let other_items = other.to_iterable().unwrap_or_default();
+                        let mut seen = Vec::new();
+                        let mut result = Vec::new();
+                        for item in items.iter().chain(other_items.iter()) {
+                            let key = item.as_string();
+                            if !seen.contains(&key) {
+                                seen.push(key);
+                                result.push(item.clone());
+                            }
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    // .Intersect(other) — set intersection
+                    "intersect" => {
+                        let other = self.evaluate_expr(&args[0])?;
+                        let other_items = other.to_iterable().unwrap_or_default();
+                        let other_keys: Vec<String> = other_items.iter().map(|v| v.as_string()).collect();
+                        let mut seen = Vec::new();
+                        let mut result = Vec::new();
+                        for item in &items {
+                            let key = item.as_string();
+                            if other_keys.contains(&key) && !seen.contains(&key) {
+                                seen.push(key);
+                                result.push(item.clone());
+                            }
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    // .Except(other) — set difference
+                    "except" => {
+                        let other = self.evaluate_expr(&args[0])?;
+                        let other_items = other.to_iterable().unwrap_or_default();
+                        let other_keys: Vec<String> = other_items.iter().map(|v| v.as_string()).collect();
+                        let result: Vec<Value> = items.into_iter()
+                            .filter(|v| !other_keys.contains(&v.as_string()))
+                            .collect();
+                        return Ok(Value::Array(result));
+                    }
+                    // .Concat(other) — concatenation (allows duplicates)
+                    "concat" if !matches!(val, Value::String(_)) => {
+                        let other = self.evaluate_expr(&args[0])?;
+                        let other_items = other.to_iterable().unwrap_or_default();
+                        let mut result = items;
+                        result.extend(other_items);
+                        return Ok(Value::Array(result));
+                    }
+                    // .SkipWhile(Function(x) bool)
+                    "skipwhile" => {
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let mut skipping = true;
+                        let mut result = Vec::new();
+                        for item in &items {
+                            if skipping && self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                continue;
+                            }
+                            skipping = false;
+                            result.push(item.clone());
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    // .TakeWhile(Function(x) bool)
+                    "takewhile" => {
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let mut result = Vec::new();
+                        for item in &items {
+                            if !self.call_lambda(predicate.clone(), &[item.clone()])?.is_truthy() {
+                                break;
+                            }
+                            result.push(item.clone());
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    // .ElementAt(index)
+                    "elementat" => {
+                        let idx = self.evaluate_expr(&args[0])?.as_integer()? as usize;
+                        return items.get(idx).cloned().ok_or_else(|| {
+                            RuntimeError::Custom(format!("Index {} out of range", idx))
+                        });
+                    }
+                    // .ElementAtOrDefault(index)
+                    "elementatordefault" => {
+                        let idx = self.evaluate_expr(&args[0])?.as_integer()? as usize;
+                        return Ok(items.get(idx).cloned().unwrap_or(Value::Nothing));
+                    }
+                    // .DefaultIfEmpty() / .DefaultIfEmpty(defaultValue)
+                    "defaultifempty" => {
+                        if items.is_empty() {
+                            let def = if !args.is_empty() {
+                                self.evaluate_expr(&args[0])?
+                            } else {
+                                Value::Nothing
+                            };
+                            return Ok(Value::Array(vec![def]));
+                        }
+                        return Ok(Value::Array(items));
+                    }
+                    // .SequenceEqual(other)
+                    "sequenceequal" => {
+                        let other = self.evaluate_expr(&args[0])?;
+                        let other_items = other.to_iterable().unwrap_or_default();
+                        if items.len() != other_items.len() {
+                            return Ok(Value::Boolean(false));
+                        }
+                        for (a, b) in items.iter().zip(other_items.iter()) {
+                            if a.as_string() != b.as_string() {
+                                return Ok(Value::Boolean(false));
+                            }
+                        }
+                        return Ok(Value::Boolean(true));
+                    }
+                    // .ThenBy(Function(x) key) — secondary sort (simplified: just re-sort on this key)
+                    "thenby" | "thenbydescending" => {
+                        let selector = self.evaluate_expr(&args[0])?;
+                        let mut keyed: Vec<(Value, Value)> = Vec::new();
+                        for item in &items {
+                            let key = self.call_lambda(selector.clone(), &[item.clone()])?;
+                            keyed.push((item.clone(), key));
+                        }
+                        keyed.sort_by(|a, b| compare_values_ordering(&a.1, &b.1));
+                        if method_name == "thenbydescending" {
+                            keyed.reverse();
+                        }
+                        return Ok(Value::Array(keyed.into_iter().map(|(v, _)| v).collect()));
                     }
                     _ => {}
                 }
@@ -11663,6 +12056,8 @@ impl Interpreter {
         // Save previous object context and set new one
         let prev_object = self.current_object.take();
         self.current_object = context;
+        let prev_procedure = self.current_procedure.take();
+        self.current_procedure = Some(sub.name.as_str().to_string());
 
         let mut byref_writebacks = Vec::new();
 
@@ -11670,9 +12065,29 @@ impl Interpreter {
         for (i, param) in sub.parameters.iter().enumerate() {
             let mut val = Value::Nothing;
             
+            // ParamArray: last parameter collects remaining args into an array
+            if param.is_param_array {
+                if let Some(values) = args {
+                    let remaining: Vec<Value> = values[i..].to_vec();
+                    val = Value::Array(remaining);
+                } else if let Some(exprs) = arg_exprs {
+                    let mut remaining = Vec::new();
+                    for expr in &exprs[i..] {
+                        remaining.push(self.evaluate_expr(expr)?);
+                    }
+                    val = Value::Array(remaining);
+                }
+                self.env.define(param.name.as_str(), val);
+                break; // ParamArray must be last parameter
+            }
+
             if let Some(values) = args {
                 if i < values.len() {
                     val = values[i].clone();
+                } else if param.is_optional {
+                    if let Some(ref default) = param.default_value {
+                        val = self.evaluate_expr(default)?;
+                    }
                 }
             } else if let Some(exprs) = arg_exprs {
                 if i < exprs.len() {
@@ -11693,17 +12108,17 @@ impl Interpreter {
             self.env.define(param.name.as_str(), val);
         }
 
-        // Execute body
-        for stmt in &sub.body {
-            match self.execute(stmt) {
-                Err(RuntimeError::Exit(ExitType::Sub)) => break,
-                Err(e) => {
-                    self.env.pop_scope();
-                    self.current_object = prev_object; // Restore context
-                    return Err(e);
-                }
-                Ok(_) => {}
+        // Execute body with GoTo and On Error support
+        let result = self.execute_body_with_goto(&sub.body);
+        match result {
+            Err(RuntimeError::Exit(ExitType::Sub)) => {}
+            Err(e) => {
+                self.env.pop_scope();
+                self.current_object = prev_object;
+                self.current_procedure = prev_procedure;
+                return Err(e);
             }
+            Ok(_) => {}
         }
 
         // Perform ByRef writebacks (capture values before popping scope)
@@ -11716,9 +12131,13 @@ impl Interpreter {
              }
         }
 
+        // Persist static local variables before popping scope
+        self.persist_static_locals();
+
         // Pop scope
         self.env.pop_scope();
         self.current_object = prev_object;
+        self.current_procedure = prev_procedure;
         
         // Apply writebacks in restored scope
         for (var_name, val) in final_writebacks {
@@ -11741,14 +12160,37 @@ impl Interpreter {
         self.env.push_scope();
         let prev_object = self.current_object.take();
         self.current_object = context;
+        let prev_procedure = self.current_procedure.take();
+        self.current_procedure = Some(func.name.as_str().to_string());
 
         let mut byref_writebacks = Vec::new();
 
         for (i, param) in func.parameters.iter().enumerate() {
             let mut val = Value::Nothing;
-             if let Some(values) = args {
+
+            // ParamArray: last parameter collects remaining args into an array
+            if param.is_param_array {
+                if let Some(values) = args {
+                    let remaining: Vec<Value> = values[i..].to_vec();
+                    val = Value::Array(remaining);
+                } else if let Some(exprs) = arg_exprs {
+                    let mut remaining = Vec::new();
+                    for expr in &exprs[i..] {
+                        remaining.push(self.evaluate_expr(expr)?);
+                    }
+                    val = Value::Array(remaining);
+                }
+                self.env.define(param.name.as_str(), val);
+                break; // ParamArray must be last parameter
+            }
+
+            if let Some(values) = args {
                 if i < values.len() {
                     val = values[i].clone();
+                } else if param.is_optional {
+                    if let Some(ref default) = param.default_value {
+                        val = self.evaluate_expr(default)?;
+                    }
                 }
             } else if let Some(exprs) = arg_exprs {
                 if i < exprs.len() {
@@ -11762,6 +12204,10 @@ impl Interpreter {
                             _ => {}
                         }
                     }
+                } else if param.is_optional {
+                    if let Some(ref default) = param.default_value {
+                        val = self.evaluate_expr(default)?;
+                    }
                 }
             }
             self.env.define(param.name.as_str(), val);
@@ -11771,22 +12217,23 @@ impl Interpreter {
         let mut explicit_return: Option<Value> = None;
 
         let mut result = Value::Nothing;
-        for stmt in &func.body {
-            match self.execute(stmt) {
-                Err(RuntimeError::Exit(ExitType::Function)) => break,
-                Err(RuntimeError::Return(val)) => {
-                    if let Some(v) = val {
-                        explicit_return = Some(v);
-                    }
-                    break;
+        // Execute body with GoTo and On Error support
+        let body = func.body.clone();
+        let exec_result = self.execute_body_with_goto(&body);
+        match exec_result {
+            Err(RuntimeError::Exit(ExitType::Function)) => {}
+            Err(RuntimeError::Return(val)) => {
+                if let Some(v) = val {
+                    explicit_return = Some(v);
                 }
-                Err(e) => {
-                    self.env.pop_scope();
-                    self.current_object = prev_object;
-                    return Err(e);
-                }
-                Ok(_) => {}
             }
+            Err(e) => {
+                self.env.pop_scope();
+                self.current_object = prev_object;
+                self.current_procedure = prev_procedure;
+                return Err(e);
+            }
+            Ok(_) => {}
         }
 
         if let Some(ret) = explicit_return {
@@ -11805,8 +12252,12 @@ impl Interpreter {
              }
         }
 
+        // Persist static local variables before popping scope
+        self.persist_static_locals();
+
         self.env.pop_scope();
         self.current_object = prev_object;
+        self.current_procedure = prev_procedure;
 
         // Writeback
         for (var_name, val) in final_writebacks {
@@ -13249,6 +13700,62 @@ impl Default for Interpreter {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Compare two Values for ordering. Numbers compare numerically, strings lexically.
+fn compare_values_ordering(a: &Value, b: &Value) -> std::cmp::Ordering {
+    // Try to extract numeric values for comparison
+    let a_num = match a {
+        Value::Integer(n) => Some(*n as f64),
+        Value::Long(n) => Some(*n as f64),
+        Value::Single(n) => Some(*n as f64),
+        Value::Double(n) => Some(*n),
+        _ => None,
+    };
+    let b_num = match b {
+        Value::Integer(n) => Some(*n as f64),
+        Value::Long(n) => Some(*n as f64),
+        Value::Single(n) => Some(*n as f64),
+        Value::Double(n) => Some(*n),
+        _ => None,
+    };
+    match (a_num, b_num) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+        _ => a.as_string().cmp(&b.as_string()),
+    }
+}
+
+/// Create a multi-dimensional array as nested Value::Array.
+/// dims = [3, 4] creates a 3-element array where each element is a 4-element array.
+fn create_multi_dim_array(dims: &[usize], default: &Value) -> Value {
+    if dims.len() == 1 {
+        Value::Array(vec![default.clone(); dims[0]])
+    } else {
+        let inner = create_multi_dim_array(&dims[1..], default);
+        Value::Array(vec![inner; dims[0]])
+    }
+}
+
+/// Set an element in a multi-dimensional (nested) array.
+fn set_multi_dim_element(arr: &mut Value, indices: &[usize], val: Value) -> Result<(), RuntimeError> {
+    if indices.len() == 1 {
+        if let Value::Array(vec) = arr {
+            if indices[0] < vec.len() {
+                vec[indices[0]] = val;
+                return Ok(());
+            }
+            return Err(RuntimeError::Custom("Array index out of bounds".to_string()));
+        }
+        return Err(RuntimeError::Custom("Not an array".to_string()));
+    }
+    // Recurse into the inner dimension
+    if let Value::Array(vec) = arr {
+        if indices[0] < vec.len() {
+            return set_multi_dim_element(&mut vec[indices[0]], &indices[1..], val);
+        }
+        return Err(RuntimeError::Custom("Array index out of bounds".to_string()));
+    }
+    Err(RuntimeError::Custom("Not an array".to_string()))
 }
 
 fn default_value_for_type(_name: &str, var_type: &Option<vybe_parser::VBType>) -> Value {

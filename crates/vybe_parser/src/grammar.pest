@@ -64,6 +64,10 @@ statement = _{
     | exit_statement
     | throw_statement
     | return_statement
+    | on_error_statement
+    | resume_statement
+    | goto_statement
+    | label_statement
     | line_input_statement
     | open_statement
     | close_statement
@@ -74,6 +78,7 @@ statement = _{
     | addhandler_statement
     | removehandler_statement
     | raiseevent_statement
+    | static_statement
     | expression_statement
 }
 dim_new_keyword = { ^"New" }
@@ -84,6 +89,7 @@ dim_statement = {
     ("=" ~ (array_literal | expression))?
 }
 
+static_statement = { ^"Static" ~ identifier ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
 const_statement = { visibility_modifier? ~ ^"Const" ~ identifier ~ ^"As" ~ type_name ~ "=" ~ expression }
 set_statement = { ^"Set" ~ identifier ~ "=" ~ expression }
 compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "\\=" | "&=" | "^=" | "<<=" | ">>=" }
@@ -228,6 +234,19 @@ exit_statement = { ^"Exit" ~ exit_type }
 exit_type = { ^"Sub" | ^"Function" | ^"For" | ^"Do" | ^"Select" | ^"Try" | ^"Property" | ^"While" }
 return_statement = { ^"Return" ~ expression? }
 
+// GoTo / Labels
+goto_statement = { ^"GoTo" ~ identifier }
+label_statement = { identifier ~ ":" }
+
+// On Error (VB6/VB.NET structured error handling)
+on_error_statement = {
+    ^"On" ~ ^"Error" ~ (
+        ^"Resume" ~ ^"Next"
+        | ^"GoTo" ~ (^"0" | identifier)
+    )
+}
+resume_statement = { ^"Resume" ~ (^"Next" | identifier)? }
+
 // VB6 File I/O statements
 open_statement = { ^"Open" ~ expression ~ ^"For" ~ file_mode ~ ^"As" ~ "#"? ~ expression }
 file_mode = { ^"Input" | ^"Output" | ^"Append" | ^"Binary" | ^"Random" }
@@ -264,7 +283,8 @@ func_end = { ^"End" ~ ^"Function" }
 param_list = { param ~ ("," ~ param)* }
 pass_type_keyword = { ^"ByVal" | ^"ByRef" }
 optional_keyword = { ^"Optional" }
-param = { optional_keyword? ~ pass_type_keyword? ~ optional_keyword? ~ identifier ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
+paramarray_keyword = { ^"ParamArray" }
+param = { paramarray_keyword? ~ optional_keyword? ~ pass_type_keyword? ~ optional_keyword? ~ identifier ~ ("(" ~ ")")? ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
 nullable_marker = { "?" }
 
 // Module declarations (VB.NET style - members are implicitly shared)
@@ -302,7 +322,7 @@ implements_statement = { ^"Implements" ~ type_name ~ ("," ~ type_name)* }
 implements_line = _{ implements_statement ~ (NEWLINE | EOI) }
 
 interface_decl = {
-    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Interface" ~ identifier ~ (NEWLINE | EOI)
+    visibility_modifier? ~ ^"Interface" ~ identifier ~ (NEWLINE | EOI)
     ~ inherits_line?
     ~ (!interface_end ~ (interface_sub | interface_function | interface_property | interface_event | NEWLINE | COMMENT))*
     ~ interface_end
@@ -315,7 +335,7 @@ interface_event = { ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_lis
 
 // Structure declarations
 structure_decl = {
-    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Structure" ~ identifier ~ (NEWLINE | EOI)
+    visibility_modifier? ~ ^"Structure" ~ identifier ~ (NEWLINE | EOI)
     ~ implements_line?
     ~ (!structure_end ~ (property_decl | auto_property_line | sub_decl | function_decl | field_line | dim_line | NEWLINE | COMMENT))*
     ~ structure_end
@@ -331,12 +351,12 @@ namespace_decl = {
 namespace_end = { ^"End" ~ ^"Namespace" }
 
 // Event declarations
-event_decl = { (^"Public" | ^"Private" | ^"Protected" | ^"Friend")? ~ ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_list? ~ ")")? }
+event_decl = { visibility_modifier? ~ ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_list? ~ ")")? }
 event_line = _{ event_decl ~ (NEWLINE | EOI) }
 
 // Delegate declarations
-delegate_sub_decl = { (^"Public" | ^"Private" | ^"Friend")? ~ ^"Delegate" ~ ^"Sub" ~ identifier ~ "(" ~ param_list? ~ ")" }
-delegate_function_decl = { (^"Public" | ^"Private" | ^"Friend")? ~ ^"Delegate" ~ ^"Function" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? }
+delegate_sub_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Sub" ~ identifier ~ "(" ~ param_list? ~ ")" }
+delegate_function_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Function" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? }
 delegate_line = _{ (delegate_sub_decl | delegate_function_decl) ~ (NEWLINE | EOI) }
 
 // Enum declarations
@@ -543,7 +563,7 @@ member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{
-    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler")
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
