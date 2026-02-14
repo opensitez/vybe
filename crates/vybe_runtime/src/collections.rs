@@ -163,6 +163,149 @@ impl ArrayList {
              Err(RuntimeError::Custom(format!("Index out of range: {}", index)))
          }
     }
+
+    /// Capacity property — returns current Vec capacity.
+    pub fn capacity(&self) -> i32 {
+        self.items.capacity() as i32
+    }
+
+    /// Set the capacity (reserve at least this many slots).
+    pub fn set_capacity(&mut self, cap: usize) {
+        if cap > self.items.len() {
+            self.items.reserve(cap - self.items.len());
+        }
+    }
+
+    /// TrimToSize — shrink capacity to match count.
+    pub fn trim_to_size(&mut self) {
+        self.items.shrink_to_fit();
+    }
+
+    /// Clone — shallow copy.
+    pub fn clone_list(&self) -> Self {
+        Self {
+            items: self.items.clone(),
+            keys: self.keys.clone(),
+        }
+    }
+
+    /// GetRange(index, count) — return a sub-list.
+    pub fn get_range(&self, index: usize, count: usize) -> Result<Vec<Value>, RuntimeError> {
+        if index + count > self.items.len() {
+            return Err(RuntimeError::Custom(format!(
+                "GetRange: index {} + count {} exceeds length {}", index, count, self.items.len()
+            )));
+        }
+        Ok(self.items[index..index + count].to_vec())
+    }
+
+    /// InsertRange(index, collection) — insert multiple items at index.
+    pub fn insert_range(&mut self, index: usize, items: Vec<Value>) {
+        let insert_at = index.min(self.items.len());
+        // Shift key indices >= insert_at
+        let shift = items.len();
+        for v in self.keys.values_mut() {
+            if *v >= insert_at {
+                *v += shift;
+            }
+        }
+        for (i, item) in items.into_iter().enumerate() {
+            self.items.insert(insert_at + i, item);
+        }
+    }
+
+    /// RemoveRange(index, count) — remove a range of elements.
+    pub fn remove_range(&mut self, index: usize, count: usize) -> Result<(), RuntimeError> {
+        if index + count > self.items.len() {
+            return Err(RuntimeError::Custom(format!(
+                "RemoveRange: index {} + count {} exceeds length {}", index, count, self.items.len()
+            )));
+        }
+        self.items.drain(index..index + count);
+        // Rebuild keys: remove any pointing into removed range, shift rest
+        self.keys.retain(|_, v| *v < index || *v >= index + count);
+        for v in self.keys.values_mut() {
+            if *v >= index + count {
+                *v -= count;
+            }
+        }
+        Ok(())
+    }
+
+    /// SetRange(index, collection) — overwrite elements starting at index.
+    pub fn set_range(&mut self, index: usize, items: &[Value]) -> Result<(), RuntimeError> {
+        if index + items.len() > self.items.len() {
+            return Err(RuntimeError::Custom(format!(
+                "SetRange: index {} + count {} exceeds length {}", index, items.len(), self.items.len()
+            )));
+        }
+        for (i, item) in items.iter().enumerate() {
+            self.items[index + i] = item.clone();
+        }
+        Ok(())
+    }
+
+    /// Reverse a subrange.
+    pub fn reverse_range(&mut self, index: usize, count: usize) -> Result<(), RuntimeError> {
+        if index + count > self.items.len() {
+            return Err(RuntimeError::Custom(format!(
+                "Reverse: index {} + count {} exceeds length {}", index, count, self.items.len()
+            )));
+        }
+        self.items[index..index + count].reverse();
+        Ok(())
+    }
+
+    /// BinarySearch — assumes the list is sorted. Returns index or bitwise complement of insertion point.
+    pub fn binary_search(&self, value: &Value) -> i32 {
+        let result = self.items.binary_search_by(|item| {
+            let a = item.as_string();
+            let b = value.as_string();
+            a.cmp(&b)
+        });
+        match result {
+            Ok(idx) => idx as i32,
+            Err(idx) => !(idx as i32), // bitwise complement like .NET
+        }
+    }
+
+    /// CopyTo(destination_start_index) — copies items into an existing array.
+    /// Returns the items as a Vec for the interpreter to place into the target array.
+    pub fn copy_to(&self) -> Vec<Value> {
+        self.items.clone()
+    }
+
+    /// IndexOf with start index.
+    pub fn index_of_from(&self, value: &Value, start: usize) -> i32 {
+        for i in start..self.items.len() {
+            if self.items[i] == *value {
+                return i as i32;
+            }
+        }
+        -1
+    }
+
+    /// IndexOf with start index and count.
+    pub fn index_of_range(&self, value: &Value, start: usize, count: usize) -> i32 {
+        let end = (start + count).min(self.items.len());
+        for i in start..end {
+            if self.items[i] == *value {
+                return i as i32;
+            }
+        }
+        -1
+    }
+
+    /// LastIndexOf with start index.
+    pub fn last_index_of_from(&self, value: &Value, start: usize) -> i32 {
+        let end = start.min(self.items.len().saturating_sub(1));
+        for i in (0..=end).rev() {
+            if self.items[i] == *value {
+                return i as i32;
+            }
+        }
+        -1
+    }
 }
 
 // ---------------------------------------------------------------------------

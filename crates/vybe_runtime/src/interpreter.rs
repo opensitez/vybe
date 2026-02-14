@@ -5125,8 +5125,13 @@ impl Interpreter {
                 
                 // Collection Properties
                 if let Value::Collection(col_rc) = &obj_val {
-                    if member.as_str().eq_ignore_ascii_case("Count") {
-                        return Ok(Value::Integer(col_rc.borrow().count()));
+                    let m = member.as_str().to_lowercase();
+                    match m.as_str() {
+                        "count" => return Ok(Value::Integer(col_rc.borrow().count())),
+                        "capacity" => return Ok(Value::Integer(col_rc.borrow().capacity())),
+                        "isfixedsize" | "isreadonly" => return Ok(Value::Boolean(false)),
+                        "issynchronized" => return Ok(Value::Boolean(false)),
+                        _ => {}
                     }
                 }
 
@@ -10229,17 +10234,7 @@ impl Interpreter {
                         });
                         return Ok(Value::Nothing);
                     }
-                    "reverse" => {
-                        col_rc.borrow_mut().items.reverse();
-                        return Ok(Value::Nothing);
-                    }
-                    "indexof" => {
-                        let val = self.evaluate_expr(&args[0])?;
-                        let idx = col_rc.borrow().items.iter().position(|v| {
-                            crate::evaluator::values_equal(v, &val)
-                        }).map(|i| i as i32).unwrap_or(-1);
-                        return Ok(Value::Integer(idx));
-                    }
+
                     "contains" => {
                         let val = self.evaluate_expr(&args[0])?;
                         let found = col_rc.borrow().items.iter().any(|v| {
@@ -10335,16 +10330,156 @@ impl Interpreter {
                     }
                     "lastindexof" => {
                         let val = self.evaluate_expr(&args[0])?;
+                        if args.len() >= 2 {
+                            let start = self.evaluate_expr(&args[1])?.as_integer()? as usize;
+                            let idx = col_rc.borrow().last_index_of_from(&val, start);
+                            return Ok(Value::Integer(idx));
+                        }
                         let idx = col_rc.borrow().items.iter().rposition(|v| {
                             crate::evaluator::values_equal(v, &val)
                         }).map(|i| i as i32).unwrap_or(-1);
                         return Ok(Value::Integer(idx));
                     }
+                    "indexof" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        if args.len() >= 3 {
+                            let start = self.evaluate_expr(&args[1])?.as_integer()? as usize;
+                            let count = self.evaluate_expr(&args[2])?.as_integer()? as usize;
+                            return Ok(Value::Integer(col_rc.borrow().index_of_range(&val, start, count)));
+                        } else if args.len() >= 2 {
+                            let start = self.evaluate_expr(&args[1])?.as_integer()? as usize;
+                            return Ok(Value::Integer(col_rc.borrow().index_of_from(&val, start)));
+                        }
+                        let idx = col_rc.borrow().items.iter().position(|v| {
+                            crate::evaluator::values_equal(v, &val)
+                        }).map(|i| i as i32).unwrap_or(-1);
+                        return Ok(Value::Integer(idx));
+                    }
+                    "binarysearch" => {
+                        let val = self.evaluate_expr(&args[0])?;
+                        return Ok(Value::Integer(col_rc.borrow().binary_search(&val)));
+                    }
+                    "capacity" => {
+                        return Ok(Value::Integer(col_rc.borrow().capacity()));
+                    }
+                    "trimtosize" => {
+                        col_rc.borrow_mut().trim_to_size();
+                        return Ok(Value::Nothing);
+                    }
+                    "clone" => {
+                        let cloned = col_rc.borrow().clone_list();
+                        return Ok(Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(cloned))));
+                    }
+                    "getrange" => {
+                        let idx = self.evaluate_expr(&args[0])?.as_integer()? as usize;
+                        let count = self.evaluate_expr(&args[1])?.as_integer()? as usize;
+                        let range = col_rc.borrow().get_range(idx, count)?;
+                        let mut al = crate::collections::ArrayList::new();
+                        al.items = range;
+                        return Ok(Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(al))));
+                    }
+                    "insertrange" => {
+                        let idx = self.evaluate_expr(&args[0])?.as_integer()? as usize;
+                        let val = self.evaluate_expr(&args[1])?;
+                        let items = match val {
+                            Value::Array(arr) => arr,
+                            Value::Collection(c) => c.borrow().items.clone(),
+                            _ => vec![val],
+                        };
+                        col_rc.borrow_mut().insert_range(idx, items);
+                        return Ok(Value::Nothing);
+                    }
+                    "removerange" => {
+                        let idx = self.evaluate_expr(&args[0])?.as_integer()? as usize;
+                        let count = self.evaluate_expr(&args[1])?.as_integer()? as usize;
+                        col_rc.borrow_mut().remove_range(idx, count)?;
+                        return Ok(Value::Nothing);
+                    }
+                    "setrange" => {
+                        let idx = self.evaluate_expr(&args[0])?.as_integer()? as usize;
+                        let val = self.evaluate_expr(&args[1])?;
+                        let items = match val {
+                            Value::Array(arr) => arr,
+                            Value::Collection(c) => c.borrow().items.clone(),
+                            _ => vec![val],
+                        };
+                        col_rc.borrow_mut().set_range(idx, &items)?;
+                        return Ok(Value::Nothing);
+                    }
+                    "copyto" => {
+                        // CopyTo returns items as array (interpreter places into target)
+                        return Ok(Value::Array(col_rc.borrow().copy_to()));
+                    }
+                    "findindex" => {
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let items = col_rc.borrow().items.clone();
+                        for (i, item) in items.iter().enumerate() {
+                            let r = self.call_lambda(predicate.clone(), &[item.clone()])?;
+                            if r.as_bool()? {
+                                return Ok(Value::Integer(i as i32));
+                            }
+                        }
+                        return Ok(Value::Integer(-1));
+                    }
+                    "findlast" => {
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let items = col_rc.borrow().items.clone();
+                        for item in items.iter().rev() {
+                            let r = self.call_lambda(predicate.clone(), &[item.clone()])?;
+                            if r.as_bool()? {
+                                return Ok(item.clone());
+                            }
+                        }
+                        return Ok(Value::Nothing);
+                    }
+                    "findlastindex" => {
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let items = col_rc.borrow().items.clone();
+                        for (i, item) in items.iter().enumerate().rev() {
+                            let r = self.call_lambda(predicate.clone(), &[item.clone()])?;
+                            if r.as_bool()? {
+                                return Ok(Value::Integer(i as i32));
+                            }
+                        }
+                        return Ok(Value::Integer(-1));
+                    }
+                    "trueforall" => {
+                        let predicate = self.evaluate_expr(&args[0])?;
+                        let items = col_rc.borrow().items.clone();
+                        for item in &items {
+                            let r = self.call_lambda(predicate.clone(), &[item.clone()])?;
+                            if !r.as_bool()? {
+                                return Ok(Value::Boolean(false));
+                            }
+                        }
+                        return Ok(Value::Boolean(true));
+                    }
+                    "convertall" => {
+                        let converter = self.evaluate_expr(&args[0])?;
+                        let items = col_rc.borrow().items.clone();
+                        let mut result = Vec::new();
+                        for item in &items {
+                            let r = self.call_lambda(converter.clone(), &[item.clone()])?;
+                            result.push(r);
+                        }
+                        let mut al = crate::collections::ArrayList::new();
+                        al.items = result;
+                        return Ok(Value::Collection(std::rc::Rc::new(std::cell::RefCell::new(al))));
+                    }
+                    "reverse" => {
+                        if args.len() >= 2 {
+                            let idx = self.evaluate_expr(&args[0])?.as_integer()? as usize;
+                            let count = self.evaluate_expr(&args[1])?.as_integer()? as usize;
+                            col_rc.borrow_mut().reverse_range(idx, count)?;
+                        } else {
+                            col_rc.borrow_mut().items.reverse();
+                        }
+                        return Ok(Value::Nothing);
+                    }
                     _ => {} // Fall through to other handlers
                  }
             }
 
-            // Queue methods
             if let Value::Queue(q) = &obj_val {
                 match method_name.as_str() {
                     "enqueue" => {
