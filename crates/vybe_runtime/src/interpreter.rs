@@ -327,6 +327,56 @@ impl Interpreter {
         // Register ConsoleColor enum globally
         self.env.define("consolecolor", cc_obj);
 
+        // ── System.Drawing ──────────────────────────────────────────────────────
+        let mut drawing_fields = HashMap::new();
+        // Color
+        let color_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+            class_name: "Color".to_string(), fields: HashMap::new(),
+        })));
+        drawing_fields.insert("color".to_string(), color_class_obj.clone());
+        // Pen
+        let pen_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+            class_name: "Pen".to_string(), fields: HashMap::new(),
+        })));
+        drawing_fields.insert("pen".to_string(), pen_class_obj.clone());
+        // SolidBrush
+        let brush_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+            class_name: "SolidBrush".to_string(), fields: HashMap::new(),
+        })));
+        drawing_fields.insert("solidbrush".to_string(), brush_class_obj.clone());
+        // Graphics
+        let graphics_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+            class_name: "Graphics".to_string(), fields: HashMap::new(),
+        })));
+        drawing_fields.insert("graphics".to_string(), graphics_class_obj.clone());
+
+        let drawing_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+            class_name: "Namespace".to_string(), fields: drawing_fields,
+        })));
+        
+        // Add Drawing to System namespace (using Compare-And-Swap style access since system_obj is Rc<RefCell>)
+        if let Value::Object(sys_ref) = &system_obj {
+            sys_ref.borrow_mut().fields.insert("drawing".to_string(), drawing_obj.clone());
+        }
+        self.env.define("system.drawing", drawing_obj.clone());
+        // Register Color/Pen/Brush globally for easy access (standard imports)
+        self.env.define("color", color_class_obj);
+        self.env.define("pen", pen_class_obj);
+        self.env.define("solidbrush", brush_class_obj);
+        self.env.define("graphics", graphics_class_obj);
+
+        // ── System.Windows.Forms.MessageBox ─────────────────────────────────────
+        let msgbox_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+            class_name: "MessageBox".to_string(), fields: HashMap::new(),
+        })));
+        if let Value::Object(swf_ref) = &swf_obj {
+            swf_ref.borrow_mut().fields.insert("messagebox".to_string(), msgbox_class_obj.clone());
+        }
+        // Register MessageBox globally
+        self.env.define("messagebox", msgbox_class_obj.clone());
+        self.env.define("system.windows.forms.messagebox", msgbox_class_obj); // Not strictly needed if swf is valid
+
+
         // ── My.Application ─────────────────────────────────────────────────────
         // Provides My.Application.Info.Title/Version, My.Application.DoEvents(), etc.
         let mut info_fields = HashMap::new();
@@ -3800,6 +3850,20 @@ impl Interpreter {
                 if class_name == "printpreviewdialog" || class_name.ends_with(".printpreviewdialog") {
                     return Ok(crate::builtins::dialogs::create_printpreviewdialog());
                 }
+
+                // ===== System.Drawing =====
+                if class_name == "pen" || class_name == "system.drawing.pen" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    return crate::builtins::drawing_fns::new_pen_fn(&arg_values);
+                }
+                if class_name == "solidbrush" || class_name == "system.drawing.solidbrush" {
+                    let arg_values: Result<Vec<_>, _> = ctor_args.iter().map(|e| self.evaluate_expr(e)).collect();
+                    let arg_values = arg_values?;
+                    return crate::builtins::drawing_fns::new_solid_brush_fn(&arg_values);
+                }
+
+
                 if class_name == "pagesetupdialog" || class_name.ends_with(".pagesetupdialog") {
                     return Ok(crate::builtins::dialogs::create_pagesetupdialog());
                 }
@@ -10869,6 +10933,27 @@ impl Interpreter {
                     return self.dispatch_console_method(&method_name, &arg_values);
                 } else if class_name_lower == "application" || class_name_lower == "my.application" {
                     return self.dispatch_application_method(&method_name, &arg_values);
+                } else if class_name_lower == "system.drawing.color" || class_name_lower == "color" {
+                    if method_name.eq_ignore_ascii_case("fromargb") {
+                         return crate::builtins::drawing_fns::color_from_argb_fn(&arg_values);
+                    }
+                    // Standard colors
+                    let argb = match method_name.to_lowercase().as_str() {
+                        "red" => Some(0xFFFF0000),
+                        "green" => Some(0xFF008000),
+                        "blue" => Some(0xFF0000FF),
+                        "black" => Some(0xFF000000),
+                        "white" => Some(0xFFFFFFFF),
+                        "transparent" => Some(0x00FFFFFF),
+                        "yellow" => Some(0xFFFFFF00),
+                        "gray" => Some(0xFF808080),
+                        "lightgray" => Some(0xFFD3D3D3),
+                        "darkgray" => Some(0xFFA9A9A9),
+                        _ => None,
+                    };
+                    if let Some(val) = argb {
+                        return Ok(crate::builtins::drawing_fns::create_color_obj(&method_name, val));
+                    }
                 } else if class_name_lower == "system.math" {
                     return self.dispatch_math_method(&method_name, &arg_values);
                 } else if class_name_lower == "utf8encoding" {
@@ -12441,6 +12526,14 @@ impl Interpreter {
                     return self.dispatch_file_method(&method_name, &arg_values);
                 } else if qualified_call_name.starts_with("directory.") || qualified_call_name.starts_with("system.io.directory.") {
                     return self.dispatch_directory_method(&method_name, &arg_values);
+                } else if qualified_call_name.starts_with("messagebox.") || qualified_call_name.starts_with("system.windows.forms.messagebox.") {
+                    if method_name.eq_ignore_ascii_case("show") {
+                        return crate::builtins::msgbox::msgbox(&arg_values);
+                    }
+                } else if qualified_call_name.starts_with("color.") || qualified_call_name.starts_with("system.drawing.color.") {
+                    if method_name.eq_ignore_ascii_case("fromargb") {
+                         return crate::builtins::drawing_fns::color_from_argb_fn(&arg_values);
+                    }
                 }
             }
         }
