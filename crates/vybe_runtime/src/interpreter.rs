@@ -8789,7 +8789,11 @@ impl Interpreter {
                                         let mut ds_borrow = ds_ref.borrow_mut();
                                         if let Some(Value::Array(bindings)) = ds_borrow.fields.get_mut("__bindings") {
                                             let binding_entry = format!("{}|{}|{}", parent_name, prop_name, data_member);
+                                            eprintln!("[DataBindings.Add] registering binding: {}", binding_entry);
                                             bindings.push(Value::String(binding_entry));
+                                            eprintln!("[DataBindings.Add] __bindings now has {} entries", bindings.len());
+                                        } else {
+                                            eprintln!("[DataBindings.Add] ERROR: __bindings field not found or wrong type on BindingSource");
                                         }
                                     }
 
@@ -11165,7 +11169,7 @@ impl Interpreter {
 
     /// Like `refresh_bindings` but applies filter/sort from the BindingSource.
     /// `position` is the index into the filtered/sorted results.
-    fn refresh_bindings_filtered(
+    pub fn refresh_bindings_filtered(
         &mut self,
         bs_ref: &std::rc::Rc<std::cell::RefCell<crate::value::ObjectData>>,
         datasource: &Value,
@@ -11177,6 +11181,10 @@ impl Interpreter {
                 Some(arr.iter().filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).collect())
             } else { None })
             .unwrap_or_default();
+
+        eprintln!("[refresh_bindings_filtered] bs_name={} bindings={:?}",
+            bs_ref.borrow().fields.get("name").map(|v| v.as_string()).unwrap_or_default(),
+            bindings);
 
         if bindings.is_empty() { return; }
 
@@ -11196,6 +11204,8 @@ impl Interpreter {
             filtered.get(position as usize).cloned().unwrap_or(Value::Nothing)
         };
 
+        let row_is_object = matches!(&row_val, Value::Object(_));
+        eprintln!("[refresh_bindings_filtered] position={} row_is_object={}", position, row_is_object);
         if let Value::Object(r) = row_val {
             for entry in &bindings {
                 let parts: Vec<&str> = entry.split('|').collect();
@@ -11206,7 +11216,10 @@ impl Interpreter {
 
                     let cell_val = r.borrow().fields.get(&data_member)
                         .cloned().unwrap_or(Value::String(String::new()));
-                    
+
+                    eprintln!("[refresh_bindings_filtered] emitting PropertyChange ctrl={} prop={} val={:?}",
+                        ctrl_name, prop_name, cell_val.as_string());
+
                     self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
                         object: ctrl_name.to_string(),
                         property: prop_name.to_string(),

@@ -462,6 +462,7 @@ fn process_side_effects(
                                     match property.to_lowercase().as_str() {
                                         "text" => {
                                             let text_val = value.as_string();
+                                            eprintln!("[PropertyChange text] found ctrl={} val={:?}", control_part, &text_val[..text_val.len().min(30)]);
                                             ctrl.set_text(text_val.clone());
                                             // Mirror the new text back into form_obj so
                                             // needs_sync doesn't detect a stale mismatch
@@ -913,6 +914,50 @@ pub fn FormRunner() -> Element {
                                         }
                                         process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content);
                                     }
+                                }
+
+                                // 9. Post-init binding refresh: re-emit current position for
+                                //    every BindingSource so nav + bound controls always show
+                                //    the correct initial state regardless of init ordering.
+                                let bs_objects: Vec<std::rc::Rc<std::cell::RefCell<vybe_runtime::value::ObjectData>>> = {
+                                    if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+                                        let form_borrow = form_obj.borrow();
+                                        form_borrow.fields.values()
+                                            .filter_map(|val| {
+                                                if let Value::Object(ctrl_obj) = val {
+                                                    let is_bs = ctrl_obj.borrow().fields
+                                                        .get("__type")
+                                                        .map(|v| v.as_string() == "BindingSource")
+                                                        .unwrap_or(false);
+                                                    if is_bs { Some(ctrl_obj.clone()) } else { None }
+                                                } else { None }
+                                            })
+                                            .collect()
+                                    } else { Vec::new() }
+                                };
+                                for ctrl_obj in bs_objects {
+                                    let (bs_name, position) = {
+                                        let borrow = ctrl_obj.borrow();
+                                        let name = borrow.fields.get("name").map(|v| v.as_string()).unwrap_or_default();
+                                        let pos = borrow.fields.get("position")
+                                            .and_then(|v| if let Value::Integer(i) = v { Some(*i) } else { None })
+                                            .unwrap_or(0);
+                                        (name, pos)
+                                    };
+                                    if bs_name.is_empty() { continue; }
+                                    let count = interp.binding_source_row_count_filtered(&Value::Object(ctrl_obj.clone()));
+                                    if count > 0 {
+                                        let ds = ctrl_obj.borrow().fields.get("__datasource").cloned().unwrap_or(Value::Nothing);
+                                        interp.side_effects.push_back(RuntimeSideEffect::BindingPositionChanged {
+                                            binding_source_name: bs_name,
+                                            position,
+                                            count,
+                                        });
+                                        interp.refresh_bindings_filtered(&ctrl_obj, &ds, position);
+                                    }
+                                }
+                                if !interp.side_effects.is_empty() {
+                                    process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content);
                                 }
                             }
                         }
