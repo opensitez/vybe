@@ -67,13 +67,14 @@ pub fn Toolbox() -> Element {
                         let is_selected = *selected_tool.read() == control_type;
                         let bg_color = if is_selected { "#0078d4" } else { "transparent" };
                         let text_color = if is_selected { "white" } else { "black" };
+                        let ct_click = control_type.clone();
                         
                         rsx! {
                             div {
                                 key: "{name}",
                                 style: "padding: 6px 8px; cursor: pointer; background: {bg_color}; color: {text_color}; border-radius: 3px; margin-bottom: 2px;",
                                 onclick: move |_| {
-                                    selected_tool.set(control_type);
+                                    selected_tool.set(ct_click.clone());
                                 },
                                 "{name}"
                             }
@@ -100,6 +101,7 @@ pub fn Toolbox() -> Element {
                             "DataAdapter" => "🔌 ",
                             _ => "",
                         };
+                        let ct_click = control_type.clone();
 
                         rsx! {
                             div {
@@ -107,14 +109,14 @@ pub fn Toolbox() -> Element {
                                 style: "padding: 5px 8px; cursor: pointer; background: {bg_color}; color: {text_color}; border-radius: 3px; margin-bottom: 2px; font-size: 12px;",
                                 onclick: move |_| {
                                     // Non-visual components are added immediately (no form canvas click needed)
-                                    if let Some(ct) = control_type {
+                                    if let Some(ct) = &ct_click {
                                         if ct.is_non_visual() {
-                                            state.add_control_at(ct, 0, 0);
+                                            state.add_control_at(ct.clone(), 0, 0);
                                             selected_tool.set(None); // reset to pointer
                                             return;
                                         }
                                     }
-                                    selected_tool.set(control_type);
+                                    selected_tool.set(ct_click.clone());
                                 },
                                 "{icon}{name}"
                             }

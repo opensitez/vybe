@@ -229,6 +229,7 @@ fn drain_console_effects(interp: &mut Interpreter) {
             RuntimeSideEffect::FormClose { .. } => {}
             RuntimeSideEffect::FormShowDialog { .. } => {}
             RuntimeSideEffect::AddControl { .. } => {}
+            RuntimeSideEffect::RunApplication { .. } => {}
         }
     }
 }

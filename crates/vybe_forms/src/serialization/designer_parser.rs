@@ -53,7 +53,7 @@ pub fn vbnet_type_to_control_type(name: &str) -> Option<ControlType> {
         "dataset" => Some(ControlType::DataSetComponent),
         "datatable" => Some(ControlType::DataTableComponent),
         "sqldataadapter" | "dataadapter" | "oledbdataadapter" => Some(ControlType::DataAdapterComponent),
-        _ => None,
+        _ => Some(ControlType::Custom(name.to_string())),
     }
 }
 
@@ -72,8 +72,8 @@ struct ControlBuilder {
     tab_index: i32,
     tag: Option<String>,
     explicit_name: Option<String>,
-    /// Additional string properties (DataSource, DataMember, DisplayMember, etc.)
-    extra_props: std::collections::HashMap<String, String>,
+    /// Additional properties (DataSource, DataMember, etc.) and arbitrary designer properties
+    extra_props: std::collections::HashMap<String, crate::properties::PropertyValue>,
 }
 
 impl ControlBuilder {
@@ -111,6 +111,8 @@ impl ControlBuilder {
                     ctrl.index = Some(idx);
                 }
             }
+            // Always persist the tag value to properties
+            ctrl.properties.set("Tag", tag.clone());
         }
         if let Some(text) = self.text {
             // In .NET WinForms, ALL controls use the Text property (Caption is VB6-only)
@@ -125,11 +127,50 @@ impl ControlBuilder {
         if let Some(font) = self.font {
             ctrl.set_font(font);
         }
-        // Apply extra data-binding properties
-        for (key, val) in &self.extra_props {
-            ctrl.properties.set(key.as_str(), val.clone());
+        // Apply extra data-binding properties and arbitrary properties
+        for (key, val) in self.extra_props {
+            ctrl.properties.set_raw(key, val);
         }
         ctrl
+    }
+}
+
+/// Convert an AST expression to a PropertyValue.
+/// Literals become typed values; everything else becomes an Expression code string.
+fn expr_to_property_value(expr: &Expression) -> crate::properties::PropertyValue {
+    use crate::properties::PropertyValue;
+    match expr {
+        Expression::StringLiteral(s) => PropertyValue::String(s.clone()),
+        Expression::IntegerLiteral(i) => PropertyValue::Integer(*i),
+        Expression::BooleanLiteral(b) => PropertyValue::Boolean(*b),
+        Expression::DoubleLiteral(d) => PropertyValue::Double(*d),
+        _ => PropertyValue::Expression(expr_to_code(expr)),
+    }
+}
+
+/// Simple AST to VB.NET code reconstructor for designer expressions.
+fn expr_to_code(expr: &Expression) -> String {
+    match expr {
+        Expression::Variable(id) => id.as_str().to_string(),
+        Expression::MemberAccess(obj, member) => format!("{}.{}", expr_to_code(obj), member.as_str()),
+        Expression::Call(func, args) => {
+            let arg_strs: Vec<String> = args.iter().map(expr_to_code).collect();
+            format!("{}({})", func.as_str(), arg_strs.join(", "))
+        }
+        Expression::MethodCall(obj, method, args) => {
+            let arg_strs: Vec<String> = args.iter().map(expr_to_code).collect();
+            format!("{}.{}({})", expr_to_code(obj), method.as_str(), arg_strs.join(", "))
+        }
+        Expression::New(type_name, args) => {
+            let arg_strs: Vec<String> = args.iter().map(expr_to_code).collect();
+            format!("New {}({})", type_name.as_str(), arg_strs.join(", "))
+        }
+        Expression::StringLiteral(s) => format!("\"{}\"", s), // Escape quotes?
+        Expression::IntegerLiteral(i) => i.to_string(),
+        Expression::BooleanLiteral(b) => if *b { "True".to_string() } else { "False".to_string() },
+        Expression::DoubleLiteral(d) => d.to_string(),
+        Expression::Me => "Me".to_string(),
+        _ => "Nothing".to_string(), // Fallback
     }
 }
 
@@ -154,6 +195,8 @@ pub fn extract_form_from_designer(class_decl: &ClassDecl) -> Option<Form> {
     // Use IndexMap to preserve insertion order for deterministic control ordering
     let mut builders: std::collections::HashMap<String, ControlBuilder> = std::collections::HashMap::new();
     let mut insertion_order: Vec<String> = Vec::new();
+    // Map child_name -> parent_name
+    let mut parent_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for stmt in init_method {
         match stmt {
@@ -187,6 +230,25 @@ pub fn extract_form_from_designer(class_decl: &ClassDecl) -> Option<Form> {
                     if let Some(font) = extract_font(value) {
                         form.font = Some(font);
                     }
+                } else if member_name.eq_ignore_ascii_case("Font") {
+                    if let Some(font) = extract_font(value) {
+                        form.font = Some(font);
+                    }
+                } else if matches!(member_name.to_lowercase().as_str(), 
+                    "autoscaledimensions" | 
+                    "autocalemode" | 
+                    "padding" | 
+                    "margin" | 
+                    "minimumsize" | 
+                    "maximumsize" | 
+                    "size" | 
+                    "location" |
+                    "icon" |
+                    "transparencykey" |
+                    "topmost" |
+                    "opacity"
+                ) {
+                     // Ignore - handled by runtime, specific property logic, or unused
                 } else if let Expression::New(type_id, _) = value {
                     // Me.X = New System.Windows.Forms.Button() -> register control
                     if let Some(ct) = vbnet_type_to_control_type(type_id.as_str()) {
@@ -260,71 +322,79 @@ pub fn extract_form_from_designer(class_decl: &ClassDecl) -> Option<Form> {
                             "datasource" => {
                                 match value {
                                     Expression::MemberAccess(inner, member) if is_me(inner) => {
-                                        builder.extra_props.insert("DataSource".to_string(), member.as_str().to_string());
+                                        builder.extra_props.insert("DataSource".to_string(), crate::properties::PropertyValue::String(member.as_str().to_string()));
                                     }
                                     Expression::StringLiteral(s) => {
-                                        builder.extra_props.insert("DataSource".to_string(), s.clone());
+                                        builder.extra_props.insert("DataSource".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Arbitrary assignment
+                                        builder.extra_props.insert("DataSource".to_string(), expr_to_property_value(value));
+                                    }
                                 }
                             }
                             "datamember" => {
                                 if let Expression::StringLiteral(s) = value {
-                                    builder.extra_props.insert("DataMember".to_string(), s.clone());
+                                    builder.extra_props.insert("DataMember".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                 }
                             }
                             "displaymember" => {
                                 if let Expression::StringLiteral(s) = value {
-                                    builder.extra_props.insert("DisplayMember".to_string(), s.clone());
+                                    builder.extra_props.insert("DisplayMember".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                 }
                             }
                             "valuemember" => {
                                 if let Expression::StringLiteral(s) = value {
-                                    builder.extra_props.insert("ValueMember".to_string(), s.clone());
+                                    builder.extra_props.insert("ValueMember".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                 }
                             }
                             "bindingsource" => {
                                 match value {
                                     Expression::MemberAccess(inner, member) if is_me(inner) => {
-                                        builder.extra_props.insert("BindingSource".to_string(), member.as_str().to_string());
+                                        builder.extra_props.insert("BindingSource".to_string(), crate::properties::PropertyValue::String(member.as_str().to_string()));
                                     }
                                     Expression::StringLiteral(s) => {
-                                        builder.extra_props.insert("BindingSource".to_string(), s.clone());
+                                        builder.extra_props.insert("BindingSource".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                     }
                                     _ => {}
                                 }
                             }
                             "filter" => {
                                 if let Expression::StringLiteral(s) = value {
-                                    builder.extra_props.insert("Filter".to_string(), s.clone());
+                                    builder.extra_props.insert("Filter".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                 }
                             }
                             "sort" => {
                                 if let Expression::StringLiteral(s) = value {
-                                    builder.extra_props.insert("Sort".to_string(), s.clone());
+                                    builder.extra_props.insert("Sort".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                 }
                             }
                             "datasetname" => {
                                 if let Expression::StringLiteral(s) = value {
-                                    builder.extra_props.insert("DataSetName".to_string(), s.clone());
+                                    builder.extra_props.insert("DataSetName".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                 }
                             }
                             "tablename" => {
                                 if let Expression::StringLiteral(s) = value {
-                                    builder.extra_props.insert("TableName".to_string(), s.clone());
+                                    builder.extra_props.insert("TableName".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                 }
                             }
                             "selectcommand" => {
                                 if let Expression::StringLiteral(s) = value {
-                                    builder.extra_props.insert("SelectCommand".to_string(), s.clone());
+                                    builder.extra_props.insert("SelectCommand".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                 }
                             }
                             "connectionstring" => {
                                 if let Expression::StringLiteral(s) = value {
-                                    builder.extra_props.insert("ConnectionString".to_string(), s.clone());
+                                    builder.extra_props.insert("ConnectionString".to_string(), crate::properties::PropertyValue::String(s.clone()));
                                 }
                             }
-                            _ => {}
+                            _ => {
+                                // Default/Catch-all: Store arbitrary properties
+                                // Use the original member name (prop_name) to preserve casing if possible, 
+                                // but we might want to normalize? Usually preserving is better for codegen.
+                                builder.extra_props.insert(prop_name.to_string(), expr_to_property_value(value));
+                            }
                         }
                     }
                 }
@@ -332,22 +402,25 @@ pub fn extract_form_from_designer(class_decl: &ClassDecl) -> Option<Form> {
             // Handle DataBindings.Add calls:
             // Me.txtName.DataBindings.Add("Text", Me.bs1, "Name")
             // Parsed as ExpressionStatement(MethodCall(MemberAccess(MemberAccess(Me, ctrl), "DataBindings"), "Add", args))
+            // Handle Method Calls (Add)
             Statement::ExpressionStatement(Expression::MethodCall(obj, method, args))
                 if method.as_str().eq_ignore_ascii_case("Add") =>
             {
-                // Check if the object is Me.X.DataBindings
-                if let Expression::MemberAccess(inner, db_member) = obj.as_ref() {
-                    if db_member.as_str().eq_ignore_ascii_case("DataBindings") {
+                // Inspect the object being called on
+                if let Expression::MemberAccess(inner, member) = obj.as_ref() {
+                    let member_str = member.as_str();
+
+                    // Case 1: DataBindings.Add
+                    if member_str.eq_ignore_ascii_case("DataBindings") {
                         if let Some((ctrl_name, true)) = extract_me_member_target(inner) {
-                            // args: ("PropertyName", Me.bindingSource, "ColumnName")
                             if args.len() >= 3 {
                                 let prop_name = match &args[0] {
                                     Expression::StringLiteral(s) => Some(s.clone()),
                                     _ => None,
                                 };
                                 let bs_name = match &args[1] {
-                                    Expression::MemberAccess(inner2, member) if is_me(inner2) => {
-                                        Some(member.as_str().to_string())
+                                    Expression::MemberAccess(inner2, member2) if is_me(inner2) => {
+                                        Some(member2.as_str().to_string())
                                     }
                                     Expression::StringLiteral(s) => Some(s.clone()),
                                     _ => None,
@@ -358,16 +431,39 @@ pub fn extract_form_from_designer(class_decl: &ClassDecl) -> Option<Form> {
                                 };
                                 if let (Some(prop), Some(bs), Some(col)) = (prop_name, bs_name, col_name) {
                                     if let Some(builder) = builders.get_mut(&ctrl_name) {
-                                        builder.extra_props.insert("DataBindings.Source".to_string(), bs);
-                                        builder.extra_props.insert(format!("DataBindings.{}", prop), col);
+                                        builder.extra_props.insert("DataBindings.Source".to_string(), crate::properties::PropertyValue::String(bs));
+                                        builder.extra_props.insert(format!("DataBindings.{}", prop), crate::properties::PropertyValue::String(col));
                                     }
+                                }
+                            }
+                        }
+                    }
+                    // Case 2: Controls.Add
+                    else if member_str.eq_ignore_ascii_case("Controls") {
+                         let parent_name_opt = if is_me(inner) {
+                            // Me.Controls.Add -> parent is Form (None)
+                            None
+                        } else if let Some((name, true)) = extract_me_member_target(inner) {
+                            // Me.Panel1.Controls.Add -> parent is Panel1
+                            Some(name)
+                        } else {
+                            // Unknown target, ignore
+                            continue;
+                        };
+
+                        // Arg[0] should be Me.ChildName
+                        if let Some(arg0) = args.first() {
+                            if let Some((child_name, true)) = extract_me_member_target(arg0) {
+                                // Store relationship
+                                if let Some(parent) = parent_name_opt {
+                                    parent_map.insert(child_name, parent);
                                 }
                             }
                         }
                     }
                 }
             }
-            // Me.Controls.Add(...), Me.SuspendLayout(), Me.ResumeLayout() -> skip
+            // Me.SuspendLayout, Me.ResumeLayout -> skip
             Statement::ExpressionStatement(_) | Statement::Call { .. } => {}
             _ => {}
         }
@@ -377,6 +473,21 @@ pub fn extract_form_from_designer(class_decl: &ClassDecl) -> Option<Form> {
     for name in &insertion_order {
         if let Some(builder) = builders.remove(name) {
             form.controls.push(builder.build());
+        }
+    }
+
+    // Resolve parent-child relationships
+    // 1. Build name -> id map
+    let name_to_id: std::collections::HashMap<String, uuid::Uuid> = form.controls.iter()
+        .map(|c| (c.name.clone(), c.id))
+        .collect();
+
+    // 2. Apply parent_ids
+    for ctrl in &mut form.controls {
+        if let Some(parent_name) = parent_map.get(&ctrl.name) {
+            if let Some(parent_id) = name_to_id.get(parent_name) {
+                ctrl.parent_id = Some(*parent_id);
+            }
         }
     }
 

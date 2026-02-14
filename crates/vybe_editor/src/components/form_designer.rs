@@ -310,7 +310,7 @@ pub fn FormDesigner() -> Element {
                                 }));
                             },
                             onclick: move |evt| {
-                                let tool_opt = *selected_tool.read();
+                                let tool_opt = selected_tool.read().clone();
                                 if let Some(tool) = tool_opt {
                                      // Non-visual components don't need coordinates
                                      if tool.is_non_visual() {
@@ -613,7 +613,7 @@ fn ControlContent(
 ) -> Element {
     let _state = use_context::<AppState>();
     let control_id = control.id;
-    let control_type = control.control_type;
+    let control_type = control.control_type.clone();
     let text = control.get_text().map(|s| s.to_string()).unwrap_or(control.name.clone());
 
     match control_type {

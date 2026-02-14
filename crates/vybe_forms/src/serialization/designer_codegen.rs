@@ -55,6 +55,7 @@ pub fn control_type_to_vbnet(ct: &ControlType) -> &str {
         ControlType::DataSetComponent => "System.Data.DataSet",
         ControlType::DataTableComponent => "System.Data.DataTable",
         ControlType::DataAdapterComponent => "System.Data.SqlClient.SqlDataAdapter",
+        ControlType::Custom(s) => s.as_str(),
     }
 }
 
@@ -249,7 +250,55 @@ pub fn generate_designer_code(form: &Form) -> String {
             "        Me.{}.TabIndex = {}\n",
             field_name, control.tab_index
         ));
-        code.push_str(&format!("        Me.Controls.Add(Me.{})\n", field_name));
+
+        // Hierarchy: Me.Parent.Controls.Add(Me.Child)
+        if let Some(parent_id) = control.parent_id {
+            if let Some(parent) = form.controls.iter().find(|c| c.id == parent_id) {
+                let parent_field = control_field_name(parent);
+                code.push_str(&format!("        Me.{}.Controls.Add(Me.{})\n", parent_field, field_name));
+            } else {
+                // Parent not found, fallback to Form
+                code.push_str(&format!("        Me.Controls.Add(Me.{})\n", field_name));
+            }
+        } else {
+            // No parent -> Form is parent
+            code.push_str(&format!("        Me.Controls.Add(Me.{})\n", field_name));
+        }
+
+        // Generic arbitrary property generation
+        // Blacklist of properties already handled above or special
+        let handled = [
+            "Text", "BackColor", "ForeColor", "Font", "Name", "Tag", "TabIndex", "Location", "Size",
+            "DataSource", "DataMember", "Filter", "Sort", "TableName", "DataSetName", "SelectCommand", "ConnectionString",
+            "DisplayMember", "ValueMember", "BindingSource",
+            // DataBindings key prefixes
+            "DataBindings.Source", "DataBindings.Text", "DataBindings.Checked", "DataBindings.ImageLocation", "DataBindings.Value",
+        ];
+
+        for (key, val) in control.properties.iter() {
+            if handled.contains(&key.as_str()) {
+                // Special case: Tag is handled above ONLY if it's an index.
+                // If it's NOT an index, we still want to write it here.
+                if key == "Tag" && control.index.is_some() {
+                    continue;
+                }
+                if key != "Tag" {
+                    continue;
+                }
+            }
+            
+            // Generate assignment: Me.Control.Prop = Value
+            let val_str = match val {
+                crate::properties::PropertyValue::String(s) => format!("\"{}\"", s),
+                crate::properties::PropertyValue::Integer(i) => i.to_string(),
+                crate::properties::PropertyValue::Boolean(b) => if *b { "True".to_string() } else { "False".to_string() },
+                crate::properties::PropertyValue::Double(d) => d.to_string(),
+                crate::properties::PropertyValue::StringArray(_) => continue, // Arrays need special handling usually
+                crate::properties::PropertyValue::Expression(code) => code.clone(),
+            };
+            
+            code.push_str(&format!("        Me.{}.{} = {}\n", field_name, key, val_str));
+        }
     }
 
     // Form properties

@@ -399,6 +399,37 @@ fn process_side_effects(
             RuntimeSideEffect::MsgBox(msg) => {
                 msgbox_content.set(Some(msg));
             }
+            RuntimeSideEffect::RunApplication { form_name } => {
+                let project_read = rp.project.read();
+                if let Some(proj) = project_read.as_ref() {
+                     if let Some(form_module) = proj.forms.iter().find(|f| f.form.name.eq_ignore_ascii_case(&form_name)) {
+                         // Found the form definition
+                         let mut new_form = form_module.form.clone();
+                         
+                         // Sync from the runtime instance
+                         if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
+                             sync_instance_to_ui(&mut new_form, &form_obj);
+                             
+                             // Trigger Load event
+                             let load_args = interp.make_event_handler_args(&form_name, "Load");
+                             // Note: get_event_handlers needs form class name (form_name) and control name "Me"
+                             let handlers = interp.get_event_handlers(&form_name.to_lowercase(), "Me", "Load");
+                             for handler in handlers {
+                                 let _ = interp.call_method_on_object(&form_obj, &handler, &load_args);
+                             }
+                             
+                             // Trigger Shown event
+                             let shown_args = interp.make_event_handler_args(&form_name, "Shown");
+                             let handlers = interp.get_event_handlers(&form_name.to_lowercase(), "Me", "Shown");
+                             for handler in handlers {
+                                 let _ = interp.call_method_on_object(&form_obj, &handler, &shown_args);
+                             }
+                         }
+                         
+                         runtime_form.set(Some(new_form));
+                     }
+                }
+            }
             RuntimeSideEffect::PropertyChange { object, property, value } => {
                 let mut switched = false;
 
@@ -950,10 +981,11 @@ pub fn FormRunner() -> Element {
 
                                         // 6. Fire Form_Load / Me.Load handler
                                         let load_args = interp.make_event_handler_args(&form_class, "Load");
-                                        if let Some(handler) =
-                                            interp.find_handles_method(&form_name_lower, "Me", "Load")
-                                        {
-                                            let _ = interp.call_method_on_object(&form_obj, &handler, &load_args);
+                                        let handlers = interp.get_event_handlers(&form_name_lower, "Me", "Load");
+                                        if !handlers.is_empty() {
+                                            for handler in handlers {
+                                                let _ = interp.call_method_on_object(&form_obj, &handler, &load_args);
+                                            }
                                         } else {
                                             // Fallback: try Form1_Load convention
                                             let conv = format!("{}_Load", form_class);
@@ -977,8 +1009,11 @@ pub fn FormRunner() -> Element {
                                     if let Some(fname) = shown_form_name {
                                         let shown_args = interp.make_event_handler_args(&fname, "Shown");
                                         let fname_lower = fname.to_lowercase();
-                                        if let Some(handler) = interp.find_handles_method(&fname_lower, "Me", "Shown") {
-                                            let _ = interp.call_method_on_object(&form_obj, &handler, &shown_args);
+                                        let handlers = interp.get_event_handlers(&fname_lower, "Me", "Shown");
+                                        if !handlers.is_empty() {
+                                            for handler in handlers {
+                                                let _ = interp.call_method_on_object(&form_obj, &handler, &shown_args);
+                                            }
                                         } else {
                                             let _ = interp.call_method_on_object(&form_obj, &format!("{}_Shown", fname), &shown_args);
                                         }
@@ -1093,9 +1128,8 @@ pub fn FormRunner() -> Element {
                     let form_class = runtime_form.peek().as_ref()
                         .map(|f| f.name.to_lowercase()).unwrap_or_default();
                     let event_args = interp.make_event_handler_args_with_data(&control_name, &event_name, event_data.as_ref());
-                    if let Some(method_name) =
-                        interp.find_handles_method(&form_class, &control_name, &event_name)
-                    {
+                    let handlers = interp.get_event_handlers(&form_class, &control_name, &event_name);
+                    for method_name in handlers {
                         let _ = interp.call_method_on_object(&form_obj, &method_name, &event_args);
                     }
                 }
@@ -1122,10 +1156,9 @@ pub fn FormRunner() -> Element {
                     &control_name, &event_name, event_data.as_ref(),
                 );
 
-                // 1. Try Handles clause (e.g. `Handles btn1.Click`)
-                if let Some(method_name) =
-                    interp.find_handles_method(&form_class, &control_name, &event_name)
-                {
+                // 1. Try Handles clause AND AddHandler (e.g. `Handles btn1.Click` or `AddHandler ...`)
+                let handlers = interp.get_event_handlers(&form_class, &control_name, &event_name);
+                for method_name in handlers {
                     if interp.call_method_on_object(&form_obj, &method_name, &event_args).is_ok() {
                         executed = true;
                     }
@@ -1439,7 +1472,7 @@ pub fn FormRunner() -> Element {
                             // Controls (skip non-visual components)
                             for control in form.controls.into_iter().filter(|c| !c.control_type.is_non_visual()) {
                                 {
-                                    let control_type = control.control_type;
+                                    let control_type = control.control_type.clone();
                                     let x = control.bounds.x;
                                     let y = control.bounds.y;
                                     let w = control.bounds.width;

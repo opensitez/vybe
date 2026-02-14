@@ -289,6 +289,24 @@ impl Interpreter {
         };
         let system_obj = Value::Object(Rc::new(RefCell::new(system_obj_data)));
 
+        // Create System.Windows.Forms namespace
+        let mut swf_fields = HashMap::new();
+        let app_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+            class_name: "Application".to_string(), fields: HashMap::new(),
+        })));
+        swf_fields.insert("application".to_string(), app_class_obj.clone());
+        
+        let swf_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+            class_name: "Namespace".to_string(), fields: swf_fields,
+        })));
+        
+        // Note: we don't attach windows to system fields here because system fields were already created above.
+        // But we DO need to make it accessible via System.Windows.Forms
+        // Ideally we should modify system_fields BEFORE creating system_obj, but system_obj is created above.
+        // Let's just register it in the environment directly.
+        // To be correct, we should insert it into system_fields if possible, but system_fields is moved.
+        // So we will just define it globally.
+
         // Register all nested namespaces in the environment for easy resolution by Imports
         self.env.define("system", system_obj.clone());
         self.env.define("system.io", io_obj.clone());
@@ -297,6 +315,9 @@ impl Interpreter {
         self.env.define("system.security", security_obj.clone());
         self.env.define("system.security.cryptography", crypto_obj.clone());
         self.env.define("system.diagnostics", diag_obj.clone());
+        self.env.define("system.windows.forms", swf_obj.clone());
+        // Also expose Application globally for convenience (as per standard VB project imports)
+        self.env.define("application", app_class_obj.clone());
         
         // Also register Console and Math globally for convenience (like implicit Imports System)
         self.env.define("console", console_obj);
@@ -3022,10 +3043,19 @@ impl Interpreter {
                 // The handler is typically registered as "ControlName_EventName" 
                 // For form-level events, the control is the form itself
                 if let Some(event_type) = vybe_forms::EventType::from_name(event_str) {
-                    if let Some(handler_name) = self.events.get_handler(&module, &event_type).map(|s| s.to_string()) {
-                        let args: Vec<Value> = arguments.iter()
-                            .map(|a| self.evaluate_expr(a))
-                            .collect::<Result<Vec<_>, _>>()?;
+                    // Evaluate args first
+                    let args: Vec<Value> = arguments.iter()
+                        .map(|a| self.evaluate_expr(a))
+                        .collect::<Result<Vec<_>, _>>()?;
+                        
+                    // Get handlers
+                    let handlers = if let Some(h_vec) = self.events.get_handlers(&module, &event_type) {
+                        h_vec.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    
+                    for handler_name in handlers {
                         self.call_event_handler(&handler_name, &args)?;
                     }
                 }
@@ -6369,6 +6399,13 @@ impl Interpreter {
             }
             "console.setcursorposition" => {
                 return self.dispatch_console_method("setcursorposition", &arg_values);
+            }
+
+            "application.run" | "system.windows.forms.application.run" => {
+                return self.dispatch_application_method("run", &arg_values);
+            }
+            "application.exit" | "system.windows.forms.application.exit" => {
+                return self.dispatch_application_method("exit", &arg_values);
             }
 
             "callbyname" | "microsoft.visualbasic.interaction.callbyname" => {
@@ -10739,6 +10776,8 @@ impl Interpreter {
                     return self.dispatch_path_method(&method_name, &arg_values);
                 } else if class_name_lower == "system.console" {
                     return self.dispatch_console_method(&method_name, &arg_values);
+                } else if class_name_lower == "application" {
+                    return self.dispatch_application_method(&method_name, &arg_values);
                 } else if class_name_lower == "system.math" {
                     return self.dispatch_math_method(&method_name, &arg_values);
                 } else if class_name_lower == "utf8encoding" {
@@ -13503,23 +13542,38 @@ impl Interpreter {
     /// Find a class method that has a Handles clause matching the given control.event pattern.
     /// For example, find_handles_method("form1", "btn0", "Click") finds a method with `Handles btn0.Click`.
     /// For Me.Load, use control_name="Me" and event_name="Load".
-    pub fn find_handles_method(&self, class_name: &str, control_name: &str, event_name: &str) -> Option<String> {
+    /// Find all methods that handle the given control.event.
+    /// This includes methods with `Handles` clauses and handlers registered via `AddHandler`.
+    pub fn get_event_handlers(&self, class_name: &str, control_name: &str, event_name: &str) -> Vec<String> {
+        let mut handlers = Vec::new();
         let key = class_name.to_lowercase();
         let target = format!("{}.{}", control_name, event_name).to_lowercase();
+
+        // 1. Find static `Handles` clauses
         if let Some(cls) = self.classes.get(&key) {
             for method in &cls.methods {
                 if let vybe_parser::ast::decl::MethodDecl::Sub(s) = method {
-                    if let Some(handles) = &s.handles {
-                        for h in handles {
+                    if let Some(handles_list) = &s.handles {
+                        for h in handles_list {
                             if h.to_lowercase() == target {
-                                return Some(s.name.as_str().to_string());
+                                handlers.push(s.name.as_str().to_string());
                             }
                         }
                     }
                 }
             }
         }
-        None
+
+        // 2. Find dynamic `AddHandler` registrations
+        // Note: Runtime events are stored as "control_event", so we query "btn1" and "Click" (EventType)
+        // However, EventSystem stores keys as "control_event".
+        if let Some(event_type) = vybe_forms::EventType::from_name(event_name) {
+            if let Some(dynamic_handlers) = self.events.get_handlers(control_name, &event_type) {
+                handlers.extend_from_slice(dynamic_handlers);
+            }
+        }
+
+        handlers
     }
 
     /// Get all Handles clause mappings for a class as (control, event) -> method_name.
@@ -13547,17 +13601,23 @@ impl Interpreter {
     }
 
     pub fn trigger_event(&mut self, control_name: &str, event_type: vybe_forms::EventType, index: Option<i32>) -> Result<(), RuntimeError> {
-        let handler_name = self.events.get_handler(control_name, &event_type).map(|s| s.to_string());
-        if let Some(handler_name) = handler_name {
-            // Check if it's a valid sub before calling
+        let handlers = if let Some(h) = self.events.get_handlers(control_name, &event_type) {
+            h.clone()
+        } else {
+            Vec::new()
+        };
+        
+        if handlers.is_empty() { return Ok(()); }
+        
+        // Prepare args once
+        let args: Vec<Value> = if let Some(idx) = index {
+             vec![Value::Integer(idx)]
+        } else {
+             self.make_event_handler_args(control_name, event_type.as_str())
+        };
+        
+        for handler_name in handlers {
             if self.subs.contains_key(&handler_name.to_lowercase()) {
-                let args: Vec<Value> = if let Some(idx) = index {
-                    // VB6 control array: pass Index As Integer
-                    vec![Value::Integer(idx)]
-                } else {
-                    // .NET style: pass (sender As Object, e As EventArgs)
-                    self.make_event_handler_args(control_name, event_type.as_str())
-                };
                 self.call_event_handler(&handler_name, &args)?;
             }
         }
@@ -14650,6 +14710,42 @@ impl Interpreter {
                 Ok(Value::Nothing)
             }
             _ => Err(RuntimeError::UndefinedFunction(format!("System.Console.{}", method_name)))
+        }
+    }
+
+    fn dispatch_application_method(&mut self, method_name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+        match method_name.to_lowercase().as_str() {
+            "run" => {
+                if let Some(arg) = args.first() {
+                    if let Value::Object(obj_ref) = arg {
+                        let class_name = obj_ref.borrow().class_name.clone();
+                        // Set as the active form instance
+                        self.env.define_global("__form_instance__", arg.clone());
+                        self.side_effects.push_back(crate::RuntimeSideEffect::RunApplication { form_name: class_name });
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "exit" => {
+                // Close the current form if any
+                if let Ok(Value::Object(obj_ref)) = self.env.get("__form_instance__") {
+                    let borrow = obj_ref.borrow();
+                    let name = borrow.fields.get("name")
+                        .map(|v| v.as_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(borrow.class_name.clone());
+                        
+                    if !name.is_empty() {
+                         self.side_effects.push_back(crate::RuntimeSideEffect::FormClose { form_name: name });
+                    }
+                }
+                Ok(Value::Nothing)
+            }
+            "doevents" => {
+                // No-op in this interpreter model (events are handled by UI thread)
+                Ok(Value::Nothing)
+            }
+            _ => Err(RuntimeError::UndefinedFunction(format!("Application.{}", method_name)))
         }
     }
 

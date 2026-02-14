@@ -79,6 +79,10 @@ pub enum RuntimeSideEffect {
         x_pos: i32,
         y_pos: i32,
     },
+    /// Start the application message loop with the given form.
+    RunApplication {
+        form_name: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

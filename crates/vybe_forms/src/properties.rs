@@ -8,6 +8,8 @@ pub enum PropertyValue {
     Boolean(bool),
     Double(f64),
     StringArray(Vec<String>),
+    /// Raw code expression that should be written as-is (not quoted).
+    Expression(String),
 }
 
 impl PropertyValue {

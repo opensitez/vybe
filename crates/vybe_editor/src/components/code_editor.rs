@@ -205,13 +205,13 @@ pub fn CodeEditor() -> Element {
                      c_type = None;
                 } else {
                      if let Some(c) = form.get_control_by_name(sel_obj) {
-                         c_type = Some(c.control_type);
+                         c_type = Some(c.control_type.clone());
                      }
                 }
             }
 
             for evt in EventType::all_events() {
-                if evt.is_applicable_to(c_type) {
+                if evt.is_applicable_to(c_type.clone()) {
                     events.push(evt.as_str().to_string());
                 }
             }

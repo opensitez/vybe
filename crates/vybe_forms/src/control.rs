@@ -29,7 +29,7 @@ impl Bounds {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlType {
     Button,
     Label,
@@ -73,6 +73,8 @@ pub enum ControlType {
     DataSetComponent,
     DataTableComponent,
     DataAdapterComponent,
+    // Arbitrary custom control type (fully qualified name)
+    Custom(String),
 }
 
 impl ControlType {
@@ -116,7 +118,7 @@ impl ControlType {
             "hscrollbar" => Some(ControlType::HScrollBar),
             "vscrollbar" => Some(ControlType::VScrollBar),
             "tooltip" => Some(ControlType::ToolTip),
-            _ => None,
+            _ => Some(ControlType::Custom(name.to_string())),
         }
     }
 
@@ -163,6 +165,7 @@ impl ControlType {
             ControlType::DataSetComponent => "DataSet",
             ControlType::DataTableComponent => "DataTable",
             ControlType::DataAdapterComponent => "DataAdapter",
+            ControlType::Custom(s) => s.as_str(),
         }
     }
 
@@ -230,6 +233,7 @@ impl ControlType {
             ControlType::DataSetComponent => "ds",
             ControlType::DataTableComponent => "dt",
             ControlType::DataAdapterComponent => "da",
+            ControlType::Custom(_) => "ctrl",
         }
     }
 
@@ -276,6 +280,7 @@ impl ControlType {
             ControlType::DataSetComponent => (32, 32),
             ControlType::DataTableComponent => (32, 32),
             ControlType::DataAdapterComponent => (32, 32),
+            ControlType::Custom(_) => (100, 100),
         }
     }
 }
@@ -539,6 +544,10 @@ impl Control {
             ControlType::DataAdapterComponent => {
                 properties.set("SelectCommand", "");
                 properties.set("ConnectionString", "");
+            }
+            ControlType::Custom(_) => {
+                properties.set("Enabled", true);
+                properties.set("Visible", true);
             }
             _ => {
                 properties.set("Enabled", true);
