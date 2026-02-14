@@ -532,14 +532,25 @@ fn process_side_effects(
                                             ));
                                         }
                                         _ => {
-                                            let prop_val = match value {
-                                                vybe_runtime::Value::Integer(i) => vybe_forms::PropertyValue::Integer(i),
-                                                vybe_runtime::Value::String(s) => vybe_forms::PropertyValue::String(s),
-                                                vybe_runtime::Value::Boolean(b) => vybe_forms::PropertyValue::Boolean(b),
-                                                vybe_runtime::Value::Double(d) => vybe_forms::PropertyValue::Double(d),
-                                                _ => vybe_forms::PropertyValue::String(value.to_string()),
+                                            let prop_val = match &value {
+                                                vybe_runtime::Value::Integer(i) => Some(vybe_forms::PropertyValue::Integer(*i)),
+                                                vybe_runtime::Value::String(s) => Some(vybe_forms::PropertyValue::String(s.clone())),
+                                                vybe_runtime::Value::Boolean(b) => Some(vybe_forms::PropertyValue::Boolean(*b)),
+                                                vybe_runtime::Value::Double(d) => Some(vybe_forms::PropertyValue::Double(*d)),
+                                                // For Object values, extract the "name" field as a string identifier
+                                                // (e.g. BindingSource property set to a BindingSource object → store its name)
+                                                vybe_runtime::Value::Object(obj_ref) => {
+                                                    obj_ref.borrow().fields.get("name")
+                                                        .and_then(|v| if let vybe_runtime::Value::String(s) = v {
+                                                            if !s.is_empty() { Some(vybe_forms::PropertyValue::String(s.clone())) } else { None }
+                                                        } else { None })
+                                                }
+                                                // Skip Nothing, Array, etc.
+                                                _ => None,
                                             };
-                                            ctrl.properties.set_raw(&property, prop_val);
+                                            if let Some(pv) = prop_val {
+                                                ctrl.properties.set_raw(&property, pv);
+                                            }
                                         }
                                     }
                                 }
@@ -1091,7 +1102,6 @@ pub fn FormRunner() -> Element {
                                 if let Ok(Value::Object(_form_obj)) = interp.env.get("__form_instance__") {
                                     // Navigate via the form instance
                                     let nav_script = format!("__form_instance__.{}.{}()", bs_name, event_name);
-                                    eprintln!("[Nav] script: {}", nav_script);
                                     if let Ok(prog) = parse_program(&nav_script) {
                                         let _ = interp.load_module("NavAction", &prog);
                                     }
