@@ -1663,35 +1663,62 @@ fn build_control_object(ctrl: &vybe_forms::Control) -> Value {
 }
 
 /// Convert a runtime Value to a CSS color string.
-/// Handles Value::String (pass-through), Value::Object (Color with r/g/b fields),
-/// and falls back to as_string() for anything else.
+/// Handles Value::String (pass-through), Value::Object (Color with r/g/b fields).
 fn value_to_css_color(value: &vybe_runtime::Value) -> Option<String> {
     use vybe_runtime::Value;
     match value {
         Value::String(s) if !s.is_empty() => Some(s.clone()),
         Value::Object(obj_ref) => {
             let b = obj_ref.borrow();
-            // Extract r, g, b from Color object
-            let r = b.fields.get("r").and_then(|v| match v {
-                Value::Byte(b) => Some(*b as u32),
-                Value::Integer(i) => Some(*i as u32),
-                _ => None,
-            });
-            let g = b.fields.get("g").and_then(|v| match v {
-                Value::Byte(b) => Some(*b as u32),
-                Value::Integer(i) => Some(*i as u32),
-                _ => None,
-            });
-            let b_val = b.fields.get("b").and_then(|v| match v {
-                Value::Byte(b) => Some(*b as u32),
-                Value::Integer(i) => Some(*i as u32),
-                _ => None,
-            });
+            let extract_u32 = |v: &Value| -> Option<u32> {
+                match v {
+                    Value::Byte(b) => Some(*b as u32),
+                    Value::Integer(i) => Some(*i as u32),
+                    _ => None,
+                }
+            };
+            let r = b.fields.get("r").and_then(extract_u32);
+            let g = b.fields.get("g").and_then(extract_u32);
+            let b_val = b.fields.get("b").and_then(extract_u32);
             if let (Some(r), Some(g), Some(b)) = (r, g, b_val) {
                 Some(format!("#{:02X}{:02X}{:02X}", r, g, b))
             } else {
                 None
             }
+        }
+        _ => None,
+    }
+}
+
+/// Convert a runtime Value to a CSS font string.
+/// Handles Value::String (pass-through), Value::Object (Font with name/size fields).
+fn value_to_css_font(value: &vybe_runtime::Value) -> Option<String> {
+    use vybe_runtime::Value;
+    match value {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Object(obj_ref) => {
+            let b = obj_ref.borrow();
+            let name = b.fields.get("name")
+                .or_else(|| b.fields.get("fontfamily"))
+                .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                .unwrap_or_else(|| "Segoe UI".to_string());
+            let size = b.fields.get("size")
+                .or_else(|| b.fields.get("sizeininpoints"))
+                .and_then(|v| match v {
+                    Value::Double(d) => Some(*d),
+                    Value::Single(f) => Some(*f as f64),
+                    Value::Integer(i) => Some(*i as f64),
+                    _ => None,
+                })
+                .unwrap_or(9.0);
+            let bold = b.fields.get("bold").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+            let italic = b.fields.get("italic").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+            let mut parts = Vec::new();
+            if italic { parts.push("italic".to_string()); }
+            if bold { parts.push("bold".to_string()); }
+            parts.push(format!("{}px", size));
+            parts.push(format!("'{}'", name));
+            Some(parts.join(" "))
         }
         _ => None,
     }
@@ -1851,7 +1878,11 @@ fn process_side_effects(
                                                 ctrl.set_fore_color(css);
                                             }
                                         },
-                                        "font" => ctrl.set_font(value.as_string()),
+                                        "font" => {
+                                            if let Some(css) = value_to_css_font(&value) {
+                                                ctrl.set_font(css);
+                                            }
+                                        },
                                         // CheckBox / RadioButton
                                         "checked" => {
                                             let checked = match &value {
