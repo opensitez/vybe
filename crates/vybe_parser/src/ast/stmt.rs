@@ -199,6 +199,12 @@ pub enum Statement {
         file_number: Expression,
         variable: Identifier,
     },
+
+    // SyncLock
+    SyncLock {
+        lock_object: Expression,
+        body: Vec<Statement>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

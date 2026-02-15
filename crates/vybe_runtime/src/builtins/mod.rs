@@ -15,6 +15,7 @@ pub mod text_fns;
 pub mod xml;
 pub mod cryptography_fns;
 pub mod drawing_fns;
+pub mod concurrent_collections;
 
 pub use msgbox::*;
 pub use string_fns::*;
@@ -32,3 +33,4 @@ pub use financial_fns::*;
 pub use text_fns::*;
 pub use cryptography_fns::*;
 pub use drawing_fns::*;
+pub use concurrent_collections::*;

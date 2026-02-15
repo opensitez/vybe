@@ -1233,7 +1233,6 @@ pub fn FormRunner() -> Element {
                                             }
                                         }
                                     }
-                                    drop(frm);
                                     for (key, url) in to_fetch {
                                         eprintln!("[WebBrowser] auto-fetching initial URL: {}", url);
                                         let output = std::process::Command::new("curl")

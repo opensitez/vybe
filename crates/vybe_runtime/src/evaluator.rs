@@ -358,9 +358,9 @@ pub fn evaluate(expr: &Expression, env: &Environment) -> Result<Value, RuntimeEr
             arr.get_array_element(index)
         }
 
-        Expression::Call(_, _) | Expression::MethodCall(_, _, _) | Expression::New(_, _) | Expression::NewFromInitializer(_, _, _) | Expression::NewWithInitializer(_, _, _) | Expression::Me | Expression::MyBase | Expression::WithTarget | Expression::IfExpression(_, _, _) | Expression::AddressOf(_) | Expression::Cast { .. } => {
+        Expression::Call(_, _) | Expression::MethodCall(_, _, _) | Expression::New(_, _) | Expression::NewFromInitializer(_, _, _) | Expression::NewWithInitializer(_, _, _) | Expression::Me | Expression::MyBase | Expression::WithTarget | Expression::IfExpression(_, _, _) | Expression::AddressOf(_) | Expression::Cast { .. } | Expression::Query(_) | Expression::XmlLiteral(_) => {
             // These are handled in the interpreter
-            Err(RuntimeError::Custom("Function calls must be evaluated in interpreter context".to_string()))
+            Err(RuntimeError::Custom("Expression must be evaluated in interpreter context".to_string()))
         }
         Expression::Lambda { .. } => {
             Err(RuntimeError::Custom("Lambdas cannot be evaluated in constant expressions".to_string()))

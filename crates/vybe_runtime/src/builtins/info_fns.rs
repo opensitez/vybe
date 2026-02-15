@@ -85,6 +85,9 @@ pub fn typename_fn(args: &[Value]) -> Result<Value, RuntimeError> {
         Value::Stack(_) => "Stack",
         Value::HashSet(_) => "HashSet",
         Value::Dictionary(_) => "Dictionary",
+        Value::ConcurrentDictionary(_) => "ConcurrentDictionary",
+        Value::ConcurrentQueue(_) => "ConcurrentQueue",
+        Value::ConcurrentStack(_) => "ConcurrentStack",
         Value::Lambda { .. } => "Lambda",
     };
     Ok(Value::String(name.to_string()))
@@ -112,6 +115,9 @@ pub fn vartype_fn(args: &[Value]) -> Result<Value, RuntimeError> {
         Value::Stack(_) => 9,      // vbObject
         Value::HashSet(_) => 9,    // vbObject
         Value::Dictionary(_) => 9, // vbObject
+        Value::ConcurrentDictionary(_) => 9, // vbObject
+        Value::ConcurrentQueue(_) => 9, // vbObject
+        Value::ConcurrentStack(_) => 9, // vbObject
         Value::Array(_) => 8192, // vbArray
         Value::Lambda { .. } => 9, // vbObject
     };
@@ -325,7 +331,7 @@ pub fn isobject_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         return Err(RuntimeError::Custom("IsObject requires exactly one argument".to_string()));
     }
-    let result = matches!(&args[0], Value::Object(_) | Value::Collection(_));
+    let result = matches!(&args[0], Value::Object(_) | Value::Collection(_) | Value::ConcurrentDictionary(_) | Value::ConcurrentQueue(_) | Value::ConcurrentStack(_));
     Ok(Value::Boolean(result))
 }
 

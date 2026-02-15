@@ -36,6 +36,9 @@ pub enum SharedValue {
     Array(Vec<SharedValue>),
     Nothing,
     Object(std::sync::Arc<std::sync::Mutex<SharedObjectData>>),
+    ConcurrentDictionary(crate::builtins::concurrent_collections::ConcurrentDictionary),
+    ConcurrentQueue(crate::builtins::concurrent_collections::ConcurrentQueue),
+    ConcurrentStack(crate::builtins::concurrent_collections::ConcurrentStack),
     Lambda {
         params: Vec<vybe_parser::ast::decl::Parameter>,
         body: Box<vybe_parser::ast::expr::LambdaBody>,
@@ -60,6 +63,9 @@ pub enum Value {
     Stack(Rc<RefCell<crate::collections::Stack>>),
     HashSet(Rc<RefCell<crate::collections::VBHashSet>>),
     Dictionary(Rc<RefCell<crate::collections::VBDictionary>>),
+    ConcurrentDictionary(crate::builtins::concurrent_collections::ConcurrentDictionary),
+    ConcurrentQueue(crate::builtins::concurrent_collections::ConcurrentQueue),
+    ConcurrentStack(crate::builtins::concurrent_collections::ConcurrentStack),
     Nothing,
     Object(Rc<RefCell<ObjectData>>),
     Lambda {
@@ -191,6 +197,9 @@ impl Value {
             Value::Stack(s) => format!("[Stack Count={}]", s.borrow().count()),
             Value::HashSet(h) => format!("[HashSet Count={}]", h.borrow().count()),
             Value::Dictionary(d) => format!("[Dictionary Count={}]", d.borrow().count()),
+            Value::ConcurrentDictionary(d) => format!("[ConcurrentDictionary Count={}]", d.count()),
+            Value::ConcurrentQueue(q) => format!("[ConcurrentQueue Count={}]", q.count()),
+            Value::ConcurrentStack(s) => format!("[ConcurrentStack Count={}]", s.count()),
             Value::Nothing => "Nothing".to_string(),
             Value::Object(obj_ref) => {
                 let b = obj_ref.borrow();
@@ -288,6 +297,9 @@ impl Value {
             Value::Stack(_) => true,
             Value::HashSet(_) => true,
             Value::Dictionary(_) => true,
+            Value::ConcurrentDictionary(_) => true,
+            Value::ConcurrentQueue(_) => true,
+            Value::ConcurrentStack(_) => true,
             Value::Nothing => false,
             _ => false,
         }
@@ -301,6 +313,12 @@ impl Value {
                     .ok_or_else(|| RuntimeError::Custom(format!("Array index {} out of bounds", index)))
             }
             Value::Collection(col) => col.borrow().item(index),
+            Value::ConcurrentDictionary(_) | Value::ConcurrentQueue(_) | Value::ConcurrentStack(_) => {
+                Err(RuntimeError::TypeError {
+                    expected: "Array or Collection (Indexable)".to_string(),
+                    got: format!("{:?}", self),
+                })
+            }
             _ => Err(RuntimeError::TypeError {
                 expected: "Array or Collection".to_string(),
                 got: format!("{:?}", self),
@@ -319,6 +337,12 @@ impl Value {
                 }
             }
             Value::Collection(col) => col.borrow_mut().set_item(index, value),
+            Value::ConcurrentDictionary(_) | Value::ConcurrentQueue(_) | Value::ConcurrentStack(_) => {
+                Err(RuntimeError::TypeError {
+                    expected: "Array or Collection (Mutable Index)".to_string(),
+                    got: format!("{:?}", self),
+                })
+            }
             _ => Err(RuntimeError::TypeError {
                 expected: "Array or Collection".to_string(),
                 got: format!("{:?}", self),
@@ -329,6 +353,10 @@ impl Value {
     pub fn array_length(&self) -> Result<usize, RuntimeError> {
         match self {
             Value::Array(arr) => Ok(arr.len()),
+            Value::Collection(c) => Ok(c.borrow().count() as usize),
+            Value::ConcurrentDictionary(c) => Ok(c.count() as usize),
+            Value::ConcurrentQueue(c) => Ok(c.count() as usize),
+            Value::ConcurrentStack(c) => Ok(c.count() as usize),
             _ => Err(RuntimeError::TypeError {
                 expected: "Array".to_string(),
                 got: format!("{:?}", self),
@@ -361,6 +389,9 @@ impl Value {
                     })))
                 }).collect())
             }
+            Value::ConcurrentDictionary(d) => Ok(d.to_array()),
+            Value::ConcurrentQueue(q) => Ok(q.to_array()),
+            Value::ConcurrentStack(s) => Ok(s.to_array()),
             Value::String(s) => Ok(s.chars().map(|c| Value::String(c.to_string())).collect()),
             Value::Object(obj) => {
                 // If the object has an items/rows array field, iterate that
@@ -409,6 +440,9 @@ impl Value {
                 let values = db.values().into_iter().map(|v| v.deep_clone()).collect();
                 Value::Dictionary(Rc::new(RefCell::new(crate::collections::VBDictionary::from_parts(keys, values))))
             }
+            Value::ConcurrentDictionary(c) => Value::ConcurrentDictionary(c.clone()), // Shared reference
+            Value::ConcurrentQueue(c) => Value::ConcurrentQueue(c.clone()), // Shared reference
+            Value::ConcurrentStack(c) => Value::ConcurrentStack(c.clone()), // Shared reference
             Value::Object(obj) => {
                 let b = obj.borrow();
                 let mut new_fields = HashMap::new();
@@ -480,6 +514,9 @@ impl Value {
                 }
                 SharedValue::Array(shared_items) // Specialized handling would be better, but Array is safe
             }
+            Value::ConcurrentDictionary(c) => SharedValue::ConcurrentDictionary(c.clone()),
+            Value::ConcurrentQueue(c) => SharedValue::ConcurrentQueue(c.clone()),
+            Value::ConcurrentStack(c) => SharedValue::ConcurrentStack(c.clone()),
         }
     }
 }
@@ -517,6 +554,9 @@ impl SharedValue {
                     env: Rc::new(RefCell::new(env.to_environment())),
                 }
             }
+            SharedValue::ConcurrentDictionary(c) => Value::ConcurrentDictionary(c.clone()),
+            SharedValue::ConcurrentQueue(c) => Value::ConcurrentQueue(c.clone()),
+            SharedValue::ConcurrentStack(c) => Value::ConcurrentStack(c.clone()),
         }
     }
 }

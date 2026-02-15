@@ -80,6 +80,7 @@ statement = _{
     | raiseevent_statement
     | static_statement
     | expression_statement
+    | synclock_statement
 }
 dim_new_keyword = { ^"New" }
 dim_statement = {
@@ -461,6 +462,8 @@ primary = _{
     | literal
     | lambda_expression
     | if_expression
+    | query_expression
+    | xml_literal
     | me_member_call
     | me_member_access
     | me_keyword
@@ -568,3 +571,49 @@ keyword = _{
 }
 
 call_keyword = @{ ^"Call" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── LINQ Query Syntax ──
+query_expression = { from_clause ~ query_body }
+from_clause = { ^"From" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression ~ ("," ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression)* }
+query_body = { query_operator* ~ select_or_group_clause }
+query_operator = { where_clause | order_by_clause | let_clause }
+
+where_clause = { ^"Where" ~ expression }
+order_by_clause = { ^"Order" ~ ^"By" ~ ordering ~ ("," ~ ordering)* }
+ordering = { expression ~ (^"Ascending" | ^"Descending")? }
+let_clause = { ^"Let" ~ identifier ~ "=" ~ expression }
+
+select_or_group_clause = { select_clause | group_clause }
+select_clause = { ^"Select" ~ expression ~ ("," ~ expression)* }
+group_clause = { ^"Group" ~ (expression ~ ("," ~ expression)*)? ~ ^"By" ~ expression ~ (^"Into" ~ expression)? }
+
+// ── XML Literals ──
+xml_literal = { xml_document | xml_element }
+xml_document = { xml_declaration? ~ xml_element }
+xml_declaration = { "<?xml" ~ xml_attribute* ~ "?>" }
+
+xml_element = {
+    "<" ~ xml_name ~ xml_attribute* ~ "/>"
+    | "<" ~ xml_name ~ xml_attribute* ~ ">" ~ xml_content* ~ "</" ~ xml_name ~ ">"
+}
+
+xml_name = @{ (ASCII_ALPHA | "_" | ":") ~ (ASCII_ALPHANUMERIC | "_" | ":" | "-" | ".")* }
+xml_attribute = { xml_name ~ "=" ~ (string_literal | xml_embedded_expression) }
+xml_content = {
+    xml_element
+    | xml_cdata
+    | xml_embedded_expression
+    | xml_text
+}
+
+xml_text = @{ (!("<" | "<%=") ~ ANY)+ }
+xml_cdata = { "<![CDATA[" ~ (!"]]>" ~ ANY)* ~ "]]>" }
+xml_embedded_expression = { "<%=" ~ expression ~ "%>" }
+
+// ── Threading / SyncLock ──
+synclock_statement = {
+    ^"SyncLock" ~ expression ~ (NEWLINE | EOI)
+    ~ (!synclock_end ~ line)*
+    ~ synclock_end
+}
+synclock_end = { ^"End" ~ ^"SyncLock" }

@@ -9,15 +9,20 @@ fn test_misc_gaps() {
     let source = std::fs::read_to_string(&test_file)
         .expect("Failed to read test_misc_gaps.vb");
     
-    let parsed = vybe_parser::parse_vb(&source)
+    let parsed = vybe_parser::parse_program(&source)
         .expect("Failed to parse test_misc_gaps.vb");
     
     let mut interp = vybe_runtime::Interpreter::new();
-    let console_output = interp.get_console_output();
     
     interp.run(&parsed).expect("Runtime error in test_misc_gaps.vb");
     
-    let output = console_output.borrow().join("");
+    let output = interp.side_effects.iter()
+        .filter_map(|se| match se {
+            vybe_runtime::RuntimeSideEffect::ConsoleOutput(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
     println!("{}", output);
     
     assert!(output.contains("SUCCESS"), "Misc gaps test did not pass:\n{}", output);

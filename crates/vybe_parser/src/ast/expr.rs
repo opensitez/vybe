@@ -106,6 +106,12 @@ pub enum Expression {
         expr: Box<Expression>,
         target_type: String,
     },
+
+    // LINQ Query
+    Query(Box<super::query::QueryExpression>),
+
+    // XML Literals
+    XmlLiteral(Box<super::xml::XmlNode>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

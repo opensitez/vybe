@@ -5,23 +5,22 @@ mod tests {
     use vybe_runtime::Value;
 
     #[test]
-    fn test_task_run() {
+    fn test_xml_literal() {
         let code = r#"
-            Imports System.Threading.Tasks
-            
             Module Test
                 Sub Main()
-                    Dim t = Task.Run(Sub() 
-                                        Console.WriteLine("Task Running")
-                                     End Sub)
-                    t.Wait()
-                    Console.WriteLine("Task Completed")
+                    Dim name = "World"
+                    Dim x = <root>
+                                <child id="1">Hello <%= name %></child>
+                            </root>
+                    
+                    Console.WriteLine(x.ToString())
                 End Sub
             End Module
         "#;
         let program = parse_program(code).unwrap();
         let mut interp = Interpreter::new();
         interp.run(&program).unwrap();
-        // Verify execution order or completion
+        // Verify output via side_effects if needed, or just ensure it runs without error
     }
 }

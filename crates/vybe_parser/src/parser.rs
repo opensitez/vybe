@@ -1138,6 +1138,7 @@ fn parse_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
             // But if we do, just return Nothing to not break.
             Ok(Statement::ExpressionStatement(Expression::Nothing))
         }
+        Rule::synclock_statement => parse_synclock_statement(pair),
         _ => Err(ParseError::UnexpectedRule(pair.as_rule())),
     }
 }
@@ -1400,6 +1401,8 @@ fn parse_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
 
             Ok(expr)
         }
+        Rule::query_expression => parse_query_expression(pair),
+        Rule::xml_literal => parse_xml_literal(pair),
         Rule::identifier => Ok(Expression::Variable(Identifier::new(pair.as_str()))),
         Rule::cast_expression => {
             let text = pair.as_str();
@@ -2587,4 +2590,220 @@ fn parse_event_decl(pair: Pair<Rule>) -> ParseResult<EventDecl> {
     }
 
     Ok(EventDecl { visibility, name, parameters, event_type })
+}
+
+// ── Syntax Extensions Implementation ──
+
+fn parse_synclock_statement(pair: Pair<Rule>) -> ParseResult<Statement> {
+    let mut inner = pair.into_inner();
+    let lock_object = parse_expression(inner.next().unwrap())?;
+    let mut body = Vec::new();
+
+    for p in inner {
+        match p.as_rule() {
+            Rule::statement | Rule::statement_line => {
+                for stmt_pair in p.into_inner() {
+                    if stmt_pair.as_rule() == Rule::NEWLINE || stmt_pair.as_rule() == Rule::EOI {
+                        continue;
+                    }
+                    body.push(parse_statement(stmt_pair)?);
+                }
+            }
+            Rule::synclock_end | Rule::NEWLINE => {}
+            _ => {}
+        }
+    }
+    Ok(Statement::SyncLock { lock_object, body })
+}
+
+fn parse_query_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
+    let mut inner = pair.into_inner();
+    let from_clause_pair = inner.next().unwrap();
+    
+    // Parse From clause
+    let mut from_inner = from_clause_pair.into_inner();
+    let mut ranges = Vec::new();
+    
+    while let Some(id_pair) = from_inner.next() {
+        if id_pair.as_rule() == Rule::identifier {
+            let name = id_pair.as_str().to_string();
+            let mut collection_expr = None;
+            let mut type_name = None;
+            
+            while let Some(p) = from_inner.next() {
+                match p.as_rule() {
+                    Rule::expression => { collection_expr = Some(parse_expression(p)?); break; }
+                    Rule::type_name => type_name = Some(p.as_str().to_string()),
+                    _ => {}
+                }
+            }
+             
+            if let Some(collection) = collection_expr {
+                ranges.push(crate::ast::query::RangeVariable {
+                    name,
+                    collection,
+                    type_name,
+                });
+            }
+        }
+    }
+    
+    let query_body_pair = inner.next().unwrap();
+    let body_inner = query_body_pair.into_inner();
+    let mut clauses = Vec::new();
+    let mut select_or_group = None;
+    
+    for p in body_inner {
+        match p.as_rule() {
+            Rule::query_operator => {
+                let op = p.into_inner().next().unwrap();
+                match op.as_rule() {
+                    Rule::where_clause => {
+                        let expr = parse_expression(op.into_inner().next().unwrap())?;
+                        clauses.push(crate::ast::query::QueryClause::Where(expr));
+                    }
+                    Rule::order_by_clause => {
+                        let mut orderings = Vec::new();
+                        for ord in op.into_inner() {
+                            let mut ord_inner = ord.into_inner();
+                            let expr = parse_expression(ord_inner.next().unwrap())?;
+                            let direction = match ord_inner.next().map(|x| x.as_str().to_lowercase()).as_deref() {
+                                Some("descending") => crate::ast::query::OrderDirection::Descending,
+                                _ => crate::ast::query::OrderDirection::Ascending,
+                            };
+                            orderings.push(crate::ast::query::Ordering { expression: expr, direction });
+                        }
+                        clauses.push(crate::ast::query::QueryClause::OrderBy(orderings));
+                    }
+                    Rule::let_clause => {
+                        let mut let_inner = op.into_inner();
+                        let name = let_inner.next().unwrap().as_str().to_string();
+                        let value = parse_expression(let_inner.next().unwrap())?;
+                        clauses.push(crate::ast::query::QueryClause::Let { name, value });
+                    }
+                    _ => {}
+                }
+            }
+            Rule::select_or_group_clause => {
+                let inner_sg = p.into_inner().next().unwrap();
+                match inner_sg.as_rule() {
+                    Rule::select_clause => {
+                        let exprs = inner_sg.into_inner().map(|x| parse_expression(x)).collect::<Result<Vec<_>,_>>()?;
+                        select_or_group = Some(crate::ast::query::SelectOrGroupClause::Select(exprs));
+                    }
+                    Rule::group_clause => {
+                        let mut exprs = Vec::new();
+                        for x in inner_sg.into_inner() {
+                             if x.as_rule() == Rule::expression {
+                                 exprs.push(parse_expression(x)?);
+                             }
+                        }
+                        if exprs.len() >= 2 {
+                             let key = exprs.pop().unwrap();
+                             let item = exprs.pop().unwrap();
+                             select_or_group = Some(crate::ast::query::SelectOrGroupClause::Group(Box::new(crate::ast::query::GroupClause { item, key })));
+                        } else if !exprs.is_empty() {
+                             let key = exprs.pop().unwrap();
+                             let item = Expression::Nothing;
+                             select_or_group = Some(crate::ast::query::SelectOrGroupClause::Group(Box::new(crate::ast::query::GroupClause { item, key })));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    Ok(Expression::Query(Box::new(crate::ast::query::QueryExpression {
+        from_clause: crate::ast::query::FromClause { ranges },
+        body: crate::ast::query::QueryBody {
+            clauses,
+            select_or_group: select_or_group.unwrap_or(crate::ast::query::SelectOrGroupClause::Select(vec![Expression::Nothing])), 
+        },
+    })))
+}
+
+fn parse_xml_literal(pair: Pair<Rule>) -> ParseResult<Expression> {
+    let top = parse_xml_node(pair)?;
+    Ok(Expression::XmlLiteral(Box::new(top)))
+}
+
+fn parse_xml_node(pair: Pair<Rule>) -> ParseResult<crate::ast::xml::XmlNode> {
+    match pair.as_rule() {
+        Rule::xml_literal => parse_xml_node(pair.into_inner().next().unwrap()),
+        Rule::xml_document => {
+            let mut inner = pair.into_inner();
+            let first = inner.next().unwrap();
+            if first.as_rule() == Rule::xml_declaration {
+                parse_xml_node(inner.next().unwrap())
+            } else {
+                parse_xml_node(first)
+            }
+        }
+        Rule::xml_element => {
+            let is_self_closing = pair.as_str().ends_with("/>");
+            let mut inner = pair.into_inner();
+            let name_pair = inner.next().unwrap();
+            let name = parse_xml_name(name_pair);
+            
+            let mut attributes = Vec::new();
+            let mut children = Vec::new();
+            
+            for p in inner {
+                match p.as_rule() {
+                    Rule::xml_attribute => {
+                        let mut attr_inner = p.into_inner();
+                        let attr_name = parse_xml_name(attr_inner.next().unwrap());
+                        let val_pair = attr_inner.next().unwrap();
+                        let val_node = if val_pair.as_rule() == Rule::xml_embedded_expression {
+                            crate::ast::xml::XmlNode::EmbeddedExpression(parse_expression(val_pair.into_inner().next().unwrap())?)
+                        } else {
+                             let s = val_pair.as_str().trim_matches('"').to_string();
+                             let s = s.replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+                             crate::ast::xml::XmlNode::Text(s)
+                        };
+                        attributes.push(crate::ast::xml::XmlAttribute { name: attr_name, value: vec![val_node] });
+                    }
+                    Rule::xml_content => {
+                         let content = p.into_inner().next().unwrap();
+                         match content.as_rule() {
+                             Rule::xml_element => children.push(parse_xml_node(content)?),
+                             Rule::xml_text => {
+                                 let t = content.as_str().to_string();
+                                 if !t.trim().is_empty() {
+                                     children.push(crate::ast::xml::XmlNode::Text(t));
+                                 }
+                             }
+                             Rule::xml_embedded_expression => {
+                                 children.push(crate::ast::xml::XmlNode::EmbeddedExpression(parse_expression(content.into_inner().next().unwrap())?));
+                             }
+                             _ => {}
+                         }
+                    }
+                    _ => {}
+                }
+            }
+             
+             Ok(crate::ast::xml::XmlNode::Element(crate::ast::xml::XmlElement {
+                 name,
+                 attributes,
+                 children,
+                 is_empty: is_self_closing,
+             }))
+        }
+        _ => Err(ParseError::Custom(format!("Unexpected XML: {:?}", pair.as_rule()))),
+    }
+}
+
+fn parse_xml_name(pair: Pair<Rule>) -> crate::ast::xml::XmlName {
+    let s = pair.as_str();
+    if let Some(idx) = s.find(':') {
+        crate::ast::xml::XmlName {
+            prefix: Some(s[..idx].to_string()),
+            local: s[idx+1..].to_string(),
+        }
+    } else {
+        crate::ast::xml::XmlName { prefix: None, local: s.to_string() }
+    }
 }

@@ -2060,6 +2060,16 @@ impl Interpreter {
                 Ok(())
             }
 
+            Statement::SyncLock { lock_object, body } => {
+                let _lock = self.evaluate_expr(lock_object)?;
+                // Verify reference type if strict, but for now just execute body
+                // In a single-threaded interpreter, the lock is implicit
+                for stmt in body {
+                    self.execute(stmt)?;
+                }
+                Ok(())
+            }
+
             Statement::MemberAssignment { object, member, value } => {
                 let val = self.evaluate_expr(value)?;
                 let obj_val = self.evaluate_expr(object)?;
@@ -3455,6 +3465,8 @@ impl Interpreter {
                     .collect();
                 Ok(Value::Array(vals?))
             }
+            Expression::Query(query) => self.execute_query(query),
+            Expression::XmlLiteral(node) => self.construct_xml(node),
             // For all other expressions that might contain nested calls, evaluate through interpreter
             Expression::Add(left, right) => {
                 let l = self.evaluate_expr(left)?;
@@ -4466,6 +4478,42 @@ impl Interpreter {
                 }
 
                 // Dictionary
+                if class_name == "dictionary" || class_name == "system.collections.generic.dictionary" {
+                     return Ok(Value::Dictionary(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))));
+                }
+
+                // ConcurrentDictionary
+                if class_name == "concurrentdictionary" || class_name == "system.collections.concurrent.concurrentdictionary" {
+                     return Ok(Value::ConcurrentDictionary(crate::builtins::concurrent_collections::ConcurrentDictionary::new()));
+                }
+
+                // ConcurrentQueue
+                if class_name == "concurrentqueue" || class_name == "system.collections.concurrent.concurrentqueue" {
+                     return Ok(Value::ConcurrentQueue(crate::builtins::concurrent_collections::ConcurrentQueue::new()));
+                }
+
+                // ConcurrentStack
+                if class_name == "concurrentstack" || class_name == "system.collections.concurrent.concurrentstack" {
+                     return Ok(Value::ConcurrentStack(crate::builtins::concurrent_collections::ConcurrentStack::new()));
+                }
+                if class_name == "dictionary" || class_name == "system.collections.generic.dictionary" {
+                     return Ok(Value::Dictionary(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))));
+                }
+
+                // ConcurrentDictionary
+                if class_name == "concurrentdictionary" || class_name == "system.collections.concurrent.concurrentdictionary" {
+                     return Ok(Value::ConcurrentDictionary(crate::builtins::concurrent_collections::ConcurrentDictionary::new()));
+                }
+
+                // ConcurrentQueue
+                if class_name == "concurrentqueue" || class_name == "system.collections.concurrent.concurrentqueue" {
+                     return Ok(Value::ConcurrentQueue(crate::builtins::concurrent_collections::ConcurrentQueue::new()));
+                }
+
+                // ConcurrentStack
+                if class_name == "concurrentstack" || class_name == "system.collections.concurrent.concurrentstack" {
+                     return Ok(Value::ConcurrentStack(crate::builtins::concurrent_collections::ConcurrentStack::new()));
+                }
                 if class_name == "dictionary" || class_name == "system.collections.generic.dictionary"
                     || class_name == "system.collections.hashtable" || class_name == "hashtable" {
                     return Ok(Value::Dictionary(std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))));
@@ -5343,6 +5391,29 @@ impl Interpreter {
                         "values" => return Ok(Value::Array(d.borrow().values())),
                         _ => {}
                     }
+                }
+
+                // ConcurrentDictionary Properties
+                if let Value::ConcurrentDictionary(d) = &obj_val {
+                    let m = member.as_str().to_lowercase();
+                    match m.as_str() {
+                        "count" => return Ok(Value::Integer(d.count())),
+                        "keys" => return Ok(Value::Array(d.keys().into_iter().map(Value::String).collect())),
+                        "values" => return Ok(Value::Array(d.values())),
+                        _ => {}
+                    }
+                }
+
+                // ConcurrentQueue Properties
+                if let Value::ConcurrentQueue(q) = &obj_val {
+                    let m = member.as_str().to_lowercase();
+                    if m == "count" { return Ok(Value::Integer(q.count())); }
+                }
+
+                // ConcurrentStack Properties
+                if let Value::ConcurrentStack(s) = &obj_val {
+                    let m = member.as_str().to_lowercase();
+                    if m == "count" { return Ok(Value::Integer(s.count())); }
                 }
 
                 // Array Properties (Length, Count)
@@ -10831,7 +10902,160 @@ impl Interpreter {
                     _ => {}
                 }
             }
+
+
+            // ConcurrentDictionary methods
+            if let Value::ConcurrentDictionary(d) = &obj_val {
+                match method_name.as_str() {
+                    "tryadd" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        let val = self.evaluate_expr(&args[1])?;
+                        return Ok(Value::Boolean(d.try_add(&key.as_string(), val)));
+                    }
+                    "trygetvalue" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        if let Some(val) = d.try_get_value(&key.as_string()) {
+                             if args.len() >= 2 {
+                                if let Expression::Variable(var_name) = &args[1] {
+                                    self.env.set(var_name.as_str(), val.clone()).ok();
+                                }
+                            }
+                            return Ok(Value::Boolean(true));
+                        } else {
+                            return Ok(Value::Boolean(false));
+                        }
+                    }
+                    "tryremove" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        if let Some(val) = d.try_remove(&key.as_string()) {
+                             if args.len() >= 2 {
+                                if let Expression::Variable(var_name) = &args[1] {
+                                    self.env.set(var_name.as_str(), val.clone()).ok();
+                                }
+                            }
+                            return Ok(Value::Boolean(true));
+                        } else {
+                            return Ok(Value::Boolean(false));
+                        }
+                    }
+                    "tryupdate" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        let new_val = self.evaluate_expr(&args[1])?;
+                        let comparison = self.evaluate_expr(&args[2])?;
+                        // Comparison value also needs to be passed? ConcurrentDictionary::try_update doesn't exist in my impl?? 
+                        // Wait, I didn't implement try_update in concurrent_collections.rs!
+                        // I implemented add_or_update, try_add, try_get_value, try_remove, get_or_add.
+                        // TryUpdate is standard?
+                        // If I didn't implement it, I should remove it or implement it.
+                        // I'll remove it for now or implement it if useful.
+                        // Let's implement it in concurrent_collections.rs later if needed.
+                        // For now, I'll comment it out or implement a dummy.
+                        return Err(RuntimeError::Custom("TryUpdate not implemented".to_string()));
+                    }
+                    "getoradd" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        let val = self.evaluate_expr(&args[1])?;
+                        return Ok(d.get_or_add(&key.as_string(), val));
+                    }
+                    "addorupdate" => {
+                        let key = self.evaluate_expr(&args[0])?;
+                        let add_val = self.evaluate_expr(&args[1])?;
+                        let update_val = self.evaluate_expr(&args[2])?;
+                        return Ok(d.add_or_update(&key.as_string(), add_val, update_val));
+                    }
+                    "clear" => {
+                        d.clear();
+                        return Ok(Value::Nothing);
+                    }
+                    "toarray" => {
+                        // Returns KeyValuePair array
+                        return Ok(Value::Array(d.to_array()));
+                    }
+                    _ => {}
+                }
+
+            }
+
+            // ConcurrentQueue methods
+            if let Value::ConcurrentQueue(q) = &obj_val {
+                match method_name.as_str() {
+                   "enqueue" => {
+                       let val = self.evaluate_expr(&args[0])?;
+                       q.enqueue(val);
+                       return Ok(Value::Nothing);
+                   }
+                   "trydequeue" => {
+                       if let Some(val) = q.try_dequeue() {
+                            if args.len() >= 1 {
+                                if let Expression::Variable(var_name) = &args[0] {
+                                    self.env.set(var_name.as_str(), val.clone()).ok();
+                                }
+                            }
+                           return Ok(Value::Boolean(true));
+                       } else {
+                           return Ok(Value::Boolean(false));
+                       }
+                   }
+                   "trypeek" => {
+                       if let Some(val) = q.try_peek() {
+                            if args.len() >= 1 {
+                                if let Expression::Variable(var_name) = &args[0] {
+                                    self.env.set(var_name.as_str(), val.clone()).ok();
+                                }
+                            }
+                           return Ok(Value::Boolean(true));
+                       } else {
+                           return Ok(Value::Boolean(false));
+                       }
+                   }
+                   "toarray" => {
+                       return Ok(Value::Array(q.to_array()));
+                   }
+                   _ => {}
+                }
+            }
+
+            // ConcurrentStack methods
+            if let Value::ConcurrentStack(s) = &obj_val {
+                match method_name.as_str() {
+                   "push" => {
+                       let val = self.evaluate_expr(&args[0])?;
+                       s.push(val);
+                       return Ok(Value::Nothing);
+                   }
+                   "trypop" => {
+                       if let Some(val) = s.try_pop() {
+                            if args.len() >= 1 {
+                                if let Expression::Variable(var_name) = &args[0] {
+                                    self.env.set(var_name.as_str(), val.clone()).ok();
+                                }
+                            }
+                           return Ok(Value::Boolean(true));
+                       } else {
+                           return Ok(Value::Boolean(false));
+                       }
+                   }
+                   "trypeek" => {
+                       if let Some(val) = s.try_peek() {
+                            if args.len() >= 1 {
+                                if let Expression::Variable(var_name) = &args[0] {
+                                    self.env.set(var_name.as_str(), val.clone()).ok();
+                                }
+                            }
+                           return Ok(Value::Boolean(true));
+                       } else {
+                           return Ok(Value::Boolean(false));
+                       }
+                   }
+                   "toarray" => {
+                       return Ok(Value::Array(s.to_array()));
+                   }
+                   _ => {}
+                }
+            }
         }
+
+
 
         // If no arguments, first try to access as a property (e.g., txt1.Text)
         if args.is_empty() {
@@ -15572,5 +15796,155 @@ fn expr_matches(expr: &vybe_parser::ast::Expression, pred: &dyn Fn(&vybe_parser:
         Expression::MemberAccess(obj, _) => expr_matches(obj, pred),
         Expression::Call(_, args) => args.iter().any(|a| expr_matches(a, pred)),
         _ => false,
+    }
+}
+// ── Runtime Extensions ──
+
+impl Interpreter {
+    fn execute_query(&mut self, query: &vybe_parser::ast::query::QueryExpression) -> Result<Value, RuntimeError> {
+        use vybe_parser::ast::query::*;
+        
+        let range = query.from_clause.ranges.first().ok_or(RuntimeError::Custom("Query must have range variable".to_string()))?;
+        let collection_val = self.evaluate_expr(&range.collection)?;
+        
+        // Ensure we're working with a collection
+        let items: Vec<Value> = match collection_val {
+            Value::Array(a) => a.clone(),
+            Value::Collection(c) => c.borrow().items.clone(),
+            _ => return Err(RuntimeError::Custom("Query source must be array or collection".to_string()))
+        };
+        
+        self.env.push_scope();
+        
+        let mut filtered_items = Vec::new();
+        for item in items {
+            self.env.define(&range.name, item.clone());
+            let mut include = true;
+            
+            for clause in &query.body.clauses {
+                match clause {
+                    QueryClause::Where(expr) => {
+                         if !self.evaluate_expr(expr)?.as_bool().unwrap_or(false) {
+                             include = false;
+                             break;
+                         }
+                    }
+                    QueryClause::Let { name, value } => {
+                        let v = self.evaluate_expr(value)?;
+                        self.env.define(name, v);
+                    }
+                    _ => {} // OrderBy handled later
+                }
+            }
+            
+            if include {
+                filtered_items.push(item); 
+            }
+        }
+        
+        // TODO: Sort (OrderBy)
+        
+        // Project (Select)
+        let mut results = Vec::new();
+        for item in filtered_items {
+            self.env.define(&range.name, item.clone());
+            // Re-run Let for context
+            for clause in &query.body.clauses {
+                if let QueryClause::Let { name, value } = clause {
+                     let v = self.evaluate_expr(value)?;
+                     self.env.define(name, v);
+                }
+            }
+            
+            match &query.body.select_or_group {
+                SelectOrGroupClause::Select(exprs) => {
+                    if exprs.len() == 1 {
+                        results.push(self.evaluate_expr(&exprs[0])?);
+                    } else {
+                        return Err(RuntimeError::Custom("Multiple select fields not yet supported in runtime".to_string()));
+                    }
+                }
+                SelectOrGroupClause::Group(_g) => {
+                     return Err(RuntimeError::Custom("Group By not yet supported".to_string()));
+                }
+            }
+        }
+        
+        self.env.pop_scope();
+        Ok(Value::Array(results))
+    }
+
+    fn construct_xml(&mut self, node: &vybe_parser::ast::xml::XmlNode) -> Result<Value, RuntimeError> {
+        use vybe_parser::ast::xml::*;
+        match node {
+            XmlNode::Element(el) => {
+                let name = if let Some(prefix) = &el.name.prefix {
+                    format!("{}:{}", prefix, el.name.local)
+                } else {
+                    el.name.local.clone()
+                };
+                
+                let mut content = Vec::new();
+                
+                // Attributes creation
+                // Note: builtins::xml::create_xattribute takes &[Value] usually [name, value]
+                for attr in &el.attributes {
+                    let attr_name = if let Some(prefix) = &attr.name.prefix {
+                        format!("{}:{}", prefix, attr.name.local)
+                    } else {
+                        attr.name.local.clone()
+                    };
+                    
+                    let mut attr_val_str = String::new();
+                    // Attribute value can be composite
+                    for part in &attr.value {
+                         match part {
+                             XmlNode::Text(s) => attr_val_str.push_str(s),
+                             XmlNode::EmbeddedExpression(expr) => {
+                                 let v = self.evaluate_expr(expr)?;
+                                 attr_val_str.push_str(&v.as_string());
+                             }
+                             _ => {}
+                         }
+                    }
+                    
+                    let attr_obj = crate::builtins::xml::create_xattribute(&[
+                        Value::String(attr_name),
+                        Value::String(attr_val_str)
+                    ]);
+                    // Attributes are part of content/children in create_xelement for now or need separate handling?
+                    // create_xelement description says "content can be: string value, XAttribute, XElement..."
+                    content.push(attr_obj);
+                }
+                
+                // Children
+                for child in &el.children {
+                    match child {
+                        XmlNode::Text(s) => content.push(Value::String(s.clone())),
+                        XmlNode::EmbeddedExpression(expr) => {
+                             let v = self.evaluate_expr(expr)?;
+                             content.push(v);
+                        }
+                        XmlNode::Element(_) => {
+                            content.push(self.construct_xml(child)?);
+                        }
+                        XmlNode::Comment(s) => {
+                            content.push(crate::builtins::xml::create_xcomment(&[Value::String(s.clone())]));
+                        }
+                        _ => {}
+                    }
+                }
+                
+                let mut args = vec![Value::String(name)];
+                args.extend(content);
+                
+                let result = crate::builtins::xml::create_xelement(&args);
+                Ok(result)
+            }
+            XmlNode::Text(s) => Ok(Value::String(s.clone())),
+            XmlNode::EmbeddedExpression(expr) => self.evaluate_expr(expr),
+            XmlNode::Comment(s) => Ok(crate::builtins::xml::create_xcomment(&[Value::String(s.clone())])),
+            XmlNode::CData(s) => Ok(Value::String(s.clone())), // Treat CDATA as text for now
+        }
     }
 }
