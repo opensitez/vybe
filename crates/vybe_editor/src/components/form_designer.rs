@@ -634,7 +634,7 @@ fn ControlContent(
                 }
             }
         },
-        ControlType::Frame | ControlType::PictureBox | ControlType::WebBrowser | ControlType::Panel => {
+        ControlType::Frame | ControlType::PictureBox | ControlType::Panel => {
             let back = control.get_back_color().map(|s| s.to_string()).unwrap_or_else(|| "#f8fafc".to_string());
             let fore = control.get_fore_color().map(|s| s.to_string()).unwrap_or_else(|| "#0f172a".to_string());
             let font = control.get_font().map(|s| s.to_string()).unwrap_or_else(|| "Segoe UI, 12px".to_string());
@@ -1030,15 +1030,25 @@ fn ControlVisuals(control: Control) -> Element {
             }
         },
         // ── WebBrowser ──
-        ControlType::WebBrowser => rsx! {
-            div {
-                style: "width: 100%; height: 100%; border: 1px solid #999; background: white; overflow: hidden; display: flex; flex-direction: column;",
+        ControlType::WebBrowser => {
+            let url = control.properties.get_string("URL").map(|s| s.to_string()).unwrap_or_else(|| "about:blank".to_string());
+            let html = control.properties.get_string("HTML").map(|s| s.to_string()).unwrap_or_default();
+            rsx! {
                 div {
-                    style: "display: flex; align-items: center; gap: 4px; padding: 2px 4px; background: #f0f0f0; border-bottom: 1px solid #ccc; font-size: 11px;",
-                    span { "←" } span { "→" } span { "🔄" }
-                    div { style: "flex: 1; padding: 1px 4px; background: white; border: 1px solid #ccc; font-size: 10px; color: #999;", "about:blank" }
+                    style: "width: 100%; height: 100%; border: 1px solid #999; background: white; overflow: hidden; display: flex; flex-direction: column;",
+                    div {
+                        style: "display: flex; align-items: center; gap: 4px; padding: 2px 4px; background: #e8e8e8; border-bottom: 1px solid #ccc; font-size: 11px; color: #333;",
+                        span { "←" } span { "→" } span { "🔄" }
+                        div { 
+                            style: "flex: 1; padding: 1px 4px; background: white; border: 1px solid #ccc; font-size: 10px; color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;", 
+                            "{url}" 
+                        }
+                    }
+                    div { 
+                        style: "flex: 1; overflow: auto; background: white; color: black;",
+                        dangerous_inner_html: "{html}"
+                    }
                 }
-                div { style: "flex: 1;" }
             }
         },
         // ── Panel ──

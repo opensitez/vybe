@@ -528,7 +528,7 @@ static VISUAL_HANDLED: &[&str] = &[
     // Data-source binding
     "DataSource", "DataMember", "DisplayMember", "ValueMember", "BindingSource",
     // Vybe-internal runtime keys with no VB.NET designer equivalent
-    "List", "ListValues", "ListIndex", "HTML", "URL", "ToolbarVisible",
+    "List", "ListValues", "ListIndex", "ToolbarVisible",
     // CheckState and Value are stored internally; DropDownStyle stored as int but VB.NET expects enum
     "CheckState", "DropDownStyle",
 ];

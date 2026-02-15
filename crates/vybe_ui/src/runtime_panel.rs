@@ -1,4 +1,6 @@
 use dioxus::prelude::*;
+use dioxus::desktop::use_asset_handler;
+use wry::http::Response;
 use vybe_forms::{ControlType, Form, EventType};
 use vybe_project::Project;
 use vybe_runtime::{Interpreter, RuntimeSideEffect, Value, ObjectData, ConsoleMessage};
@@ -251,6 +253,14 @@ fn sync_instance_to_ui(
             if let Some(Value::String(s)) = ctrl_fields.fields.get("text") {
                 ctrl.set_text(s.clone());
             }
+            // Multiline
+            if let Some(Value::Boolean(b)) = ctrl_fields.fields.get("multiline") {
+                ctrl.properties.set("Multiline", *b);
+            }
+            // ReadOnly
+            if let Some(Value::Boolean(b)) = ctrl_fields.fields.get("readonly") {
+                ctrl.properties.set("ReadOnly", *b);
+            }
             // Enabled
             if let Some(val) = ctrl_fields.fields.get("enabled") {
                 let en = match val {
@@ -288,6 +298,15 @@ fn sync_instance_to_ui(
             // Value
             if let Some(Value::Integer(i)) = ctrl_fields.fields.get("value") {
                 ctrl.properties.set_raw("Value", vybe_forms::PropertyValue::Integer(*i));
+            }
+            // WebBrowser URL/HTML
+            if let Some(Value::String(s)) = ctrl_fields.fields.get("url") {
+                ctrl.properties.set("URL", s.clone());
+            }
+            if let Some(Value::String(s)) = ctrl_fields.fields.get("html") {
+                ctrl.properties.set("HTML", s.clone());
+            } else if let Some(Value::String(s)) = ctrl_fields.fields.get("documenttext") {
+                ctrl.properties.set("HTML", s.clone());
             }
         }
     }
@@ -393,6 +412,7 @@ fn process_side_effects(
     rp: RuntimeProject,
     runtime_form: &mut Signal<Option<Form>>,
     msgbox_content: &mut Signal<Option<String>>,
+    wb_html: &mut Signal<std::collections::HashMap<String, String>>,
 ) {
     while let Some(effect) = interp.side_effects.pop_front() {
         match effect {
@@ -597,30 +617,65 @@ fn process_side_effects(
                                         "url" => {
                                             ctrl.properties.set("URL", value.as_string());
                                             let url = value.as_string();
-                                            let _ = document::eval(&format!(
-                                                r#"
-                                                const iframe = document.getElementById('{}');
-                                                if (iframe) {{
-                                                    iframe.src = '{}';
-                                                }}
-                                                "#,
-                                                control_part, url
-                                            ));
+                                            let ctrl_id = control_part.to_lowercase();
+                                            // Clear HTML content on Navigate
+                                            wb_html.write().remove(&ctrl_id);
+                                            // Only fetch if URL is new or changed
+                                            let mut do_fetch = true;
+                                            if let Some(existing) = wb_html.read().get(&ctrl_id) {
+                                                if let Some(v) = ctrl.properties.get("URL") {
+                                                    if let vybe_forms::PropertyValue::String(s) = v {
+                                                        if s == &url && !existing.is_empty() {
+                                                            do_fetch = false;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if url.is_empty() || url == "about:blank" {
+                                                wb_html.write().remove(&ctrl_id);
+                                            } else if do_fetch {
+                                                // Fetch HTML on the Rust side, store in the wb_html signal.
+                                                eprintln!("[WebBrowser] fetching URL: {}", url);
+                                                let output = std::process::Command::new("curl")
+                                                    .args(&["-s", "-L", "-k", "--max-time", "10", &url])
+                                                    .output();
+                                                let html = match output {
+                                                    Ok(out) if out.status.success() => {
+                                                        let raw = String::from_utf8_lossy(&out.stdout).to_string();
+                                                        let base_tag = format!("<base href=\"{}\" target=\"_self\">", url);
+                                                        let nav_script = format!(
+                                                            "<script>\
+                                                             document.addEventListener('click',function(e){{\
+                                                               var a=e.target.closest('a');\
+                                                               if(a&&a.href){{\
+                                                                 e.preventDefault();\
+                                                                 e.stopPropagation();\
+                                                                 window.__vybe_nav=a.href;\
+                                                               }}\
+                                                             }},true);\
+                                                             </script>"
+                                                        );
+                                                        if let Some(pos) = raw.to_lowercase().find("<head") {
+                                                            if let Some(end) = raw[pos..].find('>') {
+                                                                format!("{}{}{}{}", &raw[..pos + end + 1], base_tag, &raw[pos + end + 1..], nav_script)
+                                                            } else {
+                                                                format!("{}{}{}", base_tag, raw, nav_script)
+                                                            }
+                                                        } else {
+                                                            format!("{}{}{}", base_tag, raw, nav_script)
+                                                        }
+                                                    }
+                                                    _ => format!("<html><body><p style='color:red'>Failed to load: {}</p></body></html>", url),
+                                                };
+                                                eprintln!("[WebBrowser] fetched {} bytes", html.len());
+                                                wb_html.write().insert(ctrl_id, html);
+                                            }
                                         }
-                                        "html" => {
+                                        "html" | "documenttext" => {
                                             ctrl.properties.set("HTML", value.as_string());
                                             let html = value.as_string();
-                                            let rtb_id = format!("rtb_{}", control_part);
-                                            let _ = document::eval(&format!(
-                                                r#"
-                                                const editor = document.getElementById('{}');
-                                                if (editor) {{
-                                                    editor.innerHTML = '{}';
-                                                }}
-                                                "#,
-                                                rtb_id,
-                                                html.replace("'", "\\'").replace("\n", "\\n")
-                                            ));
+                                            let ctrl_id = control_part.to_lowercase();
+                                            wb_html.write().insert(ctrl_id, html);
                                         }
                                         _ => {
                                             let prop_val = match &value {
@@ -860,6 +915,139 @@ pub fn FormRunner() -> Element {
     let mut console_input_tx: Signal<Option<TxWrap>> = use_signal(|| None);
     let mut console_rx: Signal<Option<RxWrap>> = use_signal(|| None);
 
+    // WebBrowser HTML content – stored separately so form-sync can't wipe it.
+    let mut wb_html: Signal<std::collections::HashMap<String, String>> =
+        use_signal(|| std::collections::HashMap::new());
+
+    // ── Poll for link clicks inside WebBrowser content ───────────────
+    // The injected script sets window.__vybe_nav when a link is clicked.
+    // We poll every 200ms, fetch the URL via curl, and update the signal.
+    {
+        let mut wb_html_poll = wb_html.clone();
+        use_future(move || async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let mut eval = document::eval(
+                    "if(window.__vybe_nav){var u=window.__vybe_nav;window.__vybe_nav=null;dioxus.send(u);}else{dioxus.send('');}"
+                );
+                if let Ok(url) = eval.recv::<String>().await {
+                    if !url.is_empty() {
+                        eprintln!("[WebBrowser] link click: {}", url);
+                        // Fetch the linked page
+                        let output = std::process::Command::new("curl")
+                            .args(&["-s", "-L", "-k", "--max-time", "10", &url])
+                            .output();
+
+                        let html = match output {
+                            Ok(out) if out.status.success() => {
+                                let raw = String::from_utf8_lossy(&out.stdout).to_string();
+                                let base_tag = format!("<base href=\"{}\" target=\"_self\">", url);
+                                let nav_script = "<script>\
+                                    document.addEventListener('click',function(e){\
+                                      var a=e.target.closest('a');\
+                                      if(a&&a.href){\
+                                        e.preventDefault();\
+                                        e.stopPropagation();\
+                                        window.__vybe_nav=a.href;\
+                                      }\
+                                    },true);\
+                                    </script>";
+                                if let Some(pos) = raw.to_lowercase().find("<head") {
+                                    if let Some(end) = raw[pos..].find('>') {
+                                        format!("{}{}{}{}", &raw[..pos + end + 1], base_tag, &raw[pos + end + 1..], nav_script)
+                                    } else {
+                                        format!("{}{}{}", base_tag, raw, nav_script)
+                                    }
+                                } else {
+                                    format!("{}{}{}", base_tag, raw, nav_script)
+                                }
+                            }
+                            _ => format!("<html><body><p style='color:red'>Failed to load: {}</p></body></html>", url),
+                        };
+                        eprintln!("[WebBrowser] link fetched {} bytes", html.len());
+                        // Find which wb control to update (use first one for now)
+                        let keys: Vec<String> = wb_html_poll.read().keys().cloned().collect();
+                        if let Some(key) = keys.first() {
+                            wb_html_poll.write().insert(key.clone(), html);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // ── WebBrowser proxy handler ─────────────────────────────────────
+    // Dioxus desktop blocks all non-dioxus:// navigations (including
+    // iframe sub-frame loads) and opens http/https URLs in the system
+    // browser.  We work around this by routing WebBrowser iframe URLs
+    // through the dioxus:// custom protocol via this asset handler.
+    // Requests to  /vybeweb/<encoded-url>  are fetched with curl and
+    // the response HTML is returned inline.
+    use_asset_handler("vybeweb", move |request, responder| {
+        let path = request.uri().path();
+        // Strip the leading /vybeweb/ prefix to get the target URL
+        let target_url = path.strip_prefix("/vybeweb/").unwrap_or(path);
+        let target_url = urlencoding::decode(target_url)
+            .unwrap_or_else(|_| target_url.into())
+            .to_string();
+
+        if target_url.is_empty() || target_url == "about:blank" {
+            responder.respond(
+                Response::builder()
+                    .header("Content-Type", "text/html")
+                    .body(b"<html><body></body></html>".to_vec())
+                    .unwrap(),
+            );
+            return;
+        }
+
+        // Fetch the URL using curl (available on macOS / Linux)
+        let output = std::process::Command::new("curl")
+            .args(&["-s", "-L", "-k", "--max-time", "10", &target_url])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                // Inject a <base> tag so relative URLs resolve against the
+                // original site, and add a target="_self" so links stay in
+                // the iframe instead of opening in the system browser.
+                let html = String::from_utf8_lossy(&out.stdout);
+                let base_tag = format!(
+                    "<base href=\"{}\" target=\"_self\">",
+                    target_url
+                );
+                let patched = if let Some(pos) = html.to_lowercase().find("<head") {
+                    // Insert right after the opening <head...>
+                    if let Some(end) = html[pos..].find('>') {
+                        format!("{}{}{}", &html[..pos + end + 1], base_tag, &html[pos + end + 1..])
+                    } else {
+                        format!("{}{}", base_tag, html)
+                    }
+                } else {
+                    format!("{}{}", base_tag, html)
+                };
+                responder.respond(
+                    Response::builder()
+                        .header("Content-Type", "text/html; charset=utf-8")
+                        .body(patched.into_bytes())
+                        .unwrap(),
+                );
+            }
+            _ => {
+                let err_msg = format!(
+                    "<html><body><p style='color:red'>Failed to load: {}</p></body></html>",
+                    target_url
+                );
+                responder.respond(
+                    Response::builder()
+                        .header("Content-Type", "text/html")
+                        .body(err_msg.into_bytes())
+                        .unwrap(),
+                );
+            }
+        }
+    });
+
     // ── Initialize Runtime ──────────────────────────────────────────────
     use_effect(move || {
         if interpreter.read().is_none() && !*is_console_mode.read() {
@@ -1026,7 +1214,61 @@ pub fn FormRunner() -> Element {
                                 }
 
                                 // 7. Process side-effects (MsgBox, form switches, etc.)
-                                process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content);
+                                process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content, &mut wb_html);
+
+                                // 7b. Auto-fetch any WebBrowser controls that have a URL
+                                //     set (from designer or Form_Load) but no content yet.
+                                if let Some(frm) = runtime_form.read().as_ref() {
+                                    let mut to_fetch: Vec<(String, String)> = Vec::new();
+                                    for ctrl in &frm.controls {
+                                        if ctrl.control_type == vybe_forms::ControlType::WebBrowser {
+                                            let url = ctrl.properties.get_string("URL")
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_default();
+                                            let key = ctrl.name.to_lowercase();
+                                            if !url.is_empty() && url != "about:blank"
+                                                && !wb_html.read().contains_key(&key)
+                                            {
+                                                to_fetch.push((key, url));
+                                            }
+                                        }
+                                    }
+                                    drop(frm);
+                                    for (key, url) in to_fetch {
+                                        eprintln!("[WebBrowser] auto-fetching initial URL: {}", url);
+                                        let output = std::process::Command::new("curl")
+                                            .args(&["-s", "-L", "-k", "--max-time", "10", &url])
+                                            .output();
+                                        let html = match output {
+                                            Ok(out) if out.status.success() => {
+                                                let raw = String::from_utf8_lossy(&out.stdout).to_string();
+                                                let base_tag = format!("<base href=\"{}\" target=\"_self\">", url);
+                                                let nav_script = "<script>\
+                                                    document.addEventListener('click',function(e){\
+                                                      var a=e.target.closest('a');\
+                                                      if(a&&a.href){\
+                                                        e.preventDefault();\
+                                                        e.stopPropagation();\
+                                                        window.__vybe_nav=a.href;\
+                                                      }\
+                                                    },true);\
+                                                    </script>";
+                                                if let Some(pos) = raw.to_lowercase().find("<head") {
+                                                    if let Some(end) = raw[pos..].find('>') {
+                                                        format!("{}{}{}{}", &raw[..pos + end + 1], base_tag, &raw[pos + end + 1..], nav_script)
+                                                    } else {
+                                                        format!("{}{}{}", base_tag, raw, nav_script)
+                                                    }
+                                                } else {
+                                                    format!("{}{}{}", base_tag, raw, nav_script)
+                                                }
+                                            }
+                                            _ => format!("<html><body><p style='color:red'>Failed to load: {}</p></body></html>", url),
+                                        };
+                                        eprintln!("[WebBrowser] auto-fetched {} bytes", html.len());
+                                        wb_html.write().insert(key, html);
+                                    }
+                                }
 
                                 // 8. Fire Shown event
                                 if let Ok(Value::Object(form_obj)) = interp.env.get("__form_instance__") {
@@ -1042,7 +1284,7 @@ pub fn FormRunner() -> Element {
                                         } else {
                                             let _ = interp.call_method_on_object(&form_obj, &format!("{}_Shown", fname), &shown_args);
                                         }
-                                        process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content);
+                                        process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content, &mut wb_html);
                                     }
                                 }
 
@@ -1105,7 +1347,7 @@ pub fn FormRunner() -> Element {
                                     }
                                 }
                                 if !interp.side_effects.is_empty() {
-                                    process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content);
+                                    process_side_effects(&mut interp, rp, &mut runtime_form, &mut msgbox_content, &mut wb_html);
                                 }
                             }
                         }
@@ -1248,7 +1490,7 @@ pub fn FormRunner() -> Element {
                 }
             }
 
-            process_side_effects(interp, rp, &mut runtime_form, &mut msgbox_content);
+            process_side_effects(interp, rp, &mut runtime_form, &mut msgbox_content, &mut wb_html);
         }
         handling_event.set(false);
     };
@@ -1692,19 +1934,44 @@ pub fn FormRunner() -> Element {
                                                             "{text}"
                                                         }
                                                     },
-                                                    ControlType::TextBox => rsx! {
-                                                        input {
-                                                            style: "width: 100%; height: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; {base_field_bg} {style_back} {style_font} {style_fore};",
-                                                            disabled: !is_enabled,
-                                                            value: "{text}",
-                                                            oninput: move |evt| {
-                                                                if let Some(frm) = runtime_form.write().as_mut() {
-                                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                        ctrl.set_text(evt.value());
+                                                    ControlType::TextBox => {
+                                                        let is_multiline = control.properties.get_bool("Multiline").unwrap_or(false);
+                                                        let is_readonly = control.properties.get_bool("ReadOnly").unwrap_or(false);
+                                                        if is_multiline {
+                                                            rsx! {
+                                                                textarea {
+                                                                    style: "width: 100%; height: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; resize: none; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                                                    disabled: !is_enabled,
+                                                                    readonly: is_readonly,
+                                                                    value: "{text}",
+                                                                    oninput: move |evt| {
+                                                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                                ctrl.set_text(evt.value());
+                                                                            }
+                                                                        }
+                                                                        handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                                                        handle_event(name_clone.clone(), "Change".to_string(), None);
                                                                     }
                                                                 }
-                                                                handle_event(name_clone.clone(), "TextChanged".to_string(), None);
-                                                                handle_event(name_clone.clone(), "Change".to_string(), None);
+                                                            }
+                                                        } else {
+                                                            rsx! {
+                                                                input {
+                                                                    style: "width: 100%; height: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                                                    disabled: !is_enabled,
+                                                                    readonly: is_readonly,
+                                                                    value: "{text}",
+                                                                    oninput: move |evt| {
+                                                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                                ctrl.set_text(evt.value());
+                                                                            }
+                                                                        }
+                                                                        handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                                                        handle_event(name_clone.clone(), "Change".to_string(), None);
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     },
@@ -1979,14 +2246,28 @@ pub fn FormRunner() -> Element {
                                                             }
                                                         }
                                                     },
-                                                    ControlType::WebBrowser => rsx! {
-                                                        {
-                                                            let url = control.properties.get_string("URL").map(|s| s.to_string()).unwrap_or_else(|| "about:blank".to_string());
+                                                    ControlType::WebBrowser => {
+                                                        // Read HTML from the dedicated wb_html signal
+                                                        // (immune to form-sync overwrites), falling back
+                                                        // to the initial property from the Form definition.
+                                                        let content = wb_html.read()
+                                                            .get(&name_clone.to_lowercase())
+                                                            .cloned()
+                                                            .or_else(|| control.properties.get_string("HTML").map(|s| s.to_string()))
+                                                            .unwrap_or_default();
+                                                        if content.is_empty() {
                                                             rsx! {
-                                                                iframe {
-                                                                    id: "{name_clone}",
+                                                                div {
+                                                                    id: "wb_{name_clone}",
                                                                     style: "width: 100%; height: 100%; border: 1px inset #999; background: white; {style_back};",
-                                                                    src: "{url}",
+                                                                }
+                                                            }
+                                                        } else {
+                                                            rsx! {
+                                                                div {
+                                                                    id: "wb_{name_clone}",
+                                                                    style: "width: 100%; height: 100%; border: 1px inset #999; background: white; overflow: hidden; {style_back};",
+                                                                    dangerous_inner_html: "{content}",
                                                                 }
                                                             }
                                                         }

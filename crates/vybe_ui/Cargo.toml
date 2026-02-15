@@ -12,8 +12,15 @@ vybe_forms = { workspace = true }
 vybe_project = { workspace = true }
 serde = { workspace = true }
 
+# For JSON parsing in WebBrowser polling
+serde_json = "1.0"
+
 # Dioxus for GUI rendering
 dioxus = { version = "0.7.3", features = ["desktop"] }
+wry = "0.53.5"
+
+# URL encoding for WebBrowser proxy
+urlencoding = "2"
 
 # Tokio for async timers in console polling
 tokio = { version = "1", features = ["time"] }

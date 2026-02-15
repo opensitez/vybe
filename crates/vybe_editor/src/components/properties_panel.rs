@@ -693,13 +693,12 @@ pub fn PropertiesPanel() -> Element {
                                                     // Also considers BindingSource.DataMember (table name) as fallback query
                                                     let resolve_columns_for_bs = |bs_name: &str| -> Vec<String> {
                                                         if bs_name.is_empty() {
-                                                            eprintln!("[resolve_columns] bs_name is empty");
                                                             return Vec::new();
                                                         }
                                                         let form_ref = state.get_current_form();
                                                         let form = match form_ref.as_ref() {
                                                             Some(f) => f,
-                                                            None => { eprintln!("[resolve_columns] no current form"); return Vec::new(); }
+                                                            None => { return Vec::new(); }
                                                         };
                                                         // Find the BindingSource control
                                                         let bs_ctrl = form.controls.iter()
@@ -708,9 +707,6 @@ pub fn PropertiesPanel() -> Element {
                                                         let bs_ctrl = match bs_ctrl {
                                                             Some(c) => c,
                                                             None => {
-                                                                eprintln!("[resolve_columns] BindingSource '{}' not found among {} controls: {:?}",
-                                                                    bs_name, form.controls.len(),
-                                                                    form.controls.iter().map(|c| format!("{}({:?})", c.name, c.control_type)).collect::<Vec<_>>());
                                                                 return Vec::new();
                                                             }
                                                         };
@@ -718,15 +714,13 @@ pub fn PropertiesPanel() -> Element {
                                                         let da_name = match bs_ctrl.properties.get_string("DataSource") {
                                                             Some(s) if !s.is_empty() => s.to_string(),
                                                             _ => {
-                                                                eprintln!("[resolve_columns] BindingSource '{}' has no DataSource property. Props: {:?}",
-                                                                    bs_name, bs_ctrl.properties.iter().map(|(k,v)| format!("{}={:?}", k, v)).collect::<Vec<_>>());
                                                                 return Vec::new();
                                                             }
                                                         };
                                                         // Get the DataMember (table name) from the BindingSource
                                                         let data_member = bs_ctrl.properties.get_string("DataMember")
                                                             .map(|s| s.to_string()).unwrap_or_default();
-                                                        eprintln!("[resolve_columns] BS '{}' -> DataAdapter '{}', DataMember '{}'", bs_name, da_name, data_member);
+
                                                         // Find the DataAdapter control
                                                         let da_ctrl = form.controls.iter()
                                                             .find(|c| c.name.eq_ignore_ascii_case(&da_name)
@@ -734,13 +728,11 @@ pub fn PropertiesPanel() -> Element {
                                                         let da_ctrl = match da_ctrl {
                                                             Some(c) => c,
                                                             None => {
-                                                                eprintln!("[resolve_columns] DataAdapter '{}' not found", da_name);
                                                                 return Vec::new();
                                                             }
                                                         };
                                                         let conn_str = da_ctrl.properties.get_string("ConnectionString").unwrap_or("");
                                                         if conn_str.is_empty() {
-                                                            eprintln!("[resolve_columns] DataAdapter '{}' has empty ConnectionString", da_name);
                                                             return Vec::new();
                                                         }
                                                         let conn_str = resolve_conn_str(conn_str);
@@ -752,24 +744,15 @@ pub fn PropertiesPanel() -> Element {
                                                         } else if !data_member.is_empty() {
                                                             format!("SELECT * FROM {}", data_member)
                                                         } else {
-                                                            eprintln!("[resolve_columns] No SelectCommand and no DataMember for DA '{}'", da_name);
                                                             return Vec::new();
                                                         };
-                                                        eprintln!("[resolve_columns] conn='{}', query='{}'", conn_str, query);
                                                         match vybe_runtime::data_access::fetch_columns_for_query(&conn_str, &query) {
-                                                            Ok(cols) => {
-                                                                eprintln!("[resolve_columns] SUCCESS: {:?}", cols);
-                                                                cols
-                                                            }
-                                                            Err(e) => {
-                                                                eprintln!("[resolve_columns] ERROR: {}", e);
+                                                            Ok(cols) => cols,
+                                                            Err(_e) => {
                                                                 Vec::new()
                                                             }
                                                         }
                                                     };
-
-                                                    eprintln!("[DATA_SECTION] Rendering for '{}' ({:?}), is_non_visual={}, has_complex={}, binding_sources={:?}",
-                                                        control.name, control.control_type, is_non_visual, has_complex_binding, binding_sources);
 
                                                     rsx! {
                                                         div { style: "grid-column: 1 / -1; margin-top: 8px; padding-top: 6px; border-top: 1px solid #ddd; font-weight: bold; font-size: 11px; color: #0078d4; text-transform: uppercase;",
@@ -1329,10 +1312,11 @@ pub fn PropertiesPanel() -> Element {
                                                 }
                                             }
 
-                                            // URL property for WebBrowser
+                                            // URL and HTML properties for WebBrowser
                                             if matches!(control.control_type, vybe_forms::ControlType::WebBrowser) {
                                                 {
                                                     let url = control.properties.get_string("URL").map(|s| s.to_string()).unwrap_or_else(|| "about:blank".to_string());
+                                                    let html = control.properties.get_string("HTML").map(|s| s.to_string()).unwrap_or_else(|| "".to_string());
                                                     rsx! {
                                                         div { style: "font-weight: bold;", "URL" }
                                                         input {
@@ -1341,6 +1325,14 @@ pub fn PropertiesPanel() -> Element {
                                                             placeholder: "about:blank",
                                                             oninput: move |evt| {
                                                                 state.update_control_property(cid, "URL", evt.value());
+                                                            }
+                                                        }
+                                                        div { style: "font-weight: bold; margin-top: 8px;", "HTML" }
+                                                        textarea {
+                                                            style: "width: 100%; height: 100px; border: 1px solid #ccc; padding: 4px; font-size: 12px; font-family: monospace; resize: vertical;",
+                                                            initial_value: "{html}",
+                                                            onchange: move |evt| {
+                                                                state.update_control_property(cid, "HTML", evt.value());
                                                             }
                                                         }
                                                     }

@@ -561,6 +561,7 @@ impl Control {
                 properties.set("Enabled", true);
                 properties.set("Visible", true);
                 properties.set("URL", "about:blank");
+                properties.set("HTML", ""); // HTML content
             }
             ControlType::ListView => {
                 properties.set("View", "Details"); // Report, List, Icon, SmallIcon
