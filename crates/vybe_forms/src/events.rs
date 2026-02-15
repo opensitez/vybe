@@ -796,7 +796,7 @@ impl EventType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventBinding {
     pub control_name: String,
     pub event_type: EventType,

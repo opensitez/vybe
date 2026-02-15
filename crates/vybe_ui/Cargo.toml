@@ -11,6 +11,7 @@ vybe_runtime = { workspace = true }
 vybe_forms = { workspace = true }
 vybe_project = { workspace = true }
 serde = { workspace = true }
+uuid = { workspace = true }
 
 # For JSON parsing in WebBrowser polling
 serde_json = "1.0"

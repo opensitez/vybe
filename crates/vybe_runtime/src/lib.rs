@@ -70,6 +70,8 @@ pub enum RuntimeSideEffect {
         top: i32,
         width: i32,
         height: i32,
+        /// Name of the parent control (empty = form-level).
+        parent_name: String,
     },
     /// Show a native InputBox dialog.
     InputBox {

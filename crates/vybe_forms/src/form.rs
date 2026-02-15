@@ -3,7 +3,7 @@ use crate::events::EventBinding;
 use crate::properties::PropertyBag;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Form {
     pub name: String,
     pub text: String,

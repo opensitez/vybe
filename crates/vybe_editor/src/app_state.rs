@@ -1063,12 +1063,27 @@ impl AppState {
             return; // Cannot reparent to self
         }
 
+        // Skip if the parent isn't actually changing
+        {
+            let project_read = self.project.read();
+            let form_name = self.current_form.read();
+            if let (Some(proj), Some(name)) = (project_read.as_ref(), form_name.as_ref()) {
+                if let Some(form_module) = proj.get_form(name) {
+                    if let Some(ctrl) = form_module.form.get_control(control_id) {
+                        if ctrl.parent_id == new_parent_id {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         self.push_undo_snapshot();
 
         let mut project_signal = self.project;
         let mut project_write = project_signal.write();
         let form_name = self.current_form.read();
-        
+
         if let (Some(proj), Some(name)) = (project_write.as_mut(), form_name.as_ref()) {
             if let Some(form_module) = proj.get_form_mut(name) {
                 // 1. Build a lookup for geometry calculations and hierarchy check

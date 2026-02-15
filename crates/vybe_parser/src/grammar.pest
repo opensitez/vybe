@@ -226,7 +226,7 @@ try_body = { (!try_control ~ line)* }
 catch_block = { ^"Catch" ~ (identifier ~ ^"As" ~ type_name)? ~ (^"When" ~ expression)? ~ (NEWLINE | EOI) ~ try_body }
 finally_block = { ^"Finally" ~ (NEWLINE | EOI) ~ try_body }
 try_end = { ^"End" ~ ^"Try" }
-try_control = _{ ^"Catch" | ^"Finally" | try_end }
+try_control = _{ (^"Catch" | ^"Finally" | try_end) ~ !(ASCII_ALPHANUMERIC | "_") }
 
 throw_statement = { ^"Throw" ~ expression? }
 continue_statement = { ^"Continue" ~ (^"Do" | ^"For" | ^"While") }

@@ -2832,34 +2832,47 @@ impl Interpreter {
                              };
                              
                              if type_match {
+                                 // Push scope for the catch variable to exist during 'When' evaluation and body execution
+                                 self.env.push_scope();
+                                 
+                                 // Define the exception variable if present
+                                 if let Some((name, _)) = &catch.variable {
+                                     let mut ex_fields = std::collections::HashMap::new();
+                                     ex_fields.insert("message".to_string(), Value::String(ex_msg.clone()));
+                                     // Basic stacktrace support
+                                     ex_fields.insert("stacktrace".to_string(), Value::String(String::new()));
+                                     ex_fields.insert("source".to_string(), Value::String(String::new()));
+                                     ex_fields.insert("hresult".to_string(), Value::Integer(-2146233088));
+                                     if let Some(ref inner) = ex_inner {
+                                         ex_fields.insert("innerexception".to_string(), Value::String(inner.clone()));
+                                     } else {
+                                          ex_fields.insert("innerexception".to_string(), Value::Nothing);
+                                     }
+                                     
+                                     let ex_obj = crate::value::ObjectData {
+                                         class_name: ex_type.clone(),
+                                         fields: ex_fields,
+                                     };
+                                     self.env.define(name.as_str(), Value::Object(std::rc::Rc::new(std::cell::RefCell::new(ex_obj))));
+                                 }
+
                                  let when_match = if let Some(expr) = &catch.when_clause {
-                                      self.evaluate_expr(expr)?.is_truthy()
+                                      match self.evaluate_expr(expr) {
+                                          Ok(val) => val.is_truthy(),
+                                          Err(_) => false, // If evaluation fails (e.g. wrong property), treat as false match
+                                      }
                                  } else {
                                       true
                                  };
                                  
                                  if when_match {
-                                     if let Some((name, _)) = &catch.variable {
-                                          let mut ex_fields = std::collections::HashMap::new();
-                                          ex_fields.insert("message".to_string(), Value::String(ex_msg.clone()));
-                                          ex_fields.insert("stacktrace".to_string(), Value::String(String::new()));
-                                          ex_fields.insert("source".to_string(), Value::String(String::new()));
-                                          ex_fields.insert("hresult".to_string(), Value::Integer(-2146233088));
-                                          if let Some(ref inner) = ex_inner {
-                                              ex_fields.insert("innerexception".to_string(), Value::String(inner.clone()));
-                                          } else {
-                                              ex_fields.insert("innerexception".to_string(), Value::Nothing);
-                                          }
-                                          let ex_obj = crate::value::ObjectData {
-                                              class_name: ex_type.clone(),
-                                              fields: ex_fields,
-                                          };
-                                          self.env.define(name.as_str(), Value::Object(std::rc::Rc::new(std::cell::RefCell::new(ex_obj))));
-                                     }
-                                     
                                      flow_result = self.execute_block(&catch.body);
+                                     self.env.pop_scope();
                                      handled = true;
                                      break;
+                                 } else {
+                                     // Pop scope if we didn't match (remove the variable)
+                                     self.env.pop_scope();
                                  }
                              }
                         }
@@ -6903,6 +6916,18 @@ impl Interpreter {
         // Handle Controls.* methods — full ControlCollection API
         if let Expression::MemberAccess(parent_expr, member) = obj {
             if member.as_str().eq_ignore_ascii_case("Controls") {
+                // Extract parent control name from parent_expr
+                // Me.pnlRoot.Controls → parent_name = "pnlRoot"
+                // Me.Controls → parent_name = "" (form-level)
+                let parent_ctrl_name = match parent_expr.as_ref() {
+                    Expression::MemberAccess(_, id) => {
+                        let name = id.as_str();
+                        // "Me" means form-level
+                        if name.eq_ignore_ascii_case("me") { String::new() } else { name.to_string() }
+                    }
+                    _ => String::new(), // Variable("Me") or other → form-level
+                };
+
                 match method_name.as_str() {
                     "add" => {
                         if !args.is_empty() {
@@ -6922,6 +6947,7 @@ impl Interpreter {
                                         control_name: ctrl_name.clone(),
                                         control_type: ctrl_type,
                                         left, top, width, height,
+                                        parent_name: parent_ctrl_name.clone(),
                                     });
                                 }
                                 // Also store the control as a field on the parent for Controls iteration
@@ -6972,6 +6998,7 @@ impl Interpreter {
                                             control_name: ctrl_name.clone(),
                                             control_type: ctrl_type,
                                             left, top, width, height,
+                                            parent_name: parent_ctrl_name.clone(),
                                         });
                                     }
                                     if let Ok(parent_val) = self.evaluate_expr(parent_expr) {

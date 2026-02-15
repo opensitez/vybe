@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
 use vybe_parser::parse_program;
+use crate::runner::LAUNCH_PROJECT;
 
 // ---------------------------------------------------------------------------
 // Console color helpers
@@ -60,6 +61,1256 @@ pub struct RuntimeProject {
     /// finishes executing.  The editor watches this to leave run-mode
     /// automatically; the standalone shell can ignore it.
     pub finished: Signal<bool>,
+}
+
+/// Top-level Dioxus component for the standalone shell.
+#[component]
+fn ShellApp() -> Element {
+    let project = LAUNCH_PROJECT
+        .with(|cell| cell.borrow().clone())
+        .expect("LAUNCH_PROJECT must be set before launching");
+
+    use_context_provider(|| RuntimeProject {
+        project: Signal::new(Some(project)),
+        finished: Signal::new(false),
+    });
+
+    rsx! { FormRunner {} }
+}
+
+#[derive(PartialEq, Props, Clone)]
+struct ControlTreeProps {
+    form: Form,
+    parent_id: Option<uuid::Uuid>,
+    interpreter: Signal<Option<Interpreter>>,
+    wb_html: Signal<HashMap<String, String>>,
+    runtime_form: Signal<Option<Form>>,
+    #[props(into)]
+    on_handle_event: EventHandler<(String, String, Option<vybe_runtime::EventData>)>,
+}
+
+#[component]
+fn ControlTree(props: ControlTreeProps) -> Element {
+    let form = &props.form;
+    let parent_id = props.parent_id;
+    let interpreter = props.interpreter;
+    let wb_html = props.wb_html;
+    let mut runtime_form = props.runtime_form;
+    let on_handle_event = props.on_handle_event;
+
+    // Filter controls for this level
+    // We must clone because we can't return references to form.controls in the iterator easily
+    let children: Vec<_> = form.controls.iter()
+        .filter(|c| c.parent_id == parent_id && !c.control_type.is_non_visual())
+        .cloned()
+        .collect();
+    
+    // Sort logic if needed (currently reliance on vector order is default)
+    
+    if children.is_empty() {
+        return rsx! {};
+    }
+
+    rsx! {
+        for control in children {
+            {
+                let control_type = control.control_type.clone();
+                let x = control.bounds.x;
+                let y = control.bounds.y;
+                let w = control.bounds.width;
+                let h = control.bounds.height;
+                let name = control.name.clone();
+                let id = control.id;
+                
+                // Local handle_event wrapper to match existing code style
+                let handle_event = {
+                    let handler = on_handle_event;
+                    move |n: String, e: String, d: Option<vybe_runtime::EventData>| {
+                        handler.call((n, e, d))
+                    }
+                };
+
+                let text = control.get_text().map(|s| s.to_string()).unwrap_or_else(|| name.clone());
+                let is_enabled = control.is_enabled();
+                let is_visible = control.is_visible();
+
+                let base_font = "font-family: 'Segoe UI', sans-serif; color: #0f172a;";
+                let base_field_bg = "background: #f8fafc;";
+                let base_button_bg = "background: linear-gradient(90deg, #2563eb, #1d4ed8); color: #f8fafc; border: 1px solid #1d4ed8;";
+                let base_frame_border = "border: 1px solid #cbd5e1;";
+
+                let back_color = control.get_back_color().map(|s| s.to_string());
+                let fore_color = control.get_fore_color().map(|s| s.to_string());
+                let font_family = control.get_font().map(|s| s.to_string());
+
+                let mut style_font = base_font.to_string();
+                if let Some(f) = &font_family {
+                    style_font = format!("font: {};", f);
+                }
+                let mut style_fore = String::new();
+                if let Some(fc) = &fore_color {
+                    style_fore = format!("color: {};", fc);
+                }
+                let mut style_back = String::new();
+                if let Some(bc) = &back_color {
+                    style_back = format!("background: {};", bc);
+                }
+                let button_bg = if let Some(bc) = &back_color {
+                    let color_part = if let Some(fc) = &fore_color {
+                        format!("color: {};", fc)
+                    } else {
+                        String::new()
+                    };
+                    format!("background: {}; {}; border: 1px solid #cbd5e1;", bc, color_part)
+                } else {
+                    base_button_bg.to_string()
+                };
+
+                let parent = parent_id.and_then(|pid| form.controls.iter().find(|c| c.id == pid));
+                let is_flow_or_table = parent.map(|p| matches!(p.control_type, 
+                    ControlType::FlowLayoutPanel | ControlType::TableLayoutPanel |
+                    ControlType::ToolStrip | ControlType::MenuStrip | ControlType::StatusStrip
+                )).unwrap_or(false);
+
+                // Compute Dock-based positioning
+                let dock_val = control.properties.get_int("Dock").unwrap_or(0);
+                
+                let wrapper_style = if is_flow_or_table {
+                    // Static positioning for flow/table layouts
+                    format!("position: relative; width: {}px; height: {}px; margin: 2px;", w, h)
+                } else {
+                    match dock_val {
+                        1 => "position: absolute; z-index: 10; left: 0; top: 0; width: 100%; outline: none;".to_string(), // DockStyle.Top
+                        2 => "position: absolute; z-index: 10; left: 0; bottom: 0; width: 100%; outline: none;".to_string(), // DockStyle.Bottom
+                        3 => "position: absolute; z-index: 10; left: 0; top: 0; height: 100%; outline: none;".to_string(), // DockStyle.Left
+                        4 => "position: absolute; z-index: 10; right: 0; top: 0; height: 100%; outline: none;".to_string(), // DockStyle.Right
+                        5 => "position: absolute; z-index: 10; left: 0; top: 0; width: 100%; height: 100%; outline: none;".to_string(), // DockStyle.Fill
+                        _ => format!("position: absolute; z-index: 10; left: {}px; top: {}px; width: {}px; height: {}px; outline: none;", x, y, w, h),
+                    }
+                };
+
+                let name_clone = name.clone();
+                let name_focusin = name.clone();
+                let name_focusout = name.clone();
+                
+                println!("[DEBUG] Rendering control '{}' (ID={}) inside parent {:?}. Style: [{}] Visible: {}", 
+                    name_clone, control.id, parent_id, wrapper_style, is_visible);
+
+                rsx! {
+                    if is_visible {
+                        div {
+                            style: "{wrapper_style}",
+                            // Event bubbling / capture
+                            onfocusin: move |_evt: FocusEvent| {
+                                handle_event(name_focusin.clone(), "GotFocus".to_string(), None);
+                            },
+                            onfocusout: move |_evt: FocusEvent| {
+                                handle_event(name_focusout.clone(), "LostFocus".to_string(), None);
+                            },
+
+                            {match control_type {
+                                ControlType::Panel => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; position: relative; border: 1px solid #ccc; {style_back} {style_font} {style_fore};",
+                                        onclick: move |evt: MouseEvent| {
+                                            let data = vybe_runtime::EventData::Mouse {
+                                                button: 0x100000, clicks: 1,
+                                                x: evt.client_coordinates().x as i32,
+                                                y: evt.client_coordinates().y as i32,
+                                                delta: 0,
+                                            };
+                                            handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                        },
+                                        ControlTree {
+                                            form: form.clone(),
+                                            parent_id: Some(id),
+                                            interpreter: interpreter,
+                                            wb_html: wb_html,
+                                            runtime_form: runtime_form,
+                                            on_handle_event: on_handle_event
+                                        }
+                                    }
+                                },
+                                ControlType::Frame => rsx! {
+                                    fieldset {
+                                        style: "width: 100%; height: 100%; position: relative; {base_frame_border} margin: 0; padding: 0; border-radius: 8px; {style_back} {style_font} {style_fore};",
+                                        onclick: move |evt: MouseEvent| {
+                                            let data = vybe_runtime::EventData::Mouse {
+                                                button: 0x100000, clicks: 1,
+                                                x: evt.client_coordinates().x as i32,
+                                                y: evt.client_coordinates().y as i32,
+                                                delta: 0,
+                                            };
+                                            handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                        },
+                                        legend { "{text}" }
+                                        ControlTree {
+                                            form: form.clone(),
+                                            parent_id: Some(id),
+                                            interpreter: interpreter,
+                                            wb_html: wb_html,
+                                            runtime_form: runtime_form,
+                                            on_handle_event: on_handle_event
+                                        }
+                                    }
+                                },
+                                ControlType::Button => rsx! {
+                                    button {
+                                        style: "width: 100%; height: 100%; padding: 6px 10px; {button_bg} {style_font}; border-radius: 6px; box-shadow: 0 2px 4px rgba(37,99,235,0.12);",
+                                        disabled: !is_enabled,
+                                        onclick: move |evt: MouseEvent| {
+                                            let data = vybe_runtime::EventData::Mouse {
+                                                button: 0x100000, clicks: 1,
+                                                x: evt.client_coordinates().x as i32,
+                                                y: evt.client_coordinates().y as i32,
+                                                delta: 0,
+                                            };
+                                            handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                        },
+                                        "{text}"
+                                    }
+                                },
+                                ControlType::Label => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; padding: 4px 2px; {style_font} {style_fore} {style_back};",
+                                        onclick: move |evt: MouseEvent| {
+                                            let data = vybe_runtime::EventData::Mouse {
+                                                button: 0x100000, clicks: 1,
+                                                x: evt.client_coordinates().x as i32,
+                                                y: evt.client_coordinates().y as i32,
+                                                delta: 0,
+                                            };
+                                            handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                        },
+                                        "{text}"
+                                    }
+                                },
+                                ControlType::TextBox => {
+                                    let is_multiline = control.properties.get_bool("Multiline").unwrap_or(false);
+                                    let is_readonly = control.properties.get_bool("ReadOnly").unwrap_or(false);
+                                    if is_multiline {
+                                        rsx! {
+                                            textarea {
+                                                style: "width: 100%; height: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; resize: none; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                                disabled: !is_enabled,
+                                                readonly: is_readonly,
+                                                value: "{text}",
+                                                oninput: move |evt| {
+                                                    if let Some(frm) = runtime_form.write().as_mut() {
+                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                            ctrl.set_text(evt.value());
+                                                        }
+                                                    }
+                                                    handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                                    handle_event(name_clone.clone(), "Change".to_string(), None);
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        rsx! {
+                                            input {
+                                                style: "width: 100%; height: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                                disabled: !is_enabled,
+                                                readonly: is_readonly,
+                                                value: "{text}",
+                                                oninput: move |evt| {
+                                                    if let Some(frm) = runtime_form.write().as_mut() {
+                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                            ctrl.set_text(evt.value());
+                                                        }
+                                                    }
+                                                    handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                                    handle_event(name_clone.clone(), "Change".to_string(), None);
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::CheckBox => rsx! {
+                                    div {
+                                        style: "display: flex; align-items: center; gap: 6px; {style_font} {style_fore} {style_back};",
+                                        input {
+                                            r#type: "checkbox",
+                                            disabled: !is_enabled,
+                                            checked: control.properties.get_bool("Checked").unwrap_or(false) || control.properties.get_int("Value").unwrap_or(0) == 1,
+                                            onclick: move |evt: MouseEvent| {
+                                                // Toggle state
+                                                if let Some(frm) = runtime_form.write().as_mut() {
+                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                        let was_checked = ctrl.properties.get_bool("Checked").unwrap_or(false) || ctrl.properties.get_int("Value").unwrap_or(0) == 1;
+                                                        let now_checked = !was_checked;
+                                                        ctrl.properties.set("Checked", now_checked);
+                                                        use vybe_forms::properties::PropertyValue;
+                                                        let int_val = if now_checked { 1 } else { 0 };
+                                                        ctrl.properties.set_raw("Value", PropertyValue::Integer(int_val));
+                                                        ctrl.properties.set_raw("CheckState", PropertyValue::Integer(int_val));
+                                                    }
+                                                }
+                                                handle_event(name_clone.clone(), "CheckedChanged".to_string(), None);
+                                                let data = vybe_runtime::EventData::Mouse {
+                                                    button: 0x100000, clicks: 1,
+                                                    x: evt.client_coordinates().x as i32,
+                                                    y: evt.client_coordinates().y as i32,
+                                                    delta: 0,
+                                                };
+                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                            }
+                                        }
+                                        span { "{text}" }
+                                    }
+                                },
+                                ControlType::RadioButton => rsx! {
+                                    div {
+                                        style: "display: flex; align-items: center; gap: 6px; {style_font} {style_fore} {style_back};",
+                                        input {
+                                            r#type: "radio",
+                                            name: "radio_group",
+                                            disabled: !is_enabled,
+                                            checked: control.properties.get_bool("Checked").unwrap_or(false) || control.properties.get_int("Value").unwrap_or(0) == 1,
+                                            onclick: move |evt: MouseEvent| {
+                                                // Toggle state
+                                                if let Some(frm) = runtime_form.write().as_mut() {
+                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                        ctrl.properties.set("Checked", true);
+                                                        use vybe_forms::properties::PropertyValue;
+                                                        ctrl.properties.set_raw("Value", PropertyValue::Integer(1));
+                                                    }
+                                                }
+                                                handle_event(name_clone.clone(), "CheckedChanged".to_string(), None);
+                                                let data = vybe_runtime::EventData::Mouse {
+                                                    button: 0x100000, clicks: 1,
+                                                    x: evt.client_coordinates().x as i32,
+                                                    y: evt.client_coordinates().y as i32,
+                                                    delta: 0,
+                                                };
+                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                            }
+                                        }
+                                        span { "{text}" }
+                                    }
+                                },
+                                ControlType::ListBox => rsx! {
+                                    select {
+                                        style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 8px; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                        multiple: true,
+                                        disabled: !is_enabled,
+                                        onchange: move |evt| {
+                                            if let Some(frm) = runtime_form.write().as_mut() {
+                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                    ctrl.set_text(evt.value());
+                                                    let items = ctrl.get_list_items();
+                                                    if let Some(idx) = items.iter().position(|i| *i == evt.value()) {
+                                                        use vybe_forms::properties::PropertyValue;
+                                                        ctrl.properties.set_raw("SelectedIndex", PropertyValue::Integer(idx as i32));
+                                                    }
+                                                }
+                                            }
+                                            handle_event(name_clone.clone(), "SelectedIndexChanged".to_string(), None);
+                                            handle_event(name_clone.clone(), "Click".to_string(), None);
+                                        },
+                                        {
+                                            let mut items = control.get_list_items();
+                                            if items.is_empty() {
+                                                let raw = text.clone();
+                                                if !raw.is_empty() {
+                                                    items = raw.split('|').map(|s| s.trim().to_string()).collect();
+                                                }
+                                            }
+                                            if items.is_empty() {
+                                                rsx! { option { "(empty)" } }
+                                            } else {
+                                                rsx! {
+                                                    for item in items {
+                                                        option { "{item}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::ComboBox => rsx! {
+                                    select {
+                                        style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 8px; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                        disabled: !is_enabled,
+                                        onchange: move |evt| {
+                                            if let Some(frm) = runtime_form.write().as_mut() {
+                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                    ctrl.set_text(evt.value());
+                                                    let items = ctrl.get_list_items();
+                                                    if let Some(idx) = items.iter().position(|i| *i == evt.value()) {
+                                                        use vybe_forms::properties::PropertyValue;
+                                                        ctrl.properties.set_raw("SelectedIndex", PropertyValue::Integer(idx as i32));
+                                                    }
+                                                }
+                                            }
+                                            handle_event(name_clone.clone(), "SelectedIndexChanged".to_string(), None);
+                                            handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                            handle_event(name_clone.clone(), "Change".to_string(), None);
+                                        },
+                                        {
+                                            let items = control.get_list_items();
+                                            if items.is_empty() {
+                                                rsx! { option { value: "", "{text}" } }
+                                            } else {
+                                                rsx! {
+                                                    for item in items {
+                                                        option { "{item}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::RichTextBox => rsx! {
+                                    {
+                                        let html = control.properties.get_string("HTML")
+                                            .map(|s| s.to_string())
+                                            .or_else(|| control.get_text().map(|s| s.to_string()))
+                                            .unwrap_or_default();
+                                        let rtb_id = format!("rtb_{}", name_clone);
+                                        rsx! {
+                                            div {
+                                                style: "width: 100%; height: 100%; display: flex; flex-direction: column; border: 1px inset #999; background: white; {style_back} {style_font} {style_fore};",
+                                                div {
+                                                    id: "{rtb_id}",
+                                                    contenteditable: if is_enabled { "true" } else { "false" },
+                                                    style: "flex: 1; padding: 8px; overflow: auto; outline: none; background: white; {style_back} {style_font} {style_fore};",
+                                                    dangerous_inner_html: "{html}",
+                                                    oninput: move |_| {
+                                                        handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                                        handle_event(name_clone.clone(), "Change".to_string(), None);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::WebBrowser => {
+                                    let content = wb_html.read()
+                                        .get(&name_clone.to_lowercase())
+                                        .cloned()
+                                        .or_else(|| control.properties.get_string("HTML").map(|s| s.to_string()))
+                                        .unwrap_or_default();
+                                    if content.is_empty() {
+                                        rsx! {
+                                            div {
+                                                id: "wb_{name_clone}",
+                                                style: "width: 100%; height: 100%; border: 1px inset #999; background: white; {style_back};",
+                                            }
+                                        }
+                                    } else {
+                                        rsx! {
+                                            div {
+                                                id: "wb_{name_clone}",
+                                                style: "width: 100%; height: 100%; border: 1px inset #999; background: white; overflow: hidden; {style_back};",
+                                                dangerous_inner_html: "{content}",
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::ListView => {
+                                    let lv_items = control.get_list_items();
+                                    let lv_selected = control.properties.get_int("SelectedIndex").unwrap_or(-1);
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; border: 1px inset #999; overflow: auto; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                            table {
+                                                style: "width: 100%; border-collapse: collapse; font-size: 12px;",
+                                                thead { tr { th { style: "border-bottom: 2px solid #aaa; padding: 3px 6px; background: #f0f0f0; text-align: left;", "Item" } } }
+                                                tbody {
+                                                    if lv_items.is_empty() {
+                                                        tr { td { style: "padding: 4px 6px; color: #aaa; font-style: italic;", "(empty)" } }
+                                                    } else {
+                                                        for (idx, item) in lv_items.iter().enumerate() {
+                                                            {
+                                                                let item_str = item.clone();
+                                                                let item_name = name_clone.clone();
+                                                                let item_idx = idx as i32;
+                                                                let row_style = if item_idx == lv_selected {
+                                                                    "background: #cce5ff; cursor: pointer; border-bottom: 1px solid #eee; padding: 3px 6px;"
+                                                                } else {
+                                                                    "cursor: pointer; border-bottom: 1px solid #eee; padding: 3px 6px;"
+                                                                };
+                                                                rsx! {
+                                                                    tr {
+                                                                        key: "{idx}",
+                                                                        onclick: move |_| {
+                                                                            if let Some(frm) = runtime_form.write().as_mut() {
+                                                                                if let Some(ctrl) = frm.get_control_by_name_mut(&item_name) {
+                                                                                    ctrl.properties.set("SelectedIndex", item_idx);
+                                                                                }
+                                                                            }
+                                                                            handle_event(item_name.clone(), "SelectedIndexChanged".to_string(), None);
+                                                                            handle_event(item_name.clone(), "ItemActivate".to_string(), None);
+                                                                        },
+                                                                        td { style: "{row_style}", "{item_str}" }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::UserControl => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; position: relative; border: 1px dashed #94a3b8; {style_back};",
+                                        ControlTree {
+                                            form: form.clone(),
+                                            parent_id: Some(id),
+                                            interpreter: interpreter,
+                                            wb_html: wb_html,
+                                            runtime_form: runtime_form,
+                                            on_handle_event: on_handle_event
+                                        }
+                                    }
+                                },
+                                ControlType::FlowLayoutPanel => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: flex; flex-wrap: wrap; align-content: flex-start; padding: 2px; {style_back}",
+                                        ControlTree {
+                                            form: form.clone(),
+                                            parent_id: Some(id),
+                                            interpreter: interpreter,
+                                            wb_html: wb_html,
+                                            runtime_form: runtime_form,
+                                            on_handle_event: on_handle_event
+                                        }
+                                    }
+                                },
+                                ControlType::TableLayoutPanel => {
+                                    let tlp_cols = control.properties.get_int("ColumnCount").unwrap_or(2);
+                                    let tlp_rows = control.properties.get_int("RowCount").unwrap_or(2);
+                                    let grid_cols = format!("repeat({}, 1fr)", tlp_cols);
+                                    let grid_rows = format!("repeat({}, 1fr)", tlp_rows);
+                                    // We render children here so they fill the grid
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: grid; grid-template-columns: {grid_cols}; grid-template-rows: {grid_rows}; {style_back}",
+                                            ControlTree {
+                                                form: form.clone(),
+                                                parent_id: Some(id),
+                                                interpreter: interpreter,
+                                                wb_html: wb_html,
+                                                runtime_form: runtime_form,
+                                                on_handle_event: on_handle_event
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::TabControl => {
+                                    let tab_items = control.get_list_items();
+                                    let selected_tab = control.properties.get_int("SelectedIndex").unwrap_or(0);
+                                    let tabs: Vec<String> = if tab_items.is_empty() { vec!["Tab 1".to_string()] } else { tab_items };
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; border: 1px solid #adb5bd; display: flex; flex-direction: column;",
+                                            div {
+                                                style: "display: flex; background: #e9ecef; border-bottom: 1px solid #adb5bd;",
+                                                for (ti, tab_label) in tabs.iter().enumerate() {
+                                                    {
+                                                        let tl = tab_label.clone();
+                                                        let tab_name = name_clone.clone();
+                                                        let is_active = ti as i32 == selected_tab;
+                                                        let tab_style = if is_active {
+                                                            "padding: 4px 12px; background: white; border: 1px solid #adb5bd; border-bottom: none; cursor: pointer; font-size: 12px; font-weight: bold;"
+                                                        } else {
+                                                            "padding: 4px 12px; background: #e9ecef; border: 1px solid transparent; cursor: pointer; font-size: 12px;"
+                                                        };
+                                                        rsx! {
+                                                            div {
+                                                                style: "{tab_style}",
+                                                                onclick: move |_| {
+                                                                    if let Some(frm) = runtime_form.write().as_mut() {
+                                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&tab_name) {
+                                                                            use vybe_forms::properties::PropertyValue;
+                                                                            ctrl.properties.set_raw("SelectedIndex", PropertyValue::Integer(ti as i32));
+                                                                        }
+                                                                    }
+                                                                    handle_event(tab_name.clone(), "SelectedIndexChanged".to_string(), None);
+                                                                },
+                                                                "{tl}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            div {
+                                                style: "flex: 1; padding: 8px; background: white;",
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::BindingNavigator => rsx! {
+                                    {
+                                        let nav_first = name.clone();
+                                        let nav_prev = name.clone();
+                                        let nav_next = name.clone();
+                                        let nav_last = name.clone();
+                                        let nav_add = name.clone();
+                                        let nav_del = name.clone();
+                                        rsx! {
+                                            div {
+                                                style: "width: 100%; height: 100%; display: flex; align-items: center; gap: 2px; background: #f0f0f0; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
+                                                button {
+                                                    style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                    title: "Move first",
+                                                    onclick: move |_| handle_event(nav_first.clone(), "MoveFirst".to_string(), None),
+                                                    "⏮"
+                                                }
+                                                button {
+                                                    style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                    title: "Move previous",
+                                                    onclick: move |_| handle_event(nav_prev.clone(), "MovePrevious".to_string(), None),
+                                                    "◀"
+                                                }
+                                                span {
+                                                    style: "padding: 0 4px; min-width: 40px; text-align: center; border: 1px solid #ccc; background: white;",
+                                                    "{text}"
+                                                }
+                                                button {
+                                                    style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                    title: "Move next",
+                                                    onclick: move |_| handle_event(nav_next.clone(), "MoveNext".to_string(), None),
+                                                    "▶"
+                                                }
+                                                button {
+                                                    style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                    title: "Move last",
+                                                    onclick: move |_| handle_event(nav_last.clone(), "MoveLast".to_string(), None),
+                                                    "⏭"
+                                                }
+                                                div { style: "width: 1px; height: 16px; background: #aaa; margin: 0 2px;" }
+                                                button {
+                                                    style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                    title: "Add new",
+                                                    onclick: move |_| handle_event(nav_add.clone(), "AddNew".to_string(), None),
+                                                    "➕"
+                                                }
+                                                button {
+                                                    style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
+                                                    title: "Delete",
+                                                    onclick: move |_| handle_event(nav_del.clone(), "Delete".to_string(), None),
+                                                    "❌"
+                                                }
+                                                ControlTree {
+                                                    form: form.clone(),
+                                                    parent_id: Some(id),
+                                                    interpreter: interpreter,
+                                                    wb_html: wb_html,
+                                                    runtime_form: runtime_form,
+                                                    on_handle_event: on_handle_event
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::PictureBox => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; overflow: hidden; {style_back};",
+                                        onclick: move |evt: MouseEvent| {
+                                            let data = vybe_runtime::EventData::Mouse {
+                                                button: 0x100000, clicks: 1,
+                                                x: evt.client_coordinates().x as i32,
+                                                y: evt.client_coordinates().y as i32,
+                                                delta: 0,
+                                            };
+                                            handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                        },
+                                        ControlTree {
+                                            form: form.clone(),
+                                            parent_id: Some(id),
+                                            interpreter: interpreter,
+                                            wb_html: wb_html,
+                                            runtime_form: runtime_form,
+                                            on_handle_event: on_handle_event
+                                        }
+                                    }
+                                },
+                                ControlType::ProgressBar => {
+                                    let pb_val = control.properties.get_int("Value").unwrap_or(0);
+                                    let pb_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                    let pb_pct = if pb_max > 0 { (pb_val as f64 / pb_max as f64 * 100.0) as i32 } else { 0 };
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; background: #e9ecef; border: 1px solid #adb5bd; overflow: hidden; border-radius: 4px;",
+                                            div {
+                                                style: "height: 100%; background: linear-gradient(180deg, #5cb85c, #4cae4c); width: {pb_pct}%; transition: width 0.3s;",
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::NumericUpDown => {
+                                    let nud_val = control.properties.get_int("Value").unwrap_or(0);
+                                    let nud_min = control.properties.get_int("Minimum").unwrap_or(0);
+                                    let nud_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                    let nud_val_str = nud_val.to_string();
+                                    let nud_min_str = nud_min.to_string();
+                                    let nud_max_str = nud_max.to_string();
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; display: flex; border: 1px solid #adb5bd; border-radius: 6px; overflow: hidden; {style_back}",
+                                            input {
+                                                r#type: "number",
+                                                style: "flex: 1; border: none; padding: 2px 6px; {style_font} {style_fore} outline: none; background: transparent;",
+                                                disabled: !is_enabled,
+                                                min: "{nud_min_str}",
+                                                max: "{nud_max_str}",
+                                                value: "{nud_val_str}",
+                                                oninput: move |evt: FormEvent| {
+                                                    if let Ok(v) = evt.value().parse::<i32>() {
+                                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                ctrl.properties.set("Value", v);
+                                                                ctrl.set_text(v.to_string());
+                                                            }
+                                                        }
+                                                        handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::MenuStrip | ControlType::ContextMenuStrip => {
+                                    let menu_items = control.get_list_items();
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; padding: 0 4px; {style_font} font-size: 12px;",
+                                            if menu_items.is_empty() {
+                                                span {
+                                                    style: "padding: 2px 8px; cursor: pointer;",
+                                                    onclick: move |_| handle_event(name_clone.clone(), "Click".to_string(), None),
+                                                    "File"
+                                                }
+                                            } else {
+                                                for item in menu_items {
+                                                    {
+                                                        let item_text = item.clone();
+                                                        let menu_name = name_clone.clone();
+                                                        rsx! {
+                                                            span {
+                                                                style: "padding: 2px 8px; cursor: pointer;",
+                                                                onclick: move |_| {
+                                                                    handle_event(menu_name.clone(), "ItemClicked".to_string(), None);
+                                                                },
+                                                                "{item_text}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            ControlTree {
+                                                form: form.clone(),
+                                                parent_id: Some(id),
+                                                interpreter: interpreter,
+                                                wb_html: wb_html,
+                                                runtime_form: runtime_form,
+                                                on_handle_event: on_handle_event
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::StatusStrip => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; background: #007acc; border-top: 1px solid #005a9e; display: flex; align-items: center; padding: 0 8px; font-size: 12px; color: white; {style_font}",
+                                        "{text}"
+                                        ControlTree {
+                                            form: form.clone(),
+                                            parent_id: Some(id),
+                                            interpreter: interpreter,
+                                            wb_html: wb_html,
+                                            runtime_form: runtime_form,
+                                            on_handle_event: on_handle_event
+                                        }
+                                    }
+                                },
+                                ControlType::DateTimePicker => {
+                                    let dtp_format = control.properties.get_string("Format").map(|s| s.to_string()).unwrap_or_else(|| "Long".to_string());
+                                    let input_type = if dtp_format == "Time" { "time" } else { "date" };
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; display: flex; align-items: center; {style_back} {style_font} {style_fore}",
+                                            input {
+                                                r#type: "{input_type}",
+                                                style: "width: 100%; height: 100%; border: 1px solid #adb5bd; padding: 2px 6px; border-radius: 6px; {style_font} {style_fore} {style_back} outline: none; cursor: pointer;",
+                                                disabled: !is_enabled,
+                                                value: "{text}",
+                                                oninput: move |evt: FormEvent| {
+                                                    if let Some(frm) = runtime_form.write().as_mut() {
+                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                            ctrl.set_text(evt.value());
+                                                            ctrl.properties.set("Value", evt.value());
+                                                        }
+                                                    }
+                                                    handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::LinkLabel => rsx! {
+                                    a {
+                                        style: "width: 100%; height: 100%; display: flex; align-items: center; {style_font} font-size: 12px; color: #0066cc; text-decoration: underline; cursor: pointer;",
+                                        onclick: move |evt: MouseEvent| {
+                                            let data = vybe_runtime::EventData::Mouse {
+                                                button: 0x100000, clicks: 1,
+                                                x: evt.client_coordinates().x as i32,
+                                                y: evt.client_coordinates().y as i32,
+                                                delta: 0,
+                                            };
+                                            handle_event(name_clone.clone(), "LinkClicked".to_string(), Some(data.clone()));
+                                            handle_event(name_clone.clone(), "Click".to_string(), Some(data));
+                                        },
+                                        "{text}"
+                                    }
+                                },
+                                ControlType::ToolStrip => {
+                                    let ts_items = control.get_list_items();
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; gap: 1px; padding: 2px 4px; {style_font} font-size: 11px;",
+                                            if ts_items.is_empty() {
+                                                span {
+                                                    style: "padding: 2px 6px; background: #e8e8e8; border: 1px solid #ccc; cursor: pointer;",
+                                                    onclick: move |_| handle_event(name_clone.clone(), "ButtonClick".to_string(), None),
+                                                    "Button1"
+                                                }
+                                            } else {
+                                                for it in ts_items {
+                                                    {
+                                                        let it_text = it.clone();
+                                                        let ts_name = name_clone.clone();
+                                                        rsx! {
+                                                            span {
+                                                                style: "padding: 2px 6px; background: #e8e8e8; border: 1px solid #ccc; cursor: pointer;",
+                                                                onclick: move |_| {
+                                                                    handle_event(ts_name.clone(), "ItemClicked".to_string(), None);
+                                                                },
+                                                                "{it_text}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            ControlTree {
+                                                form: form.clone(),
+                                                parent_id: Some(id),
+                                                interpreter: interpreter,
+                                                wb_html: wb_html,
+                                                runtime_form: runtime_form,
+                                                on_handle_event: on_handle_event
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::TrackBar => {
+                                    let tb_val = control.properties.get_int("Value").unwrap_or(0);
+                                    let tb_min = control.properties.get_int("Minimum").unwrap_or(0);
+                                    let tb_max = control.properties.get_int("Maximum").unwrap_or(10);
+                                    let tb_val_str = tb_val.to_string();
+                                    let tb_min_str = tb_min.to_string();
+                                    let tb_max_str = tb_max.to_string();
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 4px; {style_back}",
+                                            input {
+                                                r#type: "range",
+                                                style: "width: 100%; cursor: pointer;",
+                                                disabled: !is_enabled,
+                                                min: "{tb_min_str}",
+                                                max: "{tb_max_str}",
+                                                value: "{tb_val_str}",
+                                                oninput: move |evt: FormEvent| {
+                                                    if let Ok(v) = evt.value().parse::<i32>() {
+                                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                ctrl.properties.set("Value", v);
+                                                            }
+                                                        }
+                                                        handle_event(name_clone.clone(), "Scroll".to_string(), None);
+                                                        handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::MaskedTextBox => {
+                                    let mask = control.properties.get_string("Mask").map(|s| s.to_string()).unwrap_or_default();
+                                    let prompt_char = control.properties.get_string("PromptChar").map(|s| s.to_string()).unwrap_or_else(|| "_".to_string());
+                                    let placeholder = if mask.is_empty() { String::new() } else { mask.chars().map(|c| if c == '0' || c == '9' || c == '#' { prompt_char.chars().next().unwrap_or('_') } else { c }).collect::<String>() };
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; display: flex; align-items: center;",
+                                            input {
+                                                r#type: "text",
+                                                style: "width: 100%; height: 100%; border: 1px solid #adb5bd; padding: 2px 6px; border-radius: 6px; {style_font} {style_fore} {style_back} outline: none;",
+                                                disabled: !is_enabled,
+                                                value: "{text}",
+                                                placeholder: "{placeholder}",
+                                                oninput: move |evt: FormEvent| {
+                                                    if let Some(frm) = runtime_form.write().as_mut() {
+                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                            ctrl.set_text(evt.value());
+                                                        }
+                                                    }
+                                                    handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::SplitContainer => {
+                                    let sc_orient = control.properties.get_string("Orientation").map(|s| s.to_string()).unwrap_or_else(|| "Vertical".to_string());
+                                    let flex_dir = if sc_orient == "Horizontal" { "column" } else { "row" };
+                                    let splitter_style = if sc_orient == "Horizontal" { "height: 4px; background: #d0d0d0; cursor: ns-resize; flex-shrink: 0;" } else { "width: 4px; background: #d0d0d0; cursor: ew-resize; flex-shrink: 0;" };
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; display: flex; flex-direction: {flex_dir}; border: 1px solid #adb5bd; {style_back}",
+                                            div { style: "flex: 1; overflow: hidden;" }
+                                            div { style: "{splitter_style}" }
+                                            div { style: "flex: 1; overflow: hidden;" }
+                                        }
+                                    }
+                                },
+                                ControlType::MonthCalendar => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; display: flex; align-items: stretch;",
+                                        input {
+                                            r#type: "date",
+                                            style: "width: 100%; height: 100%; border: 1px solid #adb5bd; border-radius: 6px; padding: 4px 8px; {style_font} {style_fore} {style_back} outline: none; cursor: pointer;",
+                                            disabled: !is_enabled,
+                                            value: "{text}",
+                                            oninput: move |evt: FormEvent| {
+                                                if let Some(frm) = runtime_form.write().as_mut() {
+                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                        ctrl.set_text(evt.value());
+                                                        ctrl.properties.set("SelectionStart", evt.value());
+                                                    }
+                                                }
+                                                handle_event(name_clone.clone(), "DateChanged".to_string(), None);
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::HScrollBar => {
+                                    let hs_val = control.properties.get_int("Value").unwrap_or(0);
+                                    let hs_min = control.properties.get_int("Minimum").unwrap_or(0);
+                                    let hs_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                    let hs_val_str = hs_val.to_string();
+                                    let hs_min_str = hs_min.to_string();
+                                    let hs_max_str = hs_max.to_string();
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; display: flex; align-items: center;",
+                                            input {
+                                                r#type: "range",
+                                                style: "width: 100%; height: 100%; cursor: pointer;",
+                                                disabled: !is_enabled,
+                                                min: "{hs_min_str}",
+                                                max: "{hs_max_str}",
+                                                value: "{hs_val_str}",
+                                                oninput: move |evt: FormEvent| {
+                                                    if let Ok(v) = evt.value().parse::<i32>() {
+                                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                ctrl.properties.set("Value", v);
+                                                            }
+                                                        }
+                                                        handle_event(name_clone.clone(), "Scroll".to_string(), None);
+                                                        handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::VScrollBar => {
+                                    let vs_val = control.properties.get_int("Value").unwrap_or(0);
+                                    let vs_min = control.properties.get_int("Minimum").unwrap_or(0);
+                                    let vs_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                    let vs_val_str = vs_val.to_string();
+                                    let vs_min_str = vs_min.to_string();
+                                    let vs_max_str = vs_max.to_string();
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; display: flex; align-items: center;",
+                                            input {
+                                                r#type: "range",
+                                                style: "width: 17px; height: 100%; writing-mode: vertical-lr; direction: rtl; cursor: pointer;",
+                                                disabled: !is_enabled,
+                                                min: "{vs_min_str}",
+                                                max: "{vs_max_str}",
+                                                value: "{vs_val_str}",
+                                                oninput: move |evt: FormEvent| {
+                                                    if let Ok(v) = evt.value().parse::<i32>() {
+                                                        if let Some(frm) = runtime_form.write().as_mut() {
+                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                                ctrl.properties.set("Value", v);
+                                                            }
+                                                        }
+                                                        handle_event(name_clone.clone(), "Scroll".to_string(), None);
+                                                        handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::CheckedListBox => {
+                                    let items = control.get_list_items();
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 4px; {base_field_bg} {style_back} {style_font} {style_fore};",
+                                            for (idx, item) in items.iter().enumerate() {
+                                                {
+                                                    let item_name = name_clone.clone();
+                                                    let item_idx = idx;
+                                                    let item_str = item.clone();
+                                                    rsx! {
+                                                        div {
+                                                            key: "{item_idx}",
+                                                            style: "display: flex; align-items: center; gap: 6px; padding: 2px 6px; cursor: pointer;",
+                                                            onclick: move |_| {
+                                                                handle_event(item_name.clone(), "ItemCheck".to_string(), None);
+                                                                handle_event(item_name.clone(), "SelectedIndexChanged".to_string(), None);
+                                                            },
+                                                            input {
+                                                                r#type: "checkbox",
+                                                                disabled: !is_enabled,
+                                                            }
+                                                            span { "{item_str}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::DomainUpDown => rsx! {
+                                    div {
+                                        style: "display: flex; align-items: center; width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 4px; {base_field_bg} {style_back};",
+                                        input {
+                                            style: "flex: 1; border: none; outline: none; background: transparent; padding: 0 4px; {style_font} {style_fore};",
+                                            disabled: !is_enabled,
+                                            value: "{text}",
+                                            oninput: move |evt| {
+                                                if let Some(frm) = runtime_form.write().as_mut() {
+                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                        ctrl.set_text(evt.value());
+                                                    }
+                                                }
+                                                handle_event(name_clone.clone(), "SelectedItemChanged".to_string(), None);
+                                            }
+                                        }
+                                        div {
+                                            style: "display: flex; flex-direction: column; border-left: 1px solid #cbd5e1;",
+                                            button { style: "padding: 0 4px; border: none; background: #f1f5f9; cursor: pointer; font-size: 8px; line-height: 1;", disabled: !is_enabled, "▲" }
+                                            button { style: "padding: 0 4px; border: none; background: #f1f5f9; cursor: pointer; font-size: 8px; line-height: 1;", disabled: !is_enabled, "▼" }
+                                        }
+                                    }
+                                },
+                                ControlType::PropertyGrid => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; overflow: auto; {base_field_bg} {style_back} {style_font};",
+                                        div {
+                                            style: "padding: 4px 6px; background: #e2e8f0; border-bottom: 1px solid #cbd5e1; font-size: 11px; font-weight: bold; color: #475569;",
+                                            "Properties"
+                                        }
+                                        div {
+                                            style: "padding: 8px; font-size: 11px; color: #64748b;",
+                                            "[ PropertyGrid ]"
+                                        }
+                                    }
+                                },
+                                ControlType::Splitter => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; background: #e2e8f0; cursor: col-resize; border-left: 1px solid #cbd5e1; border-right: 1px solid #cbd5e1;",
+                                    }
+                                },
+                                ControlType::DataGrid => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; overflow: auto; {base_field_bg} {style_back} {style_font};",
+                                        table {
+                                            style: "width: 100%; border-collapse: collapse; font-size: 12px;",
+                                            tbody {
+                                                tr {
+                                                    td {
+                                                        style: "padding: 6px 8px; border: 1px solid #e2e8f0; color: #64748b; text-align: center;",
+                                                        "[ DataGrid ]"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::PrintPreviewControl => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; background: #f1f5f9; display: flex; align-items: center; justify-content: center; {style_font};",
+                                        div {
+                                            style: "text-align: center; color: #64748b;",
+                                            div { style: "font-size: 32px; margin-bottom: 8px;", "🖨" }
+                                            div { style: "font-size: 11px;", "Print Preview" }
+                                        }
+                                    }
+                                },
+                                ControlType::ToolStripSeparator => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;",
+                                        div { style: "width: 1px; height: 80%; background: #cbd5e1;" }
+                                    }
+                                },
+                                ControlType::ToolStripButton => rsx! {
+                                    button {
+                                        style: "width: 100%; height: 100%; border: 1px solid transparent; background: transparent; cursor: pointer; border-radius: 3px; {style_font} {style_fore}; padding: 2px 4px;",
+                                        disabled: !is_enabled,
+                                        onclick: move |_| { handle_event(name_clone.clone(), "Click".to_string(), None); },
+                                        "{text}"
+                                    }
+                                },
+                                ControlType::ToolStripLabel => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 0 4px; {style_font} {style_fore} {style_back};",
+                                        "{text}"
+                                    }
+                                },
+                                ControlType::ToolStripComboBox => rsx! {
+                                    select {
+                                        style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 3px; {base_field_bg} {style_back} {style_font} {style_fore}; padding: 0 2px;",
+                                        disabled: !is_enabled,
+                                    }
+                                },
+                                ControlType::ToolStripDropDownButton | ControlType::ToolStripSplitButton => rsx! {
+                                    button {
+                                        style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; border-radius: 3px; {style_font} {style_fore}; padding: 2px 4px; display: flex; align-items: center; gap: 2px;",
+                                        disabled: !is_enabled,
+                                        onclick: move |_| { handle_event(name_clone.clone(), "Click".to_string(), None); },
+                                        span { "{text}" }
+                                        span { style: "font-size: 8px;", "▼" }
+                                    }
+                                },
+                                ControlType::ToolStripTextBox => rsx! {
+                                    input {
+                                        style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 3px; {base_field_bg} {style_back} {style_font} {style_fore}; padding: 0 4px;",
+                                        disabled: !is_enabled,
+                                        value: "{text}",
+                                        oninput: move |evt| {
+                                            if let Some(frm) = runtime_form.write().as_mut() {
+                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
+                                                    ctrl.set_text(evt.value());
+                                                }
+                                            }
+                                            handle_event(name_clone.clone(), "TextChanged".to_string(), None);
+                                        }
+                                    }
+                                },
+                                ControlType::ToolStripProgressBar => {
+                                    let ts_val = control.properties.get_int("Value").unwrap_or(0);
+                                    let ts_max = control.properties.get_int("Maximum").unwrap_or(100);
+                                    let ts_pct = if ts_max > 0 { (ts_val * 100) / ts_max } else { 0 };
+                                    let ts_pct_str = format!("{}%", ts_pct);
+                                    rsx! {
+                                        div {
+                                            style: "width: 100%; height: 100%; background: #e2e8f0; border: 1px solid #cbd5e1; border-radius: 3px; overflow: hidden;",
+                                            div {
+                                                style: "height: 100%; background: #2563eb; width: {ts_pct_str}; transition: width 0.3s;",
+                                            }
+                                        }
+                                    }
+                                },
+                                ControlType::DataGridView => rsx! {
+                                    {
+                                        // Get dynamic grid data from properties (set by DataSourceChanged)
+                                        let grid_columns = control.properties.get_string_array("__grid_columns")
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        let grid_row_strs = control.properties.get_string_array("__grid_rows")
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        let grid_rows: Vec<Vec<String>> = grid_row_strs.iter()
+                                            .map(|s| s.split('\t').map(|c| c.to_string()).collect())
+                                            .collect();
+                                        let has_data = !grid_columns.is_empty();
+
+                                        let dgv_selected_row = control.properties.get_int("CurrentRowIndex").unwrap_or(-1);
+                                        rsx! {
+                                            div {
+                                                style: "width: 100%; height: 100%; border: 1px solid #999; background: #f0f0f0; padding: 1px; overflow: auto;",
+                                                table {
+                                                    style: "width: 100%; background: white; border-collapse: separate; border-spacing: 0; font-size: 12px;",
+                                                    thead {
+                                                        tr {
+                                                            th { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 2px solid #999; padding: 4px 6px; width: 30px; text-align: center; font-weight: normal; color: #333;", "" }
+                                                            if has_data {
+                                                                for col in &grid_columns {
+                                                                    th { style: "background: #e8e8e8; border-right: 1px solid #ccc; border-bottom: 2px solid #999; padding: 4px 8px; text-align: left; font-weight: bold; color: #222; cursor: default; white-space: nowrap;", "{col}" }
+                                                                }
+                                                            } else {
+                                                                th { style: "background: #e8e8e8; border-right: 1px solid #ccc; border-bottom: 2px solid #999; padding: 4px 8px;", "Column1" }
+                                                                th { style: "background: #e8e8e8; border-right: 1px solid #ccc; border-bottom: 2px solid #999; padding: 4px 8px;", "Column2" }
+                                                            }
+                                                        }
+                                                    }
+                                                    tbody {
+                                                        if has_data {
+                                                            for (ri, row) in grid_rows.iter().enumerate() {
+                                                                {
+                                                                    let row_idx = ri as i32;
+                                                                    let dgv_name = name_clone.clone();
+                                                                    let row_bg = if row_idx == dgv_selected_row { "background: #cce5ff;" } else { "" };
+                                                                    rsx! {
+                                                                        tr {
+                                                                            key: "{ri}",
+                                                                            style: "{row_bg} cursor: pointer;",
+                                                                            onclick: move |_| {
+                                                                                if let Some(frm) = runtime_form.write().as_mut() {
+                                                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&dgv_name) {
+                                                                                        ctrl.properties.set("CurrentRowIndex", row_idx);
+                                                                                    }
+                                                                                }
+                                                                                handle_event(dgv_name.clone(), "CellClick".to_string(), None);
+                                                                                handle_event(dgv_name.clone(), "RowEnter".to_string(), None);
+                                                                                handle_event(dgv_name.clone(), "SelectionChanged".to_string(), None);
+                                                                                handle_event(dgv_name.clone(), "CurrentCellChanged".to_string(), None);
+                                                                            },
+                                                                            td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; color: #333; width: 30px; height: 22px;", "{ri}" }
+                                                                            for cell in row {
+                                                                                td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; white-space: nowrap; height: 22px; {row_bg}", "{cell}" }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        } else {
+                                                            tr {
+                                                                td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; width: 30px; height: 22px;", "" }
+                                                                td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; height: 22px;", "" }
+                                                                td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; height: 22px;", "" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                // Fallback for others
+                                _ => rsx! {
+                                    div {
+                                        style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #666; {style_back}",
+                                        "{text}"
+                                    }
+                                }
+                            }}
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,12 +1531,16 @@ fn sync_instance_to_ui(
                 ctrl.properties.set_raw("Visible", vybe_forms::PropertyValue::Boolean(vis));
             }
             // BackColor
-            if let Some(Value::String(s)) = ctrl_fields.fields.get("backcolor") {
-                if !s.is_empty() { ctrl.set_back_color(s.clone()); }
+            if let Some(val) = ctrl_fields.fields.get("backcolor") {
+                if let Some(css) = value_to_css_color(val) {
+                    ctrl.set_back_color(css);
+                }
             }
             // ForeColor
-            if let Some(Value::String(s)) = ctrl_fields.fields.get("forecolor") {
-                if !s.is_empty() { ctrl.set_fore_color(s.clone()); }
+            if let Some(val) = ctrl_fields.fields.get("forecolor") {
+                if let Some(css) = value_to_css_color(val) {
+                    ctrl.set_fore_color(css);
+                }
             }
             // Checked
             if let Some(Value::Boolean(b)) = ctrl_fields.fields.get("checked") {
@@ -405,6 +1660,41 @@ fn build_control_object(ctrl: &vybe_forms::Control) -> Value {
         class_name: ctrl.control_type.as_str().to_string(),
         fields,
     })))
+}
+
+/// Convert a runtime Value to a CSS color string.
+/// Handles Value::String (pass-through), Value::Object (Color with r/g/b fields),
+/// and falls back to as_string() for anything else.
+fn value_to_css_color(value: &vybe_runtime::Value) -> Option<String> {
+    use vybe_runtime::Value;
+    match value {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Object(obj_ref) => {
+            let b = obj_ref.borrow();
+            // Extract r, g, b from Color object
+            let r = b.fields.get("r").and_then(|v| match v {
+                Value::Byte(b) => Some(*b as u32),
+                Value::Integer(i) => Some(*i as u32),
+                _ => None,
+            });
+            let g = b.fields.get("g").and_then(|v| match v {
+                Value::Byte(b) => Some(*b as u32),
+                Value::Integer(i) => Some(*i as u32),
+                _ => None,
+            });
+            let b_val = b.fields.get("b").and_then(|v| match v {
+                Value::Byte(b) => Some(*b as u32),
+                Value::Integer(i) => Some(*i as u32),
+                _ => None,
+            });
+            if let (Some(r), Some(g), Some(b)) = (r, g, b_val) {
+                Some(format!("#{:02X}{:02X}{:02X}", r, g, b))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 fn process_side_effects(
@@ -551,8 +1841,16 @@ fn process_side_effects(
                                         "height" => { if let vybe_runtime::Value::Integer(v) = &value { ctrl.bounds.height = *v; } },
                                         "visible" => { ctrl.properties.set_raw("Visible", vybe_forms::PropertyValue::Boolean(value.as_bool().unwrap_or(true))); },
                                         "enabled" => { ctrl.properties.set_raw("Enabled", vybe_forms::PropertyValue::Boolean(value.as_bool().unwrap_or(true))); },
-                                        "backcolor" => ctrl.set_back_color(value.as_string()),
-                                        "forecolor" => ctrl.set_fore_color(value.as_string()),
+                                        "backcolor" => {
+                                            if let Some(css) = value_to_css_color(&value) {
+                                                ctrl.set_back_color(css);
+                                            }
+                                        },
+                                        "forecolor" => {
+                                            if let Some(css) = value_to_css_color(&value) {
+                                                ctrl.set_fore_color(css);
+                                            }
+                                        },
                                         "font" => ctrl.set_font(value.as_string()),
                                         // CheckBox / RadioButton
                                         "checked" => {
@@ -822,16 +2120,38 @@ fn process_side_effects(
                     }
                 }
             }
-            RuntimeSideEffect::AddControl { form_name, control_name, control_type, left, top, width, height } => {
+            RuntimeSideEffect::AddControl { form_name, control_name, control_type, left, top, width, height, parent_name } => {
                 // Dynamically add a control at runtime
                 if let Some(frm) = runtime_form.write().as_mut() {
                     if frm.name.eq_ignore_ascii_case(&form_name) || form_name.is_empty() {
-                        let ct = vybe_forms::ControlType::from_name(&control_type);
-                        if let Some(ct) = ct {
-                            let mut ctrl = vybe_forms::Control::new(ct, control_name.clone(), left, top);
-                            ctrl.bounds.width = width;
-                            ctrl.bounds.height = height;
-                            frm.controls.push(ctrl);
+                        // If a control with this name already exists (from design-time),
+                        // update its parent_id instead of adding a duplicate.
+                        let existing = frm.controls.iter().position(|c| c.name.eq_ignore_ascii_case(&control_name));
+                        if let Some(idx) = existing {
+                            if !parent_name.is_empty() {
+                                let parent_id = frm.controls.iter()
+                                    .find(|c| c.name.eq_ignore_ascii_case(&parent_name))
+                                    .map(|c| c.id);
+                                if let Some(pid) = parent_id {
+                                    frm.controls[idx].parent_id = Some(pid);
+                                }
+                            } else {
+                                frm.controls[idx].parent_id = None;
+                            }
+                        } else {
+                            let ct = vybe_forms::ControlType::from_name(&control_type);
+                            if let Some(ct) = ct {
+                                let mut ctrl = vybe_forms::Control::new(ct, control_name.clone(), left, top);
+                                ctrl.bounds.width = width;
+                                ctrl.bounds.height = height;
+                                // Resolve parent control by name
+                                if !parent_name.is_empty() {
+                                    if let Some(parent) = frm.controls.iter().find(|c| c.name.eq_ignore_ascii_case(&parent_name)) {
+                                        ctrl.parent_id = Some(parent.id);
+                                    }
+                                }
+                                frm.controls.push(ctrl);
+                            }
                         }
                     }
                 }
@@ -1736,1351 +3056,13 @@ pub fn FormRunner() -> Element {
                             }
 
                             // Controls (skip non-visual components)
-                            for control in form.controls.into_iter().filter(|c| !c.control_type.is_non_visual()) {
-                                {
-                                    let control_type = control.control_type.clone();
-                                    let x = control.bounds.x;
-                                    let y = control.bounds.y;
-                                    let w = control.bounds.width;
-                                    let h = control.bounds.height;
-                                    let name = control.name.clone();
-                                    let name_clone = name.clone();
-                                    let name_mousemove = name.clone();
-                                    let name_mouseenter = name.clone();
-                                    let name_mouseleave = name.clone();
-                                    let name_mousedown = name.clone();
-                                    let name_mouseup = name.clone();
-                                    let name_wheel = name.clone();
-                                    let name_keydown = name.clone();
-                                    let name_keyup = name.clone();
-                                    let name_keypress = name.clone();
-                                    let name_dblclick = name.clone();
-                                    let name_focusin = name.clone();
-                                    let name_focusout = name.clone();
-
-                                    let text = control.get_text().map(|s| s.to_string()).unwrap_or_else(|| name.clone());
-                                    let is_enabled = control.is_enabled();
-                                    let is_visible = control.is_visible();
-
-                                    let base_font = "font-family: 'Segoe UI', sans-serif; color: #0f172a;";
-                                    let base_field_bg = "background: #f8fafc;";
-                                    let base_button_bg = "background: linear-gradient(90deg, #2563eb, #1d4ed8); color: #f8fafc; border: 1px solid #1d4ed8;";
-                                    let base_frame_border = "border: 1px solid #cbd5e1;";
-
-                                    let back_color = control.get_back_color().map(|s| s.to_string());
-                                    let fore_color = control.get_fore_color().map(|s| s.to_string());
-                                    let font_family = control.get_font().map(|s| s.to_string());
-
-                                    let mut style_font = base_font.to_string();
-                                    if let Some(f) = &font_family {
-                                        style_font = format!("font: {};", f);
-                                    }
-                                    let mut style_fore = String::new();
-                                    if let Some(fc) = &fore_color {
-                                        style_fore = format!("color: {};", fc);
-                                    }
-                                    let mut style_back = String::new();
-                                    if let Some(bc) = &back_color {
-                                        style_back = format!("background: {};", bc);
-                                    }
-                                    let button_bg = if let Some(bc) = &back_color {
-                                        let color_part = if let Some(fc) = &fore_color {
-                                            format!("color: {};", fc)
-                                        } else {
-                                            String::new()
-                                        };
-                                        format!("background: {}; {}; border: 1px solid #cbd5e1;", bc, color_part)
-                                    } else {
-                                        base_button_bg.to_string()
-                                    };
-
-                                    // Compute Dock-based positioning
-                                    let dock_val = control.properties.get_int("Dock").unwrap_or(0);
-                                    let wrapper_style = match dock_val {
-                                        1 => "position: absolute; left: 0; top: 0; width: 100%; outline: none;".to_string(), // DockStyle.Top
-                                        2 => "position: absolute; left: 0; bottom: 0; width: 100%; outline: none;".to_string(), // DockStyle.Bottom
-                                        3 => "position: absolute; left: 0; top: 0; height: 100%; outline: none;".to_string(), // DockStyle.Left
-                                        4 => "position: absolute; right: 0; top: 0; height: 100%; outline: none;".to_string(), // DockStyle.Right
-                                        5 => "position: absolute; left: 0; top: 0; width: 100%; height: 100%; outline: none;".to_string(), // DockStyle.Fill
-                                        _ => format!("position: absolute; left: {}px; top: {}px; width: {}px; height: {}px; outline: none;", x, y, w, h),
-                                    };
-
-                                    rsx! {
-                                        if is_visible {
-                                            div {
-                                                tabindex: "0",
-                                                style: "{wrapper_style}",
-                                                onmousemove: move |evt: MouseEvent| {
-                                                    let data = vybe_runtime::EventData::Mouse {
-                                                        button: 0, clicks: 0,
-                                                        x: evt.client_coordinates().x as i32,
-                                                        y: evt.client_coordinates().y as i32,
-                                                        delta: 0,
-                                                    };
-                                                    handle_event(name_mousemove.clone(), "MouseMove".to_string(), Some(data));
-                                                },
-                                                onmouseenter: move |evt: MouseEvent| {
-                                                    let data = vybe_runtime::EventData::Mouse {
-                                                        button: 0, clicks: 0,
-                                                        x: evt.client_coordinates().x as i32,
-                                                        y: evt.client_coordinates().y as i32,
-                                                        delta: 0,
-                                                    };
-                                                    handle_event(name_mouseenter.clone(), "MouseEnter".to_string(), Some(data));
-                                                },
-                                                onmouseleave: move |_evt: MouseEvent| {
-                                                    handle_event(name_mouseleave.clone(), "MouseLeave".to_string(), None);
-                                                },
-                                                onmousedown: move |evt: MouseEvent| {
-                                                    let btn = match evt.trigger_button() {
-                                                        Some(dioxus::html::input_data::MouseButton::Primary) => 0x100000,
-                                                        Some(dioxus::html::input_data::MouseButton::Secondary) => 0x200000,
-                                                        Some(dioxus::html::input_data::MouseButton::Auxiliary) => 0x400000,
-                                                        _ => 0,
-                                                    };
-                                                    let data = vybe_runtime::EventData::Mouse {
-                                                        button: btn, clicks: 1,
-                                                        x: evt.client_coordinates().x as i32,
-                                                        y: evt.client_coordinates().y as i32,
-                                                        delta: 0,
-                                                    };
-                                                    handle_event(name_mousedown.clone(), "MouseDown".to_string(), Some(data));
-                                                },
-                                                onmouseup: move |evt: MouseEvent| {
-                                                    let btn = match evt.trigger_button() {
-                                                        Some(dioxus::html::input_data::MouseButton::Primary) => 0x100000,
-                                                        Some(dioxus::html::input_data::MouseButton::Secondary) => 0x200000,
-                                                        Some(dioxus::html::input_data::MouseButton::Auxiliary) => 0x400000,
-                                                        _ => 0,
-                                                    };
-                                                    let data = vybe_runtime::EventData::Mouse {
-                                                        button: btn, clicks: 1,
-                                                        x: evt.client_coordinates().x as i32,
-                                                        y: evt.client_coordinates().y as i32,
-                                                        delta: 0,
-                                                    };
-                                                    handle_event(name_mouseup.clone(), "MouseUp".to_string(), Some(data));
-                                                },
-                                                ondoubleclick: move |evt: MouseEvent| {
-                                                    let data = vybe_runtime::EventData::Mouse {
-                                                        button: 0x100000, clicks: 2,
-                                                        x: evt.client_coordinates().x as i32,
-                                                        y: evt.client_coordinates().y as i32,
-                                                        delta: 0,
-                                                    };
-                                                    handle_event(name_dblclick.clone(), "DoubleClick".to_string(), Some(data));
-                                                },
-                                                onwheel: move |evt: WheelEvent| {
-                                                    let data = vybe_runtime::EventData::Mouse {
-                                                        button: 0, clicks: 0, x: 0, y: 0,
-                                                        delta: evt.delta().strip_units().y as i32,
-                                                    };
-                                                    handle_event(name_wheel.clone(), "MouseWheel".to_string(), Some(data));
-                                                },
-                                                onkeydown: move |evt: KeyboardEvent| {
-                                                    let data = vybe_runtime::EventData::Key {
-                                                        key_code: dioxus_key_to_vk(&evt.key()),
-                                                        shift: evt.modifiers().shift(),
-                                                        ctrl: evt.modifiers().ctrl(),
-                                                        alt: evt.modifiers().alt(),
-                                                    };
-                                                    handle_event(name_keydown.clone(), "KeyDown".to_string(), Some(data));
-                                                },
-                                                onkeyup: move |evt: KeyboardEvent| {
-                                                    let data = vybe_runtime::EventData::Key {
-                                                        key_code: dioxus_key_to_vk(&evt.key()),
-                                                        shift: evt.modifiers().shift(),
-                                                        ctrl: evt.modifiers().ctrl(),
-                                                        alt: evt.modifiers().alt(),
-                                                    };
-                                                    handle_event(name_keyup.clone(), "KeyUp".to_string(), Some(data));
-                                                },
-                                                onkeypress: move |evt: KeyboardEvent| {
-                                                    // KeyPress fires for character keys — extract the char
-                                                    let ch = match evt.key() {
-                                                        dioxus::prelude::Key::Character(ref s) => s.chars().next().unwrap_or('\0'),
-                                                        dioxus::prelude::Key::Enter => '\r',
-                                                        dioxus::prelude::Key::Tab => '\t',
-                                                        dioxus::prelude::Key::Backspace => '\x08',
-                                                        _ => '\0',
-                                                    };
-                                                    if ch != '\0' {
-                                                        let data = vybe_runtime::EventData::KeyPress { key_char: ch };
-                                                        handle_event(name_keypress.clone(), "KeyPress".to_string(), Some(data));
-                                                    }
-                                                },
-                                                onfocusin: move |_evt: FocusEvent| {
-                                                    handle_event(name_focusin.clone(), "GotFocus".to_string(), None);
-                                                },
-                                                onfocusout: move |_evt: FocusEvent| {
-                                                    handle_event(name_focusout.clone(), "LostFocus".to_string(), None);
-                                                },
-
-                                                {match control_type {
-                                                    ControlType::Button => rsx! {
-                                                        button {
-                                                            style: "width: 100%; height: 100%; padding: 6px 10px; {button_bg} {style_font}; border-radius: 6px; box-shadow: 0 2px 4px rgba(37,99,235,0.12);",
-                                                            disabled: !is_enabled,
-                                                            onclick: move |evt: MouseEvent| {
-                                                                let data = vybe_runtime::EventData::Mouse {
-                                                                    button: 0x100000, clicks: 1,
-                                                                    x: evt.client_coordinates().x as i32,
-                                                                    y: evt.client_coordinates().y as i32,
-                                                                    delta: 0,
-                                                                };
-                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
-                                                            },
-                                                            "{text}"
-                                                        }
-                                                    },
-                                                    ControlType::TextBox => {
-                                                        let is_multiline = control.properties.get_bool("Multiline").unwrap_or(false);
-                                                        let is_readonly = control.properties.get_bool("ReadOnly").unwrap_or(false);
-                                                        if is_multiline {
-                                                            rsx! {
-                                                                textarea {
-                                                                    style: "width: 100%; height: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; resize: none; {base_field_bg} {style_back} {style_font} {style_fore};",
-                                                                    disabled: !is_enabled,
-                                                                    readonly: is_readonly,
-                                                                    value: "{text}",
-                                                                    oninput: move |evt| {
-                                                                        if let Some(frm) = runtime_form.write().as_mut() {
-                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                                ctrl.set_text(evt.value());
-                                                                            }
-                                                                        }
-                                                                        handle_event(name_clone.clone(), "TextChanged".to_string(), None);
-                                                                        handle_event(name_clone.clone(), "Change".to_string(), None);
-                                                                    }
-                                                                }
-                                                            }
-                                                        } else {
-                                                            rsx! {
-                                                                input {
-                                                                    style: "width: 100%; height: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; {base_field_bg} {style_back} {style_font} {style_fore};",
-                                                                    disabled: !is_enabled,
-                                                                    readonly: is_readonly,
-                                                                    value: "{text}",
-                                                                    oninput: move |evt| {
-                                                                        if let Some(frm) = runtime_form.write().as_mut() {
-                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                                ctrl.set_text(evt.value());
-                                                                            }
-                                                                        }
-                                                                        handle_event(name_clone.clone(), "TextChanged".to_string(), None);
-                                                                        handle_event(name_clone.clone(), "Change".to_string(), None);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::Label => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; padding: 4px 2px; {style_font} {style_fore} {style_back};",
-                                                            onclick: move |evt: MouseEvent| {
-                                                                let data = vybe_runtime::EventData::Mouse {
-                                                                    button: 0x100000, clicks: 1,
-                                                                    x: evt.client_coordinates().x as i32,
-                                                                    y: evt.client_coordinates().y as i32,
-                                                                    delta: 0,
-                                                                };
-                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
-                                                            },
-                                                            "{text}"
-                                                        }
-                                                    },
-                                                    ControlType::CheckBox => rsx! {
-                                                        div {
-                                                            style: "display: flex; align-items: center; gap: 6px; {style_font} {style_fore} {style_back};",
-                                                            input {
-                                                                r#type: "checkbox",
-                                                                disabled: !is_enabled,
-                                                                checked: control.properties.get_bool("Checked").unwrap_or(false) || control.properties.get_int("Value").unwrap_or(0) == 1,
-                                                                onclick: move |evt: MouseEvent| {
-                                                                    // Toggle state
-                                                                    if let Some(frm) = runtime_form.write().as_mut() {
-                                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                            let was_checked = ctrl.properties.get_bool("Checked").unwrap_or(false) || ctrl.properties.get_int("Value").unwrap_or(0) == 1;
-                                                                            let now_checked = !was_checked;
-                                                                            ctrl.properties.set("Checked", now_checked);
-                                                                            use vybe_forms::properties::PropertyValue;
-                                                                            let int_val = if now_checked { 1 } else { 0 };
-                                                                            ctrl.properties.set_raw("Value", PropertyValue::Integer(int_val));
-                                                                            ctrl.properties.set_raw("CheckState", PropertyValue::Integer(int_val));
-                                                                        }
-                                                                    }
-                                                                    handle_event(name_clone.clone(), "CheckedChanged".to_string(), None);
-                                                                    let data = vybe_runtime::EventData::Mouse {
-                                                                        button: 0x100000, clicks: 1,
-                                                                        x: evt.client_coordinates().x as i32,
-                                                                        y: evt.client_coordinates().y as i32,
-                                                                        delta: 0,
-                                                                    };
-                                                                    handle_event(name_clone.clone(), "Click".to_string(), Some(data));
-                                                                }
-                                                            }
-                                                            span { "{text}" }
-                                                        }
-                                                    },
-                                                    ControlType::RadioButton => rsx! {
-                                                        div {
-                                                            style: "display: flex; align-items: center; gap: 6px; {style_font} {style_fore} {style_back};",
-                                                            input {
-                                                                r#type: "radio",
-                                                                name: "radio_group",
-                                                                disabled: !is_enabled,
-                                                                checked: control.properties.get_bool("Checked").unwrap_or(false) || control.properties.get_int("Value").unwrap_or(0) == 1,
-                                                                onclick: move |evt: MouseEvent| {
-                                                                    // Toggle state
-                                                                    if let Some(frm) = runtime_form.write().as_mut() {
-                                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                            ctrl.properties.set("Checked", true);
-                                                                            use vybe_forms::properties::PropertyValue;
-                                                                            ctrl.properties.set_raw("Value", PropertyValue::Integer(1));
-                                                                        }
-                                                                    }
-                                                                    handle_event(name_clone.clone(), "CheckedChanged".to_string(), None);
-                                                                    let data = vybe_runtime::EventData::Mouse {
-                                                                        button: 0x100000, clicks: 1,
-                                                                        x: evt.client_coordinates().x as i32,
-                                                                        y: evt.client_coordinates().y as i32,
-                                                                        delta: 0,
-                                                                    };
-                                                                    handle_event(name_clone.clone(), "Click".to_string(), Some(data));
-                                                                }
-                                                            }
-                                                            span { "{text}" }
-                                                        }
-                                                    },
-                                                    ControlType::Frame => rsx! {
-                                                        fieldset {
-                                                            style: "width: 100%; height: 100%; {base_frame_border} margin: 0; padding: 0; border-radius: 8px; {style_back} {style_font} {style_fore};",
-                                                            onclick: move |evt: MouseEvent| {
-                                                                let data = vybe_runtime::EventData::Mouse {
-                                                                    button: 0x100000, clicks: 1,
-                                                                    x: evt.client_coordinates().x as i32,
-                                                                    y: evt.client_coordinates().y as i32,
-                                                                    delta: 0,
-                                                                };
-                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
-                                                            },
-                                                            legend { "{text}" }
-                                                        }
-                                                    },
-                                                    ControlType::ListBox => rsx! {
-                                                        select {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 8px; {base_field_bg} {style_back} {style_font} {style_fore};",
-                                                            multiple: true,
-                                                            disabled: !is_enabled,
-                                                            onchange: move |evt| {
-                                                                if let Some(frm) = runtime_form.write().as_mut() {
-                                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                        ctrl.set_text(evt.value());
-                                                                        // Try to get selected index from value
-                                                                        let items = ctrl.get_list_items();
-                                                                        if let Some(idx) = items.iter().position(|i| *i == evt.value()) {
-                                                                            use vybe_forms::properties::PropertyValue;
-                                                                            ctrl.properties.set_raw("SelectedIndex", PropertyValue::Integer(idx as i32));
-                                                                        }
-                                                                    }
-                                                                }
-                                                                handle_event(name_clone.clone(), "SelectedIndexChanged".to_string(), None);
-                                                                handle_event(name_clone.clone(), "Click".to_string(), None);
-                                                            },
-                                                            {
-                                                                let mut items = control.get_list_items();
-                                                                if items.is_empty() {
-                                                                    let raw = text.clone();
-                                                                    if !raw.is_empty() {
-                                                                        items = raw.split('|').map(|s| s.trim().to_string()).collect();
-                                                                    }
-                                                                }
-
-                                                                if items.is_empty() {
-                                                                    rsx! { option { "(empty)" } }
-                                                                } else {
-                                                                    rsx! {
-                                                                        for item in items {
-                                                                            option { "{item}" }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::ComboBox => rsx! {
-                                                        select {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 8px; {base_field_bg} {style_back} {style_font} {style_fore};",
-                                                            disabled: !is_enabled,
-                                                            onchange: move |evt| {
-                                                                if let Some(frm) = runtime_form.write().as_mut() {
-                                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                        ctrl.set_text(evt.value());
-                                                                        let items = ctrl.get_list_items();
-                                                                        if let Some(idx) = items.iter().position(|i| *i == evt.value()) {
-                                                                            use vybe_forms::properties::PropertyValue;
-                                                                            ctrl.properties.set_raw("SelectedIndex", PropertyValue::Integer(idx as i32));
-                                                                        }
-                                                                    }
-                                                                }
-                                                                handle_event(name_clone.clone(), "SelectedIndexChanged".to_string(), None);
-                                                                handle_event(name_clone.clone(), "TextChanged".to_string(), None);
-                                                                handle_event(name_clone.clone(), "Change".to_string(), None);
-                                                            },
-                                                            {
-                                                                let items = control.get_list_items();
-                                                                if items.is_empty() {
-                                                                    rsx! { option { value: "", "{text}" } }
-                                                                } else {
-                                                                    rsx! {
-                                                                        for item in items {
-                                                                            option { "{item}" }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::RichTextBox => rsx! {
-                                                        {
-                                                            let html = control.properties.get_string("HTML")
-                                                                .map(|s| s.to_string())
-                                                                .or_else(|| control.get_text().map(|s| s.to_string()))
-                                                                .unwrap_or_default();
-                                                            let toolbar_visible = control.properties.get_bool("ToolbarVisible").unwrap_or(true);
-                                                            let rtb_id = format!("rtb_{}", name_clone);
-                                                            let rtb_id_bold = rtb_id.clone();
-                                                            let rtb_id_italic = rtb_id.clone();
-                                                            let rtb_id_underline = rtb_id.clone();
-                                                            let rtb_id_ul = rtb_id.clone();
-                                                            let rtb_id_ol = rtb_id.clone();
-                                                            let rtb_id_mount = rtb_id.clone();
-                                                            rsx! {
-                                                                div {
-                                                                    style: "width: 100%; height: 100%; display: flex; flex-direction: column; border: 1px inset #999; background: white; {style_back} {style_font} {style_fore};",
-                                                                    if toolbar_visible {
-                                                                        div {
-                                                                            style: "display: flex; gap: 2px; padding: 4px; background: #f0f0f0; border-bottom: 1px solid #ccc;",
-                                                                            button {
-                                                                                style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer; font-weight: bold;",
-                                                                                title: "Bold (Ctrl+B)",
-                                                                                onclick: move |_| {
-                                                                                    let _ = document::eval(&format!("document.execCommand('bold', false, null); document.getElementById('{}').focus();", rtb_id_bold));
-                                                                                },
-                                                                                "B"
-                                                                            }
-                                                                            button {
-                                                                                style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer; font-style: italic;",
-                                                                                title: "Italic (Ctrl+I)",
-                                                                                onclick: move |_| {
-                                                                                    let _ = document::eval(&format!("document.execCommand('italic', false, null); document.getElementById('{}').focus();", rtb_id_italic));
-                                                                                },
-                                                                                "I"
-                                                                            }
-                                                                            button {
-                                                                                style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer; text-decoration: underline;",
-                                                                                title: "Underline (Ctrl+U)",
-                                                                                onclick: move |_| {
-                                                                                    let _ = document::eval(&format!("document.execCommand('underline', false, null); document.getElementById('{}').focus();", rtb_id_underline));
-                                                                                },
-                                                                                "U"
-                                                                            }
-                                                                            div { style: "width: 1px; background: #ccc; margin: 0 4px;" }
-                                                                            button {
-                                                                                style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer;",
-                                                                                title: "Bullet List",
-                                                                                onclick: move |_| {
-                                                                                    let _ = document::eval(&format!("document.execCommand('insertUnorderedList', false, null); document.getElementById('{}').focus();", rtb_id_ul));
-                                                                                },
-                                                                                "• List"
-                                                                            }
-                                                                            button {
-                                                                                style: "padding: 4px 8px; border: 1px solid #999; background: white; cursor: pointer;",
-                                                                                title: "Numbered List",
-                                                                                onclick: move |_| {
-                                                                                    let _ = document::eval(&format!("document.execCommand('insertOrderedList', false, null); document.getElementById('{}').focus();", rtb_id_ol));
-                                                                                },
-                                                                                "1. List"
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                    div {
-                                                                        id: "{rtb_id}",
-                                                                        contenteditable: if is_enabled { "true" } else { "false" },
-                                                                        style: "flex: 1; padding: 8px; overflow: auto; outline: none; background: white; {style_back} {style_font} {style_fore};",
-                                                                        dangerous_inner_html: "{html}",
-                                                                        oninput: move |_| {
-                                                                            handle_event(name_clone.clone(), "TextChanged".to_string(), None);
-                                                                            handle_event(name_clone.clone(), "Change".to_string(), None);
-                                                                        },
-                                                                        onmounted: move |_| {
-                                                                            let _ = document::eval(&format!(r#"
-                                                                                (function() {{
-                                                                                    const editor = document.getElementById('{}');
-                                                                                    if (editor) {{
-                                                                                        editor.addEventListener('keydown', function(e) {{
-                                                                                            if (e.ctrlKey || e.metaKey) {{
-                                                                                                switch(e.key.toLowerCase()) {{
-                                                                                                    case 'b':
-                                                                                                        e.preventDefault();
-                                                                                                        document.execCommand('bold', false, null);
-                                                                                                        break;
-                                                                                                    case 'i':
-                                                                                                        e.preventDefault();
-                                                                                                        document.execCommand('italic', false, null);
-                                                                                                        break;
-                                                                                                    case 'u':
-                                                                                                        e.preventDefault();
-                                                                                                        document.execCommand('underline', false, null);
-                                                                                                        break;
-                                                                                                }}
-                                                                                            }}
-                                                                                        }});
-                                                                                    }}
-                                                                                }})();
-                                                                            "#, rtb_id_mount));
-                                                                        },
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::WebBrowser => {
-                                                        // Read HTML from the dedicated wb_html signal
-                                                        // (immune to form-sync overwrites), falling back
-                                                        // to the initial property from the Form definition.
-                                                        let content = wb_html.read()
-                                                            .get(&name_clone.to_lowercase())
-                                                            .cloned()
-                                                            .or_else(|| control.properties.get_string("HTML").map(|s| s.to_string()))
-                                                            .unwrap_or_default();
-                                                        if content.is_empty() {
-                                                            rsx! {
-                                                                div {
-                                                                    id: "wb_{name_clone}",
-                                                                    style: "width: 100%; height: 100%; border: 1px inset #999; background: white; {style_back};",
-                                                                }
-                                                            }
-                                                        } else {
-                                                            rsx! {
-                                                                div {
-                                                                    id: "wb_{name_clone}",
-                                                                    style: "width: 100%; height: 100%; border: 1px inset #999; background: white; overflow: hidden; {style_back};",
-                                                                    dangerous_inner_html: "{content}",
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::ListView => {
-                                                        let lv_items = control.get_list_items();
-                                                        let lv_selected = control.properties.get_int("SelectedIndex").unwrap_or(-1);
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; border: 1px inset #999; overflow: auto; {base_field_bg} {style_back} {style_font} {style_fore};",
-                                                                table {
-                                                                    style: "width: 100%; border-collapse: collapse; font-size: 12px;",
-                                                                    thead {
-                                                                        tr {
-                                                                            th { style: "border-bottom: 2px solid #aaa; padding: 3px 6px; background: #f0f0f0; text-align: left;", "Item" }
-                                                                        }
-                                                                    }
-                                                                    tbody {
-                                                                        if lv_items.is_empty() {
-                                                                            tr {
-                                                                                td { style: "padding: 4px 6px; color: #aaa; font-style: italic;", "(empty)" }
-                                                                            }
-                                                                        } else {
-                                                                            for (idx, item) in lv_items.iter().enumerate() {
-                                                                                {
-                                                                                    let item_str = item.clone();
-                                                                                    let item_name = name_clone.clone();
-                                                                                    let item_idx = idx as i32;
-                                                                                    let row_style = if item_idx == lv_selected {
-                                                                                        "background: #cce5ff; cursor: pointer; border-bottom: 1px solid #eee; padding: 3px 6px;"
-                                                                                    } else {
-                                                                                        "cursor: pointer; border-bottom: 1px solid #eee; padding: 3px 6px;"
-                                                                                    };
-                                                                                    rsx! {
-                                                                                        tr {
-                                                                                            key: "{idx}",
-                                                                                            onclick: move |_| {
-                                                                                                if let Some(frm) = runtime_form.write().as_mut() {
-                                                                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&item_name) {
-                                                                                                        ctrl.properties.set("SelectedIndex", item_idx);
-                                                                                                    }
-                                                                                                }
-                                                                                                handle_event(item_name.clone(), "SelectedIndexChanged".to_string(), None);
-                                                                                                handle_event(item_name.clone(), "ItemActivate".to_string(), None);
-                                                                                            },
-                                                                                            td { style: "{row_style}", "{item_str}" }
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::TreeView => {
-                                                        // Nodes stored as flat list in "List" property; indent via "  " prefix
-                                                        let tv_nodes = control.get_list_items();
-                                                        let tv_selected = control.properties.get_string("SelectedNode").map(|s| s.to_string()).unwrap_or_default();
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; border: 1px inset #999; overflow-y: auto; padding: 2px; {base_field_bg} {style_back} {style_font} {style_fore};",
-                                                                if tv_nodes.is_empty() {
-                                                                    div { style: "padding: 4px; color: #aaa; font-style: italic;", "(no nodes)" }
-                                                                } else {
-                                                                    for node_text in &tv_nodes {
-                                                                        {
-                                                                            let node_str = node_text.clone();
-                                                                            let node_name = name_clone.clone();
-                                                                            let indent = node_str.chars().take_while(|c| *c == ' ').count();
-                                                                            let label = node_str.trim_start().to_string();
-                                                                            let is_selected = node_str == tv_selected;
-                                                                            let bg = if is_selected { "background: #cce5ff;" } else { "" };
-                                                                            rsx! {
-                                                                                div {
-                                                                                    style: "padding: 2px 4px; padding-left: {indent * 12 + 4}px; cursor: pointer; {bg}",
-                                                                                    onclick: move |_| {
-                                                                                        if let Some(frm) = runtime_form.write().as_mut() {
-                                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&node_name) {
-                                                                                                ctrl.properties.set("SelectedNode", node_str.clone());
-                                                                                            }
-                                                                                        }
-                                                                                        handle_event(node_name.clone(), "AfterSelect".to_string(), None);
-                                                                                        handle_event(node_name.clone(), "NodeMouseClick".to_string(), None);
-                                                                                    },
-                                                                                    "▸ {label}"
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::DataGridView => rsx! {
-                                                        {
-                                                            // Get dynamic grid data from properties (set by DataSourceChanged)
-                                                            let grid_columns = control.properties.get_string_array("__grid_columns")
-                                                                .cloned()
-                                                                .unwrap_or_default();
-                                                            let grid_row_strs = control.properties.get_string_array("__grid_rows")
-                                                                .cloned()
-                                                                .unwrap_or_default();
-                                                            let grid_rows: Vec<Vec<String>> = grid_row_strs.iter()
-                                                                .map(|s| s.split('\t').map(|c| c.to_string()).collect())
-                                                                .collect();
-                                                            let has_data = !grid_columns.is_empty();
-
-                                                            let dgv_selected_row = control.properties.get_int("CurrentRowIndex").unwrap_or(-1);
-                                                            rsx! {
-                                                                div {
-                                                                    style: "width: 100%; height: 100%; border: 1px solid #999; background: #f0f0f0; padding: 1px; overflow: auto;",
-                                                                    table {
-                                                                        style: "width: 100%; background: white; border-collapse: separate; border-spacing: 0; font-size: 12px;",
-                                                                        thead {
-                                                                            tr {
-                                                                                th { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 2px solid #999; padding: 4px 6px; width: 30px; text-align: center; font-weight: normal; color: #333;", "" }
-                                                                                if has_data {
-                                                                                    for col in &grid_columns {
-                                                                                        th { style: "background: #e8e8e8; border-right: 1px solid #ccc; border-bottom: 2px solid #999; padding: 4px 8px; text-align: left; font-weight: bold; color: #222; cursor: default; white-space: nowrap;", "{col}" }
-                                                                                    }
-                                                                                } else {
-                                                                                    th { style: "background: #e8e8e8; border-right: 1px solid #ccc; border-bottom: 2px solid #999; padding: 4px 8px;", "Column1" }
-                                                                                    th { style: "background: #e8e8e8; border-right: 1px solid #ccc; border-bottom: 2px solid #999; padding: 4px 8px;", "Column2" }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        tbody {
-                                                                            if has_data {
-                                                                                for (ri, row) in grid_rows.iter().enumerate() {
-                                                                                    {
-                                                                                        let row_idx = ri as i32;
-                                                                                        let dgv_name = name_clone.clone();
-                                                                                        let row_bg = if row_idx == dgv_selected_row { "background: #cce5ff;" } else { "" };
-                                                                                        rsx! {
-                                                                                            tr {
-                                                                                                key: "{ri}",
-                                                                                                style: "{row_bg} cursor: pointer;",
-                                                                                                onclick: move |_| {
-                                                                                                    if let Some(frm) = runtime_form.write().as_mut() {
-                                                                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&dgv_name) {
-                                                                                                            ctrl.properties.set("CurrentRowIndex", row_idx);
-                                                                                                        }
-                                                                                                    }
-                                                                                                    handle_event(dgv_name.clone(), "CellClick".to_string(), None);
-                                                                                                    handle_event(dgv_name.clone(), "RowEnter".to_string(), None);
-                                                                                                    handle_event(dgv_name.clone(), "SelectionChanged".to_string(), None);
-                                                                                                    handle_event(dgv_name.clone(), "CurrentCellChanged".to_string(), None);
-                                                                                                },
-                                                                                                td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; color: #333; width: 30px; height: 22px;", "{ri}" }
-                                                                                                for cell in row {
-                                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; white-space: nowrap; height: 22px; {row_bg}", "{cell}" }
-                                                                                                }
-                                                                                            }
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            } else {
-                                                                                tr {
-                                                                                    td { style: "background: #e8e8e8; border-right: 1px solid #999; border-bottom: 1px solid #ddd; text-align: center; padding: 2px 4px; width: 30px; height: 22px;", "" }
-                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; height: 22px;", "" }
-                                                                                    td { style: "border-right: 1px solid #eee; border-bottom: 1px solid #eee; padding: 3px 6px; height: 22px;", "" }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::BindingNavigator => rsx! {
-                                                        {
-                                                            let nav_first = name.clone();
-                                                            let nav_prev = name.clone();
-                                                            let nav_next = name.clone();
-                                                            let nav_last = name.clone();
-                                                            let nav_add = name.clone();
-                                                            let nav_del = name.clone();
-                                                            rsx! {
-                                                                div {
-                                                                    style: "width: 100%; height: 100%; display: flex; align-items: center; gap: 2px; background: #f0f0f0; border: 1px solid #ccc; padding: 2px 4px; font-size: 11px;",
-                                                                    button {
-                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
-                                                                        title: "Move first",
-                                                                        onclick: move |_| handle_event(nav_first.clone(), "MoveFirst".to_string(), None),
-                                                                        "⏮"
-                                                                    }
-                                                                    button {
-                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
-                                                                        title: "Move previous",
-                                                                        onclick: move |_| handle_event(nav_prev.clone(), "MovePrevious".to_string(), None),
-                                                                        "◀"
-                                                                    }
-                                                                    span {
-                                                                        style: "padding: 0 4px; min-width: 40px; text-align: center; border: 1px solid #ccc; background: white;",
-                                                                        "{text}"
-                                                                    }
-                                                                    button {
-                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
-                                                                        title: "Move next",
-                                                                        onclick: move |_| handle_event(nav_next.clone(), "MoveNext".to_string(), None),
-                                                                        "▶"
-                                                                    }
-                                                                    button {
-                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
-                                                                        title: "Move last",
-                                                                        onclick: move |_| handle_event(nav_last.clone(), "MoveLast".to_string(), None),
-                                                                        "⏭"
-                                                                    }
-                                                                    div { style: "width: 1px; height: 16px; background: #aaa; margin: 0 2px;" }
-                                                                    button {
-                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
-                                                                        title: "Add new",
-                                                                        onclick: move |_| handle_event(nav_add.clone(), "AddNew".to_string(), None),
-                                                                        "➕"
-                                                                    }
-                                                                    button {
-                                                                        style: "padding: 1px 6px; border: 1px solid #aaa; background: #e8e8e8; cursor: pointer; font-size: 11px;",
-                                                                        title: "Delete",
-                                                                        onclick: move |_| handle_event(nav_del.clone(), "Delete".to_string(), None),
-                                                                        "❌"
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::Panel => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #ccc; overflow: hidden; {style_back} {style_font} {style_fore};",
-                                                            onclick: move |evt: MouseEvent| {
-                                                                let data = vybe_runtime::EventData::Mouse {
-                                                                    button: 0x100000, clicks: 1,
-                                                                    x: evt.client_coordinates().x as i32,
-                                                                    y: evt.client_coordinates().y as i32,
-                                                                    delta: 0,
-                                                                };
-                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
-                                                            },
-                                                        }
-                                                    },
-                                                    ControlType::PictureBox => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; overflow: hidden; {style_back};",
-                                                            onclick: move |evt: MouseEvent| {
-                                                                let data = vybe_runtime::EventData::Mouse {
-                                                                    button: 0x100000, clicks: 1,
-                                                                    x: evt.client_coordinates().x as i32,
-                                                                    y: evt.client_coordinates().y as i32,
-                                                                    delta: 0,
-                                                                };
-                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data));
-                                                            },
-                                                        }
-                                                    },
-                                                    ControlType::TabControl => {
-                                                        let tab_items = control.get_list_items();
-                                                        let selected_tab = control.properties.get_int("SelectedIndex").unwrap_or(0);
-                                                        let tabs: Vec<String> = if tab_items.is_empty() { vec!["Tab 1".to_string()] } else { tab_items };
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; border: 1px solid #adb5bd; display: flex; flex-direction: column;",
-                                                                div {
-                                                                    style: "display: flex; background: #e9ecef; border-bottom: 1px solid #adb5bd;",
-                                                                    for (ti, tab_label) in tabs.iter().enumerate() {
-                                                                        {
-                                                                            let tl = tab_label.clone();
-                                                                            let tab_name = name_clone.clone();
-                                                                            let is_active = ti as i32 == selected_tab;
-                                                                            let tab_style = if is_active {
-                                                                                "padding: 4px 12px; background: white; border: 1px solid #adb5bd; border-bottom: none; cursor: pointer; font-size: 12px; font-weight: bold;"
-                                                                            } else {
-                                                                                "padding: 4px 12px; background: #e9ecef; border: 1px solid transparent; cursor: pointer; font-size: 12px;"
-                                                                            };
-                                                                            rsx! {
-                                                                                div {
-                                                                                    style: "{tab_style}",
-                                                                                    onclick: move |_| {
-                                                                                        if let Some(frm) = runtime_form.write().as_mut() {
-                                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&tab_name) {
-                                                                                                use vybe_forms::properties::PropertyValue;
-                                                                                                ctrl.properties.set_raw("SelectedIndex", PropertyValue::Integer(ti as i32));
-                                                                                            }
-                                                                                        }
-                                                                                        handle_event(tab_name.clone(), "SelectedIndexChanged".to_string(), None);
-                                                                                    },
-                                                                                    "{tl}"
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                                div {
-                                                                    style: "flex: 1; padding: 8px; background: white;",
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::ProgressBar => {
-                                                        let pb_val = control.properties.get_int("Value").unwrap_or(0);
-                                                        let pb_max = control.properties.get_int("Maximum").unwrap_or(100);
-                                                        let pb_pct = if pb_max > 0 { (pb_val as f64 / pb_max as f64 * 100.0) as i32 } else { 0 };
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; background: #e9ecef; border: 1px solid #adb5bd; overflow: hidden; border-radius: 4px;",
-                                                                div {
-                                                                    style: "height: 100%; background: linear-gradient(180deg, #5cb85c, #4cae4c); width: {pb_pct}%; transition: width 0.3s;",
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::NumericUpDown => {
-                                                        let nud_val = control.properties.get_int("Value").unwrap_or(0);
-                                                        let nud_min = control.properties.get_int("Minimum").unwrap_or(0);
-                                                        let nud_max = control.properties.get_int("Maximum").unwrap_or(100);
-                                                        let nud_val_str = nud_val.to_string();
-                                                        let nud_min_str = nud_min.to_string();
-                                                        let nud_max_str = nud_max.to_string();
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; display: flex; border: 1px solid #adb5bd; border-radius: 6px; overflow: hidden; {style_back}",
-                                                                input {
-                                                                    r#type: "number",
-                                                                    style: "flex: 1; border: none; padding: 2px 6px; {style_font} {style_fore} outline: none; background: transparent;",
-                                                                    disabled: !is_enabled,
-                                                                    min: "{nud_min_str}",
-                                                                    max: "{nud_max_str}",
-                                                                    value: "{nud_val_str}",
-                                                                    oninput: move |evt: FormEvent| {
-                                                                        if let Ok(v) = evt.value().parse::<i32>() {
-                                                                            if let Some(frm) = runtime_form.write().as_mut() {
-                                                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                                    ctrl.properties.set("Value", v);
-                                                                                    ctrl.set_text(v.to_string());
-                                                                                }
-                                                                            }
-                                                                            handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::MenuStrip | ControlType::ContextMenuStrip => {
-                                                        let menu_items = control.get_list_items();
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; padding: 0 4px; {style_font} font-size: 12px;",
-                                                                if menu_items.is_empty() {
-                                                                    span {
-                                                                        style: "padding: 2px 8px; cursor: pointer;",
-                                                                        onclick: move |_| handle_event(name_clone.clone(), "Click".to_string(), None),
-                                                                        "File"
-                                                                    }
-                                                                } else {
-                                                                    for item in menu_items {
-                                                                        {
-                                                                            let item_text = item.clone();
-                                                                            let menu_name = name_clone.clone();
-                                                                            rsx! {
-                                                                                span {
-                                                                                    style: "padding: 2px 8px; cursor: pointer;",
-                                                                                    onclick: move |_| {
-                                                                                        handle_event(menu_name.clone(), "ItemClicked".to_string(), None);
-                                                                                    },
-                                                                                    "{item_text}"
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::StatusStrip => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; background: #007acc; border-top: 1px solid #005a9e; display: flex; align-items: center; padding: 0 8px; font-size: 12px; color: white; {style_font}",
-                                                            "{text}"
-                                                        }
-                                                    },
-                                                    ControlType::DateTimePicker => {
-                                                        // Use native HTML date input for proper dropdown
-                                                        let dtp_format = control.properties.get_string("Format").map(|s| s.to_string()).unwrap_or_else(|| "Long".to_string());
-                                                        let input_type = if dtp_format == "Time" { "time" } else { "date" };
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; display: flex; align-items: center; {style_back} {style_font} {style_fore}",
-                                                                input {
-                                                                    r#type: "{input_type}",
-                                                                    style: "width: 100%; height: 100%; border: 1px solid #adb5bd; padding: 2px 6px; border-radius: 6px; {style_font} {style_fore} {style_back} outline: none; cursor: pointer;",
-                                                                    disabled: !is_enabled,
-                                                                    value: "{text}",
-                                                                    oninput: move |evt: FormEvent| {
-                                                                        if let Some(frm) = runtime_form.write().as_mut() {
-                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                                ctrl.set_text(evt.value());
-                                                                                ctrl.properties.set("Value", evt.value());
-                                                                            }
-                                                                        }
-                                                                        handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::LinkLabel => rsx! {
-                                                        a {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; {style_font} font-size: 12px; color: #0066cc; text-decoration: underline; cursor: pointer;",
-                                                            onclick: move |evt: MouseEvent| {
-                                                                let data = vybe_runtime::EventData::Mouse {
-                                                                    button: 0x100000, clicks: 1,
-                                                                    x: evt.client_coordinates().x as i32,
-                                                                    y: evt.client_coordinates().y as i32,
-                                                                    delta: 0,
-                                                                };
-                                                                let data2 = vybe_runtime::EventData::Mouse {
-                                                                    button: 0x100000, clicks: 1,
-                                                                    x: evt.client_coordinates().x as i32,
-                                                                    y: evt.client_coordinates().y as i32,
-                                                                    delta: 0,
-                                                                };
-                                                                handle_event(name_clone.clone(), "LinkClicked".to_string(), Some(data));
-                                                                handle_event(name_clone.clone(), "Click".to_string(), Some(data2));
-                                                            },
-                                                            "{text}"
-                                                        }
-                                                    },
-                                                    ControlType::ToolStrip => {
-                                                        let ts_items = control.get_list_items();
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; gap: 1px; padding: 2px 4px; {style_font} font-size: 11px;",
-                                                                if ts_items.is_empty() {
-                                                                    span {
-                                                                        style: "padding: 2px 6px; background: #e8e8e8; border: 1px solid #ccc; cursor: pointer;",
-                                                                        onclick: move |_| handle_event(name_clone.clone(), "ButtonClick".to_string(), None),
-                                                                        "Button1"
-                                                                    }
-                                                                } else {
-                                                                    for it in ts_items {
-                                                                        {
-                                                                            let it_text = it.clone();
-                                                                            let ts_name = name_clone.clone();
-                                                                            rsx! {
-                                                                                span {
-                                                                                    style: "padding: 2px 6px; background: #e8e8e8; border: 1px solid #ccc; cursor: pointer;",
-                                                                                    onclick: move |_| {
-                                                                                        handle_event(ts_name.clone(), "ItemClicked".to_string(), None);
-                                                                                    },
-                                                                                    "{it_text}"
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::TrackBar => {
-                                                        let tb_val = control.properties.get_int("Value").unwrap_or(0);
-                                                        let tb_min = control.properties.get_int("Minimum").unwrap_or(0);
-                                                        let tb_max = control.properties.get_int("Maximum").unwrap_or(10);
-                                                        let tb_val_str = tb_val.to_string();
-                                                        let tb_min_str = tb_min.to_string();
-                                                        let tb_max_str = tb_max.to_string();
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 4px; {style_back}",
-                                                                input {
-                                                                    r#type: "range",
-                                                                    style: "width: 100%; cursor: pointer;",
-                                                                    disabled: !is_enabled,
-                                                                    min: "{tb_min_str}",
-                                                                    max: "{tb_max_str}",
-                                                                    value: "{tb_val_str}",
-                                                                    oninput: move |evt: FormEvent| {
-                                                                        if let Ok(v) = evt.value().parse::<i32>() {
-                                                                            if let Some(frm) = runtime_form.write().as_mut() {
-                                                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                                    ctrl.properties.set("Value", v);
-                                                                                }
-                                                                            }
-                                                                            handle_event(name_clone.clone(), "Scroll".to_string(), None);
-                                                                            handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::MaskedTextBox => {
-                                                        let mask = control.properties.get_string("Mask").map(|s| s.to_string()).unwrap_or_default();
-                                                        let prompt_char = control.properties.get_string("PromptChar").map(|s| s.to_string()).unwrap_or_else(|| "_".to_string());
-                                                        let placeholder = if mask.is_empty() { String::new() } else { mask.chars().map(|c| if c == '0' || c == '9' || c == '#' { prompt_char.chars().next().unwrap_or('_') } else { c }).collect::<String>() };
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; display: flex; align-items: center;",
-                                                                input {
-                                                                    r#type: "text",
-                                                                    style: "width: 100%; height: 100%; border: 1px solid #adb5bd; padding: 2px 6px; border-radius: 6px; {style_font} {style_fore} {style_back} outline: none;",
-                                                                    disabled: !is_enabled,
-                                                                    value: "{text}",
-                                                                    placeholder: "{placeholder}",
-                                                                    oninput: move |evt: FormEvent| {
-                                                                        if let Some(frm) = runtime_form.write().as_mut() {
-                                                                            if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                                ctrl.set_text(evt.value());
-                                                                            }
-                                                                        }
-                                                                        handle_event(name_clone.clone(), "TextChanged".to_string(), None);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::SplitContainer => {
-                                                        let sc_orient = control.properties.get_string("Orientation").map(|s| s.to_string()).unwrap_or_else(|| "Vertical".to_string());
-                                                        let flex_dir = if sc_orient == "Horizontal" { "column" } else { "row" };
-                                                        let splitter_style = if sc_orient == "Horizontal" { "height: 4px; background: #d0d0d0; cursor: ns-resize; flex-shrink: 0;" } else { "width: 4px; background: #d0d0d0; cursor: ew-resize; flex-shrink: 0;" };
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; display: flex; flex-direction: {flex_dir}; border: 1px solid #adb5bd; {style_back}",
-                                                                div { style: "flex: 1; overflow: hidden;" }
-                                                                div { style: "{splitter_style}" }
-                                                                div { style: "flex: 1; overflow: hidden;" }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::FlowLayoutPanel => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: flex; flex-wrap: wrap; align-content: flex-start; padding: 2px; {style_back}",
-                                                        }
-                                                    },
-                                                    ControlType::TableLayoutPanel => {
-                                                        let tlp_cols = control.properties.get_int("ColumnCount").unwrap_or(2);
-                                                        let tlp_rows = control.properties.get_int("RowCount").unwrap_or(2);
-                                                        let grid_cols = format!("repeat({}, 1fr)", tlp_cols);
-                                                        let grid_rows = format!("repeat({}, 1fr)", tlp_rows);
-                                                        let cell_count = (tlp_cols * tlp_rows) as usize;
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: grid; grid-template-columns: {grid_cols}; grid-template-rows: {grid_rows}; {style_back}",
-                                                                for i in 0..cell_count {
-                                                                    div { key: "{i}", style: "border: 1px dotted #ccc;" }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::MonthCalendar => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: stretch;",
-                                                            input {
-                                                                r#type: "date",
-                                                                style: "width: 100%; height: 100%; border: 1px solid #adb5bd; border-radius: 6px; padding: 4px 8px; {style_font} {style_fore} {style_back} outline: none; cursor: pointer;",
-                                                                disabled: !is_enabled,
-                                                                value: "{text}",
-                                                                oninput: move |evt: FormEvent| {
-                                                                    if let Some(frm) = runtime_form.write().as_mut() {
-                                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                            ctrl.set_text(evt.value());
-                                                                            ctrl.properties.set("SelectionStart", evt.value());
-                                                                        }
-                                                                    }
-                                                                    handle_event(name_clone.clone(), "DateChanged".to_string(), None);
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::HScrollBar => {
-                                                        let hs_val = control.properties.get_int("Value").unwrap_or(0);
-                                                        let hs_min = control.properties.get_int("Minimum").unwrap_or(0);
-                                                        let hs_max = control.properties.get_int("Maximum").unwrap_or(100);
-                                                        let hs_val_str = hs_val.to_string();
-                                                        let hs_min_str = hs_min.to_string();
-                                                        let hs_max_str = hs_max.to_string();
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; display: flex; align-items: center;",
-                                                                input {
-                                                                    r#type: "range",
-                                                                    style: "width: 100%; height: 100%; cursor: pointer;",
-                                                                    disabled: !is_enabled,
-                                                                    min: "{hs_min_str}",
-                                                                    max: "{hs_max_str}",
-                                                                    value: "{hs_val_str}",
-                                                                    oninput: move |evt: FormEvent| {
-                                                                        if let Ok(v) = evt.value().parse::<i32>() {
-                                                                            if let Some(frm) = runtime_form.write().as_mut() {
-                                                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                                    ctrl.properties.set("Value", v);
-                                                                                }
-                                                                            }
-                                                                            handle_event(name_clone.clone(), "Scroll".to_string(), None);
-                                                                            handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::VScrollBar => {
-                                                        let vs_val = control.properties.get_int("Value").unwrap_or(0);
-                                                        let vs_min = control.properties.get_int("Minimum").unwrap_or(0);
-                                                        let vs_max = control.properties.get_int("Maximum").unwrap_or(100);
-                                                        let vs_val_str = vs_val.to_string();
-                                                        let vs_min_str = vs_min.to_string();
-                                                        let vs_max_str = vs_max.to_string();
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; display: flex; align-items: center;",
-                                                                input {
-                                                                    r#type: "range",
-                                                                    style: "width: 17px; height: 100%; writing-mode: vertical-lr; direction: rtl; cursor: pointer;",
-                                                                    disabled: !is_enabled,
-                                                                    min: "{vs_min_str}",
-                                                                    max: "{vs_max_str}",
-                                                                    value: "{vs_val_str}",
-                                                                    oninput: move |evt: FormEvent| {
-                                                                        if let Ok(v) = evt.value().parse::<i32>() {
-                                                                            if let Some(frm) = runtime_form.write().as_mut() {
-                                                                                if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                                    ctrl.properties.set("Value", v);
-                                                                                }
-                                                                            }
-                                                                            handle_event(name_clone.clone(), "Scroll".to_string(), None);
-                                                                            handle_event(name_clone.clone(), "ValueChanged".to_string(), None);
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    // ── CheckedListBox ──────────────────────────────────────────────
-                                                    ControlType::CheckedListBox => {
-                                                        let items = control.get_list_items();
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 4px; {base_field_bg} {style_back} {style_font} {style_fore};",
-                                                                for (idx, item) in items.iter().enumerate() {
-                                                                    {
-                                                                        let item_name = name_clone.clone();
-                                                                        let item_idx = idx;
-                                                                        let item_str = item.clone();
-                                                                        rsx! {
-                                                                            div {
-                                                                                key: "{item_idx}",
-                                                                                style: "display: flex; align-items: center; gap: 6px; padding: 2px 6px; cursor: pointer;",
-                                                                                onclick: move |_| {
-                                                                                    handle_event(item_name.clone(), "ItemCheck".to_string(), None);
-                                                                                    handle_event(item_name.clone(), "SelectedIndexChanged".to_string(), None);
-                                                                                },
-                                                                                input {
-                                                                                    r#type: "checkbox",
-                                                                                    disabled: !is_enabled,
-                                                                                }
-                                                                                span { "{item_str}" }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    // ── DomainUpDown ────────────────────────────────────────────────
-                                                    ControlType::DomainUpDown => rsx! {
-                                                        div {
-                                                            style: "display: flex; align-items: center; width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 4px; {base_field_bg} {style_back};",
-                                                            input {
-                                                                style: "flex: 1; border: none; outline: none; background: transparent; padding: 0 4px; {style_font} {style_fore};",
-                                                                disabled: !is_enabled,
-                                                                value: "{text}",
-                                                                oninput: move |evt| {
-                                                                    if let Some(frm) = runtime_form.write().as_mut() {
-                                                                        if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                            ctrl.set_text(evt.value());
-                                                                        }
-                                                                    }
-                                                                    handle_event(name_clone.clone(), "SelectedItemChanged".to_string(), None);
-                                                                }
-                                                            }
-                                                            div {
-                                                                style: "display: flex; flex-direction: column; border-left: 1px solid #cbd5e1;",
-                                                                button { style: "padding: 0 4px; border: none; background: #f1f5f9; cursor: pointer; font-size: 8px; line-height: 1;", disabled: !is_enabled, "▲" }
-                                                                button { style: "padding: 0 4px; border: none; background: #f1f5f9; cursor: pointer; font-size: 8px; line-height: 1;", disabled: !is_enabled, "▼" }
-                                                            }
-                                                        }
-                                                    },
-                                                    // ── PropertyGrid ────────────────────────────────────────────────
-                                                    ControlType::PropertyGrid => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; overflow: auto; {base_field_bg} {style_back} {style_font};",
-                                                            div {
-                                                                style: "padding: 4px 6px; background: #e2e8f0; border-bottom: 1px solid #cbd5e1; font-size: 11px; font-weight: bold; color: #475569;",
-                                                                "Properties"
-                                                            }
-                                                            div {
-                                                                style: "padding: 8px; font-size: 11px; color: #64748b;",
-                                                                "[ PropertyGrid ]"
-                                                            }
-                                                        }
-                                                    },
-                                                    // ── Splitter ────────────────────────────────────────────────────
-                                                    ControlType::Splitter => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; background: #e2e8f0; cursor: col-resize; border-left: 1px solid #cbd5e1; border-right: 1px solid #cbd5e1;",
-                                                        }
-                                                    },
-                                                    // ── DataGrid (legacy) ────────────────────────────────────────────
-                                                    ControlType::DataGrid => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; overflow: auto; {base_field_bg} {style_back} {style_font};",
-                                                            table {
-                                                                style: "width: 100%; border-collapse: collapse; font-size: 12px;",
-                                                                tbody {
-                                                                    tr {
-                                                                        td {
-                                                                            style: "padding: 6px 8px; border: 1px solid #e2e8f0; color: #64748b; text-align: center;",
-                                                                            "[ DataGrid ]"
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    // ── UserControl (container) ──────────────────────────────────────
-                                                    ControlType::UserControl => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; position: relative; border: 1px dashed #94a3b8; {style_back};",
-                                                        }
-                                                    },
-                                                    // ── PrintPreviewControl ──────────────────────────────────────────
-                                                    ControlType::PrintPreviewControl => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; background: #f1f5f9; display: flex; align-items: center; justify-content: center; {style_font};",
-                                                            div {
-                                                                style: "text-align: center; color: #64748b;",
-                                                                div { style: "font-size: 32px; margin-bottom: 8px;", "🖨" }
-                                                                div { style: "font-size: 11px;", "Print Preview" }
-                                                            }
-                                                        }
-                                                    },
-                                                    // ── ToolStrip sub-components (standalone rendering) ──────────────
-                                                    ControlType::ToolStripSeparator => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;",
-                                                            div { style: "width: 1px; height: 80%; background: #cbd5e1;" }
-                                                        }
-                                                    },
-                                                    ControlType::ToolStripButton => rsx! {
-                                                        button {
-                                                            style: "width: 100%; height: 100%; border: 1px solid transparent; background: transparent; cursor: pointer; border-radius: 3px; {style_font} {style_fore}; padding: 2px 4px;",
-                                                            disabled: !is_enabled,
-                                                            onclick: move |_| { handle_event(name_clone.clone(), "Click".to_string(), None); },
-                                                            "{text}"
-                                                        }
-                                                    },
-                                                    ControlType::ToolStripLabel => rsx! {
-                                                        div {
-                                                            style: "width: 100%; height: 100%; display: flex; align-items: center; padding: 0 4px; {style_font} {style_fore} {style_back};",
-                                                            "{text}"
-                                                        }
-                                                    },
-                                                    ControlType::ToolStripComboBox => rsx! {
-                                                        select {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 3px; {base_field_bg} {style_back} {style_font} {style_fore}; padding: 0 2px;",
-                                                            disabled: !is_enabled,
-                                                        }
-                                                    },
-                                                    ControlType::ToolStripDropDownButton | ControlType::ToolStripSplitButton => rsx! {
-                                                        button {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; border-radius: 3px; {style_font} {style_fore}; padding: 2px 4px; display: flex; align-items: center; gap: 2px;",
-                                                            disabled: !is_enabled,
-                                                            onclick: move |_| { handle_event(name_clone.clone(), "Click".to_string(), None); },
-                                                            span { "{text}" }
-                                                            span { style: "font-size: 8px;", "▼" }
-                                                        }
-                                                    },
-                                                    ControlType::ToolStripTextBox => rsx! {
-                                                        input {
-                                                            style: "width: 100%; height: 100%; border: 1px solid #cbd5e1; border-radius: 3px; {base_field_bg} {style_back} {style_font} {style_fore}; padding: 0 4px;",
-                                                            disabled: !is_enabled,
-                                                            value: "{text}",
-                                                            oninput: move |evt| {
-                                                                if let Some(frm) = runtime_form.write().as_mut() {
-                                                                    if let Some(ctrl) = frm.get_control_by_name_mut(&name_clone) {
-                                                                        ctrl.set_text(evt.value());
-                                                                    }
-                                                                }
-                                                                handle_event(name_clone.clone(), "TextChanged".to_string(), None);
-                                                            }
-                                                        }
-                                                    },
-                                                    ControlType::ToolStripProgressBar => {
-                                                        let ts_val = control.properties.get_int("Value").unwrap_or(0);
-                                                        let ts_max = control.properties.get_int("Maximum").unwrap_or(100);
-                                                        let ts_pct = if ts_max > 0 { (ts_val * 100) / ts_max } else { 0 };
-                                                        let ts_pct_str = format!("{}%", ts_pct);
-                                                        rsx! {
-                                                            div {
-                                                                style: "width: 100%; height: 100%; background: #e2e8f0; border: 1px solid #cbd5e1; border-radius: 3px; overflow: hidden;",
-                                                                div {
-                                                                    style: "height: 100%; background: #2563eb; width: {ts_pct_str}; transition: width 0.3s;",
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    _ => rsx! {
-                                                        div { style: "width: 100%; height: 100%; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #666; {style_back}", "{text}" }
-                                                    }
-                                                }}
-                                            }
-                                        }
-                                    }
-                                }
+                            ControlTree {
+                                form: form.clone(),
+                                parent_id: None,
+                                interpreter: interpreter,
+                                wb_html: wb_html,
+                                runtime_form: runtime_form,
+                                on_handle_event: move |(name, evt_name, data)| handle_event(name, evt_name, data),
                             }
                             // MsgBox overlay
                             {if msgbox_visible {

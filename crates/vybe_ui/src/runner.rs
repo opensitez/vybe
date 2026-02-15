@@ -16,8 +16,8 @@ use crate::FormRunner;
 // (Dioxus `launch()` requires a plain fn-pointer, so we can't use a closure.)
 // ---------------------------------------------------------------------------
 thread_local! {
-    static LAUNCH_PROJECT: std::cell::RefCell<Option<Project>> = std::cell::RefCell::new(None);
-    static LAUNCH_TITLE: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+    pub static LAUNCH_PROJECT: std::cell::RefCell<Option<Project>> = std::cell::RefCell::new(None);
+    pub static LAUNCH_TITLE: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
 }
 
 // ---------------------------------------------------------------------------
