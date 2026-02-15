@@ -16,6 +16,7 @@ pub mod xml;
 pub mod cryptography_fns;
 pub mod drawing_fns;
 pub mod concurrent_collections;
+pub mod networking;
 
 pub use msgbox::*;
 pub use string_fns::*;

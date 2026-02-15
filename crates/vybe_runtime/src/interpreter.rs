@@ -22,6 +22,8 @@ pub struct Interpreter {
     current_object: Option<Rc<RefCell<crate::value::ObjectData>>>,
     with_object: Option<Value>,
     pub file_handles: HashMap<i32, crate::file_io::FileHandle>,
+    pub net_handles: HashMap<i64, crate::builtins::networking::NetHandle>,
+    next_net_handle_id: i64,
     pub resources: HashMap<String, String>,
     pub resource_entries: Vec<crate::ResourceEntry>,
     pub command_line_args: Vec<String>,
@@ -99,6 +101,8 @@ impl Interpreter {
             current_object: None,
             with_object: None,
             file_handles: HashMap::new(),
+            net_handles: HashMap::new(),
+            next_net_handle_id: 1,
             resources: HashMap::new(),
             resource_entries: Vec::new(),
             command_line_args: Vec::new(),
@@ -1350,6 +1354,18 @@ impl Interpreter {
              let my_obj = Value::Object(Rc::new(RefCell::new(my_obj_data)));
              self.env.define("my", my_obj);
         }
+    }
+
+    // ── Network handle management ──────────────────────────────────────
+    fn alloc_net_handle(&mut self, handle: crate::builtins::networking::NetHandle) -> i64 {
+        let id = self.next_net_handle_id;
+        self.next_net_handle_id += 1;
+        self.net_handles.insert(id, handle);
+        id
+    }
+
+    fn remove_net_handle(&mut self, id: i64) {
+        self.net_handles.remove(&id);
     }
 
     fn register_builtin_constants(&mut self) {
@@ -4169,14 +4185,23 @@ impl Interpreter {
                     fields.insert("__type".to_string(), Value::String("TcpClient".to_string()));
                     fields.insert("__host".to_string(), Value::String(host.clone()));
                     fields.insert("__port".to_string(), Value::Integer(port));
-                    fields.insert("connected".to_string(), Value::Boolean(false));
                     fields.insert("receivebuffersize".to_string(), Value::Integer(8192));
                     fields.insert("sendbuffersize".to_string(), Value::Integer(8192));
-                    fields.insert("__socket_id".to_string(), Value::Long(0));
-                    fields.insert("__recv_buffer".to_string(), Value::Array(Vec::new()));
-                    // If host and port provided, auto-connect
+                    // If host and port provided, actually connect
                     if !host.is_empty() && port > 0 {
-                        fields.insert("connected".to_string(), Value::Boolean(true));
+                        match crate::builtins::networking::NetHandle::connect_tcp(&host, port, None) {
+                            Ok(handle) => {
+                                let id = self.alloc_net_handle(handle);
+                                fields.insert("__socket_id".to_string(), Value::Long(id));
+                                fields.insert("connected".to_string(), Value::Boolean(true));
+                            }
+                            Err(e) => {
+                                return Err(RuntimeError::Custom(format!("TcpClient connect failed: {}", e)));
+                            }
+                        }
+                    } else {
+                        fields.insert("__socket_id".to_string(), Value::Long(0));
+                        fields.insert("connected".to_string(), Value::Boolean(false));
                     }
                     let obj = crate::value::ObjectData { class_name: "TcpClient".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
@@ -4197,6 +4222,7 @@ impl Interpreter {
                     fields.insert("__address".to_string(), Value::String(addr));
                     fields.insert("__port".to_string(), Value::Integer(port));
                     fields.insert("__active".to_string(), Value::Boolean(false));
+                    fields.insert("__socket_id".to_string(), Value::Long(0));
                     let obj = crate::value::ObjectData { class_name: "TcpListener".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
@@ -4209,7 +4235,16 @@ impl Interpreter {
                     let mut fields = std::collections::HashMap::new();
                     fields.insert("__type".to_string(), Value::String("UdpClient".to_string()));
                     fields.insert("__port".to_string(), Value::Integer(port));
-                    fields.insert("__recv_buffer".to_string(), Value::Array(Vec::new()));
+                    // Actually bind the UDP socket
+                    match crate::builtins::networking::NetHandle::bind_udp(port) {
+                        Ok(handle) => {
+                            let id = self.alloc_net_handle(handle);
+                            fields.insert("__socket_id".to_string(), Value::Long(id));
+                        }
+                        Err(e) => {
+                            return Err(RuntimeError::Custom(format!("UdpClient bind failed: {}", e)));
+                        }
+                    }
                     let obj = crate::value::ObjectData { class_name: "UdpClient".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
@@ -4775,40 +4810,70 @@ impl Interpreter {
 
                 // System.IO.StreamReader
                 if class_name == "streamreader" || class_name == "system.io.streamreader" {
-                    let path = if !ctor_args.is_empty() {
-                        self.evaluate_expr(&ctor_args[0])?.as_string()
-                    } else {
-                        return Err(RuntimeError::Custom("StreamReader requires a file path".to_string()));
-                    };
-                    let content = std::fs::read_to_string(&path)
-                        .map_err(|e| RuntimeError::Custom(format!("StreamReader: {}", e)))?;
+                    if ctor_args.is_empty() {
+                        return Err(RuntimeError::Custom("StreamReader requires a file path or stream".to_string()));
+                    }
+                    let arg0 = self.evaluate_expr(&ctor_args[0])?;
                     let mut fields = std::collections::HashMap::new();
                     fields.insert("__type".to_string(), Value::String("StreamReader".to_string()));
+                    fields.insert("__closed".to_string(), Value::Boolean(false));
+                    // Check if arg is a NetworkStream (has __socket_id)
+                    if let Value::Object(obj_ref) = &arg0 {
+                        let b = obj_ref.borrow();
+                        if let Some(Value::Long(sid)) = b.fields.get("__socket_id") {
+                            if *sid > 0 {
+                                // Network-backed StreamReader
+                                fields.insert("__socket_id".to_string(), Value::Long(*sid));
+                                fields.insert("__content".to_string(), Value::String(String::new()));
+                                fields.insert("__position".to_string(), Value::Integer(0));
+                                let obj = crate::value::ObjectData { class_name: "StreamReader".to_string(), fields };
+                                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                            }
+                        }
+                    }
+                    // File-backed StreamReader
+                    let path = arg0.as_string();
+                    let content = std::fs::read_to_string(&path)
+                        .map_err(|e| RuntimeError::Custom(format!("StreamReader: {}", e)))?;
                     fields.insert("__content".to_string(), Value::String(content));
                     fields.insert("__position".to_string(), Value::Integer(0));
-                    fields.insert("__closed".to_string(), Value::Boolean(false));
                     let obj = crate::value::ObjectData { class_name: "StreamReader".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
                 // System.IO.StreamWriter
                 if class_name == "streamwriter" || class_name == "system.io.streamwriter" {
-                    let path = if !ctor_args.is_empty() {
-                        self.evaluate_expr(&ctor_args[0])?.as_string()
-                    } else {
-                        return Err(RuntimeError::Custom("StreamWriter requires a file path".to_string()));
-                    };
+                    if ctor_args.is_empty() {
+                        return Err(RuntimeError::Custom("StreamWriter requires a file path or stream".to_string()));
+                    }
+                    let arg0 = self.evaluate_expr(&ctor_args[0])?;
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert("__type".to_string(), Value::String("StreamWriter".to_string()));
+                    fields.insert("__closed".to_string(), Value::Boolean(false));
+                    // Check if arg is a NetworkStream (has __socket_id)
+                    if let Value::Object(obj_ref) = &arg0 {
+                        let b = obj_ref.borrow();
+                        if let Some(Value::Long(sid)) = b.fields.get("__socket_id") {
+                            if *sid > 0 {
+                                // Network-backed StreamWriter
+                                fields.insert("__socket_id".to_string(), Value::Long(*sid));
+                                fields.insert("__buffer".to_string(), Value::String(String::new()));
+                                fields.insert("autoflush".to_string(), Value::Boolean(false));
+                                let obj = crate::value::ObjectData { class_name: "StreamWriter".to_string(), fields };
+                                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                            }
+                        }
+                    }
+                    // File-backed StreamWriter
+                    let path = arg0.as_string();
                     let append = if ctor_args.len() >= 2 {
                         self.evaluate_expr(&ctor_args[1])?.as_bool()?
                     } else {
                         false
                     };
-                    let mut fields = std::collections::HashMap::new();
-                    fields.insert("__type".to_string(), Value::String("StreamWriter".to_string()));
                     fields.insert("__path".to_string(), Value::String(path));
                     fields.insert("__buffer".to_string(), Value::String(String::new()));
                     fields.insert("__append".to_string(), Value::Boolean(append));
-                    fields.insert("__closed".to_string(), Value::Boolean(false));
                     let obj = crate::value::ObjectData { class_name: "StreamWriter".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
@@ -5525,6 +5590,11 @@ impl Interpreter {
 
                         // Special: StreamReader.EndOfStream
                         if class_name_str == "StreamReader" && member.as_str().eq_ignore_ascii_case("EndOfStream") {
+                            // Network-backed: check __closed flag (can't peek a socket easily)
+                            if obj_data.fields.contains_key("__socket_id") {
+                                let closed = obj_data.fields.get("__closed").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+                                return Ok(Value::Boolean(closed));
+                            }
                             let content_len = obj_data.fields.get("__content").map(|v| v.as_string().len()).unwrap_or(0);
                             let pos = obj_data.fields.get("__position").map(|v| if let Value::Integer(i) = v { *i as usize } else { 0 }).unwrap_or(0);
                             return Ok(Value::Boolean(pos >= content_len));
@@ -8395,43 +8465,92 @@ impl Interpreter {
 
                     // StreamReader instance methods
                     if type_name == "StreamReader" {
-                        match method_name.as_str() {
-                            "readline" => {
-                                let content = obj_ref.borrow().fields.get("__content").map(|v| v.as_string()).unwrap_or_default();
-                                let pos = obj_ref.borrow().fields.get("__position").map(|v| if let Value::Integer(i) = v { *i as usize } else { 0 }).unwrap_or(0);
-                                if pos >= content.len() {
-                                    return Ok(Value::Nothing); // EOF
+                        // Check if this is a network-backed StreamReader
+                        let socket_id = obj_ref.borrow().fields.get("__socket_id")
+                            .and_then(|v| if let Value::Long(l) = v { Some(*l) } else { None });
+
+                        if let Some(sid) = socket_id {
+                            // Network-backed StreamReader
+                            match method_name.as_str() {
+                                "readline" => {
+                                    if let Some(handle) = self.net_handles.get_mut(&sid) {
+                                        match handle.tcp_read_line() {
+                                            Ok(Some(line)) => return Ok(Value::String(line)),
+                                            Ok(None) => return Ok(Value::Nothing), // EOF
+                                            Err(e) => return Err(RuntimeError::Custom(format!("StreamReader.ReadLine: {}", e))),
+                                        }
+                                    }
+                                    return Ok(Value::Nothing);
                                 }
-                                let remaining = &content[pos..];
-                                if let Some(nl) = remaining.find('\n') {
-                                    let line = remaining[..nl].trim_end_matches('\r').to_string();
-                                    obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Integer((pos + nl + 1) as i32));
-                                    return Ok(Value::String(line));
-                                } else {
-                                    obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Integer(content.len() as i32));
-                                    return Ok(Value::String(remaining.to_string()));
-                                }
-                            }
-                            "readtoend" => {
-                                let content = obj_ref.borrow().fields.get("__content").map(|v| v.as_string()).unwrap_or_default();
-                                let pos = obj_ref.borrow().fields.get("__position").map(|v| if let Value::Integer(i) = v { *i as usize } else { 0 }).unwrap_or(0);
-                                obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Integer(content.len() as i32));
-                                if pos >= content.len() {
+                                "readtoend" => {
+                                    if let Some(handle) = self.net_handles.get_mut(&sid) {
+                                        match handle.tcp_read_to_end() {
+                                            Ok(data) => return Ok(Value::String(data)),
+                                            Err(e) => return Err(RuntimeError::Custom(format!("StreamReader.ReadToEnd: {}", e))),
+                                        }
+                                    }
                                     return Ok(Value::String(String::new()));
                                 }
-                                return Ok(Value::String(content[pos..].to_string()));
+                                "read" => {
+                                    if let Some(handle) = self.net_handles.get_mut(&sid) {
+                                        match handle.tcp_read_byte() {
+                                            Ok(Some(b)) => return Ok(Value::Integer(b as i32)),
+                                            Ok(None) => return Ok(Value::Integer(-1)),
+                                            Err(e) => return Err(RuntimeError::Custom(format!("StreamReader.Read: {}", e))),
+                                        }
+                                    }
+                                    return Ok(Value::Integer(-1));
+                                }
+                                "peek" => {
+                                    // Peek is hard without buffering; just return -1 for network streams
+                                    return Ok(Value::Integer(-1));
+                                }
+                                "close" | "dispose" => {
+                                    obj_ref.borrow_mut().fields.insert("__closed".to_string(), Value::Boolean(true));
+                                    return Ok(Value::Nothing);
+                                }
+                                _ => {}
                             }
-                            "peek" => {
-                                let content = obj_ref.borrow().fields.get("__content").map(|v| v.as_string()).unwrap_or_default();
-                                let pos = obj_ref.borrow().fields.get("__position").map(|v| if let Value::Integer(i) = v { *i as usize } else { 0 }).unwrap_or(0);
-                                if pos >= content.len() { return Ok(Value::Integer(-1)); }
-                                return Ok(Value::Integer(content.as_bytes()[pos] as i32));
+                        } else {
+                            // File-backed StreamReader (existing logic)
+                            match method_name.as_str() {
+                                "readline" => {
+                                    let content = obj_ref.borrow().fields.get("__content").map(|v| v.as_string()).unwrap_or_default();
+                                    let pos = obj_ref.borrow().fields.get("__position").map(|v| if let Value::Integer(i) = v { *i as usize } else { 0 }).unwrap_or(0);
+                                    if pos >= content.len() {
+                                        return Ok(Value::Nothing); // EOF
+                                    }
+                                    let remaining = &content[pos..];
+                                    if let Some(nl) = remaining.find('\n') {
+                                        let line = remaining[..nl].trim_end_matches('\r').to_string();
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Integer((pos + nl + 1) as i32));
+                                        return Ok(Value::String(line));
+                                    } else {
+                                        obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Integer(content.len() as i32));
+                                        return Ok(Value::String(remaining.to_string()));
+                                    }
+                                }
+                                "readtoend" => {
+                                    let content = obj_ref.borrow().fields.get("__content").map(|v| v.as_string()).unwrap_or_default();
+                                    let pos = obj_ref.borrow().fields.get("__position").map(|v| if let Value::Integer(i) = v { *i as usize } else { 0 }).unwrap_or(0);
+                                    obj_ref.borrow_mut().fields.insert("__position".to_string(), Value::Integer(content.len() as i32));
+                                    if pos >= content.len() {
+                                        return Ok(Value::String(String::new()));
+                                    }
+                                    return Ok(Value::String(content[pos..].to_string()));
+                                }
+                                "peek" => {
+                                    let content = obj_ref.borrow().fields.get("__content").map(|v| v.as_string()).unwrap_or_default();
+                                    let pos = obj_ref.borrow().fields.get("__position").map(|v| if let Value::Integer(i) = v { *i as usize } else { 0 }).unwrap_or(0);
+                                    if pos >= content.len() { return Ok(Value::Integer(-1)); }
+                                    return Ok(Value::Integer(content.as_bytes()[pos] as i32));
+                                }
+                                "close" | "dispose" => {
+                                    obj_ref.borrow_mut().fields.insert("__closed".to_string(), Value::Boolean(true));
+                                    return Ok(Value::Nothing);
+                                }
+                                _ => {}
                             }
-                            "close" | "dispose" => {
-                                obj_ref.borrow_mut().fields.insert("__closed".to_string(), Value::Boolean(true));
-                                return Ok(Value::Nothing);
-                            }
-                            _ => {}
                         }
                     }
 
@@ -8441,57 +8560,97 @@ impl Interpreter {
                             .map(|arg| self.evaluate_expr(arg))
                             .collect();
                         let arg_values = arg_values?;
-                        match method_name.as_str() {
-                            "write" => {
-                                let text = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
-                                let mut buf = obj_ref.borrow().fields.get("__buffer").map(|v| v.as_string()).unwrap_or_default();
-                                buf.push_str(&text);
-                                obj_ref.borrow_mut().fields.insert("__buffer".to_string(), Value::String(buf));
-                                return Ok(Value::Nothing);
-                            }
-                            "writeline" => {
-                                let text = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
-                                let mut buf = obj_ref.borrow().fields.get("__buffer").map(|v| v.as_string()).unwrap_or_default();
-                                buf.push_str(&text);
-                                buf.push('\n');
-                                obj_ref.borrow_mut().fields.insert("__buffer".to_string(), Value::String(buf));
-                                return Ok(Value::Nothing);
-                            }
-                            "flush" => {
-                                let path = obj_ref.borrow().fields.get("__path").map(|v| v.as_string()).unwrap_or_default();
-                                let buf = obj_ref.borrow().fields.get("__buffer").map(|v| v.as_string()).unwrap_or_default();
-                                let append = obj_ref.borrow().fields.get("__append").map(|v| if let Value::Boolean(b) = v { *b } else { false }).unwrap_or(false);
-                                if append {
-                                    use std::io::Write;
-                                    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)
-                                        .map_err(|e| RuntimeError::Custom(format!("StreamWriter.Flush: {}", e)))?;
-                                    f.write_all(buf.as_bytes()).map_err(|e| RuntimeError::Custom(format!("StreamWriter.Flush: {}", e)))?;
-                                } else {
-                                    std::fs::write(&path, &buf).map_err(|e| RuntimeError::Custom(format!("StreamWriter.Flush: {}", e)))?;
+
+                        // Check if this is a network-backed StreamWriter
+                        let socket_id = obj_ref.borrow().fields.get("__socket_id")
+                            .and_then(|v| if let Value::Long(l) = v { Some(*l) } else { None });
+
+                        if let Some(sid) = socket_id {
+                            // Network-backed StreamWriter — write directly to socket
+                            match method_name.as_str() {
+                                "write" => {
+                                    let text = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                                    if let Some(handle) = self.net_handles.get_mut(&sid) {
+                                        handle.tcp_write(text.as_bytes())
+                                            .map_err(|e| RuntimeError::Custom(format!("StreamWriter.Write: {}", e)))?;
+                                    }
+                                    return Ok(Value::Nothing);
                                 }
-                                obj_ref.borrow_mut().fields.insert("__buffer".to_string(), Value::String(String::new()));
-                                obj_ref.borrow_mut().fields.insert("__append".to_string(), Value::Boolean(true));
-                                return Ok(Value::Nothing);
+                                "writeline" => {
+                                    let text = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                                    if let Some(handle) = self.net_handles.get_mut(&sid) {
+                                        handle.tcp_write_line(&text)
+                                            .map_err(|e| RuntimeError::Custom(format!("StreamWriter.WriteLine: {}", e)))?;
+                                    }
+                                    return Ok(Value::Nothing);
+                                }
+                                "flush" => {
+                                    if let Some(handle) = self.net_handles.get_mut(&sid) {
+                                        handle.tcp_flush()
+                                            .map_err(|e| RuntimeError::Custom(format!("StreamWriter.Flush: {}", e)))?;
+                                    }
+                                    return Ok(Value::Nothing);
+                                }
+                                "close" | "dispose" => {
+                                    obj_ref.borrow_mut().fields.insert("__closed".to_string(), Value::Boolean(true));
+                                    return Ok(Value::Nothing);
+                                }
+                                _ => {}
                             }
-                            "close" | "dispose" => {
-                                let path = obj_ref.borrow().fields.get("__path").map(|v| v.as_string()).unwrap_or_default();
-                                let buf = obj_ref.borrow().fields.get("__buffer").map(|v| v.as_string()).unwrap_or_default();
-                                let append = obj_ref.borrow().fields.get("__append").map(|v| if let Value::Boolean(b) = v { *b } else { false }).unwrap_or(false);
-                                if !buf.is_empty() {
+                        } else {
+                            // File-backed StreamWriter (existing logic)
+                            match method_name.as_str() {
+                                "write" => {
+                                    let text = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                                    let mut buf = obj_ref.borrow().fields.get("__buffer").map(|v| v.as_string()).unwrap_or_default();
+                                    buf.push_str(&text);
+                                    obj_ref.borrow_mut().fields.insert("__buffer".to_string(), Value::String(buf));
+                                    return Ok(Value::Nothing);
+                                }
+                                "writeline" => {
+                                    let text = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                                    let mut buf = obj_ref.borrow().fields.get("__buffer").map(|v| v.as_string()).unwrap_or_default();
+                                    buf.push_str(&text);
+                                    buf.push('\n');
+                                    obj_ref.borrow_mut().fields.insert("__buffer".to_string(), Value::String(buf));
+                                    return Ok(Value::Nothing);
+                                }
+                                "flush" => {
+                                    let path = obj_ref.borrow().fields.get("__path").map(|v| v.as_string()).unwrap_or_default();
+                                    let buf = obj_ref.borrow().fields.get("__buffer").map(|v| v.as_string()).unwrap_or_default();
+                                    let append = obj_ref.borrow().fields.get("__append").map(|v| if let Value::Boolean(b) = v { *b } else { false }).unwrap_or(false);
                                     if append {
                                         use std::io::Write;
                                         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)
-                                            .map_err(|e| RuntimeError::Custom(format!("StreamWriter.Close: {}", e)))?;
-                                        f.write_all(buf.as_bytes()).map_err(|e| RuntimeError::Custom(format!("StreamWriter.Close: {}", e)))?;
+                                            .map_err(|e| RuntimeError::Custom(format!("StreamWriter.Flush: {}", e)))?;
+                                        f.write_all(buf.as_bytes()).map_err(|e| RuntimeError::Custom(format!("StreamWriter.Flush: {}", e)))?;
                                     } else {
-                                        std::fs::write(&path, &buf).map_err(|e| RuntimeError::Custom(format!("StreamWriter.Close: {}", e)))?;
+                                        std::fs::write(&path, &buf).map_err(|e| RuntimeError::Custom(format!("StreamWriter.Flush: {}", e)))?;
                                     }
+                                    obj_ref.borrow_mut().fields.insert("__buffer".to_string(), Value::String(String::new()));
+                                    obj_ref.borrow_mut().fields.insert("__append".to_string(), Value::Boolean(true));
+                                    return Ok(Value::Nothing);
                                 }
-                                obj_ref.borrow_mut().fields.insert("__buffer".to_string(), Value::String(String::new()));
-                                obj_ref.borrow_mut().fields.insert("__closed".to_string(), Value::Boolean(true));
-                                return Ok(Value::Nothing);
+                                "close" | "dispose" => {
+                                    let path = obj_ref.borrow().fields.get("__path").map(|v| v.as_string()).unwrap_or_default();
+                                    let buf = obj_ref.borrow().fields.get("__buffer").map(|v| v.as_string()).unwrap_or_default();
+                                    let append = obj_ref.borrow().fields.get("__append").map(|v| if let Value::Boolean(b) = v { *b } else { false }).unwrap_or(false);
+                                    if !buf.is_empty() {
+                                        if append {
+                                            use std::io::Write;
+                                            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)
+                                                .map_err(|e| RuntimeError::Custom(format!("StreamWriter.Close: {}", e)))?;
+                                            f.write_all(buf.as_bytes()).map_err(|e| RuntimeError::Custom(format!("StreamWriter.Close: {}", e)))?;
+                                        } else {
+                                            std::fs::write(&path, &buf).map_err(|e| RuntimeError::Custom(format!("StreamWriter.Close: {}", e)))?;
+                                        }
+                                    }
+                                    obj_ref.borrow_mut().fields.insert("__buffer".to_string(), Value::String(String::new()));
+                                    obj_ref.borrow_mut().fields.insert("__closed".to_string(), Value::Boolean(true));
+                                    return Ok(Value::Nothing);
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
 
@@ -8993,26 +9152,126 @@ impl Interpreter {
                             "connect" => {
                                 let host = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
                                 let port = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0);
-                                obj_ref.borrow_mut().fields.insert("__host".to_string(), Value::String(host));
-                                obj_ref.borrow_mut().fields.insert("__port".to_string(), Value::Integer(port));
-                                obj_ref.borrow_mut().fields.insert("connected".to_string(), Value::Boolean(true));
+                                // Remove old handle if any
+                                if let Some(Value::Long(old_id)) = obj_ref.borrow().fields.get("__socket_id") {
+                                    if *old_id > 0 { self.remove_net_handle(*old_id); }
+                                }
+                                match crate::builtins::networking::NetHandle::connect_tcp(&host, port, None) {
+                                    Ok(handle) => {
+                                        let id = self.alloc_net_handle(handle);
+                                        let mut b = obj_ref.borrow_mut();
+                                        b.fields.insert("__host".to_string(), Value::String(host));
+                                        b.fields.insert("__port".to_string(), Value::Integer(port));
+                                        b.fields.insert("__socket_id".to_string(), Value::Long(id));
+                                        b.fields.insert("connected".to_string(), Value::Boolean(true));
+                                    }
+                                    Err(e) => {
+                                        return Err(RuntimeError::Custom(format!("TcpClient.Connect failed: {}", e)));
+                                    }
+                                }
                                 return Ok(Value::Nothing);
                             }
                             "getstream" => {
-                                // Return a NetworkStream-like object (MemoryStream proxy)
+                                let socket_id = obj_ref.borrow().fields.get("__socket_id")
+                                    .and_then(|v| if let Value::Long(id) = v { Some(*id) } else { None })
+                                    .unwrap_or(0);
                                 let mut fields = std::collections::HashMap::new();
                                 fields.insert("__type".to_string(), Value::String("NetworkStream".to_string()));
-                                fields.insert("__data".to_string(), Value::Array(Vec::new()));
+                                fields.insert("__socket_id".to_string(), Value::Long(socket_id));
                                 fields.insert("canread".to_string(), Value::Boolean(true));
                                 fields.insert("canwrite".to_string(), Value::Boolean(true));
-                                fields.insert("position".to_string(), Value::Long(0));
-                                fields.insert("length".to_string(), Value::Long(0));
-                                fields.insert("dataavailable".to_string(), Value::Boolean(false));
                                 let obj = crate::value::ObjectData { class_name: "NetworkStream".to_string(), fields };
                                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                             }
                             "close" | "dispose" => {
-                                obj_ref.borrow_mut().fields.insert("connected".to_string(), Value::Boolean(false));
+                                if let Some(Value::Long(id)) = obj_ref.borrow().fields.get("__socket_id") {
+                                    if *id > 0 {
+                                        let id_val = *id;
+                                        if let Some(handle) = self.net_handles.get_mut(&id_val) {
+                                            let _ = handle.tcp_shutdown();
+                                        }
+                                        self.remove_net_handle(id_val);
+                                    }
+                                }
+                                let mut b = obj_ref.borrow_mut();
+                                b.fields.insert("connected".to_string(), Value::Boolean(false));
+                                b.fields.insert("__socket_id".to_string(), Value::Long(0));
+                                return Ok(Value::Nothing);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ===== NetworkStream instance methods =====
+                    if type_name == "NetworkStream" {
+                        let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
+                        let arg_values = arg_values?;
+                        let socket_id = obj_ref.borrow().fields.get("__socket_id")
+                            .and_then(|v| if let Value::Long(id) = v { Some(*id) } else { None })
+                            .unwrap_or(0);
+                        match method_name.as_str() {
+                            "read" => {
+                                // Read(buffer, offset, count) → returns bytes read
+                                let count = arg_values.get(2).and_then(|v| v.as_integer().ok()).unwrap_or(4096) as usize;
+                                if let Some(handle) = self.net_handles.get_mut(&socket_id) {
+                                    let mut buf = vec![0u8; count];
+                                    match handle.tcp_read(&mut buf) {
+                                        Ok(n) => {
+                                            buf.truncate(n);
+                                            // Update the buffer array arg if provided
+                                            return Ok(Value::Integer(n as i32));
+                                        }
+                                        Err(e) => return Err(RuntimeError::Custom(format!("NetworkStream.Read: {}", e))),
+                                    }
+                                }
+                                return Ok(Value::Integer(0));
+                            }
+                            "readbyte" => {
+                                if let Some(handle) = self.net_handles.get_mut(&socket_id) {
+                                    match handle.tcp_read_byte() {
+                                        Ok(Some(b)) => return Ok(Value::Integer(b as i32)),
+                                        Ok(None) => return Ok(Value::Integer(-1)), // EOF
+                                        Err(e) => return Err(RuntimeError::Custom(format!("NetworkStream.ReadByte: {}", e))),
+                                    }
+                                }
+                                return Ok(Value::Integer(-1));
+                            }
+                            "write" => {
+                                // Write(buffer, offset, count)
+                                let data: Vec<u8> = if let Some(Value::Array(arr)) = arg_values.get(0) {
+                                    arr.iter().map(|v| v.as_integer().unwrap_or(0) as u8).collect()
+                                } else if let Some(val) = arg_values.get(0) {
+                                    val.as_string().into_bytes()
+                                } else {
+                                    Vec::new()
+                                };
+                                if let Some(handle) = self.net_handles.get_mut(&socket_id) {
+                                    match handle.tcp_write(&data) {
+                                        Ok(_) => {}
+                                        Err(e) => return Err(RuntimeError::Custom(format!("NetworkStream.Write: {}", e))),
+                                    }
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "writebyte" => {
+                                let b = arg_values.get(0).and_then(|v| v.as_integer().ok()).unwrap_or(0) as u8;
+                                if let Some(handle) = self.net_handles.get_mut(&socket_id) {
+                                    let _ = handle.tcp_write(&[b]);
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "flush" => {
+                                if let Some(handle) = self.net_handles.get_mut(&socket_id) {
+                                    let _ = handle.tcp_flush();
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "close" | "dispose" => {
+                                if socket_id > 0 {
+                                    if let Some(handle) = self.net_handles.get_mut(&socket_id) {
+                                        let _ = handle.tcp_shutdown();
+                                    }
+                                }
                                 return Ok(Value::Nothing);
                             }
                             _ => {}
@@ -9023,27 +9282,78 @@ impl Interpreter {
                     if type_name == "TcpListener" {
                         match method_name.as_str() {
                             "start" => {
-                                obj_ref.borrow_mut().fields.insert("__active".to_string(), Value::Boolean(true));
+                                let addr = obj_ref.borrow().fields.get("__address")
+                                    .map(|v| v.as_string()).unwrap_or_else(|| "0.0.0.0".to_string());
+                                let port = obj_ref.borrow().fields.get("__port")
+                                    .and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                // Remove old handle if any
+                                if let Some(Value::Long(old_id)) = obj_ref.borrow().fields.get("__socket_id") {
+                                    if *old_id > 0 { self.remove_net_handle(*old_id); }
+                                }
+                                match crate::builtins::networking::NetHandle::bind_listener(&addr, port) {
+                                    Ok(handle) => {
+                                        let id = self.alloc_net_handle(handle);
+                                        let mut b = obj_ref.borrow_mut();
+                                        b.fields.insert("__socket_id".to_string(), Value::Long(id));
+                                        b.fields.insert("__active".to_string(), Value::Boolean(true));
+                                    }
+                                    Err(e) => {
+                                        return Err(RuntimeError::Custom(format!("TcpListener.Start failed: {}", e)));
+                                    }
+                                }
                                 return Ok(Value::Nothing);
                             }
                             "stop" => {
-                                obj_ref.borrow_mut().fields.insert("__active".to_string(), Value::Boolean(false));
+                                if let Some(Value::Long(id)) = obj_ref.borrow().fields.get("__socket_id") {
+                                    if *id > 0 { self.remove_net_handle(*id); }
+                                }
+                                let mut b = obj_ref.borrow_mut();
+                                b.fields.insert("__active".to_string(), Value::Boolean(false));
+                                b.fields.insert("__socket_id".to_string(), Value::Long(0));
                                 return Ok(Value::Nothing);
                             }
                             "accepttcpclient" => {
-                                // Return a new TcpClient stub
-                                let mut fields = std::collections::HashMap::new();
-                                fields.insert("__type".to_string(), Value::String("TcpClient".to_string()));
-                                fields.insert("connected".to_string(), Value::Boolean(true));
-                                fields.insert("__host".to_string(), Value::String("127.0.0.1".to_string()));
-                                fields.insert("__port".to_string(), Value::Integer(0));
-                                fields.insert("receivebuffersize".to_string(), Value::Integer(8192));
-                                fields.insert("sendbuffersize".to_string(), Value::Integer(8192));
-                                fields.insert("__recv_buffer".to_string(), Value::Array(Vec::new()));
-                                let obj = crate::value::ObjectData { class_name: "TcpClient".to_string(), fields };
-                                return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                                let socket_id = obj_ref.borrow().fields.get("__socket_id")
+                                    .and_then(|v| if let Value::Long(id) = v { Some(*id) } else { None })
+                                    .unwrap_or(0);
+                                if let Some(handle) = self.net_handles.get(&socket_id) {
+                                    match handle.listener_accept() {
+                                        Ok((stream, addr)) => {
+                                            let peer_host = addr.split(':').next().unwrap_or("").to_string();
+                                            let peer_port: i32 = addr.split(':').last()
+                                                .and_then(|s| s.parse().ok()).unwrap_or(0);
+                                            match crate::builtins::networking::NetHandle::from_tcp_stream(stream) {
+                                                Ok(client_handle) => {
+                                                    let client_id = self.alloc_net_handle(client_handle);
+                                                    let mut fields = std::collections::HashMap::new();
+                                                    fields.insert("__type".to_string(), Value::String("TcpClient".to_string()));
+                                                    fields.insert("connected".to_string(), Value::Boolean(true));
+                                                    fields.insert("__host".to_string(), Value::String(peer_host));
+                                                    fields.insert("__port".to_string(), Value::Integer(peer_port));
+                                                    fields.insert("__socket_id".to_string(), Value::Long(client_id));
+                                                    fields.insert("receivebuffersize".to_string(), Value::Integer(8192));
+                                                    fields.insert("sendbuffersize".to_string(), Value::Integer(8192));
+                                                    let obj = crate::value::ObjectData { class_name: "TcpClient".to_string(), fields };
+                                                    return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
+                                                }
+                                                Err(e) => return Err(RuntimeError::Custom(format!("AcceptTcpClient: {}", e))),
+                                            }
+                                        }
+                                        Err(e) => return Err(RuntimeError::Custom(format!("AcceptTcpClient: {}", e))),
+                                    }
+                                }
+                                return Err(RuntimeError::Custom("TcpListener not started".to_string()));
                             }
                             "pending" => {
+                                let socket_id = obj_ref.borrow().fields.get("__socket_id")
+                                    .and_then(|v| if let Value::Long(id) = v { Some(*id) } else { None })
+                                    .unwrap_or(0);
+                                if let Some(handle) = self.net_handles.get(&socket_id) {
+                                    match handle.listener_pending() {
+                                        Ok(b) => return Ok(Value::Boolean(b)),
+                                        Err(_) => return Ok(Value::Boolean(false)),
+                                    }
+                                }
                                 return Ok(Value::Boolean(false));
                             }
                             _ => {}
@@ -9054,17 +9364,65 @@ impl Interpreter {
                     if type_name == "UdpClient" {
                         let arg_values: Result<Vec<Value>, RuntimeError> = args.iter().map(|a| self.evaluate_expr(a)).collect();
                         let arg_values = arg_values?;
+                        let socket_id = obj_ref.borrow().fields.get("__socket_id")
+                            .and_then(|v| if let Value::Long(id) = v { Some(*id) } else { None })
+                            .unwrap_or(0);
                         match method_name.as_str() {
                             "send" => {
-                                // send(bytes, length, hostname, port)
-                                let _length = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0);
-                                return Ok(Value::Integer(_length));
+                                // Send(bytes, length, hostname, port)
+                                let data: Vec<u8> = if let Some(Value::Array(arr)) = arg_values.get(0) {
+                                    arr.iter().map(|v| v.as_integer().unwrap_or(0) as u8).collect()
+                                } else {
+                                    Vec::new()
+                                };
+                                let hostname = arg_values.get(2).map(|v| v.as_string()).unwrap_or_default();
+                                let port = arg_values.get(3).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                if let Some(handle) = self.net_handles.get(&socket_id) {
+                                    if !hostname.is_empty() {
+                                        match handle.udp_send_to(&data, &hostname, port) {
+                                            Ok(n) => return Ok(Value::Integer(n as i32)),
+                                            Err(e) => return Err(RuntimeError::Custom(format!("UdpClient.Send: {}", e))),
+                                        }
+                                    } else {
+                                        match handle.udp_send(&data) {
+                                            Ok(n) => return Ok(Value::Integer(n as i32)),
+                                            Err(e) => return Err(RuntimeError::Custom(format!("UdpClient.Send: {}", e))),
+                                        }
+                                    }
+                                }
+                                return Ok(Value::Integer(0));
                             }
                             "receive" => {
-                                // Return empty byte array (stub)
+                                // Receive(ByRef remoteEP) → returns byte array
+                                let buf_size = obj_ref.borrow().fields.get("receivebuffersize")
+                                    .and_then(|v| v.as_integer().ok()).unwrap_or(8192) as usize;
+                                if let Some(handle) = self.net_handles.get(&socket_id) {
+                                    match handle.udp_recv(buf_size) {
+                                        Ok((data, _addr)) => {
+                                            let arr: Vec<Value> = data.into_iter().map(|b| Value::Integer(b as i32)).collect();
+                                            return Ok(Value::Array(arr));
+                                        }
+                                        Err(e) => return Err(RuntimeError::Custom(format!("UdpClient.Receive: {}", e))),
+                                    }
+                                }
                                 return Ok(Value::Array(Vec::new()));
                             }
-                            "close" | "dispose" => { return Ok(Value::Nothing); }
+                            "connect" => {
+                                let host = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                                let port = arg_values.get(1).and_then(|v| v.as_integer().ok()).unwrap_or(0);
+                                if let Some(handle) = self.net_handles.get(&socket_id) {
+                                    if let Err(e) = handle.udp_connect(&host, port) {
+                                        return Err(RuntimeError::Custom(format!("UdpClient.Connect: {}", e)));
+                                    }
+                                }
+                                return Ok(Value::Nothing);
+                            }
+                            "close" | "dispose" => {
+                                if socket_id > 0 {
+                                    self.remove_net_handle(socket_id);
+                                }
+                                return Ok(Value::Nothing);
+                            }
                             _ => {}
                         }
                     }
@@ -9075,36 +9433,108 @@ impl Interpreter {
                         let arg_values = arg_values?;
                         match method_name.as_str() {
                             "send" => {
-                                // SmtpClient.Send(MailMessage) — use system mail command if available
+                                // SmtpClient.Send(MailMessage) — use curl SMTP
                                 if let Some(Value::Object(msg_ref)) = arg_values.get(0) {
                                     let msg = msg_ref.borrow();
                                     let from = msg.fields.get("from").map(|v| v.as_string()).unwrap_or_default();
                                     let to = msg.fields.get("to").map(|v| v.as_string()).unwrap_or_default();
                                     let subject = msg.fields.get("subject").map(|v| v.as_string()).unwrap_or_default();
                                     let body = msg.fields.get("body").map(|v| v.as_string()).unwrap_or_default();
+                                    let is_html = msg.fields.get("isbodyhtml").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+                                    // CC and BCC from MailMessage
+                                    let cc = msg.fields.get("cc").map(|v| v.as_string()).unwrap_or_default();
+                                    let bcc = msg.fields.get("bcc").map(|v| v.as_string()).unwrap_or_default();
+
                                     let host = obj_ref.borrow().fields.get("host").map(|v| v.as_string()).unwrap_or_default();
                                     let port = obj_ref.borrow().fields.get("port").and_then(|v| v.as_integer().ok()).unwrap_or(25);
-                                    // Use curl to send email via SMTP
-                                    let smtp_url = format!("smtp://{}:{}", host, port);
+                                    let enable_ssl = obj_ref.borrow().fields.get("enablessl").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+
+                                    // Credentials (NetworkCredential object or username/password strings)
+                                    let (cred_user, cred_pass) = {
+                                        let obj = obj_ref.borrow();
+                                        if let Some(Value::Object(cred_ref)) = obj.fields.get("credentials") {
+                                            let cred = cred_ref.borrow();
+                                            let u = cred.fields.get("username").map(|v| v.as_string()).unwrap_or_default();
+                                            let p = cred.fields.get("password").map(|v| v.as_string()).unwrap_or_default();
+                                            (u, p)
+                                        } else {
+                                            (String::new(), String::new())
+                                        }
+                                    };
+
+                                    // Build SMTP URL — use smtps:// for SSL on port 465, else smtp:// with --ssl for STARTTLS
+                                    let smtp_url = if enable_ssl && port == 465 {
+                                        format!("smtps://{}:{}", host, port)
+                                    } else {
+                                        format!("smtp://{}:{}", host, port)
+                                    };
+
+                                    let mut curl_args: Vec<String> = vec![
+                                        "--mail-from".to_string(), from.clone(),
+                                        "--mail-rcpt".to_string(), to.clone(),
+                                    ];
+
+                                    // Add CC recipients
+                                    if !cc.is_empty() {
+                                        for addr in cc.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                                            curl_args.push("--mail-rcpt".to_string());
+                                            curl_args.push(addr.to_string());
+                                        }
+                                    }
+                                    // Add BCC recipients
+                                    if !bcc.is_empty() {
+                                        for addr in bcc.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                                            curl_args.push("--mail-rcpt".to_string());
+                                            curl_args.push(addr.to_string());
+                                        }
+                                    }
+
+                                    curl_args.push("--url".to_string());
+                                    curl_args.push(smtp_url);
+
+                                    // SSL/TLS: STARTTLS for non-465 ports
+                                    if enable_ssl && port != 465 {
+                                        curl_args.push("--ssl-reqd".to_string());
+                                    }
+
+                                    // Credentials
+                                    if !cred_user.is_empty() {
+                                        curl_args.push("--user".to_string());
+                                        curl_args.push(format!("{}:{}", cred_user, cred_pass));
+                                    }
+
+                                    curl_args.push("-T".to_string());
+                                    curl_args.push("-".to_string());
+
+                                    // Build email body with headers
+                                    let content_type = if is_html { "text/html" } else { "text/plain" };
+                                    let mut email_body = format!(
+                                        "From: {}\r\nTo: {}\r\nSubject: {}\r\nContent-Type: {}; charset=utf-8\r\n",
+                                        from, to, subject, content_type
+                                    );
+                                    if !cc.is_empty() {
+                                        email_body.push_str(&format!("Cc: {}\r\n", cc));
+                                    }
+                                    email_body.push_str(&format!("\r\n{}", body));
+
+                                    let curl_args_str: Vec<&str> = curl_args.iter().map(|s| s.as_str()).collect();
                                     let status = std::process::Command::new("curl")
-                                        .args(&[
-                                            "--mail-from", &from,
-                                            "--mail-rcpt", &to,
-                                            "--url", &smtp_url,
-                                            "-T", "-",
-                                        ])
+                                        .args(&curl_args_str)
                                         .stdin(std::process::Stdio::piped())
+                                        .stdout(std::process::Stdio::null())
+                                        .stderr(std::process::Stdio::piped())
                                         .spawn()
                                         .and_then(|mut child| {
                                             if let Some(ref mut stdin) = child.stdin {
                                                 use std::io::Write;
-                                                let _ = write!(stdin, "From: {}\r\nTo: {}\r\nSubject: {}\r\n\r\n{}", from, to, subject, body);
+                                                let _ = stdin.write_all(email_body.as_bytes());
                                             }
                                             child.wait()
                                         });
                                     match status {
                                         Ok(s) if s.success() => return Ok(Value::Nothing),
-                                        _ => return Err(RuntimeError::Custom("SmtpClient.Send failed".to_string())),
+                                        Ok(s) => return Err(RuntimeError::Custom(format!("SmtpClient.Send failed with exit code {}", s.code().unwrap_or(-1)))),
+                                        Err(e) => return Err(RuntimeError::Custom(format!("SmtpClient.Send failed: {}", e))),
                                     }
                                 }
                                 return Ok(Value::Nothing);
