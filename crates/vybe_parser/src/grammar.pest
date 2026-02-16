@@ -440,14 +440,14 @@ neg_op = { "-" }
 await_op = { ^"Await" }
 
 // Me keyword rules
-me_keyword = { ^"Me" }
+me_keyword = @{ ^"Me" ~ !(ASCII_ALPHANUMERIC | "_") }
 async_kw = { ^"Async" }
 me_member_call = { me_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ argument_list? ~ ")" }
 me_member_access = { me_keyword ~ ("." ~ member_identifier)+ }
 me_assign_statement = { me_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ expression }
 
 // MyBase keyword rules
-mybase_keyword = { ^"MyBase" }
+mybase_keyword = @{ ^"MyBase" ~ !(ASCII_ALPHANUMERIC | "_") }
 mybase_member_call = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ argument_list? ~ ")" }
 mybase_member_access = { mybase_keyword ~ ("." ~ member_identifier)+ }
 mybase_assign_statement = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ expression }
@@ -560,7 +560,7 @@ array_type_suffix = { "(" ~ ")" }
 generic_suffix = { "(" ~ ^"Of" ~ type_name ~ ("," ~ type_name)* ~ ")" }
 
 // Identifiers
-identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+identifier = @{ "[" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ "]" | !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 // Member identifier: allows keywords like Next, Close, Open, etc. as method/property names after a dot
 member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 

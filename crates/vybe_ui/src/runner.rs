@@ -230,6 +230,7 @@ fn drain_console_effects(interp: &mut Interpreter) {
             RuntimeSideEffect::FormShowDialog { .. } => {}
             RuntimeSideEffect::AddControl { .. } => {}
             RuntimeSideEffect::RunApplication { .. } => {}
+            RuntimeSideEffect::Repaint { .. } => {}
         }
     }
 }

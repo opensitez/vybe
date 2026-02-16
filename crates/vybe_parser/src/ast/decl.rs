@@ -47,6 +47,8 @@ pub struct VariableDecl {
     pub var_type: Option<VBType>,
     pub array_bounds: Option<Vec<Expression>>,
     pub initializer: Option<Expression>,
+    #[serde(default)]
+    pub with_events: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -87,6 +89,7 @@ pub struct FunctionDecl {
     pub parameters: Vec<Parameter>,
     pub return_type: Option<VBType>,
     pub body: Vec<Statement>,
+    pub handles: Option<Vec<String>>,
     #[serde(default)]
     pub is_async: bool,
     #[serde(default)]

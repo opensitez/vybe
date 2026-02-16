@@ -27,7 +27,7 @@ pub fn create_xelement(args: &[Value]) -> Value {
     fields.insert("__children".to_string(), Value::Array(Vec::new()));
     fields.insert("__attributes".to_string(), Value::Array(Vec::new()));
 
-    let obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+    let obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
         class_name: "XmlElement".to_string(),
         fields,
     })));
@@ -47,7 +47,7 @@ pub fn create_xattribute(args: &[Value]) -> Value {
     let mut fields = HashMap::new();
     fields.insert("__name".to_string(), Value::String(name));
     fields.insert("__value".to_string(), Value::String(value));
-    Value::Object(Rc::new(RefCell::new(ObjectData {
+    Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
         class_name: "XmlAttribute".to_string(),
         fields,
     })))
@@ -59,7 +59,7 @@ pub fn create_xdocument(args: &[Value]) -> Value {
     fields.insert("__children".to_string(), Value::Array(Vec::new()));
     fields.insert("__declaration".to_string(), Value::Nothing);
 
-    let obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+    let obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
         class_name: "XmlDocument".to_string(),
         fields,
     })));
@@ -82,7 +82,7 @@ pub fn create_xcomment(args: &[Value]) -> Value {
     let text = args.first().map(|v| v.as_string()).unwrap_or_default();
     let mut fields = HashMap::new();
     fields.insert("__value".to_string(), Value::String(text));
-    Value::Object(Rc::new(RefCell::new(ObjectData {
+    Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
         class_name: "XmlComment".to_string(),
         fields,
     })))
@@ -97,7 +97,7 @@ pub fn create_xdeclaration(args: &[Value]) -> Value {
     fields.insert("version".to_string(), Value::String(version));
     fields.insert("encoding".to_string(), Value::String(encoding));
     fields.insert("standalone".to_string(), Value::String(standalone));
-    Value::Object(Rc::new(RefCell::new(ObjectData {
+    Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
         class_name: "XmlDeclaration".to_string(),
         fields,
     })))
@@ -607,7 +607,7 @@ fn parse_xml_string(xml_str: &str) -> Result<Value, RuntimeError> {
     fields.insert("__children".to_string(), Value::Array(doc_children));
     fields.insert("__declaration".to_string(), declaration);
 
-    Ok(Value::Object(Rc::new(RefCell::new(ObjectData {
+    Ok(Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
         class_name: "XmlDocument".to_string(),
         fields,
     }))))
@@ -668,7 +668,7 @@ fn parse_element_content(
     fields.insert("__children".to_string(), Value::Array(children));
     fields.insert("__attributes".to_string(), Value::Array(attr_values));
 
-    Ok(Value::Object(Rc::new(RefCell::new(ObjectData {
+    Ok(Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
         class_name: "XmlElement".to_string(),
         fields,
     }))))
@@ -691,7 +691,7 @@ fn parse_empty_element(e: &quick_xml::events::BytesStart) -> Result<Value, Runti
     fields.insert("__children".to_string(), Value::Array(Vec::new()));
     fields.insert("__attributes".to_string(), Value::Array(attrs));
 
-    Ok(Value::Object(Rc::new(RefCell::new(ObjectData {
+    Ok(Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
         class_name: "XmlElement".to_string(),
         fields,
     }))))

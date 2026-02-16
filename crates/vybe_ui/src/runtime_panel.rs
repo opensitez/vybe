@@ -1374,6 +1374,7 @@ fn event_type_from_name(name: &str) -> Option<EventType> {
 }
 
 /// Map Dioxus keyboard Key to Windows Forms Virtual Key code (VK_*).
+#[allow(dead_code)]
 fn dioxus_key_to_vk(key: &dioxus::prelude::Key) -> i32 {
     use dioxus::prelude::Key;
     match key {
@@ -1659,6 +1660,7 @@ fn build_control_object(ctrl: &vybe_forms::Control) -> Value {
     Value::Object(Rc::new(RefCell::new(ObjectData {
         class_name: ctrl.control_type.as_str().to_string(),
         fields,
+        drawing_commands: Vec::new(),
     })))
 }
 
@@ -1735,6 +1737,9 @@ fn process_side_effects(
         match effect {
             RuntimeSideEffect::MsgBox(msg) => {
                 msgbox_content.set(Some(msg));
+            }
+            RuntimeSideEffect::Repaint { control_name: _ } => {
+                // TODO: Implement actual UI repaint triggering
             }
             RuntimeSideEffect::RunApplication { form_name } => {
                 let project_read = rp.project.read();

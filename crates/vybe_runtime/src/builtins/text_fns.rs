@@ -93,6 +93,7 @@ pub fn stringbuilder_new_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Object(Rc::new(RefCell::new(ObjectData {
         class_name: "StringBuilder".to_string(),
         fields,
+        drawing_commands: Vec::new(),
     }))))
 }
 
@@ -388,6 +389,7 @@ pub fn encoding_getencoding_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Object(Rc::new(RefCell::new(ObjectData {
         class_name: "Encoding".to_string(),
         fields,
+        drawing_commands: Vec::new(),
     }))))
 }
 
@@ -502,11 +504,19 @@ pub fn regex_match_fn(args: &[Value]) -> Result<Value, RuntimeError> {
                 fields.insert("index".to_string(), Value::Integer(m.start() as i32));
                 fields.insert("length".to_string(), Value::Integer(m.len() as i32));
                 fields.insert("success".to_string(), Value::Boolean(true));
-                Ok(Value::Object(Rc::new(RefCell::new(ObjectData { class_name: "Match".to_string(), fields }))))
+                Ok(Value::Object(Rc::new(RefCell::new(ObjectData { 
+                    class_name: "Match".to_string(), 
+                    fields,
+                    drawing_commands: Vec::new(),
+                }))))
             } else {
                 let mut fields = std::collections::HashMap::new();
                 fields.insert("success".to_string(), Value::Boolean(false));
-                Ok(Value::Object(Rc::new(RefCell::new(ObjectData { class_name: "Match".to_string(), fields }))))
+                Ok(Value::Object(Rc::new(RefCell::new(ObjectData { 
+                    class_name: "Match".to_string(), 
+                    fields,
+                    drawing_commands: Vec::new(),
+                }))))
             }
         },
         Err(e) => Err(RuntimeError::Custom(format!("Invalid regex pattern: {}", e))),
@@ -530,7 +540,11 @@ pub fn regex_matches_fn(args: &[Value]) -> Result<Value, RuntimeError> {
                 fields.insert("value".to_string(), Value::String(m.as_str().to_string()));
                 fields.insert("index".to_string(), Value::Integer(m.start() as i32));
                 fields.insert("length".to_string(), Value::Integer(m.len() as i32));
-                Value::Object(Rc::new(RefCell::new(ObjectData { class_name: "Match".to_string(), fields })))
+                Value::Object(Rc::new(RefCell::new(ObjectData { 
+                    class_name: "Match".to_string(), 
+                    fields,
+                    drawing_commands: Vec::new(),
+                })))
             }).collect();
             Ok(Value::Array(matches))
         },
@@ -632,7 +646,11 @@ fn json_to_value(json: &serde_json::Value) -> Value {
             for (k, v) in obj.iter() {
                 fields.insert(k.clone(), json_to_value(v));
             }
-            Value::Object(Rc::new(RefCell::new(ObjectData { class_name: "JsonObject".to_string(), fields })))
+            Value::Object(Rc::new(RefCell::new(ObjectData { 
+                class_name: "JsonObject".to_string(), 
+                fields,
+                drawing_commands: Vec::new(),
+            })))
         }
     }
 }
@@ -693,7 +711,11 @@ fn xml_to_value(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Value, 
                     }
                 }
                 if !attrs.is_empty() {
-                    map.insert("@attributes".to_string(), Value::Object(Rc::new(RefCell::new(ObjectData { class_name: "Attributes".to_string(), fields: attrs }))));
+                     map.insert("@attributes".to_string(), Value::Object(Rc::new(RefCell::new(ObjectData { 
+                        class_name: "Attributes".to_string(), 
+                        fields: attrs,
+                        drawing_commands: Vec::new(),
+                     }))));
                 }
                 
                 // Recursively parse child element
@@ -738,7 +760,11 @@ fn xml_to_value(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Value, 
     }
     
     use crate::value::ObjectData;
-    Ok(Value::Object(Rc::new(RefCell::new(ObjectData { class_name: "XmlElement".to_string(), fields: map }))))
+    Ok(Value::Object(Rc::new(RefCell::new(ObjectData { 
+        class_name: "XmlElement".to_string(), 
+        fields: map,
+        drawing_commands: Vec::new(),
+    }))))
 }
 
 /// XDocument.Parse(xml) - Parse XML string
@@ -769,7 +795,11 @@ pub fn xml_parse_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     
     use crate::value::ObjectData;
-    Ok(Value::Object(Rc::new(RefCell::new(ObjectData { class_name: "XmlDocument".to_string(), fields: root }))))
+    Ok(Value::Object(Rc::new(RefCell::new(ObjectData { 
+        class_name: "XmlDocument".to_string(), 
+        fields: root,
+        drawing_commands: Vec::new(),
+    }))))
 }
 
 fn value_to_xml(writer: &mut Writer<Cursor<Vec<u8>>>, name: &str, value: &Value) -> Result<(), RuntimeError> {

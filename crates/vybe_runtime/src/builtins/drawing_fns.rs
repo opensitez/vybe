@@ -15,6 +15,7 @@ pub fn create_color_obj(name: &str, argb: u32) -> Value {
     let obj = ObjectData {
         class_name: "System.Drawing.Color".to_string(),
         fields,
+        drawing_commands: Vec::new(),
     };
     Value::Object(Rc::new(RefCell::new(obj)))
 }
@@ -59,6 +60,7 @@ pub fn new_pen_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     let obj = ObjectData {
         class_name: "System.Drawing.Pen".to_string(),
         fields,
+        drawing_commands: Vec::new(),
     };
     Ok(Value::Object(Rc::new(RefCell::new(obj))))
 }
@@ -77,6 +79,7 @@ pub fn new_solid_brush_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     let obj = ObjectData {
         class_name: "System.Drawing.SolidBrush".to_string(),
         fields,
+        drawing_commands: Vec::new(),
     };
     Ok(Value::Object(Rc::new(RefCell::new(obj))))
 }
@@ -87,6 +90,7 @@ pub fn graphics_from_image_fn(_args: &[Value]) -> Result<Value, RuntimeError> {
     let obj = ObjectData {
         class_name: "System.Drawing.Graphics".to_string(),
         fields: HashMap::new(),
+        drawing_commands: Vec::new(),
     };
     Ok(Value::Object(Rc::new(RefCell::new(obj))))
 }

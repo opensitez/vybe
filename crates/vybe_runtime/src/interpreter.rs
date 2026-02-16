@@ -66,15 +66,15 @@ pub struct ImportEntry {
     pub alias: Option<String>,
 }
 
-struct RuntimeRegistry {
-    threads: HashMap<String, std::thread::JoinHandle<()>>,
-    processes: HashMap<String, std::process::Child>,
-    shared_objects: HashMap<String, std::sync::Arc<std::sync::Mutex<crate::value::SharedObjectData>>>,
+pub struct RuntimeRegistry {
+    pub threads: HashMap<String, std::thread::JoinHandle<()>>,
+    pub processes: HashMap<String, std::process::Child>,
+    pub shared_objects: HashMap<String, std::sync::Arc<std::sync::Mutex<crate::value::SharedObjectData>>>,
 }
 
 static REGISTRY: std::sync::OnceLock<std::sync::Mutex<RuntimeRegistry>> = std::sync::OnceLock::new();
 
-fn get_registry() -> &'static std::sync::Mutex<RuntimeRegistry> {
+pub fn get_registry() -> &'static std::sync::Mutex<RuntimeRegistry> {
     REGISTRY.get_or_init(|| std::sync::Mutex::new(RuntimeRegistry {
         threads: HashMap::new(),
         processes: HashMap::new(),
@@ -124,6 +124,119 @@ impl Interpreter {
         interp
     }
 
+    fn wire_events(&mut self, object: &Value, field_name: &str, host_instance: Rc<RefCell<ObjectData>>) {
+         // Get runtime name of object
+         let mut runtime_name = String::new();
+         if let Value::Object(obj_ref) = object {
+             if let Some(Value::String(s)) = obj_ref.borrow().fields.get("name") {
+                 runtime_name = s.clone();
+             }
+         } else if let Value::String(s) = object {
+             // For string proxies
+             runtime_name = s.clone();
+         }
+         
+         if runtime_name.is_empty() { return; }
+         
+         let class_name = host_instance.borrow().class_name.clone();
+         
+         if let Some(class_decl) = self.classes.get(&class_name.to_lowercase()) {
+             use vybe_parser::MethodDecl;
+             for method_enum in class_decl.methods.iter() {
+                 let (method_name, handles) = match method_enum {
+                     MethodDecl::Sub(s) => (s.name.as_str(), &s.handles),
+                     MethodDecl::Function(f) => (f.name.as_str(), &f.handles),
+                 };
+                 
+                 if let Some(handles_vec) = handles {
+                      for handle in handles_vec {
+                           // Handle is "varname.eventname"
+                           let parts: Vec<&str> = handle.split('.').collect();
+                           if parts.len() == 2 {
+                                let var = parts[0];
+                                let evt = parts[1];
+                                if var.eq_ignore_ascii_case(field_name) {
+                                     // Found a match
+                                     let event_type = match evt.to_lowercase().as_str() {
+                                         "click" => vybe_forms::EventType::Click,
+                                         "load" => vybe_forms::EventType::Load,
+                                         "resize" => vybe_forms::EventType::Resize,
+                                         "formclosed" => vybe_forms::EventType::FormClosed,
+                                         "paint" => vybe_forms::EventType::Paint,
+                                         "mousedown" => vybe_forms::EventType::MouseDown,
+                                         "mouseup" => vybe_forms::EventType::MouseUp,
+                                         "mousemove" => vybe_forms::EventType::MouseMove,
+                                         "keydown" => vybe_forms::EventType::KeyDown,
+                                         "keyup" => vybe_forms::EventType::KeyUp,
+                                         "keypress" => vybe_forms::EventType::KeyPress,
+                                         "textchanged" => vybe_forms::EventType::TextChanged,
+                                          // Add more as needed
+                                         _ => continue, 
+                                     };
+                                     
+                                     self.events.register_handler(&runtime_name, &event_type, method_name);
+                                }
+                           }
+                      }
+                 }
+             }
+         }
+    }
+
+    fn unwire_events(&mut self, object: &Value, field_name: &str, host_instance: Rc<RefCell<ObjectData>>) {
+         let mut runtime_name = String::new();
+         if let Value::Object(obj_ref) = object {
+             if let Some(Value::String(s)) = obj_ref.borrow().fields.get("name") {
+                 runtime_name = s.clone();
+             }
+         } else if let Value::String(s) = object {
+             runtime_name = s.clone();
+         }
+         
+         if runtime_name.is_empty() { return; }
+         
+         let class_name = host_instance.borrow().class_name.clone();
+         
+         if let Some(class_decl) = self.classes.get(&class_name.to_lowercase()) {
+             use vybe_parser::MethodDecl;
+             for method_enum in class_decl.methods.iter() {
+                 let (method_name, handles) = match method_enum {
+                     MethodDecl::Sub(s) => (s.name.as_str(), &s.handles),
+                     MethodDecl::Function(f) => (f.name.as_str(), &f.handles),
+                 };
+                 
+                 if let Some(handles_vec) = handles {
+                      for handle in handles_vec {
+                           let parts: Vec<&str> = handle.split('.').collect();
+                           if parts.len() == 2 {
+                                let var = parts[0];
+                                let evt = parts[1];
+                                if var.eq_ignore_ascii_case(field_name) {
+                                     let event_type = match evt.to_lowercase().as_str() {
+                                         "click" => vybe_forms::EventType::Click,
+                                         "load" => vybe_forms::EventType::Load,
+                                         "resize" => vybe_forms::EventType::Resize,
+                                         "formclosed" => vybe_forms::EventType::FormClosed,
+                                         "paint" => vybe_forms::EventType::Paint,
+                                         "mousedown" => vybe_forms::EventType::MouseDown,
+                                         "mouseup" => vybe_forms::EventType::MouseUp,
+                                         "mousemove" => vybe_forms::EventType::MouseMove,
+                                         "keydown" => vybe_forms::EventType::KeyDown,
+                                         "keyup" => vybe_forms::EventType::KeyUp,
+                                         "keypress" => vybe_forms::EventType::KeyPress,
+                                         "textchanged" => vybe_forms::EventType::TextChanged,
+                                         _ => continue, 
+                                     };
+                                     
+                                     self.events.remove_handler(&runtime_name, &event_type, method_name);
+                                }
+                           }
+                      }
+                 }
+             }
+         }
+    }
+
     pub fn new_background(
         functions: HashMap<String, vybe_parser::ast::decl::FunctionDecl>,
         subs: HashMap<String, vybe_parser::ast::decl::SubDecl>,
@@ -140,14 +253,14 @@ impl Interpreter {
 
     pub fn init_namespaces(&mut self) {
         // Create System.IO.File object
-        let file_obj_data = ObjectData {
+        let file_obj_data = ObjectData { drawing_commands: Vec::new(),
             class_name: "System.IO.File".to_string(),
             fields: HashMap::new(),
         };
         let file_obj = Value::Object(Rc::new(RefCell::new(file_obj_data)));
 
         // Create System.IO.Path object
-        let path_obj_data = ObjectData {
+        let path_obj_data = ObjectData { drawing_commands: Vec::new(),
             class_name: "System.IO.Path".to_string(),
             fields: HashMap::new(),
         };
@@ -166,7 +279,7 @@ impl Interpreter {
         console_fields.insert("bufferwidth".to_string(), Value::Integer(80));
         console_fields.insert("bufferheight".to_string(), Value::Integer(300));
         console_fields.insert("keyavailable".to_string(), Value::Boolean(false));
-        let console_obj_data = ObjectData {
+        let console_obj_data = ObjectData { drawing_commands: Vec::new(),
             class_name: "System.Console".to_string(),
             fields: console_fields,
         };
@@ -190,12 +303,12 @@ impl Interpreter {
         cc_fields.insert("magenta".to_string(), Value::Integer(13));
         cc_fields.insert("yellow".to_string(), Value::Integer(14));
         cc_fields.insert("white".to_string(), Value::Integer(15));
-        let cc_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let cc_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "ConsoleColor".to_string(), fields: cc_fields,
         })));
 
         // Create System.Math object
-        let math_obj_data = ObjectData {
+        let math_obj_data = ObjectData { drawing_commands: Vec::new(),
             class_name: "System.Math".to_string(),
             fields: HashMap::new(),
         };
@@ -206,7 +319,7 @@ impl Interpreter {
         io_fields.insert("file".to_string(), file_obj);
         io_fields.insert("path".to_string(), path_obj);
         
-        let io_obj_data = ObjectData {
+        let io_obj_data = ObjectData { drawing_commands: Vec::new(),
             class_name: "Namespace".to_string(),
             fields: io_fields,
         };
@@ -220,20 +333,20 @@ impl Interpreter {
         // System.DBNull
         let mut dbnull_fields = HashMap::new();
         dbnull_fields.insert("value".to_string(), Value::Nothing);
-        let dbnull_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let dbnull_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "DBNull".to_string(), fields: dbnull_fields,
         })));
         system_fields.insert("dbnull".to_string(), dbnull_obj.clone());
         
         // System.BitConverter
-        let bit_converter_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let bit_converter_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "BitConverter".to_string(),
             fields: HashMap::new(),
         })));
         system_fields.insert("bitconverter".to_string(), bit_converter_obj);
         
         // Create System.Text.Encoding.UTF8 object
-        let utf8_obj_data = ObjectData {
+        let utf8_obj_data = ObjectData { drawing_commands: Vec::new(),
             class_name: "Utf8Encoding".to_string(),
             fields: HashMap::new(),
         };
@@ -242,31 +355,31 @@ impl Interpreter {
         let mut text_fields = HashMap::new();
         let mut encoding_fields = HashMap::new();
         encoding_fields.insert("utf8".to_string(), utf8_obj);
-        let encoding_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let encoding_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Namespace".to_string(), fields: encoding_fields,
         })));
         text_fields.insert("encoding".to_string(), encoding_obj.clone());
-        let text_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let text_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Namespace".to_string(), fields: text_fields,
         })));
         // Create System.Security.Cryptography objects
-        let md5_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let md5_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "MD5".to_string(), fields: HashMap::new(),
         })));
-        let sha256_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let sha256_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "SHA256".to_string(), fields: HashMap::new(),
         })));
         
         let mut crypto_fields = HashMap::new();
         crypto_fields.insert("md5".to_string(), md5_class_obj.clone());
         crypto_fields.insert("sha256".to_string(), sha256_class_obj.clone());
-        let crypto_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let crypto_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Namespace".to_string(), fields: crypto_fields,
         })));
         
         let mut security_fields = HashMap::new();
         security_fields.insert("cryptography".to_string(), crypto_obj.clone());
-        let security_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let security_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Namespace".to_string(), fields: security_fields,
         })));
         system_fields.insert("security".to_string(), security_obj.clone());
@@ -274,20 +387,20 @@ impl Interpreter {
 
         // System.Diagnostics.Process + ProcessStartInfo
         let mut diag_fields = HashMap::new();
-        let process_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let process_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Process".to_string(), fields: HashMap::new(),
         })));
-        let psi_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let psi_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "ProcessStartInfo".to_string(), fields: HashMap::new(),
         })));
         diag_fields.insert("process".to_string(), process_class_obj);
         diag_fields.insert("processstartinfo".to_string(), psi_class_obj);
-        let diag_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let diag_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Namespace".to_string(), fields: diag_fields,
         })));
         system_fields.insert("diagnostics".to_string(), diag_obj.clone());
         
-        let system_obj_data = ObjectData {
+        let system_obj_data = ObjectData { drawing_commands: Vec::new(),
             class_name: "Namespace".to_string(),
             fields: system_fields,
         };
@@ -295,12 +408,12 @@ impl Interpreter {
 
         // Create System.Windows.Forms namespace
         let mut swf_fields = HashMap::new();
-        let app_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let app_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Application".to_string(), fields: HashMap::new(),
         })));
         swf_fields.insert("application".to_string(), app_class_obj.clone());
         
-        let swf_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let swf_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Namespace".to_string(), fields: swf_fields,
         })));
         
@@ -334,27 +447,27 @@ impl Interpreter {
         // ── System.Drawing ──────────────────────────────────────────────────────
         let mut drawing_fields = HashMap::new();
         // Color
-        let color_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let color_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Color".to_string(), fields: HashMap::new(),
         })));
         drawing_fields.insert("color".to_string(), color_class_obj.clone());
         // Pen
-        let pen_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let pen_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Pen".to_string(), fields: HashMap::new(),
         })));
         drawing_fields.insert("pen".to_string(), pen_class_obj.clone());
         // SolidBrush
-        let brush_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let brush_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "SolidBrush".to_string(), fields: HashMap::new(),
         })));
         drawing_fields.insert("solidbrush".to_string(), brush_class_obj.clone());
         // Graphics
-        let graphics_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let graphics_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Graphics".to_string(), fields: HashMap::new(),
         })));
         drawing_fields.insert("graphics".to_string(), graphics_class_obj.clone());
 
-        let drawing_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let drawing_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "Namespace".to_string(), fields: drawing_fields,
         })));
         
@@ -370,7 +483,7 @@ impl Interpreter {
         self.env.define("graphics", graphics_class_obj);
 
         // ── System.Windows.Forms.MessageBox ─────────────────────────────────────
-        let msgbox_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let msgbox_class_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "MessageBox".to_string(), fields: HashMap::new(),
         })));
         if let Value::Object(swf_ref) = &swf_obj {
@@ -390,14 +503,14 @@ impl Interpreter {
         info_fields.insert("companyname".to_string(), Value::String(String::new()));
         info_fields.insert("copyright".to_string(), Value::String(String::new()));
         info_fields.insert("description".to_string(), Value::String(String::new()));
-        let info_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let info_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "My.Application.Info".to_string(),
             fields: info_fields,
         })));
 
         let mut cmd_args_fields = HashMap::new();
         cmd_args_fields.insert("count".to_string(), Value::Integer(0));
-        let cmd_args_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let cmd_args_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "CommandLineArgs".to_string(),
             fields: cmd_args_fields,
         })));
@@ -405,7 +518,7 @@ impl Interpreter {
         let mut my_app_fields = HashMap::new();
         my_app_fields.insert("info".to_string(), info_obj);
         my_app_fields.insert("commandlineargs".to_string(), cmd_args_obj);
-        let my_app_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let my_app_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "My.Application".to_string(),
             fields: my_app_fields,
         })));
@@ -413,7 +526,7 @@ impl Interpreter {
         // Create the My namespace with Application; Resources added later by register_resource_entries
         let mut my_fields = HashMap::new();
         my_fields.insert("application".to_string(), my_app_obj.clone());
-        let my_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let my_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "My".to_string(),
             fields: my_fields,
         })));
@@ -526,7 +639,7 @@ impl Interpreter {
     pub fn make_event_args() -> Value {
         let mut fields = std::collections::HashMap::new();
         fields.insert("__type".to_string(), Value::String("EventArgs".to_string()));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "EventArgs".to_string(),
             fields,
         })))
@@ -540,7 +653,7 @@ impl Interpreter {
         fields.insert("x".to_string(), Value::Integer(x));
         fields.insert("y".to_string(), Value::Integer(y));
         fields.insert("isempty".to_string(), Value::Boolean(x == 0 && y == 0));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "Point".to_string(), fields,
         })))
     }
@@ -551,7 +664,7 @@ impl Interpreter {
         fields.insert("width".to_string(), Value::Integer(w));
         fields.insert("height".to_string(), Value::Integer(h));
         fields.insert("isempty".to_string(), Value::Boolean(w == 0 && h == 0));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "Size".to_string(), fields,
         })))
     }
@@ -567,7 +680,7 @@ impl Interpreter {
         fields.insert("top".to_string(), Value::Integer(y));
         fields.insert("right".to_string(), Value::Integer(x + w));
         fields.insert("bottom".to_string(), Value::Integer(y + h));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "Rectangle".to_string(), fields,
         })))
     }
@@ -1123,7 +1236,7 @@ impl Interpreter {
         fields.insert("y".to_string(), Value::Integer(y));
         fields.insert("delta".to_string(), Value::Integer(delta));
         fields.insert("location".to_string(), Self::make_point(x, y));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "MouseEventArgs".to_string(),
             fields,
         })))
@@ -1141,7 +1254,7 @@ impl Interpreter {
         fields.insert("alt".to_string(), Value::Boolean(alt));
         fields.insert("handled".to_string(), Value::Boolean(false));
         fields.insert("suppresskeypress".to_string(), Value::Boolean(false));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "KeyEventArgs".to_string(),
             fields,
         })))
@@ -1153,7 +1266,7 @@ impl Interpreter {
         fields.insert("__type".to_string(), Value::String("KeyPressEventArgs".to_string()));
         fields.insert("keychar".to_string(), Value::Char(key_char));
         fields.insert("handled".to_string(), Value::Boolean(false));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "KeyPressEventArgs".to_string(),
             fields,
         })))
@@ -1166,7 +1279,7 @@ impl Interpreter {
         fields.insert("cancel".to_string(), Value::Boolean(false));
         // CloseReason enum: 0=None, 1=WindowsShutDown, 2=MdiFormClosing, 3=UserClosing, 4=TaskManagerClosing, 5=FormOwnerClosing, 6=ApplicationExitCall
         fields.insert("closereason".to_string(), Value::Integer(close_reason));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "FormClosingEventArgs".to_string(),
             fields,
         })))
@@ -1177,7 +1290,7 @@ impl Interpreter {
         let mut fields = std::collections::HashMap::new();
         fields.insert("__type".to_string(), Value::String("FormClosedEventArgs".to_string()));
         fields.insert("closereason".to_string(), Value::Integer(close_reason));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "FormClosedEventArgs".to_string(),
             fields,
         })))
@@ -1189,7 +1302,7 @@ impl Interpreter {
         fields.insert("__type".to_string(), Value::String("PaintEventArgs".to_string()));
         // Graphics and ClipRectangle are stubs
         fields.insert("cliprectangle".to_string(), Value::String("0, 0, 0, 0".to_string()));
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: "PaintEventArgs".to_string(),
             fields,
         })))
@@ -1303,7 +1416,7 @@ impl Interpreter {
                     fields.insert("resourcetype".to_string(), Value::String(entry.resource_type.clone()));
                     // ToString returns the file path
                     fields.insert("__tostring".to_string(), Value::String(entry.file_path.clone().unwrap_or(entry.value.clone())));
-                    Value::Object(Rc::new(RefCell::new(ObjectData {
+                    Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
                         class_name: format!("Resource.{}", entry.resource_type),
                         fields,
                     })))
@@ -1326,13 +1439,13 @@ impl Interpreter {
                 Value::String(entry.value.clone()),
             );
         }
-        let rm_obj = Value::Object(Rc::new(RefCell::new(ObjectData {
+        let rm_obj = Value::Object(Rc::new(RefCell::new(ObjectData { drawing_commands: Vec::new(),
             class_name: "ResourceManager".to_string(),
             fields: rm_fields,
         })));
         res_fields.insert("resourcemanager".to_string(), rm_obj);
 
-        let res_obj_data = ObjectData {
+        let res_obj_data = ObjectData { drawing_commands: Vec::new(),
             class_name: "My.Resources".to_string(),
             fields: res_fields,
         };
@@ -1347,7 +1460,7 @@ impl Interpreter {
              let mut my_fields = HashMap::new();
              my_fields.insert("resources".to_string(), res_obj);
              
-             let my_obj_data = ObjectData {
+             let my_obj_data = ObjectData { drawing_commands: Vec::new(),
                  class_name: "My".to_string(),
                  fields: my_fields,
              };
@@ -1795,126 +1908,50 @@ impl Interpreter {
             .cloned()
     }
 
-    // Helper to collect all fields including inherited ones
+    /// Collect all fields (including inherited) for a class, initializing them
+    /// from their declarations. Returns a HashMap suitable for ObjectData.fields.
     fn collect_fields(&mut self, class_name: &str) -> HashMap<String, Value> {
         let mut fields = HashMap::new();
-        
-        let resolved = self.resolve_class_key(class_name);
-        // 1. Get base class fields first (if any)
-        if let Some(cls) = resolved.and_then(|k| self.classes.get(&k).cloned()) {
-             if let Some(parent_type) = &cls.inherits {
-                 // Resolve parent type to string
-                 // VBType::Custom(name) usually
-                 let parent_name = match parent_type {
-                     vybe_parser::VBType::Custom(n) => Some(n.clone()),
-                     vybe_parser::VBType::Object => None, // Object has no fields
-                     _ => None, // Primitives don't have fields
-                 };
-                 
-                 if let Some(p_name) = parent_name {
-                     let parent_fields = self.collect_fields(&p_name);
-                     fields.extend(parent_fields);
-                 }
-             }
-             
-             // 2. Add/Override with current class fields
-            for field in &cls.fields {
-                 let init_val = if let Some(expr) = &field.initializer {
-                     self.evaluate_expr(expr).unwrap_or(Value::Nothing) 
-                 } else {
-                     match &field.var_type {
-                         Some(t) => match t {
-                             vybe_parser::VBType::Integer => Value::Integer(0),
-                             vybe_parser::VBType::Long => Value::Long(0),
-                             vybe_parser::VBType::Single => Value::Single(0.0),
-                             vybe_parser::VBType::Double => Value::Double(0.0),
-                             vybe_parser::VBType::String => Value::String("".to_string()),
-                             vybe_parser::VBType::Boolean => Value::Boolean(false),
-                             vybe_parser::VBType::Custom(s) => {
-                                 let s_lower = s.to_lowercase();
-                                 if s_lower.contains("system.windows.forms.") || 
-                                    s_lower == "button" || 
-                                    s_lower == "label" || 
-                                    s_lower == "textbox" || 
-                                    s_lower == "checkbox" || 
-                                    s_lower == "radiobutton" ||
-                                    s_lower == "groupbox" ||
-                                    s_lower == "panel" ||
-                                    s_lower == "form" ||
-                                    s_lower == "datagridview" ||
-                                    s_lower == "combobox" ||
-                                    s_lower == "listbox" ||
-                                    s_lower == "picturebox" ||
-                                    s_lower == "timer" ||
-                                    s_lower == "toolstrip" ||
-                                    s_lower == "menustrip" ||
-                                    s_lower == "statusstrip" ||
-                                    s_lower == "tabcontrol" ||
-                                    s_lower == "richtextbox" ||
-                                    s_lower == "progressbar" ||
-                                    s_lower == "trackbar" ||
-                                    s_lower == "numericupdown" ||
-                                    s_lower == "datetimepicker" ||
-                                    s_lower == "monthcalendar" ||
-                                    s_lower == "treeview" ||
-                                    s_lower == "listview" ||
-                                    s_lower == "webbrowser" ||
-                                    s_lower == "errorprovider" ||
-                                    s_lower == "tooltip" ||
-                                    s_lower == "bindingnavigator" ||
-                                    s_lower == "bindingsource" ||
-                                    s_lower == "component" ||
-                                    s_lower == "container" ||
-                                    s_lower == "contextmenustrip" ||
-                                    s_lower == "flowlayoutpanel" ||
-                                    s_lower == "tablelayoutpanel" ||
-                                    s_lower == "splitcontainer" ||
-                                    s_lower == "propertygrid" ||
-                                    s_lower == "domainupdown" ||
-                                    s_lower == "maskedtextbox" ||
-                                    s_lower == "linklabel" ||
-                                    s_lower == "printdocument" ||
-                                    s_lower == "printpreviewcontrol" ||
-                                    s_lower == "printpreviewdialog" ||
-                                    s_lower == "pagesetupdialog" ||
-                                    s_lower == "printdialog" ||
-                                    s_lower == "colordialog" ||
-                                    s_lower == "fontdialog" ||
-                                    s_lower == "folderbrowserdialog" ||
-                                    s_lower == "openfiledialog" ||
-                                    s_lower == "savefiledialog" ||
-                                    s_lower == "checkedlistbox" ||
-                                    s_lower == "splitter" ||
-                                    s_lower == "datagrid" ||
-                                    s_lower == "usercontrol" ||
-                                    s_lower == "toolstripseparator" ||
-                                    s_lower == "toolstripbutton" ||
-                                    s_lower == "toolstriplabel" ||
-                                    s_lower == "toolstripcombobox" ||
-                                    s_lower == "toolstripdropdownbutton" ||
-                                    s_lower == "toolstripsplitbutton" ||
-                                    s_lower == "toolstriptextbox" ||
-                                    s_lower == "toolstripprogressbar" ||
-                                    s_lower == "helpprovider" ||
-                                    s_lower == "dataview"
-                                 {
-                                     Value::String(field.name.as_str().to_string())
-                                 } else {
-                                     Value::Nothing
-                                 }
-                             }
-                             _ => Value::Nothing,
-                         },
-                         None => Value::Nothing,
-                     }
-                 };
-                 fields.insert(field.name.as_str().to_lowercase(), init_val);
-             }
+        fields.insert("__type".to_string(), Value::String(class_name.to_string()));
+
+        // Collect the class hierarchy (base first, derived last)
+        let mut chain = Vec::new();
+        let mut current = class_name.to_lowercase();
+        loop {
+            let key = match self.resolve_class_key(&current) {
+                Some(k) => k,
+                None => break,
+            };
+            let cls = match self.classes.get(&key).cloned() {
+                Some(c) => c,
+                None => break,
+            };
+            let base = cls.inherits.as_ref().and_then(|t| {
+                if let vybe_parser::VBType::Custom(n) = t { Some(n.to_lowercase()) } else { None }
+            });
+            chain.push(cls);
+            match base {
+                Some(b) => current = b,
+                None => break,
+            }
         }
-        
+        chain.reverse(); // base first
+
+        for cls in &chain {
+            for field in &cls.fields {
+                let field_name = field.name.as_str().to_lowercase();
+                let default_val = if let Some(init) = &field.initializer {
+                    self.evaluate_expr(init).unwrap_or(Value::Nothing)
+                } else {
+                    Value::Nothing
+                };
+                fields.insert(field_name, default_val);
+            }
+        }
+
         fields
     }
-
+             
     // Helper to find a method in class hierarchy
     fn find_method(&self, class_name: &str, method_name: &str) -> Option<vybe_parser::ast::decl::MethodDecl> {
         let key = self.resolve_class_key(class_name)?;
@@ -2059,9 +2096,32 @@ impl Interpreter {
 
                 // 2. Check if it's a field in the current object
                 if let Some(obj_rc) = &self.current_object {
-                    let mut obj = obj_rc.borrow_mut();
-                    // Create or update instance field
-                    obj.fields.insert(target_lower, val);
+                    // Check if field is WithEvents before modification
+                    let (is_withevents, old_val) = {
+                        let obj = obj_rc.borrow();
+                        let class_name = obj.class_name.clone();
+                        let old = obj.fields.get(target_lower.as_str()).cloned();
+                        
+                        let is_we = if let Some(cls) = self.classes.get(&class_name.to_lowercase()) {
+                             cls.fields.iter().any(|f| f.name.as_str().eq_ignore_ascii_case(target_str) && f.with_events)
+                        } else { false };
+                        (is_we, old)
+                    };
+
+                    {
+                        let mut obj = obj_rc.borrow_mut();
+                        // Create or update instance field
+                        obj.fields.insert(target_lower.clone(), val.clone());
+                    }
+                    
+                    if is_withevents {
+                        let host = obj_rc.clone();
+                         if let Some(old) = old_val {
+                             self.unwire_events(&old, target_str, host.clone());
+                         }
+                         self.wire_events(&val, target_str, host);
+                    }
+
                     return Ok(());
                 }
 
@@ -2293,7 +2353,26 @@ impl Interpreter {
                         } else {
                             val.clone()
                         };
+                        // Check if field is WithEvents (we need to know the Class of obj_ref)
+                        let (is_withevents, old_val) = {
+                             let obj = obj_ref.borrow();
+                             let class_name = obj.class_name.clone();
+                             let old = obj.fields.get(&member_lower).cloned();
+                             let is_we = if let Some(cls) = self.classes.get(&class_name.to_lowercase()) {
+                                  cls.fields.iter().any(|f| f.name.as_str().eq_ignore_ascii_case(&prop_name) && f.with_events)
+                             } else { false };
+                             (is_we, old)
+                        };
+
                         obj_ref.borrow_mut().fields.insert(member_lower.clone(), store_val.clone());
+                        
+                        if is_withevents {
+                            let host = obj_ref.clone();
+                             if let Some(old) = old_val {
+                                 self.unwire_events(&old, &prop_name, host.clone());
+                             }
+                             self.wire_events(&store_val, &prop_name, host);
+                        }
 
                         // StringBuilder.Length setter: truncate or pad the buffer
                         if obj_type == "StringBuilder" && member_lower == "length" {
@@ -2743,11 +2822,18 @@ impl Interpreter {
             }
 
             Statement::AddHandler { event_target, handler } => {
-                // event_target = "Button1.Click", handler = "HandleClick" or "Me.HandleClick"
-                let parts: Vec<&str> = event_target.splitn(2, '.').collect();
+                // event_target = "Button1.Click" or "Me.Button1.Click"
+                // Strip "Me." prefix if present
+                let target = if event_target.to_lowercase().starts_with("me.") {
+                    &event_target[3..]
+                } else {
+                    event_target.as_str()
+                };
+                let parts: Vec<&str> = target.rsplitn(2, '.').collect();
+                // rsplitn(2, '.') on "btnListen.Click" gives ["Click", "btnListen"]
                 if parts.len() == 2 {
-                    let control = parts[0].to_string();
-                    let event = parts[1].to_string();
+                    let control = parts[1].to_string();
+                    let event = parts[0].to_string();
                     // Resolve the handler name: strip "Me." prefix if present
                     let handler_name = if handler.to_lowercase().starts_with("me.") {
                         handler[3..].to_string()
@@ -2865,7 +2951,7 @@ impl Interpreter {
                                           ex_fields.insert("innerexception".to_string(), Value::Nothing);
                                      }
                                      
-                                     let ex_obj = crate::value::ObjectData {
+                                     let ex_obj = crate::value::ObjectData { drawing_commands: Vec::new(),
                                          class_name: ex_type.clone(),
                                          fields: ex_fields,
                                      };
@@ -3838,6 +3924,8 @@ impl Interpreter {
                 let class_name_full = class_id.as_str().to_lowercase();
                 let class_name = if let Some(idx) = class_name_full.find("(of ") {
                     class_name_full[..idx].trim_end().to_string()
+                } else if class_name_full.ends_with("()") {
+                    class_name_full[..class_name_full.len()-2].to_string()
                 } else {
                     class_name_full
                 };
@@ -3965,7 +4053,7 @@ impl Interpreter {
                             fields.insert("filename".to_string(), arg_values.get(0).cloned().unwrap_or(Value::String(String::new())));
                             fields.insert("arguments".to_string(), arg_values.get(1).cloned().unwrap_or(Value::String(String::new())));
                             fields.insert("__type".to_string(), Value::String("ProcessStartInfo".to_string()));
-                            return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData {
+                            return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(crate::value::ObjectData { drawing_commands: Vec::new(),
                                 class_name: "ProcessStartInfo".to_string(),
                                 fields,
                             }))));
@@ -4020,7 +4108,7 @@ impl Interpreter {
                         fields.insert("hresult".to_string(), Value::Integer(-2146233088));
                         fields.insert("innerexception".to_string(), inner.map(Value::String).unwrap_or(Value::Nothing));
                         fields.insert("__type".to_string(), Value::String(nice_name.clone()));
-                        let obj = crate::value::ObjectData { class_name: nice_name, fields };
+                        let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: nice_name, fields };
                         return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                     }
                 }
@@ -4036,7 +4124,7 @@ impl Interpreter {
                         fields.insert(format!("item{}", i + 1), val.clone());
                     }
                     fields.insert("length".to_string(), Value::Integer(arg_values.len() as i32));
-                    let obj = crate::value::ObjectData { class_name: "Tuple".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Tuple".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4050,7 +4138,7 @@ impl Interpreter {
                     fields.insert("__type".to_string(), Value::String("Nullable".to_string()));
                     fields.insert("value".to_string(), inner_val);
                     fields.insert("hasvalue".to_string(), Value::Boolean(has_value));
-                    let obj = crate::value::ObjectData { class_name: "Nullable".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Nullable".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4065,7 +4153,7 @@ impl Interpreter {
                     }
                     fields.insert("isalive".to_string(), Value::Boolean(false));
                     fields.insert("managedthreadid".to_string(), Value::Integer(0));
-                    let obj = crate::value::ObjectData { class_name: "Thread".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Thread".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4080,7 +4168,7 @@ impl Interpreter {
                     fields.insert("enabled".to_string(), Value::Boolean(false));
                     fields.insert("autoreset".to_string(), Value::Boolean(true));
                     fields.insert("__elapsed_count".to_string(), Value::Integer(0));
-                    let obj = crate::value::ObjectData { class_name: "Timer".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Timer".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4111,7 +4199,7 @@ impl Interpreter {
                     fields.insert("__data".to_string(), Value::Array(data.iter().map(|b| Value::Integer(*b as i32)).collect()));
                     fields.insert("position".to_string(), Value::Long(0));
                     fields.insert("__closed".to_string(), Value::Boolean(false));
-                    let obj = crate::value::ObjectData { class_name: "FileStream".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "FileStream".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4137,7 +4225,7 @@ impl Interpreter {
                     fields.insert("canwrite".to_string(), Value::Boolean(true));
                     fields.insert("canseek".to_string(), Value::Boolean(true));
                     fields.insert("__closed".to_string(), Value::Boolean(false));
-                    let obj = crate::value::ObjectData { class_name: "MemoryStream".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "MemoryStream".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4157,7 +4245,7 @@ impl Interpreter {
                     fields.insert("__data".to_string(), stream_data);
                     fields.insert("__position".to_string(), Value::Long(0));
                     fields.insert("__closed".to_string(), Value::Boolean(false));
-                    let obj = crate::value::ObjectData { class_name: "BinaryReader".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "BinaryReader".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4171,7 +4259,7 @@ impl Interpreter {
                     fields.insert("__stream".to_string(), stream_ref);
                     fields.insert("__data".to_string(), Value::Array(Vec::new()));
                     fields.insert("__closed".to_string(), Value::Boolean(false));
-                    let obj = crate::value::ObjectData { class_name: "BinaryWriter".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "BinaryWriter".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4203,7 +4291,7 @@ impl Interpreter {
                         fields.insert("__socket_id".to_string(), Value::Long(0));
                         fields.insert("connected".to_string(), Value::Boolean(false));
                     }
-                    let obj = crate::value::ObjectData { class_name: "TcpClient".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "TcpClient".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4223,7 +4311,7 @@ impl Interpreter {
                     fields.insert("__port".to_string(), Value::Integer(port));
                     fields.insert("__active".to_string(), Value::Boolean(false));
                     fields.insert("__socket_id".to_string(), Value::Long(0));
-                    let obj = crate::value::ObjectData { class_name: "TcpListener".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "TcpListener".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4245,7 +4333,7 @@ impl Interpreter {
                             return Err(RuntimeError::Custom(format!("UdpClient bind failed: {}", e)));
                         }
                     }
-                    let obj = crate::value::ObjectData { class_name: "UdpClient".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "UdpClient".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4262,7 +4350,7 @@ impl Interpreter {
                     fields.insert("enablessl".to_string(), Value::Boolean(false));
                     fields.insert("credentials".to_string(), Value::Nothing);
                     fields.insert("deliverymethod".to_string(), Value::Integer(0)); // Network
-                    let obj = crate::value::ObjectData { class_name: "SmtpClient".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "SmtpClient".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4283,7 +4371,7 @@ impl Interpreter {
                     fields.insert("isbodyhtml".to_string(), Value::Boolean(false));
                     fields.insert("cc".to_string(), Value::String(String::new()));
                     fields.insert("bcc".to_string(), Value::String(String::new()));
-                    let obj = crate::value::ObjectData { class_name: "MailMessage".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "MailMessage".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4299,7 +4387,7 @@ impl Interpreter {
                     fields.insert("displayname".to_string(), Value::String(display_name));
                     fields.insert("host".to_string(), Value::String(address.split('@').nth(1).unwrap_or("").to_string()));
                     fields.insert("user".to_string(), Value::String(address.split('@').next().unwrap_or("").to_string()));
-                    let obj = crate::value::ObjectData { class_name: "MailAddress".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "MailAddress".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4313,7 +4401,7 @@ impl Interpreter {
                     fields.insert("__type".to_string(), Value::String("Mutex".to_string()));
                     fields.insert("__owned".to_string(), Value::Boolean(initially_owned));
                     fields.insert("__name".to_string(), Value::String(name));
-                    let obj = crate::value::ObjectData { class_name: "Mutex".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Mutex".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4329,7 +4417,7 @@ impl Interpreter {
                     fields.insert("__count".to_string(), Value::Integer(initial_count));
                     fields.insert("__max".to_string(), Value::Integer(max_count));
                     fields.insert("currentcount".to_string(), Value::Integer(initial_count));
-                    let obj = crate::value::ObjectData { class_name: "Semaphore".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Semaphore".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4344,7 +4432,7 @@ impl Interpreter {
                     fields.insert("x".to_string(), Value::Integer(x));
                     fields.insert("y".to_string(), Value::Integer(y));
                     fields.insert("isempty".to_string(), Value::Boolean(x == 0 && y == 0));
-                    let obj = crate::value::ObjectData { class_name: "Point".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Point".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4359,7 +4447,7 @@ impl Interpreter {
                     fields.insert("width".to_string(), Value::Integer(w));
                     fields.insert("height".to_string(), Value::Integer(h));
                     fields.insert("isempty".to_string(), Value::Boolean(w == 0 && h == 0));
-                    let obj = crate::value::ObjectData { class_name: "Size".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Size".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4381,7 +4469,7 @@ impl Interpreter {
                     fields.insert("top".to_string(), Value::Integer(y));
                     fields.insert("right".to_string(), Value::Integer(x + w));
                     fields.insert("bottom".to_string(), Value::Integer(y + h));
-                    let obj = crate::value::ObjectData { class_name: "Rectangle".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Rectangle".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4403,7 +4491,7 @@ impl Interpreter {
                     fields.insert("underline".to_string(), Value::Boolean(style & 4 != 0));
                     fields.insert("strikeout".to_string(), Value::Boolean(style & 8 != 0));
                     fields.insert("style".to_string(), Value::Integer(style));
-                    let obj = crate::value::ObjectData { class_name: "Font".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Font".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4418,7 +4506,7 @@ impl Interpreter {
                     fields.insert("a".to_string(), Value::Integer(255));
                     fields.insert("name".to_string(), Value::String("Empty".to_string()));
                     fields.insert("isempty".to_string(), Value::Boolean(true));
-                    let obj = crate::value::ObjectData { class_name: "Color".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Color".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4440,12 +4528,12 @@ impl Interpreter {
                     si_fields.insert("filename".to_string(), Value::String(String::new()));
                     si_fields.insert("arguments".to_string(), Value::String(String::new()));
                     si_fields.insert("useshellexecute".to_string(), Value::Boolean(true));
-                    let start_info = crate::value::ObjectData { class_name: "ProcessStartInfo".to_string(), fields: si_fields };
+                    let start_info = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "ProcessStartInfo".to_string(), fields: si_fields };
                     let si_obj = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(start_info)));
                     
                     fields.insert("startinfo".to_string(), si_obj);
                     
-                    let obj = crate::value::ObjectData { class_name: "Process".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Process".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4489,7 +4577,7 @@ impl Interpreter {
                     // Type-specific default fields
                     Self::init_control_type_defaults(&base_name, &mut fields);
 
-                    let obj = crate::value::ObjectData { class_name: base_name, fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: base_name, fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4576,7 +4664,7 @@ impl Interpreter {
                     fields.insert("headers".to_string(), Value::Dictionary(
                         std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))
                     ));
-                    let obj = crate::value::ObjectData {
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(),
                         class_name: "WebClient".to_string(),
                         fields,
                     };
@@ -4591,7 +4679,7 @@ impl Interpreter {
                     fields.insert("defaultrequestheaders".to_string(), Value::Dictionary(
                         std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))
                     ));
-                    let obj = crate::value::ObjectData {
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(),
                         class_name: "HttpClient".to_string(),
                         fields,
                     };
@@ -4612,7 +4700,7 @@ impl Interpreter {
                             fields.insert("domain".to_string(), Value::String(domain));
                         }
                     }
-                    let obj = crate::value::ObjectData {
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(),
                         class_name: "NetworkCredential".to_string(),
                         fields,
                     };
@@ -4674,7 +4762,7 @@ impl Interpreter {
                         _ => (0, 0, 0, 0, 0),
                     };
                     let total_seconds = (days as f64) * 86400.0 + (hours as f64) * 3600.0 + (minutes as f64) * 60.0 + (seconds as f64) + (ms as f64) / 1000.0;
-                    let obj_data = crate::value::ObjectData {
+                    let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                         class_name: "TimeSpan".to_string(),
                         fields: {
                             let mut f = std::collections::HashMap::new();
@@ -4720,7 +4808,7 @@ impl Interpreter {
                         fields.insert("absolutepath".to_string(), Value::String(url.clone()));
                         fields.insert("pathandquery".to_string(), Value::String(url.clone()));
                     }
-                    let obj = crate::value::ObjectData { class_name: "Uri".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Uri".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4745,7 +4833,7 @@ impl Interpreter {
                         fields.insert("length".to_string(), Value::Long(0));
                         fields.insert("isreadonly".to_string(), Value::Boolean(false));
                     }
-                    let obj = crate::value::ObjectData { class_name: "FileInfo".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "FileInfo".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4761,7 +4849,7 @@ impl Interpreter {
                     fields.insert("name".to_string(), Value::String(p.file_name().unwrap_or_default().to_string_lossy().to_string()));
                     fields.insert("exists".to_string(), Value::Boolean(p.is_dir()));
                     fields.insert("parent".to_string(), Value::String(p.parent().unwrap_or(std::path::Path::new("")).to_string_lossy().to_string()));
-                    let obj = crate::value::ObjectData { class_name: "DirectoryInfo".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DirectoryInfo".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4776,7 +4864,7 @@ impl Interpreter {
                     fields.insert("__type".to_string(), Value::String("Random".to_string()));
                     fields.insert("__seed".to_string(), Value::Long(seed as i64));
                     fields.insert("__counter".to_string(), Value::Long(0));
-                    let obj = crate::value::ObjectData { class_name: "Random".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Random".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4788,7 +4876,7 @@ impl Interpreter {
                     fields.insert("elapsedmilliseconds".to_string(), Value::Long(0));
                     fields.insert("__start_ms".to_string(), Value::Long(0));
                     fields.insert("__accumulated_ms".to_string(), Value::Long(0));
-                    let obj = crate::value::ObjectData { class_name: "Stopwatch".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Stopwatch".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4804,7 +4892,7 @@ impl Interpreter {
                     fields.insert("__dowork_handler".to_string(), Value::Nothing);
                     fields.insert("__progresschanged_handler".to_string(), Value::Nothing);
                     fields.insert("__runworkercompleted_handler".to_string(), Value::Nothing);
-                    let obj = crate::value::ObjectData { class_name: "BackgroundWorker".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "BackgroundWorker".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4826,7 +4914,7 @@ impl Interpreter {
                                 fields.insert("__socket_id".to_string(), Value::Long(*sid));
                                 fields.insert("__content".to_string(), Value::String(String::new()));
                                 fields.insert("__position".to_string(), Value::Integer(0));
-                                let obj = crate::value::ObjectData { class_name: "StreamReader".to_string(), fields };
+                                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "StreamReader".to_string(), fields };
                                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                             }
                         }
@@ -4837,7 +4925,7 @@ impl Interpreter {
                         .map_err(|e| RuntimeError::Custom(format!("StreamReader: {}", e)))?;
                     fields.insert("__content".to_string(), Value::String(content));
                     fields.insert("__position".to_string(), Value::Integer(0));
-                    let obj = crate::value::ObjectData { class_name: "StreamReader".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "StreamReader".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4859,7 +4947,7 @@ impl Interpreter {
                                 fields.insert("__socket_id".to_string(), Value::Long(*sid));
                                 fields.insert("__buffer".to_string(), Value::String(String::new()));
                                 fields.insert("autoflush".to_string(), Value::Boolean(false));
-                                let obj = crate::value::ObjectData { class_name: "StreamWriter".to_string(), fields };
+                                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "StreamWriter".to_string(), fields };
                                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                             }
                         }
@@ -4874,7 +4962,7 @@ impl Interpreter {
                     fields.insert("__path".to_string(), Value::String(path));
                     fields.insert("__buffer".to_string(), Value::String(String::new()));
                     fields.insert("__append".to_string(), Value::Boolean(append));
-                    let obj = crate::value::ObjectData { class_name: "StreamWriter".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "StreamWriter".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4894,7 +4982,7 @@ impl Interpreter {
                     fields.insert("__type".to_string(), Value::String("Regex".to_string()));
                     fields.insert("__pattern".to_string(), Value::String(pattern));
                     fields.insert("__options".to_string(), Value::Integer(options));
-                    let obj = crate::value::ObjectData { class_name: "Regex".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Regex".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4912,7 +5000,7 @@ impl Interpreter {
                         let media_type = self.evaluate_expr(&ctor_args[2])?.as_string();
                         fields.insert("mediatype".to_string(), Value::String(media_type));
                     }
-                    let obj = crate::value::ObjectData {
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(),
                         class_name: "StringContent".to_string(),
                         fields,
                     };
@@ -4937,7 +5025,7 @@ impl Interpreter {
                     fields.insert("__conn_id".to_string(), Value::Long(0)); // 0 = not yet opened
                     fields.insert("connectionstring".to_string(), Value::String(conn_str.clone()));
                     fields.insert("state".to_string(), Value::Integer(0)); // 0=Closed, 1=Open
-                    let obj = crate::value::ObjectData { class_name: "DbConnection".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbConnection".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4971,7 +5059,7 @@ impl Interpreter {
                     fields.insert("__parameters".to_string(), Value::Collection(
                         std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))
                     ));
-                    let obj = crate::value::ObjectData { class_name: "DbCommand".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbCommand".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -4995,7 +5083,7 @@ impl Interpreter {
                     fields.insert("__type".to_string(), Value::String("DataAdapter".to_string()));
                     fields.insert("__conn_id".to_string(), Value::Long(conn_id));
                     fields.insert("selectcommandtext".to_string(), Value::String(sql));
-                    let obj = crate::value::ObjectData { class_name: "DataAdapter".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataAdapter".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -5006,7 +5094,7 @@ impl Interpreter {
                     fields.insert("__rs_id".to_string(), Value::Long(0)); // Not yet populated
                     fields.insert("__conn_id".to_string(), Value::Long(0));
                     fields.insert("source".to_string(), Value::String(String::new()));
-                    let obj = crate::value::ObjectData { class_name: "DbRecordset".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbRecordset".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -5018,7 +5106,7 @@ impl Interpreter {
                     fields.insert("tablename".to_string(), Value::String(
                         if !ctor_args.is_empty() { self.evaluate_expr(&ctor_args[0])?.as_string() } else { String::new() }
                     ));
-                    let obj = crate::value::ObjectData { class_name: "DataTable".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataTable".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -5031,7 +5119,7 @@ impl Interpreter {
                     ));
                     // Tables collection: Vec<DataTable> stored as Array
                     fields.insert("__tables".to_string(), Value::Array(Vec::new()));
-                    let obj = crate::value::ObjectData { class_name: "DataSet".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataSet".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -5046,7 +5134,7 @@ impl Interpreter {
                     fields.insert("name".to_string(), Value::String(String::new()));
                     fields.insert("filter".to_string(), Value::String(String::new()));
                     fields.insert("sort".to_string(), Value::String(String::new()));
-                    let obj = crate::value::ObjectData { class_name: "BindingSource".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "BindingSource".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -5061,7 +5149,7 @@ impl Interpreter {
                     fields.insert("direction".to_string(), Value::Integer(1)); // adParamInput
                     fields.insert("type".to_string(), Value::Integer(200)); // adVarChar
                     fields.insert("size".to_string(), Value::Integer(0));
-                    let obj = crate::value::ObjectData { class_name: "DbParameter".to_string(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbParameter".to_string(), fields };
                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                 }
 
@@ -5078,7 +5166,7 @@ impl Interpreter {
                     // Collect fields from hierarchy
                     let fields = self.collect_fields(&class_name);
 
-                    let obj_data = crate::value::ObjectData {
+                    let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                         class_name: class_decl.name.as_str().to_string(),
                         fields,
                     };
@@ -5149,6 +5237,7 @@ impl Interpreter {
 
                     Ok(Value::Object(obj_ref))
                 } else {
+                    println!("DEBUG: Expression::New failed to resolve class '{}'. Available classes keys: {:?}", class_name, self.classes.keys().collect::<Vec<_>>());
                     // If the class is unknown, return Nothing instead of error to keep VB code running
                     return Ok(Value::Nothing);
                 }
@@ -5293,7 +5382,7 @@ impl Interpreter {
                     "single.minvalue" | "system.single.minvalue" => return Ok(Value::Single(f32::MIN)),
                     // TimeSpan.Zero
                     "timespan.zero" | "system.timespan.zero" => {
-                        let obj_data = crate::value::ObjectData {
+                        let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                             class_name: "TimeSpan".to_string(),
                             fields: {
                                 let mut f = std::collections::HashMap::new();
@@ -5531,7 +5620,7 @@ impl Interpreter {
                         }
                         "timeofday" => {
                             let total_seconds = (ndt.hour() as f64) * 3600.0 + (ndt.minute() as f64) * 60.0 + (ndt.second() as f64);
-                            let obj_data = crate::value::ObjectData {
+                            let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                                 class_name: "TimeSpan".to_string(),
                                 fields: {
                                     let mut f = std::collections::HashMap::new();
@@ -5794,7 +5883,7 @@ impl Interpreter {
                                 let mut fields = std::collections::HashMap::new();
                                 fields.insert("__type".to_string(), Value::String("DbParameters".to_string()));
                                 fields.insert("__parent_cmd".to_string(), Value::Object(obj_rc));
-                                let obj = crate::value::ObjectData { class_name: "DbParameters".to_string(), fields };
+                                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbParameters".to_string(), fields };
                                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                             }
                             if m == "connection" {
@@ -5842,7 +5931,7 @@ impl Interpreter {
                                                 let v = db_row.values.get(ci).cloned().unwrap_or_default();
                                                 flds.insert(col.to_lowercase(), Value::String(v));
                                             }
-                                            let obj = crate::value::ObjectData { class_name: "DataRow".to_string(), fields: flds };
+                                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataRow".to_string(), fields: flds };
                                             row_objects.push(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                         }
                                         return Ok(Value::Array(row_objects));
@@ -5935,7 +6024,7 @@ impl Interpreter {
                                     let mut flds = std::collections::HashMap::new();
                                     flds.insert("__type".to_string(), Value::String("DataBindings".to_string()));
                                     flds.insert("__parent".to_string(), Value::Object(obj_rc));
-                                    let proxy = crate::value::ObjectData { class_name: "DataBindings".to_string(), fields: flds };
+                                    let proxy = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataBindings".to_string(), fields: flds };
                                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(proxy))));
                                 }
                                 _ => {}
@@ -6088,7 +6177,7 @@ impl Interpreter {
                                 n
                             };
                             flds.insert("__parent_name".to_string(), parent_name_val);
-                            let proxy = crate::value::ObjectData { class_name: "DataBindings".to_string(), fields: flds };
+                            let proxy = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataBindings".to_string(), fields: flds };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(proxy))));
                         }
                         "datasource" => {
@@ -6117,6 +6206,7 @@ impl Interpreter {
                                  is_must_override: false,
                                  is_shared: false,
                                  is_not_overridable: false,
+                                 handles: None,
                              };
                              
                              // Execute Property Get
@@ -6132,7 +6222,7 @@ impl Interpreter {
                         let mut flds = std::collections::HashMap::new();
                         flds.insert("__type".to_string(), Value::String("DataBindings".to_string()));
                         flds.insert("__parent_name".to_string(), Value::String(obj_name.clone()));
-                        let proxy = crate::value::ObjectData { class_name: "DataBindings".to_string(), fields: flds };
+                        let proxy = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataBindings".to_string(), fields: flds };
                         return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(proxy))));
                     }
                     // DataSource property for string-proxy DataGridView
@@ -6857,7 +6947,7 @@ impl Interpreter {
                         "create" => {
                             let mut fields = HashMap::new();
                             fields.insert("__type".to_string(), Value::String("MD5".to_string()));
-                            let obj = crate::value::ObjectData { class_name: "MD5".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "MD5".to_string(), fields };
                             return Ok(Value::Object(Rc::new(RefCell::new(obj))));
                         }
                         _ => return Err(RuntimeError::UndefinedFunction(format!("MD5.{}", method_name))),
@@ -6868,7 +6958,7 @@ impl Interpreter {
                         "create" => {
                             let mut fields = HashMap::new();
                             fields.insert("__type".to_string(), Value::String("SHA256".to_string()));
-                            let obj = crate::value::ObjectData { class_name: "SHA256".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "SHA256".to_string(), fields };
                             return Ok(Value::Object(Rc::new(RefCell::new(obj))));
                         }
                         _ => return Err(RuntimeError::UndefinedFunction(format!("SHA256.{}", method_name))),
@@ -7395,7 +7485,7 @@ impl Interpreter {
                             fields.insert("fullname".to_string(), Value::String(full));
                             fields.insert("namespace".to_string(), Value::String("System".to_string()));
                             fields.insert("__type".to_string(), Value::String("Type".to_string()));
-                            let type_obj = crate::value::ObjectData {
+                            let type_obj = crate::value::ObjectData { drawing_commands: Vec::new(),
                                 class_name: "Type".to_string(),
                                 fields,
                             };
@@ -7408,7 +7498,7 @@ impl Interpreter {
                     fields.insert("fullname".to_string(), Value::String(full_name.to_string()));
                     fields.insert("namespace".to_string(), Value::String("System".to_string()));
                     fields.insert("__type".to_string(), Value::String("Type".to_string()));
-                    let type_obj = crate::value::ObjectData {
+                    let type_obj = crate::value::ObjectData { drawing_commands: Vec::new(),
                         class_name: "Type".to_string(),
                         fields,
                     };
@@ -7514,7 +7604,7 @@ impl Interpreter {
                     }
                     "timeofday" => {
                         let total_seconds = (ndt.hour() as f64) * 3600.0 + (ndt.minute() as f64) * 60.0 + (ndt.second() as f64);
-                        let obj_data = crate::value::ObjectData {
+                        let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                             class_name: "TimeSpan".to_string(),
                             fields: {
                                 let mut f = std::collections::HashMap::new();
@@ -7599,7 +7689,7 @@ impl Interpreter {
                         if let Some(Value::Date(other_ole)) = arg_values.get(0) {
                             let diff_days = *ole_val - *other_ole;
                             let total_seconds = diff_days * 86400.0;
-                            let obj_data = crate::value::ObjectData {
+                            let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                                 class_name: "TimeSpan".to_string(),
                                 fields: {
                                     let mut f = std::collections::HashMap::new();
@@ -8035,7 +8125,7 @@ impl Interpreter {
                                 fields.insert("statuscode".to_string(), Value::String("200".to_string()));
                                 fields.insert("issuccessstatuscode".to_string(), Value::Boolean(true));
                             }
-                            let obj = crate::value::ObjectData { class_name: "HttpResponseMessage".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "HttpResponseMessage".to_string(), fields };
                             Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))))
                         };
                         match method_name.as_str() {
@@ -8151,7 +8241,7 @@ impl Interpreter {
                                     fields.insert("statuscode".to_string(), Value::String("200".to_string()));
                                     fields.insert("contentlength".to_string(), Value::Integer(full.len() as i32));
                                 }
-                                let obj = crate::value::ObjectData { class_name: "HttpWebResponse".to_string(), fields };
+                                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "HttpWebResponse".to_string(), fields };
                                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                             }
                             "dispose" | "abort" => return Ok(Value::Nothing),
@@ -8307,7 +8397,7 @@ impl Interpreter {
                                 dw_fields.insert("cancel".to_string(), Value::Boolean(false));
                                 dw_fields.insert("result".to_string(), Value::Nothing);
                                 let dw_args = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
-                                    crate::value::ObjectData { class_name: "DoWorkEventArgs".to_string(), fields: dw_fields }
+                                    crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DoWorkEventArgs".to_string(), fields: dw_fields }
                                 )));
 
                                 // Fire DoWork handler
@@ -8342,7 +8432,7 @@ impl Interpreter {
                                 rw_fields.insert("cancelled".to_string(), Value::Boolean(was_cancelled));
                                 rw_fields.insert("error".to_string(), Value::Nothing);
                                 let rw_args = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
-                                    crate::value::ObjectData { class_name: "RunWorkerCompletedEventArgs".to_string(), fields: rw_fields }
+                                    crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "RunWorkerCompletedEventArgs".to_string(), fields: rw_fields }
                                 )));
 
                                 // Fire RunWorkerCompleted handler
@@ -8372,7 +8462,7 @@ impl Interpreter {
                                 pc_fields.insert("progresspercentage".to_string(), Value::Integer(percent));
                                 pc_fields.insert("userstate".to_string(), user_state);
                                 let pc_args = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
-                                    crate::value::ObjectData { class_name: "ProgressChangedEventArgs".to_string(), fields: pc_fields }
+                                    crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "ProgressChangedEventArgs".to_string(), fields: pc_fields }
                                 )));
 
                                 // Fire ProgressChanged handler
@@ -8397,6 +8487,166 @@ impl Interpreter {
                                 return Ok(Value::Nothing);
                             }
                             _ => {}
+                        }
+                    }
+
+                    // ── System.Drawing.Graphics / Control Painting ──────────────────
+                    if type_name == "Graphics" || type_name == "System.Drawing.Graphics" {
+                        let arg_values: Vec<Value> = args.iter().map(|a| self.evaluate_expr(a)).collect::<Result<_,_>>()?;
+                        
+                        // Retrieve the target control from the Graphics object
+                        let ctrl_val = obj_ref.borrow().fields.get("__control").cloned();
+                        if let Some(Value::Object(ctrl_ref)) = ctrl_val {
+                            let mut ctrl = ctrl_ref.borrow_mut();
+                            
+                            // Color helper
+                            let get_color = |v: &Value| -> u32 {
+                                if let Value::Object(o) = v {
+                                    let b = o.borrow();
+                                    let a = b.fields.get("a").and_then(|v| v.as_integer().ok()).unwrap_or(255) as u32;
+                                    let r = b.fields.get("r").and_then(|v| v.as_integer().ok()).unwrap_or(0) as u32;
+                                    let g = b.fields.get("g").and_then(|v| v.as_integer().ok()).unwrap_or(0) as u32;
+                                    let b_v = b.fields.get("b").and_then(|v| v.as_integer().ok()).unwrap_or(0) as u32;
+                                    (a << 24) | (r << 16) | (g << 8) | b_v
+                                } else { 0xFF000000 }
+                            };
+                            
+                            // Pen helper
+                            let get_pen = |v: &Value| -> (u32, f32) {
+                                if let Value::Object(o) = v {
+                                    let b = o.borrow();
+                                    let c = b.fields.get("color").map(|v| get_color(v)).unwrap_or(0xFF000000);
+                                    let w = b.fields.get("width").and_then(|v| v.as_double().ok()).unwrap_or(1.0) as f32;
+                                    (c, w)
+                                } else { (0xFF000000, 1.0) }
+                            };
+                            
+                            // Brush helper
+                            let get_brush = |v: &Value| -> u32 {
+                                if let Value::Object(o) = v {
+                                    let b = o.borrow();
+                                    b.fields.get("color").map(|v| get_color(v)).unwrap_or(0xFF000000)
+                                } else { 0xFF000000 }
+                            };
+
+                            match method_name.as_str() {
+                                "clear" => {
+                                    let color_val = arg_values.get(0).cloned().unwrap_or(Value::Nothing);
+                                    let c = get_color(&color_val);
+                                    ctrl.drawing_commands.push(crate::value::DrawingCommand::Clear { color: c });
+                                    // Trigger repaint? usually Clear is part of Paint event which redraws anyway
+                                    return Ok(Value::Nothing);
+                                }
+                                "drawline" => {
+                                    if arg_values.len() >= 5 {
+                                        let (c, w) = get_pen(&arg_values[0]);
+                                        let x1 = arg_values[1].as_integer().unwrap_or(0);
+                                        let y1 = arg_values[2].as_integer().unwrap_or(0);
+                                        let x2 = arg_values[3].as_integer().unwrap_or(0);
+                                        let y2 = arg_values[4].as_integer().unwrap_or(0);
+                                        ctrl.drawing_commands.push(crate::value::DrawingCommand::Line {
+                                            x1, y1, x2, y2, color: c, width: w
+                                        });
+                                    }
+                                    return Ok(Value::Nothing);
+                                }
+                                "drawrectangle" => {
+                                    if arg_values.len() >= 5 {
+                                        let (c, _w) = get_pen(&arg_values[0]);
+                                        let x = arg_values[1].as_integer().unwrap_or(0);
+                                        let y = arg_values[2].as_integer().unwrap_or(0);
+                                        let w_rect = arg_values[3].as_integer().unwrap_or(0);
+                                        let h_rect = arg_values[4].as_integer().unwrap_or(0);
+                                        ctrl.drawing_commands.push(crate::value::DrawingCommand::Rectangle {
+                                            x, y, width: w_rect, height: h_rect, color: c, fill: false
+                                        });
+                                    }
+                                    return Ok(Value::Nothing);
+                                }
+                                "fillrectangle" => {
+                                    if arg_values.len() >= 5 {
+                                        let c = get_brush(&arg_values[0]);
+                                        let x = arg_values[1].as_integer().unwrap_or(0);
+                                        let y = arg_values[2].as_integer().unwrap_or(0);
+                                        let w_rect = arg_values[3].as_integer().unwrap_or(0);
+                                        let h_rect = arg_values[4].as_integer().unwrap_or(0);
+                                        ctrl.drawing_commands.push(crate::value::DrawingCommand::Rectangle {
+                                            x, y, width: w_rect, height: h_rect, color: c, fill: true
+                                        });
+                                    }
+                                    return Ok(Value::Nothing);
+                                }
+                                "drawellipse" => {
+                                    if arg_values.len() >= 5 {
+                                        let (c, _w) = get_pen(&arg_values[0]);
+                                        let x = arg_values[1].as_integer().unwrap_or(0);
+                                        let y = arg_values[2].as_integer().unwrap_or(0);
+                                        let w_rect = arg_values[3].as_integer().unwrap_or(0);
+                                        let h_rect = arg_values[4].as_integer().unwrap_or(0);
+                                        ctrl.drawing_commands.push(crate::value::DrawingCommand::Ellipse {
+                                            x, y, width: w_rect, height: h_rect, color: c, fill: false
+                                        });
+                                    }
+                                    return Ok(Value::Nothing);
+                                }
+                                "fillellipse" => {
+                                    if arg_values.len() >= 5 {
+                                        let c = get_brush(&arg_values[0]);
+                                        let x = arg_values[1].as_integer().unwrap_or(0);
+                                        let y = arg_values[2].as_integer().unwrap_or(0);
+                                        let w_rect = arg_values[3].as_integer().unwrap_or(0);
+                                        let h_rect = arg_values[4].as_integer().unwrap_or(0);
+                                        ctrl.drawing_commands.push(crate::value::DrawingCommand::Ellipse {
+                                            x, y, width: w_rect, height: h_rect, color: c, fill: true
+                                        });
+                                    }
+                                    return Ok(Value::Nothing);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    // Control.CreateGraphics & Invalidate
+                    let is_control = obj_ref.borrow().fields.get("__is_control")
+                        .map(|v| v.as_bool().unwrap_or(false)).unwrap_or(false);
+                    
+                    if is_control {
+                        if method_name == "creategraphics" {
+                             let mut g_fields = std::collections::HashMap::new();
+                             let ctrl_name = obj_ref.borrow().fields.get("name").map(|v| v.as_string()).unwrap_or_default();
+                             g_fields.insert("__control_name".to_string(), Value::String(ctrl_name));
+                             g_fields.insert("__control".to_string(), obj_val.clone());
+                             g_fields.insert("__type".to_string(), Value::String("Graphics".to_string()));
+                             
+                             let g_obj = crate::value::ObjectData {
+                                 class_name: "Graphics".to_string(),
+                                 fields: g_fields,
+                                 drawing_commands: Vec::new(),
+                             };
+                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(g_obj))));
+                        }
+                        
+                        if method_name == "invalidate" {
+                             // Trigger repaint
+                             let ctrl_name = obj_ref.borrow().fields.get("name").map(|v| v.as_string()).unwrap_or_default();
+                             if !ctrl_name.is_empty() {
+                                 self.side_effects.push_back(crate::RuntimeSideEffect::Repaint {
+                                     control_name: ctrl_name,
+                                 });
+                             }
+                             return Ok(Value::Nothing);
+                        }
+                        
+                        // Control.Refresh calls Invalidate+Update. For now alias to Invalidate
+                        if method_name == "refresh" {
+                             let ctrl_name = obj_ref.borrow().fields.get("name").map(|v| v.as_string()).unwrap_or_default();
+                             if !ctrl_name.is_empty() {
+                                 self.side_effects.push_back(crate::RuntimeSideEffect::Repaint {
+                                     control_name: ctrl_name,
+                                 });
+                             }
+                             return Ok(Value::Nothing);
                         }
                     }
 
@@ -8731,7 +8981,7 @@ impl Interpreter {
                                     fields.insert("isfaulted".to_string(), Value::Boolean(false));
                                     fields.insert("iscanceled".to_string(), Value::Boolean(false));
                                     fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
-                                    let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Task".to_string(), fields };
                                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                 }
                                 return Ok(Value::Nothing);
@@ -9180,7 +9430,7 @@ impl Interpreter {
                                 fields.insert("__socket_id".to_string(), Value::Long(socket_id));
                                 fields.insert("canread".to_string(), Value::Boolean(true));
                                 fields.insert("canwrite".to_string(), Value::Boolean(true));
-                                let obj = crate::value::ObjectData { class_name: "NetworkStream".to_string(), fields };
+                                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "NetworkStream".to_string(), fields };
                                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                             }
                             "close" | "dispose" => {
@@ -9333,7 +9583,7 @@ impl Interpreter {
                                                     fields.insert("__socket_id".to_string(), Value::Long(client_id));
                                                     fields.insert("receivebuffersize".to_string(), Value::Integer(8192));
                                                     fields.insert("sendbuffersize".to_string(), Value::Integer(8192));
-                                                    let obj = crate::value::ObjectData { class_name: "TcpClient".to_string(), fields };
+                                                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "TcpClient".to_string(), fields };
                                                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                                 }
                                                 Err(e) => return Err(RuntimeError::Custom(format!("AcceptTcpClient: {}", e))),
@@ -9653,7 +9903,7 @@ impl Interpreter {
                                     fields.insert("__type".to_string(), Value::String("DbRecordset".to_string()));
                                     fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                                     fields.insert("__conn_id".to_string(), Value::Long(conn_id as i64));
-                                    let obj = crate::value::ObjectData { class_name: "DbRecordset".to_string(), fields };
+                                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbRecordset".to_string(), fields };
                                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                 }
                                 crate::data_access::ExecuteResult::RowsAffected(n) => {
@@ -9674,7 +9924,7 @@ impl Interpreter {
                             fields.insert("__parameters".to_string(), Value::Collection(
                                 std::rc::Rc::new(std::cell::RefCell::new(crate::collections::ArrayList::new()))
                             ));
-                            let obj = crate::value::ObjectData { class_name: "DbCommand".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbCommand".to_string(), fields };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                         }
                         "begintransaction" => {
@@ -9687,7 +9937,7 @@ impl Interpreter {
                             let mut fields = std::collections::HashMap::new();
                             fields.insert("__type".to_string(), Value::String("DbTransaction".to_string()));
                             fields.insert("__conn_id".to_string(), Value::Long(tx_id as i64));
-                            let obj = crate::value::ObjectData { class_name: "DbTransaction".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbTransaction".to_string(), fields };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                         }
                         // Async wrappers — delegate to sync versions
@@ -9732,7 +9982,7 @@ impl Interpreter {
                             fields.insert("__type".to_string(), Value::String("DataTable".to_string()));
                             fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                             fields.insert("tablename".to_string(), Value::String(collection));
-                            let obj = crate::value::ObjectData { class_name: "DataTable".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataTable".to_string(), fields };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                         }
                         "changedatabase" => {
@@ -9800,7 +10050,7 @@ impl Interpreter {
                                         fields.insert("__type".to_string(), Value::String("DbReader".to_string()));
                                         fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                                         fields.insert("__started".to_string(), Value::Boolean(false));
-                                        let obj = crate::value::ObjectData { class_name: "DbReader".to_string(), fields };
+                                        let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbReader".to_string(), fields };
                                         return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                     }
                                     crate::data_access::ExecuteResult::RowsAffected(n) => return Ok(Value::Integer(n as i32)),
@@ -9817,7 +10067,7 @@ impl Interpreter {
                             fields.insert("__type".to_string(), Value::String("DbReader".to_string()));
                             fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                             fields.insert("__started".to_string(), Value::Boolean(false));
-                            let obj = crate::value::ObjectData { class_name: "DbReader".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbReader".to_string(), fields };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                         }
                         "executenonquery" => {
@@ -9876,7 +10126,7 @@ impl Interpreter {
                                         fields.insert("__type".to_string(), Value::String("DbRecordset".to_string()));
                                         fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                                         fields.insert("__conn_id".to_string(), Value::Long(conn_id as i64));
-                                        let obj = crate::value::ObjectData { class_name: "DbRecordset".to_string(), fields };
+                                        let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbRecordset".to_string(), fields };
                                         return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                     }
                                     crate::data_access::ExecuteResult::RowsAffected(n) => return Ok(Value::Long(n)),
@@ -9893,7 +10143,7 @@ impl Interpreter {
                                     fields.insert("__type".to_string(), Value::String("DbRecordset".to_string()));
                                     fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                                     fields.insert("__conn_id".to_string(), Value::Long(conn_id as i64));
-                                    let obj = crate::value::ObjectData { class_name: "DbRecordset".to_string(), fields };
+                                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbRecordset".to_string(), fields };
                                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                 }
                                 crate::data_access::ExecuteResult::RowsAffected(n) => return Ok(Value::Long(n)),
@@ -9920,7 +10170,7 @@ impl Interpreter {
                                         fields.insert("__type".to_string(), Value::String("DbReader".to_string()));
                                         fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                                         fields.insert("__started".to_string(), Value::Boolean(false));
-                                        let obj = crate::value::ObjectData { class_name: "DbReader".to_string(), fields };
+                                        let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbReader".to_string(), fields };
                                         return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                     }
                                     crate::data_access::ExecuteResult::RowsAffected(n) => return Ok(Value::Integer(n as i32)),
@@ -9935,7 +10185,7 @@ impl Interpreter {
                             fields.insert("__type".to_string(), Value::String("DbReader".to_string()));
                             fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                             fields.insert("__started".to_string(), Value::Boolean(false));
-                            let obj = crate::value::ObjectData { class_name: "DbReader".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbReader".to_string(), fields };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                         }
                         "executenonqueryasync" => {
@@ -9984,7 +10234,7 @@ impl Interpreter {
                                     fields.insert("__type".to_string(), Value::String("DbReader".to_string()));
                                     fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                                     fields.insert("__started".to_string(), Value::Boolean(false));
-                                    let obj = crate::value::ObjectData { class_name: "DbReader".to_string(), fields };
+                                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbReader".to_string(), fields };
                                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                 }
                                 crate::data_access::ExecuteResult::RowsAffected(n) => return Ok(Value::Integer(n as i32)),
@@ -10011,7 +10261,7 @@ impl Interpreter {
                             fields.insert("direction".to_string(), Value::Integer(p_dir));
                             fields.insert("type".to_string(), Value::Integer(p_type));
                             fields.insert("size".to_string(), Value::Integer(p_size));
-                            let obj = crate::value::ObjectData { class_name: "DbParameter".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbParameter".to_string(), fields };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                         }
                         _ => {}
@@ -10117,7 +10367,7 @@ impl Interpreter {
                                     fld.insert("__type".to_string(), Value::String("DbField".to_string()));
                                     fld.insert("value".to_string(), Value::String(val.clone()));
                                     fld.insert("name".to_string(), Value::String(field_name));
-                                    let obj = crate::value::ObjectData { class_name: "DbField".to_string(), fields: fld };
+                                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DbField".to_string(), fields: fld };
                                     return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                 }
                             }
@@ -10313,7 +10563,7 @@ impl Interpreter {
                             fields.insert("__type".to_string(), Value::String("DataTable".to_string()));
                             fields.insert("__rs_id".to_string(), Value::Long(schema_id as i64));
                             fields.insert("tablename".to_string(), Value::String("SchemaTable".to_string()));
-                            let obj = crate::value::ObjectData { class_name: "DataTable".to_string(), fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataTable".to_string(), fields };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                         }
                         "getdatetime" => {
@@ -10411,7 +10661,7 @@ impl Interpreter {
                                         dt_fields.insert("__rs_id".to_string(), Value::Long(rs_id as i64));
                                         dt_fields.insert("tablename".to_string(), Value::String("Table".to_string()));
                                         let new_dt = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
-                                            crate::value::ObjectData { class_name: "DataTable".to_string(), fields: dt_fields }
+                                            crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataTable".to_string(), fields: dt_fields }
                                         )));
                                         let mut ds_borrow = dt_ref.borrow_mut();
                                         if let Some(Value::Array(tables)) = ds_borrow.fields.get_mut("__tables") {
@@ -10614,7 +10864,7 @@ impl Interpreter {
                                         let v = db_row.values.get(ci).cloned().unwrap_or_default();
                                         flds.insert(col.to_lowercase(), Value::String(v));
                                     }
-                                    let obj = crate::value::ObjectData { class_name: "DataRow".to_string(), fields: flds };
+                                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataRow".to_string(), fields: flds };
                                     row_objects.push(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                                 }
                                 return Ok(Value::Array(row_objects));
@@ -10637,7 +10887,7 @@ impl Interpreter {
                                     flds.insert(col.to_lowercase(), Value::String(String::new()));
                                 }
                             }
-                            let obj = crate::value::ObjectData { class_name: "DataRow".to_string(), fields: flds };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataRow".to_string(), fields: flds };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                         }
                         "clear" | "dispose" => {
@@ -10647,7 +10897,7 @@ impl Interpreter {
                             // Return a shallow copy
                             let obj_data = obj_ref.borrow();
                             let new_fields = obj_data.fields.clone();
-                            let obj = crate::value::ObjectData { class_name: "DataTable".to_string(), fields: new_fields };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataTable".to_string(), fields: new_fields };
                             return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                         }
                         _ => {}
@@ -10802,7 +11052,7 @@ impl Interpreter {
                             binding_fields.insert("datasource".to_string(), data_source.clone());
                             binding_fields.insert("datamember".to_string(), Value::String(data_member.clone()));
                             binding_fields.insert("controlname".to_string(), Value::String(parent_name.clone()));
-                            let binding_obj = crate::value::ObjectData { class_name: "Binding".to_string(), fields: binding_fields };
+                            let binding_obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Binding".to_string(), fields: binding_fields };
                             self.env.define_global(&binding_key, Value::Object(std::rc::Rc::new(std::cell::RefCell::new(binding_obj))));
 
                             // Resolve data_source to object if it's a string proxy
@@ -11558,6 +11808,7 @@ impl Interpreter {
                                   is_must_override: false,
                                   is_shared: false,
                                   is_not_overridable: false,
+                                  handles: None,
                               };
                               return self.call_user_function(&func, &[], Some(obj_ref.clone()));
                          }
@@ -11643,6 +11894,17 @@ impl Interpreter {
                         let bytes = s.into_bytes();
                         let value_bytes: Vec<Value> = bytes.into_iter().map(Value::Byte).collect();
                         return Ok(Value::Array(value_bytes));
+                    } else if method_name == "getstring" {
+                        let bytes: Vec<u8> = match arg_values.first() {
+                            Some(Value::Array(arr)) => arr.iter().map(|v| match v {
+                                Value::Byte(b) => *b,
+                                Value::Integer(i) => *i as u8,
+                                _ => 0u8,
+                            }).collect(),
+                            _ => vec![],
+                        };
+                        let s = String::from_utf8_lossy(&bytes).to_string();
+                        return Ok(Value::String(s));
                     }
                 } else if class_name_lower == "bitconverter" {
                     if method_name == "tostring" {
@@ -11699,7 +11961,7 @@ impl Interpreter {
                                 let shared_lambda = lambda.to_shared();
                                 
                                 // Create shared object for thread state
-                                let shared_thread_obj = std::sync::Arc::new(std::sync::Mutex::new(crate::value::SharedObjectData {
+                                let shared_thread_obj = std::sync::Arc::new(std::sync::Mutex::new(crate::value::SharedObjectData { drawing_commands: Vec::new(),
                                     class_name: "Thread".to_string(),
                                     fields: {
                                         let mut f = HashMap::new();
@@ -11938,7 +12200,7 @@ impl Interpreter {
                 let mut fields = std::collections::HashMap::new();
                 fields.insert("__type".to_string(), Value::String("Guid".to_string()));
                 fields.insert("__value".to_string(), Value::String(guid_str.clone()));
-                let obj = crate::value::ObjectData { class_name: "Guid".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Guid".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
             "guid.parse" | "system.guid.parse" => {
@@ -11946,14 +12208,14 @@ impl Interpreter {
                 let mut fields = std::collections::HashMap::new();
                 fields.insert("__type".to_string(), Value::String("Guid".to_string()));
                 fields.insert("__value".to_string(), Value::String(s));
-                let obj = crate::value::ObjectData { class_name: "Guid".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Guid".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
             "guid.empty" | "system.guid.empty" => {
                 let mut fields = std::collections::HashMap::new();
                 fields.insert("__type".to_string(), Value::String("Guid".to_string()));
                 fields.insert("__value".to_string(), Value::String("00000000-0000-0000-0000-000000000000".to_string()));
-                let obj = crate::value::ObjectData { class_name: "Guid".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Guid".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
 
@@ -11998,7 +12260,7 @@ impl Interpreter {
                 fields.insert("elapsedmilliseconds".to_string(), Value::Long(0));
                 fields.insert("__start_ms".to_string(), Value::Long(now_ms));
                 fields.insert("__accumulated_ms".to_string(), Value::Long(0));
-                let obj = crate::value::ObjectData { class_name: "Stopwatch".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Stopwatch".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
 
@@ -12022,7 +12284,7 @@ impl Interpreter {
                 fields.insert("__handle".to_string(), crate::value::SharedValue::String(handle_id.clone()));
                 fields.insert("status".to_string(), crate::value::SharedValue::String("WaitingToRun".to_string()));
                 
-                let shared_task_obj = std::sync::Arc::new(std::sync::Mutex::new(crate::value::SharedObjectData {
+                let shared_task_obj = std::sync::Arc::new(std::sync::Mutex::new(crate::value::SharedObjectData { drawing_commands: Vec::new(),
                     class_name: "Task".to_string(),
                     fields,
                 }));
@@ -12039,7 +12301,10 @@ impl Interpreter {
                     let mut bg_interpreter = Interpreter::new_background(functions, subs, classes, namespace_map);
                     let result = match bg_interpreter.call_lambda(shared_lambda.to_value(), &[]) {
                         Ok(v) => v.to_shared(),
-                        Err(_) => crate::value::SharedValue::Nothing,
+                        Err(e) => {
+                            eprintln!("[ERROR] Task.Run background thread failed: {}", e);
+                            crate::value::SharedValue::Nothing
+                        }
                     };
                     
                     let mut lock = task_clone.lock().unwrap();
@@ -12060,7 +12325,7 @@ impl Interpreter {
                 let ms = arg_values.get(0).map(|v| v.as_integer().unwrap_or(0)).unwrap_or(0) as u64;
                 let handle_id = generate_runtime_id();
                 
-                let shared_task_obj = std::sync::Arc::new(std::sync::Mutex::new(crate::value::SharedObjectData {
+                let shared_task_obj = std::sync::Arc::new(std::sync::Mutex::new(crate::value::SharedObjectData { drawing_commands: Vec::new(),
                     class_name: "Task".to_string(),
                     fields: {
                         let mut f = HashMap::new();
@@ -12097,7 +12362,7 @@ impl Interpreter {
                 fields.insert("isfaulted".to_string(), Value::Boolean(false));
                 fields.insert("iscanceled".to_string(), Value::Boolean(false));
                 fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
-                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Task".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
             "task.whenall" | "system.threading.tasks.task.whenall" => {
@@ -12109,7 +12374,7 @@ impl Interpreter {
                 fields.insert("isfaulted".to_string(), Value::Boolean(false));
                 fields.insert("iscanceled".to_string(), Value::Boolean(false));
                 fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
-                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Task".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
             "task.whenany" | "system.threading.tasks.task.whenany" => {
@@ -12121,7 +12386,7 @@ impl Interpreter {
                 fields.insert("isfaulted".to_string(), Value::Boolean(false));
                 fields.insert("iscanceled".to_string(), Value::Boolean(false));
                 fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
-                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Task".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
             "task.completedtask" | "system.threading.tasks.task.completedtask" => {
@@ -12132,7 +12397,7 @@ impl Interpreter {
                 fields.insert("isfaulted".to_string(), Value::Boolean(false));
                 fields.insert("iscanceled".to_string(), Value::Boolean(false));
                 fields.insert("status".to_string(), Value::String("RanToCompletion".to_string()));
-                let obj = crate::value::ObjectData { class_name: "Task".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Task".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
 
@@ -12243,7 +12508,7 @@ impl Interpreter {
                         };
                         fields.insert(field_name, default_val);
                     }
-                    let obj = crate::value::ObjectData { class_name: class_name_str.clone(), fields };
+                    let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: class_name_str.clone(), fields };
                     let obj_ref = std::rc::Rc::new(std::cell::RefCell::new(obj));
 
                     // Call Sub New if it exists
@@ -12277,14 +12542,14 @@ impl Interpreter {
                         let mut fields = std::collections::HashMap::new();
                         fields.insert("__type".to_string(), Value::String("StringBuilder".to_string()));
                         fields.insert("__buffer".to_string(), Value::String(String::new()));
-                        let obj = crate::value::ObjectData { class_name: "StringBuilder".to_string(), fields };
+                        let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "StringBuilder".to_string(), fields };
                         return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                     }
                     _ => {
                         // Create a generic object
                         let mut fields = std::collections::HashMap::new();
                         fields.insert("__type".to_string(), Value::String(type_name.clone()));
-                        let obj = crate::value::ObjectData { class_name: type_name, fields };
+                        let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: type_name, fields };
                         return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                     }
                 }
@@ -12354,7 +12619,7 @@ impl Interpreter {
                     fields.insert(format!("item{}", i + 1), val.clone());
                 }
                 fields.insert("length".to_string(), Value::Integer(arg_values.len() as i32));
-                let obj = crate::value::ObjectData { class_name: "Tuple".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Tuple".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
 
@@ -12391,7 +12656,7 @@ impl Interpreter {
                 fields.insert("__type".to_string(), Value::String("ZipArchive".to_string()));
                 fields.insert("__path".to_string(), Value::String(path));
                 fields.insert("__mode".to_string(), Value::Integer(mode));
-                let obj = crate::value::ObjectData { class_name: "ZipArchive".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "ZipArchive".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
 
@@ -12502,7 +12767,7 @@ impl Interpreter {
                         fields.insert("hasexited".to_string(), Value::Boolean(false));
                         fields.insert("exitcode".to_string(), Value::Integer(0));
                         
-                        let obj = crate::value::ObjectData { class_name: "Process".to_string(), fields };
+                        let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Process".to_string(), fields };
                         return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
                     }
                     Err(e) => return Err(RuntimeError::Custom(format!("Process.Start failed: {} (file={})", e, filename))),
@@ -12802,7 +13067,7 @@ impl Interpreter {
             "timespan.frommilliseconds" => {
                 let ms = arg_values[0].as_double()?;
                 let total_seconds = ms / 1000.0;
-                let obj_data = crate::value::ObjectData {
+                let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                     class_name: "TimeSpan".to_string(),
                     fields: {
                         let mut f = std::collections::HashMap::new();
@@ -12825,7 +13090,7 @@ impl Interpreter {
                 let ticks = arg_values[0].as_double()?;
                 let ms = ticks / 10000.0;
                 let total_seconds = ms / 1000.0;
-                let obj_data = crate::value::ObjectData {
+                let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                     class_name: "TimeSpan".to_string(),
                     fields: {
                         let mut f = std::collections::HashMap::new();
@@ -12864,7 +13129,7 @@ impl Interpreter {
                     _ => (0.0, 0.0, 0.0),
                 };
                 let total_seconds = hours * 3600.0 + minutes * 60.0 + seconds;
-                let obj_data = crate::value::ObjectData {
+                let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                     class_name: "TimeSpan".to_string(),
                     fields: {
                         let mut f = std::collections::HashMap::new();
@@ -12884,7 +13149,7 @@ impl Interpreter {
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj_data))));
             }
             "timespan.zero" | "system.timespan.zero" => {
-                let obj_data = crate::value::ObjectData {
+                let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                     class_name: "TimeSpan".to_string(),
                     fields: {
                         let mut f = std::collections::HashMap::new();
@@ -12945,7 +13210,7 @@ impl Interpreter {
                 let mut fields = std::collections::HashMap::new();
                 fields.insert("keychar".to_string(), Value::String(" ".to_string()));
                 fields.insert("key".to_string(), Value::Integer(32)); // Spacebar
-                let obj = crate::value::ObjectData { class_name: "ConsoleKeyInfo".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "ConsoleKeyInfo".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
 
@@ -12963,7 +13228,7 @@ impl Interpreter {
                 fields.insert("headers".to_string(), Value::Dictionary(
                     std::rc::Rc::new(std::cell::RefCell::new(crate::collections::VBDictionary::new()))
                 ));
-                let obj = crate::value::ObjectData { class_name: "HttpWebRequest".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "HttpWebRequest".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
 
@@ -13016,7 +13281,7 @@ impl Interpreter {
                 let mut fields = std::collections::HashMap::new();
                 fields.insert("hostname".to_string(), Value::String(hostname));
                 fields.insert("addresslist".to_string(), Value::Array(addresses));
-                let obj = crate::value::ObjectData { class_name: "IPHostEntry".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "IPHostEntry".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
             "dns.gethostaddresses" | "system.net.dns.gethostaddresses" => {
@@ -13072,7 +13337,7 @@ impl Interpreter {
                 fields.insert("addressfamily".to_string(), Value::String(
                     if is_v4 { "InterNetwork".to_string() } else { "InterNetworkV6".to_string() }
                 ));
-                let obj = crate::value::ObjectData { class_name: "IPAddress".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "IPAddress".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
             "ipaddress.tryparse" | "system.net.ipaddress.tryparse" => {
@@ -13091,7 +13356,7 @@ impl Interpreter {
                 fields.insert("__type".to_string(), Value::String("IPAddress".to_string()));
                 fields.insert("address".to_string(), Value::String("127.0.0.1".to_string()));
                 fields.insert("addressfamily".to_string(), Value::String("InterNetwork".to_string()));
-                let obj = crate::value::ObjectData { class_name: "IPAddress".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "IPAddress".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
             "ipaddress.any" | "system.net.ipaddress.any" => {
@@ -13099,7 +13364,7 @@ impl Interpreter {
                 fields.insert("__type".to_string(), Value::String("IPAddress".to_string()));
                 fields.insert("address".to_string(), Value::String("0.0.0.0".to_string()));
                 fields.insert("addressfamily".to_string(), Value::String("InterNetwork".to_string()));
-                let obj = crate::value::ObjectData { class_name: "IPAddress".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "IPAddress".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
             "ipaddress.ipv6loopback" | "system.net.ipaddress.ipv6loopback" => {
@@ -13107,7 +13372,7 @@ impl Interpreter {
                 fields.insert("__type".to_string(), Value::String("IPAddress".to_string()));
                 fields.insert("address".to_string(), Value::String("::1".to_string()));
                 fields.insert("addressfamily".to_string(), Value::String("InterNetworkV6".to_string()));
-                let obj = crate::value::ObjectData { class_name: "IPAddress".to_string(), fields };
+                let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "IPAddress".to_string(), fields };
                 return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj))));
             }
 
@@ -13115,7 +13380,7 @@ impl Interpreter {
             "timespan.fromdays" => {
                 let days = arg_values[0].as_double()?;
                 let total_seconds = days * 86400.0;
-                let obj_data = crate::value::ObjectData {
+                let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                     class_name: "TimeSpan".to_string(),
                     fields: {
                         let mut f = std::collections::HashMap::new();
@@ -13137,7 +13402,7 @@ impl Interpreter {
             "timespan.fromhours" => {
                 let hours = arg_values[0].as_double()?;
                 let total_seconds = hours * 3600.0;
-                let obj_data = crate::value::ObjectData {
+                let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                     class_name: "TimeSpan".to_string(),
                     fields: {
                         let mut f = std::collections::HashMap::new();
@@ -13158,7 +13423,7 @@ impl Interpreter {
             "timespan.fromminutes" => {
                 let mins = arg_values[0].as_double()?;
                 let total_seconds = mins * 60.0;
-                let obj_data = crate::value::ObjectData {
+                let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                     class_name: "TimeSpan".to_string(),
                     fields: {
                         let mut f = std::collections::HashMap::new();
@@ -13178,7 +13443,7 @@ impl Interpreter {
             }
             "timespan.fromseconds" => {
                 let secs = arg_values[0].as_double()?;
-                let obj_data = crate::value::ObjectData {
+                let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
                     class_name: "TimeSpan".to_string(),
                     fields: {
                         let mut f = std::collections::HashMap::new();
@@ -13566,7 +13831,7 @@ impl Interpreter {
                                 fields.insert("item2".to_string(), b.clone());
                                 fields.insert("__type".to_string(), Value::String("Tuple".to_string()));
                                 result.push(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
-                                    crate::value::ObjectData { class_name: "Tuple".to_string(), fields }
+                                    crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Tuple".to_string(), fields }
                                 ))));
                             }
                         }
@@ -13592,7 +13857,7 @@ impl Interpreter {
                             fields.insert("count".to_string(), Value::Integer(group_items.len() as i32));
                             fields.insert("__type".to_string(), Value::String("Grouping".to_string()));
                             result.push(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
-                                crate::value::ObjectData { class_name: "Grouping".to_string(), fields }
+                                crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "Grouping".to_string(), fields }
                             ))));
                         }
                         return Ok(Value::Array(result));
@@ -14011,6 +14276,28 @@ impl Interpreter {
                 }
                 Ok(Value::Nothing)
             }
+            "appendtext" => {
+                // TextBox.AppendText(text) — append text to the control's Text property
+                if let Ok(obj_val) = self.evaluate_expr(obj) {
+                    if let Value::Object(obj_ref) = &obj_val {
+                        let text = arg_values.get(0).map(|v| v.as_string()).unwrap_or_default();
+                        let mut current = obj_ref.borrow().fields.get("text").map(|v| v.as_string()).unwrap_or_default();
+                        current.push_str(&text);
+                        obj_ref.borrow_mut().fields.insert("text".to_string(), Value::String(current));
+                        // Emit PropertyChange so the UI updates
+                        let ctrl_name = obj_ref.borrow().fields.get("name").map(|v| v.as_string()).unwrap_or_default();
+                        if !ctrl_name.is_empty() {
+                            let new_text = obj_ref.borrow().fields.get("text").map(|v| v.as_string()).unwrap_or_default();
+                            self.side_effects.push_back(crate::RuntimeSideEffect::PropertyChange {
+                                object: ctrl_name,
+                                property: "Text".to_string(),
+                                value: Value::String(new_text),
+                            });
+                        }
+                    }
+                }
+                Ok(Value::Nothing)
+            }
             "selectall" | "clear" | "copy" | "cut" | "paste" | "undo" | "redo" => {
                 // TextBox/RichTextBox edit methods — no-op in interpreter
                 Ok(Value::Nothing)
@@ -14045,7 +14332,7 @@ impl Interpreter {
                             } else {
                                 let mut fields = std::collections::HashMap::new();
                                 fields.insert(ctrl_name.to_lowercase(), Value::String(text));
-                                let map_obj = crate::value::ObjectData { class_name: "__TooltipMap".to_string(), fields };
+                                let map_obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "__TooltipMap".to_string(), fields };
                                 *tooltips = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(map_obj)));
                             }
                         }
@@ -14118,7 +14405,34 @@ impl Interpreter {
                 // MonthCalendar bold date management — no-op for now
                 Ok(Value::Nothing)
             }
-            _ => Err(RuntimeError::Custom(format!("Unknown method: {}", method_name))),
+            _ => {
+                if let Ok(obj_val) = self.evaluate_expr(obj) {
+                    if let Value::Object(obj_ref) = obj_val {
+                        let class_name = obj_ref.borrow().class_name.clone();
+                        if let Some(method) = self.find_method(&class_name, method_name) {
+                            match method {
+                                vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                                    self.call_user_sub(&s, arg_values, Some(obj_ref.clone()))?;
+                                    return Ok(Value::Nothing);
+                                }
+                                vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                                    return self.call_user_function(&f, arg_values, Some(obj_ref.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Ok(obj_val) = self.evaluate_expr(obj) {
+                     // ... existing logic ...
+                }
+                println!("DEBUG: Unknown method fallback. method={}. obj={:?}", method_name, obj);
+                if let Ok(val) = self.evaluate_expr(obj) {
+                    println!("DEBUG: obj evaluates to: {:?}", val);
+                } else {
+                    println!("DEBUG: obj evaluation failed");
+                }
+                Err(RuntimeError::Custom(format!("Unknown method: {}", method_name)))
+            }
         }
     }
 
@@ -14482,7 +14796,7 @@ impl Interpreter {
         }
 
         let fields = self.collect_fields(class_name);
-        let obj_data = crate::value::ObjectData {
+        let obj_data = crate::value::ObjectData { drawing_commands: Vec::new(),
             class_name: class_decl.name.as_str().to_string(),
             fields,
         };
@@ -15216,7 +15530,7 @@ impl Interpreter {
                                 let v = db_row.values.get(ci).cloned().unwrap_or_default();
                                 flds.insert(col.to_lowercase(), Value::String(v));
                             }
-                            let obj = crate::value::ObjectData { class_name: "DataRow".to_string(), fields: flds };
+                            let obj = crate::value::ObjectData { drawing_commands: Vec::new(), class_name: "DataRow".to_string(), fields: flds };
                             return Value::Object(std::rc::Rc::new(std::cell::RefCell::new(obj)));
                         }
                     }

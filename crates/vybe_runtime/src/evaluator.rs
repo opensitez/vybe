@@ -365,8 +365,87 @@ pub fn evaluate(expr: &Expression, env: &Environment) -> Result<Value, RuntimeEr
         Expression::Lambda { .. } => {
             Err(RuntimeError::Custom("Lambdas cannot be evaluated in constant expressions".to_string()))
         }
-        Expression::Await(_) => {
-            Err(RuntimeError::Custom("Await cannot be evaluated in constant expressions".to_string()))
+        Expression::Await(operand) => {
+            let val = evaluate(operand, env)?;
+            
+            // Check if it's a Task object
+            let mut handle_id = String::new();
+            let mut is_completed = false;
+            let mut result = Value::Nothing;
+            
+            // Check local object (Task.FromResult)
+            if let Value::Object(obj) = &val {
+                let b = obj.borrow();
+                if b.class_name == "Task" {
+                     if let Some(Value::Boolean(c)) = b.fields.get("iscompleted") {
+                         is_completed = *c;
+                     }
+                     if let Some(res) = b.fields.get("result") {
+                         result = res.clone();
+                     }
+                     // Local tasks don't have threads usually, unless wrapped
+                     if is_completed {
+                         return Ok(result);
+                     }
+                }
+            }
+            
+            // Check shared object (Task.Run) - via SharedValue::Object -> to_value() -> Value::Object
+            // But wait, evaluate returns Value. If it was a SharedValue, it's already converted to Value.
+            // When SharedValue::Object is converted to Value::Object, it creates a new RefCell<ObjectData>.
+            // But the interpreter implementation of Task.Run simply returns a Value::Object wrap of SharedObjectData?
+            // No, SharedValue::to_value() creates a Snapshot.
+            // This is a problem! If we 'Await' a snapshot, we won't see updates from the background thread.
+            // We need access to the underlying SharedObject if possible.
+            // But Value::Object doesn't hold reference to SharedObject.
+            
+            // Re-reading interpreter.rs:
+            // return Ok(crate::value::SharedValue::Object(shared_task_obj).to_value());
+            // It calls to_value().
+            
+            // This means 'val' is a disconnected snapshot.
+            // However, the snapshot contains "__handle".
+            if let Value::Object(obj) = &val {
+                let b = obj.borrow();
+                if let Some(Value::String(h)) = b.fields.get("__handle") {
+                    handle_id = h.clone();
+                }
+            }
+            
+            if !handle_id.is_empty() {
+                // It's a background task.
+                // We need to join the thread.
+                let thread_handle = {
+                    let mut reg = crate::interpreter::get_registry().lock().unwrap();
+                    reg.threads.remove(&handle_id)
+                };
+                
+                if let Some(handle) = thread_handle {
+                    // Block until done
+                    let _ = handle.join();
+                }
+                
+                // Now retrieve the result from the SHARED object registry, because the local 'val' is a stale snapshot.
+                let shared_obj = {
+                     let reg = crate::interpreter::get_registry().lock().unwrap();
+                     reg.shared_objects.get(&handle_id).cloned()
+                };
+                
+                if let Some(sh_obj) = shared_obj {
+                    let lock = sh_obj.lock().unwrap();
+                    if let Some(res) = lock.fields.get("result") {
+                         return Ok(res.to_value());
+                    }
+                }
+            }
+            
+            // If explicit task object with immediate result
+            if is_completed {
+                return Ok(result);
+            }
+            
+            // Fallback
+             Ok(Value::Nothing)
         }
     }
 }

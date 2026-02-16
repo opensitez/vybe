@@ -171,6 +171,7 @@ pub fn app_fn(_args: &[Value]) -> Result<Value, RuntimeError> {
     let obj = ObjectData {
         class_name: "App".to_string(),
         fields,
+        drawing_commands: Vec::new(),
     };
     
     Ok(Value::Object(Rc::new(RefCell::new(obj))))
@@ -190,6 +191,7 @@ pub fn screen_fn(_args: &[Value]) -> Result<Value, RuntimeError> {
     let obj = ObjectData {
         class_name: "Screen".to_string(),
         fields,
+        drawing_commands: Vec::new(),
     };
     
     Ok(Value::Object(Rc::new(RefCell::new(obj))))
@@ -206,6 +208,7 @@ pub fn clipboard_fn(_args: &[Value]) -> Result<Value, RuntimeError> {
     let obj = ObjectData {
         class_name: "Clipboard".to_string(),
         fields,
+        drawing_commands: Vec::new(),
     };
     
     Ok(Value::Object(Rc::new(RefCell::new(obj))))

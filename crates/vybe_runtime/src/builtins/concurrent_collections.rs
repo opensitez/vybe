@@ -89,7 +89,7 @@ impl ConcurrentDictionary {
             fields.insert("value".to_string(), v.to_value());
             fields.insert("__type".to_string(), Value::String("KeyValuePair".to_string()));
             
-            let obj = crate::value::ObjectData {
+            let obj = crate::value::ObjectData { drawing_commands: Vec::new(),
                 class_name: "KeyValuePair".to_string(),
                 fields,
             };

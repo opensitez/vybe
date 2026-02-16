@@ -117,7 +117,7 @@ pub fn create_openfiledialog() -> Value {
     fields.insert("Multiselect".to_string(), Value::Boolean(data.multiselect));
     fields.insert("_dialog_type".to_string(), Value::String("OpenFileDialog".to_string()));
     
-    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData { drawing_commands: Vec::new(),
         class_name: "OpenFileDialog".to_string(),
         fields,
     })))
@@ -134,7 +134,7 @@ pub fn create_savefiledialog() -> Value {
     fields.insert("Title".to_string(), Value::String(data.title.clone()));
     fields.insert("_dialog_type".to_string(), Value::String("SaveFileDialog".to_string()));
     
-    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData { drawing_commands: Vec::new(),
         class_name: "SaveFileDialog".to_string(),
         fields,
     })))
@@ -150,7 +150,7 @@ pub fn create_colordialog() -> Value {
     fields.insert("SolidColorOnly".to_string(), Value::Boolean(data.solid_color_only));
     fields.insert("_dialog_type".to_string(), Value::String("ColorDialog".to_string()));
     
-    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData { drawing_commands: Vec::new(),
         class_name: "ColorDialog".to_string(),
         fields,
     })))
@@ -164,7 +164,7 @@ pub fn create_fontdialog() -> Value {
     fields.insert("Color".to_string(), Value::String(data.color.clone()));
     fields.insert("_dialog_type".to_string(), Value::String("FontDialog".to_string()));
     
-    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData { drawing_commands: Vec::new(),
         class_name: "FontDialog".to_string(),
         fields,
     })))
@@ -180,7 +180,7 @@ pub fn create_printdialog() -> Value {
     fields.insert("ShowHelp".to_string(), Value::Boolean(false));
     fields.insert("ShowNetwork".to_string(), Value::Boolean(true));
     fields.insert("_dialog_type".to_string(), Value::String("PrintDialog".to_string()));
-    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData { drawing_commands: Vec::new(),
         class_name: "PrintDialog".to_string(),
         fields,
     })))
@@ -190,7 +190,7 @@ pub fn create_printdialog() -> Value {
 pub fn create_printpreviewdialog() -> Value {
     let mut fields = HashMap::new();
     fields.insert("_dialog_type".to_string(), Value::String("PrintPreviewDialog".to_string()));
-    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData { drawing_commands: Vec::new(),
         class_name: "PrintPreviewDialog".to_string(),
         fields,
     })))
@@ -205,7 +205,7 @@ pub fn create_pagesetupdialog() -> Value {
     fields.insert("AllowPrinter".to_string(), Value::Boolean(false));
     fields.insert("MinMargins".to_string(), Value::Nothing);
     fields.insert("_dialog_type".to_string(), Value::String("PageSetupDialog".to_string()));
-    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData { drawing_commands: Vec::new(),
         class_name: "PageSetupDialog".to_string(),
         fields,
     })))
@@ -216,7 +216,7 @@ pub fn create_helpprovider() -> Value {
     let mut fields = HashMap::new();
     fields.insert("HelpNamespace".to_string(), Value::String(String::new()));
     fields.insert("_dialog_type".to_string(), Value::String("HelpProvider".to_string()));
-    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData { drawing_commands: Vec::new(),
         class_name: "HelpProvider".to_string(),
         fields,
     })))
@@ -231,7 +231,7 @@ pub fn create_folderbrowserdialog() -> Value {
     fields.insert("ShowNewFolderButton".to_string(), Value::Boolean(data.show_new_folder_button));
     fields.insert("_dialog_type".to_string(), Value::String("FolderBrowserDialog".to_string()));
     
-    Value::Object(Rc::new(RefCell::new(crate::ObjectData {
+    Value::Object(Rc::new(RefCell::new(crate::ObjectData { drawing_commands: Vec::new(),
         class_name: "FolderBrowserDialog".to_string(),
         fields,
     })))

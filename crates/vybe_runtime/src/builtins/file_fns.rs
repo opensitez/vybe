@@ -933,7 +933,7 @@ pub fn loadpicture_fn(args: &[Value]) -> Result<Value, RuntimeError> {
                 .to_lowercase();
             fields.insert("format".to_string(), Value::String(ext));
             
-            let obj = ObjectData {
+            let obj = ObjectData { drawing_commands: Vec::new(),
                 class_name: "Picture".to_string(),
                 fields,
             };

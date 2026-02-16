@@ -5,7 +5,13 @@ pub struct Identifier(pub String);
 
 impl Identifier {
     pub fn new<S: Into<String>>(s: S) -> self::Identifier {
-        Identifier(s.into())
+        let val: String = s.into();
+        // Strip VB.NET escaped identifier brackets: [Stop] → Stop
+        if val.starts_with('[') && val.ends_with(']') && val.len() > 2 {
+            Identifier(val[1..val.len()-1].to_string())
+        } else {
+            Identifier(val)
+        }
     }
 
     pub fn as_str(&self) -> &str {

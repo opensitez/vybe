@@ -5,15 +5,25 @@ use std::collections::{HashMap, VecDeque};
 use chrono::{NaiveDate, Duration};
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum DrawingCommand {
+    Line { x1: i32, y1: i32, x2: i32, y2: i32, color: u32, width: f32 },
+    Rectangle { x: i32, y: i32, width: i32, height: i32, color: u32, fill: bool },
+    Ellipse { x: i32, y: i32, width: i32, height: i32, color: u32, fill: bool },
+    Clear { color: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ObjectData {
     pub class_name: String,
     pub fields: HashMap<String, Value>,
+    pub drawing_commands: Vec<DrawingCommand>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SharedObjectData {
     pub class_name: String,
     pub fields: HashMap<String, SharedValue>,
+    pub drawing_commands: Vec<DrawingCommand>,
 }
 
 #[derive(Debug, Clone)]
@@ -386,6 +396,7 @@ impl Value {
                     Value::Object(Rc::new(RefCell::new(ObjectData {
                         class_name: "KeyValuePair".to_string(),
                         fields,
+                        drawing_commands: Vec::new(),
                     })))
                 }).collect())
             }
@@ -452,6 +463,7 @@ impl Value {
                 Value::Object(Rc::new(RefCell::new(ObjectData {
                     class_name: b.class_name.clone(),
                     fields: new_fields,
+                    drawing_commands: b.drawing_commands.clone(),
                 })))
             }
             Value::Lambda { params, body, env } => {
@@ -488,6 +500,7 @@ impl Value {
                 let shared_obj = SharedObjectData {
                     class_name: b.class_name.clone(),
                     fields: shared_fields,
+                    drawing_commands: b.drawing_commands.clone(),
                 };
                 SharedValue::Object(std::sync::Arc::new(std::sync::Mutex::new(shared_obj)))
             }
@@ -544,6 +557,7 @@ impl SharedValue {
                 let obj_data = ObjectData {
                     class_name: b.class_name.clone(),
                     fields,
+                    drawing_commands: b.drawing_commands.clone(),
                 };
                 Value::Object(Rc::new(RefCell::new(obj_data)))
             }

@@ -41,6 +41,10 @@ pub enum RuntimeSideEffect {
     },
     ConsoleOutput(String),
     ConsoleClear,
+    /// Trigger a repaint of a control.
+    Repaint {
+        control_name: String,
+    },
     /// Signals that a data-bound control's data source has changed and needs re-rendering.
     DataSourceChanged {
         control_name: String,

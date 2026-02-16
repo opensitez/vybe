@@ -50,6 +50,7 @@ impl NetHandle {
     /// Bind a TCP listener.
     pub fn bind_listener(addr: &str, port: i32) -> std::io::Result<Self> {
         let bind_addr = format!("{}:{}", addr, port);
+        println!("[DEBUG] Binding TCP listener to {}", bind_addr);
         let listener = TcpListener::bind(&bind_addr)?;
         Ok(NetHandle::Listener(listener))
     }
@@ -164,6 +165,7 @@ impl NetHandle {
         match self {
             NetHandle::Listener(listener) => {
                 let (stream, addr) = listener.accept()?;
+                println!("[DEBUG] Accepted TCP connection from {}", addr);
                 Ok((stream, addr.to_string()))
             }
             _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a TCP listener")),

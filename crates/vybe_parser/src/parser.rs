@@ -181,6 +181,7 @@ fn parse_dim_statement(pair: Pair<Rule>) -> ParseResult<VariableDecl> {
         var_type,
         array_bounds,
         initializer,
+        with_events: false,
     })
 }
 
@@ -373,6 +374,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> ParseResult<FunctionDecl> {
     let mut parameters = Vec::new();
     let mut return_type = None;
     let mut body = Vec::new();
+    let mut handles: Option<Vec<String>> = None;
     let mut is_async = false;
     let mut is_extension = false;
     let mut is_overridable = false;
@@ -438,6 +440,17 @@ fn parse_function_decl(pair: Pair<Rule>) -> ParseResult<FunctionDecl> {
                     }
                 }
             }
+            Rule::handles_clause => {
+                let mut handle_list = Vec::new();
+                for hp in p.into_inner() {
+                    if hp.as_rule() == Rule::dotted_identifier {
+                        handle_list.push(hp.as_str().to_string());
+                    }
+                }
+                if !handle_list.is_empty() {
+                    handles = Some(handle_list);
+                }
+            }
             _ => {}
         }
     }
@@ -455,6 +468,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> ParseResult<FunctionDecl> {
         is_must_override,
         is_shared,
         is_not_overridable,
+        handles,
     })
 }
 
@@ -563,6 +577,7 @@ fn parse_auto_property_as_field(pair: Pair<Rule>) -> ParseResult<VariableDecl> {
         var_type,
         array_bounds: None,
         initializer,
+        with_events: false,
     })
 }
 
@@ -2194,9 +2209,11 @@ fn parse_field_decl(pair: Pair<Rule>) -> ParseResult<VariableDecl> {
     let mut is_new = false;
     let mut ctor_args: Vec<Expression> = Vec::new();
     
+    let mut is_with_events = false;
+    
     for fp in pair.into_inner() {
         match fp.as_rule() {
-            Rule::withevents_keyword => {} 
+            Rule::withevents_keyword => { is_with_events = true; } 
             Rule::visibility_modifier | Rule::partial_keyword => {} // modifiers handled by caller
             Rule::dim_new_keyword => { is_new = true; }
             Rule::identifier => field_name = Identifier::new(fp.as_str()),
@@ -2232,6 +2249,7 @@ fn parse_field_decl(pair: Pair<Rule>) -> ParseResult<VariableDecl> {
         var_type: field_type,
         array_bounds: field_bounds,
         initializer: field_init,
+        with_events: is_with_events,
     })
 }
 
