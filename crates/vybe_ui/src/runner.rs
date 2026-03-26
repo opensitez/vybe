@@ -80,11 +80,8 @@ fn run_js_file(path: &Path) {
     let mut vm = vybe_bytecode::VM::new();
     let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
 
-    // 2. Register JS runtime WITH GUI support
-    let host = vybe_compiler_js::setup_js_gui_runtime(&mut vm, queue.clone());
-
-    // 3. Compile
-    let chunks = match vybe_compiler_js::compile(&program, host) {
+    // 2. Register all host modules + compile
+    let chunks = match vybe_compiler_js::setup_and_compile_with_gui(&mut vm, &program, queue.clone()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("JS compile error: {e}");

@@ -1,6 +1,14 @@
 use crate::opcode::Op;
 use crate::value::Value;
 
+/// A host function import declaration — (module, name).
+/// Like WASM: (import "vybe:math" "floor" (func ...))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    pub module: String,
+    pub name: String,
+}
+
 /// A compiled chunk of bytecode — one per function/script.
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -10,6 +18,10 @@ pub struct Chunk {
     pub name: String,
     pub arity: u8,
     pub local_count: u16,
+    /// Import table — only on the script chunk (chunk 0).
+    /// Each entry is a (module, name) pair.
+    /// CallHost operand indexes into this table.
+    pub imports: Vec<Import>,
 }
 
 impl Chunk {
@@ -21,7 +33,21 @@ impl Chunk {
             name: name.into(),
             arity: 0,
             local_count: 0,
+            imports: Vec::new(),
         }
+    }
+
+    /// Add an import and return its index (used by CallHost operand).
+    pub fn add_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
+        let import = Import { module: module.into(), name: name.into() };
+        // Deduplicate — return existing index if already imported
+        for (i, existing) in self.imports.iter().enumerate() {
+            if *existing == import {
+                return i as u16;
+            }
+        }
+        self.imports.push(import);
+        (self.imports.len() - 1) as u16
     }
 
     pub fn emit(&mut self, byte: u8, line: u32) {
@@ -67,7 +93,7 @@ impl Chunk {
     }
 
     pub fn emit_loop(&mut self, target_offset: usize, line: u32) {
-        self.emit(Op::Jump as u8, line);
+        self.emit(Op::br as u8, line);
         let jump = target_offset as i32 - (self.code.len() as i32 + 2);
         self.emit((jump >> 8) as u8, line);
         self.emit((jump & 0xff) as u8, line);

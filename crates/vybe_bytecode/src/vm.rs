@@ -33,7 +33,10 @@ pub struct VM {
     pub globals: HashMap<String, Value>,
     open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
     host_fns: Vec<HostFn>,
-    host_fn_names: Vec<String>,
+    /// Registry: (module, name) → index into host_fns.
+    host_registry: HashMap<(String, String), usize>,
+    /// Import resolution table: import_index → host_fn_index.
+    import_table: Vec<usize>,
 }
 
 impl VM {
@@ -45,23 +48,36 @@ impl VM {
             globals: HashMap::new(),
             open_upvalues: Vec::new(),
             host_fns: Vec::new(),
-            host_fn_names: Vec::new(),
+            host_registry: HashMap::new(),
+            import_table: Vec::new(),
         }
     }
 
-    /// Register a host function. Returns its index (used by CallHost opcode).
-    pub fn register_host_fn(&mut self, name: impl Into<String>, f: HostFn) -> u16 {
-        let idx = self.host_fns.len() as u16;
-        self.host_fn_names.push(name.into());
+    /// Register a host function with a (module, name) pair.
+    pub fn register_host_fn(&mut self, module: &str, name: &str, f: HostFn) {
+        let idx = self.host_fns.len();
         self.host_fns.push(f);
-        idx
+        self.host_registry.insert((module.to_string(), name.to_string()), idx);
     }
 
     /// Load chunks and execute chunk 0 (the script).
+    /// Resolves the import table against registered host functions.
     pub fn run(&mut self, chunks: Vec<Chunk>) -> Result<Value, VMError> {
         self.chunks = chunks;
         if self.chunks.is_empty() {
             return Ok(Value::Null);
+        }
+
+        // Resolve imports from chunk 0's import table
+        self.import_table.clear();
+        for import in &self.chunks[0].imports {
+            let key = (import.module.clone(), import.name.clone());
+            match self.host_registry.get(&key) {
+                Some(&idx) => self.import_table.push(idx),
+                None => return Err(VMError::new(format!(
+                    "Unresolved import: \"{}\" \"{}\"", import.module, import.name
+                ))),
+            }
         }
 
         self.frames.push(CallFrame {
@@ -179,49 +195,49 @@ impl VM {
             };
 
             match op {
-                Op::Halt => {
+                Op::halt => {
                     // Close all open upvalues so closures retain captured values
                     self.close_upvalues(0);
                     return Ok(if self.stack.is_empty() { Value::Null } else { self.pop() });
                 }
 
-                Op::Const => {
+                Op::r#const => {
                     let idx = self.read_u16();
                     let val = self.get_constant(idx);
                     self.push(val)?;
                 }
-                Op::Pop => { self.pop(); }
-                Op::Dup => {
+                Op::drop => { self.pop(); }
+                Op::dup => {
                     let val = self.peek(0).clone();
                     self.push(val)?;
                 }
 
                 // -- Variables --
-                Op::GetLocal => {
+                Op::local_get => {
                     let slot = self.read_u16() as usize;
                     let base = self.frame().base;
                     let val = self.stack[base + slot].clone();
                     self.push(val)?;
                 }
-                Op::SetLocal => {
+                Op::local_set => {
                     let slot = self.read_u16() as usize;
                     let val = self.peek(0).clone();
                     let base = self.frame().base;
                     self.stack[base + slot] = val;
                 }
-                Op::GetGlobal => {
+                Op::global_get => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let val = self.globals.get(&name).cloned().unwrap_or(Value::Null);
                     self.push(val)?;
                 }
-                Op::SetGlobal => {
+                Op::global_set => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let val = self.peek(0).clone();
                     self.globals.insert(name, val);
                 }
-                Op::GetUpvalue => {
+                Op::upvalue_get => {
                     let idx = self.read_byte() as usize;
                     let uv = self.frame().upvalues[idx].clone();
                     let val = match &uv.borrow().location {
@@ -230,7 +246,7 @@ impl VM {
                     };
                     self.push(val)?;
                 }
-                Op::SetUpvalue => {
+                Op::upvalue_set => {
                     let idx = self.read_byte() as usize;
                     let val = self.peek(0).clone();
                     let uv = self.frame().upvalues[idx].clone();
@@ -242,7 +258,7 @@ impl VM {
                 }
 
                 // -- Properties --
-                Op::GetProp => {
+                Op::struct_get => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let obj = self.pop();
@@ -257,7 +273,7 @@ impl VM {
                         _ => self.push(Value::Null)?,
                     }
                 }
-                Op::SetProp => {
+                Op::struct_set => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let val = self.pop();
@@ -267,7 +283,7 @@ impl VM {
                     }
                     self.push(val)?;
                 }
-                Op::GetIndex => {
+                Op::array_get => {
                     let key = self.pop();
                     let obj = self.pop();
                     match &obj {
@@ -287,7 +303,7 @@ impl VM {
                         _ => self.push(Value::Null)?,
                     }
                 }
-                Op::SetIndex => {
+                Op::array_set => {
                     let val = self.pop();
                     let key = self.pop();
                     let obj = self.pop();
@@ -299,61 +315,61 @@ impl VM {
                 }
 
                 // -- Float arithmetic --
-                Op::AddF => {
+                Op::f64_add => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a + b))?;
                 }
-                Op::SubF => {
+                Op::f64_sub => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a - b))?;
                 }
-                Op::MulF => {
+                Op::f64_mul => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a * b))?;
                 }
-                Op::DivF => {
+                Op::f64_div => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a / b))?;
                 }
-                Op::ModF => {
+                Op::f64_mod => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a % b))?;
                 }
-                Op::NegF => {
+                Op::f64_neg => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(-a))?;
                 }
 
                 // -- Integer arithmetic --
-                Op::AddI => {
+                Op::i32_add => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_add(b)))?;
                 }
-                Op::SubI => {
+                Op::i32_sub => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_sub(b)))?;
                 }
-                Op::MulI => {
+                Op::i32_mul => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_mul(b)))?;
                 }
 
                 // -- String --
-                Op::Concat => {
+                Op::str_concat => {
                     let b = self.pop();
                     let a = self.pop();
                     let s = format!("{}{}", a, b);
                     self.push(Value::String(Rc::from(s.as_str())))?;
                 }
-                Op::StrConcat => {
+                Op::str_concat_n => {
                     let count = self.read_byte() as usize;
                     let start = self.stack.len() - count;
                     let mut result = String::new();
@@ -365,53 +381,53 @@ impl VM {
                 }
 
                 // -- Bitwise --
-                Op::BitAnd => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a & b))?; }
-                Op::BitOr  => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a | b))?; }
-                Op::BitXor => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a ^ b))?; }
-                Op::BitNot => { let a = self.pop().as_i32(); self.push(Value::I32(!a))?; }
-                Op::Shl    => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a << (b & 0x1f)))?; }
-                Op::Shr    => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a >> (b & 0x1f)))?; }
-                Op::UShr   => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32((a >> (b & 0x1f)) as i32))?; }
+                Op::i32_and => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a & b))?; }
+                Op::i32_or  => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a | b))?; }
+                Op::i32_xor => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a ^ b))?; }
+                Op::i32_not => { let a = self.pop().as_i32(); self.push(Value::I32(!a))?; }
+                Op::i32_shl    => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a << (b & 0x1f)))?; }
+                Op::i32_shr_s    => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a >> (b & 0x1f)))?; }
+                Op::i32_shr_u   => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32((a >> (b & 0x1f)) as i32))?; }
 
                 // -- Comparison --
-                Op::CmpEq => {
+                Op::eq => {
                     let b = self.pop();
                     let a = self.pop();
                     self.push(Value::Bool(a.eq(&b)))?;
                 }
-                Op::CmpNe => {
+                Op::ne => {
                     let b = self.pop();
                     let a = self.pop();
                     self.push(Value::Bool(!a.eq(&b)))?;
                 }
-                Op::CmpLtF => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a < b))?; }
-                Op::CmpGtF => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a > b))?; }
-                Op::CmpLeF => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a <= b))?; }
-                Op::CmpGeF => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a >= b))?; }
-                Op::CmpLtS => {
+                Op::f64_lt => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a < b))?; }
+                Op::f64_gt => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a > b))?; }
+                Op::f64_le => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a <= b))?; }
+                Op::f64_ge => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a >= b))?; }
+                Op::str_lt => {
                     let b = self.pop();
                     let a = self.pop();
                     self.push(Value::Bool(a.as_str() < b.as_str()))?;
                 }
-                Op::CmpGtS => {
+                Op::str_gt => {
                     let b = self.pop();
                     let a = self.pop();
                     self.push(Value::Bool(a.as_str() > b.as_str()))?;
                 }
 
                 // -- Logical --
-                Op::BoolNot => {
+                Op::bool_not => {
                     let a = self.pop().as_bool();
                     self.push(Value::Bool(!a))?;
                 }
 
                 // -- Control flow --
-                Op::Jump => {
+                Op::br => {
                     let offset = self.read_i16();
                     let f = self.frame_mut();
                     f.ip = (f.ip as i64 + offset as i64) as usize;
                 }
-                Op::JumpIfFalse => {
+                Op::br_if_false => {
                     let offset = self.read_i16();
                     let val = self.pop();
                     if val.as_bool() == false {
@@ -419,7 +435,7 @@ impl VM {
                         f.ip = (f.ip as i64 + offset as i64) as usize;
                     }
                 }
-                Op::JumpIfTrue => {
+                Op::br_if_true => {
                     let offset = self.read_i16();
                     let val = self.pop();
                     if val.as_bool() == true {
@@ -427,7 +443,7 @@ impl VM {
                         f.ip = (f.ip as i64 + offset as i64) as usize;
                     }
                 }
-                Op::JumpIfNull => {
+                Op::br_if_null => {
                     let offset = self.read_i16();
                     let val = self.pop();
                     if matches!(val, Value::Null) {
@@ -437,11 +453,11 @@ impl VM {
                 }
 
                 // -- Functions --
-                Op::Call => {
+                Op::call => {
                     let argc = self.read_byte() as usize;
                     self.call_value(argc)?;
                 }
-                Op::Return => {
+                Op::r#return => {
                     let result = self.pop();
                     let base = self.frame().base;
                     self.close_upvalues(base);
@@ -452,7 +468,7 @@ impl VM {
                     self.stack.truncate(base);
                     self.push(result)?;
                 }
-                Op::Closure => {
+                Op::ref_func => {
                     let func_idx = self.read_u16() as usize;
                     let chunk = &self.chunks[func_idx];
                     let arity = chunk.arity;
@@ -479,23 +495,24 @@ impl VM {
                 }
 
                 // -- Host functions --
-                Op::CallHost => {
-                    let fn_idx = self.read_u16() as usize;
+                Op::call_import => {
+                    let import_idx = self.read_u16() as usize;
                     let argc = self.read_byte() as usize;
                     let base = self.stack.len() - argc;
                     let args: Vec<Value> = self.stack[base..].to_vec();
                     self.stack.truncate(base);
 
-                    if fn_idx < self.host_fns.len() {
-                        let result = (self.host_fns[fn_idx])(&args);
+                    if import_idx < self.import_table.len() {
+                        let host_idx = self.import_table[import_idx];
+                        let result = (self.host_fns[host_idx])(&args);
                         self.push(result)?;
                     } else {
-                        return Err(VMError::new(format!("Unknown host function index: {}", fn_idx)));
+                        return Err(VMError::new(format!("Unresolved import index: {}", import_idx)));
                     }
                 }
 
                 // -- Object/Array --
-                Op::NewObject => {
+                Op::struct_new => {
                     let count = self.read_u16() as usize;
                     let mut obj = Object::new();
                     let start = self.stack.len() - count * 2;
@@ -507,7 +524,7 @@ impl VM {
                     self.stack.truncate(start);
                     self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
                 }
-                Op::NewArray => {
+                Op::array_new => {
                     let count = self.read_u16() as usize;
                     let start = self.stack.len() - count;
                     let elems: Vec<Value> = self.stack[start..].to_vec();
@@ -516,50 +533,121 @@ impl VM {
                 }
 
                 // -- Immediates --
-                Op::PushNull => self.push(Value::Null)?,
-                Op::PushTrue => self.push(Value::Bool(true))?,
-                Op::PushFalse => self.push(Value::Bool(false))?,
-                Op::PushI32Zero => self.push(Value::I32(0))?,
-                Op::PushI32One => self.push(Value::I32(1))?,
-                Op::PushF64Zero => self.push(Value::F64(0.0))?,
+                Op::null => self.push(Value::Null)?,
+                Op::r#true => self.push(Value::Bool(true))?,
+                Op::r#false => self.push(Value::Bool(false))?,
+                Op::i32_const_0 => self.push(Value::I32(0))?,
+                Op::i32_const_1 => self.push(Value::I32(1))?,
+                Op::f64_const_0 => self.push(Value::F64(0.0))?,
 
                 // -- Type checks --
-                Op::IsNull => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Null)))?; }
-                Op::IsString => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::String(_))))?; }
-                Op::IsNumber => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::F64(_) | Value::I32(_) | Value::I64(_))))?; }
-                Op::IsBool => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Bool(_))))?; }
-                Op::IsObject => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Object(_))))?; }
-                Op::IsFunction => {
+                Op::ref_is_null => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Null)))?; }
+                Op::ref_is_string => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::String(_))))?; }
+                Op::ref_is_number => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::F64(_) | Value::I32(_) | Value::I64(_))))?; }
+                Op::ref_is_bool => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Bool(_))))?; }
+                Op::ref_is_object => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Object(_))))?; }
+                Op::ref_is_func => {
                     let v = self.pop();
                     let is_fn = matches!(&v, Value::Object(o) if matches!(o.borrow().kind, ObjectKind::Function(_)));
                     self.push(Value::Bool(is_fn))?;
                 }
 
                 // -- Conversions --
-                Op::ToF64 => {
+                Op::f64_from_i32 => {
                     let v = self.pop();
                     self.push(Value::F64(v.as_f64()))?;
                 }
-                Op::ToI32 => {
+                Op::i32_from_f64 => {
                     let v = self.pop();
                     self.push(Value::I32(v.as_i32()))?;
                 }
 
+                // -- Dynamic ops (inline type dispatch, no host call) --
+                Op::dyn_add => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let result = match (&a, &b) {
+                        (Value::F64(x), Value::F64(y)) => Value::F64(x + y),
+                        (Value::I32(x), Value::I32(y)) => Value::I32(x.wrapping_add(*y)),
+                        (Value::String(_), _) | (_, Value::String(_)) => {
+                            Value::String(Rc::from(format!("{}{}", a, b).as_str()))
+                        }
+                        _ => Value::F64(a.as_f64() + b.as_f64()),
+                    };
+                    self.push(result)?;
+                }
+                Op::dyn_eq => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let result = match (&a, &b) {
+                        (Value::Null, Value::Null) => true,
+                        (Value::Bool(x), Value::Bool(y)) => x == y,
+                        (Value::F64(x), Value::F64(y)) => if x.is_nan() || y.is_nan() { false } else { x == y },
+                        (Value::I32(x), Value::I32(y)) => x == y,
+                        (Value::F64(x), Value::I32(y)) => *x == *y as f64,
+                        (Value::I32(x), Value::F64(y)) => *x as f64 == *y,
+                        (Value::String(x), Value::String(y)) => x == y,
+                        (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
+                        _ => false,
+                    };
+                    self.push(Value::Bool(result))?;
+                }
+                Op::dyn_ne => {
+                    let b = self.pop(); let a = self.pop();
+                    self.push(Value::Bool(!a.eq(&b)))?;
+                }
+                Op::dyn_lt => {
+                    let b = self.pop(); let a = self.pop();
+                    let r = match (&a, &b) {
+                        (Value::String(x), Value::String(y)) => *x < *y,
+                        _ => a.as_f64() < b.as_f64(),
+                    };
+                    self.push(Value::Bool(r))?;
+                }
+                Op::dyn_gt => {
+                    let b = self.pop(); let a = self.pop();
+                    let r = match (&a, &b) {
+                        (Value::String(x), Value::String(y)) => *x > *y,
+                        _ => a.as_f64() > b.as_f64(),
+                    };
+                    self.push(Value::Bool(r))?;
+                }
+                Op::dyn_le => {
+                    let b = self.pop(); let a = self.pop();
+                    self.push(Value::Bool(a.as_f64() <= b.as_f64()))?;
+                }
+                Op::dyn_ge => {
+                    let b = self.pop(); let a = self.pop();
+                    self.push(Value::Bool(a.as_f64() >= b.as_f64()))?;
+                }
+                Op::dyn_neg => {
+                    let a = self.pop();
+                    self.push(Value::F64(-a.as_f64()))?;
+                }
+                Op::dyn_not => {
+                    let a = self.pop();
+                    self.push(Value::Bool(!dyn_truthy(&a)))?;
+                }
+                Op::dyn_to_bool => {
+                    let a = self.pop();
+                    self.push(Value::Bool(dyn_truthy(&a)))?;
+                }
+
                 // -- Exceptions --
-                Op::TryStart => { let _ = self.read_u16(); let _ = self.read_u16(); }
-                Op::TryEnd => {}
-                Op::Throw => {
+                Op::try_start => { let _ = self.read_u16(); let _ = self.read_u16(); }
+                Op::try_end => {}
+                Op::throw => {
                     let val = self.pop();
                     return Err(VMError::new(format!("{}", val)));
                 }
 
                 // -- Stubs --
-                Op::GetIterator | Op::IterNext | Op::Spread => {
+                Op::iter_get | Op::iter_next | Op::spread => {
                     return Err(VMError::new("Iteration not yet implemented"));
                 }
-                Op::Class => { let _ = self.read_u16(); self.push(Value::Null)?; }
-                Op::Method => { let _ = self.read_u16(); }
-                Op::Inherit => { self.pop(); }
+                Op::class_new => { let _ = self.read_u16(); self.push(Value::Null)?; }
+                Op::method_def => { let _ = self.read_u16(); }
+                Op::inherit => { self.pop(); }
             }
         }
     }
@@ -636,5 +724,17 @@ impl VM {
                 i += 1;
             }
         }
+    }
+}
+
+fn dyn_truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::F64(n) => *n != 0.0 && !n.is_nan(),
+        Value::I32(n) => *n != 0,
+        Value::I64(n) => *n != 0,
+        Value::String(s) => !s.is_empty(),
+        Value::Object(_) => true,
     }
 }

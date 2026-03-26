@@ -1,156 +1,148 @@
-/// Bytecode opcodes for the stack-based VM.
+/// Bytecode opcodes — aligned with WebAssembly naming conventions.
 ///
-/// This is a language-agnostic instruction set. Language-specific semantics
-/// (JS coercion, VB implicit conversion) are the compiler's responsibility —
-/// the VM only executes typed operations.
+/// WASM uses `f64.add`, `local.get`, `struct.new` — we use `f64_add`, `local_get`, `struct_new`
+/// (dots aren't valid in Rust identifiers).
 ///
 /// Operand encoding:
-/// - `u16` indices: two bytes big-endian after the opcode.
-/// - `u8` counts: one byte after the opcode.
+/// - `u16`: two bytes big-endian after the opcode.
+/// - `u8`: one byte after the opcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[allow(non_camel_case_types)]
 pub enum Op {
     // -- Stack --
-    /// Push constant from pool: [Const, hi, lo]
-    Const,
-    Pop,
-    Dup,
+    r#const,         // push from constant pool: [const, hi, lo]
+    drop,            // discard TOS
+    dup,             // duplicate TOS
 
     // -- Variables --
-    GetLocal,   // u16 slot
-    SetLocal,   // u16 slot
-    GetGlobal,  // u16 name constant index
-    SetGlobal,  // u16 name constant index
-    GetUpvalue, // u8 index
-    SetUpvalue, // u8 index
+    local_get,       // [local_get, hi, lo]
+    local_set,       // [local_set, hi, lo]
+    global_get,      // [global_get, hi, lo] (name from constant pool)
+    global_set,      // [global_set, hi, lo]
+    upvalue_get,     // [upvalue_get, u8]
+    upvalue_set,     // [upvalue_set, u8]
 
-    // -- Properties --
-    GetProp,   // u16 name constant index; stack [obj] → [val]
-    SetProp,   // u16 name constant index; stack [obj, val] → [val]
-    GetIndex,  // stack [obj, key] → [val]
-    SetIndex,  // stack [obj, key, val] → [val]
+    // -- Struct (WASM GC) --
+    struct_get,      // [struct_get, hi, lo] name from constant pool; stack [obj] → [val]
+    struct_set,      // [struct_set, hi, lo]; stack [obj, val] → [val]
 
-    // -- Arithmetic (f64) --
-    /// f64 + f64 → f64
-    AddF,
-    SubF,
-    MulF,
-    DivF,
-    ModF,
-    NegF,
+    // -- Array (WASM GC) --
+    array_get,       // stack [obj, key] → [val]
+    array_set,       // stack [obj, key, val] → [val]
 
-    // -- Integer arithmetic (i32) --
-    AddI,
-    SubI,
-    MulI,
+    // -- f64 arithmetic --
+    f64_add,
+    f64_sub,
+    f64_mul,
+    f64_div,
+    f64_mod,
+    f64_neg,
+
+    // -- i32 arithmetic --
+    i32_add,
+    i32_sub,
+    i32_mul,
 
     // -- String --
-    /// String + String → String
-    Concat,
-    /// Concatenate N values from stack into one string: [StrConcat, u8 count]
-    StrConcat,
+    str_concat,      // String + String → String
+    str_concat_n,    // concatenate N from stack: [str_concat_n, u8 count]
 
-    // -- Bitwise (i32) --
-    BitAnd,
-    BitOr,
-    BitXor,
-    BitNot,
-    Shl,
-    Shr,
-    UShr,
+    // -- i32 bitwise --
+    i32_and,
+    i32_or,
+    i32_xor,
+    i32_not,
+    i32_shl,
+    i32_shr_s,      // signed shift right
+    i32_shr_u,      // unsigned shift right
 
     // -- Comparison --
-    /// Same-type equality: push Bool
-    CmpEq,
-    CmpNe,
-    /// Numeric comparison (f64): push Bool
-    CmpLtF,
-    CmpGtF,
-    CmpLeF,
-    CmpGeF,
-    /// String comparison: push Bool
-    CmpLtS,
-    CmpGtS,
+    eq,              // same-type equality → Bool
+    ne,
+    f64_lt,
+    f64_gt,
+    f64_le,
+    f64_ge,
+    str_lt,
+    str_gt,
 
-    // -- Logical (Bool operands only) --
-    /// Bool → Bool
-    BoolNot,
+    // -- Logical --
+    bool_not,
 
     // -- Control flow --
-    /// Unconditional jump: [Jump, hi, lo] (signed i16 offset)
-    Jump,
-    /// Jump if TOS is Bool(false) (pops): [JumpIfFalse, hi, lo]
-    JumpIfFalse,
-    /// Jump if TOS is Bool(true) (pops): [JumpIfTrue, hi, lo]
-    JumpIfTrue,
-    /// Jump if TOS is Null (pops): [JumpIfNull, hi, lo]
-    JumpIfNull,
+    br,              // unconditional: [br, hi, lo] (signed i16 offset)
+    br_if_false,     // branch if Bool(false), pops: [br_if_false, hi, lo]
+    br_if_true,      // branch if Bool(true), pops
+    br_if_null,      // branch if Null, pops
 
     // -- Functions --
-    /// Call bytecode function: [Call, u8 arg_count]
-    Call,
-    Return,
-    /// Create closure: [Closure, u16 chunk_index, u8 upvalue_count, descriptors...]
-    Closure,
+    call,            // [call, u8 arg_count]
+    r#return,
+    ref_func,        // create closure: [ref_func, u16 chunk_idx, u8 upvalue_count, descriptors...]
 
-    // -- Host functions --
-    /// Call a host-registered function: [CallHost, u16 host_fn_index, u8 arg_count]
-    /// Pops arg_count values, pushes one return value.
-    CallHost,
+    // -- Imports --
+    call_import,     // [call_import, u16 import_idx, u8 arg_count]
 
-    // -- Object / Array construction --
-    NewObject,  // u16 property_count; stack [key, val, ...] → [obj]
-    NewArray,   // u16 element_count; stack [elem, ...] → [arr]
+    // -- Construction (WASM GC) --
+    struct_new,      // [struct_new, u16 prop_count]; stack [key, val, ...] → [obj]
+    array_new,       // [array_new, u16 elem_count]; stack [elem, ...] → [arr]
 
     // -- Immediate values --
-    PushNull,
-    PushTrue,
-    PushFalse,
-    PushI32Zero,
-    PushI32One,
-    PushF64Zero,
+    null,
+    r#true,
+    r#false,
+    i32_const_0,
+    i32_const_1,
+    f64_const_0,
 
-    // -- Type checks (push Bool) --
-    /// Is TOS Null?
-    IsNull,
-    /// Is TOS a String?
-    IsString,
-    /// Is TOS an F64?
-    IsNumber,
-    /// Is TOS a Bool?
-    IsBool,
-    /// Is TOS an Object (including Array, Function)?
-    IsObject,
-    /// Is TOS a Function?
-    IsFunction,
+    // -- Type checks (WASM GC: ref.is_null, ref.test) --
+    ref_is_null,
+    ref_is_string,
+    ref_is_number,
+    ref_is_bool,
+    ref_is_object,
+    ref_is_func,
 
-    // -- Conversions (compiler emits these explicitly) --
-    /// Coerce TOS to F64 (from I32/I64/Bool)
-    ToF64,
-    /// Coerce TOS to I32 (from F64/I64/Bool)
-    ToI32,
+    // -- Conversions --
+    f64_from_i32,    // WASM: f64.convert_i32_s
+    i32_from_f64,    // WASM: i32.trunc_f64_s
+
+    // -- Dynamic ops (type dispatch inline, no host call overhead) --
+    // These handle mixed types in the VM loop directly.
+    // Used by dynamic languages (JS, VB) for hot paths.
+    dyn_add,         // number+number→number, string+any→string, any+string→string
+    dyn_eq,          // same-type eq, null==null, type coercion for number/string
+    dyn_ne,          // negation of dyn_eq
+    dyn_lt,          // numeric or string comparison
+    dyn_gt,
+    dyn_le,
+    dyn_ge,
+    dyn_neg,         // -value (numeric)
+    dyn_not,         // !value (truthy check → bool)
+    dyn_to_bool,     // value → Bool (truthy conversion)
 
     // -- Exception handling --
-    TryStart,  // u16 catch_offset, u16 finally_offset
-    TryEnd,
-    Throw,
+    try_start,       // [try_start, u16 catch, u16 finally]
+    try_end,
+    throw,
 
     // -- Iteration (future) --
-    GetIterator,
-    IterNext,
-    Spread,
+    iter_get,
+    iter_next,
+    spread,
 
     // -- Class (future) --
-    Class,     // u16 name
-    Method,    // u16 name
-    Inherit,
+    class_new,       // [class_new, u16 name]
+    method_def,      // [method_def, u16 name]
+    inherit,
 
-    Halt,
+    halt,
 }
 
 impl Op {
     pub fn from_byte(byte: u8) -> Option<Op> {
-        if byte <= Op::Halt as u8 {
+        if byte <= Op::halt as u8 {
             Some(unsafe { std::mem::transmute(byte) })
         } else {
             None

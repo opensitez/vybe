@@ -7,6 +7,6 @@ pub mod debug;
 
 pub use opcode::Op;
 pub use value::Value;
-pub use chunk::Chunk;
+pub use chunk::{Chunk, Import};
 pub use vm::{VM, HostFn};
 pub use error::VMError;

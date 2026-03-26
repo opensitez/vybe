@@ -1,5 +1,5 @@
 pub mod side_effect;
-pub mod gui;
+pub mod modules;
 
 pub use side_effect::{SideEffect, PropValue, UIEvent, SideEffectQueue};
-pub use gui::register_gui_runtime;
+pub use modules::{register_all, register_all_with_gui};
