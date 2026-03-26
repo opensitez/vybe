@@ -179,6 +179,7 @@ impl Compiler {
             // Platform modules — vybe names for non-WASI
             "gui"     => "vybe:gui",
             "db"      => "vybe:database",
+            "Promise" => "vybe:runtime",
             // Unknown → pass through as-is
             _ => obj_name,
         }
@@ -189,6 +190,9 @@ impl Compiler {
     fn js_remap<'a>(module: &'a str, method: &'a str) -> (&'a str, &'a str) {
         match (module, method) {
             ("vybe:math", "random") => ("wasi:random", "random"),
+            ("vybe:runtime", "resolve") => ("vybe:runtime", "promiseResolve"),
+            ("vybe:runtime", "reject") => ("vybe:runtime", "promiseReject"),
+            ("vybe:runtime", "all") => ("vybe:runtime", "promiseAll"),
             _ => (module, method),
         }
     }
@@ -207,6 +211,8 @@ impl Compiler {
     fn resolve_bare_import(&mut self, name: &str) -> Option<u16> {
         match name {
             // JS standard globals — encoding/decoding
+            // setTimeout is handled specially in compile_call
+            // "setTimeout" => handled below,
             "btoa" => return Some(self.import("vybe:convert", "btoa")),
             "atob" => return Some(self.import("vybe:convert", "atob")),
             "encodeURIComponent" => return Some(self.import("vybe:convert", "encodeURIComponent")),
@@ -865,12 +871,19 @@ impl Compiler {
                 self.emit_u16(Op::struct_new, count);
             }
             Expression::Function(func) => { self.compile_function(func)?; }
-            Expression::ArrowFunction { params, body } => {
+            Expression::ArrowFunction { params, body, is_async } => {
                 let func = match body {
-                    ArrowBody::Block(stmts) => FunctionDecl { name: None, params: params.clone(), body: stmts.clone() },
-                    ArrowBody::Expression(expr) => FunctionDecl { name: None, params: params.clone(), body: vec![Statement::Return(Some(*expr.clone()))] },
+                    ArrowBody::Block(stmts) => FunctionDecl { name: None, params: params.clone(), body: stmts.clone(), is_async: *is_async },
+                    ArrowBody::Expression(expr) => FunctionDecl { name: None, params: params.clone(), body: vec![Statement::Return(Some(*expr.clone()))], is_async: *is_async },
                 };
                 self.compile_function(&func)?;
+            }
+            Expression::Await(inner) => {
+                // For synchronous promises: await just evaluates the expression.
+                // Emit the expression, then the await opcode.
+                // The VM handles Promise checking and fiber suspension.
+                self.compile_expression(inner)?;
+                self.emit(Op::r#await);
             }
             Expression::TemplateLiteral { quasis, expressions } => {
                 let to_str = self.import("js:coerce", "toString");
@@ -993,6 +1006,32 @@ impl Compiler {
             if let Some(idx) = self.resolve_bare_import(name) {
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_host_call(idx, arguments.len() as u8);
+                return Ok(());
+            }
+        }
+
+        // Special builtins that need compiler-level handling
+        if let Expression::Identifier(name) = callee {
+            if name == "setTimeout" && arguments.len() >= 1 {
+                // setTimeout(fn, ms) → set_timer opcode (VM handles event loop)
+                self.compile_expression(&arguments[0])?; // callback
+                if arguments.len() >= 2 {
+                    self.compile_expression(&arguments[1])?; // ms
+                } else {
+                    self.emit_constant(Value::F64(0.0));
+                }
+                self.emit(Op::set_timer);
+                return Ok(());
+            }
+            if name == "setInterval" && arguments.len() >= 1 {
+                // setInterval — same as setTimeout for now (TODO: repeating)
+                self.compile_expression(&arguments[0])?;
+                if arguments.len() >= 2 {
+                    self.compile_expression(&arguments[1])?;
+                } else {
+                    self.emit_constant(Value::F64(0.0));
+                }
+                self.emit(Op::set_timer);
                 return Ok(());
             }
         }
@@ -1684,7 +1723,7 @@ impl Compiler {
         }
         let ctor_params = constructor.as_ref().map(|c| c.params.clone()).unwrap_or_default();
         let ctor_body = constructor.map(|c| c.body).unwrap_or_default();
-        let ctor = FunctionDecl { name: Some(name.into()), params: ctor_params, body: ctor_body };
+        let ctor = FunctionDecl { name: Some(name.into()), params: ctor_params, body: ctor_body, is_async: false };
         self.compile_class_constructor(&ctor, &methods)?;
         Ok(())
     }

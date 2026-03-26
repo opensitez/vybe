@@ -1,0 +1,133 @@
+//! Event loop — processes async tasks, timers, and promise callbacks.
+//! Follows the browser/Node.js model:
+//!   1. Run synchronous code
+//!   2. Drain microtask queue (Promise.then callbacks)
+//!   3. Process one macrotask (setTimeout callback)
+//!   4. Repeat until all queues empty
+
+use std::collections::VecDeque;
+use crate::fiber::Fiber;
+use crate::value::Value;
+
+/// A task in the event loop.
+#[derive(Debug)]
+pub enum Task {
+    /// A suspended fiber waiting to resume with a value.
+    ResumeFiber(Fiber),
+    /// A timer callback — function value + scheduled time (ms since epoch).
+    Timer {
+        callback: Value,
+        fire_at_ms: f64,
+    },
+    /// A microtask — Promise.then/catch callback with a value.
+    Microtask {
+        callback: Value,
+        value: Value,
+    },
+}
+
+/// The event loop — manages pending async work.
+#[derive(Debug)]
+pub struct EventLoop {
+    /// Microtask queue (Promise callbacks) — higher priority.
+    pub microtasks: VecDeque<Task>,
+    /// Macrotask queue (setTimeout callbacks).
+    pub macrotasks: VecDeque<Task>,
+    /// Suspended fibers waiting for Promise resolution.
+    pub waiting_fibers: Vec<(u64, Fiber)>,  // (promise_id, fiber)
+    /// Next promise ID.
+    next_promise_id: u64,
+}
+
+impl EventLoop {
+    pub fn new() -> Self {
+        EventLoop {
+            microtasks: VecDeque::new(),
+            macrotasks: VecDeque::new(),
+            waiting_fibers: Vec::new(),
+            next_promise_id: 1,
+        }
+    }
+
+    /// Generate a unique promise ID.
+    pub fn next_promise_id(&mut self) -> u64 {
+        let id = self.next_promise_id;
+        self.next_promise_id += 1;
+        id
+    }
+
+    /// Schedule a microtask (Promise.then callback).
+    pub fn queue_microtask(&mut self, callback: Value, value: Value) {
+        self.microtasks.push_back(Task::Microtask { callback, value });
+    }
+
+    /// Schedule a macrotask (setTimeout callback).
+    pub fn queue_timer(&mut self, callback: Value, delay_ms: f64) {
+        let now = current_time_ms();
+        self.macrotasks.push_back(Task::Timer {
+            callback,
+            fire_at_ms: now + delay_ms,
+        });
+    }
+
+    /// Suspend a fiber — it will resume when the promise with the given ID resolves.
+    pub fn suspend_fiber(&mut self, promise_id: u64, fiber: Fiber) {
+        self.waiting_fibers.push((promise_id, fiber));
+    }
+
+    /// Resolve a promise — wake the fiber waiting for it.
+    pub fn resolve_promise(&mut self, promise_id: u64, value: Value) -> Option<Fiber> {
+        if let Some(pos) = self.waiting_fibers.iter().position(|(id, _)| *id == promise_id) {
+            let (_, mut fiber) = self.waiting_fibers.remove(pos);
+            fiber.resume_value = Some(value);
+            Some(fiber)
+        } else {
+            None
+        }
+    }
+
+    /// Get the next ready microtask.
+    pub fn next_microtask(&mut self) -> Option<Task> {
+        self.microtasks.pop_front()
+    }
+
+    /// Get the next ready macrotask (timer whose fire time has passed).
+    pub fn next_ready_timer(&mut self) -> Option<Task> {
+        let now = current_time_ms();
+        if let Some(pos) = self.macrotasks.iter().position(|t| {
+            matches!(t, Task::Timer { fire_at_ms, .. } if *fire_at_ms <= now)
+        }) {
+            Some(self.macrotasks.remove(pos).unwrap())
+        } else {
+            None
+        }
+    }
+
+    /// Check if there's any pending work.
+    pub fn has_pending(&self) -> bool {
+        !self.microtasks.is_empty() || !self.macrotasks.is_empty() || !self.waiting_fibers.is_empty()
+    }
+
+    /// Sleep until the next timer fires (or return immediately if microtasks pending).
+    pub fn wait_for_next(&self) {
+        if !self.microtasks.is_empty() || !self.waiting_fibers.is_empty() {
+            return; // microtasks are processed immediately
+        }
+        if let Some(earliest) = self.macrotasks.iter().filter_map(|t| {
+            if let Task::Timer { fire_at_ms, .. } = t { Some(*fire_at_ms) } else { None }
+        }).reduce(f64::min) {
+            let now = current_time_ms();
+            if earliest > now {
+                let sleep_ms = (earliest - now) as u64;
+                std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+            }
+        }
+    }
+}
+
+fn current_time_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as f64
+}

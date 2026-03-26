@@ -127,6 +127,13 @@ pub enum Op {
     try_end,
     throw,
 
+    // -- Async (WASI async proposal) --
+    /// Await a Promise value. If pending, suspends the current fiber.
+    /// Stack: [promise_or_value] → [resolved_value]
+    r#await,
+    /// Schedule a timer callback. Stack: [callback, ms] → [null]
+    set_timer,
+
     // -- Iteration (future) --
     iter_get,
     iter_next,

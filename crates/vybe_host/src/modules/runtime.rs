@@ -34,6 +34,70 @@ pub fn register(vm: &mut VM) {
         // Not a builtin collection — return Null (caller falls through to regular method call)
         Value::Null
     }));
+
+    // awaitPromise(value) — if value is a Promise, extract its resolved value
+    // For synchronous promises (our model), this is immediate.
+    vm.register_host_fn("vybe:runtime", "awaitPromise", Box::new(|args: &[Value]| {
+        let val = args.first().cloned().unwrap_or(Value::Null);
+        if let Value::Object(ref obj) = val {
+            let o = obj.borrow();
+            if o.properties.get("__type").map(|v| format!("{}", v)) == Some("Promise".into()) {
+                let state = o.properties.get("__state").map(|v| format!("{}", v)).unwrap_or_default();
+                if state == "fulfilled" {
+                    return o.properties.get("__value").cloned().unwrap_or(Value::Null);
+                } else if state == "rejected" {
+                    // TODO: throw the rejection reason
+                    return o.properties.get("__value").cloned().unwrap_or(Value::Null);
+                }
+                // pending — in synchronous model this shouldn't happen
+                return Value::Null;
+            }
+        }
+        // Not a Promise — return as-is (await on non-Promise is identity in JS)
+        val
+    }));
+
+    // Promise.resolve(value) → creates a fulfilled Promise
+    vm.register_host_fn("vybe:runtime", "promiseResolve", Box::new(|args: &[Value]| {
+        let val = args.first().cloned().unwrap_or(Value::Null);
+        make_promise("fulfilled", val)
+    }));
+
+    // Promise.reject(reason) → creates a rejected Promise
+    vm.register_host_fn("vybe:runtime", "promiseReject", Box::new(|args: &[Value]| {
+        let val = args.first().cloned().unwrap_or(Value::Null);
+        make_promise("rejected", val)
+    }));
+
+    // Promise.all(array) → Promise that resolves with array of values
+    vm.register_host_fn("vybe:runtime", "promiseAll", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(arr)) = args.first() {
+            let o = arr.borrow();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                let results: Vec<Value> = elems.iter().map(|p| {
+                    if let Value::Object(obj) = p {
+                        let po = obj.borrow();
+                        if po.properties.get("__type").map(|v| format!("{}", v)) == Some("Promise".into()) {
+                            return po.properties.get("__value").cloned().unwrap_or(Value::Null);
+                        }
+                    }
+                    p.clone()
+                }).collect();
+                return make_promise("fulfilled", Value::Object(
+                    Rc::new(RefCell::new(Object::new_array(results)))
+                ));
+            }
+        }
+        make_promise("fulfilled", Value::Null)
+    }));
+}
+
+fn make_promise(state: &str, value: Value) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert("__type".into(), Value::String(Rc::from("Promise")));
+    obj.properties.insert("__state".into(), Value::String(Rc::from(state)));
+    obj.properties.insert("__value".into(), value);
+    Value::Object(Rc::new(RefCell::new(obj)))
 }
 
 fn dispatch_map(obj: &Value, method: &str, args: &[Value]) -> Value {

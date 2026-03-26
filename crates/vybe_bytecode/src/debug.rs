@@ -32,6 +32,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::bool_not |
         Op::dyn_add | Op::dyn_eq | Op::dyn_ne | Op::dyn_lt | Op::dyn_gt |
         Op::dyn_le | Op::dyn_ge | Op::dyn_neg | Op::dyn_not | Op::dyn_to_bool |
+        Op::r#await | Op::set_timer |
         Op::r#return | Op::halt |
         Op::null | Op::r#true | Op::r#false |
         Op::i32_const_0 | Op::i32_const_1 | Op::f64_const_0 |

@@ -265,6 +265,7 @@ pub enum Expression {
     ArrowFunction {
         params: Vec<Param>,
         body: ArrowBody,
+        is_async: bool,
     },
 
     // Operators
@@ -274,6 +275,9 @@ pub enum Expression {
 
     // Spread
     Spread(Box<Expression>),
+
+    // Async
+    Await(Box<Expression>),
 
     // Comma
     Sequence(Vec<Expression>),
@@ -306,6 +310,7 @@ pub struct FunctionDecl {
     pub name: Option<String>,
     pub params: Vec<Param>,
     pub body: Vec<Statement>,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]

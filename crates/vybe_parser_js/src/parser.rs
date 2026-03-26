@@ -29,7 +29,16 @@ impl Parser {
         match self.current_kind() {
             TokenKind::LBrace => self.parse_block_statement(),
             TokenKind::Var | TokenKind::Let | TokenKind::Const => self.parse_variable_declaration(),
-            TokenKind::Function => self.parse_function_declaration(),
+            TokenKind::Function => self.parse_function_declaration_with_async(false),
+            TokenKind::Async => {
+                // async function or async arrow — peek ahead
+                if self.pos + 1 < self.tokens.len() && matches!(self.tokens[self.pos + 1].kind, TokenKind::Function) {
+                    self.advance(); // skip 'async'
+                    self.parse_function_declaration_with_async(true)
+                } else {
+                    self.parse_expression_statement()
+                }
+            }
             TokenKind::Class => self.parse_class_declaration(),
             TokenKind::If => self.parse_if_statement(),
             TokenKind::For => self.parse_for_statement(),
@@ -292,11 +301,15 @@ impl Parser {
     }
 
     fn parse_function_declaration(&mut self) -> Result<Statement, String> {
-        let func = self.parse_function(true)?;
+        self.parse_function_declaration_with_async(false)
+    }
+
+    fn parse_function_declaration_with_async(&mut self, is_async: bool) -> Result<Statement, String> {
+        let func = self.parse_function(true, is_async)?;
         Ok(Statement::FunctionDeclaration(func))
     }
 
-    fn parse_function(&mut self, require_name: bool) -> Result<FunctionDecl, String> {
+    fn parse_function(&mut self, require_name: bool, is_async: bool) -> Result<FunctionDecl, String> {
         self.expect(TokenKind::Function)?;
         let name = if require_name || self.is_identifier() {
             Some(self.expect_identifier()?)
@@ -307,7 +320,7 @@ impl Parser {
         let params = self.parse_param_list()?;
         self.expect(TokenKind::RParen)?;
         let body = self.parse_block_body()?;
-        Ok(FunctionDecl { name, params, body })
+        Ok(FunctionDecl { name, params, body, is_async })
     }
 
     fn parse_param_list(&mut self) -> Result<Vec<Param>, String> {
@@ -397,7 +410,7 @@ impl Parser {
             let body = self.parse_block_body()?;
             Ok(ClassMember::Method {
                 key,
-                value: FunctionDecl { name: None, params, body },
+                value: FunctionDecl { name: None, params, body, is_async: false },
                 kind: actual_kind,
                 is_static,
             })
@@ -1054,8 +1067,40 @@ impl Parser {
             TokenKind::LBracket => self.parse_array_literal(),
             TokenKind::LBrace => self.parse_object_literal(),
             TokenKind::Function => {
-                let func = self.parse_function(false)?;
+                let func = self.parse_function(false, false)?;
                 Ok(Expression::Function(func))
+            }
+            TokenKind::Async => {
+                // async function expression or async arrow
+                self.advance();
+                if self.check_kind(&TokenKind::Function) {
+                    let func = self.parse_function(false, true)?;
+                    Ok(Expression::Function(func))
+                } else {
+                    // async arrow: async (params) => body or async ident => body
+                    if self.check_kind(&TokenKind::LParen) {
+                        self.advance();
+                        if self.check_kind(&TokenKind::RParen) {
+                            self.advance();
+                            self.expect(TokenKind::Arrow)?;
+                            return self.parse_arrow_body_async(vec![]);
+                        }
+                        if let Some(params) = self.try_parse_arrow_params()? {
+                            self.expect(TokenKind::Arrow)?;
+                            return self.parse_arrow_body_async(params);
+                        }
+                        Err(self.error("Expected async arrow function"))
+                    } else {
+                        let name = self.expect_identifier()?;
+                        self.expect(TokenKind::Arrow)?;
+                        self.parse_arrow_body_async(vec![Param::simple(name)])
+                    }
+                }
+            }
+            TokenKind::Await => {
+                self.advance();
+                let expr = self.parse_unary()?;
+                Ok(Expression::Await(Box::new(expr)))
             }
             TokenKind::Class => {
                 let class = self.parse_class()?;
@@ -1063,6 +1108,7 @@ impl Parser {
                     name: class.name,
                     params: vec![],
                     body: vec![],
+                    is_async: false,
                 }))
             }
             TokenKind::DotDotDot => {
@@ -1136,7 +1182,7 @@ impl Parser {
                     let body = self.parse_block_body()?;
                     properties.push(PropertyDef::Method {
                         key,
-                        value: FunctionDecl { name: None, params, body },
+                        value: FunctionDecl { name: None, params, body, is_async: false },
                     });
                 } else if self.eat(TokenKind::Colon) {
                     // key: value
@@ -1161,7 +1207,16 @@ impl Parser {
         } else {
             ArrowBody::Expression(Box::new(self.parse_assignment_expression()?))
         };
-        Ok(Expression::ArrowFunction { params, body })
+        Ok(Expression::ArrowFunction { params, body, is_async: false })
+    }
+
+    fn parse_arrow_body_async(&mut self, params: Vec<Param>) -> Result<Expression, String> {
+        let body = if self.check_kind(&TokenKind::LBrace) {
+            ArrowBody::Block(self.parse_block_body()?)
+        } else {
+            ArrowBody::Expression(Box::new(self.parse_assignment_expression()?))
+        };
+        Ok(Expression::ArrowFunction { params, body, is_async: true })
     }
 
     // -- Helpers --

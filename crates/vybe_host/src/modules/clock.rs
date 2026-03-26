@@ -63,4 +63,7 @@ pub fn register(vm: &mut VM) {
             y, m + 1, remaining + 1, hours, minutes, seconds, millis
         ).as_str()))
     }));
+
+    // setTimeout/setInterval are handled by the VM's set_timer opcode.
+    // No host function needed — the compiler emits the opcode directly.
 }

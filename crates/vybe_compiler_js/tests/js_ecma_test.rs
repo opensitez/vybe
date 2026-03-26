@@ -1081,3 +1081,309 @@ fn test_spread_in_array() {
     "#;
     assert_eq!(run_js_one(code), "1,2,3,4,5");
 }
+
+// ============================================================
+// async/await
+// ============================================================
+
+#[test]
+fn test_async_function() {
+    let code = r#"
+        async function getValue() {
+            return 42;
+        }
+        let result = await getValue();
+        console.log(result);
+    "#;
+    assert_eq!(run_js_one(code), "42");
+}
+
+#[test]
+fn test_await_non_promise() {
+    // await on a non-Promise just returns the value
+    assert_eq!(run_js_one("console.log(await 5)"), "5");
+}
+
+#[test]
+fn test_async_arrow() {
+    let code = r#"
+        let fetchData = async () => {
+            return "data loaded";
+        };
+        console.log(await fetchData());
+    "#;
+    assert_eq!(run_js_one(code), "data loaded");
+}
+
+#[test]
+fn test_promise_resolve() {
+    let code = r#"
+        let p = Promise.resolve(99);
+        console.log(await p);
+    "#;
+    assert_eq!(run_js_one(code), "99");
+}
+
+#[test]
+fn test_promise_all() {
+    let code = r#"
+        let results = await Promise.all([
+            Promise.resolve(1),
+            Promise.resolve(2),
+            Promise.resolve(3)
+        ]);
+        console.log(results.join(","));
+    "#;
+    assert_eq!(run_js_one(code), "1,2,3");
+}
+
+#[test]
+fn test_async_sequential() {
+    let code = r#"
+        async function step1() { return 10; }
+        async function step2(x) { return x * 2; }
+        async function step3(x) { return x + 5; }
+
+        let a = await step1();
+        let b = await step2(a);
+        let c = await step3(b);
+        console.log(c);
+    "#;
+    assert_eq!(run_js_one(code), "25");
+}
+
+// ============================================================
+// setTimeout (blocking in our model)
+// ============================================================
+
+#[test]
+fn test_set_timeout_async() {
+    // setTimeout callback fires AFTER synchronous code finishes (via event loop)
+    let code = r#"
+        let log = "";
+        setTimeout(() => { log = log + "timer "; console.log(log + "done"); }, 1);
+        log = log + "sync ";
+        console.log(log);
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "sync ");        // sync code runs first
+    assert_eq!(lines[1], "sync timer done"); // then timer callback fires
+}
+
+// ============================================================
+// Async — comprehensive tests
+// ============================================================
+
+#[test]
+fn test_settimeout_ordering() {
+    // Multiple timers fire in order
+    let code = r#"
+        let order = [];
+        setTimeout(() => { order.push("a"); }, 1);
+        setTimeout(() => { order.push("b"); }, 2);
+        setTimeout(() => { order.push("c"); }, 3);
+        setTimeout(() => { console.log(order.join(",")); }, 4);
+    "#;
+    assert_eq!(run_js_one(code), "a,b,c");
+}
+
+#[test]
+fn test_settimeout_zero() {
+    // setTimeout(fn, 0) still defers to event loop
+    let code = r#"
+        let result = "before";
+        setTimeout(() => { result = "after"; console.log(result); }, 0);
+        console.log(result);
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "before");  // sync runs first
+    assert_eq!(lines[1], "after");   // then timer
+}
+
+#[test]
+fn test_settimeout_closure() {
+    // Timer callbacks capture closures properly
+    // Use function wrapper to capture per-iteration (known loop scope limitation)
+    let code = r#"
+        let results = [];
+        function scheduleOne(val) {
+            setTimeout(() => { results.push(val); }, 1);
+        }
+        for (let i = 0; i < 3; i++) {
+            scheduleOne(i);
+        }
+        setTimeout(() => { console.log(results.join(",")); }, 5);
+    "#;
+    assert_eq!(run_js_one(code), "0,1,2");
+}
+
+#[test]
+fn test_async_await_chain() {
+    let code = r#"
+        async function double(x) { return x * 2; }
+        async function addTen(x) { return x + 10; }
+        
+        async function compute() {
+            let a = await double(5);
+            let b = await addTen(a);
+            return b;
+        }
+        
+        console.log(await compute());
+    "#;
+    assert_eq!(run_js_one(code), "20");
+}
+
+#[test]
+fn test_async_await_with_regular_values() {
+    // await on non-Promise values works
+    let code = r#"
+        async function getItems() {
+            let a = await 10;
+            let b = await 20;
+            return a + b;
+        }
+        console.log(await getItems());
+    "#;
+    assert_eq!(run_js_one(code), "30");
+}
+
+#[test]
+fn test_promise_resolve_then_await() {
+    let code = r#"
+        let p = Promise.resolve(42);
+        let val = await p;
+        console.log(val);
+    "#;
+    assert_eq!(run_js_one(code), "42");
+}
+
+#[test]
+fn test_promise_all_with_values() {
+    let code = r#"
+        let results = await Promise.all([
+            Promise.resolve("a"),
+            Promise.resolve("b"),
+            Promise.resolve("c")
+        ]);
+        console.log(results.join("-"));
+    "#;
+    assert_eq!(run_js_one(code), "a-b-c");
+}
+
+#[test]
+fn test_promise_all_with_async_functions() {
+    let code = r#"
+        async function fetchName() { return "Alice"; }
+        async function fetchAge() { return 30; }
+        
+        let [name, age] = await Promise.all([
+            fetchName(),
+            fetchAge()
+        ]);
+        console.log(name, age);
+    "#;
+    assert_eq!(run_js_one(code), "Alice 30");
+}
+
+#[test]
+fn test_async_error_handling() {
+    let code = r#"
+        async function riskyOp() {
+            throw "something went wrong";
+        }
+        
+        try {
+            await riskyOp();
+        } catch (e) {
+            console.log("caught:", e);
+        }
+    "#;
+    assert_eq!(run_js_one(code), "caught: something went wrong");
+}
+
+#[test]
+fn test_async_in_loop() {
+    let code = r#"
+        async function process(x) { return x * x; }
+        
+        let results = [];
+        let items = [1, 2, 3, 4, 5];
+        for (let item of items) {
+            let result = await process(item);
+            results.push(result);
+        }
+        console.log(results.join(","));
+    "#;
+    assert_eq!(run_js_one(code), "1,4,9,16,25");
+}
+
+#[test]
+fn test_settimeout_nested() {
+    // Timer inside a timer
+    let code = r#"
+        let log = [];
+        setTimeout(() => {
+            log.push("first");
+            setTimeout(() => {
+                log.push("second");
+                console.log(log.join(","));
+            }, 1);
+        }, 1);
+    "#;
+    assert_eq!(run_js_one(code), "first,second");
+}
+
+#[test]
+fn test_async_with_class() {
+    let code = r#"
+        class UserService {
+            constructor(name) {
+                this.name = name;
+            }
+            async greet() {
+                return "Hello, " + this.name + "!";
+            }
+        }
+        
+        let svc = new UserService("Bob");
+        console.log(await svc.greet());
+    "#;
+    assert_eq!(run_js_one(code), "Hello, Bob!");
+}
+
+#[test]
+fn test_async_map_sequential() {
+    // Process array items sequentially with async
+    let code = r#"
+        async function transform(x) { return x * 10; }
+        
+        let items = [1, 2, 3];
+        let results = [];
+        for (let item of items) {
+            results.push(await transform(item));
+        }
+        console.log(results.join(","));
+    "#;
+    assert_eq!(run_js_one(code), "10,20,30");
+}
+
+#[test]
+fn test_mixed_sync_async() {
+    let code = r#"
+        let log = [];
+        log.push("1-sync");
+        
+        async function asyncOp() {
+            log.push("2-async-start");
+            let result = await Promise.resolve("done");
+            log.push("3-async-end");
+            return result;
+        }
+        
+        let result = await asyncOp();
+        log.push("4-after-await");
+        console.log(log.join(" | "));
+    "#;
+    assert_eq!(run_js_one(code), "1-sync | 2-async-start | 3-async-end | 4-after-await");
+}

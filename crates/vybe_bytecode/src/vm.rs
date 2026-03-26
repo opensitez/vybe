@@ -4,11 +4,22 @@ use std::rc::Rc;
 
 use crate::chunk::Chunk;
 use crate::error::VMError;
+use crate::event_loop::{EventLoop, Task};
+use crate::fiber::{Fiber, SavedFrame};
 use crate::opcode::Op;
 use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value};
 
 const MAX_FRAMES: usize = 256;
 const MAX_STACK: usize = 65536;
+
+/// Result of VM execution — may complete or suspend for async.
+pub enum ExecResult {
+    /// Execution completed with a value.
+    Done(Value),
+    /// Execution suspended — waiting for a Promise to resolve.
+    /// Contains the promise ID the fiber is waiting on.
+    Suspended(u64),
+}
 
 /// Host function signature. Receives args, returns a value.
 pub type HostFn = Box<dyn Fn(&[Value]) -> Value>;
@@ -52,6 +63,8 @@ pub struct VM {
     import_table: Vec<usize>,
     /// Exception handler stack (WASM exception proposal).
     exception_handlers: Vec<ExceptionHandler>,
+    /// Event loop for async operations (shared with host functions).
+    pub event_loop: Rc<RefCell<EventLoop>>,
 }
 
 impl VM {
@@ -66,6 +79,7 @@ impl VM {
             host_registry: HashMap::new(),
             import_table: Vec::new(),
             exception_handlers: Vec::new(),
+            event_loop: Rc::new(RefCell::new(EventLoop::new())),
         }
     }
 
@@ -108,7 +122,98 @@ impl VM {
             self.stack.push(Value::Null);
         }
 
-        self.execute()
+        // Run synchronous code
+        let result = self.execute_with_async()?;
+
+        // Event loop — process async tasks until all done
+        match result {
+            ExecResult::Done(val) => {
+                self.run_event_loop()?;
+                Ok(val)
+            }
+            ExecResult::Suspended(_) => {
+                self.run_event_loop()?;
+                Ok(Value::Null)
+            }
+        }
+    }
+
+    /// Run the event loop until all pending tasks are processed.
+    fn run_event_loop(&mut self) -> Result<(), VMError> {
+        loop {
+            let has_pending = self.event_loop.borrow().has_pending();
+            if !has_pending { break; }
+
+            // 1. Drain all microtasks
+            let microtasks: Vec<Task> = {
+                let mut el = self.event_loop.borrow_mut();
+                let mut tasks = Vec::new();
+                while let Some(task) = el.next_microtask() {
+                    tasks.push(task);
+                }
+                tasks
+            };
+
+            for task in microtasks {
+                match task {
+                    Task::Microtask { callback, value } => {
+                        self.invoke(&callback, &[value])?;
+                    }
+                    Task::ResumeFiber(fiber) => {
+                        self.resume_fiber(fiber)?;
+                    }
+                    _ => {}
+                }
+            }
+
+            // 2. Wait for and process one macrotask (timer)
+            {
+                let el = self.event_loop.borrow();
+                el.wait_for_next();
+            }
+            let timer = self.event_loop.borrow_mut().next_ready_timer();
+            if let Some(Task::Timer { callback, .. }) = timer {
+                self.invoke(&callback, &[])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Resume a suspended fiber — restore its state and continue execution.
+    fn resume_fiber(&mut self, fiber: Fiber) -> Result<Value, VMError> {
+        // Restore state from fiber
+        self.stack = fiber.stack;
+        self.frames = fiber.frames.into_iter().map(|f| CallFrame {
+            chunk_index: f.chunk_index,
+            ip: f.ip,
+            base: f.base,
+            upvalues: f.upvalues,
+        }).collect();
+        self.open_upvalues = fiber.open_upvalues;
+
+        // Push the resolved value onto the stack (this is what `await` returns)
+        if let Some(val) = fiber.resume_value {
+            self.push(val)?;
+        }
+
+        // Continue execution
+        match self.execute_with_async()? {
+            ExecResult::Done(val) => Ok(val),
+            ExecResult::Suspended(_) => Ok(Value::Null), // re-suspended, event loop will handle
+        }
+    }
+
+    /// Save the current execution state to a Fiber.
+    fn save_fiber(&mut self) -> Fiber {
+        let frames = self.frames.drain(..).map(|f| SavedFrame {
+            chunk_index: f.chunk_index,
+            ip: f.ip,
+            base: f.base,
+            upvalues: f.upvalues,
+        }).collect();
+        let stack = self.stack.drain(..).collect();
+        let upvalues = self.open_upvalues.drain(..).collect();
+        Fiber::new(stack, frames, upvalues)
     }
 
     /// Call a function value after the initial run() has completed.
@@ -187,6 +292,18 @@ impl VM {
     }
 
     // -- Execute --
+
+    fn execute_with_async(&mut self) -> Result<ExecResult, VMError> {
+        match self.execute() {
+            Ok(val) => Ok(ExecResult::Done(val)),
+            Err(e) if e.message.starts_with("__await__:") => {
+                // Await suspension — extract promise ID
+                let id: u64 = e.message["__await__:".len()..].parse().unwrap_or(0);
+                Ok(ExecResult::Suspended(id))
+            }
+            Err(e) => Err(e),
+        }
+    }
 
     fn execute(&mut self) -> Result<Value, VMError> {
         loop {
@@ -647,6 +764,57 @@ impl VM {
                 Op::dyn_to_bool => {
                     let a = self.pop();
                     self.push(Value::Bool(dyn_truthy(&a)))?;
+                }
+
+                // -- Async (await) --
+                Op::r#await => {
+                    let val = self.pop();
+                    if let Value::Object(ref obj) = val {
+                        let o = obj.borrow();
+                        let is_promise = o.properties.get("__type")
+                            .map(|v| format!("{}", v) == "Promise")
+                            .unwrap_or(false);
+                        if is_promise {
+                            let state = o.properties.get("__state")
+                                .map(|v| format!("{}", v))
+                                .unwrap_or_default();
+                            if state == "fulfilled" {
+                                // Already resolved — push the value and continue
+                                let resolved = o.properties.get("__value").cloned().unwrap_or(Value::Null);
+                                drop(o);
+                                self.push(resolved)?;
+                            } else if state == "pending" {
+                                // Not yet resolved — suspend the fiber
+                                let promise_id = o.properties.get("__id")
+                                    .map(|v| v.as_f64() as u64)
+                                    .unwrap_or(0);
+                                drop(o);
+                                let fiber = self.save_fiber();
+                                self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
+                                // Signal suspension via special error
+                                return Err(VMError::new(format!("__await__:{}", promise_id)));
+                            } else {
+                                // Rejected — push the rejection value
+                                let rejected = o.properties.get("__value").cloned().unwrap_or(Value::Null);
+                                drop(o);
+                                self.push(rejected)?;
+                            }
+                        } else {
+                            drop(o);
+                            // Not a Promise — await on non-Promise returns the value as-is
+                            self.push(val)?;
+                        }
+                    } else {
+                        // Not an object — return as-is
+                        self.push(val)?;
+                    }
+                }
+
+                Op::set_timer => {
+                    let ms = self.pop().as_f64();
+                    let callback = self.pop();
+                    self.event_loop.borrow_mut().queue_timer(callback, ms);
+                    self.push(Value::Null)?;
                 }
 
                 // -- Exceptions (WASM exception proposal) --
