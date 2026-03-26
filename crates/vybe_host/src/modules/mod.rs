@@ -28,6 +28,10 @@ pub mod clock;
 pub mod env;
 pub mod random;
 pub mod http;
+pub mod object;
+pub mod regex;
+pub mod collections;
+pub mod runtime;
 pub mod gui;
 
 use vybe_bytecode::VM;
@@ -45,6 +49,10 @@ pub fn register_all(vm: &mut VM) {
     env::register(vm);
     random::register(vm);
     http::register(vm);
+    object::register(vm);
+    regex::register(vm);
+    collections::register(vm);
+    runtime::register(vm);
 }
 
 /// Register all standard VSI modules + GUI module.

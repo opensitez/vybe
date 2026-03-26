@@ -162,6 +162,10 @@ impl Compiler {
             "Math"    => "vybe:math",
             "JSON"    => "vybe:json",
             "Date"    => "vybe:clock",
+            "Object"  => "vybe:object",
+            "RegExp"  => "vybe:regex",
+            "Map"     => "vybe:collections",
+            "Set"     => "vybe:collections",
             // Vybe platform modules — map to vybe: prefix
             "fs"      => "vybe:fs",
             "clock"   => "vybe:clock",
@@ -185,6 +189,15 @@ impl Compiler {
 
     /// Resolve bare global calls that are host imports, not user functions.
     /// Each language compiler defines its own set of bare imports.
+    /// Resolve builtin constructors: new Map(), new Set(), new RegExp()
+    fn resolve_builtin_constructor(&mut self, name: &str) -> Option<u16> {
+        match name {
+            "Map" => Some(self.import("vybe:collections", "Map")),
+            "Set" => Some(self.import("vybe:collections", "Set")),
+            _ => None,
+        }
+    }
+
     fn resolve_bare_import(&mut self, name: &str) -> Option<u16> {
         match name {
             // JS standard globals that are host functions
@@ -208,6 +221,10 @@ impl Compiler {
             "slice" => ("vybe:array", "slice"),
             "indexOf" => ("vybe:string", "indexOf"),
             "includes" => ("vybe:string", "includes"),
+            // Note: Map/Set methods (set, get, has, delete, add, keys, values)
+            // are NOT listed here because they conflict with user class methods.
+            // They go through the regular method call path (obj.method → struct_get + call).
+            // The collections module attaches these methods on the instance during construction.
             _ => return None,
         };
         Some(self.import(module, name))
@@ -233,24 +250,8 @@ impl Compiler {
                     } else {
                         self.emit(Op::null);
                     }
-                    match self.resolve_variable(&decl.name) {
-                        VarResolution::Local(_) => {
-                            let slot = self.current_scope().resolve_local(&decl.name).unwrap();
-                            self.emit_u16(Op::local_set, slot);
-                            self.emit(Op::drop);
-                        }
-                        _ => {
-                            if self.scopes.len() == 1 && self.current_scope().depth == 0 && *kind == VarKind::Var {
-                                let idx = self.add_string_constant(&decl.name);
-                                self.emit_u16(Op::global_set, idx);
-                                self.emit(Op::drop);
-                            } else {
-                                let slot = self.define_local(&decl.name);
-                                self.emit_u16(Op::local_set, slot);
-                                self.emit(Op::drop);
-                            }
-                        }
-                    }
+                    // Value is on stack — bind it to the pattern
+                    self.compile_binding(&decl.pattern, *kind)?;
                 }
             }
             Statement::FunctionDeclaration(func) => {
@@ -387,8 +388,123 @@ impl Compiler {
                     }
                 }
             }
-            Statement::ForIn { .. } | Statement::ForOf { .. } => {
-                return Err("for-in/for-of not yet implemented".into());
+            Statement::ForOf { left, right, body } => {
+                // Desugar: for (let x of arr) → { let __arr = arr; let __i = 0; while (__i < __arr.length) { let x = __arr[__i]; body; __i++; } }
+                self.current_scope_mut().begin_scope();
+
+                // __arr = right
+                self.compile_expression(right)?;
+                let arr_slot = self.define_local("__for_of_arr");
+                self.emit_u16(Op::local_set, arr_slot);
+                self.emit(Op::drop);
+
+                // __i = 0
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__for_of_i");
+                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::drop);
+
+                // Loop start: __i < __arr.length
+                let loop_start = self.current_offset();
+                self.loop_stack.push(LoopContext { start_offset: loop_start, break_patches: vec![], continue_patches: vec![] });
+
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                let len_idx = self.add_string_constant("length");
+                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::dyn_lt);
+                self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+
+                // let x = __arr[__i]
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                let var_name = match left {
+                    ForInTarget::VarDecl(_, name) => name.clone(),
+                    ForInTarget::Identifier(name) => name.clone(),
+                };
+                let var_slot = self.define_local(&var_name);
+                self.emit_u16(Op::local_set, var_slot);
+                self.emit(Op::drop);
+
+                // body
+                self.compile_statement(body)?;
+
+                // continue target
+                for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
+
+                // __i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::drop);
+
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+                let ctx = self.loop_stack.pop().unwrap();
+                for p in ctx.break_patches { self.patch_jump(p); }
+                self.current_scope_mut().end_scope();
+            }
+            Statement::ForIn { left, right, body } => {
+                // Desugar: for (let k in obj) → { let __keys = Object.keys(obj); for (let k of __keys) { body; } }
+                self.current_scope_mut().begin_scope();
+
+                // __keys = host call to get object keys
+                self.compile_expression(right)?;
+                let keys_idx = self.import("vybe:object", "keys");
+                self.emit_host_call(keys_idx, 1);
+                let keys_slot = self.define_local("__for_in_keys");
+                self.emit_u16(Op::local_set, keys_slot);
+                self.emit(Op::drop);
+
+                // __i = 0
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__for_in_i");
+                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::drop);
+
+                // Loop: __i < __keys.length
+                let loop_start = self.current_offset();
+                self.loop_stack.push(LoopContext { start_offset: loop_start, break_patches: vec![], continue_patches: vec![] });
+
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, keys_slot);
+                let len_idx = self.add_string_constant("length");
+                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::dyn_lt);
+                self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+
+                // let k = __keys[__i]
+                self.emit_u16(Op::local_get, keys_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                let var_name = match left {
+                    ForInTarget::VarDecl(_, name) => name.clone(),
+                    ForInTarget::Identifier(name) => name.clone(),
+                };
+                let var_slot = self.define_local(&var_name);
+                self.emit_u16(Op::local_set, var_slot);
+                self.emit(Op::drop);
+
+                self.compile_statement(body)?;
+
+                for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
+
+                // __i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::drop);
+
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+                let ctx = self.loop_stack.pop().unwrap();
+                for p in ctx.break_patches { self.patch_jump(p); }
+                self.current_scope_mut().end_scope();
             }
             Statement::Labeled { body, .. } => { self.compile_statement(body)?; }
             Statement::Empty => {}
@@ -505,7 +621,7 @@ impl Compiler {
             }
             Expression::Assignment { op, left, right } => {
                 match left.as_ref() {
-                    Expression::Member { object, property } => {
+                    Expression::Member { object, property, .. } => {
                         self.compile_expression(object)?;
                         if *op == AssignOp::Assign {
                             self.compile_expression(right)?;
@@ -547,20 +663,43 @@ impl Compiler {
                 self.compile_expression(alternate)?;
                 self.patch_jump(end_j);
             }
-            Expression::Member { object, property } => {
+            Expression::Member { object, property, optional } => {
                 self.compile_expression(object)?;
-                let idx = self.add_string_constant(property);
-                self.emit_u16(Op::struct_get, idx);
+                if *optional {
+                    // obj?.prop — if obj is null, short-circuit to null
+                    self.emit(Op::dup);
+                    let skip = self.emit_jump(Op::br_if_null);
+                    let idx = self.add_string_constant(property);
+                    self.emit_u16(Op::struct_get, idx);
+                    let end = self.emit_jump(Op::br);
+                    self.patch_jump(skip);
+                    // null was already on stack from dup+branch, just leave it
+                    self.patch_jump(end);
+                } else {
+                    let idx = self.add_string_constant(property);
+                    self.emit_u16(Op::struct_get, idx);
+                }
             }
             Expression::ComputedMember { object, property } => {
                 self.compile_expression(object)?;
                 self.compile_expression(property)?;
                 self.emit(Op::array_get);
             }
-            Expression::Call { callee, arguments } => {
+            Expression::Call { callee, arguments, .. } => {
                 self.compile_call(callee, arguments)?;
             }
             Expression::New { callee, arguments } => {
+                // Check for builtin constructors (Map, Set, etc.)
+                if let Expression::Identifier(name) = callee.as_ref() {
+                    if let Some(host_idx) = self.resolve_builtin_constructor(name) {
+                        // Create empty object, call host constructor with it
+                        self.emit_u16(Op::struct_new, 0);
+                        for arg in arguments { self.compile_expression(arg)?; }
+                        self.emit_host_call(host_idx, (arguments.len() + 1) as u8);
+                        return Ok(());
+                    }
+                }
+                // User class: push constructor, create empty obj, call
                 self.compile_expression(callee)?;
                 self.emit_u16(Op::struct_new, 0);
                 for arg in arguments { self.compile_expression(arg)?; }
@@ -659,7 +798,7 @@ impl Compiler {
     ///   1. If `func` is NOT a known variable → bare import: ("vybe:convert", func) for known globals
     ///   2. Otherwise → regular function call
     fn compile_call(&mut self, callee: &Expression, arguments: &[Expression]) -> Result<(), String> {
-        if let Expression::Member { object, property } = callee {
+        if let Expression::Member { object, property, .. } = callee {
             // obj.method() pattern
             if let Expression::Identifier(obj_name) = object.as_ref() {
                 if !self.is_known_variable(obj_name) {
@@ -682,13 +821,35 @@ impl Compiler {
                 return Ok(());
             }
 
-            // Regular method call on object: obj.method() with this binding
+            // Method call on object. Could be a user class method or a builtin
+            // collection method. Try runtime dispatch first — it returns Null for
+            // non-builtins, in which case we fall through to struct_get + call.
+            //
+            // For builtins (Map, Set): callMethod handles it directly.
+            // For user objects: regular struct_get + call with this binding.
+            //
+            // We use callMethod(obj, "methodName", ...args) for all method calls.
+            // The runtime checks __type and dispatches accordingly.
+            // If it returns Null and the method isn't a builtin, we do regular call.
+            self.compile_expression(object)?;
+            self.emit_constant(Value::String(Rc::from(property.as_str())));
+            for arg in arguments { self.compile_expression(arg)?; }
+            let cm_idx = self.import("vybe:runtime", "callMethod");
+            self.emit_host_call(cm_idx, (arguments.len() + 2) as u8);
+
+            // Check if callMethod returned Null (not a builtin) — then do regular call
+            self.emit(Op::dup);
+            self.emit(Op::ref_is_null);
+            let done = self.emit_jump(Op::br_if_false); // not null = result, skip
+            self.emit(Op::drop); // drop the null
+            // Regular method call: obj.method(args) with this
             self.compile_expression(object)?;
             let prop_idx = self.add_string_constant(property);
             self.emit_u16(Op::struct_get, prop_idx);
             self.compile_expression(object)?;
             for arg in arguments { self.compile_expression(arg)?; }
             self.emit_u8(Op::call, (arguments.len() + 1) as u8);
+            self.patch_jump(done);
             return Ok(());
         }
 
@@ -707,6 +868,102 @@ impl Compiler {
         self.compile_expression(callee)?;
         for arg in arguments { self.compile_expression(arg)?; }
         self.emit_u8(Op::call, arguments.len() as u8);
+        Ok(())
+    }
+
+    /// Bind the value on top of stack to a pattern (var/let/const declaration).
+    fn compile_binding(&mut self, pattern: &BindingPattern, kind: VarKind) -> Result<(), String> {
+        match pattern {
+            BindingPattern::Identifier(name) => {
+                match self.resolve_variable(name) {
+                    VarResolution::Local(_) => {
+                        let slot = self.current_scope().resolve_local(name).unwrap();
+                        self.emit_u16(Op::local_set, slot);
+                        self.emit(Op::drop);
+                    }
+                    _ => {
+                        if self.scopes.len() == 1 && self.current_scope().depth == 0 && kind == VarKind::Var {
+                            let idx = self.add_string_constant(name);
+                            self.emit_u16(Op::global_set, idx);
+                            self.emit(Op::drop);
+                        } else {
+                            let slot = self.define_local(name);
+                            self.emit_u16(Op::local_set, slot);
+                            self.emit(Op::drop);
+                        }
+                    }
+                }
+            }
+            BindingPattern::Object(props) => {
+                // Stack has the object value. For each prop, dup + get property + bind.
+                for prop in props {
+                    self.emit(Op::dup); // keep object on stack
+                    let key_idx = self.add_string_constant(&prop.key);
+                    self.emit_u16(Op::struct_get, key_idx);
+                    // If there's a default and the value is null, use default
+                    if let Some(ref default_expr) = prop.default {
+                        self.emit(Op::dup);
+                        self.emit(Op::ref_is_null);
+                        let skip = self.emit_jump(Op::br_if_false);
+                        self.emit(Op::drop); // drop null
+                        self.compile_expression(default_expr)?;
+                        self.patch_jump(skip);
+                    }
+                    // Bind to the target name
+                    let target_name = match &prop.value {
+                        Some(BindingPattern::Identifier(n)) => n.clone(),
+                        None => prop.key.clone(), // shorthand
+                        _ => {
+                            // Nested destructuring — recurse
+                            if let Some(ref nested) = prop.value {
+                                self.compile_binding(nested, kind)?;
+                                continue;
+                            }
+                            prop.key.clone()
+                        }
+                    };
+                    let slot = self.define_local(&target_name);
+                    self.emit_u16(Op::local_set, slot);
+                    self.emit(Op::drop);
+                }
+                self.emit(Op::drop); // drop the object
+            }
+            BindingPattern::Array(elems) => {
+                // Stack has the array value. For each elem, dup + get index + bind.
+                for (i, elem) in elems.iter().enumerate() {
+                    match elem {
+                        ArrayPatternElem::Pattern(pat, default) => {
+                            self.emit(Op::dup);
+                            self.emit_constant(Value::F64(i as f64));
+                            self.emit(Op::array_get);
+                            if let Some(default_expr) = default {
+                                self.emit(Op::dup);
+                                self.emit(Op::ref_is_null);
+                                let skip = self.emit_jump(Op::br_if_false);
+                                self.emit(Op::drop);
+                                self.compile_expression(default_expr)?;
+                                self.patch_jump(skip);
+                            }
+                            self.compile_binding(pat, kind)?;
+                        }
+                        ArrayPatternElem::Rest(name) => {
+                            // ...rest — slice remaining elements
+                            self.emit(Op::dup);
+                            self.emit_constant(Value::F64(i as f64));
+                            let slice_idx = self.import("vybe:array", "slice");
+                            self.emit_host_call(slice_idx, 2);
+                            let slot = self.define_local(name);
+                            self.emit_u16(Op::local_set, slot);
+                            self.emit(Op::drop);
+                        }
+                        ArrayPatternElem::Hole => {
+                            // Skip this index
+                        }
+                    }
+                }
+                self.emit(Op::drop); // drop the array
+            }
+        }
         Ok(())
     }
 
@@ -740,7 +997,7 @@ impl Compiler {
                 }
                 self.emit(Op::drop);
             }
-            Expression::Member { object, property } => {
+            Expression::Member { object, property, .. } => {
                 self.compile_expression(object)?;
                 let idx = self.add_string_constant(property);
                 self.emit_u16(Op::struct_set, idx);
@@ -763,11 +1020,26 @@ impl Compiler {
         self.chunks.push(chunk);
 
         let mut scope = Scope::new_function();
-        for param in &func.params { scope.define_local(param); }
+        for param in &func.params { scope.define_local(&param.name); }
 
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;
         self.scopes.push(scope);
+
+        // Emit default parameter initialization
+        for param in &func.params {
+            if let Some(ref default_expr) = param.default {
+                // if (param is null) { param = default; }
+                let slot = self.current_scope().resolve_local(&param.name).unwrap();
+                self.emit_u16(Op::local_get, slot);
+                self.emit(Op::ref_is_null);
+                let skip = self.emit_jump(Op::br_if_false); // if NOT null, skip
+                self.compile_expression(default_expr)?;
+                self.emit_u16(Op::local_set, slot);
+                self.emit(Op::drop);
+                self.patch_jump(skip);
+            }
+        }
 
         for stmt in &func.body { self.compile_statement(stmt)?; }
         self.emit(Op::null);
@@ -802,7 +1074,7 @@ impl Compiler {
 
         let mut scope = Scope::new_function();
         scope.define_local("this");
-        for param in &func.params { scope.define_local(param); }
+        for param in &func.params { scope.define_local(&param.name); }
 
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;
@@ -859,7 +1131,7 @@ impl Compiler {
 
         let mut scope = Scope::new_function();
         scope.define_local("this");
-        for param in &ctor.params { scope.define_local(param); }
+        for param in &ctor.params { scope.define_local(&param.name); }
 
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;

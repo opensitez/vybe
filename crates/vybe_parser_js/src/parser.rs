@@ -77,19 +77,79 @@ impl Parser {
 
         let mut declarations = Vec::new();
         loop {
-            let name = self.expect_identifier()?;
+            let pattern = self.parse_binding_pattern()?;
             let init = if self.eat(TokenKind::Eq) {
                 Some(self.parse_assignment_expression()?)
             } else {
                 None
             };
-            declarations.push(VarDeclarator { name, init });
+            declarations.push(VarDeclarator { pattern, init });
             if !self.eat(TokenKind::Comma) {
                 break;
             }
         }
         self.eat_semicolon();
         Ok(Statement::VariableDeclaration { kind, declarations })
+    }
+
+    fn parse_binding_pattern(&mut self) -> Result<BindingPattern, String> {
+        match self.current_kind() {
+            TokenKind::LBrace => self.parse_object_pattern(),
+            TokenKind::LBracket => self.parse_array_pattern(),
+            _ => {
+                let name = self.expect_identifier()?;
+                Ok(BindingPattern::Identifier(name))
+            }
+        }
+    }
+
+    fn parse_object_pattern(&mut self) -> Result<BindingPattern, String> {
+        self.expect(TokenKind::LBrace)?;
+        let mut props = Vec::new();
+        while !self.check_kind(&TokenKind::RBrace) && !self.is_at_end() {
+            if self.check_kind(&TokenKind::DotDotDot) {
+                self.advance();
+                let name = self.expect_identifier()?;
+                props.push(ObjectPatternProp { key: name.clone(), value: Some(BindingPattern::Identifier(name)), default: None });
+            } else {
+                let key = self.expect_identifier()?;
+                if self.eat(TokenKind::Colon) {
+                    // { key: pattern }
+                    let pat = self.parse_binding_pattern()?;
+                    let default = if self.eat(TokenKind::Eq) { Some(self.parse_assignment_expression()?) } else { None };
+                    props.push(ObjectPatternProp { key, value: Some(pat), default });
+                } else {
+                    // Shorthand { key } or { key = default }
+                    let default = if self.eat(TokenKind::Eq) { Some(self.parse_assignment_expression()?) } else { None };
+                    props.push(ObjectPatternProp { key, value: None, default });
+                }
+            }
+            if !self.eat(TokenKind::Comma) { break; }
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(BindingPattern::Object(props))
+    }
+
+    fn parse_array_pattern(&mut self) -> Result<BindingPattern, String> {
+        self.expect(TokenKind::LBracket)?;
+        let mut elems = Vec::new();
+        while !self.check_kind(&TokenKind::RBracket) && !self.is_at_end() {
+            if self.check_kind(&TokenKind::Comma) {
+                elems.push(ArrayPatternElem::Hole);
+            } else if self.check_kind(&TokenKind::DotDotDot) {
+                self.advance();
+                let name = self.expect_identifier()?;
+                elems.push(ArrayPatternElem::Rest(name));
+                break; // rest must be last
+            } else {
+                let pat = self.parse_binding_pattern()?;
+                let default = if self.eat(TokenKind::Eq) { Some(self.parse_assignment_expression()?) } else { None };
+                elems.push(ArrayPatternElem::Pattern(pat, default));
+            }
+            if !self.eat(TokenKind::Comma) { break; }
+        }
+        self.expect(TokenKind::RBracket)?;
+        Ok(BindingPattern::Array(elems))
     }
 
     fn parse_function_declaration(&mut self) -> Result<Statement, String> {
@@ -111,15 +171,24 @@ impl Parser {
         Ok(FunctionDecl { name, params, body })
     }
 
-    fn parse_param_list(&mut self) -> Result<Vec<String>, String> {
+    fn parse_param_list(&mut self) -> Result<Vec<Param>, String> {
         let mut params = Vec::new();
         if !self.check_kind(&TokenKind::RParen) {
             loop {
-                if self.check_kind(&TokenKind::DotDotDot) {
-                    self.advance(); // skip ...
-                }
-                params.push(self.expect_identifier()?);
-                if !self.eat(TokenKind::Comma) {
+                let rest = if self.check_kind(&TokenKind::DotDotDot) {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+                let name = self.expect_identifier()?;
+                let default = if self.eat(TokenKind::Eq) {
+                    Some(self.parse_assignment_expression()?)
+                } else {
+                    None
+                };
+                params.push(Param { name, default, rest });
+                if rest || !self.eat(TokenKind::Comma) {
                     break;
                 }
             }
@@ -260,7 +329,7 @@ impl Parser {
             } else {
                 None
             };
-            declarations.push(VarDeclarator { name, init: init_expr });
+            declarations.push(VarDeclarator::simple(name, init_expr));
             while self.eat(TokenKind::Comma) {
                 let n = self.expect_identifier()?;
                 let init = if self.eat(TokenKind::Eq) {
@@ -268,7 +337,7 @@ impl Parser {
                 } else {
                     None
                 };
-                declarations.push(VarDeclarator { name: n, init });
+                declarations.push(VarDeclarator::simple(n, init));
             }
 
             self.expect(TokenKind::Semicolon)?;
@@ -703,12 +772,12 @@ impl Parser {
                     self.advance();
                     let args = self.parse_arguments()?;
                     self.expect(TokenKind::RParen)?;
-                    expr = Expression::Call { callee: Box::new(expr), arguments: args };
+                    expr = Expression::Call { callee: Box::new(expr), arguments: args, optional: false };
                 }
                 TokenKind::Dot => {
                     self.advance();
                     let prop = self.expect_property_name()?;
-                    expr = Expression::Member { object: Box::new(expr), property: prop };
+                    expr = Expression::Member { object: Box::new(expr), property: prop, optional: false };
                 }
                 TokenKind::QuestionDot => {
                     self.advance();
@@ -716,10 +785,10 @@ impl Parser {
                         self.advance();
                         let args = self.parse_arguments()?;
                         self.expect(TokenKind::RParen)?;
-                        expr = Expression::Call { callee: Box::new(expr), arguments: args };
+                        expr = Expression::Call { callee: Box::new(expr), arguments: args, optional: true };
                     } else {
                         let prop = self.expect_property_name()?;
-                        expr = Expression::Member { object: Box::new(expr), property: prop };
+                        expr = Expression::Member { object: Box::new(expr), property: prop, optional: true };
                     }
                 }
                 TokenKind::LBracket => {
@@ -740,7 +809,7 @@ impl Parser {
         let callee = self.parse_call_expression()?;
         // If callee was already parsed as a Call, convert it
         match callee {
-            Expression::Call { callee, arguments } => {
+            Expression::Call { callee, arguments, .. } => {
                 Ok(Expression::New { callee, arguments })
             }
             _ => {
@@ -805,7 +874,7 @@ impl Parser {
                 // Check for arrow function: ident => ...
                 if self.check_kind(&TokenKind::Arrow) {
                     self.advance(); // skip =>
-                    return self.parse_arrow_body(vec![name]);
+                    return self.parse_arrow_body(vec![Param::simple(name)]);
                 }
 
                 Ok(Expression::Identifier(name))
@@ -873,23 +942,19 @@ impl Parser {
         loop {
             expressions.push(self.parse_expression()?);
 
-            // After the expression, we need to continue the template
-            self.expect(TokenKind::RBrace)?;
-            let tok = self.lexer.lex_template_continuation()
-                .map_err(|e| format!("Template error: {}", e))?;
-
-            match &tok.kind {
+            // The lexer produces TemplateTail or TemplateMiddle after the }
+            match self.current_kind() {
                 TokenKind::TemplateTail(s) => {
-                    quasis.push(s.clone());
-                    // Replace current token with next real token
-                    self.resync_after_template();
+                    quasis.push(s);
+                    self.advance();
                     break;
                 }
                 TokenKind::TemplateMiddle(s) => {
-                    quasis.push(s.clone());
-                    // Continue parsing next interpolation
+                    quasis.push(s);
+                    self.advance();
+                    // Continue parsing next interpolation expression
                 }
-                _ => return Err("Expected template continuation".to_string()),
+                _ => return Err(self.error("Expected template continuation")),
             }
         }
 
@@ -951,7 +1016,7 @@ impl Parser {
         Ok(Expression::Object(properties))
     }
 
-    fn parse_arrow_body(&mut self, params: Vec<String>) -> Result<Expression, String> {
+    fn parse_arrow_body(&mut self, params: Vec<Param>) -> Result<Expression, String> {
         let body = if self.check_kind(&TokenKind::LBrace) {
             ArrowBody::Block(self.parse_block_body()?)
         } else {
@@ -1117,24 +1182,20 @@ impl Parser {
         matches!(self.current_kind(), TokenKind::Identifier(_) | TokenKind::DotDotDot)
     }
 
-    fn try_parse_arrow_params(&mut self) -> Result<Option<Vec<String>>, String> {
-        // Save position
+    fn try_parse_arrow_params(&mut self) -> Result<Option<Vec<Param>>, String> {
         let saved = self.pos;
         let mut params = Vec::new();
 
         loop {
-            if self.check_kind(&TokenKind::DotDotDot) {
-                self.advance();
-            }
+            let rest = if self.check_kind(&TokenKind::DotDotDot) { self.advance(); true } else { false };
             match self.current_kind() {
                 TokenKind::Identifier(name) => {
-                    params.push(name);
                     self.advance();
-                    // Allow default values
-                    if self.check_kind(&TokenKind::Eq) {
+                    let default = if self.check_kind(&TokenKind::Eq) {
                         self.advance();
-                        let _default = self.parse_assignment_expression()?;
-                    }
+                        Some(self.parse_assignment_expression()?)
+                    } else { None };
+                    params.push(Param { name, default, rest });
                 }
                 _ => {
                     self.pos = saved;
@@ -1157,14 +1218,14 @@ impl Parser {
         }
     }
 
-    fn expr_to_params(&self, expr: &Expression) -> Option<Vec<String>> {
+    fn expr_to_params(&self, expr: &Expression) -> Option<Vec<Param>> {
         match expr {
-            Expression::Identifier(name) => Some(vec![name.clone()]),
+            Expression::Identifier(name) => Some(vec![Param::simple(name.clone())]),
             Expression::Sequence(exprs) => {
                 let mut params = Vec::new();
                 for e in exprs {
                     match e {
-                        Expression::Identifier(n) => params.push(n.clone()),
+                        Expression::Identifier(n) => params.push(Param::simple(n.clone())),
                         _ => return None,
                     }
                 }

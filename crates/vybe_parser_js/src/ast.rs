@@ -90,10 +90,39 @@ pub enum VarKind {
     Const,
 }
 
+/// A binding pattern — simple name or destructuring.
+#[derive(Debug, Clone)]
+pub enum BindingPattern {
+    Identifier(String),
+    Object(Vec<ObjectPatternProp>),
+    Array(Vec<ArrayPatternElem>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjectPatternProp {
+    pub key: String,
+    pub value: Option<BindingPattern>,  // None = shorthand { x }
+    pub default: Option<Expression>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ArrayPatternElem {
+    Pattern(BindingPattern, Option<Expression>),  // element with optional default
+    Rest(String),                                  // ...rest
+    Hole,                                          // empty slot in [,x]
+}
+
 #[derive(Debug, Clone)]
 pub struct VarDeclarator {
-    pub name: String,
+    pub pattern: BindingPattern,
     pub init: Option<Expression>,
+}
+
+impl VarDeclarator {
+    /// Convenience for simple `let x = ...` declarations.
+    pub fn simple(name: String, init: Option<Expression>) -> Self {
+        VarDeclarator { pattern: BindingPattern::Identifier(name), init }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +205,7 @@ pub enum Expression {
     Member {
         object: Box<Expression>,
         property: String,
+        optional: bool,  // true for ?.
     },
     ComputedMember {
         object: Box<Expression>,
@@ -185,6 +215,7 @@ pub enum Expression {
     Call {
         callee: Box<Expression>,
         arguments: Vec<Expression>,
+        optional: bool,  // true for ?.()
     },
     /// new Foo(...)
     New {
@@ -195,7 +226,7 @@ pub enum Expression {
     // Functions as expressions
     Function(FunctionDecl),
     ArrowFunction {
-        params: Vec<String>,
+        params: Vec<Param>,
         body: ArrowBody,
     },
 
@@ -219,10 +250,24 @@ pub enum ArrowBody {
 
 // -- Shared structures --
 
+/// A function parameter — name with optional default value and rest marker.
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub name: String,
+    pub default: Option<Expression>,
+    pub rest: bool,
+}
+
+impl Param {
+    pub fn simple(name: impl Into<String>) -> Self {
+        Param { name: name.into(), default: None, rest: false }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FunctionDecl {
     pub name: Option<String>,
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
     pub body: Vec<Statement>,
 }
 

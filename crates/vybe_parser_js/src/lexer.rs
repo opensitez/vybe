@@ -4,6 +4,11 @@ pub struct Lexer {
     source: Vec<char>,
     pos: usize,
     line: u32,
+    /// Stack of template literal nesting depths.
+    /// When we enter `${`, we push the current brace depth.
+    /// When `}` matches that depth, we resume template scanning.
+    template_stack: Vec<i32>,
+    brace_depth: i32,
 }
 
 impl Lexer {
@@ -12,6 +17,8 @@ impl Lexer {
             source: source.chars().collect(),
             pos: 0,
             line: 1,
+            template_stack: Vec::new(),
+            brace_depth: 0,
         }
     }
 
@@ -181,6 +188,8 @@ impl Lexer {
             }
             if self.source[self.pos] == '$' && self.pos + 1 < self.source.len() && self.source[self.pos + 1] == '{' {
                 self.pos += 2; // skip ${
+                self.template_stack.push(self.brace_depth);
+                self.brace_depth += 1;
                 return Ok(self.make_token(TokenKind::TemplateHead(value), start));
             }
             if self.source[self.pos] == '\\' {
@@ -208,8 +217,7 @@ impl Lexer {
     }
 
     /// Continue lexing template after an interpolation expression (after `}`).
-    pub fn lex_template_continuation(&mut self) -> Result<Token, String> {
-        let start = self.pos;
+    fn lex_template_continuation(&mut self, start: usize) -> Result<Token, String> {
         let mut value = String::new();
         while self.pos < self.source.len() {
             if self.source[self.pos] == '`' {
@@ -218,6 +226,8 @@ impl Lexer {
             }
             if self.source[self.pos] == '$' && self.pos + 1 < self.source.len() && self.source[self.pos + 1] == '{' {
                 self.pos += 2;
+                self.template_stack.push(self.brace_depth);
+                self.brace_depth += 1;
                 return Ok(self.make_token(TokenKind::TemplateMiddle(value), start));
             }
             if self.source[self.pos] == '\\' {
@@ -323,8 +333,19 @@ impl Lexer {
         let kind = match ch {
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
-            '{' => TokenKind::LBrace,
-            '}' => TokenKind::RBrace,
+            '{' => { self.brace_depth += 1; TokenKind::LBrace },
+            '}' => {
+                self.brace_depth -= 1;
+                // Check if this } closes a template interpolation
+                if let Some(&saved_depth) = self.template_stack.last() {
+                    if self.brace_depth == saved_depth {
+                        self.template_stack.pop();
+                        // Continue scanning the template literal
+                        return self.lex_template_continuation(start);
+                    }
+                }
+                TokenKind::RBrace
+            },
             '[' => TokenKind::LBracket,
             ']' => TokenKind::RBracket,
             ';' => TokenKind::Semicolon,
