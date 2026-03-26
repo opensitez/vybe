@@ -673,3 +673,113 @@ fn test_new_set_has_delete() {
     assert_eq!(lines[0], "true");
     assert_eq!(lines[1], "false");
 }
+
+// ============================================================
+// Array.map
+// ============================================================
+
+#[test]
+fn test_array_map() {
+    let code = r#"let r = [1, 2, 3].map((x) => x * 2); console.log(r.join(","))"#;
+    assert_eq!(run_js_one(code), "2,4,6");
+}
+
+#[test]
+fn test_array_map_with_index() {
+    let code = r#"let r = [10, 20, 30].map((x, i) => i); console.log(r.join(","))"#;
+    assert_eq!(run_js_one(code), "0,1,2");
+}
+
+// ============================================================
+// Array.filter
+// ============================================================
+
+#[test]
+fn test_array_filter() {
+    let code = r#"let r = [1, 2, 3, 4, 5].filter((x) => x > 3); console.log(r.join(","))"#;
+    assert_eq!(run_js_one(code), "4,5");
+}
+
+#[test]
+fn test_array_filter_even() {
+    let code = r#"let r = [1, 2, 3, 4, 5, 6].filter((x) => x % 2 === 0); console.log(r.join(","))"#;
+    assert_eq!(run_js_one(code), "2,4,6");
+}
+
+// ============================================================
+// Array.forEach
+// ============================================================
+
+#[test]
+fn test_array_foreach() {
+    let code = r#"
+        let sum = 0;
+        [1, 2, 3, 4, 5].forEach((x) => { sum = sum + x; });
+        console.log(sum);
+    "#;
+    assert_eq!(run_js_one(code), "15");
+}
+
+// ============================================================
+// Array.find
+// ============================================================
+
+#[test]
+fn test_array_find() {
+    let code = r#"console.log([1, 2, 3, 4, 5].find((x) => x > 3))"#;
+    assert_eq!(run_js_one(code), "4");
+}
+
+#[test]
+fn test_array_find_not_found() {
+    let code = r#"console.log([1, 2, 3].find((x) => x > 10))"#;
+    assert_eq!(run_js_one(code), "null");
+}
+
+// ============================================================
+// Array.reduce
+// ============================================================
+
+#[test]
+fn test_array_reduce_sum() {
+    let code = r#"console.log([1, 2, 3, 4, 5].reduce((acc, x) => acc + x, 0))"#;
+    assert_eq!(run_js_one(code), "15");
+}
+
+#[test]
+fn test_array_reduce_product() {
+    let code = r#"console.log([1, 2, 3, 4].reduce((acc, x) => acc * x, 1))"#;
+    assert_eq!(run_js_one(code), "24");
+}
+
+// ============================================================
+// Array.sort
+// ============================================================
+
+#[test]
+fn test_array_sort_default() {
+    let code = r#"let r = [3, 1, 4, 1, 5, 9].sort(); console.log(r.join(","))"#;
+    assert_eq!(run_js_one(code), "1,1,3,4,5,9");
+}
+
+#[test]
+fn test_array_sort_comparator() {
+    let code = r#"let r = [3, 1, 4, 1, 5].sort((a, b) => b - a); console.log(r.join(","))"#;
+    assert_eq!(run_js_one(code), "5,4,3,1,1");
+}
+
+// ============================================================
+// Combined
+// ============================================================
+
+#[test]
+fn test_map_filter_reduce() {
+    let code = r#"
+        let result = [1, 2, 3, 4, 5]
+            .filter((x) => x % 2 !== 0)
+            .map((x) => x * x)
+            .reduce((acc, x) => acc + x, 0);
+        console.log(result);
+    "#;
+    assert_eq!(run_js_one(code), "35"); // 1+9+25
+}

@@ -121,6 +121,20 @@ pub fn register(vm: &mut VM) {
             _ => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
         }
     }));
+    // setAt(arr, index, value) — set element at index
+    vm.register_host_fn("vybe:array", "setAt", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let value = args.get(2).cloned().unwrap_or(Value::Null);
+            let mut o = obj.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = o.kind {
+                if idx < elems.len() {
+                    elems[idx] = value;
+                }
+            }
+        }
+        Value::Null
+    }));
 }
 
 fn norm(args: &[Value], idx: usize, default: i64, len: i64) -> usize {

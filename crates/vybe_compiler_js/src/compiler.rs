@@ -813,6 +813,15 @@ impl Compiler {
                 }
             }
 
+            // Array higher-order methods — desugar to forEach + push pattern
+            // These methods need VM callbacks (calling JS functions from loops).
+            // We desugar them in the compiler to bytecode loops that use `call`.
+            if matches!(property.as_str(), "map" | "filter" | "forEach" | "find" | "reduce" | "sort") {
+                if self.compile_array_callback_method(object, property, arguments)? {
+                    return Ok(());
+                }
+            }
+
             // obj IS a variable — check for value methods (push, slice, etc.)
             if let Some(idx) = self.resolve_value_method(property) {
                 self.compile_expression(object)?;
@@ -965,6 +974,397 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    /// Compile arr.map(fn), arr.filter(fn), arr.forEach(fn), arr.find(fn),
+    /// arr.reduce(fn, init), arr.sort(fn) as inline bytecode loops.
+    /// Uses call (same as WASM call_indirect) for the callback.
+    /// Returns true if the method was handled.
+    fn compile_array_callback_method(
+        &mut self,
+        object: &Expression,
+        method: &str,
+        arguments: &[Expression],
+    ) -> Result<bool, String> {
+        match method {
+            "map" => {
+                // arr.map(fn) → { let __r=[]; for i in arr { __r.push(fn(arr[i],i,arr)); } __r }
+                self.current_scope_mut().begin_scope();
+                // __arr = object
+                self.compile_expression(object)?;
+                let arr_slot = self.define_local("__cb_arr");
+                self.emit_u16(Op::local_set, arr_slot);
+                self.emit(Op::drop);
+                // __fn = callback
+                if arguments.is_empty() { return Err("map requires a callback".into()); }
+                self.compile_expression(&arguments[0])?;
+                let fn_slot = self.define_local("__cb_fn");
+                self.emit_u16(Op::local_set, fn_slot);
+                self.emit(Op::drop);
+                // __result = []
+                self.emit_u16(Op::array_new, 0);
+                let result_slot = self.define_local("__cb_result");
+                self.emit_u16(Op::local_set, result_slot);
+                self.emit(Op::drop);
+                // __i = 0
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__cb_i");
+                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::drop);
+                // loop: while __i < __arr.length
+                let loop_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                let len_idx = self.add_string_constant("length");
+                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::dyn_lt);
+                self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+                // val = fn(arr[i], i, arr) — use call (WASM call_indirect)
+                self.emit_u16(Op::local_get, fn_slot);   // push callback
+                self.emit_u16(Op::local_get, arr_slot);   // arr
+                self.emit_u16(Op::local_get, i_slot);     // i
+                self.emit(Op::array_get);                  // arr[i]
+                self.emit_u16(Op::local_get, i_slot);     // i
+                self.emit_u16(Op::local_get, arr_slot);   // arr
+                self.emit_u8(Op::call, 3);                // fn(arr[i], i, arr) → val on stack
+                // Store val, then push(result, val)
+                let val_slot = self.define_local("__cb_val");
+                self.emit_u16(Op::local_set, val_slot);    // val_slot = val (TOS)
+                self.emit(Op::drop);                        // pop val from stack
+                let push_idx = self.import("vybe:array", "push");
+                self.emit_u16(Op::local_get, result_slot); // push result_arr
+                self.emit_u16(Op::local_get, val_slot);    // push val
+                self.emit_host_call(push_idx, 2);          // push(result_arr, val)
+                self.emit(Op::drop);                        // discard push return
+                // i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+                // push result
+                self.emit_u16(Op::local_get, result_slot);
+                self.current_scope_mut().end_scope();
+                Ok(true)
+            }
+            "filter" => {
+                self.current_scope_mut().begin_scope();
+                self.compile_expression(object)?;
+                let arr_slot = self.define_local("__cb_arr");
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                self.compile_expression(&arguments[0])?;
+                let fn_slot = self.define_local("__cb_fn");
+                self.emit_u16(Op::local_set, fn_slot); self.emit(Op::drop);
+                self.emit_u16(Op::array_new, 0);
+                let result_slot = self.define_local("__cb_result");
+                self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__cb_i");
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                let loop_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                let len_idx = self.add_string_constant("length");
+                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+                // elem = arr[i]
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                let elem_slot = self.define_local("__cb_elem");
+                self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
+                // if fn(elem, i, arr) → push elem
+                self.emit_u16(Op::local_get, fn_slot);
+                self.emit_u16(Op::local_get, elem_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u8(Op::call, 3);
+                self.emit(Op::dyn_to_bool);
+                let skip = self.emit_jump(Op::br_if_false);
+                let push_idx = self.import("vybe:array", "push");
+                self.emit_u16(Op::local_get, result_slot);
+                self.emit_u16(Op::local_get, elem_slot);
+                self.emit_host_call(push_idx, 2);
+                self.emit(Op::drop);
+                self.patch_jump(skip);
+                // i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+                self.emit_u16(Op::local_get, result_slot);
+                self.current_scope_mut().end_scope();
+                Ok(true)
+            }
+            "forEach" => {
+                self.current_scope_mut().begin_scope();
+                self.compile_expression(object)?;
+                let arr_slot = self.define_local("__cb_arr");
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                self.compile_expression(&arguments[0])?;
+                let fn_slot = self.define_local("__cb_fn");
+                self.emit_u16(Op::local_set, fn_slot); self.emit(Op::drop);
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__cb_i");
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                let loop_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                let len_idx = self.add_string_constant("length");
+                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+                self.emit_u16(Op::local_get, fn_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u8(Op::call, 3);
+                self.emit(Op::drop); // discard return
+                // i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+                self.emit(Op::null); // forEach returns undefined
+                self.current_scope_mut().end_scope();
+                Ok(true)
+            }
+            "find" => {
+                self.current_scope_mut().begin_scope();
+                self.compile_expression(object)?;
+                let arr_slot = self.define_local("__cb_arr");
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                self.compile_expression(&arguments[0])?;
+                let fn_slot = self.define_local("__cb_fn");
+                self.emit_u16(Op::local_set, fn_slot); self.emit(Op::drop);
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__cb_i");
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit(Op::null);
+                let result_slot = self.define_local("__cb_result");
+                self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                let loop_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                let len_idx = self.add_string_constant("length");
+                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+                // elem = arr[i]
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                let elem_slot = self.define_local("__cb_elem");
+                self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
+                self.emit_u16(Op::local_get, fn_slot);
+                self.emit_u16(Op::local_get, elem_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u8(Op::call, 3);
+                self.emit(Op::dyn_to_bool);
+                let skip = self.emit_jump(Op::br_if_false);
+                // found — store and break
+                self.emit_u16(Op::local_get, elem_slot);
+                self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                let done = self.emit_jump(Op::br);
+                self.patch_jump(skip);
+                // i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+                self.patch_jump(done);
+                self.emit_u16(Op::local_get, result_slot);
+                self.current_scope_mut().end_scope();
+                Ok(true)
+            }
+            "reduce" => {
+                self.current_scope_mut().begin_scope();
+                self.compile_expression(object)?;
+                let arr_slot = self.define_local("__cb_arr");
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                self.compile_expression(&arguments[0])?;
+                let fn_slot = self.define_local("__cb_fn");
+                self.emit_u16(Op::local_set, fn_slot); self.emit(Op::drop);
+                // init value
+                if arguments.len() > 1 {
+                    self.compile_expression(&arguments[1])?;
+                } else {
+                    self.emit(Op::null);
+                }
+                let acc_slot = self.define_local("__cb_acc");
+                self.emit_u16(Op::local_set, acc_slot); self.emit(Op::drop);
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__cb_i");
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                let loop_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                let len_idx = self.add_string_constant("length");
+                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+                // acc = fn(acc, arr[i], i, arr)
+                self.emit_u16(Op::local_get, fn_slot);
+                self.emit_u16(Op::local_get, acc_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u8(Op::call, 4);
+                self.emit_u16(Op::local_set, acc_slot); self.emit(Op::drop);
+                // i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+                self.emit_u16(Op::local_get, acc_slot);
+                self.current_scope_mut().end_scope();
+                Ok(true)
+            }
+            "sort" => {
+                // Bubble sort with optional comparator
+                self.current_scope_mut().begin_scope();
+                self.compile_expression(object)?;
+                let arr_slot = self.define_local("__cb_arr");
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                // comparator (optional)
+                let has_fn = !arguments.is_empty();
+                let fn_slot = if has_fn {
+                    self.compile_expression(&arguments[0])?;
+                    let s = self.define_local("__cb_fn");
+                    self.emit_u16(Op::local_set, s); self.emit(Op::drop);
+                    s
+                } else { 0 };
+                // len
+                self.emit_u16(Op::local_get, arr_slot);
+                let len_idx = self.add_string_constant("length");
+                self.emit_u16(Op::struct_get, len_idx);
+                let len_slot = self.define_local("__cb_len");
+                self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
+                // outer loop: i
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__cb_i");
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                let outer_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, len_slot);
+                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                let outer_exit = self.emit_jump(Op::br_if_false);
+                // inner loop: j
+                self.emit_constant(Value::F64(0.0));
+                let j_slot = self.define_local("__cb_j");
+                self.emit_u16(Op::local_set, j_slot); self.emit(Op::drop);
+                let inner_start = self.current_offset();
+                // j < len - i - 1
+                self.emit_u16(Op::local_get, j_slot);
+                self.emit_u16(Op::local_get, len_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::dyn_add); // len + i... wait, need len - i - 1
+                // Hmm, dyn_add won't subtract. Let me use f64_sub.
+                // len - i - 1
+                self.emit(Op::drop); // drop the bad add
+                self.emit_u16(Op::local_get, j_slot);
+                self.emit_u16(Op::local_get, len_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::f64_sub);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::f64_sub);
+                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                let inner_exit = self.emit_jump(Op::br_if_false);
+                // compare arr[j] vs arr[j+1]
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, j_slot);
+                self.emit(Op::array_get); // arr[j]
+                let a_slot = self.define_local("__sort_a");
+                self.emit_u16(Op::local_set, a_slot); self.emit(Op::drop);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, j_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit(Op::array_get); // arr[j+1]
+                let b_slot = self.define_local("__sort_b");
+                self.emit_u16(Op::local_set, b_slot); self.emit(Op::drop);
+                // cmp
+                if has_fn {
+                    self.emit_u16(Op::local_get, fn_slot);
+                    self.emit_u16(Op::local_get, a_slot);
+                    self.emit_u16(Op::local_get, b_slot);
+                    self.emit_u8(Op::call, 2);
+                    // comparator returns number: >0 means swap
+                    self.emit_constant(Value::F64(0.0));
+                    self.emit(Op::dyn_gt);
+                } else {
+                    // default: a > b
+                    self.emit_u16(Op::local_get, a_slot);
+                    self.emit_u16(Op::local_get, b_slot);
+                    self.emit(Op::dyn_gt);
+                }
+                self.emit(Op::dyn_to_bool);
+                let no_swap = self.emit_jump(Op::br_if_false);
+                // swap: arr[j] = b, arr[j+1] = a
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, j_slot);
+                self.emit_constant(Value::String(Rc::from(""))); // key placeholder — we need to use array_set properly
+                // Actually array_set wants [obj, key, val]. Let me use the host push approach.
+                // Simpler: use computed member assignment
+                // arr[j] = b
+                self.emit(Op::drop); // drop the "" placeholder
+                // I'll just use struct_set/array_set directly
+                // arr obj is on stack... actually this is getting messy. Let me use host functions.
+                let set_idx = self.import("vybe:array", "setAt");
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, j_slot);
+                self.emit_u16(Op::local_get, b_slot);
+                self.emit_host_call(set_idx, 3);
+                self.emit(Op::drop);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, j_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_get, a_slot);
+                self.emit_host_call(set_idx, 3);
+                self.emit(Op::drop);
+                self.patch_jump(no_swap);
+                // j++
+                self.emit_u16(Op::local_get, j_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, j_slot); self.emit(Op::drop);
+                self.emit_loop(inner_start);
+                self.patch_jump(inner_exit);
+                // i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_loop(outer_start);
+                self.patch_jump(outer_exit);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.current_scope_mut().end_scope();
+                Ok(true)
+            }
+            "some" | "every" | "findIndex" | "flatMap" => {
+                // TODO: implement these similarly
+                Ok(false) // fall through to regular method call
+            }
+            _ => Ok(false),
+        }
     }
 
     fn emit_compound_op(&mut self, op: &AssignOp) {
