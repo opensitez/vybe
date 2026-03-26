@@ -3,7 +3,7 @@ use vybe_bytecode::{VM, Value};
 
 pub fn register(vm: &mut VM) {
     // Returns milliseconds since Unix epoch (like JS Date.now())
-    vm.register_host_fn("vybe:clock", "now", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "now", Box::new(|_args: &[Value]| {
         let ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -12,7 +12,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Returns nanoseconds (high-resolution timer, like performance.now())
-    vm.register_host_fn("vybe:clock", "hrtime", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "hrtime", Box::new(|_args: &[Value]| {
         let ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -21,14 +21,14 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Sleep for N milliseconds (blocking)
-    vm.register_host_fn("vybe:clock", "sleep", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "sleep", Box::new(|args: &[Value]| {
         let ms = args.first().map(|v| v.as_f64()).unwrap_or(0.0) as u64;
         std::thread::sleep(std::time::Duration::from_millis(ms));
         Value::Null
     }));
 
     // Format a timestamp as ISO 8601 string (simple implementation)
-    vm.register_host_fn("vybe:clock", "toISOString", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "toISOString", Box::new(|args: &[Value]| {
         let ms = args.first().map(|v| v.as_f64()).unwrap_or(0.0) as u64;
         let total_secs = ms / 1000;
         let millis = ms % 1000;

@@ -4,7 +4,7 @@ use vybe_bytecode::value::{Object, ObjectKind};
 use std::cell::RefCell;
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:fs", "readFile", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "readFile", Box::new(|args: &[Value]| {
         let path = s(args, 0);
         match std::fs::read_to_string(&path) {
             Ok(contents) => Value::String(Rc::from(contents.as_str())),
@@ -12,7 +12,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:fs", "readFileBytes", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "readFileBytes", Box::new(|args: &[Value]| {
         let path = s(args, 0);
         match std::fs::read(&path) {
             Ok(bytes) => {
@@ -23,7 +23,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:fs", "writeFile", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "writeFile", Box::new(|args: &[Value]| {
         let path = s(args, 0);
         let data = s(args, 1);
         match std::fs::write(&path, &data) {
@@ -32,7 +32,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:fs", "appendFile", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "appendFile", Box::new(|args: &[Value]| {
         use std::io::Write;
         let path = s(args, 0);
         let data = s(args, 1);
@@ -45,19 +45,19 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:fs", "exists", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "exists", Box::new(|args: &[Value]| {
         Value::Bool(std::path::Path::new(&s(args, 0)).exists())
     }));
 
-    vm.register_host_fn("vybe:fs", "isFile", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "isFile", Box::new(|args: &[Value]| {
         Value::Bool(std::path::Path::new(&s(args, 0)).is_file())
     }));
 
-    vm.register_host_fn("vybe:fs", "isDir", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "isDir", Box::new(|args: &[Value]| {
         Value::Bool(std::path::Path::new(&s(args, 0)).is_dir())
     }));
 
-    vm.register_host_fn("vybe:fs", "remove", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "remove", Box::new(|args: &[Value]| {
         let path = s(args, 0);
         let p = std::path::Path::new(&path);
         let ok = if p.is_dir() {
@@ -68,7 +68,7 @@ pub fn register(vm: &mut VM) {
         Value::Bool(ok)
     }));
 
-    vm.register_host_fn("vybe:fs", "listDir", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "listDir", Box::new(|args: &[Value]| {
         let path = s(args, 0);
         match std::fs::read_dir(&path) {
             Ok(entries) => {
@@ -82,14 +82,67 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:fs", "mkdir", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "mkdir", Box::new(|args: &[Value]| {
         Value::Bool(std::fs::create_dir_all(&s(args, 0)).is_ok())
     }));
 
-    vm.register_host_fn("vybe:fs", "fileSize", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:filesystem", "fileSize", Box::new(|args: &[Value]| {
         match std::fs::metadata(&s(args, 0)) {
             Ok(m) => Value::F64(m.len() as f64),
             Err(_) => Value::F64(-1.0),
+        }
+    }));
+
+    // rename(oldPath, newPath)
+    vm.register_host_fn("wasi:filesystem", "rename", Box::new(|args: &[Value]| {
+        let old = s(args, 0);
+        let new = s(args, 1);
+        Value::Bool(std::fs::rename(&old, &new).is_ok())
+    }));
+
+    // copy(src, dest)
+    vm.register_host_fn("wasi:filesystem", "copy", Box::new(|args: &[Value]| {
+        let src = s(args, 0);
+        let dest = s(args, 1);
+        Value::Bool(std::fs::copy(&src, &dest).is_ok())
+    }));
+
+    // stat(path) → object { size, isFile, isDir, modified }
+    vm.register_host_fn("wasi:filesystem", "stat", Box::new(|args: &[Value]| {
+        let path = s(args, 0);
+        match std::fs::metadata(&path) {
+            Ok(m) => {
+                let mut obj = Object::new();
+                obj.properties.insert("size".into(), Value::F64(m.len() as f64));
+                obj.properties.insert("isFile".into(), Value::Bool(m.is_file()));
+                obj.properties.insert("isDir".into(), Value::Bool(m.is_dir()));
+                if let Ok(modified) = m.modified() {
+                    let ms = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+                    obj.properties.insert("modified".into(), Value::F64(ms as f64));
+                }
+                Value::Object(Rc::new(RefCell::new(obj)))
+            }
+            Err(_) => Value::Null,
+        }
+    }));
+
+    // readDir(path) → array of { name, isFile, isDir }
+    vm.register_host_fn("wasi:filesystem", "readDirEntries", Box::new(|args: &[Value]| {
+        let path = s(args, 0);
+        match std::fs::read_dir(&path) {
+            Ok(entries) => {
+                let items: Vec<Value> = entries.filter_map(|e| e.ok()).map(|e| {
+                    let mut obj = Object::new();
+                    obj.properties.insert("name".into(), Value::String(Rc::from(e.file_name().to_string_lossy().as_ref())));
+                    if let Ok(ft) = e.file_type() {
+                        obj.properties.insert("isFile".into(), Value::Bool(ft.is_file()));
+                        obj.properties.insert("isDir".into(), Value::Bool(ft.is_dir()));
+                    }
+                    Value::Object(Rc::new(RefCell::new(obj)))
+                }).collect();
+                Value::Object(Rc::new(RefCell::new(Object::new_array(items))))
+            }
+            Err(_) => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))),
         }
     }));
 }

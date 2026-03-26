@@ -9,7 +9,7 @@ fn run_js(code: &str) -> Vec<String> {
 
     vybe_host::register_all(&mut vm);
     vybe_compiler_js::register_js_coercion(&mut vm);
-    vm.register_host_fn("vybe:console", "log", Box::new(move |args: &[vybe_bytecode::Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[vybe_bytecode::Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
         out.borrow_mut().push(parts.join(" "));
         vybe_bytecode::Value::Null
@@ -226,4 +226,123 @@ fn test_timed_operation() {
         console.log(sum, elapsed >= 0);
     "#;
     assert_eq!(run_js_one(code), "49995000 true");
+}
+
+// ============================================================
+// JSON.parse
+// ============================================================
+
+#[test]
+fn test_json_parse_object() {
+    let code = r#"
+        let obj = JSON.parse('{"name":"Alice","age":30}');
+        console.log(obj.name, obj.age);
+    "#;
+    assert_eq!(run_js_one(code), "Alice 30");
+}
+
+#[test]
+fn test_json_parse_array() {
+    let code = r#"
+        let arr = JSON.parse("[1, 2, 3]");
+        console.log(arr.length, arr[0]);
+    "#;
+    assert_eq!(run_js_one(code), "3 1");
+}
+
+#[test]
+fn test_json_roundtrip() {
+    let code = r#"
+        let obj = { x: 10, y: "hello" };
+        let json = JSON.stringify(obj);
+        let parsed = JSON.parse(json);
+        console.log(parsed.x, parsed.y);
+    "#;
+    assert_eq!(run_js_one(code), "10 hello");
+}
+
+// ============================================================
+// Base64
+// ============================================================
+
+#[test]
+fn test_btoa_atob() {
+    let code = r#"
+        let encoded = btoa("Hello World");
+        console.log(encoded);
+        let decoded = atob(encoded);
+        console.log(decoded);
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "SGVsbG8gV29ybGQ=");
+    assert_eq!(lines[1], "Hello World");
+}
+
+// ============================================================
+// URI encoding
+// ============================================================
+
+#[test]
+fn test_encode_uri_component() {
+    assert_eq!(run_js_one(r#"console.log(encodeURIComponent("hello world"))"#), "hello%20world");
+}
+
+#[test]
+fn test_decode_uri_component() {
+    assert_eq!(run_js_one(r#"console.log(decodeURIComponent("hello%20world"))"#), "hello world");
+}
+
+// ============================================================
+// Array.isArray / Array.from
+// ============================================================
+
+#[test]
+fn test_array_is_array() {
+    let code = r#"
+        console.log(Array.isArray([1, 2, 3]));
+        console.log(Array.isArray("hello"));
+        console.log(Array.isArray(42));
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "true");
+    assert_eq!(lines[1], "false");
+    assert_eq!(lines[2], "false");
+}
+
+// ============================================================
+// wasi:filesystem stat/rename/copy
+// ============================================================
+
+#[test]
+fn test_fs_stat() {
+    let code = r#"
+        fs.writeFile("/tmp/vybe_stat_test.txt", "hello");
+        let info = fs.stat("/tmp/vybe_stat_test.txt");
+        console.log(info.isFile, info.size);
+        fs.remove("/tmp/vybe_stat_test.txt");
+    "#;
+    assert_eq!(run_js_one(code), "true 5");
+}
+
+#[test]
+fn test_fs_rename() {
+    let code = r#"
+        fs.writeFile("/tmp/vybe_rename_old.txt", "data");
+        fs.rename("/tmp/vybe_rename_old.txt", "/tmp/vybe_rename_new.txt");
+        console.log(fs.exists("/tmp/vybe_rename_old.txt"), fs.exists("/tmp/vybe_rename_new.txt"));
+        fs.remove("/tmp/vybe_rename_new.txt");
+    "#;
+    assert_eq!(run_js_one(code), "false true");
+}
+
+#[test]
+fn test_fs_copy() {
+    let code = r#"
+        fs.writeFile("/tmp/vybe_copy_src.txt", "original");
+        fs.copy("/tmp/vybe_copy_src.txt", "/tmp/vybe_copy_dst.txt");
+        console.log(fs.readFile("/tmp/vybe_copy_dst.txt"));
+        fs.remove("/tmp/vybe_copy_src.txt");
+        fs.remove("/tmp/vybe_copy_dst.txt");
+    "#;
+    assert_eq!(run_js_one(code), "original");
 }

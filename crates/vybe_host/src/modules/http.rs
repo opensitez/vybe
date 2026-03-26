@@ -7,7 +7,7 @@ use vybe_bytecode::value::Object;
 
 pub fn register(vm: &mut VM) {
     // Simple HTTP GET — returns response body as string
-    vm.register_host_fn("vybe:http", "get", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:http", "get", Box::new(|args: &[Value]| {
         let url = s(args, 0);
         match http_request("GET", &url, None) {
             Ok(body) => Value::String(Rc::from(body.as_str())),
@@ -16,7 +16,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // HTTP POST — body as second arg, returns response
-    vm.register_host_fn("vybe:http", "post", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:http", "post", Box::new(|args: &[Value]| {
         let url = s(args, 0);
         let body = s(args, 1);
         match http_request("POST", &url, Some(&body)) {
@@ -26,7 +26,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Full fetch — returns object { status, body, ok }
-    vm.register_host_fn("vybe:http", "fetch", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:http", "fetch", Box::new(|args: &[Value]| {
         let url = s(args, 0);
         let method = if args.len() > 1 { s(args, 1) } else { "GET".into() };
         let body = if args.len() > 2 { Some(s(args, 2)) } else { None };

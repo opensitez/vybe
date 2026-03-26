@@ -135,6 +135,26 @@ pub fn register(vm: &mut VM) {
         }
         Value::Null
     }));
+
+    // Array.isArray(value)
+    vm.register_host_fn("vybe:array", "isArray", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            return Value::Bool(matches!(o.kind, ObjectKind::Array(_)));
+        }
+        Value::Bool(false)
+    }));
+
+    // Array.from(arrayLike) — creates a new array from an iterable/array-like
+    vm.register_host_fn("vybe:array", "from", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(elems.clone()))));
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
 }
 
 fn norm(args: &[Value], idx: usize, default: i64, len: i64) -> usize {

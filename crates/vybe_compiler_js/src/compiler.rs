@@ -157,23 +157,27 @@ impl Compiler {
     /// through as-is (e.g. "MyModule" → ("MyModule", "method")).
     fn js_module_alias(obj_name: &str) -> &str {
         match obj_name {
-            // JS standard objects → VSI modules
-            "console" => "vybe:console",
+            // JS standard objects → WASI system modules
+            "console" => "wasi:cli",
+            "Date"    => "wasi:clocks",
+            // JS standard objects → vybe language runtime
             "Math"    => "vybe:math",
             "JSON"    => "vybe:json",
-            "Date"    => "vybe:clock",
             "Object"  => "vybe:object",
             "RegExp"  => "vybe:regex",
+            "Array"   => "vybe:array",
+            "Number"  => "vybe:convert",
             "Map"     => "vybe:collections",
             "Set"     => "vybe:collections",
-            // Vybe platform modules — map to vybe: prefix
-            "fs"      => "vybe:fs",
-            "clock"   => "vybe:clock",
-            "env"     => "vybe:env",
-            "random"  => "vybe:random",
-            "http"    => "vybe:http",
+            // Platform modules — WASI names for system I/O
+            "fs"      => "wasi:filesystem",
+            "clock"   => "wasi:clocks",
+            "env"     => "wasi:cli",
+            "random"  => "wasi:random",
+            "http"    => "wasi:http",
+            // Platform modules — vybe names for non-WASI
             "gui"     => "vybe:gui",
-            // Unknown → pass through as-is (user module or future VB namespace)
+            // Unknown → pass through as-is
             _ => obj_name,
         }
     }
@@ -182,7 +186,7 @@ impl Compiler {
     /// Only remap when JS convention differs from VSI naming.
     fn js_remap<'a>(module: &'a str, method: &'a str) -> (&'a str, &'a str) {
         match (module, method) {
-            ("vybe:math", "random") => ("vybe:random", "random"),
+            ("vybe:math", "random") => ("wasi:random", "random"),
             _ => (module, method),
         }
     }
@@ -200,7 +204,12 @@ impl Compiler {
 
     fn resolve_bare_import(&mut self, name: &str) -> Option<u16> {
         match name {
-            // JS standard globals that are host functions
+            // JS standard globals — encoding/decoding
+            "btoa" => return Some(self.import("vybe:convert", "btoa")),
+            "atob" => return Some(self.import("vybe:convert", "atob")),
+            "encodeURIComponent" => return Some(self.import("vybe:convert", "encodeURIComponent")),
+            "decodeURIComponent" => return Some(self.import("vybe:convert", "decodeURIComponent")),
+            // JS standard globals — type conversion
             "parseInt" | "parseFloat" | "isNaN" | "isFinite" => Some(self.import("vybe:convert", name)),
             _ => None,
         }
