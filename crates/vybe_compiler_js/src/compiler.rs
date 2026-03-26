@@ -18,6 +18,10 @@ pub struct Compiler {
     loop_stack: Vec<LoopContext>,
     line: u32,
     in_method: bool,
+    /// Track names that have been set as globals (class declarations, function declarations, var).
+    defined_globals: std::collections::HashSet<String>,
+    /// Track names that are class constructors (for static method dispatch).
+    defined_classes: std::collections::HashSet<String>,
 }
 
 impl Compiler {
@@ -29,6 +33,8 @@ impl Compiler {
             loop_stack: Vec::new(),
             line: 1,
             in_method: false,
+            defined_globals: std::collections::HashSet::new(),
+            defined_classes: std::collections::HashSet::new(),
         }
     }
 
@@ -41,6 +47,13 @@ impl Compiler {
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
         Ok(self.chunks)
+    }
+
+    /// Emit a global set and track the name as defined.
+    fn emit_global_set(&mut self, name: &str) {
+        let idx = self.add_string_constant(name);
+        self.emit_u16(Op::global_set, idx);
+        self.defined_globals.insert(name.to_string());
     }
 
     // -- Import helper: adds to chunk 0's import table, returns import index --
@@ -143,11 +156,14 @@ impl Compiler {
         if self.current_scope().resolve_local(name).is_some() {
             return true;
         }
-        // Check upvalue scopes
         for scope in self.scopes.iter().rev().skip(1) {
             if scope.resolve_local(name).is_some() {
                 return true;
             }
+        }
+        // Also check previously defined globals
+        if self.defined_globals.contains(name) {
+            return true;
         }
         false
     }
@@ -204,6 +220,9 @@ impl Compiler {
         match name {
             "Map" => Some(self.import("vybe:collections", "Map")),
             "Set" => Some(self.import("vybe:collections", "Set")),
+            "Error" => Some(self.import("vybe:runtime", "Error")),
+            "TypeError" => Some(self.import("vybe:runtime", "TypeError")),
+            "RangeError" => Some(self.import("vybe:runtime", "RangeError")),
             _ => None,
         }
     }
@@ -277,8 +296,7 @@ impl Compiler {
                 self.compile_function(func)?;
                 if let Some(name) = &func.name {
                     if self.scopes.len() == 1 && self.current_scope().depth == 0 {
-                        let idx = self.add_string_constant(name);
-                        self.emit_u16(Op::global_set, idx);
+                        self.emit_global_set(name);
                         self.emit(Op::drop);
                     } else {
                         let slot = self.define_local(name);
@@ -434,9 +452,9 @@ impl Compiler {
             Statement::ClassDeclaration(class) => {
                 self.compile_class(class)?;
                 if let Some(name) = &class.name {
+                    self.defined_classes.insert(name.clone());
                     if self.scopes.len() == 1 && self.current_scope().depth == 0 {
-                        let idx = self.add_string_constant(name);
-                        self.emit_u16(Op::global_set, idx);
+                        self.emit_global_set(name);
                         self.emit(Op::drop);
                     } else {
                         let slot = self.define_local(name);
@@ -655,6 +673,13 @@ impl Compiler {
                 if self.in_method { self.emit_u16(Op::local_get, 1); }
                 else { self.emit(Op::null); }
             }
+            Expression::Super => {
+                // super is used in two contexts:
+                // 1. super() — call parent constructor (handled in Call)
+                // 2. super.method() — call parent method (handled in Member)
+                // As a standalone expression, push null placeholder
+                self.emit(Op::null);
+            }
             Expression::Identifier(name) => {
                 match self.resolve_variable(name) {
                     VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
@@ -794,6 +819,17 @@ impl Compiler {
                 self.patch_jump(end_j);
             }
             Expression::Member { object, property, optional } => {
+                // Check for namespace constants: Math.PI, Math.E, Number.MAX_VALUE, etc.
+                if let Expression::Identifier(obj_name) = object.as_ref() {
+                    if !self.is_known_variable(obj_name) {
+                        let module = Self::js_module_alias(obj_name);
+                        let (module, name) = Self::js_remap(module, property);
+                        // Try as a zero-arg host call (for constants like Math.PI)
+                        let idx = self.import(module, name);
+                        self.emit_host_call(idx, 0);
+                        return Ok(());
+                    }
+                }
                 self.compile_expression(object)?;
                 if *optional {
                     // obj?.prop — if obj is null, short-circuit to null
@@ -863,6 +899,12 @@ impl Compiler {
                         PropertyDef::Method { key, value } => {
                             self.emit_constant(Value::String(Rc::from(key.as_str())));
                             self.compile_function(value)?;
+                            count += 1;
+                        }
+                        PropertyDef::Computed { key, value } => {
+                            // Key is an expression — evaluate it to get the string key
+                            self.compile_expression(key)?;
+                            self.compile_expression(value)?;
                             count += 1;
                         }
                         PropertyDef::Spread(_) => {}
@@ -988,13 +1030,22 @@ impl Compiler {
             self.emit(Op::ref_is_null);
             let done = self.emit_jump(Op::br_if_false); // not null = result, skip
             self.emit(Op::drop); // drop the null
-            // Regular method call: obj.method(args) with this
+            // Regular method call: obj.method(args)
             self.compile_expression(object)?;
             let prop_idx = self.add_string_constant(property);
             self.emit_u16(Op::struct_get, prop_idx);
-            self.compile_expression(object)?;
-            for arg in arguments { self.compile_expression(arg)?; }
-            self.emit_u8(Op::call, (arguments.len() + 1) as u8);
+            // If calling on a class name (static call), don't pass this
+            let is_static = if let Expression::Identifier(obj_name) = object.as_ref() {
+                self.defined_classes.contains(obj_name)
+            } else { false };
+            if is_static {
+                for arg in arguments { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, arguments.len() as u8);
+            } else {
+                self.compile_expression(object)?; // this
+                for arg in arguments { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, (arguments.len() + 1) as u8);
+            }
             self.patch_jump(done);
             return Ok(());
         }
@@ -1008,6 +1059,24 @@ impl Compiler {
                 self.emit_host_call(idx, arguments.len() as u8);
                 return Ok(());
             }
+        }
+
+        // super() — call parent constructor with this + args
+        if matches!(callee, Expression::Super) {
+            if self.in_method {
+                // Get this.__super (set during class compilation)
+                self.emit_u16(Op::local_get, 1); // this
+                let super_idx = self.add_string_constant("__super");
+                self.emit_u16(Op::struct_get, super_idx);
+                // Push this as first arg, then user args
+                self.emit_u16(Op::local_get, 1); // this
+                for arg in arguments { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, (arguments.len() + 1) as u8);
+                return Ok(());
+            }
+            // Outside method — just push null
+            self.emit(Op::null);
+            return Ok(());
         }
 
         // Special builtins that need compiler-level handling
@@ -1101,8 +1170,7 @@ impl Compiler {
                     }
                     _ => {
                         if self.scopes.len() == 1 && self.current_scope().depth == 0 && kind == VarKind::Var {
-                            let idx = self.add_string_constant(name);
-                            self.emit_u16(Op::global_set, idx);
+                            self.emit_global_set(name);
                             self.emit(Op::drop);
                         } else {
                             let slot = self.define_local(name);
@@ -1714,21 +1782,106 @@ impl Compiler {
     fn compile_class(&mut self, class: &ClassDecl) -> Result<(), String> {
         let name = class.name.as_deref().unwrap_or("<class>");
         let mut constructor = None;
-        let mut methods: Vec<(String, FunctionDecl)> = Vec::new();
+        let mut instance_methods: Vec<(String, FunctionDecl, MethodKind)> = Vec::new();
+        let mut static_methods: Vec<(String, FunctionDecl)> = Vec::new();
+        let mut static_props: Vec<(String, Option<Expression>)> = Vec::new();
+
         for member in &class.body {
-            if let ClassMember::Method { key, value, kind, .. } = member {
-                if *kind == MethodKind::Constructor { constructor = Some(value.clone()); }
-                else { methods.push((key.clone(), value.clone())); }
+            match member {
+                ClassMember::Method { key, value, kind, is_static } => {
+                    if *kind == MethodKind::Constructor {
+                        constructor = Some(value.clone());
+                    } else if *is_static {
+                        static_methods.push((key.clone(), value.clone()));
+                    } else {
+                        instance_methods.push((key.clone(), value.clone(), kind.clone()));
+                    }
+                }
+                ClassMember::Property { key, value, is_static } => {
+                    if *is_static {
+                        static_props.push((key.clone(), value.clone()));
+                    }
+                    // Instance fields collected below
+                }
             }
         }
+
+        // If extends, compile parent class reference and store for super
+        if let Some(ref super_expr) = class.super_class {
+            self.compile_expression(super_expr)?;
+            let parent_slot = self.define_local(&format!("__parent_{}", name));
+            self.emit_u16(Op::local_set, parent_slot);
+            self.emit(Op::drop);
+        }
+
+        // Separate regular methods from getters/setters
+        let mut regular_methods: Vec<(String, FunctionDecl)> = Vec::new();
+        let mut getters: Vec<(String, FunctionDecl)> = Vec::new();
+        let mut setters: Vec<(String, FunctionDecl)> = Vec::new();
+        for (key, value, kind) in &instance_methods {
+            match kind {
+                MethodKind::Get => getters.push((key.clone(), value.clone())),
+                MethodKind::Set => setters.push((key.clone(), value.clone())),
+                _ => regular_methods.push((key.clone(), value.clone())),
+            }
+        }
+
+        // Inject instance field initializers into constructor body
+        let mut field_init_stmts: Vec<Statement> = Vec::new();
+        for member in &class.body {
+            if let ClassMember::Property { key, value: Some(val_expr), is_static: false } = member {
+                field_init_stmts.push(Statement::Expression(Expression::Assignment {
+                    op: AssignOp::Assign,
+                    left: Box::new(Expression::Member {
+                        object: Box::new(Expression::This),
+                        property: key.clone(),
+                        optional: false,
+                    }),
+                    right: Box::new(val_expr.clone()),
+                }));
+            }
+        }
+
         let ctor_params = constructor.as_ref().map(|c| c.params.clone()).unwrap_or_default();
-        let ctor_body = constructor.map(|c| c.body).unwrap_or_default();
+        let mut ctor_body = constructor.map(|c| c.body).unwrap_or_default();
+        // Prepend field initializers before the constructor body
+        for (i, stmt) in field_init_stmts.into_iter().enumerate() {
+            ctor_body.insert(i, stmt);
+        }
         let ctor = FunctionDecl { name: Some(name.into()), params: ctor_params, body: ctor_body, is_async: false };
-        self.compile_class_constructor(&ctor, &methods)?;
+
+        self.compile_class_constructor_full(&ctor, &regular_methods, &getters, &setters, &class.super_class)?;
+        // Constructor closure is now on the stack.
+        // Attach static methods and properties to the constructor object.
+        for (method_name, method_fn) in &static_methods {
+            self.emit(Op::dup); // keep constructor on stack
+            self.compile_function(method_fn)?;
+            let prop_idx = self.add_string_constant(method_name);
+            self.emit_u16(Op::struct_set, prop_idx);
+            self.emit(Op::drop);
+        }
+        for (prop_name, prop_value) in &static_props {
+            self.emit(Op::dup);
+            if let Some(expr) = prop_value {
+                self.compile_expression(expr)?;
+            } else {
+                self.emit(Op::null);
+            }
+            let prop_idx = self.add_string_constant(prop_name);
+            self.emit_u16(Op::struct_set, prop_idx);
+            self.emit(Op::drop);
+        }
         Ok(())
     }
 
-    fn compile_class_constructor(&mut self, ctor: &FunctionDecl, methods: &[(String, FunctionDecl)]) -> Result<(), String> {
+    fn compile_class_constructor_full(
+        &mut self,
+        ctor: &FunctionDecl,
+        methods: &[(String, FunctionDecl)],
+        getters: &[(String, FunctionDecl)],
+        setters: &[(String, FunctionDecl)],
+        super_class: &Option<Box<Expression>>,
+    ) -> Result<(), String> {
         let saved_method = self.in_method;
         self.in_method = true;
 
@@ -1746,13 +1899,43 @@ impl Compiler {
         self.current_chunk_idx = idx;
         self.scopes.push(scope);
 
+        // If extends: set this.__super = parent constructor
+        if let Some(super_expr) = super_class {
+            self.emit_u16(Op::local_get, 1); // this
+            self.compile_expression(super_expr)?; // parent class (constructor fn)
+            let super_idx = self.add_string_constant("__super");
+            self.emit_u16(Op::struct_set, super_idx);
+            self.emit(Op::drop);
+        }
+
+        // Compile constructor body (may contain super() calls)
         for stmt in &ctor.body { self.compile_statement(stmt)?; }
 
-        // Attach methods to this
+        // Attach regular methods to this
         for (method_name, method_fn) in methods {
             self.emit_u16(Op::local_get, 1); // this
             self.compile_method(method_fn)?;
             let prop_idx = self.add_string_constant(method_name);
+            self.emit_u16(Op::struct_set, prop_idx);
+            self.emit(Op::drop);
+        }
+
+        // Attach getters as __get_name methods
+        for (getter_name, getter_fn) in getters {
+            self.emit_u16(Op::local_get, 1);
+            self.compile_method(getter_fn)?;
+            let prop_name = format!("__get_{}", getter_name);
+            let prop_idx = self.add_string_constant(&prop_name);
+            self.emit_u16(Op::struct_set, prop_idx);
+            self.emit(Op::drop);
+        }
+
+        // Attach setters as __set_name methods
+        for (setter_name, setter_fn) in setters {
+            self.emit_u16(Op::local_get, 1);
+            self.compile_method(setter_fn)?;
+            let prop_name = format!("__set_{}", setter_name);
+            let prop_idx = self.add_string_constant(&prop_name);
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
         }

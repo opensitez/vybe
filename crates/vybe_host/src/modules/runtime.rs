@@ -90,6 +90,33 @@ pub fn register(vm: &mut VM) {
         }
         make_promise("fulfilled", Value::Null)
     }));
+
+    // Error constructor: new Error("message")
+    vm.register_host_fn("vybe:runtime", "Error", Box::new(|args: &[Value]| {
+        make_error("Error", args)
+    }));
+
+    vm.register_host_fn("vybe:runtime", "TypeError", Box::new(|args: &[Value]| {
+        make_error("TypeError", args)
+    }));
+
+    vm.register_host_fn("vybe:runtime", "RangeError", Box::new(|args: &[Value]| {
+        make_error("RangeError", args)
+    }));
+}
+
+fn make_error(kind: &str, args: &[Value]) -> Value {
+    // args[0] = this (from new), args[1] = message
+    let this = args.first().cloned().unwrap_or(Value::Null);
+    let message = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+    if let Value::Object(ref obj) = this {
+        let mut o = obj.borrow_mut();
+        o.properties.insert("__type".into(), Value::String(Rc::from(kind)));
+        o.properties.insert("name".into(), Value::String(Rc::from(kind)));
+        o.properties.insert("message".into(), Value::String(Rc::from(message.as_str())));
+        o.properties.insert("stack".into(), Value::String(Rc::from(format!("{}: {}", kind, message).as_str())));
+    }
+    this
 }
 
 fn make_promise(state: &str, value: Value) -> Value {

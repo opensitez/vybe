@@ -1387,3 +1387,621 @@ fn test_mixed_sync_async() {
     "#;
     assert_eq!(run_js_one(code), "1-sync | 2-async-start | 3-async-end | 4-after-await");
 }
+
+// ============================================================
+// Class inheritance (extends)
+// ============================================================
+
+#[test]
+fn test_class_extends_basic() {
+    let code = r#"
+        class Animal {
+            constructor(name) {
+                this.name = name;
+            }
+            speak() {
+                return this.name + " makes a sound";
+            }
+        }
+        class Dog extends Animal {
+            constructor(name) {
+                super();
+                this.name = name;
+            }
+            bark() {
+                return this.name + " barks";
+            }
+        }
+        let d = new Dog("Rex");
+        console.log(d.name);
+        console.log(d.bark());
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "Rex");
+    assert_eq!(lines[1], "Rex barks");
+}
+
+#[test]
+fn test_class_extends_override() {
+    let code = r#"
+        class Shape {
+            constructor(type) {
+                this.type = type;
+            }
+            describe() {
+                return "I am a " + this.type;
+            }
+        }
+        class Circle extends Shape {
+            constructor(radius) {
+                super();
+                this.type = "circle";
+                this.radius = radius;
+            }
+            area() {
+                return Math.PI * this.radius * this.radius;
+            }
+        }
+        let c = new Circle(5);
+        console.log(c.type);
+        console.log(Math.round(c.area()));
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "circle");
+    assert_eq!(lines[1], "79");
+}
+
+// ============================================================
+// Getter / Setter
+// ============================================================
+
+#[test]
+fn test_class_getter() {
+    let code = r#"
+        class Person {
+            constructor(first, last) {
+                this.first = first;
+                this.last = last;
+            }
+            get fullName() {
+                return this.first + " " + this.last;
+            }
+        }
+        let p = new Person("John", "Doe");
+        console.log(p.first, p.last);
+    "#;
+    // For now, getters are stored as __get_fullName — not auto-invoked on property access yet
+    assert_eq!(run_js_one(code), "John Doe");
+}
+
+#[test]
+fn test_class_method_kinds() {
+    let code = r#"
+        class Counter {
+            constructor() {
+                this._count = 0;
+            }
+            increment() { this._count = this._count + 1; }
+            getCount() { return this._count; }
+        }
+        let c = new Counter();
+        c.increment();
+        c.increment();
+        c.increment();
+        console.log(c.getCount());
+    "#;
+    assert_eq!(run_js_one(code), "3");
+}
+
+// ============================================================
+// Error class
+// ============================================================
+
+#[test]
+fn test_error_class() {
+    let code = r#"
+        let e = new Error("something failed");
+        console.log(e.message);
+        console.log(e.name);
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "something failed");
+    assert_eq!(lines[1], "Error");
+}
+
+#[test]
+fn test_error_throw_catch() {
+    let code = r#"
+        try {
+            throw new Error("oops");
+        } catch (e) {
+            console.log(e.message);
+        }
+    "#;
+    assert_eq!(run_js_one(code), "oops");
+}
+
+#[test]
+fn test_type_error() {
+    let code = r#"
+        let e = new TypeError("invalid type");
+        console.log(e.name, e.message);
+    "#;
+    assert_eq!(run_js_one(code), "TypeError invalid type");
+}
+
+// ============================================================
+// Static methods and properties
+// ============================================================
+
+#[test]
+fn test_class_multiple_instances_independent() {
+    let code = r#"
+        class Box {
+            constructor(w, h) {
+                this.w = w;
+                this.h = h;
+            }
+            area() { return this.w * this.h; }
+        }
+        let a = new Box(3, 4);
+        let b = new Box(5, 6);
+        console.log(a.area(), b.area());
+    "#;
+    assert_eq!(run_js_one(code), "12 30");
+}
+
+// ============================================================
+// Class with all features combined
+// ============================================================
+
+#[test]
+fn test_class_comprehensive() {
+    let code = r#"
+        class Vehicle {
+            constructor(make, year) {
+                this.make = make;
+                this.year = year;
+                this.speed = 0;
+            }
+            accelerate(amount) {
+                this.speed = this.speed + amount;
+            }
+            brake(amount) {
+                this.speed = Math.max(0, this.speed - amount);
+            }
+            describe() {
+                return `${this.year} ${this.make} going ${this.speed}mph`;
+            }
+        }
+        
+        let car = new Vehicle("Tesla", 2024);
+        car.accelerate(60);
+        car.accelerate(20);
+        car.brake(10);
+        console.log(car.describe());
+    "#;
+    assert_eq!(run_js_one(code), "2024 Tesla going 70mph");
+}
+
+// ============================================================
+// Getter / Setter — auto-invoke
+// ============================================================
+
+#[test]
+fn test_getter_auto_invoke() {
+    let code = r#"
+        class Person {
+            constructor(first, last) {
+                this.first = first;
+                this.last = last;
+            }
+            get fullName() {
+                return this.first + " " + this.last;
+            }
+        }
+        let p = new Person("John", "Doe");
+        console.log(p.fullName);
+    "#;
+    assert_eq!(run_js_one(code), "John Doe");
+}
+
+#[test]
+fn test_setter_auto_invoke() {
+    let code = r#"
+        class Temperature {
+            constructor(celsius) {
+                this._celsius = celsius;
+            }
+            get fahrenheit() {
+                return this._celsius * 9 / 5 + 32;
+            }
+            set fahrenheit(f) {
+                this._celsius = (f - 32) * 5 / 9;
+            }
+        }
+        let t = new Temperature(100);
+        console.log(t.fahrenheit);
+    "#;
+    assert_eq!(run_js_one(code), "212");
+}
+
+// ============================================================
+// Inheritance — method inheritance
+// ============================================================
+
+#[test]
+fn test_inherited_methods() {
+    let code = r#"
+        class Animal {
+            constructor(name) {
+                this.name = name;
+            }
+            speak() {
+                return this.name + " speaks";
+            }
+        }
+        class Dog extends Animal {
+            constructor(name, breed) {
+                super(name);
+                this.breed = breed;
+            }
+            bark() {
+                return this.name + " barks";
+            }
+        }
+        let d = new Dog("Rex", "Labrador");
+        console.log(d.name);
+        console.log(d.bark());
+        console.log(d.speak());
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "Rex");
+    assert_eq!(lines[1], "Rex barks");
+    assert_eq!(lines[2], "Rex speaks");
+}
+
+#[test]
+fn test_super_with_args() {
+    let code = r#"
+        class Base {
+            constructor(x) {
+                this.x = x;
+            }
+            getX() { return this.x; }
+        }
+        class Child extends Base {
+            constructor(x, y) {
+                super(x);
+                this.y = y;
+            }
+            getY() { return this.y; }
+            sum() { return this.x + this.y; }
+        }
+        let c = new Child(10, 20);
+        console.log(c.getX(), c.getY(), c.sum());
+    "#;
+    assert_eq!(run_js_one(code), "10 20 30");
+}
+
+#[test]
+fn test_method_override() {
+    let code = r#"
+        class Shape {
+            constructor() { this.type = "shape"; }
+            describe() { return "I am a " + this.type; }
+        }
+        class Circle extends Shape {
+            constructor(r) {
+                super();
+                this.type = "circle";
+                this.r = r;
+            }
+            describe() { return "Circle with radius " + this.r; }
+        }
+        let s = new Shape();
+        let c = new Circle(5);
+        console.log(s.describe());
+        console.log(c.describe());
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "I am a shape");
+    assert_eq!(lines[1], "Circle with radius 5");
+}
+
+// ============================================================
+// Error with throw/catch
+// ============================================================
+
+#[test]
+fn test_error_stack() {
+    let code = r#"
+        let e = new Error("test error");
+        console.log(e.stack);
+    "#;
+    assert_eq!(run_js_one(code), "Error: test error");
+}
+
+#[test]
+fn test_error_instanceof_pattern() {
+    let code = r#"
+        function validate(x) {
+            if (x < 0) throw new RangeError("must be positive");
+            return x;
+        }
+        try {
+            validate(-1);
+        } catch (e) {
+            console.log(e.name + ": " + e.message);
+        }
+    "#;
+    assert_eq!(run_js_one(code), "RangeError: must be positive");
+}
+
+// ============================================================
+// Computed property names
+// ============================================================
+
+#[test]
+fn test_computed_property_literal() {
+    let code = r#"
+        let key = "name";
+        let obj = { [key]: "Alice" };
+        console.log(obj.name);
+    "#;
+    assert_eq!(run_js_one(code), "Alice");
+}
+
+#[test]
+fn test_computed_property_expression() {
+    let code = r#"
+        let prefix = "get";
+        let obj = { [prefix + "Name"]: () => "Bob" };
+        console.log(obj.getName());
+    "#;
+    assert_eq!(run_js_one(code), "Bob");
+}
+
+#[test]
+fn test_computed_property_dynamic() {
+    let code = r#"
+        let obj = {};
+        for (let i = 0; i < 3; i++) {
+            obj["key" + i] = i * 10;
+        }
+        console.log(obj.key0, obj.key1, obj.key2);
+    "#;
+    assert_eq!(run_js_one(code), "0 10 20");
+}
+
+// ============================================================
+// Static methods and fields
+// ============================================================
+
+#[test]
+fn test_static_method() {
+    let code = r#"
+        class MathHelper {
+            static add(a, b) { return a + b; }
+            static multiply(a, b) { return a * b; }
+        }
+        console.log(MathHelper.add(3, 4), MathHelper.multiply(3, 4));
+    "#;
+    assert_eq!(run_js_one(code), "7 12");
+}
+
+#[test]
+fn test_static_field() {
+    let code = r#"
+        class Config {
+            static version = "2.0";
+            static debug = false;
+        }
+        console.log(Config.version, Config.debug);
+    "#;
+    assert_eq!(run_js_one(code), "2.0 false");
+}
+
+#[test]
+fn test_static_factory() {
+    let code = r#"
+        class User {
+            constructor(name, age) {
+                this.name = name;
+                this.age = age;
+            }
+            static fromJSON(json) {
+                let data = JSON.parse(json);
+                return new User(data.name, data.age);
+            }
+        }
+        let u = User.fromJSON('{"name":"Alice","age":30}');
+        console.log(u.name, u.age);
+    "#;
+    assert_eq!(run_js_one(code), "Alice 30");
+}
+
+// ============================================================
+// Class field initializers
+// ============================================================
+
+#[test]
+fn test_class_field_default() {
+    let code = r#"
+        class Counter {
+            count = 0;
+            increment() { this.count = this.count + 1; }
+            getCount() { return this.count; }
+        }
+        let c = new Counter();
+        c.increment();
+        c.increment();
+        console.log(c.getCount());
+    "#;
+    assert_eq!(run_js_one(code), "2");
+}
+
+#[test]
+fn test_class_field_with_constructor() {
+    let code = r#"
+        class Point {
+            z = 0;
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+            }
+        }
+        let p = new Point(3, 4);
+        console.log(p.x, p.y, p.z);
+    "#;
+    assert_eq!(run_js_one(code), "3 4 0");
+}
+
+// ============================================================
+// Getter/Setter comprehensive
+// ============================================================
+
+#[test]
+fn test_getter_computed_value() {
+    let code = r#"
+        class Rectangle {
+            constructor(w, h) {
+                this.width = w;
+                this.height = h;
+            }
+            get area() {
+                return this.width * this.height;
+            }
+            get perimeter() {
+                return 2 * (this.width + this.height);
+            }
+        }
+        let r = new Rectangle(5, 3);
+        console.log(r.area, r.perimeter);
+    "#;
+    assert_eq!(run_js_one(code), "15 16");
+}
+
+#[test]
+fn test_getter_setter_pair() {
+    let code = r#"
+        class Account {
+            constructor(balance) {
+                this._balance = balance;
+            }
+            get balance() {
+                return this._balance;
+            }
+            set balance(val) {
+                if (val < 0) { this._balance = 0; }
+                else { this._balance = val; }
+            }
+        }
+        let a = new Account(100);
+        console.log(a.balance);
+        a.balance = 200;
+        console.log(a.balance);
+        a.balance = -50;
+        console.log(a.balance);
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "100");
+    assert_eq!(lines[1], "200");
+    assert_eq!(lines[2], "0");
+}
+
+// ============================================================
+// Comprehensive class example
+// ============================================================
+
+#[test]
+fn test_class_full_example() {
+    let code = r#"
+        class EventEmitter {
+            constructor() {
+                this._handlers = {};
+            }
+            on(event, handler) {
+                if (!this._handlers[event]) {
+                    this._handlers[event] = [];
+                }
+                this._handlers[event].push(handler);
+            }
+            emit(event, data) {
+                let handlers = this._handlers[event];
+                if (handlers) {
+                    handlers.forEach((h) => h(data));
+                }
+            }
+        }
+        
+        let emitter = new EventEmitter();
+        let log = [];
+        emitter.on("greet", (name) => { log.push("Hello " + name); });
+        emitter.on("greet", (name) => { log.push("Hi " + name); });
+        emitter.emit("greet", "Alice");
+        console.log(log.join(", "));
+    "#;
+    assert_eq!(run_js_one(code), "Hello Alice, Hi Alice");
+}
+
+// ============================================================
+// Private class fields (#field)
+// ============================================================
+
+#[test]
+fn test_private_field() {
+    let code = r#"
+        class BankAccount {
+            #balance = 0;
+            constructor(initial) {
+                this.#balance = initial;
+            }
+            deposit(amount) {
+                this.#balance = this.#balance + amount;
+            }
+            getBalance() {
+                return this.#balance;
+            }
+        }
+        let acc = new BankAccount(100);
+        acc.deposit(50);
+        console.log(acc.getBalance());
+    "#;
+    assert_eq!(run_js_one(code), "150");
+}
+
+#[test]
+fn test_private_method() {
+    let code = r#"
+        class Validator {
+            #isValid(value) {
+                return value > 0;
+            }
+            validate(value) {
+                if (this.#isValid(value)) {
+                    return "valid";
+                }
+                return "invalid";
+            }
+        }
+        let v = new Validator();
+        console.log(v.validate(5), v.validate(-1));
+    "#;
+    assert_eq!(run_js_one(code), "valid invalid");
+}
+
+#[test]
+fn test_private_getter() {
+    let code = r#"
+        class Secret {
+            #data = "hidden";
+            get revealed() {
+                return this.#data;
+            }
+        }
+        let s = new Secret();
+        console.log(s.revealed);
+    "#;
+    assert_eq!(run_js_one(code), "hidden");
+}

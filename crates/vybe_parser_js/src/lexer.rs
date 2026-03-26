@@ -60,6 +60,16 @@ impl Lexer {
             return self.lex_template(start);
         }
 
+        // Private field identifier: #name
+        if ch == '#' && self.pos + 1 < self.source.len() && is_ident_start(self.source[self.pos + 1]) {
+            self.pos += 1; // skip #
+            while self.pos < self.source.len() && is_ident_part(self.source[self.pos]) {
+                self.pos += 1;
+            }
+            let name: String = self.source[start..self.pos].iter().collect(); // includes #
+            return Ok(self.make_token(TokenKind::Identifier(name), start));
+        }
+
         // Identifiers and keywords
         if is_ident_start(ch) {
             return self.lex_identifier(start);

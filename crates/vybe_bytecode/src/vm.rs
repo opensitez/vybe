@@ -397,8 +397,18 @@ impl VM {
                     let obj = self.pop();
                     match &obj {
                         Value::Object(o) => {
-                            let val = o.borrow().get(&name);
-                            self.push(val)?;
+                            // Check for getter: __get_{name}
+                            let getter_key = format!("__get_{}", name);
+                            let getter = o.borrow().properties.get(&getter_key).cloned();
+                            if let Some(getter_fn) = getter {
+                                // Call the getter with this = obj
+                                self.push(getter_fn)?;
+                                self.push(obj)?;
+                                self.call_value(1)?;
+                            } else {
+                                let val = o.borrow().get(&name);
+                                self.push(val)?;
+                            }
                         }
                         Value::String(s) if name == "length" => {
                             self.push(Value::F64(s.len() as f64))?;
@@ -412,9 +422,25 @@ impl VM {
                     let val = self.pop();
                     let obj = self.pop();
                     if let Value::Object(o) = &obj {
-                        o.borrow_mut().set(name, val.clone());
+                        // Check for setter: __set_{name}
+                        let setter_key = format!("__set_{}", name);
+                        let setter = o.borrow().properties.get(&setter_key).cloned();
+                        if let Some(setter_fn) = setter {
+                            // Call the setter with this = obj, value = val
+                            self.push(setter_fn)?;
+                            self.push(obj.clone())?;
+                            self.push(val.clone())?;
+                            self.call_value(2)?;
+                            // Setter returns are discarded, push the assigned value
+                            self.pop(); // discard setter return
+                            self.push(val)?;
+                        } else {
+                            o.borrow_mut().set(name, val.clone());
+                            self.push(val)?;
+                        }
+                    } else {
+                        self.push(val)?;
                     }
-                    self.push(val)?;
                 }
                 Op::array_get => {
                     let key = self.pop();

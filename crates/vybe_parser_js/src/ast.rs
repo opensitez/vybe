@@ -205,6 +205,7 @@ pub enum Expression {
     // Identifiers
     Identifier(String),
     This,
+    Super,
 
     // Operations
     Binary {
@@ -347,6 +348,10 @@ pub enum MethodKind {
 pub enum PropertyDef {
     KeyValue {
         key: String,
+        value: Expression,
+    },
+    Computed {
+        key: Expression,
         value: Expression,
     },
     Shorthand(String),

@@ -1020,6 +1020,7 @@ impl Parser {
             TokenKind::Null => { self.advance(); Ok(Expression::Null) }
             TokenKind::Undefined => { self.advance(); Ok(Expression::Undefined) }
             TokenKind::This => { self.advance(); Ok(Expression::This) }
+            TokenKind::Super => { self.advance(); Ok(Expression::Super) }
             TokenKind::Identifier(_) => {
                 let name = self.expect_identifier()?;
 
@@ -1171,6 +1172,14 @@ impl Parser {
             if self.check_kind(&TokenKind::DotDotDot) {
                 self.advance();
                 properties.push(PropertyDef::Spread(self.parse_assignment_expression()?));
+            } else if self.check_kind(&TokenKind::LBracket) {
+                // Computed property: [expr]: value
+                self.advance();
+                let key_expr = self.parse_assignment_expression()?;
+                self.expect(TokenKind::RBracket)?;
+                self.expect(TokenKind::Colon)?;
+                let value = self.parse_assignment_expression()?;
+                properties.push(PropertyDef::Computed { key: key_expr, value });
             } else {
                 let key = self.expect_property_name()?;
 
