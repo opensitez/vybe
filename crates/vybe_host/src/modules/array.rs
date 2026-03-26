@@ -136,6 +136,55 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
+    // fill(arr, value, start?, end?) → arr
+    vm.register_host_fn("vybe:array", "fill", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let value = args.get(1).cloned().unwrap_or(Value::Null);
+            let mut o = obj.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = o.kind {
+                let len = elems.len();
+                let start = args.get(2).map(|v| v.as_f64() as usize).unwrap_or(0).min(len);
+                let end = args.get(3).map(|v| v.as_f64() as usize).unwrap_or(len).min(len);
+                for i in start..end { elems[i] = value.clone(); }
+            }
+        }
+        args.first().cloned().unwrap_or(Value::Null)
+    }));
+
+    // flat(arr) → flattened array (one level)
+    vm.register_host_fn("vybe:array", "flat", Box::new(|args: &[Value]| {
+        let mut result = Vec::new();
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                for elem in elems {
+                    if let Value::Object(inner) = elem {
+                        let inner_obj = inner.borrow();
+                        if let ObjectKind::Array(ref inner_elems) = inner_obj.kind {
+                            result.extend(inner_elems.clone());
+                            continue;
+                        }
+                    }
+                    result.push(elem.clone());
+                }
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(result))))
+    }));
+
+    // includes(arr, value) → bool
+    vm.register_host_fn("vybe:array", "includes", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let search = args.get(1).cloned().unwrap_or(Value::Null);
+            let search_str = format!("{}", search);
+            let o = obj.borrow();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                return Value::Bool(elems.iter().any(|e| format!("{}", e) == search_str));
+            }
+        }
+        Value::Bool(false)
+    }));
+
     // Array.isArray(value)
     vm.register_host_fn("vybe:array", "isArray", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {

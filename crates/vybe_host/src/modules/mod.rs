@@ -32,6 +32,7 @@ pub mod object;
 pub mod regex;
 pub mod collections;
 pub mod runtime;
+pub mod database;
 pub mod gui;
 
 use vybe_bytecode::VM;
@@ -53,6 +54,7 @@ pub fn register_all(vm: &mut VM) {
     regex::register(vm);
     collections::register(vm);
     runtime::register(vm);
+    database::register(vm);
 }
 
 /// Register all standard VSI modules + GUI module.

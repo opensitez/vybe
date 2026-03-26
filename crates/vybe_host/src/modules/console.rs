@@ -1,4 +1,10 @@
 use vybe_bytecode::{VM, Value};
+use std::collections::HashMap;
+use std::cell::RefCell;
+
+thread_local! {
+    static TIMERS: RefCell<HashMap<String, f64>> = RefCell::new(HashMap::new());
+}
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn("wasi:cli", "log", Box::new(|args: &[Value]| {
@@ -35,6 +41,32 @@ pub fn register(vm: &mut VM) {
             Ok(_) => Value::String(std::rc::Rc::from(line.trim_end_matches('\n').trim_end_matches('\r'))),
             Err(_) => Value::Null,
         }
+    }));
+
+    // console.time / console.timeEnd — simple profiling
+    vm.register_host_fn("wasi:cli", "time", Box::new(|args: &[Value]| {
+        let label = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "default".into());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as f64;
+        // Store in a thread-local map
+        TIMERS.with(|t| t.borrow_mut().insert(label, now));
+        Value::Null
+    }));
+
+    vm.register_host_fn("wasi:cli", "timeEnd", Box::new(|args: &[Value]| {
+        let label = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "default".into());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as f64;
+        TIMERS.with(|t| {
+            if let Some(start) = t.borrow_mut().remove(&label) {
+                println!("{}: {}ms", label, now - start);
+            }
+        });
+        Value::Null
     }));
 
     // exit — terminate with exit code

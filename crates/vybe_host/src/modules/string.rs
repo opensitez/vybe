@@ -58,6 +58,58 @@ pub fn register(vm: &mut VM) {
         let (start, end) = if start > end { (end, start) } else { (start, end) };
         Value::String(Rc::from(&st[start..end]))
     }));
+
+    // charCodeAt(str, index) → number
+    vm.register_host_fn("vybe:string", "charCodeAt", Box::new(|a| {
+        let st = s(a, 0);
+        let idx = f(a, 1) as usize;
+        match st.chars().nth(idx) {
+            Some(c) => Value::F64(c as u32 as f64),
+            None => Value::F64(f64::NAN),
+        }
+    }));
+
+    // fromCharCode(code, code, ...) → string
+    vm.register_host_fn("vybe:string", "fromCharCode", Box::new(|a| {
+        let result: String = a.iter()
+            .map(|v| char::from_u32(v.as_f64() as u32).unwrap_or('\0'))
+            .collect();
+        Value::String(Rc::from(result.as_str()))
+    }));
+
+    // repeat(str, count) → string
+    vm.register_host_fn("vybe:string", "repeat", Box::new(|a| {
+        let st = s(a, 0);
+        let count = f(a, 1) as usize;
+        Value::String(Rc::from(st.repeat(count).as_str()))
+    }));
+
+    // padStart(str, targetLength, padString?) → string
+    vm.register_host_fn("vybe:string", "padStart", Box::new(|a| {
+        let st = s(a, 0);
+        let target = f(a, 1) as usize;
+        let pad = if a.len() > 2 { s(a, 2) } else { " ".into() };
+        if st.len() >= target { return Value::String(Rc::from(st.as_str())); }
+        let needed = target - st.len();
+        let padding: String = pad.chars().cycle().take(needed).collect();
+        Value::String(Rc::from(format!("{}{}", padding, st).as_str()))
+    }));
+
+    // padEnd(str, targetLength, padString?) → string
+    vm.register_host_fn("vybe:string", "padEnd", Box::new(|a| {
+        let st = s(a, 0);
+        let target = f(a, 1) as usize;
+        let pad = if a.len() > 2 { s(a, 2) } else { " ".into() };
+        if st.len() >= target { return Value::String(Rc::from(st.as_str())); }
+        let needed = target - st.len();
+        let padding: String = pad.chars().cycle().take(needed).collect();
+        Value::String(Rc::from(format!("{}{}", st, padding).as_str()))
+    }));
+
+    // replaceAll(str, search, replace) → string
+    vm.register_host_fn("vybe:string", "replaceAll", Box::new(|a| {
+        Value::String(Rc::from(s(a, 0).replace(&s(a, 1), &s(a, 2)).as_str()))
+    }));
 }
 
 fn s(args: &[Value], idx: usize) -> String {

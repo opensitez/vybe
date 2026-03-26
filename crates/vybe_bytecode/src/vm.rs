@@ -21,6 +21,19 @@ struct CallFrame {
     upvalues: Vec<Rc<RefCell<Upvalue>>>,
 }
 
+/// Exception handler entry — pushed by try_start, popped by try_end or catch.
+#[derive(Debug, Clone)]
+struct ExceptionHandler {
+    /// Instruction pointer to jump to on catch.
+    catch_ip: usize,
+    /// Chunk index the handler was registered in.
+    chunk_index: usize,
+    /// Stack depth when try_start was executed (for unwinding).
+    stack_depth: usize,
+    /// Call frame depth when try_start was executed.
+    frame_depth: usize,
+}
+
 /// A language-agnostic bytecode virtual machine.
 ///
 /// The VM has no built-in functions or language-specific semantics.
@@ -37,6 +50,8 @@ pub struct VM {
     host_registry: HashMap<(String, String), usize>,
     /// Import resolution table: import_index → host_fn_index.
     import_table: Vec<usize>,
+    /// Exception handler stack (WASM exception proposal).
+    exception_handlers: Vec<ExceptionHandler>,
 }
 
 impl VM {
@@ -50,6 +65,7 @@ impl VM {
             host_fns: Vec::new(),
             host_registry: HashMap::new(),
             import_table: Vec::new(),
+            exception_handlers: Vec::new(),
         }
     }
 
@@ -633,12 +649,42 @@ impl VM {
                     self.push(Value::Bool(dyn_truthy(&a)))?;
                 }
 
-                // -- Exceptions --
-                Op::try_start => { let _ = self.read_u16(); let _ = self.read_u16(); }
-                Op::try_end => {}
+                // -- Exceptions (WASM exception proposal) --
+                Op::try_start => {
+                    let catch_offset = self.read_u16() as i16;
+                    let _finally_offset = self.read_u16(); // reserved for finally
+                    let f = self.frame();
+                    let catch_ip = (f.ip as i64 + catch_offset as i64) as usize;
+                    self.exception_handlers.push(ExceptionHandler {
+                        catch_ip,
+                        chunk_index: f.chunk_index,
+                        stack_depth: self.stack.len(),
+                        frame_depth: self.frames.len(),
+                    });
+                }
+                Op::try_end => {
+                    // Normal exit from try block — pop the handler
+                    self.exception_handlers.pop();
+                }
                 Op::throw => {
                     let val = self.pop();
-                    return Err(VMError::new(format!("{}", val)));
+                    if let Some(handler) = self.exception_handlers.pop() {
+                        // Unwind: restore stack and frames to the state at try_start
+                        while self.frames.len() > handler.frame_depth {
+                            let base = self.frames.last().unwrap().base;
+                            self.close_upvalues(base);
+                            self.frames.pop();
+                        }
+                        self.stack.truncate(handler.stack_depth);
+                        // Push the exception value (for catch binding)
+                        self.push(val)?;
+                        // Jump to catch block
+                        let f = self.frame_mut();
+                        f.ip = handler.catch_ip;
+                    } else {
+                        // No handler — propagate as VM error
+                        return Err(VMError::new(format!("{}", val)));
+                    }
                 }
 
                 // -- Stubs --

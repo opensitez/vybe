@@ -166,6 +166,7 @@ impl Compiler {
             "Object"  => "vybe:object",
             "RegExp"  => "vybe:regex",
             "Array"   => "vybe:array",
+            "String"  => "vybe:string",
             "Number"  => "vybe:convert",
             "Map"     => "vybe:collections",
             "Set"     => "vybe:collections",
@@ -177,6 +178,7 @@ impl Compiler {
             "http"    => "wasi:http",
             // Platform modules — vybe names for non-WASI
             "gui"     => "vybe:gui",
+            "db"      => "vybe:database",
             // Unknown → pass through as-is
             _ => obj_name,
         }
@@ -223,9 +225,11 @@ impl Compiler {
         let (module, name) = match method {
             // String methods
             "toUpperCase" | "toLowerCase" | "trim" | "startsWith" | "endsWith" |
-            "charAt" | "substring" | "split" | "replace" => ("vybe:string", method),
+            "charAt" | "substring" | "split" | "replace" | "replaceAll" |
+            "charCodeAt" | "repeat" | "padStart" | "padEnd" => ("vybe:string", method),
             // Array methods
-            "push" | "pop" | "shift" | "join" | "reverse" | "concat" => ("vybe:array", method),
+            "push" | "pop" | "shift" | "join" | "reverse" | "concat" |
+            "fill" | "flat" => ("vybe:array", method),
             // Shared — host dispatches by type at runtime
             "slice" => ("vybe:array", "slice"),
             "indexOf" => ("vybe:string", "indexOf"),
@@ -356,13 +360,51 @@ impl Compiler {
             }
             Statement::Throw(expr) => { self.compile_expression(expr)?; self.emit(Op::throw); }
             Statement::Try { block, handler, finalizer } => {
+                // Emit try_start with placeholder catch offset
+                let try_start_pos = self.current_offset();
                 let line = self.line;
                 let c = &mut self.chunks[self.current_chunk_idx];
-                c.emit_op(Op::try_start, line); c.emit(0, line); c.emit(0, line); c.emit(0, line); c.emit(0, line);
+                c.emit_op(Op::try_start, line);
+                c.emit(0, line); c.emit(0, line); // catch offset placeholder
+                c.emit(0, line); c.emit(0, line); // finally offset placeholder
+
+                // Compile try block
                 for s in block { self.compile_statement(s)?; }
                 self.emit(Op::try_end);
-                if let Some(h) = handler { for s in &h.body { self.compile_statement(s)?; } }
-                if let Some(f) = finalizer { for s in f { self.compile_statement(s)?; } }
+                let skip_catch = self.emit_jump(Op::br); // jump over catch block
+
+                // Patch catch offset: relative from IP after try_start reads its operands
+                // IP after try_start = try_start_pos + 5 (1 opcode + 2 catch + 2 finally)
+                let catch_pos = self.current_offset();
+                let ip_after_try_start = try_start_pos + 5;
+                let catch_offset = catch_pos as i16 - ip_after_try_start as i16;
+                let c = &mut self.chunks[self.current_chunk_idx];
+                c.code[try_start_pos + 1] = (catch_offset >> 8) as u8;
+                c.code[try_start_pos + 2] = (catch_offset & 0xff) as u8;
+
+                // Catch block — exception value is on stack
+                if let Some(h) = handler {
+                    self.current_scope_mut().begin_scope();
+                    if let Some(ref param) = h.param {
+                        // Bind the exception to the catch parameter
+                        let slot = self.define_local(param);
+                        self.emit_u16(Op::local_set, slot);
+                        self.emit(Op::drop);
+                    } else {
+                        self.emit(Op::drop); // discard exception if no param
+                    }
+                    for s in &h.body { self.compile_statement(s)?; }
+                    self.current_scope_mut().end_scope();
+                } else {
+                    self.emit(Op::drop); // discard exception
+                }
+
+                self.patch_jump(skip_catch);
+
+                // Finally block
+                if let Some(f) = finalizer {
+                    for s in f { self.compile_statement(s)?; }
+                }
             }
             Statement::Switch { discriminant, cases } => {
                 self.compile_expression(discriminant)?;
@@ -955,11 +997,57 @@ impl Compiler {
             }
         }
 
-        // Regular function call
+        // Regular function call — check for spread
         self.compile_expression(callee)?;
-        for arg in arguments { self.compile_expression(arg)?; }
-        self.emit_u8(Op::call, arguments.len() as u8);
+        let argc = self.compile_args_with_spread(arguments)?;
+        self.emit_u8(Op::call, argc);
         Ok(())
+    }
+
+    /// Compile function arguments, handling spread.
+    /// Returns the argument count to use in the call opcode.
+    fn compile_args_with_spread(&mut self, arguments: &[Expression]) -> Result<u8, String> {
+        let has_spread = arguments.iter().any(|a| matches!(a, Expression::Spread(_)));
+
+        if !has_spread {
+            // No spread — compile normally
+            for arg in arguments { self.compile_expression(arg)?; }
+            return Ok(arguments.len() as u8);
+        }
+
+        // Case 1: single spread of array literal: f(...[1,2,3]) → f(1,2,3)
+        if arguments.len() == 1 {
+            if let Expression::Spread(inner) = &arguments[0] {
+                if let Expression::Array(elems) = inner.as_ref() {
+                    for elem in elems { self.compile_expression(elem)?; }
+                    return Ok(elems.len() as u8);
+                }
+            }
+        }
+
+        // Case 2: expand spread inline — count non-spread args + expand known arrays
+        let mut total = 0u8;
+        for arg in arguments {
+            match arg {
+                Expression::Spread(inner) => {
+                    if let Expression::Array(elems) = inner.as_ref() {
+                        // Known array literal — inline elements
+                        for elem in elems { self.compile_expression(elem)?; }
+                        total += elems.len() as u8;
+                    } else {
+                        // Dynamic spread: pass the array as a single arg
+                        // The callee receives it as one value — not ideal but functional
+                        self.compile_expression(inner)?;
+                        total += 1;
+                    }
+                }
+                _ => {
+                    self.compile_expression(arg)?;
+                    total += 1;
+                }
+            }
+        }
+        Ok(total)
     }
 
     /// Bind the value on top of stack to a pattern (var/let/const declaration).

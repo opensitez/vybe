@@ -824,3 +824,260 @@ fn test_import_from_host_module() {
     "#;
     assert_eq!(run_js_one(code), "3");
 }
+
+// ============================================================
+// String extras
+// ============================================================
+
+#[test]
+fn test_char_code_at() {
+    assert_eq!(run_js_one(r#"console.log("ABC".charCodeAt(0))"#), "65");
+}
+
+#[test]
+fn test_from_char_code() {
+    assert_eq!(run_js_one(r#"console.log(String.fromCharCode(72, 105))"#), "Hi");
+}
+
+#[test]
+fn test_string_repeat() {
+    assert_eq!(run_js_one(r#"console.log("ab".repeat(3))"#), "ababab");
+}
+
+#[test]
+fn test_pad_start() {
+    assert_eq!(run_js_one(r#"console.log("5".padStart(3, "0"))"#), "005");
+}
+
+#[test]
+fn test_pad_end() {
+    assert_eq!(run_js_one(r#"console.log("hi".padEnd(5, "."))"#), "hi...");
+}
+
+#[test]
+fn test_replace_all() {
+    assert_eq!(run_js_one(r#"console.log("aXbXc".replaceAll("X", "-"))"#), "a-b-c");
+}
+
+// ============================================================
+// Math extras
+// ============================================================
+
+#[test]
+fn test_math_trunc() {
+    assert_eq!(run_js_one("console.log(Math.trunc(3.7))"), "3");
+    assert_eq!(run_js_one("console.log(Math.trunc(-3.7))"), "-3");
+}
+
+#[test]
+fn test_math_sign() {
+    assert_eq!(run_js_one("console.log(Math.sign(-5))"), "-1");
+    assert_eq!(run_js_one("console.log(Math.sign(0))"), "0");
+    assert_eq!(run_js_one("console.log(Math.sign(5))"), "1");
+}
+
+#[test]
+fn test_math_hypot() {
+    assert_eq!(run_js_one("console.log(Math.hypot(3, 4))"), "5");
+}
+
+// ============================================================
+// Array extras
+// ============================================================
+
+#[test]
+fn test_array_fill() {
+    let code = r#"let a = [1, 2, 3, 4]; a.fill(0, 1, 3); console.log(a.join(","))"#;
+    assert_eq!(run_js_one(code), "1,0,0,4");
+}
+
+#[test]
+fn test_array_flat() {
+    let code = r#"let a = [[1, 2], [3, 4], [5]]; console.log(a.flat().join(","))"#;
+    assert_eq!(run_js_one(code), "1,2,3,4,5");
+}
+
+#[test]
+fn test_array_includes() {
+    let code = r#"console.log([1, 2, 3].includes(2), [1, 2, 3].includes(5))"#;
+    assert_eq!(run_js_one(code), "true false");
+}
+
+// ============================================================
+// Number.isInteger
+// ============================================================
+
+#[test]
+fn test_number_is_integer() {
+    let code = r#"console.log(Number.isInteger(5), Number.isInteger(5.5), Number.isInteger(0))"#;
+    assert_eq!(run_js_one(code), "true false true");
+}
+
+// ============================================================
+// try/catch — WASM exception proposal style
+// ============================================================
+
+#[test]
+fn test_try_catch_basic() {
+    let code = r#"
+        try {
+            throw "oops";
+        } catch (e) {
+            console.log("caught:", e);
+        }
+    "#;
+    assert_eq!(run_js_one(code), "caught: oops");
+}
+
+#[test]
+fn test_try_catch_no_throw() {
+    let code = r#"
+        let result = "ok";
+        try {
+            result = "from try";
+        } catch (e) {
+            result = "from catch";
+        }
+        console.log(result);
+    "#;
+    assert_eq!(run_js_one(code), "from try");
+}
+
+#[test]
+fn test_try_catch_finally() {
+    let code = r#"
+        let log = "";
+        try {
+            log = log + "try ";
+            throw "err";
+        } catch (e) {
+            log = log + "catch ";
+        } finally {
+            log = log + "finally";
+        }
+        console.log(log);
+    "#;
+    assert_eq!(run_js_one(code), "try catch finally");
+}
+
+#[test]
+fn test_try_catch_error_value() {
+    let code = r#"
+        try {
+            throw 42;
+        } catch (e) {
+            console.log(e + 8);
+        }
+    "#;
+    assert_eq!(run_js_one(code), "50");
+}
+
+#[test]
+fn test_try_catch_nested() {
+    let code = r#"
+        let result = "";
+        try {
+            try {
+                throw "inner";
+            } catch (e) {
+                result = result + e + " ";
+                throw "outer";
+            }
+        } catch (e) {
+            result = result + e;
+        }
+        console.log(result);
+    "#;
+    assert_eq!(run_js_one(code), "inner outer");
+}
+
+#[test]
+fn test_try_catch_in_function() {
+    let code = r#"
+        function safeDivide(a, b) {
+            try {
+                if (b === 0) throw "division by zero";
+                return a / b;
+            } catch (e) {
+                return e;
+            }
+        }
+        console.log(safeDivide(10, 2));
+        console.log(safeDivide(10, 0));
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "5");
+    assert_eq!(lines[1], "division by zero");
+}
+
+// ============================================================
+// typeof
+// ============================================================
+
+#[test]
+fn test_typeof_undeclared() {
+    assert_eq!(run_js_one(r#"console.log(typeof xyz)"#), "undefined");
+}
+
+#[test]
+fn test_typeof_null() {
+    assert_eq!(run_js_one(r#"console.log(typeof null)"#), "undefined");
+}
+
+#[test]
+fn test_typeof_number() {
+    assert_eq!(run_js_one(r#"console.log(typeof 42)"#), "number");
+}
+
+#[test]
+fn test_typeof_string() {
+    assert_eq!(run_js_one(r#"console.log(typeof "hello")"#), "string");
+}
+
+#[test]
+fn test_typeof_boolean() {
+    assert_eq!(run_js_one(r#"console.log(typeof true)"#), "boolean");
+}
+
+#[test]
+fn test_typeof_function() {
+    assert_eq!(run_js_one(r#"function f() {} console.log(typeof f)"#), "function");
+}
+
+#[test]
+fn test_typeof_object() {
+    assert_eq!(run_js_one(r#"console.log(typeof {})"#), "object");
+}
+
+// ============================================================
+// Spread in function calls
+// ============================================================
+
+#[test]
+fn test_spread_array_literal() {
+    let code = r#"
+        function sum(a, b, c) { return a + b + c; }
+        console.log(sum(...[1, 2, 3]));
+    "#;
+    assert_eq!(run_js_one(code), "6");
+}
+
+#[test]
+fn test_spread_mixed() {
+    let code = r#"
+        function f(a, b, c, d) { return a + b + c + d; }
+        console.log(f(1, ...[2, 3], 4));
+    "#;
+    assert_eq!(run_js_one(code), "10");
+}
+
+#[test]
+fn test_spread_in_array() {
+    let code = r#"
+        let a = [1, 2];
+        let b = [3, 4];
+        let c = [...a, ...b, 5];
+        console.log(c.join(","));
+    "#;
+    assert_eq!(run_js_one(code), "1,2,3,4,5");
+}

@@ -8,3 +8,5 @@ license.workspace = true
 [dependencies]
 vybe_bytecode = { workspace = true }
 regex = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
