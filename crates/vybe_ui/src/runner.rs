@@ -58,6 +58,7 @@ pub fn run(path: &Path, extra_args: &[String]) {
 // ---------------------------------------------------------------------------
 
 /// Run a standalone .js file via the bytecode VM.
+/// If the JS program emits gui.runApplication(), a Dioxus window is launched.
 fn run_js_file(path: &Path) {
     let code = match fs::read_to_string(path) {
         Ok(c) => c,
@@ -75,13 +76,14 @@ fn run_js_file(path: &Path) {
         }
     };
 
-    // 1. Create a bare VM
+    // 1. Create VM + shared side effect queue
     let mut vm = vybe_bytecode::VM::new();
+    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
 
-    // 2. Register JS-specific host functions (console.log, coercion, etc.)
-    let host = vybe_compiler_js::setup_js_runtime(&mut vm);
+    // 2. Register JS runtime WITH GUI support
+    let host = vybe_compiler_js::setup_js_gui_runtime(&mut vm, queue.clone());
 
-    // 3. Compile JS → bytecode using the host function table
+    // 3. Compile
     let chunks = match vybe_compiler_js::compile(&program, host) {
         Ok(c) => c,
         Err(e) => {
@@ -90,12 +92,250 @@ fn run_js_file(path: &Path) {
         }
     };
 
-    // 4. Run
+    // 4. Run the top-level JS code (sets up form, controls, etc.)
     match vm.run(chunks) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("JS runtime error: {e}");
             std::process::exit(1);
+        }
+    }
+
+    // 5. Check the side effect queue — did the JS request a GUI?
+    let effects = queue.borrow_mut().drain();
+    let mut form_name = None;
+    let mut form_title = String::new();
+    let mut form = vybe_forms::Form::new("JSForm");
+    form.width = 800;
+    form.height = 600;
+
+    for effect in &effects {
+        match effect {
+            vybe_host::SideEffect::RunApplication { form_name: name } => {
+                form_name = Some(name.clone());
+            }
+            vybe_host::SideEffect::AddControl {
+                control_name, control_type, left, top, width, height, ..
+            } => {
+                let ct = vybe_forms::control::ControlType::from_name(control_type)
+                    .unwrap_or(vybe_forms::control::ControlType::Label);
+                let mut ctrl = vybe_forms::Control::new(ct, control_name.clone(), *left, *top);
+                ctrl.bounds = vybe_forms::Bounds::new(*left, *top, *width, *height);
+                form.controls.push(ctrl);
+            }
+            vybe_host::SideEffect::PropertyChange { object, property, value } => {
+                let val_str = value.as_string();
+                // Form-level property
+                if Some(object.clone()) == form_name || object == "JSForm"
+                    || form_name.as_ref().is_some_and(|n| n == object)
+                {
+                    match property.as_str() {
+                        "Text" => { form.text = val_str.clone(); form_title = val_str; }
+                        "Width" => { form.width = val_str.parse().unwrap_or(800); }
+                        "Height" => { form.height = val_str.parse().unwrap_or(600); }
+                        _ => {}
+                    }
+                } else {
+                    // Control property
+                    if let Some(ctrl) = form.controls.iter_mut().find(|c| c.name == *object) {
+                        ctrl.properties.set(property.clone(), val_str);
+                    }
+                }
+            }
+            vybe_host::SideEffect::ConsoleOutput(msg) => {
+                print!("{msg}");
+            }
+            vybe_host::SideEffect::MsgBox { text, title } => {
+                println!("[MsgBox] {}: {}", title, text);
+            }
+            _ => {}
+        }
+    }
+
+    // 6. If RunApplication was called, launch the JS form with event support
+    if let Some(name) = form_name {
+        if form_title.is_empty() {
+            form_title = name.clone();
+        }
+        form.name = name;
+
+        // Pass data to the Dioxus component via thread-locals
+        JS_LAUNCH_FORM.with(|cell| *cell.borrow_mut() = Some(form));
+        JS_LAUNCH_TITLE.with(|cell| *cell.borrow_mut() = form_title.clone());
+        JS_LAUNCH_VM.with(|cell| *cell.borrow_mut() = Some(vm));
+        JS_LAUNCH_QUEUE.with(|cell| *cell.borrow_mut() = Some(queue));
+
+        let config = Config::new()
+            .with_resource_directory(PathBuf::from("."))
+            .with_window(
+                WindowBuilder::new()
+                    .with_title(&form_title)
+                    .with_resizable(true),
+            );
+
+        LaunchBuilder::desktop()
+            .with_cfg(config)
+            .launch(JsFormApp);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JS Form runner — Dioxus component with event dispatch to bytecode VM
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static JS_LAUNCH_FORM: std::cell::RefCell<Option<vybe_forms::Form>> = std::cell::RefCell::new(None);
+    static JS_LAUNCH_TITLE: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+    static JS_LAUNCH_VM: std::cell::RefCell<Option<vybe_bytecode::VM>> = std::cell::RefCell::new(None);
+    static JS_LAUNCH_QUEUE: std::cell::RefCell<Option<std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>>> = std::cell::RefCell::new(None);
+}
+
+#[component]
+fn JsFormApp() -> Element {
+    // use_hook runs only on first render — safe to take() from thread-locals
+    let (initial_form, vm_cell, queue_cell) = use_hook(|| {
+        let form = JS_LAUNCH_FORM.with(|c| c.borrow_mut().take()).expect("JS_LAUNCH_FORM not set");
+        let vm = JS_LAUNCH_VM.with(|c| c.borrow_mut().take()).expect("JS_LAUNCH_VM not set");
+        let queue = JS_LAUNCH_QUEUE.with(|c| c.borrow_mut().take()).expect("JS_LAUNCH_QUEUE not set");
+        (
+            form,
+            std::rc::Rc::new(std::cell::RefCell::new(vm)),
+            queue,
+        )
+    });
+
+    let form_width = initial_form.width;
+    let form_height = initial_form.height;
+
+    let runtime_form = use_signal(|| initial_form.clone());
+    let vm_cell = vm_cell.clone();
+    let queue_cell = queue_cell.clone();
+
+    // Event handler: fires when a control is clicked
+    let handle_event = {
+        let vm_cell = vm_cell.clone();
+        let queue_cell = queue_cell.clone();
+        let mut runtime_form = runtime_form.clone();
+        move |control_name: String, event_name: String| {
+            let callback = {
+                let q = queue_cell.borrow();
+                q.get_event_handler(&control_name, &event_name).cloned()
+            };
+            if let Some(cb) = callback {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut vm = vm_cell.borrow_mut();
+                    vm.invoke(&cb, &[])
+                }));
+                match result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => eprintln!("Event handler error: {e}"),
+                    Err(panic) => {
+                        let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else if let Some(s) = panic.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "unknown panic".to_string()
+                        };
+                        eprintln!("Event handler panic: {msg}");
+                    }
+                }
+
+                // Process any new side effects from the callback
+                let new_effects = queue_cell.borrow_mut().drain();
+                let mut form = runtime_form.write();
+                for effect in new_effects {
+                    match effect {
+                        vybe_host::SideEffect::PropertyChange { object, property, value } => {
+                            let val_str = value.as_string();
+                            if object == form.name {
+                                match property.as_str() {
+                                    "Text" => form.text = val_str,
+                                    _ => {}
+                                }
+                            } else if let Some(ctrl) = form.controls.iter_mut().find(|c| c.name == object) {
+                                ctrl.properties.set(property, val_str);
+                            }
+                        }
+                        vybe_host::SideEffect::ConsoleOutput(msg) => {
+                            print!("{msg}");
+                        }
+                        vybe_host::SideEffect::MsgBox { text, title } => {
+                            println!("[MsgBox] {}: {}", title, text);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    };
+
+    // Collect control data to avoid borrow issues with Dioxus RSX
+    let controls: Vec<(String, vybe_forms::control::ControlType, i32, i32, i32, i32, String)> = {
+        let f = runtime_form.read();
+        f.controls.iter().map(|ctrl| {
+            (
+                ctrl.name.clone(),
+                ctrl.control_type.clone(),
+                ctrl.bounds.x, ctrl.bounds.y, ctrl.bounds.width, ctrl.bounds.height,
+                ctrl.properties.get_string("Text").unwrap_or_default().to_string(),
+            )
+        }).collect()
+    };
+
+    rsx! {
+        div {
+            style: "width: {form_width}px; height: {form_height}px; position: relative; background: #f0f0f0; font-family: 'Segoe UI', sans-serif; font-size: 13px;",
+            {controls.iter().map(|(ctrl_name, ctrl_type, x, y, w, h, text)| {
+                let click_name = ctrl_name.clone();
+                let mut handle = handle_event.clone();
+                let ctrl_type = ctrl_type.clone();
+
+                let pos_style = format!(
+                    "position: absolute; left: {}px; top: {}px; width: {}px; height: {}px;",
+                    x, y, w, h
+                );
+
+                match ctrl_type {
+                    vybe_forms::control::ControlType::Button => rsx! {
+                        button {
+                            key: "{ctrl_name}",
+                            style: "{pos_style} cursor: pointer;",
+                            onclick: move |_| handle(click_name.clone(), "Click".into()),
+                            "{text}"
+                        }
+                    },
+                    vybe_forms::control::ControlType::Label => rsx! {
+                        div {
+                            key: "{ctrl_name}",
+                            style: "{pos_style} display: flex; align-items: center;",
+                            "{text}"
+                        }
+                    },
+                    vybe_forms::control::ControlType::TextBox => rsx! {
+                        input {
+                            key: "{ctrl_name}",
+                            style: "{pos_style}",
+                            value: "{text}",
+                        }
+                    },
+                    vybe_forms::control::ControlType::CheckBox => rsx! {
+                        label {
+                            key: "{ctrl_name}",
+                            style: "{pos_style} display: flex; align-items: center; gap: 4px;",
+                            input { r#type: "checkbox" }
+                            "{text}"
+                        }
+                    },
+                    _ => rsx! {
+                        div {
+                            key: "{ctrl_name}",
+                            style: "{pos_style} border: 1px dashed #999; display: flex; align-items: center; justify-content: center; color: #666;",
+                            "{text}"
+                        }
+                    },
+                }
+            })}
         }
     }
 }

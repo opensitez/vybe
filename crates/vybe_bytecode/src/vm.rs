@@ -79,6 +79,24 @@ impl VM {
         self.execute()
     }
 
+    /// Call a function value after the initial run() has completed.
+    /// Used for event callbacks — the VM state (globals, chunks) is preserved.
+    pub fn invoke(&mut self, callee: &Value, args: &[Value]) -> Result<Value, VMError> {
+        // Close any remaining open upvalues before clearing the stack,
+        // so closures retain their captured values.
+        self.close_upvalues(0);
+        self.stack.clear();
+        self.frames.clear();
+
+        self.push(callee.clone())?;
+        for arg in args {
+            self.push(arg.clone())?;
+        }
+
+        self.call_value(args.len())?;
+        self.execute()
+    }
+
     // -- Stack --
 
     fn push(&mut self, value: Value) -> Result<(), VMError> {
@@ -162,6 +180,8 @@ impl VM {
 
             match op {
                 Op::Halt => {
+                    // Close all open upvalues so closures retain captured values
+                    self.close_upvalues(0);
                     return Ok(if self.stack.is_empty() { Value::Null } else { self.pop() });
                 }
 

@@ -24,6 +24,8 @@ pub struct HostFnTable {
     pub js_to_boolean: u16,
     pub js_loose_eq: u16,
     pub js_add: u16,
+    // GUI host functions (from vybe_host)
+    pub gui: Option<vybe_host::gui::GuiHostFns>,
 }
 
 pub struct Compiler {
@@ -680,17 +682,36 @@ impl Compiler {
         Ok(())
     }
 
-    /// Check if a call expression is a known host function (e.g. console.log).
+    /// Check if a call expression is a known host function (e.g. console.log, gui.addControl).
     fn resolve_host_call(&self, callee: &Expression) -> Option<u16> {
         if let Expression::Member { object, property } = callee {
             if let Expression::Identifier(obj_name) = object.as_ref() {
-                if obj_name == "console" {
-                    return match property.as_str() {
-                        "log" => Some(self.host.console_log),
-                        "error" => Some(self.host.console_error),
-                        "warn" => Some(self.host.console_warn),
-                        _ => None,
-                    };
+                match obj_name.as_str() {
+                    "console" => {
+                        return match property.as_str() {
+                            "log" => Some(self.host.console_log),
+                            "error" => Some(self.host.console_error),
+                            "warn" => Some(self.host.console_warn),
+                            _ => None,
+                        };
+                    }
+                    "gui" => {
+                        if let Some(ref g) = self.host.gui {
+                            return match property.as_str() {
+                                "createForm" => Some(g.create_form),
+                                "addControl" => Some(g.add_control),
+                                "setProperty" => Some(g.set_property),
+                                "getProperty" => Some(g.get_property),
+                                "onEvent" => Some(g.on_event),
+                                "showForm" => Some(g.show_form),
+                                "runApplication" => Some(g.run_application),
+                                "msgBox" => Some(g.msg_box),
+                                "closeForm" => Some(g.close_form),
+                                _ => None,
+                            };
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

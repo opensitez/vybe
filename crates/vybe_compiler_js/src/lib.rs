@@ -78,7 +78,20 @@ pub fn setup_js_runtime(vm: &mut VM) -> HostFnTable {
         console_log, console_error, console_warn,
         js_typeof, js_to_number, js_to_string, js_to_boolean,
         js_loose_eq, js_add,
+        gui: None,
     }
+}
+
+/// Set up JS runtime WITH GUI support. Registers both JS coercion functions
+/// and GUI host functions (gui.createForm, gui.addControl, etc.).
+pub fn setup_js_gui_runtime(
+    vm: &mut VM,
+    queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+) -> HostFnTable {
+    let mut host = setup_js_runtime(vm);
+    let gui = vybe_host::register_gui_runtime(vm, queue);
+    host.gui = Some(gui);
+    host
 }
 
 /// Compile a JS program using a pre-configured host function table.
