@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use dioxus::prelude::*;
 use dioxus::desktop::{Config, WindowBuilder};
 
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 use vybe_project::Project;
 use vybe_runtime::{Interpreter, ResourceEntry, RuntimeSideEffect};
 
@@ -24,11 +24,12 @@ thread_local! {
 // Public entry point – the ONLY function the shell binary calls.
 // ---------------------------------------------------------------------------
 
-/// Run a Visual Basic file or project.
+/// Run a Visual Basic or JavaScript file or project.
 ///
 /// * `.vb`    → parse & run as console program
 /// * `.vbp`   → load VB6 project, run as form or console
 /// * `.vbproj` → load VB.NET project, run as form or console
+/// * `.js`    → parse, compile to bytecode & run via VM
 ///
 /// `extra_args` are the command-line arguments passed *after* the project file,
 /// available to the VB program via `Command()` or `Environment.GetCommandLineArgs()`.
@@ -41,9 +42,10 @@ pub fn run(path: &Path, extra_args: &[String]) {
     match ext.as_str() {
         "vb" => run_vb_file(path, extra_args),
         "vbp" | "vbproj" => run_project(path, extra_args),
+        "js" => run_js_file(path),
         _ => {
             eprintln!(
-                "Error: unsupported file type '.{}'. Expected .vb, .vbp, or .vbproj",
+                "Error: unsupported file type '.{}'. Expected .vb, .vbp, .vbproj, or .js",
                 ext
             );
             std::process::exit(1);
@@ -54,6 +56,49 @@ pub fn run(path: &Path, extra_args: &[String]) {
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+/// Run a standalone .js file via the bytecode VM.
+fn run_js_file(path: &Path) {
+    let code = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error reading file: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let program = match vybe_parser_js::parse(&code) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("JS parse error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // 1. Create a bare VM
+    let mut vm = vybe_bytecode::VM::new();
+
+    // 2. Register JS-specific host functions (console.log, coercion, etc.)
+    let host = vybe_compiler_js::setup_js_runtime(&mut vm);
+
+    // 3. Compile JS → bytecode using the host function table
+    let chunks = match vybe_compiler_js::compile(&program, host) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("JS compile error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // 4. Run
+    match vm.run(chunks) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("JS runtime error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
 
 /// Run a standalone .vb file as a console program.
 fn run_vb_file(path: &Path, extra_args: &[String]) {
@@ -82,7 +127,7 @@ fn run_vb_file(path: &Path, extra_args: &[String]) {
         std::process::exit(1);
     }
 
-    match interp.call_procedure(&vybe_parser::ast::Identifier::new("main"), &[]) {
+    match interp.call_procedure(&vybe_parser_basic::ast::Identifier::new("main"), &[]) {
         Ok(_) => {}
         Err(vybe_runtime::RuntimeError::Exit(_)) => {}
         Err(vybe_runtime::RuntimeError::Return(_)) => {}
@@ -154,7 +199,7 @@ fn run_console_project(project: &Project, extra_args: &[String]) {
         }
     }
 
-    match interp.call_procedure(&vybe_parser::ast::Identifier::new("main"), &[]) {
+    match interp.call_procedure(&vybe_parser_basic::ast::Identifier::new("main"), &[]) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Sub Main error: {:?}", e);

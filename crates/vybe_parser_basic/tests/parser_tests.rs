@@ -1,7 +1,7 @@
 
-use vybe_parser::parser::parse_program;
-// use vybe_parser::ast::*;
-use vybe_parser::ast::Declaration;
+use vybe_parser_basic::parser::parse_program;
+// use vybe_parser_basic::ast::*;
+use vybe_parser_basic::ast::Declaration;
 
 // Test for single argument implicit call
 #[test]
@@ -79,7 +79,7 @@ End Sub
     // 4: 
     // 5: <EOF>
     
-    let result = vybe_parser::parse_program(input);
+    let result = vybe_parser_basic::parse_program(input);
     assert!(result.is_ok(), "Failed to parse program with trailing newlines: {:?}", result.err());
 }
 

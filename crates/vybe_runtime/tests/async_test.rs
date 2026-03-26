@@ -1,5 +1,5 @@
 use vybe_runtime::{Interpreter, RuntimeSideEffect};
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 
 #[test]
 fn test_async_await() {
@@ -14,7 +14,7 @@ fn test_async_await() {
     // However, the test file has "Sub Main", usually we need to call it.
     // Let's assume we need to call "Main".
     
-    use vybe_parser::ast::Identifier;
+    use vybe_parser_basic::ast::Identifier;
     let main_ident = Identifier::new("Main");
     interp.call_procedure(&main_ident, &[]).expect("Failed to call Main");
 

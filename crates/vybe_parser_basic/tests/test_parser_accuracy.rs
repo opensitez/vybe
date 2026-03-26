@@ -2,10 +2,10 @@
 ///! Tests grammar rules, AST node construction, operator precedence,
 ///! and VB.NET syntax compatibility.
 
-use vybe_parser::parse_program;
-use vybe_parser::ast::decl::{Declaration, Visibility, Parameter};
-use vybe_parser::ast::stmt::{Statement, LoopConditionType, CompoundOp};
-use vybe_parser::ast::expr::Expression;
+use vybe_parser_basic::parse_program;
+use vybe_parser_basic::ast::decl::{Declaration, Visibility, Parameter};
+use vybe_parser_basic::ast::stmt::{Statement, LoopConditionType, CompoundOp};
+use vybe_parser_basic::ast::expr::Expression;
 
 // ============================================================
 // Helper to extract first Sub's body statements
@@ -20,7 +20,7 @@ fn parse_sub_body(code: &str) -> Vec<Statement> {
     panic!("No Sub found in code");
 }
 
-fn parse_first_sub(code: &str) -> vybe_parser::ast::decl::SubDecl {
+fn parse_first_sub(code: &str) -> vybe_parser_basic::ast::decl::SubDecl {
     let prog = parse_program(code).expect("Parse failed");
     for d in &prog.declarations {
         if let Declaration::Sub(s) = d {
@@ -30,7 +30,7 @@ fn parse_first_sub(code: &str) -> vybe_parser::ast::decl::SubDecl {
     panic!("No Sub found in code");
 }
 
-fn parse_first_function(code: &str) -> vybe_parser::ast::decl::FunctionDecl {
+fn parse_first_function(code: &str) -> vybe_parser_basic::ast::decl::FunctionDecl {
     let prog = parse_program(code).expect("Parse failed");
     for d in &prog.declarations {
         if let Declaration::Function(f) = d {
@@ -385,12 +385,12 @@ End Class
     }).expect("Should find class");
     let method = class.methods.iter().find(|m| {
         match m {
-            vybe_parser::ast::decl::MethodDecl::Sub(s) => s.name.as_str() == "OnClick",
+            vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => s.name.as_str() == "OnClick",
             _ => false,
         }
     }).expect("Should find OnClick");
     match method {
-        vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+        vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
             assert!(matches!(s.visibility, Visibility::Protected));
         }
         _ => panic!("Expected Sub"),
@@ -412,7 +412,7 @@ End Class
     }).expect("Should find class");
     let method = class.methods.iter().find(|m| {
         match m {
-            vybe_parser::ast::decl::MethodDecl::Function(f) => f.name.as_str() == "GetValue",
+            vybe_parser_basic::ast::decl::MethodDecl::Function(f) => f.name.as_str() == "GetValue",
             _ => false,
         }
     });

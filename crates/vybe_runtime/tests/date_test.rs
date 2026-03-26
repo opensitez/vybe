@@ -1,6 +1,6 @@
 use vybe_runtime::{Interpreter, Value, RuntimeSideEffect};
-use vybe_parser::ast::Identifier;
-use vybe_parser::parse_program;
+use vybe_parser_basic::ast::Identifier;
+use vybe_parser_basic::parse_program;
 use std::rc::Rc;
 use std::cell::RefCell;
 // use std::collections::VecDeque;

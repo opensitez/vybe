@@ -30,9 +30,9 @@ fn test_binding_source_datasource_roundtrip() {
     End Sub
 End Class"#;
 
-    let program = vybe_parser::parse_program(code).expect("Failed to parse");
+    let program = vybe_parser_basic::parse_program(code).expect("Failed to parse");
     let cls = program.declarations.into_iter().find_map(|d| {
-        if let vybe_parser::Declaration::Class(c) = d { Some(c) } else { None }
+        if let vybe_parser_basic::Declaration::Class(c) = d { Some(c) } else { None }
     }).expect("No class found");
     
     let form = vybe_forms::serialization::designer_parser::extract_form_from_designer(&cls)
@@ -69,9 +69,9 @@ End Class"#;
     let generated = vybe_forms::serialization::designer_codegen::generate_designer_code(&form);
     println!("\n=== Generated ===\n{}", generated);
     
-    let program2 = vybe_parser::parse_program(&generated).expect("Failed to parse generated code");
+    let program2 = vybe_parser_basic::parse_program(&generated).expect("Failed to parse generated code");
     let cls2 = program2.declarations.into_iter().find_map(|d| {
-        if let vybe_parser::Declaration::Class(c) = d { Some(c) } else { None }
+        if let vybe_parser_basic::Declaration::Class(c) = d { Some(c) } else { None }
     }).expect("No class in generated");
     let form2 = vybe_forms::serialization::designer_parser::extract_form_from_designer(&cls2)
         .expect("Failed to extract form from generated code");

@@ -1,5 +1,5 @@
 use vybe_runtime::{Interpreter, Value};
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 
 #[test]
 fn test_null_object_passing() {
@@ -61,7 +61,7 @@ fn test_null_object_passing() {
     interp.call_instance_method("RuntimeGlobals.Form1Instance", "InitAndCall", &[]).expect("Failed to call");
     
     // Check result
-    let check_expr = vybe_parser::parse_expression_str("RuntimeGlobals.Form1Instance.result").unwrap();
+    let check_expr = vybe_parser_basic::parse_expression_str("RuntimeGlobals.Form1Instance.result").unwrap();
     let val = interp.evaluate_expr(&check_expr).expect("Failed evaluation");
     
     match val {

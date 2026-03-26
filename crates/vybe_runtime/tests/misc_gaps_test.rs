@@ -9,7 +9,7 @@ fn test_misc_gaps() {
     let source = std::fs::read_to_string(&test_file)
         .expect("Failed to read test_misc_gaps.vb");
     
-    let parsed = vybe_parser::parse_program(&source)
+    let parsed = vybe_parser_basic::parse_program(&source)
         .expect("Failed to parse test_misc_gaps.vb");
     
     let mut interp = vybe_runtime::Interpreter::new();

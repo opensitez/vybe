@@ -1,6 +1,6 @@
 use vybe_forms::serialization::designer_parser;
 use vybe_forms::serialization::designer_codegen;
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 
 #[test]
 fn test_designer_arbitrary_properties() {
@@ -38,7 +38,7 @@ End Class
 
     let program = parse_program(vb_code).expect("Failed to parse VB code");
     let class_decl = program.declarations.iter().find_map(|d| match d {
-        vybe_parser::Declaration::Class(c) => Some(c),
+        vybe_parser_basic::Declaration::Class(c) => Some(c),
         _ => None,
     }).expect("No class found");
     

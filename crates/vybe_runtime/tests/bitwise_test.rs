@@ -1,5 +1,5 @@
 use vybe_runtime::{Interpreter, RuntimeSideEffect};
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 
 #[test]
 fn test_bitwise_ops() {
@@ -11,7 +11,7 @@ fn test_bitwise_ops() {
 
     // Call Main manually if not called automatically by run() (it performs module-level execution)
     // test_bitwise.vb has Sub Main.
-    use vybe_parser::ast::Identifier;
+    use vybe_parser_basic::ast::Identifier;
     let main_ident = Identifier::new("Main");
     interp.call_procedure(&main_ident, &[]).expect("Failed to call Main");
 

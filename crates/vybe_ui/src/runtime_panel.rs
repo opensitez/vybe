@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 use crate::runner::LAUNCH_PROJECT;
 
 // ---------------------------------------------------------------------------
@@ -2482,7 +2482,7 @@ pub fn FormRunner() -> Element {
                         }
 
                         // Run Sub Main
-                        match interp.call_procedure(&vybe_parser::ast::Identifier::new("main"), &[]) {
+                        match interp.call_procedure(&vybe_parser_basic::ast::Identifier::new("main"), &[]) {
                             Ok(_) => { let _ = msg_tx.send(ConsoleMessage::Finished); }
                             Err(e) => { let _ = msg_tx.send(ConsoleMessage::Error(format!("{:?}", e))); }
                         }

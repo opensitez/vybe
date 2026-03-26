@@ -11,19 +11,19 @@ pub enum FileHandle {
     Binary(File),
 }
 
-pub fn open_file(path: &str, mode: vybe_parser::ast::stmt::FileOpenMode) -> Result<FileHandle, RuntimeError> {
+pub fn open_file(path: &str, mode: vybe_parser_basic::ast::stmt::FileOpenMode) -> Result<FileHandle, RuntimeError> {
     let file_path = Path::new(path);
     
     match mode {
-        vybe_parser::ast::stmt::FileOpenMode::Input => {
+        vybe_parser_basic::ast::stmt::FileOpenMode::Input => {
             let file = File::open(file_path).map_err(|e| RuntimeError::Custom(format!("Failed to open file for Input: {}", e)))?;
             Ok(FileHandle::Input(BufReader::new(file)))
         }
-        vybe_parser::ast::stmt::FileOpenMode::Output => {
+        vybe_parser_basic::ast::stmt::FileOpenMode::Output => {
             let file = File::create(file_path).map_err(|e| RuntimeError::Custom(format!("Failed to open file for Output: {}", e)))?;
             Ok(FileHandle::Output(BufWriter::new(file)))
         }
-        vybe_parser::ast::stmt::FileOpenMode::Append => {
+        vybe_parser_basic::ast::stmt::FileOpenMode::Append => {
             let file = OpenOptions::new()
                 .write(true)
                 .append(true)
@@ -32,7 +32,7 @@ pub fn open_file(path: &str, mode: vybe_parser::ast::stmt::FileOpenMode) -> Resu
                 .map_err(|e| RuntimeError::Custom(format!("Failed to open file for Append: {}", e)))?;
             Ok(FileHandle::Append(BufWriter::new(file)))
         }
-        vybe_parser::ast::stmt::FileOpenMode::Binary => {
+        vybe_parser_basic::ast::stmt::FileOpenMode::Binary => {
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -41,7 +41,7 @@ pub fn open_file(path: &str, mode: vybe_parser::ast::stmt::FileOpenMode) -> Resu
                 .map_err(|e| RuntimeError::Custom(format!("Failed to open file for Binary: {}", e)))?;
             Ok(FileHandle::Binary(file))
         }
-        vybe_parser::ast::stmt::FileOpenMode::Random => {
+        vybe_parser_basic::ast::stmt::FileOpenMode::Random => {
              // For now, treat Random as Binary or Error? Let's use Binary for flexibility
              let file = OpenOptions::new()
                 .read(true)

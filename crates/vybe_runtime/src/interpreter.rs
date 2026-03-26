@@ -9,13 +9,13 @@ use std::io::BufRead;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::mpsc;
-use vybe_parser::{CaseCondition, Declaration, Expression, FunctionDecl, Identifier, Program, Statement, SubDecl};
+use vybe_parser_basic::{CaseCondition, Declaration, Expression, FunctionDecl, Identifier, Program, Statement, SubDecl};
 
 pub struct Interpreter {
     pub env: Environment,
     pub functions: HashMap<String, FunctionDecl>,
     pub subs: HashMap<String, SubDecl>,
-    pub classes: HashMap<String, vybe_parser::ClassDecl>,
+    pub classes: HashMap<String, vybe_parser_basic::ClassDecl>,
     pub events: EventSystem,
     pub side_effects: VecDeque<crate::RuntimeSideEffect>,
     current_module: Option<String>, // Track which form/module is currently executing
@@ -42,11 +42,11 @@ pub struct Interpreter {
     /// E.g. "myapp.models.customer" → "customer" (the actual key in self.classes).
     pub namespace_map: HashMap<String, String>,
     /// Registered interfaces (name → InterfaceDecl).
-    pub interfaces: HashMap<String, vybe_parser::InterfaceDecl>,
+    pub interfaces: HashMap<String, vybe_parser_basic::InterfaceDecl>,
     /// Registered structures (treated like value-type classes).
-    pub structures: HashMap<String, vybe_parser::StructureDecl>,
+    pub structures: HashMap<String, vybe_parser_basic::StructureDecl>,
     /// Registered delegates (name → DelegateDecl).
-    pub delegates: HashMap<String, vybe_parser::DelegateDecl>,
+    pub delegates: HashMap<String, vybe_parser_basic::DelegateDecl>,
     /// On Error Resume Next active?
     pub on_error_resume_next: bool,
     /// On Error GoTo <label> — the label to jump to on error (None = disabled).
@@ -141,7 +141,7 @@ impl Interpreter {
          let class_name = host_instance.borrow().class_name.clone();
          
          if let Some(class_decl) = self.classes.get(&class_name.to_lowercase()) {
-             use vybe_parser::MethodDecl;
+             use vybe_parser_basic::MethodDecl;
              for method_enum in class_decl.methods.iter() {
                  let (method_name, handles) = match method_enum {
                      MethodDecl::Sub(s) => (s.name.as_str(), &s.handles),
@@ -198,7 +198,7 @@ impl Interpreter {
          let class_name = host_instance.borrow().class_name.clone();
          
          if let Some(class_decl) = self.classes.get(&class_name.to_lowercase()) {
-             use vybe_parser::MethodDecl;
+             use vybe_parser_basic::MethodDecl;
              for method_enum in class_decl.methods.iter() {
                  let (method_name, handles) = match method_enum {
                      MethodDecl::Sub(s) => (s.name.as_str(), &s.handles),
@@ -238,9 +238,9 @@ impl Interpreter {
     }
 
     pub fn new_background(
-        functions: HashMap<String, vybe_parser::ast::decl::FunctionDecl>,
-        subs: HashMap<String, vybe_parser::ast::decl::SubDecl>,
-        classes: HashMap<String, vybe_parser::ast::decl::ClassDecl>,
+        functions: HashMap<String, vybe_parser_basic::ast::decl::FunctionDecl>,
+        subs: HashMap<String, vybe_parser_basic::ast::decl::SubDecl>,
+        classes: HashMap<String, vybe_parser_basic::ast::decl::ClassDecl>,
         namespace_map: HashMap<String, String>,
     ) -> Self {
         let mut interp = Self::new();
@@ -560,8 +560,8 @@ impl Interpreter {
         if let Some(cls) = resolved.and_then(|k| self.classes.get(&k).cloned()) {
              if let Some(parent_type) = &cls.inherits {
                  let parent_name = match parent_type {
-                     vybe_parser::VBType::Custom(n) => Some(n.clone()),
-                     vybe_parser::VBType::Object => None,
+                     vybe_parser_basic::VBType::Custom(n) => Some(n.clone()),
+                     vybe_parser_basic::VBType::Object => None,
                      _ => None,
                  };
                  
@@ -578,13 +578,13 @@ impl Interpreter {
                  } else {
                      match &field.var_type {
                          Some(t) => match t {
-                             vybe_parser::VBType::Integer => Value::Integer(0),
-                             vybe_parser::VBType::Long => Value::Long(0),
-                             vybe_parser::VBType::Single => Value::Single(0.0),
-                             vybe_parser::VBType::Double => Value::Double(0.0),
-                             vybe_parser::VBType::String => Value::String("".to_string()),
-                             vybe_parser::VBType::Boolean => Value::Boolean(false),
-                             vybe_parser::VBType::Custom(s) => {
+                             vybe_parser_basic::VBType::Integer => Value::Integer(0),
+                             vybe_parser_basic::VBType::Long => Value::Long(0),
+                             vybe_parser_basic::VBType::Single => Value::Single(0.0),
+                             vybe_parser_basic::VBType::Double => Value::Double(0.0),
+                             vybe_parser_basic::VBType::String => Value::String("".to_string()),
+                             vybe_parser_basic::VBType::Boolean => Value::Boolean(false),
+                             vybe_parser_basic::VBType::Custom(s) => {
                                  let s_lower = s.to_lowercase();
                                  if s_lower.contains("system.windows.forms.") || 
                                     s_lower == "button" || 
@@ -1784,7 +1784,7 @@ impl Interpreter {
                 }
 
                 // Enforce NotInheritable
-                if let Some(vybe_parser::VBType::Custom(parent_name)) = &class_decl.inherits {
+                if let Some(vybe_parser_basic::VBType::Custom(parent_name)) = &class_decl.inherits {
                     let parent_key = self.resolve_class_key(parent_name);
                     if let Some(parent_cls) = parent_key.as_ref().and_then(|k| self.classes.get(k)) {
                         if parent_cls.is_not_inheritable {
@@ -1800,11 +1800,11 @@ impl Interpreter {
                 // Register class methods as subs so they can be called by event system
                 for method in &class_decl.methods {
                     match method {
-                        vybe_parser::ast::MethodDecl::Sub(sub_decl) => {
+                        vybe_parser_basic::ast::MethodDecl::Sub(sub_decl) => {
                             let sub_key = format!("{}.{}", key, sub_decl.name.as_str().to_lowercase());
                             self.subs.insert(sub_key, sub_decl.clone());
                         }
-                        vybe_parser::ast::MethodDecl::Function(func_decl) => {
+                        vybe_parser_basic::ast::MethodDecl::Function(func_decl) => {
                             let func_key = format!("{}.{}", key, func_decl.name.as_str().to_lowercase());
                             self.functions.insert(func_key, func_decl.clone());
                         }
@@ -1874,7 +1874,7 @@ impl Interpreter {
                     struct_decl.name.as_str().to_lowercase()
                 };
                 // Register structure like a class (value type semantics)
-                let class = vybe_parser::ClassDecl {
+                let class = vybe_parser_basic::ClassDecl {
                     visibility: struct_decl.visibility.clone(),
                     name: struct_decl.name.clone(),
                     is_partial: false,
@@ -1912,7 +1912,7 @@ impl Interpreter {
 
     /// Register all declarations inside a Namespace block, prefixing them
     /// with the fully-qualified namespace name.
-    fn declare_namespace(&mut self, ns_name: &str, declarations: &[vybe_parser::Declaration]) -> Result<(), RuntimeError> {
+    fn declare_namespace(&mut self, ns_name: &str, declarations: &[vybe_parser_basic::Declaration]) -> Result<(), RuntimeError> {
         let prev_module = self.current_module.clone();
         // Set current_module to the namespace so nested declare() calls prefix correctly
         let full_ns = if let Some(ref outer) = prev_module {
@@ -1964,11 +1964,11 @@ impl Interpreter {
                     // Register class methods
                     for method in &class_decl.methods {
                         match method {
-                            vybe_parser::ast::MethodDecl::Sub(sub_decl) => {
+                            vybe_parser_basic::ast::MethodDecl::Sub(sub_decl) => {
                                 let sub_key = format!("{}.{}", qualified_key, sub_decl.name.as_str().to_lowercase());
                                 self.subs.insert(sub_key, sub_decl.clone());
                             }
-                            vybe_parser::ast::MethodDecl::Function(func_decl) => {
+                            vybe_parser_basic::ast::MethodDecl::Function(func_decl) => {
                                 let func_key = format!("{}.{}", qualified_key, func_decl.name.as_str().to_lowercase());
                                 self.functions.insert(func_key, func_decl.clone());
                             }
@@ -2038,14 +2038,14 @@ impl Interpreter {
     /// from their declarations. Returns a HashMap suitable for ObjectData.fields.
              
     // Helper to find a method in class hierarchy
-    fn find_method(&self, class_name: &str, method_name: &str) -> Option<vybe_parser::ast::decl::MethodDecl> {
+    fn find_method(&self, class_name: &str, method_name: &str) -> Option<vybe_parser_basic::ast::decl::MethodDecl> {
         let key = self.resolve_class_key(class_name)?;
         if let Some(cls) = self.classes.get(&key) {
             // Check current class
             for method in &cls.methods {
                 let m_name = match method {
-                    vybe_parser::ast::decl::MethodDecl::Sub(s) => &s.name,
-                    vybe_parser::ast::decl::MethodDecl::Function(f) => &f.name,
+                    vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => &s.name,
+                    vybe_parser_basic::ast::decl::MethodDecl::Function(f) => &f.name,
                 };
                 if m_name.as_str().eq_ignore_ascii_case(method_name) {
                     return Some(method.clone());
@@ -2055,7 +2055,7 @@ impl Interpreter {
             // Check base class
              if let Some(parent_type) = &cls.inherits {
                  let parent_name = match parent_type {
-                     vybe_parser::VBType::Custom(n) => Some(n.clone()),
+                     vybe_parser_basic::VBType::Custom(n) => Some(n.clone()),
                      _ => None,
                  };
                  if let Some(p_name) = parent_name {
@@ -2067,7 +2067,7 @@ impl Interpreter {
     }
 
     // Helper to find a property in class hierarchy
-    fn find_property(&self, class_name: &str, prop_name: &str) -> Option<vybe_parser::ast::decl::PropertyDecl> {
+    fn find_property(&self, class_name: &str, prop_name: &str) -> Option<vybe_parser_basic::ast::decl::PropertyDecl> {
         let key = self.resolve_class_key(class_name).unwrap_or_else(|| class_name.to_lowercase());
         if let Some(cls) = self.classes.get(&key) {
              // Check current class
@@ -2080,7 +2080,7 @@ impl Interpreter {
             // Check base class
              if let Some(parent_type) = &cls.inherits {
                  let parent_name = match parent_type {
-                     vybe_parser::VBType::Custom(n) => Some(n.clone()),
+                     vybe_parser_basic::VBType::Custom(n) => Some(n.clone()),
                      _ => None,
                  };
                  if let Some(p_name) = parent_name {
@@ -2096,14 +2096,14 @@ impl Interpreter {
         let key = self.resolve_class_key(class_name)?;
         let cls = self.classes.get(&key)?;
         match &cls.inherits {
-            Some(vybe_parser::VBType::Custom(n)) => Some(n.clone()),
+            Some(vybe_parser_basic::VBType::Custom(n)) => Some(n.clone()),
             _ => None,
         }
     }
 
     /// Find a method starting from the **parent** of the given class.
     /// Used for `MyBase.Method()` — skips the derived class entirely.
-    pub fn find_method_in_base(&self, class_name: &str, method_name: &str) -> Option<vybe_parser::ast::decl::MethodDecl> {
+    pub fn find_method_in_base(&self, class_name: &str, method_name: &str) -> Option<vybe_parser_basic::ast::decl::MethodDecl> {
         if let Some(parent) = self.get_parent_class_name(class_name) {
             self.find_method(&parent, method_name)
         } else {
@@ -2787,7 +2787,7 @@ impl Interpreter {
                     for stmt in body {
                         match self.execute(stmt) {
                             Err(RuntimeError::Exit(ExitType::For)) => return Ok(()),
-                            Err(RuntimeError::Continue(vybe_parser::ast::stmt::ContinueType::For)) => break,
+                            Err(RuntimeError::Continue(vybe_parser_basic::ast::stmt::ContinueType::For)) => break,
                             Err(e) => return Err(e),
                             Ok(_) => {}
                         }
@@ -2817,7 +2817,7 @@ impl Interpreter {
                             // VB.NET supports `Exit While`.
                             // I should check parser.rs exit_statement logic.
                             
-                            Err(RuntimeError::Continue(vybe_parser::ast::stmt::ContinueType::While)) => break,
+                            Err(RuntimeError::Continue(vybe_parser_basic::ast::stmt::ContinueType::While)) => break,
                             Err(e) => return Err(e),
                             Ok(_) => {}
                         }
@@ -2832,7 +2832,7 @@ impl Interpreter {
                 body,
                 post_condition,
             } => {
-                use vybe_parser::LoopConditionType;
+                use vybe_parser_basic::LoopConditionType;
 
                 loop {
                     // Check pre-condition
@@ -2856,7 +2856,7 @@ impl Interpreter {
                     for stmt in body {
                         match self.execute(stmt) {
                             Err(RuntimeError::Exit(ExitType::Do)) => return Ok(()),
-                            Err(RuntimeError::Continue(vybe_parser::ast::stmt::ContinueType::Do)) => break,
+                            Err(RuntimeError::Continue(vybe_parser_basic::ast::stmt::ContinueType::Do)) => break,
                             Err(e) => return Err(e),
                             Ok(_) => {}
                         }
@@ -3144,7 +3144,7 @@ impl Interpreter {
                     for s in body {
                         match self.execute(s) {
                             Err(RuntimeError::Exit(ExitType::For)) => { should_exit = true; break; }
-                            Err(RuntimeError::Continue(vybe_parser::ast::stmt::ContinueType::For)) => break,
+                            Err(RuntimeError::Continue(vybe_parser_basic::ast::stmt::ContinueType::For)) => break,
                             Err(e) => return Err(e),
                             Ok(()) => {}
                         }
@@ -3178,7 +3178,7 @@ impl Interpreter {
                 if let Value::Object(obj_ref) = res_val.clone() {
                     let class_name = obj_ref.borrow().class_name.clone();
                     if let Some(method) = self.find_method(&class_name, "Dispose") {
-                        if let vybe_parser::ast::decl::MethodDecl::Sub(s) = method {
+                        if let vybe_parser_basic::ast::decl::MethodDecl::Sub(s) = method {
                             let _ = self.call_user_sub(&s, &[], Some(obj_ref.clone()));
                         }
                     }
@@ -3313,7 +3313,7 @@ impl Interpreter {
                 };
 
                 let rhs = self.evaluate_expr(value)?;
-                use vybe_parser::ast::stmt::CompoundOp;
+                use vybe_parser_basic::ast::stmt::CompoundOp;
                 let new_val = match operator {
                     CompoundOp::AddAssign => {
                         match (&current, &rhs) {
@@ -3457,9 +3457,9 @@ impl Interpreter {
                 // Resume is only meaningful inside an error handler.
                 // For now, just return Ok — the GoTo mechanism handles jumps.
                 match target {
-                    vybe_parser::ast::stmt::ResumeTarget::Next => Ok(()),
-                    vybe_parser::ast::stmt::ResumeTarget::Label(lbl) => Err(RuntimeError::GoTo(lbl.clone())),
-                    vybe_parser::ast::stmt::ResumeTarget::Implicit => Ok(()),
+                    vybe_parser_basic::ast::stmt::ResumeTarget::Next => Ok(()),
+                    vybe_parser_basic::ast::stmt::ResumeTarget::Label(lbl) => Err(RuntimeError::GoTo(lbl.clone())),
+                    vybe_parser_basic::ast::stmt::ResumeTarget::Implicit => Ok(()),
                 }
             }
         }
@@ -5282,17 +5282,17 @@ impl Interpreter {
                         // MyBase.New() call.  If not, auto-call the base class
                         // Sub New first (VB.NET inserts this automatically).
                         let method_body = match &method {
-                            vybe_parser::ast::decl::MethodDecl::Sub(s) => &s.body,
-                            vybe_parser::ast::decl::MethodDecl::Function(f) => &f.body,
+                            vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => &s.body,
+                            vybe_parser_basic::ast::decl::MethodDecl::Function(f) => &f.body,
                         };
                         let has_mybase_new = body_contains_mybase_new(method_body);
                         if !has_mybase_new {
                             if let Some(base_new) = self.find_method_in_base(&class_name, "new") {
                                 match base_new {
-                                    vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                                    vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                                         let _ = self.call_user_sub(&s, &[], Some(obj_ref.clone()));
                                     }
-                                    vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                                    vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                                         let _ = self.call_user_function(&f, &[], Some(obj_ref.clone()));
                                     }
                                 }
@@ -5300,10 +5300,10 @@ impl Interpreter {
                         }
 
                         match method {
-                            vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                            vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                                 self.call_user_sub(&s, &arg_values, Some(obj_ref.clone()))?;
                             }
-                            vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                            vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                                 self.call_user_function(&f, &arg_values, Some(obj_ref.clone()))?;
                             }
                         }
@@ -5312,19 +5312,19 @@ impl Interpreter {
                         // auto-call InitializeComponent if it exists
                         let inherits_form = class_decl.inherits.as_ref().map_or(false, |t| {
                             match t {
-                                vybe_parser::VBType::Custom(n) => n.to_lowercase().contains("form"),
+                                vybe_parser_basic::VBType::Custom(n) => n.to_lowercase().contains("form"),
                                 _ => false,
                             }
                         });
                         if inherits_form {
                             if let Some(init_method) = self.find_method(&class_name, "InitializeComponent") {
                                 match init_method {
-                                    vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                                    vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                                         if let Err(e) = self.call_user_sub(&s, &[], Some(obj_ref.clone())) {
                                             eprintln!("[InitializeComponent error] {}", e);
                                         }
                                     }
-                                    vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                                    vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                                         let _ = self.call_user_function(&f, &[], Some(obj_ref.clone()));
                                     }
                                 }
@@ -6515,11 +6515,11 @@ impl Interpreter {
             let class_name = obj_rc.borrow().class_name.clone();
             if let Some(method) = self.find_method(&class_name, name.as_str()) {
                 match method {
-                    vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                    vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                         self.call_user_sub_exprs(&s, args, Some(obj_rc.clone()))?;
                         return Ok(Value::Nothing);
                     }
-                    vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                    vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                         return self.call_user_function_exprs(&f, args, Some(obj_rc.clone()));
                     }
                 }
@@ -6939,11 +6939,11 @@ impl Interpreter {
                             let class_name = obj_ref.borrow().class_name.clone();
                             if let Some(method_decl) = self.find_method(&class_name, &member) {
                                 match method_decl {
-                                    vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                                    vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                                         self.call_user_sub(&s, method_args, Some(obj_ref.clone()))?;
                                         return Ok(Value::Nothing);
                                     }
-                                    vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                                    vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                                         let result = self.call_user_function(&f, method_args, Some(obj_ref.clone()))?;
                                         return Ok(result);
                                     }
@@ -7093,11 +7093,11 @@ impl Interpreter {
                     .collect::<Result<Vec<_>, _>>()?;
                 if let Some(base_method) = self.find_method_in_base(&class_name, &method_name) {
                     match base_method {
-                        vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                        vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                             self.call_user_sub(&s, &arg_values, Some(obj_clone))?;
                             return Ok(Value::Nothing);
                         }
-                        vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                        vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                             return self.call_user_function(&f, &arg_values, Some(obj_clone));
                         }
                     }
@@ -12165,11 +12165,11 @@ impl Interpreter {
                 // Use helper to find method in hierarchy
                 if let Some(method) = self.find_method(&class_name_str, &method_name) {
                      match method {
-                         vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                         vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                              self.call_user_sub(&s, &arg_values, Some(obj_ref.clone()))?;
                              return Ok(Value::Nothing);
                          }
-                         vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                         vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                              return self.call_user_function(&f, &arg_values, Some(obj_ref.clone()));
                          }
                      }
@@ -12663,7 +12663,7 @@ impl Interpreter {
                     // Call Sub New if it exists
                     if let Some(new_method) = self.find_method(&class_name_str, "new") {
                          match new_method {
-                             vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                             vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                                  // Activator.CreateInstance(type) calls parameterless New()
                                  // Or matching arguments if provided (but here we only implement 1-arg version)
                                  // Assuming parameterless for now.
@@ -14560,11 +14560,11 @@ impl Interpreter {
                         let class_name = obj_ref.borrow().class_name.clone();
                         if let Some(method) = self.find_method(&class_name, method_name) {
                             match method {
-                                vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                                vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                                     self.call_user_sub(&s, arg_values, Some(obj_ref.clone()))?;
                                     return Ok(Value::Nothing);
                                 }
-                                vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                                vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                                     return self.call_user_function(&f, arg_values, Some(obj_ref.clone()));
                                 }
                             }
@@ -14665,7 +14665,7 @@ impl Interpreter {
             } else if let Some(exprs) = arg_exprs {
                 if i < exprs.len() {
                     val = self.evaluate_expr(&exprs[i])?;
-                    let is_byref = param.pass_type == vybe_parser::ast::decl::ParameterPassType::ByRef;
+                    let is_byref = param.pass_type == vybe_parser_basic::ast::decl::ParameterPassType::ByRef;
                     if is_byref {
                         // Check if argument is a variable we can write back to
                         match &exprs[i] {
@@ -14768,7 +14768,7 @@ impl Interpreter {
             } else if let Some(exprs) = arg_exprs {
                 if i < exprs.len() {
                     val = self.evaluate_expr(&exprs[i])?;
-                    let is_byref = param.pass_type == vybe_parser::ast::decl::ParameterPassType::ByRef;
+                    let is_byref = param.pass_type == vybe_parser_basic::ast::decl::ParameterPassType::ByRef;
                     if is_byref {
                         match &exprs[i] {
                             Expression::Variable(name) => {
@@ -14912,11 +14912,11 @@ impl Interpreter {
         let class_name = obj_ref.borrow().class_name.clone();
         if let Some(method) = self.find_method(&class_name, method_name) {
             match method {
-                vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                     self.call_user_sub(&s, args, Some(obj_ref.clone()))?;
                     Ok(())
                 }
-                vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                     let _ = self.call_user_function(&f, args, Some(obj_ref.clone()))?;
                     Ok(())
                 }
@@ -14956,16 +14956,16 @@ impl Interpreter {
         if let Some(method) = new_method {
             // Auto-call base Sub New first if derived doesn't explicitly do it
             let method_body = match &method {
-                vybe_parser::ast::decl::MethodDecl::Sub(s) => &s.body,
-                vybe_parser::ast::decl::MethodDecl::Function(f) => &f.body,
+                vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => &s.body,
+                vybe_parser_basic::ast::decl::MethodDecl::Function(f) => &f.body,
             };
             if !body_contains_mybase_new(method_body) {
                 if let Some(base_new) = self.find_method_in_base(class_name, "new") {
                     match base_new {
-                        vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                        vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                             let _ = self.call_user_sub(&s, &[], Some(obj_ref.clone()));
                         }
-                        vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                        vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                             let _ = self.call_user_function(&f, &[], Some(obj_ref.clone()));
                         }
                     }
@@ -14973,10 +14973,10 @@ impl Interpreter {
             }
 
             match method {
-                vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                     self.call_user_sub(&s, &[], Some(obj_ref.clone()))?;
                 }
-                vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                     let _ = self.call_user_function(&f, &[], Some(obj_ref.clone()))?;
                 }
             }
@@ -14984,19 +14984,19 @@ impl Interpreter {
             // No Sub New: auto-call InitializeComponent for form classes
             let inherits_form = class_decl.inherits.as_ref().map_or(false, |t| {
                 match t {
-                    vybe_parser::VBType::Custom(n) => n.to_lowercase().contains("form"),
+                    vybe_parser_basic::VBType::Custom(n) => n.to_lowercase().contains("form"),
                     _ => false,
                 }
             });
             if inherits_form {
                 if let Some(init_method) = self.find_method(class_name, "InitializeComponent") {
                     match init_method {
-                        vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                        vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                             if let Err(e) = self.call_user_sub(&s, &[], Some(obj_ref.clone())) {
                                 eprintln!("[InitializeComponent error] {}", e);
                             }
                         }
-                        vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                        vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                             let _ = self.call_user_function(&f, &[], Some(obj_ref.clone()));
                         }
                     }
@@ -15020,7 +15020,7 @@ impl Interpreter {
         // 1. Find static `Handles` clauses
         if let Some(cls) = self.classes.get(&key) {
             for method in &cls.methods {
-                if let vybe_parser::ast::decl::MethodDecl::Sub(s) = method {
+                if let vybe_parser_basic::ast::decl::MethodDecl::Sub(s) = method {
                     if let Some(handles_list) = &s.handles {
                         for h in handles_list {
                             let h_lower = h.to_lowercase();
@@ -15053,7 +15053,7 @@ impl Interpreter {
         let key = class_name.to_lowercase();
         if let Some(cls) = self.classes.get(&key) {
             for method in &cls.methods {
-                if let vybe_parser::ast::decl::MethodDecl::Sub(s) = method {
+                if let vybe_parser_basic::ast::decl::MethodDecl::Sub(s) = method {
                     if let Some(handles) = &s.handles {
                         for h in handles {
                             let parts: Vec<&str> = h.splitn(2, '.').collect();
@@ -16314,17 +16314,17 @@ impl Interpreter {
             }
             
             let result = match &*body {
-                vybe_parser::ast::expr::LambdaBody::Expression(expr) => {
+                vybe_parser_basic::ast::expr::LambdaBody::Expression(expr) => {
                     self.evaluate_expr(expr)
                 }
-                vybe_parser::ast::expr::LambdaBody::Statement(stmt) => {
+                vybe_parser_basic::ast::expr::LambdaBody::Statement(stmt) => {
                     match self.execute(stmt) {
                         Ok(_) => Ok(Value::Nothing),
                         Err(RuntimeError::Return(val)) => Ok(val.unwrap_or(Value::Nothing)),
                         Err(e) => Err(e),
                     }
                 }
-                vybe_parser::ast::expr::LambdaBody::Block(stmts) => {
+                vybe_parser_basic::ast::expr::LambdaBody::Block(stmts) => {
                     let mut final_res = Ok(Value::Nothing);
                     for stmt in stmts {
                         match self.execute(stmt) {
@@ -16426,15 +16426,15 @@ fn set_multi_dim_element(arr: &mut Value, indices: &[usize], val: Value) -> Resu
     Err(RuntimeError::Custom("Not an array".to_string()))
 }
 
-fn default_value_for_type(_name: &str, var_type: &Option<vybe_parser::VBType>) -> Value {
+fn default_value_for_type(_name: &str, var_type: &Option<vybe_parser_basic::VBType>) -> Value {
     match var_type {
-        Some(vybe_parser::VBType::Integer) => Value::Integer(0),
-        Some(vybe_parser::VBType::Long) => Value::Long(0),
-        Some(vybe_parser::VBType::Single) => Value::Single(0.0),
-        Some(vybe_parser::VBType::Double) => Value::Double(0.0),
-        Some(vybe_parser::VBType::String) => Value::String(String::new()),
-        Some(vybe_parser::VBType::Boolean) => Value::Boolean(false),
-        Some(vybe_parser::VBType::Variant) => Value::Nothing,
+        Some(vybe_parser_basic::VBType::Integer) => Value::Integer(0),
+        Some(vybe_parser_basic::VBType::Long) => Value::Long(0),
+        Some(vybe_parser_basic::VBType::Single) => Value::Single(0.0),
+        Some(vybe_parser_basic::VBType::Double) => Value::Double(0.0),
+        Some(vybe_parser_basic::VBType::String) => Value::String(String::new()),
+        Some(vybe_parser_basic::VBType::Boolean) => Value::Boolean(false),
+        Some(vybe_parser_basic::VBType::Variant) => Value::Nothing,
         _ => Value::Nothing,
     }
 }
@@ -16671,8 +16671,8 @@ fn vb_like_match_inner(text: &[char], pattern: &[char]) -> bool {
 
 /// Check whether a method body contains a `MyBase.New(...)` call.
 /// Used to decide if automatic base-class constructor chaining is needed.
-fn body_contains_mybase_new(body: &[vybe_parser::ast::Statement]) -> bool {
-    use vybe_parser::ast::Expression;
+fn body_contains_mybase_new(body: &[vybe_parser_basic::ast::Statement]) -> bool {
+    use vybe_parser_basic::ast::Expression;
     for stmt in body {
         if expr_in_stmt_matches(stmt, &|e| {
             matches!(e, Expression::MethodCall(obj, method, _)
@@ -16686,8 +16686,8 @@ fn body_contains_mybase_new(body: &[vybe_parser::ast::Statement]) -> bool {
 }
 
 /// Recursively check if any expression inside a statement satisfies a predicate.
-fn expr_in_stmt_matches(stmt: &vybe_parser::ast::Statement, pred: &dyn Fn(&vybe_parser::ast::Expression) -> bool) -> bool {
-    use vybe_parser::ast::Statement;
+fn expr_in_stmt_matches(stmt: &vybe_parser_basic::ast::Statement, pred: &dyn Fn(&vybe_parser_basic::ast::Expression) -> bool) -> bool {
+    use vybe_parser_basic::ast::Statement;
     match stmt {
         Statement::ExpressionStatement(e) => expr_matches(e, pred),
         Statement::Assignment { value, .. } => expr_matches(value, pred),
@@ -16708,8 +16708,8 @@ fn expr_in_stmt_matches(stmt: &vybe_parser::ast::Statement, pred: &dyn Fn(&vybe_
     }
 }
 
-fn expr_matches(expr: &vybe_parser::ast::Expression, pred: &dyn Fn(&vybe_parser::ast::Expression) -> bool) -> bool {
-    use vybe_parser::ast::Expression;
+fn expr_matches(expr: &vybe_parser_basic::ast::Expression, pred: &dyn Fn(&vybe_parser_basic::ast::Expression) -> bool) -> bool {
+    use vybe_parser_basic::ast::Expression;
     if pred(expr) { return true; }
     match expr {
         Expression::MethodCall(obj, _, args) => {
@@ -16724,8 +16724,8 @@ fn expr_matches(expr: &vybe_parser::ast::Expression, pred: &dyn Fn(&vybe_parser:
 // ── Runtime Extensions ──
 
 impl Interpreter {
-    fn execute_query(&mut self, query: &vybe_parser::ast::query::QueryExpression) -> Result<Value, RuntimeError> {
-        use vybe_parser::ast::query::*;
+    fn execute_query(&mut self, query: &vybe_parser_basic::ast::query::QueryExpression) -> Result<Value, RuntimeError> {
+        use vybe_parser_basic::ast::query::*;
         
         let range = query.from_clause.ranges.first().ok_or(RuntimeError::Custom("Query must have range variable".to_string()))?;
         let collection_val = self.evaluate_expr(&range.collection)?;
@@ -16797,8 +16797,8 @@ impl Interpreter {
         Ok(Value::Array(results))
     }
 
-    fn construct_xml(&mut self, node: &vybe_parser::ast::xml::XmlNode) -> Result<Value, RuntimeError> {
-        use vybe_parser::ast::xml::*;
+    fn construct_xml(&mut self, node: &vybe_parser_basic::ast::xml::XmlNode) -> Result<Value, RuntimeError> {
+        use vybe_parser_basic::ast::xml::*;
         match node {
             XmlNode::Element(el) => {
                 let name = if let Some(prefix) = &el.name.prefix {

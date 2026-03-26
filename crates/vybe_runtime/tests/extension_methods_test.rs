@@ -1,6 +1,6 @@
 use vybe_runtime::{Interpreter, RuntimeSideEffect};
-use vybe_parser::ast::Identifier;
-use vybe_parser::parse_program;
+use vybe_parser_basic::ast::Identifier;
+use vybe_parser_basic::parse_program;
 
 /// Helper: run a VB source, call Main, and return all console output lines.
 fn run_and_capture(source: &str) -> Vec<String> {

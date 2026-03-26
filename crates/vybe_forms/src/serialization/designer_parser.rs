@@ -1,7 +1,7 @@
 use crate::control::{Control, ControlType};
 use crate::events::{EventBinding, EventType};
 use crate::form::Form;
-use vybe_parser::{ClassDecl, Expression, Statement};
+use vybe_parser_basic::{ClassDecl, Expression, Statement};
 
 /// Extracts the last component of a potentially dotted identifier.
 /// e.g. "System.Windows.Forms.Button" -> "Button", "Button" -> "Button"
@@ -227,7 +227,7 @@ pub fn extract_form_from_designer(class_decl: &ClassDecl) -> Option<Form> {
     // Find InitializeComponent method
     let init_method = class_decl.methods.iter().find_map(|m| {
         match m {
-            vybe_parser::MethodDecl::Sub(s)
+            vybe_parser_basic::MethodDecl::Sub(s)
                 if s.name.as_str().eq_ignore_ascii_case("InitializeComponent") =>
             {
                 Some(&s.body)

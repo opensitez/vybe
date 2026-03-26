@@ -1,6 +1,6 @@
 use vybe_runtime::interpreter::Interpreter;
 use vybe_runtime::value::Value;
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 
 #[test]
 fn test_system_drawing_primitives() {

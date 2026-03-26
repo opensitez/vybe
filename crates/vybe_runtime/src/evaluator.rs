@@ -1,6 +1,6 @@
 use crate::environment::Environment;
 use crate::value::{RuntimeError, Value};
-use vybe_parser::Expression;
+use vybe_parser_basic::Expression;
 
 pub fn evaluate(expr: &Expression, env: &Environment) -> Result<Value, RuntimeError> {
     match expr {
@@ -566,8 +566,8 @@ fn vb_like_match_inner(text: &[char], pattern: &[char]) -> bool {
     }
 }
 
-pub fn compare_values(a: &Value, op: &vybe_parser::CompOp, b: &Value) -> Result<bool, RuntimeError> {
-    use vybe_parser::CompOp;
+pub fn compare_values(a: &Value, op: &vybe_parser_basic::CompOp, b: &Value) -> Result<bool, RuntimeError> {
+    use vybe_parser_basic::CompOp;
 
     let result = match op {
         CompOp::Equal => values_equal(a, b),

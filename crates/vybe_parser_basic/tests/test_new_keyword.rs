@@ -1,4 +1,4 @@
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 
 #[test]
 fn test_new_expression_parses() {

@@ -1,9 +1,9 @@
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 
 #[test]
-fn test_full_todolist_designer() {
-    let designer = include_str!("../../../examples/TodoList/Form1.Designer.vb");
-    let user_code = include_str!("../../../examples/TodoList/Form1.vb");
+fn test_full_tictactoe() {
+    let designer = include_str!("../../../examples/TicTacToe/Form1.Designer.vb");
+    let user_code = include_str!("../../../examples/TicTacToe/Form1.vb");
     let combined = format!("{}\n{}", designer, user_code);
     
     let result = parse_program(&combined);
@@ -12,15 +12,15 @@ fn test_full_todolist_designer() {
             println!("Parsed OK: {} declarations", prog.declarations.len());
             for d in &prog.declarations {
                 match d {
-                    vybe_parser::Declaration::Class(cls) => {
+                    vybe_parser_basic::Declaration::Class(cls) => {
                         println!("  Class: {} (methods: {}, fields: {})", 
                             cls.name.as_str(), cls.methods.len(), cls.fields.len());
                         for m in &cls.methods {
                             match m {
-                                vybe_parser::ast::decl::MethodDecl::Sub(s) => {
+                                vybe_parser_basic::ast::decl::MethodDecl::Sub(s) => {
                                     println!("    Sub: {} ({} stmts)", s.name.as_str(), s.body.len());
                                 }
-                                vybe_parser::ast::decl::MethodDecl::Function(f) => {
+                                vybe_parser_basic::ast::decl::MethodDecl::Function(f) => {
                                     println!("    Function: {} ({} stmts)", f.name.as_str(), f.body.len());
                                 }
                             }
@@ -34,5 +34,5 @@ fn test_full_todolist_designer() {
             println!("Parse ERROR: {}", e);
         }
     }
-    assert!(result.is_ok(), "Full TodoList should parse: {:?}", result.err());
+    assert!(result.is_ok(), "TicTacToe should parse: {:?}", result.err());
 }

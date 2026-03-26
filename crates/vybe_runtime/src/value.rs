@@ -50,8 +50,8 @@ pub enum SharedValue {
     ConcurrentQueue(crate::builtins::concurrent_collections::ConcurrentQueue),
     ConcurrentStack(crate::builtins::concurrent_collections::ConcurrentStack),
     Lambda {
-        params: Vec<vybe_parser::ast::decl::Parameter>,
-        body: Box<vybe_parser::ast::expr::LambdaBody>,
+        params: Vec<vybe_parser_basic::ast::decl::Parameter>,
+        body: Box<vybe_parser_basic::ast::expr::LambdaBody>,
         env: SharedEnvironment,
     },
 }
@@ -79,8 +79,8 @@ pub enum Value {
     Nothing,
     Object(Rc<RefCell<ObjectData>>),
     Lambda {
-        params: Vec<vybe_parser::ast::decl::Parameter>,
-        body: Box<vybe_parser::ast::expr::LambdaBody>,
+        params: Vec<vybe_parser_basic::ast::decl::Parameter>,
+        body: Box<vybe_parser_basic::ast::expr::LambdaBody>,
         env: Rc<RefCell<crate::environment::Environment>>,
     },
 }
@@ -609,7 +609,7 @@ pub enum RuntimeError {
     Exception(String, String, Option<String>),
     
     #[error("Continue")]
-    Continue(vybe_parser::ast::stmt::ContinueType),
+    Continue(vybe_parser_basic::ast::stmt::ContinueType),
 
     /// GoTo control flow: jump to the named label.
     #[error("GoTo {0}")]

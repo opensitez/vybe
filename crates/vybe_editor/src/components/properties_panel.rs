@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use crate::app_state::AppState;
-use vybe_parser::{parse_program, Declaration};
+use vybe_parser_basic::{parse_program, Declaration};
 
 fn handles_match(handle: &str, form_name: &str, control_name: &str, event_name: &str) -> bool {
     let parts: Vec<&str> = handle.split('.').collect();
@@ -35,7 +35,7 @@ fn find_vbnet_handler(code: &str, form_name: &str, control_name: &str, event_nam
             }
 
             for method in cls.methods {
-                if let vybe_parser::ast::decl::MethodDecl::Sub(sub) = method {
+                if let vybe_parser_basic::ast::decl::MethodDecl::Sub(sub) = method {
                     if sub.name.as_str().eq_ignore_ascii_case(&expected_name) {
                         return Some(sub.name.as_str().to_string());
                     }

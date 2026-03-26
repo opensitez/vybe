@@ -10,7 +10,7 @@ name = "vybe_editor"
 path = "src/main.rs"
 
 [dependencies]
-vybe_parser = { workspace = true }
+vybe_parser_basic = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_forms = { workspace = true }
 vybe_project = { workspace = true }

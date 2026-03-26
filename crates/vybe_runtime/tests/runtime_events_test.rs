@@ -1,6 +1,6 @@
 use vybe_runtime::{Interpreter, RuntimeSideEffect, Value};
-use vybe_parser::parse_program;
-use vybe_parser::ast::Identifier;
+use vybe_parser_basic::parse_program;
+use vybe_parser_basic::ast::Identifier;
 
 fn run_vb(code: &str) -> (Interpreter, Vec<String>) {
     let program = parse_program(code).expect("Parse error");

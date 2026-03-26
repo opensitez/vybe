@@ -1,0 +1,10 @@
+[package]
+name = "vybe_compiler_js"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_parser_js = { workspace = true }
+vybe_bytecode = { workspace = true }

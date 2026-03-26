@@ -2,8 +2,8 @@
 ///! array initialization, access, modification, and edge cases.
 
 use vybe_runtime::{Interpreter, RuntimeSideEffect};
-use vybe_parser::ast::Identifier;
-use vybe_parser::parse_program;
+use vybe_parser_basic::ast::Identifier;
+use vybe_parser_basic::parse_program;
 
 fn run_vb(code: &str) -> Vec<String> {
     let program = parse_program(code).expect("Parse error");
@@ -267,9 +267,9 @@ End Sub
 
 #[test]
 fn test_redim_parses() {
-    use vybe_parser::parse_program;
-    use vybe_parser::ast::stmt::Statement;
-    use vybe_parser::ast::decl::Declaration;
+    use vybe_parser_basic::parse_program;
+    use vybe_parser_basic::ast::stmt::Statement;
+    use vybe_parser_basic::ast::decl::Declaration;
 
     let code = r#"
 Sub Main()

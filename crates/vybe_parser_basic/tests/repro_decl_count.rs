@@ -1,5 +1,5 @@
-use vybe_parser::parse_program;
-use vybe_parser::ast::Declaration;
+use vybe_parser_basic::parse_program;
+use vybe_parser_basic::ast::Declaration;
 
 #[test]
 fn test_program_declarations_count() {

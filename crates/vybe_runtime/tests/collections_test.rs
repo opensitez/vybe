@@ -1,6 +1,6 @@
 use vybe_runtime::{Interpreter, RuntimeSideEffect};
-use vybe_parser::ast::Identifier;
-use vybe_parser::parse_program;
+use vybe_parser_basic::ast::Identifier;
+use vybe_parser_basic::parse_program;
 
 #[test]
 fn test_collections_functionality() {

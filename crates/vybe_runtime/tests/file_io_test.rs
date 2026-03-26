@@ -1,5 +1,5 @@
 use vybe_runtime::Interpreter;
-use vybe_parser::parser::parse_program;
+use vybe_parser_basic::parser::parse_program;
 use std::fs;
 use std::path::PathBuf;
 

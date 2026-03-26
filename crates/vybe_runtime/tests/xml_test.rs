@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use vybe_parser::parse_program;
+    use vybe_parser_basic::parse_program;
     use vybe_runtime::Interpreter;
     use vybe_runtime::Value;
 

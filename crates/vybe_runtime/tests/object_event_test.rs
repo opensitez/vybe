@@ -1,5 +1,5 @@
 use vybe_runtime::{Interpreter, Value};
-use vybe_parser::parse_program;
+use vybe_parser_basic::parse_program;
 
 #[test]
 fn test_object_event_handling() {
@@ -104,7 +104,7 @@ fn test_object_event_handling() {
 }
 
 fn eval_str(interp: &mut Interpreter, expr_str: &str) -> Result<Value, vybe_runtime::RuntimeError> {
-    let expr = vybe_parser::parse_expression_str(expr_str)
+    let expr = vybe_parser_basic::parse_expression_str(expr_str)
         .map_err(|e| vybe_runtime::RuntimeError::Custom(format!("Parse error: {}", e)))?;
     interp.evaluate_expr(&expr)
 }

@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 vybe_forms = { workspace = true }
-vybe_parser = { workspace = true }
+vybe_parser_basic = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

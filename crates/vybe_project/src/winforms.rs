@@ -24,9 +24,9 @@ fn event_type_from_name(name: &str) -> Option<EventType> {
     }
 }
 
-fn apply_vbnet_handles(form: &mut Form, cls: &vybe_parser::ClassDecl) {
+fn apply_vbnet_handles(form: &mut Form, cls: &vybe_parser_basic::ClassDecl) {
     for method in &cls.methods {
-        if let vybe_parser::ast::decl::MethodDecl::Sub(sub) = method {
+        if let vybe_parser_basic::ast::decl::MethodDecl::Sub(sub) = method {
             let Some(handles) = sub.handles.as_ref() else { continue };
 
             for handle in handles {
@@ -91,13 +91,13 @@ pub fn load_form_vb(form_path: &Path) -> SaveResult<FormModule> {
     let combined = format!("{}\n{}", designer_code, user_code);
     eprintln!("[DEBUG] load_form_vb: designer_path={:?} exists={}", designer_path, designer_path.exists());
     eprintln!("[DEBUG] combined code length: {} chars", combined.len());
-    let program = vybe_parser::parse_program(&combined)
+    let program = vybe_parser_basic::parse_program(&combined)
         .map_err(|e| { eprintln!("[DEBUG] PARSE ERROR: {}", e); SaveError::Parse(format!("{}", e)) })?;
     eprintln!("[DEBUG] Parsed OK: {} declarations", program.declarations.len());
 
-    let mut merged_class: Option<vybe_parser::ClassDecl> = None;
+    let mut merged_class: Option<vybe_parser_basic::ClassDecl> = None;
     for decl in &program.declarations {
-        if let vybe_parser::Declaration::Class(cls) = decl {
+        if let vybe_parser_basic::Declaration::Class(cls) = decl {
             if let Some(ref mut existing) = merged_class {
                 existing.fields.extend(cls.fields.clone());
                 existing.methods.extend(cls.methods.clone());
