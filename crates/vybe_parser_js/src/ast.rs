@@ -81,6 +81,43 @@ pub enum Statement {
     },
     /// Empty statement (;)
     Empty,
+
+    // -- Modules --
+
+    /// import { a, b } from "module"
+    /// import * as name from "module"
+    /// import name from "module"
+    Import {
+        specifiers: Vec<ImportSpecifier>,
+        source: String,
+    },
+    /// export function foo() {}
+    /// export let x = 5
+    /// export { a, b }
+    /// export default expr
+    Export {
+        declaration: Option<Box<Statement>>,
+        specifiers: Vec<ExportSpecifier>,
+        default: Option<Box<Expression>>,
+    },
+}
+
+/// import { foo as bar } from "mod"
+#[derive(Debug, Clone)]
+pub enum ImportSpecifier {
+    /// import { name } or import { name as alias }
+    Named { name: String, alias: Option<String> },
+    /// import * as name
+    Namespace(String),
+    /// import defaultName from "mod"
+    Default(String),
+}
+
+/// export { foo as bar }
+#[derive(Debug, Clone)]
+pub struct ExportSpecifier {
+    pub name: String,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

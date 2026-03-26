@@ -508,6 +508,79 @@ impl Compiler {
             }
             Statement::Labeled { body, .. } => { self.compile_statement(body)?; }
             Statement::Empty => {}
+
+            // -- Modules --
+            Statement::Import { specifiers, source } => {
+                // Host modules (vybe:*): import binds names to host function calls.
+                // User modules (./file.js): handled by the module loader before compilation.
+                // At this stage, user module imports have already been resolved and
+                // their exports injected as globals. So we just bind the names.
+                for spec in specifiers {
+                    match spec {
+                        ImportSpecifier::Named { name, alias } => {
+                            let local_name = alias.as_ref().unwrap_or(name);
+                            // For host modules: create a namespace object or bind directly
+                            if source.starts_with("vybe:") {
+                                // Import from host module — we don't need to do anything here.
+                                // The compiler resolves host calls by namespace at call sites.
+                                // But we store the module name so the namespace resolver knows
+                                // that this identifier maps to a host module.
+                                // For now: set a global to null as placeholder.
+                                self.emit(Op::null);
+                                let idx = self.add_string_constant(local_name);
+                                self.emit_u16(Op::global_set, idx);
+                                self.emit(Op::drop);
+                            } else {
+                                // User module: the export should already be in globals
+                                // (set by the module loader). Just create a local alias if needed.
+                                if alias.is_some() {
+                                    let src_idx = self.add_string_constant(name);
+                                    self.emit_u16(Op::global_get, src_idx);
+                                    let dst_idx = self.add_string_constant(local_name);
+                                    self.emit_u16(Op::global_set, dst_idx);
+                                    self.emit(Op::drop);
+                                }
+                            }
+                        }
+                        ImportSpecifier::Namespace(name) => {
+                            // import * as name — create namespace object
+                            // For host modules, the namespace already works via resolve_namespace_call
+                            self.emit(Op::null);
+                            let idx = self.add_string_constant(name);
+                            self.emit_u16(Op::global_set, idx);
+                            self.emit(Op::drop);
+                        }
+                        ImportSpecifier::Default(name) => {
+                            // import defaultName from "mod"
+                            // Look for "__default" export in globals
+                            let src = format!("{}.__default", source);
+                            let src_idx = self.add_string_constant(&src);
+                            self.emit_u16(Op::global_get, src_idx);
+                            let dst_idx = self.add_string_constant(name);
+                            self.emit_u16(Op::global_set, dst_idx);
+                            self.emit(Op::drop);
+                        }
+                    }
+                }
+            }
+            Statement::Export { declaration, specifiers, default } => {
+                // Compile the declaration if any
+                if let Some(decl) = declaration {
+                    self.compile_statement(decl)?;
+                    // The declaration already set the global/local.
+                    // Nothing extra needed — exports are just globals that other modules can see.
+                }
+                // export { a, b } — these are already globals, nothing to do
+                // The module loader reads the export specifiers when linking.
+
+                // export default expr
+                if let Some(expr) = default {
+                    self.compile_expression(expr)?;
+                    let idx = self.add_string_constant("__default");
+                    self.emit_u16(Op::global_set, idx);
+                    self.emit(Op::drop);
+                }
+            }
         }
         Ok(())
     }

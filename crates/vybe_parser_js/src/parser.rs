@@ -41,9 +41,148 @@ impl Parser {
             TokenKind::Continue => self.parse_continue_statement(),
             TokenKind::Throw => self.parse_throw_statement(),
             TokenKind::Try => self.parse_try_statement(),
+            TokenKind::Import => self.parse_import_statement(),
+            TokenKind::Export => self.parse_export_statement(),
             TokenKind::Semicolon => { self.advance(); Ok(Statement::Empty) }
             _ => self.parse_expression_statement(),
         }
+    }
+
+    fn parse_import_statement(&mut self) -> Result<Statement, String> {
+        self.expect(TokenKind::Import)?;
+        let mut specifiers = Vec::new();
+
+        match self.current_kind() {
+            // import "module" (side-effect import)
+            TokenKind::String(_) => {
+                let source = match self.current_kind() {
+                    TokenKind::String(s) => { self.advance(); s }
+                    _ => unreachable!(),
+                };
+                self.eat_semicolon();
+                return Ok(Statement::Import { specifiers: vec![], source });
+            }
+            // import * as name from "module"
+            TokenKind::Star => {
+                self.advance();
+                self.expect(TokenKind::As)?;
+                let name = self.expect_identifier()?;
+                specifiers.push(ImportSpecifier::Namespace(name));
+            }
+            // import { ... } from "module"
+            TokenKind::LBrace => {
+                self.advance();
+                while !self.check_kind(&TokenKind::RBrace) && !self.is_at_end() {
+                    let name = self.expect_identifier()?;
+                    let alias = if self.eat(TokenKind::As) {
+                        Some(self.expect_identifier()?)
+                    } else {
+                        None
+                    };
+                    specifiers.push(ImportSpecifier::Named { name, alias });
+                    if !self.eat(TokenKind::Comma) { break; }
+                }
+                self.expect(TokenKind::RBrace)?;
+            }
+            // import defaultName from "module" or import defaultName, { ... } from "module"
+            _ => {
+                let name = self.expect_identifier()?;
+                specifiers.push(ImportSpecifier::Default(name));
+                if self.eat(TokenKind::Comma) {
+                    // import default, { named } from "module"
+                    if self.eat(TokenKind::LBrace) {
+                        while !self.check_kind(&TokenKind::RBrace) && !self.is_at_end() {
+                            let n = self.expect_identifier()?;
+                            let a = if self.eat(TokenKind::As) {
+                                Some(self.expect_identifier()?)
+                            } else {
+                                None
+                            };
+                            specifiers.push(ImportSpecifier::Named { name: n, alias: a });
+                            if !self.eat(TokenKind::Comma) { break; }
+                        }
+                        self.expect(TokenKind::RBrace)?;
+                    }
+                }
+            }
+        }
+
+        // "from" keyword + source string
+        self.expect(TokenKind::From)?;
+        let source = match self.current_kind() {
+            TokenKind::String(s) => { self.advance(); s }
+            _ => return Err(self.error("Expected module path string")),
+        };
+        self.eat_semicolon();
+        Ok(Statement::Import { specifiers, source })
+    }
+
+    fn parse_export_statement(&mut self) -> Result<Statement, String> {
+        self.expect(TokenKind::Export)?;
+
+        // export default expr
+        if self.eat(TokenKind::Default) {
+            if self.check_kind(&TokenKind::Function) {
+                let stmt = self.parse_function_declaration()?;
+                return Ok(Statement::Export {
+                    declaration: Some(Box::new(stmt)),
+                    specifiers: vec![],
+                    default: None,
+                });
+            }
+            if self.check_kind(&TokenKind::Class) {
+                let stmt = self.parse_class_declaration()?;
+                return Ok(Statement::Export {
+                    declaration: Some(Box::new(stmt)),
+                    specifiers: vec![],
+                    default: None,
+                });
+            }
+            let expr = self.parse_assignment_expression()?;
+            self.eat_semicolon();
+            return Ok(Statement::Export {
+                declaration: None,
+                specifiers: vec![],
+                default: Some(Box::new(expr)),
+            });
+        }
+
+        // export { a, b, c }
+        if self.check_kind(&TokenKind::LBrace) {
+            self.advance();
+            let mut specifiers = Vec::new();
+            while !self.check_kind(&TokenKind::RBrace) && !self.is_at_end() {
+                let name = self.expect_identifier()?;
+                let alias = if self.eat(TokenKind::As) {
+                    Some(self.expect_identifier()?)
+                } else {
+                    None
+                };
+                specifiers.push(ExportSpecifier { name, alias });
+                if !self.eat(TokenKind::Comma) { break; }
+            }
+            self.expect(TokenKind::RBrace)?;
+            self.eat_semicolon();
+            return Ok(Statement::Export {
+                declaration: None,
+                specifiers,
+                default: None,
+            });
+        }
+
+        // export function/class/let/const/var
+        let stmt = match self.current_kind() {
+            TokenKind::Function => self.parse_function_declaration()?,
+            TokenKind::Class => self.parse_class_declaration()?,
+            TokenKind::Var | TokenKind::Let | TokenKind::Const => self.parse_variable_declaration()?,
+            _ => return Err(self.error("Expected declaration after export")),
+        };
+
+        Ok(Statement::Export {
+            declaration: Some(Box::new(stmt)),
+            specifiers: vec![],
+            default: None,
+        })
     }
 
     fn parse_block_statement(&mut self) -> Result<Statement, String> {

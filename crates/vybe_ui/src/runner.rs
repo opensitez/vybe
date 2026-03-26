@@ -58,33 +58,22 @@ pub fn run(path: &Path, extra_args: &[String]) {
 // ---------------------------------------------------------------------------
 
 /// Run a standalone .js file via the bytecode VM.
+/// Supports multi-file modules (import/export).
 /// If the JS program emits gui.runApplication(), a Dioxus window is launched.
 fn run_js_file(path: &Path) {
-    let code = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error reading file: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    let program = match vybe_parser_js::parse(&code) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("JS parse error: {e}");
-            std::process::exit(1);
-        }
-    };
-
     // 1. Create VM + shared side effect queue
     let mut vm = vybe_bytecode::VM::new();
     let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
 
-    // 2. Register all host modules + compile
-    let chunks = match vybe_compiler_js::setup_and_compile_with_gui(&mut vm, &program, queue.clone()) {
+    // 2. Register all host modules (vybe:* + js:coerce)
+    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    vybe_compiler_js::register_js_coercion(&mut vm);
+
+    // 3. Load, resolve imports, and compile all modules
+    let chunks = match vybe_compiler_js::load_and_compile(path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("JS compile error: {e}");
+            eprintln!("JS error: {e}");
             std::process::exit(1);
         }
     };
@@ -267,15 +256,26 @@ fn JsFormApp() -> Element {
         }
     };
 
-    // Collect control data to avoid borrow issues with Dioxus RSX
-    let controls: Vec<(String, vybe_forms::control::ControlType, i32, i32, i32, i32, String)> = {
+    // Collect control data — use shared control definitions from vybe_host
+    let controls: Vec<(String, String, i32, i32, i32, i32, String, String)> = {
         let f = runtime_form.read();
         f.controls.iter().map(|ctrl| {
+            let type_name = format!("{:?}", ctrl.control_type);
+            let def = vybe_host::get_def(&type_name);
+            // Collect properties for CSS generation
+            let mut props = std::collections::HashMap::new();
+            for (k, v) in ctrl.properties.iter() {
+                if let Some(s) = v.as_string() {
+                    props.insert(k.clone(), s.to_string());
+                }
+            }
+            let css = (def.css_fn)(&props);
             (
                 ctrl.name.clone(),
-                ctrl.control_type.clone(),
+                type_name,
                 ctrl.bounds.x, ctrl.bounds.y, ctrl.bounds.width, ctrl.bounds.height,
                 ctrl.properties.get_string("Text").unwrap_or_default().to_string(),
+                css,
             )
         }).collect()
     };
@@ -283,51 +283,85 @@ fn JsFormApp() -> Element {
     rsx! {
         div {
             style: "width: {form_width}px; height: {form_height}px; position: relative; background: #f0f0f0; font-family: 'Segoe UI', sans-serif; font-size: 13px;",
-            {controls.iter().map(|(ctrl_name, ctrl_type, x, y, w, h, text)| {
+            {controls.iter().map(|(ctrl_name, type_name, x, y, w, h, text, ctrl_css)| {
                 let click_name = ctrl_name.clone();
                 let mut handle = handle_event.clone();
-                let ctrl_type = ctrl_type.clone();
+                let def = vybe_host::get_def(type_name);
 
                 let pos_style = format!(
-                    "position: absolute; left: {}px; top: {}px; width: {}px; height: {}px;",
-                    x, y, w, h
+                    "position: absolute; left: {}px; top: {}px; width: {}px; height: {}px; {}",
+                    x, y, w, h, ctrl_css
                 );
 
-                match ctrl_type {
-                    vybe_forms::control::ControlType::Button => rsx! {
+                // Generic rendering based on control definition tag
+                match def.tag {
+                    "button" => rsx! {
                         button {
                             key: "{ctrl_name}",
-                            style: "{pos_style} cursor: pointer;",
+                            style: "{pos_style}",
                             onclick: move |_| handle(click_name.clone(), "Click".into()),
                             "{text}"
                         }
                     },
-                    vybe_forms::control::ControlType::Label => rsx! {
-                        div {
-                            key: "{ctrl_name}",
-                            style: "{pos_style} display: flex; align-items: center;",
-                            "{text}"
+                    "input" => {
+                        let input_type = def.input_type.unwrap_or("text");
+                        if def.inner_tag == Some("input") {
+                            // Checkbox/Radio: label wrapping input
+                            rsx! {
+                                label {
+                                    key: "{ctrl_name}",
+                                    style: "{pos_style}",
+                                    onclick: move |_| handle(click_name.clone(), "Click".into()),
+                                    input { r#type: "{input_type}" }
+                                    "{text}"
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                input {
+                                    key: "{ctrl_name}",
+                                    style: "{pos_style}",
+                                    r#type: "{input_type}",
+                                    value: "{text}",
+                                }
+                            }
                         }
                     },
-                    vybe_forms::control::ControlType::TextBox => rsx! {
-                        input {
+                    "select" => rsx! {
+                        select {
+                            key: "{ctrl_name}",
+                            style: "{pos_style}",
+                            onchange: move |_| handle(click_name.clone(), "SelectedIndexChanged".into()),
+                        }
+                    },
+                    "progress" => rsx! {
+                        progress {
                             key: "{ctrl_name}",
                             style: "{pos_style}",
                             value: "{text}",
+                            max: "100",
                         }
                     },
-                    vybe_forms::control::ControlType::CheckBox => rsx! {
-                        label {
+                    "table" => rsx! {
+                        div {
                             key: "{ctrl_name}",
-                            style: "{pos_style} display: flex; align-items: center; gap: 4px;",
-                            input { r#type: "checkbox" }
+                            style: "{pos_style}",
+                            "[DataGrid]"
+                        }
+                    },
+                    "nav" | "iframe" | "img" => rsx! {
+                        div {
+                            key: "{ctrl_name}",
+                            style: "{pos_style}",
                             "{text}"
                         }
                     },
+                    // div, a, label — all rendered as div with appropriate styles
                     _ => rsx! {
                         div {
                             key: "{ctrl_name}",
-                            style: "{pos_style} border: 1px dashed #999; display: flex; align-items: center; justify-content: center; color: #666;",
+                            style: "{pos_style}",
+                            onclick: move |_| handle(click_name.clone(), "Click".into()),
                             "{text}"
                         }
                     },

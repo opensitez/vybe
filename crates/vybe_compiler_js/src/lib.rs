@@ -1,7 +1,9 @@
 pub mod compiler;
 pub mod scope;
+pub mod module_loader;
 
 pub use compiler::Compiler;
+pub use module_loader::load_and_compile;
 use vybe_bytecode::{VM, Value};
 use std::rc::Rc;
 

@@ -783,3 +783,44 @@ fn test_map_filter_reduce() {
     "#;
     assert_eq!(run_js_one(code), "35"); // 1+9+25
 }
+
+// ============================================================
+// Import / Export — basic syntax parsing
+// ============================================================
+
+#[test]
+fn test_export_function() {
+    let code = r#"
+        export function add(a, b) { return a + b; }
+        console.log(add(3, 4));
+    "#;
+    assert_eq!(run_js_one(code), "7");
+}
+
+#[test]
+fn test_export_let() {
+    let code = r#"
+        export let name = "Alice";
+        console.log(name);
+    "#;
+    assert_eq!(run_js_one(code), "Alice");
+}
+
+#[test]
+fn test_export_default_expression() {
+    let code = r#"
+        export default 42;
+        console.log("ok");
+    "#;
+    assert_eq!(run_js_one(code), "ok");
+}
+
+#[test]
+fn test_import_from_host_module() {
+    // Importing from vybe:* should not crash — host modules resolved at call site
+    let code = r#"
+        import { floor } from "vybe:math";
+        console.log(Math.floor(3.7));
+    "#;
+    assert_eq!(run_js_one(code), "3");
+}
