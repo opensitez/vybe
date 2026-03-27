@@ -55,14 +55,29 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::select |
         Op::try_end | Op::throw |
         Op::inherit | Op::iter_get | Op::iter_next | Op::spread |
-        Op::memory_size | Op::end | Op::unpack => {
+        Op::memory_size | Op::end | Op::unpack |
+        // String builtins
+        Op::str_length | Op::str_char_code_at | Op::str_from_char_code | Op::str_char_at |
+        Op::str_substring | Op::str_slice | Op::str_index_of | Op::str_last_index_of |
+        Op::str_equals | Op::str_compare | Op::str_to_upper | Op::str_to_lower |
+        Op::str_trim | Op::str_trim_start | Op::str_trim_end |
+        Op::str_starts_with | Op::str_ends_with | Op::str_contains |
+        Op::str_replace | Op::str_split | Op::str_repeat |
+        Op::str_pad_start | Op::str_pad_end | Op::str_reverse |
+        // Array builtins
+        Op::array_length | Op::array_push | Op::array_pop | Op::array_slice |
+        Op::array_join | Op::array_reverse | Op::array_contains | Op::array_index_of |
+        Op::array_new_default | Op::array_fill | Op::array_copy | Op::array_concat | Op::array_shift |
+        // Stack switching (no-operand forms)
+        Op::cont_new => {
             (format!("{:?}", op), offset + 1)
         }
 
         // u16 operand
         Op::r#const | Op::local_get | Op::local_set | Op::global_get | Op::global_set |
         Op::struct_get | Op::struct_set | Op::struct_new | Op::array_new | Op::class_new | Op::method_def |
-        Op::block | Op::r#loop | Op::memory_grow | Op::canon_lift | Op::canon_lower | Op::ref_test => {
+        Op::block | Op::r#loop | Op::memory_grow | Op::canon_lift | Op::canon_lower | Op::ref_test |
+        Op::suspend | Op::resume | Op::switch => {
             let idx = chunk.read_u16(offset + 1);
             let extra = if op == Op::r#const && (idx as usize) < chunk.constants.len() {
                 format!(" ({})", chunk.constants[idx as usize])

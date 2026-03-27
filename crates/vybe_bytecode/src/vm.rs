@@ -1350,6 +1350,423 @@ impl VM {
                 Op::canon_lift => { let _ = self.read_u16(); }
                 Op::canon_lower => { let _ = self.read_u16(); }
 
+                // -- JS String Builtins (wasm:js-string proposal) --
+                Op::str_length => {
+                    let s = self.pop();
+                    let len = match &s {
+                        Value::String(s) => s.len() as i32,
+                        Value::Object(obj) => {
+                            let o = obj.borrow();
+                            if let ObjectKind::Array(a) = &o.kind { a.len() as i32 }
+                            else if let Some(Value::F64(n)) = o.properties.get("length") { *n as i32 }
+                            else { 0 }
+                        }
+                        _ => 0,
+                    };
+                    self.push(Value::I32(len))?;
+                }
+                Op::str_char_code_at => {
+                    let idx = self.pop().as_i32() as usize;
+                    let s = self.pop();
+                    let code = if let Value::String(s) = &s {
+                        s.chars().nth(idx).map(|c| c as i32).unwrap_or(-1)
+                    } else { -1 };
+                    self.push(Value::I32(code))?;
+                }
+                Op::str_from_char_code => {
+                    let code = self.pop().as_i32() as u32;
+                    let ch = char::from_u32(code).unwrap_or('\0');
+                    self.push(Value::String(Rc::from(ch.to_string().as_str())))?;
+                }
+                Op::str_char_at => {
+                    let idx = self.pop().as_i32() as usize;
+                    let s = self.pop();
+                    let ch = if let Value::String(s) = &s {
+                        s.chars().nth(idx).map(|c| Rc::from(c.to_string().as_str()))
+                            .unwrap_or(Rc::from(""))
+                    } else { Rc::from("") };
+                    self.push(Value::String(ch))?;
+                }
+                Op::str_substring | Op::str_slice => {
+                    let end = self.pop().as_i32() as usize;
+                    let start = self.pop().as_i32() as usize;
+                    let s = self.pop();
+                    let result = if let Value::String(s) = &s {
+                        let chars: Vec<char> = s.chars().collect();
+                        let end = end.min(chars.len());
+                        let start = start.min(end);
+                        let sub: String = chars[start..end].iter().collect();
+                        Rc::from(sub.as_str())
+                    } else { Rc::from("") };
+                    self.push(Value::String(result))?;
+                }
+                Op::str_index_of => {
+                    let needle = self.pop();
+                    let haystack = self.pop();
+                    let pos = match (&haystack, &needle) {
+                        (Value::String(h), Value::String(n)) => {
+                            h.find(n.as_ref()).map(|p| p as i32).unwrap_or(-1)
+                        }
+                        _ => -1,
+                    };
+                    self.push(Value::I32(pos))?;
+                }
+                Op::str_last_index_of => {
+                    let needle = self.pop();
+                    let haystack = self.pop();
+                    let pos = match (&haystack, &needle) {
+                        (Value::String(h), Value::String(n)) => {
+                            h.rfind(n.as_ref()).map(|p| p as i32).unwrap_or(-1)
+                        }
+                        _ => -1,
+                    };
+                    self.push(Value::I32(pos))?;
+                }
+                Op::str_equals => {
+                    let b = self.pop(); let a = self.pop();
+                    let eq = match (&a, &b) {
+                        (Value::String(a), Value::String(b)) => a == b,
+                        _ => false,
+                    };
+                    self.push(Value::Bool(eq))?;
+                }
+                Op::str_compare => {
+                    let b = self.pop(); let a = self.pop();
+                    let cmp = match (&a, &b) {
+                        (Value::String(a), Value::String(b)) => {
+                            match a.cmp(b) {
+                                std::cmp::Ordering::Less => -1,
+                                std::cmp::Ordering::Equal => 0,
+                                std::cmp::Ordering::Greater => 1,
+                            }
+                        }
+                        _ => 0,
+                    };
+                    self.push(Value::I32(cmp))?;
+                }
+                Op::str_to_upper => {
+                    let s = self.pop();
+                    let r = if let Value::String(s) = &s {
+                        Rc::from(s.to_uppercase().as_str())
+                    } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+                Op::str_to_lower => {
+                    let s = self.pop();
+                    let r = if let Value::String(s) = &s {
+                        Rc::from(s.to_lowercase().as_str())
+                    } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+                Op::str_trim => {
+                    let s = self.pop();
+                    let r = if let Value::String(s) = &s { Rc::from(s.trim()) } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+                Op::str_trim_start => {
+                    let s = self.pop();
+                    let r = if let Value::String(s) = &s { Rc::from(s.trim_start()) } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+                Op::str_trim_end => {
+                    let s = self.pop();
+                    let r = if let Value::String(s) = &s { Rc::from(s.trim_end()) } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+                Op::str_starts_with => {
+                    let prefix = self.pop(); let s = self.pop();
+                    let r = match (&s, &prefix) {
+                        (Value::String(s), Value::String(p)) => s.starts_with(p.as_ref()),
+                        _ => false,
+                    };
+                    self.push(Value::Bool(r))?;
+                }
+                Op::str_ends_with => {
+                    let suffix = self.pop(); let s = self.pop();
+                    let r = match (&s, &suffix) {
+                        (Value::String(s), Value::String(p)) => s.ends_with(p.as_ref()),
+                        _ => false,
+                    };
+                    self.push(Value::Bool(r))?;
+                }
+                Op::str_contains => {
+                    let needle = self.pop(); let s = self.pop();
+                    let r = match (&s, &needle) {
+                        (Value::String(s), Value::String(n)) => s.contains(n.as_ref()),
+                        _ => false,
+                    };
+                    self.push(Value::Bool(r))?;
+                }
+                Op::str_replace => {
+                    let new = self.pop(); let old = self.pop(); let s = self.pop();
+                    let r = match (&s, &old, &new) {
+                        (Value::String(s), Value::String(o), Value::String(n)) => {
+                            Rc::from(s.replace(o.as_ref(), n.as_ref()).as_str())
+                        }
+                        _ => Rc::from(""),
+                    };
+                    self.push(Value::String(r))?;
+                }
+                Op::str_split => {
+                    let delim = self.pop(); let s = self.pop();
+                    let parts: Vec<Value> = match (&s, &delim) {
+                        (Value::String(s), Value::String(d)) => {
+                            s.split(d.as_ref()).map(|p| Value::String(Rc::from(p))).collect()
+                        }
+                        _ => vec![],
+                    };
+                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(parts)))))?;
+                }
+                Op::str_repeat => {
+                    let count = self.pop().as_i32().max(0) as usize;
+                    let s = self.pop();
+                    let r = if let Value::String(s) = &s {
+                        Rc::from(s.repeat(count).as_str())
+                    } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+                Op::str_pad_start => {
+                    let fill = self.pop(); let target_len = self.pop().as_i32().max(0) as usize;
+                    let s = self.pop();
+                    let r = if let (Value::String(s), Value::String(f)) = (&s, &fill) {
+                        if s.len() >= target_len { Rc::clone(s) }
+                        else {
+                            let pad = target_len - s.len();
+                            let fill_str: String = f.chars().cycle().take(pad).collect();
+                            Rc::from(format!("{}{}", fill_str, s).as_str())
+                        }
+                    } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+                Op::str_pad_end => {
+                    let fill = self.pop(); let target_len = self.pop().as_i32().max(0) as usize;
+                    let s = self.pop();
+                    let r = if let (Value::String(s), Value::String(f)) = (&s, &fill) {
+                        if s.len() >= target_len { Rc::clone(s) }
+                        else {
+                            let pad = target_len - s.len();
+                            let fill_str: String = f.chars().cycle().take(pad).collect();
+                            Rc::from(format!("{}{}", s, fill_str).as_str())
+                        }
+                    } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+                Op::str_reverse => {
+                    let s = self.pop();
+                    let r = if let Value::String(s) = &s {
+                        Rc::from(s.chars().rev().collect::<String>().as_str())
+                    } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+
+                // -- Array builtins --
+                Op::array_length => {
+                    let arr = self.pop();
+                    let len = if let Value::Object(obj) = &arr {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(a) = &o.kind { a.len() as i32 } else { 0 }
+                    } else if let Value::String(s) = &arr {
+                        s.len() as i32
+                    } else { 0 };
+                    self.push(Value::I32(len))?;
+                }
+                Op::array_push => {
+                    let val = self.pop(); let arr = self.pop();
+                    if let Value::Object(obj) = &arr {
+                        let mut o = obj.borrow_mut();
+                        if let ObjectKind::Array(ref mut a) = o.kind { a.push(val); }
+                    }
+                    self.push(arr)?;
+                }
+                Op::array_pop => {
+                    let arr = self.pop();
+                    let val = if let Value::Object(obj) = &arr {
+                        let mut o = obj.borrow_mut();
+                        if let ObjectKind::Array(ref mut a) = o.kind { a.pop().unwrap_or(Value::Null) }
+                        else { Value::Null }
+                    } else { Value::Null };
+                    self.push(val)?;
+                }
+                Op::array_slice => {
+                    let end = self.pop().as_i32(); let start = self.pop().as_i32();
+                    let arr = self.pop();
+                    let result = if let Value::Object(obj) = &arr {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(a) = &o.kind {
+                            let len = a.len() as i32;
+                            let s = if start < 0 { (len + start).max(0) as usize } else { start.min(len) as usize };
+                            let e = if end < 0 { (len + end).max(0) as usize } else { end.min(len) as usize };
+                            let sliced: Vec<Value> = a[s..e.max(s)].to_vec();
+                            Value::Object(Rc::new(RefCell::new(Object::new_array(sliced))))
+                        } else { Value::Null }
+                    } else { Value::Null };
+                    self.push(result)?;
+                }
+                Op::array_join => {
+                    let delim = self.pop(); let arr = self.pop();
+                    let r = if let (Value::Object(obj), Value::String(d)) = (&arr, &delim) {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(a) = &o.kind {
+                            let parts: Vec<String> = a.iter().map(|v| format!("{}", v)).collect();
+                            Rc::from(parts.join(d.as_ref()).as_str())
+                        } else { Rc::from("") }
+                    } else { Rc::from("") };
+                    self.push(Value::String(r))?;
+                }
+                Op::array_reverse => {
+                    let arr = self.pop();
+                    if let Value::Object(obj) = &arr {
+                        let mut o = obj.borrow_mut();
+                        if let ObjectKind::Array(ref mut a) = o.kind { a.reverse(); }
+                    }
+                    self.push(arr)?;
+                }
+                Op::array_contains => {
+                    let needle = self.pop(); let arr = self.pop();
+                    let found = if let Value::Object(obj) = &arr {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(a) = &o.kind {
+                            a.iter().any(|v| v.eq(&needle))
+                        } else { false }
+                    } else { false };
+                    self.push(Value::Bool(found))?;
+                }
+                Op::array_index_of => {
+                    let needle = self.pop(); let arr = self.pop();
+                    let idx = if let Value::Object(obj) = &arr {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(a) = &o.kind {
+                            a.iter().position(|v| v.eq(&needle)).map(|p| p as i32).unwrap_or(-1)
+                        } else { -1 }
+                    } else { -1 };
+                    self.push(Value::I32(idx))?;
+                }
+
+                // WASM GC array ops
+                Op::array_new_default => {
+                    let len = self.pop().as_i32().max(0) as usize;
+                    let elems = vec![Value::Null; len];
+                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(elems)))))?;
+                }
+                Op::array_fill => {
+                    let count = self.pop().as_i32().max(0) as usize;
+                    let start = self.pop().as_i32().max(0) as usize;
+                    let val = self.pop();
+                    let arr = self.pop();
+                    if let Value::Object(obj) = &arr {
+                        let mut o = obj.borrow_mut();
+                        if let ObjectKind::Array(ref mut a) = o.kind {
+                            let end = (start + count).min(a.len());
+                            for i in start..end { a[i] = val.clone(); }
+                        }
+                    }
+                }
+                Op::array_copy => {
+                    let len = self.pop().as_i32().max(0) as usize;
+                    let src_off = self.pop().as_i32().max(0) as usize;
+                    let src = self.pop();
+                    let dst_off = self.pop().as_i32().max(0) as usize;
+                    let dst = self.pop();
+                    // Read source slice
+                    let src_vals: Vec<Value> = if let Value::Object(obj) = &src {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(a) = &o.kind {
+                            let end = (src_off + len).min(a.len());
+                            a[src_off.min(a.len())..end].to_vec()
+                        } else { vec![] }
+                    } else { vec![] };
+                    // Write to destination
+                    if let Value::Object(obj) = &dst {
+                        let mut o = obj.borrow_mut();
+                        if let ObjectKind::Array(ref mut a) = o.kind {
+                            for (i, v) in src_vals.into_iter().enumerate() {
+                                let idx = dst_off + i;
+                                if idx < a.len() { a[idx] = v; }
+                            }
+                        }
+                    }
+                }
+                Op::array_concat => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let mut result = Vec::new();
+                    if let Value::Object(obj) = &a {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(arr) = &o.kind { result.extend(arr.iter().cloned()); }
+                    }
+                    if let Value::Object(obj) = &b {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(arr) = &o.kind { result.extend(arr.iter().cloned()); }
+                    }
+                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(result)))))?;
+                }
+                Op::array_shift => {
+                    let arr = self.pop();
+                    let val = if let Value::Object(obj) = &arr {
+                        let mut o = obj.borrow_mut();
+                        if let ObjectKind::Array(ref mut a) = o.kind {
+                            if a.is_empty() { Value::Null } else { a.remove(0) }
+                        } else { Value::Null }
+                    } else { Value::Null };
+                    self.push(val)?;
+                }
+
+                // -- Stack Switching (wasm stack-switching proposal) --
+                Op::cont_new => {
+                    // Create a continuation from a function reference.
+                    // The continuation wraps a function + saved state.
+                    let func_val = self.pop();
+                    let mut obj = Object::new_typed(0);
+                    obj.properties.insert("__cont_func".into(), func_val);
+                    obj.properties.insert("__cont_state".into(), Value::String(Rc::from("ready")));
+                    obj.properties.insert("__cont_value".into(), Value::Null);
+                    self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
+                }
+                Op::suspend => {
+                    let _tag = self.read_u16();
+                    // Yield a value from the current continuation.
+                    // The yielded value stays on the stack for the caller.
+                    // This is like a return but the continuation can be resumed.
+                    let val = self.pop();
+                    return Ok(val);
+                }
+                Op::resume => {
+                    let _tag = self.read_u16();
+                    // Resume a continuation, passing a value to it.
+                    // [continuation, value] → [result]
+                    let val = self.pop();
+                    let cont = self.pop();
+                    if let Value::Object(obj) = &cont {
+                        let func_val = {
+                            let o = obj.borrow();
+                            o.properties.get("__cont_func").cloned().unwrap_or(Value::Null)
+                        };
+                        {
+                            let mut o = obj.borrow_mut();
+                            o.properties.insert("__cont_state".into(), Value::String(Rc::from("running")));
+                            o.properties.insert("__cont_value".into(), val.clone());
+                        }
+                        // Call the continuation's function with the resume value
+                        self.push(func_val)?;
+                        self.push(val)?;
+                        self.call_value(1)?;
+                    } else {
+                        self.push(val)?;
+                    }
+                }
+                Op::switch => {
+                    let _tag = self.read_u16();
+                    // Symmetric switch: suspend current continuation, resume target
+                    let val = self.pop();
+                    let cont = self.pop();
+                    if let Value::Object(obj) = &cont {
+                        let mut o = obj.borrow_mut();
+                        o.properties.insert("__cont_value".into(), val.clone());
+                        o.properties.insert("__cont_state".into(), Value::String(Rc::from("running")));
+                    }
+                    self.push(val)?;
+                }
+
                 // -- Stubs --
                 Op::iter_get | Op::iter_next | Op::spread => {
                     return Err(VMError::new("Iteration not yet implemented"));

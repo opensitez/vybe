@@ -395,13 +395,19 @@ impl Compiler {
                 "math.sqrt" | "sqr" => Some(Op::f64_sqrt),
                 "math.truncate" => Some(Op::f64_trunc),
                 "math.round" => Some(Op::f64_nearest),
-                // Type conversions: only CBool can be a direct opcode.
-                // CInt/CDbl/CLng must stay as host calls because VB allows CInt("42").
+                // Type conversions
                 "cbool" => Some(Op::dyn_to_bool),
-                // Type checks: only IsNothing/IsNull are pure type checks.
-                // IsNumeric must stay as host call (checks if string is parseable).
-                // IsObject must stay as host call (VB semantics differ from ref_is_object).
+                // Type checks
                 "isnothing" | "isnull" => Some(Op::ref_is_null),
+                // String builtins (wasm:js-string proposal)
+                "len" => Some(Op::str_length),
+                "ucase" => Some(Op::str_to_upper),
+                "lcase" => Some(Op::str_to_lower),
+                "trim" => Some(Op::str_trim),
+                "ltrim" => Some(Op::str_trim_start),
+                "rtrim" => Some(Op::str_trim_end),
+                "strreverse" => Some(Op::str_reverse),
+                "chr" | "chr$" | "chrw" => Some(Op::str_from_char_code),
                 _ => None,
             };
             if let Some(op) = op {
@@ -423,21 +429,30 @@ impl Compiler {
                 // UBound: array length - 1
                 "ubound" => {
                     self.compile_expression(&args[0])?;
-                    let len_idx = self.add_string_constant("length");
-                    self.emit_u16(Op::struct_get, len_idx);
-                    self.emit_constant(Value::F64(1.0));
-                    self.emit(Op::f64_sub);
+                    self.emit(Op::array_length);
+                    self.emit_constant(Value::I32(1));
+                    self.emit(Op::i32_sub);
+                    return Ok(Some(()));
+                }
+                // Asc(s) → str_char_code_at(s, 0)
+                "asc" | "ascw" => {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::i32_const_0);
+                    self.emit(Op::str_char_code_at);
                     return Ok(Some(()));
                 }
                 _ => {}
             }
         }
 
-        // Two-argument Math functions → direct f64 opcodes
+        // Two-argument intrinsics
         if args.len() == 2 {
             let op = match fname {
                 "math.min" => Some(Op::f64_min),
                 "math.max" => Some(Op::f64_max),
+                "split" => Some(Op::str_split),
+                "join" => Some(Op::array_join),
+                "string" | "string$" => Some(Op::str_repeat),
                 _ => None,
             };
             if let Some(op) = op {
@@ -445,6 +460,121 @@ impl Compiler {
                 self.compile_expression(&args[1])?;
                 self.emit(op);
                 return Ok(Some(()));
+            }
+
+            // Multi-opcode two-arg intrinsics
+            match fname {
+                // InStr(s, needle) → str_index_of + 1 (VB is 1-based: 1=first, 0=not found)
+                "instr" => {
+                    self.compile_expression(&args[0])?;
+                    self.compile_expression(&args[1])?;
+                    self.emit(Op::str_index_of);
+                    self.emit_constant(Value::I32(1));
+                    self.emit(Op::i32_add); // -1→0, 0→1, 5→6
+                    return Ok(Some(()));
+                }
+                // Left(s, n) → str_substring(s, 0, n)
+                "left" | "left$" => {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::i32_const_0);
+                    self.compile_expression(&args[1])?;
+                    self.emit(Op::i32_from_f64);
+                    self.emit(Op::str_substring);
+                    return Ok(Some(()));
+                }
+                // Right(s, n) → str_substring(s, len-n, len)
+                "right" | "right$" => {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::dup);
+                    self.emit(Op::str_length);        // [s, len]
+                    self.emit(Op::dup);               // [s, len, len]
+                    self.compile_expression(&args[1])?;
+                    self.emit(Op::i32_from_f64);
+                    self.emit(Op::i32_sub);           // [s, len, len-n]
+                    // need: [s, len-n, len] — swap top two
+                    // No swap opcode, so recompute: use the stack
+                    // Actually let's just fall through to host call for Right — it's complex
+                    self.emit(Op::drop);
+                    self.emit(Op::drop);
+                    self.emit(Op::drop);
+                    return Ok(None); // fall through to host call
+                }
+                _ => {}
+            }
+        }
+
+        // Mid(s, start) — 2-arg form: from start to end
+        if args.len() == 2 && (fname == "mid" || fname == "mid$") {
+            self.compile_expression(&args[0])?;
+            // start0 = start - 1
+            self.compile_expression(&args[1])?;
+            self.emit(Op::i32_from_f64);
+            self.emit_constant(Value::I32(1));
+            self.emit(Op::i32_sub);
+            // end = large number (rest of string)
+            self.emit_constant(Value::I32(0x7FFF_FFFF));
+            self.emit(Op::str_substring);
+            return Ok(Some(()));
+        }
+
+        // Three-argument intrinsics
+        if args.len() == 3 {
+            match fname {
+                // InStr(startPos, string, substring) — 3-arg with 1-based start offset
+                "instr" => {
+                    // We need: str_index_of(substring_from(s, start-1), needle) + start
+                    // Simpler: use str_substring to get tail, then str_index_of, adjust
+                    self.compile_expression(&args[1])?; // string
+                    self.compile_expression(&args[0])?; // startPos
+                    self.emit(Op::i32_from_f64);
+                    self.emit_constant(Value::I32(1));
+                    self.emit(Op::i32_sub);             // start0
+                    self.emit(Op::dup);                 // [s, start0, start0]
+                    self.emit_constant(Value::I32(0x7FFF_FFFF));
+                    self.emit(Op::str_substring);       // [start0, tail]
+                    self.compile_expression(&args[2])?; // needle
+                    self.emit(Op::str_index_of);        // [start0, pos_in_tail]
+                    // if pos_in_tail == -1, result = 0; else result = pos_in_tail + start0 + 1
+                    self.emit(Op::dup);                 // [start0, pos, pos]
+                    self.emit_constant(Value::I32(-1));
+                    self.emit(Op::dyn_eq);              // [start0, pos, is_not_found]
+                    let found = self.emit_jump(Op::br_if_true);
+                    // Found: pos + start0 + 1
+                    self.emit(Op::i32_add);             // pos + start0
+                    self.emit_constant(Value::I32(1));
+                    self.emit(Op::i32_add);
+                    let end = self.emit_jump(Op::br);
+                    self.patch_jump(found);
+                    // Not found: drop pos and start0, push 0
+                    self.emit(Op::drop);
+                    self.emit(Op::drop);
+                    self.emit(Op::i32_const_0);
+                    self.patch_jump(end);
+                    return Ok(Some(()));
+                }
+                "replace" => {
+                    self.compile_expression(&args[0])?;
+                    self.compile_expression(&args[1])?;
+                    self.compile_expression(&args[2])?;
+                    self.emit(Op::str_replace);
+                    return Ok(Some(()));
+                }
+                // Mid(s, start, length) → str_substring(s, start-1, start-1+length)
+                "mid" | "mid$" => {
+                    self.compile_expression(&args[0])?;
+                    // Convert 1-based start to 0-based
+                    self.compile_expression(&args[1])?;
+                    self.emit(Op::i32_from_f64);
+                    self.emit_constant(Value::I32(1));
+                    self.emit(Op::i32_sub);           // start0 = start - 1
+                    self.emit(Op::dup);               // [s, start0, start0]
+                    self.compile_expression(&args[2])?;
+                    self.emit(Op::i32_from_f64);
+                    self.emit(Op::i32_add);           // [s, start0, start0+length]
+                    self.emit(Op::str_substring);
+                    return Ok(Some(()));
+                }
+                _ => {}
             }
         }
         Ok(None)

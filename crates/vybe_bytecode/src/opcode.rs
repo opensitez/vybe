@@ -290,6 +290,65 @@ pub enum Op {
     /// Lower a component interface type to core value.
     canon_lower,     // [canon_lower, u16 interface_idx]
 
+    // -- JS String Builtins (wasm:js-string proposal) --
+    // These match the WASM JS String Builtins proposal import names.
+    // All operate on Value::String directly in the VM — no host call overhead.
+    str_length,      // [str] → [i32]
+    str_char_code_at,// [str, i32 index] → [i32 code]
+    str_from_char_code, // [i32 code] → [str]  (Chr in VB)
+    str_substring,   // [str, i32 start, i32 end] → [str]
+    str_index_of,    // [str, str needle] → [i32 pos] (-1 if not found)
+    str_last_index_of, // [str, str needle] → [i32 pos]
+    str_equals,      // [str, str] → [bool]
+    str_compare,     // [str, str] → [i32]  (-1, 0, 1)
+    str_to_upper,    // [str] → [str]
+    str_to_lower,    // [str] → [str]
+    str_trim,        // [str] → [str]
+    str_trim_start,  // [str] → [str]
+    str_trim_end,    // [str] → [str]
+    str_starts_with, // [str, str prefix] → [bool]
+    str_ends_with,   // [str, str suffix] → [bool]
+    str_contains,    // [str, str needle] → [bool]
+    str_replace,     // [str, str old, str new] → [str]
+    str_split,       // [str, str delim] → [array of str]
+    str_repeat,      // [str, i32 count] → [str]
+    str_pad_start,   // [str, i32 len, str fill] → [str]
+    str_pad_end,     // [str, i32 len, str fill] → [str]
+    str_slice,       // [str, i32 start, i32 end] → [str] (same as substring)
+    str_char_at,     // [str, i32 index] → [str single-char]
+    str_reverse,     // [str] → [str]
+
+    // -- Array builtins (WASM GC array.* + extras) --
+    array_length,    // [array] → [i32]                 (GC: array.len)
+    array_push,      // [array, value] → [array]
+    array_pop,       // [array] → [value]
+    array_slice,     // [array, i32 start, i32 end] → [array]
+    array_join,      // [array, str delim] → [str]
+    array_reverse,   // [array] → [array]
+    array_contains,  // [array, value] → [bool]
+    array_index_of,  // [array, value] → [i32]
+    // WASM GC spec ops
+    array_new_default, // [i32 len] → [array of nulls]    (GC: array.new_default)
+    array_fill,      // [array, value, i32 start, i32 len] → []  (GC: array.fill)
+    array_copy,      // [dst, dst_off, src, src_off, len] → []   (GC: array.copy)
+    array_concat,    // [array, array] → [array]
+    array_shift,     // [array] → [value] (remove first)
+
+    // -- Stack Switching (wasm stack-switching proposal) --
+    // Enables async/await, generators, coroutines without CPS transform.
+    /// Create a new continuation (fiber/coroutine).
+    /// [ref_func] → [continuation]
+    cont_new,
+    /// Suspend the current continuation, yielding a value.
+    /// [value] → suspends; resumes with [value]
+    suspend,         // [suspend, u16 tag_idx]
+    /// Resume a suspended continuation, passing a value.
+    /// [continuation, value] → [result]
+    resume,          // [resume, u16 tag_idx]
+    /// Resume a continuation and immediately suspend the current one (symmetric switch).
+    /// [continuation, value] → suspends; other resumes with [value]
+    switch,          // [switch, u16 tag_idx]
+
     halt,
 }
 

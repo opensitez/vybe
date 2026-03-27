@@ -1007,7 +1007,12 @@ impl Compiler {
                 }
             }
 
-            // obj IS a variable — check for value methods (push, slice, etc.)
+            // obj IS a variable — try direct WASM string/array opcodes first
+            if let Some(()) = self.try_value_method_intrinsic(object, property, arguments)? {
+                return Ok(());
+            }
+
+            // Fallback to host call for value methods
             if let Some(idx) = self.resolve_value_method(property) {
                 self.compile_expression(object)?;
                 for arg in arguments { self.compile_expression(arg)?; }
@@ -2007,8 +2012,73 @@ impl Compiler {
     }
 
     /// Emit direct WASM opcodes for bare JS globals.
-    /// Note: parseInt/parseFloat must stay as host calls because they parse STRINGS.
     fn try_bare_intrinsic(&mut self, _name: &str, _args: &[Expression]) -> Result<Option<()>, String> {
+        Ok(None)
+    }
+
+    /// Emit direct WASM string/array opcodes for value method calls.
+    /// obj.method(args) where obj is a variable.
+    fn try_value_method_intrinsic(&mut self, object: &Expression, method: &str, args: &[Expression]) -> Result<Option<()>, String> {
+        // Zero-arg string-only methods
+        if args.is_empty() {
+            let op = match method {
+                "toUpperCase" => Some(Op::str_to_upper),
+                "toLowerCase" => Some(Op::str_to_lower),
+                "trim" => Some(Op::str_trim),
+                "trimStart" => Some(Op::str_trim_start),
+                "trimEnd" => Some(Op::str_trim_end),
+                // reverse/pop are array-only but we lack compile-time type info
+                _ => None,
+            };
+            if let Some(op) = op {
+                self.compile_expression(object)?;
+                self.emit(op);
+                return Ok(Some(()));
+            }
+        }
+
+        // One-arg methods: obj.method(arg)
+        if args.len() == 1 {
+            let op = match method {
+                // String-only methods (never called on arrays)
+                "charAt" => Some(Op::str_char_at),
+                "charCodeAt" => Some(Op::str_char_code_at),
+                "startsWith" => Some(Op::str_starts_with),
+                "endsWith" => Some(Op::str_ends_with),
+                "split" => Some(Op::str_split),
+                "repeat" => Some(Op::str_repeat),
+                // Note: indexOf/includes/lastIndexOf are polymorphic (string AND array)
+                // so they must stay as host calls for correct dispatch.
+                _ => None,
+            };
+            if let Some(op) = op {
+                self.compile_expression(object)?;
+                self.compile_expression(&args[0])?;
+                self.emit(op);
+                return Ok(Some(()));
+            }
+        }
+
+        // Two-arg string-only methods
+        if args.len() == 2 {
+            let op = match method {
+                // substring is string-only; slice is polymorphic (keep as host call)
+                "substring" => Some(Op::str_substring),
+                "padStart" => Some(Op::str_pad_start),
+                "padEnd" => Some(Op::str_pad_end),
+                // replace/replaceAll: string-only in practice
+                "replace" | "replaceAll" => Some(Op::str_replace),
+                _ => None,
+            };
+            if let Some(op) = op {
+                self.compile_expression(object)?;
+                self.compile_expression(&args[0])?;
+                self.compile_expression(&args[1])?;
+                self.emit(op);
+                return Ok(Some(()));
+            }
+        }
+
         Ok(None)
     }
 }
