@@ -75,6 +75,7 @@ pub fn register_all(vm: &mut VM) {
             ("reverse", "vybe:types", "listReverse"),
             ("toarray", "vybe:types", "listToArray"),
             ("item", "vybe:types", "listItem"),
+            ("lastindexof", "vybe:types", "listIndexOf"),
             ("insert", "vybe:types", "listInsert"),
             ("addrange", "vybe:types", "listAddRange"),
             ("capacity", "vybe:types", "listCount"),

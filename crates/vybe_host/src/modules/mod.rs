@@ -41,6 +41,7 @@ pub mod xml;
 pub mod threading;
 pub mod data;
 pub mod drawing;
+pub mod rt;
 
 use vybe_bytecode::VM;
 
@@ -69,7 +70,8 @@ pub fn register_all(vm: &mut VM) {
     threading::register(vm);
     data::register(vm);
     drawing::register(vm);
-    // Set up namespace objects, type registry, and legacy type method table
+    rt::register(vm);
+    // Set up namespace objects, type registry
     crate::namespaces::setup_namespaces(vm);
     crate::builtin_types::register_all(vm);
 }

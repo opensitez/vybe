@@ -1,0 +1,12 @@
+# Call Rust WASM functions from VB
+# Run: vybec examples/rust_wasm/project.vybe
+
+[project]
+name = "Rust WASM Demo"
+entry = "call_rust.vb"
+
+[sources]
+files = ["target/wasm32-unknown-unknown/release/vybe_rust_wasm.wasm", "call_rust.vb"]
+
+[host]
+gui = false

@@ -19,3 +19,4 @@ pub mod component;
 pub mod project;
 pub use component::{Component, Linker, LinkResult, Interface, FuncSig, ValType, Language, ExportImpl};
 pub use project::ProjectConfig;
+pub mod wasm;
