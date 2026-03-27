@@ -65,8 +65,6 @@ pub struct VM {
     exception_handlers: Vec<ExceptionHandler>,
     /// Event loop for async operations (shared with host functions).
     pub event_loop: Rc<RefCell<EventLoop>>,
-    /// Legacy type method table — being replaced by TypeRegistry.
-    pub type_methods: HashMap<(String, String), usize>,
     /// WASM GC-style type definitions with vtable method dispatch.
     pub type_registry: crate::typedef::TypeRegistry,
     /// Linear memory (WASM MVP) — byte buffer for binary data.
@@ -99,7 +97,6 @@ impl VM {
             import_table: Vec::new(),
             exception_handlers: Vec::new(),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
-            type_methods: HashMap::new(),
             type_registry: crate::typedef::TypeRegistry::new(),
             memory: Vec::new(),
             func_table: Vec::new(),
@@ -108,10 +105,19 @@ impl VM {
     }
 
     /// Register a host function with a (module, name) pair.
+    /// Also adds it to the function table for call_indirect dispatch.
     pub fn register_host_fn(&mut self, module: &str, name: &str, f: HostFn) {
         let idx = self.host_fns.len();
         self.host_fns.push(f);
         self.host_registry.insert((module.to_string(), name.to_string()), idx);
+        // Add to function table — func_table index == host_fns index for host functions
+        while self.func_table.len() <= idx {
+            self.func_table.push(Value::Null);
+        }
+        // Store as a lightweight marker — call_indirect will recognize host fn indices
+        let mut obj = Object::new();
+        obj.kind = ObjectKind::HostFunction(idx);
+        self.func_table[idx] = Value::Object(Rc::new(RefCell::new(obj)));
     }
 
     /// Get a type_id by name from the TypeRegistry.
@@ -119,14 +125,6 @@ impl VM {
         self.type_registry.get_id(name).unwrap_or(0)
     }
 
-    /// Register a method on a built-in type.
-    /// When struct_get on an object with __type=type_name doesn't find the property,
-    /// it falls back to this table and returns a HostFunction.
-    pub fn register_type_method(&mut self, type_name: &str, method: &str, module: &str, fn_name: &str) {
-        if let Some(&idx) = self.host_registry.get(&(module.to_string(), fn_name.to_string())) {
-            self.type_methods.insert((type_name.to_lowercase(), method.to_lowercase()), idx);
-        }
-    }
 
     /// Load chunks and execute chunk 0 (the script).
     /// Resolves the import table against registered host functions.
@@ -1252,19 +1250,9 @@ impl VM {
                     }
                 }
 
-                // 4. Legacy type_methods fallback
-                let found = if !inferred_type.is_empty() {
-                    self.type_methods.get(&(inferred_type.clone(), name.to_lowercase())).copied()
-                } else {
-                    None
-                };
-                let found = found.or_else(|| {
-                    self.type_methods.get(&(String::new(), name.to_lowercase())).copied()
-                });
-                if let Some(fn_idx) = found {
-                    let mut method_obj = Object::new();
-                    method_obj.kind = ObjectKind::HostFunction(fn_idx);
-                    return Ok(Value::Object(Rc::new(RefCell::new(method_obj))));
+                // 3. Universal Object methods (type 0)
+                if let Some(method) = self.type_registry.resolve_method(0, name) {
+                    return Ok(self.method_to_value(method));
                 }
 
                 Ok(Value::Null)
@@ -1273,29 +1261,19 @@ impl VM {
                 if name == "length" {
                     return Ok(Value::F64(s.len() as f64));
                 }
-                // String type in registry
                 if let Some(tid) = self.type_registry.get_id("string") {
                     if let Some(method) = self.type_registry.resolve_method(tid, name) {
                         return Ok(self.method_to_value(method));
                     }
                 }
-                // Legacy fallback
-                if let Some(&fn_idx) = self.type_methods.get(&("string".into(), name.to_lowercase())) {
-                    let mut method_obj = Object::new();
-                    method_obj.kind = ObjectKind::HostFunction(fn_idx);
-                    return Ok(Value::Object(Rc::new(RefCell::new(method_obj))));
+                if let Some(method) = self.type_registry.resolve_method(0, name) {
+                    return Ok(self.method_to_value(method));
                 }
                 Ok(Value::Null)
             }
             _ => {
-                // Primitives: check Object (universal) type methods
                 if let Some(method) = self.type_registry.resolve_method(0, name) {
                     return Ok(self.method_to_value(method));
-                }
-                if let Some(&fn_idx) = self.type_methods.get(&(String::new(), name.to_lowercase())) {
-                    let mut method_obj = Object::new();
-                    method_obj.kind = ObjectKind::HostFunction(fn_idx);
-                    return Ok(Value::Object(Rc::new(RefCell::new(method_obj))));
                 }
                 Ok(Value::Null)
             }
@@ -1303,15 +1281,21 @@ impl VM {
     }
 
     /// Convert a Method (from TypeRegistry) to a callable Value.
+    /// Uses the function table for zero-allocation dispatch.
     fn method_to_value(&self, method: &crate::typedef::Method) -> Value {
         match method {
             crate::typedef::Method::HostFn(idx) => {
-                let mut obj = Object::new();
-                obj.kind = ObjectKind::HostFunction(*idx);
-                Value::Object(Rc::new(RefCell::new(obj)))
+                // Return existing entry from function table — no allocation
+                if *idx < self.func_table.len() {
+                    self.func_table[*idx].clone()
+                } else {
+                    // Fallback: create new (shouldn't happen if registered properly)
+                    let mut obj = Object::new();
+                    obj.kind = ObjectKind::HostFunction(*idx);
+                    Value::Object(Rc::new(RefCell::new(obj)))
+                }
             }
             crate::typedef::Method::ChunkFn(idx) => {
-                // Create a Function value referencing the chunk
                 let chunk = &self.chunks[*idx];
                 let func = Function {
                     name: Some(chunk.name.clone()),

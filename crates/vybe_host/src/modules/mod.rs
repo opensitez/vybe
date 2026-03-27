@@ -72,7 +72,6 @@ pub fn register_all(vm: &mut VM) {
     // Set up namespace objects, type registry, and legacy type method table
     crate::namespaces::setup_namespaces(vm);
     crate::builtin_types::register_all(vm);
-    crate::type_methods::register_all(vm); // legacy fallback
 }
 
 /// Register all standard VSI modules + GUI module.

@@ -176,6 +176,8 @@ pub fn register_all(vm: &mut VM) {
             ("insert", "sbInsert"), ("replace", "sbReplace"),
             ("chars", "sbToString"), ("equals", "sbToString"),
             ("remove", "sbClear"), ("length", "sbToString"),
+            ("ensurecapacity", "sbToString"), ("capacity", "sbToString"),
+            ("copyto", "sbToString"), ("gettype", "sbToString"),
         ] {
             if let Some(idx) = h(vm, "vybe:types", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -329,6 +331,87 @@ pub fn register_all(vm: &mut VM) {
             t.methods.insert("nextdouble".into(), Method::HostFn(idx));
         }
         t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- XDocument ---
+    {
+        let mut t = TypeDef::new("XDocument");
+        if let Some(idx) = h(vm, "vybe:xml", "toString") {
+            t.methods.insert("tostring".into(), Method::HostFn(idx));
+            t.methods.insert("save".into(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- XElement ---
+    {
+        let mut t = TypeDef::new("XElement");
+        if let Some(idx) = h(vm, "vybe:xml", "toString") {
+            t.methods.insert("tostring".into(), Method::HostFn(idx));
+            t.methods.insert("value".into(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- DataTable ---
+    {
+        let mut t = TypeDef::new("DataTable");
+        if let Some(idx) = h(vm, "vybe:data", "dataTableNewRow") {
+            t.methods.insert("newrow".into(), Method::HostFn(idx));
+        }
+        if let Some(idx) = h(vm, "vybe:data", "dataTableAddRow") {
+            t.methods.insert("rows".into(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- Map/Set (JS collections) ---
+    {
+        let mut t = TypeDef::new("Map");
+        for (method, fname) in &[
+            ("set", "mapSet"), ("get", "mapGet"), ("has", "mapHas"),
+            ("delete", "mapDelete"), ("keys", "mapKeys"),
+        ] {
+            if let Some(idx) = h(vm, "vybe:collections", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("Set");
+        for (method, fname) in &[
+            ("add", "setAdd"), ("has", "setHas"), ("delete", "setDelete"), ("values", "setValues"),
+        ] {
+            if let Some(idx) = h(vm, "vybe:collections", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- TimeSpan ---
+    {
+        let t = TypeDef::new("TimeSpan");
+        // Properties are stored on the object directly (totalseconds, etc.)
+        vm.type_registry.register(t);
+    }
+
+    // --- Task ---
+    {
+        let t = TypeDef::new("Task");
+        vm.type_registry.register(t);
+    }
+
+    // --- Promise (JS) ---
+    {
+        let t = TypeDef::new("Promise");
         vm.type_registry.register(t);
     }
 }
