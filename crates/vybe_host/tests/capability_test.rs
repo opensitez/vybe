@@ -1,0 +1,285 @@
+use vybe_bytecode::*;
+use vybe_bytecode::value::*;
+use vybe_host::{Capabilities, Capability, register_with_capabilities};
+use std::rc::Rc;
+use std::cell::RefCell;
+
+// ============================================================
+// Capability preset tests
+// ============================================================
+
+#[test]
+fn caps_all_has_everything() {
+    let caps = Capabilities::all();
+    assert!(caps.has(Capability::Console));
+    assert!(caps.has(Capability::FileRead));
+    assert!(caps.has(Capability::FileWrite));
+    assert!(caps.has(Capability::Http));
+    assert!(caps.has(Capability::Sockets));
+    assert!(caps.has(Capability::Database));
+    assert!(caps.has(Capability::Environment));
+    assert!(caps.has(Capability::Gui));
+    assert!(caps.has(Capability::Threading));
+    assert!(caps.has(Capability::Crypto));
+    assert!(caps.has(Capability::Clock));
+    assert!(caps.has(Capability::Random));
+    assert!(caps.has(Capability::Xml));
+}
+
+#[test]
+fn caps_safe_limited() {
+    let caps = Capabilities::safe();
+    assert!(caps.has(Capability::Console));
+    assert!(caps.has(Capability::Clock));
+    assert!(caps.has(Capability::Random));
+    assert!(!caps.has(Capability::FileRead));
+    assert!(!caps.has(Capability::FileWrite));
+    assert!(!caps.has(Capability::Http));
+    assert!(!caps.has(Capability::Sockets));
+    assert!(!caps.has(Capability::Database));
+    assert!(!caps.has(Capability::Environment));
+}
+
+#[test]
+fn caps_none_empty() {
+    let caps = Capabilities::none();
+    assert!(!caps.has(Capability::Console));
+    assert!(!caps.has(Capability::FileRead));
+    assert!(!caps.has(Capability::Clock));
+}
+
+#[test]
+fn caps_custom() {
+    let caps = Capabilities::with(&[Capability::Console, Capability::Crypto]);
+    assert!(caps.has(Capability::Console));
+    assert!(caps.has(Capability::Crypto));
+    assert!(!caps.has(Capability::FileRead));
+    assert!(!caps.has(Capability::Database));
+}
+
+#[test]
+fn caps_grant_revoke() {
+    let mut caps = Capabilities::none();
+    assert!(!caps.has(Capability::Http));
+    caps.grant(Capability::Http);
+    assert!(caps.has(Capability::Http));
+    caps.revoke(Capability::Http);
+    assert!(!caps.has(Capability::Http));
+}
+
+// ============================================================
+// Module registration — full access
+// ============================================================
+
+#[test]
+fn all_caps_registers_filesystem() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::all());
+    let has_fs = vm.host_registry.keys().any(|(m, _)| m == "wasi:filesystem");
+    assert!(has_fs, "Full caps should register filesystem");
+}
+
+#[test]
+fn all_caps_registers_database() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::all());
+    let has_db = vm.host_registry.keys().any(|(m, _)| m == "vybe:database");
+    assert!(has_db, "Full caps should register database");
+}
+
+#[test]
+fn all_caps_registers_sockets() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::all());
+    let has_sock = vm.host_registry.keys().any(|(m, _)| m == "vybe:net");
+    assert!(has_sock, "Full caps should register sockets");
+}
+
+#[test]
+fn all_caps_registers_http() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::all());
+    let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
+    assert!(has_http, "Full caps should register HTTP");
+}
+
+// ============================================================
+// Module registration — safe mode BLOCKS dangerous modules
+// ============================================================
+
+#[test]
+fn safe_blocks_filesystem() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_fs = vm.host_registry.keys().any(|(m, _)| m == "wasi:filesystem");
+    assert!(!has_fs, "Safe mode should NOT have filesystem");
+}
+
+#[test]
+fn safe_blocks_database() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_db = vm.host_registry.keys().any(|(m, _)| m == "vybe:database");
+    assert!(!has_db, "Safe mode should NOT have database");
+}
+
+#[test]
+fn safe_blocks_sockets() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_sock = vm.host_registry.keys().any(|(m, _)| m == "vybe:net");
+    assert!(!has_sock, "Safe mode should NOT have sockets");
+}
+
+#[test]
+fn safe_blocks_http() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
+    assert!(!has_http, "Safe mode should NOT have HTTP");
+}
+
+#[test]
+fn safe_blocks_threading() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_thread = vm.host_registry.keys().any(|(m, _)| m == "vybe:runtime" && {
+        // runtime module is always registered (pure computation parts),
+        // but threading module is separate
+        false
+    });
+    // Check for the threading-specific host function
+    let has_task_run = vm.host_registry.contains_key(&("vybe:threading".to_string(), "taskRun".to_string()));
+    assert!(!has_task_run, "Safe mode should NOT have threading");
+}
+
+// ============================================================
+// Safe mode ALLOWS pure computation modules
+// ============================================================
+
+#[test]
+fn safe_allows_math() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_math = vm.host_registry.keys().any(|(m, _)| m == "vybe:math");
+    assert!(has_math, "Safe mode should have math");
+}
+
+#[test]
+fn safe_allows_string() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_str = vm.host_registry.keys().any(|(m, _)| m == "vybe:string");
+    assert!(has_str, "Safe mode should have string");
+}
+
+#[test]
+fn safe_allows_json() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_json = vm.host_registry.keys().any(|(m, _)| m == "vybe:json");
+    assert!(has_json, "Safe mode should have JSON");
+}
+
+#[test]
+fn safe_allows_convert() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_conv = vm.host_registry.keys().any(|(m, _)| m == "vybe:convert");
+    assert!(has_conv, "Safe mode should have convert");
+}
+
+// ============================================================
+// Custom capabilities — selective access
+// ============================================================
+
+#[test]
+fn custom_database_only() {
+    let caps = Capabilities::with(&[Capability::Console, Capability::Database]);
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &caps);
+
+    let has_db = vm.host_registry.keys().any(|(m, _)| m == "vybe:database");
+    let has_fs = vm.host_registry.keys().any(|(m, _)| m == "wasi:filesystem");
+    let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
+
+    assert!(has_db, "Should have database");
+    assert!(!has_fs, "Should NOT have filesystem");
+    assert!(!has_http, "Should NOT have HTTP");
+}
+
+#[test]
+fn custom_network_only() {
+    let caps = Capabilities::with(&[Capability::Http, Capability::Sockets]);
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &caps);
+
+    let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
+    let has_sock = vm.host_registry.keys().any(|(m, _)| m == "vybe:net");
+    let has_db = vm.host_registry.keys().any(|(m, _)| m == "vybe:database");
+    let has_fs = vm.host_registry.keys().any(|(m, _)| m == "wasi:filesystem");
+
+    assert!(has_http, "Should have HTTP");
+    assert!(has_sock, "Should have sockets");
+    assert!(!has_db, "Should NOT have database");
+    assert!(!has_fs, "Should NOT have filesystem");
+}
+
+// ============================================================
+// Runtime behavior — blocked calls return undefined
+// ============================================================
+
+#[test]
+fn blocked_host_call_returns_undefined() {
+    // Register with safe caps (no filesystem)
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+
+    // Build a chunk that tries to call a filesystem function
+    let mut chunk = Chunk::new("<test>");
+    // Try to call wasi:filesystem readFile — it shouldn't be registered
+    let ci = chunk.add_constant(Value::String(Rc::from("test.txt")));
+    chunk.emit_op_u16(Op::r#const, ci, 0);
+    // Try global_get for a filesystem function — returns Undefined
+    let fn_name = chunk.add_constant(Value::String(Rc::from("readfile")));
+    chunk.emit_op_u16(Op::global_get, fn_name, 0);
+    // The function doesn't exist, so we get Undefined
+    chunk.emit_op(Op::ref_is_null, 0); // Undefined is null-ish
+    chunk.emit_op(Op::halt, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    // ref_is_null on Undefined should be true
+    assert!(matches!(result, Value::Bool(true)), "Blocked function should be undefined/null");
+}
+
+// ============================================================
+// Console output capture works in sandboxed mode
+// ============================================================
+
+#[test]
+fn sandbox_console_capture() {
+    let mut vm = VM::new();
+    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let out = output.clone();
+
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    // Override console.log to capture output
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[Value]| {
+        let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
+        out.borrow_mut().push(parts.join(" "));
+        Value::Null
+    }));
+
+    // Build a simple chunk: push "hello sandbox", call console.log
+    let mut chunk = Chunk::new("<test>");
+    let msg = chunk.add_constant(Value::String(Rc::from("hello sandbox")));
+    chunk.emit_op_u16(Op::r#const, msg, 0);
+    let log_idx = chunk.add_import("wasi:cli", "log");
+    chunk.emit_op_u16(Op::call_import, log_idx, 0);
+    chunk.emit(1, 0); // argc = 1
+    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op(Op::halt, 0);
+
+    vm.run(vec![chunk]).unwrap();
+    assert_eq!(*output.borrow(), vec!["hello sandbox"]);
+}

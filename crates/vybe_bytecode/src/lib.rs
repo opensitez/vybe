@@ -17,6 +17,6 @@ pub use event_loop::EventLoop;
 pub use typedef::{TypeDef, TypeRegistry, Method};
 pub mod component;
 pub mod project;
-pub use component::{Component, Linker, LinkResult, Interface, FuncSig, ValType, Language, ExportImpl, ModuleResolver, ResolvedModule, ModuleExport};
+pub use component::{Component, Linker, LinkResult, Interface, FuncSig, ValType, Language, ExportImpl, ModuleResolver, ResolvedModule, ModuleExport, ImportPolicy};
 pub use project::ProjectConfig;
 pub mod wasm;

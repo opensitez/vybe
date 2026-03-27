@@ -5,6 +5,6 @@ pub mod namespaces;
 pub mod builtin_types;
 
 pub use side_effect::{SideEffect, PropValue, UIEvent, SideEffectQueue};
-pub use modules::{register_all, register_all_with_gui};
+pub use modules::{register_all, register_all_with_gui, register_with_capabilities, register_with_capabilities_and_gui, Capabilities, Capability};
 pub use namespaces::setup_namespaces;
 pub use controls::get_def;

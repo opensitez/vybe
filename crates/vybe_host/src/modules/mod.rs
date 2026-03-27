@@ -1,21 +1,11 @@
 //! Vybe System Interface (VSI) modules.
 //!
 //! Each module registers host functions with (module, name) pairs on the VM,
-//! following the WASI two-level namespace model.
+//! following the WASI capability-based security model.
 //!
-//! Modules:
-//! - `vybe:console` — console I/O
-//! - `vybe:math`    — math functions
-//! - `vybe:string`  — string operations
-//! - `vybe:array`   — array operations
-//! - `vybe:convert` — type conversions
-//! - `vybe:json`    — JSON serialization
-//! - `vybe:fs`      — filesystem
-//! - `vybe:clock`   — time and sleep
-//! - `vybe:env`     — environment and args
-//! - `vybe:random`  — random number generation
-//! - `vybe:http`    — HTTP client
-//! - `vybe:gui`     — GUI / form creation
+//! Capabilities control which modules are available:
+//! - Safe (always on): math, string, array, convert, json, object, types, rt
+//! - Requires permission: fs, database, sockets, http, env, gui, threading, crypto
 
 pub mod console;
 pub mod math;
@@ -44,33 +34,150 @@ pub mod drawing;
 pub mod rt;
 
 use vybe_bytecode::VM;
+use std::collections::HashSet;
+
+/// Capability flags for host module access.
+/// Follows WASI's capability-based security model.
+#[derive(Debug, Clone)]
+pub struct Capabilities {
+    granted: HashSet<Capability>,
+}
+
+/// Individual capabilities that can be granted or denied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Capability {
+    /// Console I/O (stdout, stderr). Safe for most contexts.
+    Console,
+    /// Filesystem read access.
+    FileRead,
+    /// Filesystem write access (implies FileRead).
+    FileWrite,
+    /// Network: outbound HTTP requests.
+    Http,
+    /// Network: TCP/UDP sockets (server + client).
+    Sockets,
+    /// Database connections (SQLite, MySQL, etc.).
+    Database,
+    /// Environment variables and process args.
+    Environment,
+    /// GUI / window creation.
+    Gui,
+    /// Threading / background tasks.
+    Threading,
+    /// Cryptographic operations.
+    Crypto,
+    /// System clock access (time, sleep).
+    Clock,
+    /// Random number generation.
+    Random,
+    /// XML parsing.
+    Xml,
+}
+
+impl Capabilities {
+    /// Full access — all capabilities granted. For trusted CLI usage.
+    pub fn all() -> Self {
+        use Capability::*;
+        let mut granted = HashSet::new();
+        for cap in [Console, FileRead, FileWrite, Http, Sockets, Database,
+                    Environment, Gui, Threading, Crypto, Clock, Random, Xml] {
+            granted.insert(cap);
+        }
+        Capabilities { granted }
+    }
+
+    /// Safe subset — only pure computation, no I/O or side effects.
+    /// Suitable for untrusted code (web playground, sandboxed eval).
+    pub fn safe() -> Self {
+        use Capability::*;
+        let mut granted = HashSet::new();
+        for cap in [Console, Clock, Random] {
+            granted.insert(cap);
+        }
+        Capabilities { granted }
+    }
+
+    /// No capabilities — pure computation only.
+    pub fn none() -> Self {
+        Capabilities { granted: HashSet::new() }
+    }
+
+    /// Custom: start with none, add specific capabilities.
+    pub fn with(caps: &[Capability]) -> Self {
+        Capabilities { granted: caps.iter().copied().collect() }
+    }
+
+    pub fn has(&self, cap: Capability) -> bool {
+        self.granted.contains(&cap)
+    }
+
+    pub fn grant(&mut self, cap: Capability) {
+        self.granted.insert(cap);
+    }
+
+    pub fn revoke(&mut self, cap: Capability) {
+        self.granted.remove(&cap);
+    }
+}
 
 /// Register all standard VSI modules on a VM (no GUI).
+/// All capabilities granted.
 pub fn register_all(vm: &mut VM) {
-    console::register(vm);
+    register_with_capabilities(vm, &Capabilities::all());
+}
+
+/// Register modules based on granted capabilities.
+pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
+    // Always registered — pure computation, no security risk
     math::register(vm);
     string::register(vm);
     array::register(vm);
     convert::register(vm);
     json::register(vm);
-    fs::register(vm);
-    clock::register(vm);
-    env::register(vm);
-    random::register(vm);
-    http::register(vm);
     object::register(vm);
     regex::register(vm);
     collections::register(vm);
     runtime::register(vm);
-    database::register(vm);
     types::register(vm);
-    sockets::register(vm);
-    crypto::register(vm);
-    xml::register(vm);
-    threading::register(vm);
     data::register(vm);
     drawing::register(vm);
     rt::register(vm);
+
+    // Capability-gated modules
+    if caps.has(Capability::Console) {
+        console::register(vm);
+    }
+    if caps.has(Capability::Clock) {
+        clock::register(vm);
+    }
+    if caps.has(Capability::Random) {
+        random::register(vm);
+    }
+    if caps.has(Capability::FileRead) || caps.has(Capability::FileWrite) {
+        fs::register(vm);
+    }
+    if caps.has(Capability::Environment) {
+        env::register(vm);
+    }
+    if caps.has(Capability::Http) {
+        http::register(vm);
+    }
+    if caps.has(Capability::Sockets) {
+        sockets::register(vm);
+    }
+    if caps.has(Capability::Database) {
+        database::register(vm);
+    }
+    if caps.has(Capability::Threading) {
+        threading::register(vm);
+    }
+    if caps.has(Capability::Crypto) {
+        crypto::register(vm);
+    }
+    if caps.has(Capability::Xml) {
+        xml::register(vm);
+    }
+
     // Set up namespace objects, type registry
     crate::namespaces::setup_namespaces(vm);
     crate::builtin_types::register_all(vm);
@@ -83,6 +190,18 @@ pub fn register_all_with_gui(
 ) {
     register_all(vm);
     gui::register(vm, queue);
-    // Re-setup namespaces to include GUI functions
     crate::namespaces::setup_namespaces(vm);
+}
+
+/// Register with capabilities + GUI.
+pub fn register_with_capabilities_and_gui(
+    vm: &mut VM,
+    caps: &Capabilities,
+    queue: std::rc::Rc<std::cell::RefCell<crate::SideEffectQueue>>,
+) {
+    register_with_capabilities(vm, caps);
+    if caps.has(Capability::Gui) {
+        gui::register(vm, queue);
+        crate::namespaces::setup_namespaces(vm);
+    }
 }

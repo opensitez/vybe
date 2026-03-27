@@ -20,22 +20,23 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut dump = false;
     let mut emit_wasm = false;
+    let mut sandbox = false;
     let mut file_arg = None;
 
     for arg in &args[1..] {
-        if arg == "--dump" || arg == "-d" {
-            dump = true;
-        } else if arg == "--emit-wasm" || arg == "-w" {
-            emit_wasm = true;
-        } else if file_arg.is_none() {
-            file_arg = Some(arg.clone());
+        match arg.as_str() {
+            "--dump" | "-d" => dump = true,
+            "--emit-wasm" | "-w" => emit_wasm = true,
+            "--sandbox" | "-s" => sandbox = true,
+            _ if file_arg.is_none() => file_arg = Some(arg.clone()),
+            _ => {}
         }
     }
 
     let file_path = match file_arg {
         Some(f) => f,
         None => {
-            eprintln!("Usage: vybec [--dump] <file.vb|file.js>");
+            eprintln!("Usage: vybec [--dump] [--sandbox] <file.vb|file.js>");
             std::process::exit(1);
         }
     };
@@ -52,8 +53,8 @@ fn main() {
         .to_lowercase();
 
     match ext.as_str() {
-        "vb" => run_vb(path, dump, emit_wasm),
-        "js" => run_js(path, dump, emit_wasm),
+        "vb" => run_vb(path, dump, emit_wasm, sandbox),
+        "js" => run_js(path, dump, emit_wasm, sandbox),
         "wasm" => run_wasm(path),
         "vybe" => run_project(path, dump),
         _ => {
@@ -232,7 +233,7 @@ fn run_project(path: &Path, dump: bool) {
     vybe_ui::launch_vm_form(vm, queue);
 }
 
-fn run_vb(path: &Path, dump: bool, emit_wasm: bool) {
+fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
     let source = read_file(path);
     let program = match vybe_parser_basic::parse_program(&source) {
         Ok(p) => p,
@@ -241,7 +242,14 @@ fn run_vb(path: &Path, dump: bool, emit_wasm: bool) {
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    if sandbox {
+        eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
+        vybe_host::register_with_capabilities_and_gui(
+            &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
+        );
+    } else {
+        vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    }
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_vb::Compiler::new().compile(&program) {
@@ -266,7 +274,7 @@ fn run_vb(path: &Path, dump: bool, emit_wasm: bool) {
     vybe_ui::launch_vm_form(vm, queue);
 }
 
-fn run_js(path: &Path, dump: bool, emit_wasm: bool) {
+fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
     let source = read_file(path);
     let program = match vybe_parser_js::parse(&source) {
         Ok(p) => p,
@@ -275,7 +283,14 @@ fn run_js(path: &Path, dump: bool, emit_wasm: bool) {
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    if sandbox {
+        eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
+        vybe_host::register_with_capabilities_and_gui(
+            &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
+        );
+    } else {
+        vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    }
     vybe_compiler_js::register_js_coercion(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
 

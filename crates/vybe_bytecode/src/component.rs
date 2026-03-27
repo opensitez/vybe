@@ -202,8 +202,108 @@ pub enum ModuleExport {
     Value(crate::Value),
 }
 
+/// Security policy for module resolution.
+/// Controls what files and paths ESM imports can access.
+#[derive(Debug, Clone)]
+pub struct ImportPolicy {
+    /// Allowed file extensions (e.g., ["wasm", "js", "vb"])
+    pub allowed_extensions: Vec<String>,
+    /// Allowed directory prefixes (resolved paths must start with one of these).
+    /// Empty = allow all. Use this to sandbox imports to the project directory.
+    pub allowed_dirs: Vec<String>,
+    /// Deny list: specific paths or patterns that are never allowed.
+    pub denied_paths: Vec<String>,
+    /// Maximum number of modules that can be imported (0 = unlimited).
+    pub max_modules: usize,
+    /// Whether to allow absolute paths (e.g., /usr/lib/math.wasm).
+    /// Default: false — only relative paths allowed.
+    pub allow_absolute_paths: bool,
+    /// Whether to allow .. (parent directory traversal).
+    /// Default: false — prevents escaping the project directory.
+    pub allow_parent_traversal: bool,
+}
+
+impl ImportPolicy {
+    /// Restrictive default: only .wasm, relative paths, no parent traversal.
+    pub fn default() -> Self {
+        ImportPolicy {
+            allowed_extensions: vec!["wasm".into(), "js".into(), "vb".into()],
+            allowed_dirs: Vec::new(),
+            denied_paths: Vec::new(),
+            max_modules: 64,
+            allow_absolute_paths: false,
+            allow_parent_traversal: false,
+        }
+    }
+
+    /// No restrictions — for trusted environments (CLI with --unrestricted).
+    pub fn unrestricted() -> Self {
+        ImportPolicy {
+            allowed_extensions: vec!["wasm".into(), "js".into(), "vb".into()],
+            allowed_dirs: Vec::new(),
+            denied_paths: Vec::new(),
+            max_modules: 0,
+            allow_absolute_paths: true,
+            allow_parent_traversal: true,
+        }
+    }
+
+    /// Sandbox to a single directory (for web/untrusted contexts).
+    pub fn sandboxed(dir: impl Into<String>) -> Self {
+        ImportPolicy {
+            allowed_extensions: vec!["wasm".into()],
+            allowed_dirs: vec![dir.into()],
+            denied_paths: Vec::new(),
+            max_modules: 16,
+            allow_absolute_paths: false,
+            allow_parent_traversal: false,
+        }
+    }
+
+    /// Check if a resolved path is allowed by this policy.
+    fn check(&self, resolved_path: &str, source: &str) -> Result<(), String> {
+        // Check absolute paths
+        if !self.allow_absolute_paths && (source.starts_with('/') || source.contains(":\\")) {
+            return Err(format!("Import policy: absolute paths not allowed: {}", source));
+        }
+
+        // Check parent traversal
+        if !self.allow_parent_traversal && source.contains("..") {
+            return Err(format!("Import policy: parent directory traversal not allowed: {}", source));
+        }
+
+        // Check extension
+        let ext = std::path::Path::new(resolved_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if !self.allowed_extensions.iter().any(|e| *e == ext) {
+            return Err(format!("Import policy: extension '.{}' not allowed (allowed: {:?})", ext, self.allowed_extensions));
+        }
+
+        // Check allowed directories
+        if !self.allowed_dirs.is_empty() {
+            let in_allowed = self.allowed_dirs.iter().any(|d| resolved_path.starts_with(d.as_str()));
+            if !in_allowed {
+                return Err(format!("Import policy: path outside allowed directories: {}", resolved_path));
+            }
+        }
+
+        // Check denied paths
+        for denied in &self.denied_paths {
+            if resolved_path.contains(denied.as_str()) {
+                return Err(format!("Import policy: path denied: {}", resolved_path));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Resolves ESM-style imports at compile time.
 /// Handles: .wasm, .js, .vb files.
+/// Enforces ImportPolicy for security.
 ///
 /// Usage:
 ///   import { add, multiply } from "./math.wasm"
@@ -214,6 +314,8 @@ pub struct ModuleResolver {
     pub cache: HashMap<String, ResolvedModule>,
     /// Base directory for relative path resolution
     pub base_dir: String,
+    /// Security policy controlling what can be imported
+    pub policy: ImportPolicy,
 }
 
 impl ModuleResolver {
@@ -221,13 +323,31 @@ impl ModuleResolver {
         ModuleResolver {
             cache: HashMap::new(),
             base_dir: base_dir.into(),
+            policy: ImportPolicy::default(),
+        }
+    }
+
+    pub fn with_policy(base_dir: impl Into<String>, policy: ImportPolicy) -> Self {
+        ModuleResolver {
+            cache: HashMap::new(),
+            base_dir: base_dir.into(),
+            policy,
         }
     }
 
     /// Resolve a module source path, returning its exports.
-    /// Loads and compiles the module if not cached.
+    /// Enforces the import policy before loading.
     pub fn resolve(&mut self, source: &str) -> Result<&ResolvedModule, String> {
+        // Check module count limit
+        if self.policy.max_modules > 0 && self.cache.len() >= self.policy.max_modules {
+            return Err(format!("Import policy: maximum module count ({}) reached", self.policy.max_modules));
+        }
+
         let abs_path = self.resolve_path(source);
+
+        // Enforce security policy
+        self.policy.check(&abs_path, source)?;
+
         if self.cache.contains_key(&abs_path) {
             return Ok(&self.cache[&abs_path]);
         }
@@ -274,7 +394,7 @@ impl ModuleResolver {
     }
 
     fn resolve_path(&self, source: &str) -> String {
-        if source.starts_with('/') || source.starts_with("C:") {
+        if source.starts_with('/') || source.contains(":\\") {
             source.to_string()
         } else {
             let base = std::path::Path::new(&self.base_dir);
