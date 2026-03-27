@@ -53,7 +53,8 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::i32_reinterpret_f32 | Op::i64_reinterpret_f64 | Op::f32_reinterpret_i32 | Op::f64_reinterpret_i64 |
         Op::i32_extend8_s | Op::i32_extend16_s | Op::i64_extend8_s | Op::i64_extend16_s | Op::i64_extend32_s |
         Op::select |
-        Op::try_end | Op::throw |
+        Op::try_end | Op::throw | Op::throw_ref |
+        Op::i31_new | Op::i31_get_s | Op::i31_get_u |
         Op::inherit | Op::iter_get | Op::iter_next | Op::spread |
         Op::memory_size | Op::end | Op::unpack |
         // String builtins
@@ -76,7 +77,8 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         // u16 operand
         Op::r#const | Op::local_get | Op::local_set | Op::global_get | Op::global_set |
         Op::struct_get | Op::struct_set | Op::struct_new | Op::array_new | Op::class_new | Op::method_def |
-        Op::block | Op::r#loop | Op::memory_grow | Op::canon_lift | Op::canon_lower | Op::ref_test |
+        Op::block | Op::r#loop | Op::memory_grow | Op::canon_lift | Op::canon_lower |
+        Op::ref_test | Op::ref_cast |
         Op::suspend | Op::resume | Op::switch => {
             let idx = chunk.read_u16(offset + 1);
             let extra = if op == Op::r#const && (idx as usize) < chunk.constants.len() {
@@ -88,8 +90,9 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         }
 
         // u8 operand
-        Op::upvalue_get | Op::upvalue_set | Op::call | Op::str_concat_n |
-        Op::return_call | Op::call_indirect | Op::pack |
+        Op::upvalue_get | Op::upvalue_set | Op::call | Op::call_ref | Op::str_concat_n |
+        Op::return_call | Op::return_call_indirect | Op::return_call_ref |
+        Op::call_indirect | Op::pack |
         Op::br_label | Op::br_if_label => {
             let arg = chunk.code[offset + 1];
             (format!("{:?} {}", op, arg), offset + 2)
@@ -115,6 +118,20 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             let uv_count = chunk.code[offset + 3] as usize;
             let total = 4 + uv_count * 2;
             (format!("Closure func={} upvalues={}", func_idx, uv_count), offset + total)
+        }
+
+        // br_on_cast: u16 type_name + i16 offset = 4 bytes
+        Op::br_on_cast | Op::br_on_cast_fail => {
+            let type_idx = chunk.read_u16(offset + 1);
+            let off = chunk.read_i16(offset + 3);
+            (format!("{:?} type={} offset={}", op, type_idx, off), offset + 5)
+        }
+
+        // try_table: u8 count, then count * (u8 tag + u16 offset)
+        Op::try_table => {
+            let count = chunk.code[offset + 1] as usize;
+            let total = 2 + count * 3;
+            (format!("try_table handlers={}", count), offset + total)
         }
 
         // Memory load/store — no operand, just opcode (addr on stack)

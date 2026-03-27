@@ -89,6 +89,9 @@ pub enum Op {
     call,            // [call, u8 arg_count]
     r#return,
     ref_func,        // create closure: [ref_func, u16 chunk_idx, u8 upvalue_count, descriptors...]
+    /// Direct call through a typed function reference (WASM typed function references).
+    /// Faster than call_indirect — no table lookup, direct dispatch.
+    call_ref,        // stack: [func_ref, args...] → [result]; operand: u8 arg_count
 
     // -- Imports --
     call_import,     // [call_import, u16 import_idx, u8 arg_count]
@@ -113,10 +116,26 @@ pub enum Op {
     ref_is_object,
     ref_is_func,
 
-    // -- Type test (WASM GC: ref.test) --
+    // -- Type test (WASM GC: ref.test, ref.cast, br_on_cast) --
     /// Test if object is of type (or subtype). Uses TypeRegistry.
     /// Stack: [value] → [bool]. Operand: u16 constant index (type name).
     ref_test,        // [ref_test, u16 type_name_idx]
+    /// Cast value to type — trap if wrong type. Stack: [value] → [value].
+    ref_cast,        // [ref_cast, u16 type_name_idx]
+    /// Branch if value IS the given type (keeps value on stack).
+    /// Combines ref_test + br_if_true in one op — avoids double dispatch.
+    br_on_cast,      // [br_on_cast, u16 type_name_idx, i16 offset]
+    /// Branch if value is NOT the given type.
+    br_on_cast_fail, // [br_on_cast_fail, u16 type_name_idx, i16 offset]
+
+    // -- i31ref (WASM GC: tagged small integers) --
+    /// Box a 31-bit integer as a tagged i31ref. Avoids heap allocation.
+    /// Stack: [i32] → [i31ref value]
+    i31_new,
+    /// Unbox i31ref → i32 (sign-extended).
+    i31_get_s,       // [i31ref] → [i32]
+    /// Unbox i31ref → i32 (zero-extended).
+    i31_get_u,       // [i31ref] → [i32]
 
     // -- Conversions --
     f64_from_i32,    // WASM: f64.convert_i32_s
@@ -140,6 +159,12 @@ pub enum Op {
     try_start,       // [try_start, u16 catch, u16 finally]
     try_end,
     throw,
+    /// throw_ref: throw a value directly (WASM EH: throw_ref).
+    throw_ref,
+    /// try_table: modern block-based exception handling (WASM EH Phase 4).
+    /// Combines try + typed catch handlers in one structured block.
+    /// [try_table, u8 handler_count, then for each: u8 tag, u16 offset]
+    try_table,
 
     // -- Async (WASI async proposal) --
     /// Await a Promise value. If pending, suspends the current fiber.
@@ -162,6 +187,10 @@ pub enum Op {
     /// return_call: reuses current frame for tail-call optimization.
     /// Prevents stack overflow on deep recursion.
     return_call,     // [return_call, u8 arg_count]
+    /// Tail call through function table index.
+    return_call_indirect, // stack: [fn_table_idx, args...]; operand: u8 arg_count
+    /// Tail call through a typed function reference.
+    return_call_ref, // stack: [func_ref, args...]; operand: u8 arg_count
 
     // -- i64 arithmetic --
     i64_add,

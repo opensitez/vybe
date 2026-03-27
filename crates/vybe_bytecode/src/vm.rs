@@ -327,6 +327,40 @@ impl VM {
         }
     }
 
+    /// Test if a value matches a type name (used by ref_test, ref_cast, br_on_cast).
+    fn test_type(&self, val: &Value, target_name: &str) -> bool {
+        match val {
+            Value::Object(o) => {
+                let ob = o.borrow();
+                if ob.type_id > 0 {
+                    if let Some(target_id) = self.type_registry.get_id(target_name) {
+                        self.type_registry.is_subtype(ob.type_id, target_id)
+                    } else { false }
+                } else {
+                    let obj_type = ob.properties.get("__type")
+                        .map(|v| format!("{}", v).to_lowercase())
+                        .or_else(|| ob.properties.get("__control_type")
+                            .map(|v| format!("{}", v).to_lowercase()))
+                        .unwrap_or_default();
+                    if obj_type == target_name { true }
+                    else if let Some(tid) = self.type_registry.get_id(&obj_type) {
+                        if let Some(target_id) = self.type_registry.get_id(target_name) {
+                            self.type_registry.is_subtype(tid, target_id)
+                        } else { false }
+                    } else {
+                        target_name == "object"
+                    }
+                }
+            }
+            Value::String(_) => target_name == "string" || target_name == "object",
+            Value::F64(_) | Value::I32(_) | Value::I64(_) => {
+                target_name == "integer" || target_name == "double" || target_name == "number" || target_name == "object"
+            }
+            Value::Bool(_) => target_name == "boolean" || target_name == "object",
+            Value::Null => false,
+        }
+    }
+
     // -- Execute --
 
     fn execute_with_async(&mut self) -> Result<ExecResult, VMError> {
@@ -727,6 +761,12 @@ impl VM {
                     let argc = self.read_byte() as usize;
                     self.call_value(argc)?;
                 }
+                Op::call_ref => {
+                    // Direct call through a function reference — same as call
+                    // but the func ref is already on the stack (no table lookup).
+                    let argc = self.read_byte() as usize;
+                    self.call_value(argc)?;
+                }
                 Op::r#return => {
                     let result = self.pop();
                     let base = self.frame().base;
@@ -852,6 +892,60 @@ impl VM {
                     };
                     self.push(Value::Bool(result))?;
                 }
+                Op::ref_cast => {
+                    let type_name_idx = self.read_u16();
+                    let target_name = self.constant_str(type_name_idx);
+                    let val = self.peek(0).clone();
+                    let is_type = self.test_type(&val, &target_name);
+                    if !is_type {
+                        return Err(VMError::new(&format!("ref.cast failed: value is not {}", target_name)));
+                    }
+                    // Value stays on stack (cast is a no-op if it passes)
+                }
+                Op::br_on_cast => {
+                    let type_name_idx = self.read_u16();
+                    let offset = self.read_i16();
+                    let target_name = self.constant_str(type_name_idx);
+                    let val = self.peek(0).clone();
+                    if self.test_type(&val, &target_name) {
+                        // Type matches: branch (value stays on stack)
+                        let ip = self.frame().ip as i64 + offset as i64;
+                        self.frame_mut().ip = ip as usize;
+                    }
+                    // Type doesn't match: fall through (value stays on stack)
+                }
+                Op::br_on_cast_fail => {
+                    let type_name_idx = self.read_u16();
+                    let offset = self.read_i16();
+                    let target_name = self.constant_str(type_name_idx);
+                    let val = self.peek(0).clone();
+                    if !self.test_type(&val, &target_name) {
+                        let ip = self.frame().ip as i64 + offset as i64;
+                        self.frame_mut().ip = ip as usize;
+                    }
+                }
+
+                // -- i31ref (tagged small integers) --
+                Op::i31_new => {
+                    // Box i32 as i31ref. In our VM, I32 is already unboxed,
+                    // so this is a no-op identity. The optimization is that
+                    // the VM can use I32 directly without heap allocation.
+                    let v = self.pop().as_i32();
+                    self.push(Value::I32(v & 0x7FFF_FFFF))?; // mask to 31 bits
+                }
+                Op::i31_get_s => {
+                    let v = self.pop().as_i32();
+                    // Sign extend from 31 bits
+                    let extended = if v & 0x4000_0000 != 0 {
+                        v | !0x7FFF_FFFF_u32 as i32
+                    } else { v };
+                    self.push(Value::I32(extended))?;
+                }
+                Op::i31_get_u => {
+                    let v = self.pop().as_i32();
+                    self.push(Value::I32(v & 0x7FFF_FFFF))?;
+                }
+
                 Op::ref_is_null => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Null)))?; }
                 Op::ref_is_string => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::String(_))))?; }
                 Op::ref_is_number => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::F64(_) | Value::I32(_) | Value::I64(_))))?; }
@@ -1033,6 +1127,40 @@ impl VM {
                     }
                 }
 
+                Op::throw_ref => {
+                    // Same as throw — value is already a reference
+                    let val = self.pop();
+                    if let Some(handler) = self.exception_handlers.pop() {
+                        while self.frames.len() > handler.frame_depth {
+                            let base = self.frames.last().unwrap().base;
+                            self.close_upvalues(base);
+                            self.frames.pop();
+                        }
+                        self.stack.truncate(handler.stack_depth);
+                        self.push(val)?;
+                        let f = self.frame_mut();
+                        f.ip = handler.catch_ip;
+                    } else {
+                        return Err(VMError::new(format!("{}", val)));
+                    }
+                }
+                Op::try_table => {
+                    // Modern block-based try: [try_table, u8 handler_count, ...]
+                    let handler_count = self.read_byte() as usize;
+                    for _ in 0..handler_count {
+                        let _tag = self.read_byte();
+                        let offset = self.read_u16();
+                        // Register handler at offset
+                        let ip = self.frame().ip + offset as usize;
+                        self.exception_handlers.push(ExceptionHandler {
+                            catch_ip: ip,
+                            stack_depth: self.stack.len(),
+                            frame_depth: self.frames.len(),
+                            chunk_index: self.frame().chunk_index,
+                        });
+                    }
+                }
+
                 // -- Tail call --
                 Op::return_call => {
                     let argc = self.read_byte() as usize;
@@ -1046,6 +1174,37 @@ impl VM {
                     }
                     self.stack.truncate(base + 1 + argc);
                     // Pop current frame and call
+                    self.frames.pop();
+                    self.call_value(argc)?;
+                }
+                Op::return_call_indirect => {
+                    let argc = self.read_byte() as usize;
+                    // Same as return_call but func comes from table index on stack
+                    let table_idx = self.pop().as_i32() as usize;
+                    if table_idx < self.func_table.len() {
+                        let func = self.func_table[table_idx].clone();
+                        let base = self.frame().base;
+                        let args_start = self.stack.len() - argc;
+                        self.stack.insert(args_start, func);
+                        let callee_idx = args_start;
+                        for i in 0..=argc {
+                            self.stack[base + i] = self.stack[callee_idx + i].clone();
+                        }
+                        self.stack.truncate(base + 1 + argc);
+                        self.frames.pop();
+                        self.call_value(argc)?;
+                    }
+                }
+                Op::return_call_ref => {
+                    // Same as return_call — func ref is already on stack
+                    let argc = self.read_byte() as usize;
+                    let base = self.frame().base;
+                    let args_start = self.stack.len() - argc;
+                    let callee_idx = args_start - 1;
+                    for i in 0..=argc {
+                        self.stack[base + i] = self.stack[callee_idx + i].clone();
+                    }
+                    self.stack.truncate(base + 1 + argc);
                     self.frames.pop();
                     self.call_value(argc)?;
                 }
