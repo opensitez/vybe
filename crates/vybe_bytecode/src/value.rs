@@ -127,6 +127,8 @@ impl fmt::Display for Value {
 pub struct Object {
     pub properties: HashMap<String, Value>,
     pub kind: ObjectKind,
+    /// WASM GC-style type reference. 0 = Object (untyped), >0 = specific type.
+    pub type_id: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -140,7 +142,11 @@ pub enum ObjectKind {
 
 impl Object {
     pub fn new() -> Self {
-        Object { properties: HashMap::new(), kind: ObjectKind::Ordinary }
+        Object { properties: HashMap::new(), kind: ObjectKind::Ordinary, type_id: 0 }
+    }
+
+    pub fn new_typed(type_id: usize) -> Self {
+        Object { properties: HashMap::new(), kind: ObjectKind::Ordinary, type_id }
     }
 
     pub fn new_array(elements: Vec<Value>) -> Self {
@@ -148,6 +154,7 @@ impl Object {
         let mut obj = Object {
             properties: HashMap::new(),
             kind: ObjectKind::Array(elements),
+            type_id: 0, // Will be set to Array/List type_id by the host
         };
         obj.properties.insert("length".into(), Value::F64(len as f64));
         obj

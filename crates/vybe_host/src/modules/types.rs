@@ -319,6 +319,56 @@ fn register_list(vm: &mut VM) {
         Value::F64(-1.0)
     }));
 
+    // List.Item(index) → element at index
+    vm.register_host_fn("vybe:types", "listItem", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let o = obj.borrow();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                return elems.get(idx).cloned().unwrap_or(Value::Null);
+            }
+        }
+        Value::Null
+    }));
+
+    // List.Insert(index, item)
+    vm.register_host_fn("vybe:types", "listInsert", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let item = args.get(2).cloned().unwrap_or(Value::Null);
+            let mut o = obj.borrow_mut();
+            if let ObjectKind::Array(elems) = &mut o.kind {
+                let pos = idx.min(elems.len());
+                elems.insert(pos, item);
+                let _len = elems.len() as f64;
+                drop(elems);
+                o.properties.insert("length".into(), Value::F64(_len));
+                o.properties.insert("count".into(), Value::F64(_len));
+            }
+        }
+        Value::Null
+    }));
+
+    // List.AddRange(collection)
+    vm.register_host_fn("vybe:types", "listAddRange", Box::new(|args: &[Value]| {
+        if let (Some(Value::Object(dst)), Some(Value::Object(src))) = (args.first(), args.get(1)) {
+            let s = src.borrow();
+            if let ObjectKind::Array(ref src_elems) = s.kind {
+                let items = src_elems.clone();
+                drop(s);
+                let mut d = dst.borrow_mut();
+                if let ObjectKind::Array(ref mut dst_elems) = d.kind {
+                    dst_elems.extend(items);
+                    let _len = dst_elems.len() as f64;
+                    drop(dst_elems);
+                    d.properties.insert("length".into(), Value::F64(_len));
+                    d.properties.insert("count".into(), Value::F64(_len));
+                }
+            }
+        }
+        Value::Null
+    }));
+
     // List.Sort() — simple sort
     vm.register_host_fn("vybe:types", "listSort", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {

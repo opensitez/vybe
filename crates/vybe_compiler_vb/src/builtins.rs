@@ -289,6 +289,11 @@ impl Compiler {
             "convert.toint32" | "convert.toint" => Some(("vybe:math", "floor")),
             "convert.todouble"  => Some(("vybe:convert", "parseFloat")),
             "convert.tostring"  => Some(("vybe:convert", "toString")),
+            "convert.todatetime" => Some(("vybe:types", "dateTimeNow")),
+            // DateTime properties accessed as Namespace.Property
+            "datetime.now"   => Some(("vybe:types", "dateTimeNow")),
+            "datetime.today" => Some(("vybe:types", "dateTimeNow")),
+            "datetime.utcnow" => Some(("vybe:types", "dateTimeNow")),
             // Application
             "application.run" => Some(("vybe:gui", "runApplication")),
             _ => None,

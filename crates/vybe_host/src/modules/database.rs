@@ -28,11 +28,15 @@ fn get_state() -> Arc<Mutex<DbState>> {
 }
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(f)
+    use std::sync::OnceLock;
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    let rt = RT.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    });
+    rt.block_on(f)
 }
 
 pub fn register(vm: &mut VM) {
@@ -40,13 +44,39 @@ pub fn register(vm: &mut VM) {
     sqlx::any::install_default_drivers();
     // db.connect(connectionString) → connection id (number)
     vm.register_host_fn("vybe:database", "connect", Box::new(|args: &[Value]| {
-        let conn_str = s(args, 0);
-        match block_on(sqlx::any::AnyPoolOptions::new().max_connections(5).connect(&conn_str)) {
+        let raw = s(args, 0);
+        // Empty/null → return deferred connection object (not yet connected)
+        if raw.is_empty() || raw == "null" {
+            let mut obj = Object::new();
+            obj.properties.insert("__type".into(), Value::String(Rc::from("SqlConnection")));
+            obj.properties.insert("__conn_id".into(), Value::F64(0.0));
+            obj.properties.insert("state".into(), Value::String(Rc::from("Closed")));
+            return Value::Object(Rc::new(RefCell::new(obj)));
+        }
+        // Normalize ADO.NET / VB connection strings to sqlx URLs
+        let conn_str = if raw.to_lowercase().contains("data source=:memory:") || raw == ":memory:" {
+            "sqlite::memory:".to_string()
+        } else if raw.to_lowercase().contains("data source=") {
+            let path = raw.to_lowercase();
+            let path = path.split("data source=").nth(1).unwrap_or("").split(';').next().unwrap_or("").trim().to_string();
+            format!("sqlite:{}", path)
+        } else if !raw.contains("://") && !raw.starts_with("sqlite:") && !raw.starts_with("postgres:") && !raw.starts_with("mysql:") {
+            format!("sqlite:{}", raw)
+        } else {
+            raw
+        };
+        match block_on(sqlx::any::AnyPoolOptions::new().max_connections(1).min_connections(1).connect(&conn_str)) {
             Ok(pool) => {
                 let id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
                 let state = get_state();
-                state.lock().unwrap().connections.insert(id, DbConn { pool, conn_str });
-                Value::F64(id as f64)
+                state.lock().unwrap().connections.insert(id, DbConn { pool, conn_str: conn_str.clone() });
+                // Return an object with __type, __conn_id, and properties
+                let mut obj = Object::new();
+                obj.properties.insert("__type".into(), Value::String(Rc::from("SqlConnection")));
+                obj.properties.insert("__conn_id".into(), Value::F64(id as f64));
+                obj.properties.insert("connectionstring".into(), Value::String(Rc::from(conn_str.as_str())));
+                obj.properties.insert("state".into(), Value::String(Rc::from("Open")));
+                Value::Object(Rc::new(RefCell::new(obj)))
             }
             Err(e) => {
                 eprintln!("db.connect error: {}", e);
@@ -57,8 +87,12 @@ pub fn register(vm: &mut VM) {
 
     // db.query(conn, sql, params?) → array of row objects
     vm.register_host_fn("vybe:database", "query", Box::new(|args: &[Value]| {
-        let conn_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
-        let sql = s(args, 1);
+        let conn_id = get_conn_id(args);
+        let sql = if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            let ct = o.properties.get("commandtext").map(|v| format!("{}", v)).unwrap_or_default();
+            if !ct.is_empty() { ct } else { s(args, 1) }
+        } else { s(args, 1) };
         let params = extract_params(args, 2);
 
         let state = get_state();
@@ -102,10 +136,17 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    // db.execute(conn, sql, params?) → rows affected (number)
+    // db.execute(conn, sql, params?) or cmd.ExecuteNonQuery() → rows affected
     vm.register_host_fn("vybe:database", "execute", Box::new(|args: &[Value]| {
-        let conn_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
-        let sql = s(args, 1);
+        let conn_id = get_conn_id(args);
+        // If first arg is a SqlCommand object, get SQL from its commandtext
+        let sql = if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            let ct = o.properties.get("commandtext").map(|v| format!("{}", v)).unwrap_or_default();
+            if !ct.is_empty() { ct } else { s(args, 1) }
+        } else {
+            s(args, 1)
+        };
         let params = extract_params(args, 2);
 
         let state = get_state();
@@ -125,10 +166,14 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    // db.scalar(conn, sql, params?) → single value
+    // db.scalar(conn, sql, params?) or cmd.ExecuteScalar() → single value
     vm.register_host_fn("vybe:database", "scalar", Box::new(|args: &[Value]| {
-        let conn_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
-        let sql = s(args, 1);
+        let conn_id = get_conn_id(args);
+        let sql = if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            let ct = o.properties.get("commandtext").map(|v| format!("{}", v)).unwrap_or_default();
+            if !ct.is_empty() { ct } else { s(args, 1) }
+        } else { s(args, 1) };
         let params = extract_params(args, 2);
 
         let state = get_state();
@@ -158,9 +203,55 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
+    // db.open(connObj) — connect using the object's connectionstring property
+    vm.register_host_fn("vybe:database", "open", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let raw = {
+                let o = obj.borrow();
+                o.properties.get("connectionstring").map(|v| format!("{}", v)).unwrap_or_default()
+            };
+            if raw.is_empty() { return Value::Null; }
+            let conn_str = if raw.to_lowercase().contains("data source=:memory:") || raw == ":memory:" {
+                "sqlite::memory:".to_string()
+            } else if raw.to_lowercase().contains("data source=") {
+                let path = raw.to_lowercase();
+                let path = path.split("data source=").nth(1).unwrap_or("").split(';').next().unwrap_or("").trim().to_string();
+                format!("sqlite:{}", path)
+            } else if !raw.contains("://") && !raw.starts_with("sqlite:") {
+                format!("sqlite:{}", raw)
+            } else {
+                raw
+            };
+            match block_on(sqlx::any::AnyPoolOptions::new().max_connections(1).min_connections(1).connect(&conn_str)) {
+                Ok(pool) => {
+                    let id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
+                    let state = get_state();
+                    state.lock().unwrap().connections.insert(id, DbConn { pool, conn_str });
+                    let mut o = obj.borrow_mut();
+                    o.properties.insert("__conn_id".into(), Value::F64(id as f64));
+                    o.properties.insert("state".into(), Value::String(Rc::from("Open")));
+                }
+                Err(e) => {
+                    eprintln!("db.open error: {}", e);
+                }
+            }
+        }
+        Value::Null
+    }));
+
+    // db.createCommand(connObj) → SqlCommand object referencing same connection
+    vm.register_host_fn("vybe:database", "createCommand", Box::new(|args: &[Value]| {
+        let conn_id = get_conn_id(args);
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Rc::from("SqlCommand")));
+        obj.properties.insert("__conn_id".into(), Value::F64(conn_id as f64));
+        obj.properties.insert("commandtext".into(), Value::String(Rc::from("")));
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }));
+
     // db.close(conn)
     vm.register_host_fn("vybe:database", "close", Box::new(|args: &[Value]| {
-        let conn_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+        let conn_id = get_conn_id(args);
         let state = get_state();
         let mut guard = state.lock().unwrap();
         if let Some(conn) = guard.connections.remove(&conn_id) {
@@ -171,7 +262,7 @@ pub fn register(vm: &mut VM) {
 
     // db.tables(conn) → array of table names
     vm.register_host_fn("vybe:database", "tables", Box::new(|args: &[Value]| {
-        let conn_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+        let conn_id = get_conn_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
         let conn = match guard.connections.get(&conn_id) {
@@ -200,7 +291,7 @@ pub fn register(vm: &mut VM) {
 
     // db.columns(conn, tableName) → array of column name strings
     vm.register_host_fn("vybe:database", "columns", Box::new(|args: &[Value]| {
-        let conn_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+        let conn_id = get_conn_id(args);
         let table = s(args, 1);
         let state = get_state();
         let guard = state.lock().unwrap();
@@ -230,7 +321,7 @@ pub fn register(vm: &mut VM) {
 
     // db.transaction(conn) → transaction id
     vm.register_host_fn("vybe:database", "beginTransaction", Box::new(|args: &[Value]| {
-        let conn_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+        let conn_id = get_conn_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
         let conn = match guard.connections.get(&conn_id) {
@@ -245,7 +336,7 @@ pub fn register(vm: &mut VM) {
 
     // db.commit(conn)
     vm.register_host_fn("vybe:database", "commit", Box::new(|args: &[Value]| {
-        let conn_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+        let conn_id = get_conn_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
         let conn = match guard.connections.get(&conn_id) {
@@ -260,7 +351,7 @@ pub fn register(vm: &mut VM) {
 
     // db.rollback(conn)
     vm.register_host_fn("vybe:database", "rollback", Box::new(|args: &[Value]| {
-        let conn_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+        let conn_id = get_conn_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
         let conn = match guard.connections.get(&conn_id) {
@@ -276,6 +367,18 @@ pub fn register(vm: &mut VM) {
 
 fn s(args: &[Value], idx: usize) -> String {
     args.get(idx).map(|v| format!("{}", v)).unwrap_or_default()
+}
+
+/// Extract connection ID from either a number or a SqlConnection object.
+fn get_conn_id(args: &[Value]) -> u64 {
+    match args.first() {
+        Some(Value::F64(n)) => *n as u64,
+        Some(Value::Object(obj)) => {
+            let o = obj.borrow();
+            o.properties.get("__conn_id").map(|v| v.as_f64() as u64).unwrap_or(0)
+        }
+        _ => 0,
+    }
 }
 
 /// Extract params array from args[idx] if it's an array.

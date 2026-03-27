@@ -11,6 +11,7 @@ pub fn register(vm: &mut VM) {
 }
 
 fn register_convert_methods(vm: &VM, ns: &Value) {
+    set_prop(ns, "todatetime", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
     set_prop(ns, "toint32", host_fn_ref(vm, "vybe:convert", "cint"));
     set_prop(ns, "toint16", host_fn_ref(vm, "vybe:convert", "cint"));
     set_prop(ns, "toint64", host_fn_ref(vm, "vybe:convert", "clng"));

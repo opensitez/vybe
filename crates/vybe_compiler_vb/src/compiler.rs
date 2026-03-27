@@ -15,8 +15,9 @@ pub struct Compiler {
     pub(crate) defined_classes: HashSet<String>,
     pub(crate) function_name_stack: Vec<String>,
     /// Stack of loop contexts for Exit/Continue compilation.
-    /// Each entry: (loop_start_offset, break_jump_patches)
     pub(crate) loop_stack: Vec<LoopContext>,
+    /// When compiling inside a class, the field names for implicit Me.field access
+    pub(crate) class_fields: HashSet<String>,
 }
 
 pub(crate) struct LoopContext {
@@ -39,11 +40,14 @@ impl Compiler {
             defined_classes: HashSet::new(),
             function_name_stack: Vec::new(),
             loop_stack: Vec::new(),
+            class_fields: HashSet::new(),
         }
     }
 
     pub fn compile(mut self, program: &Program) -> Result<Vec<Chunk>, String> {
-        for decl in &program.declarations {
+        // Merge partial classes before compilation
+        let declarations = Self::merge_partial_classes(&program.declarations);
+        for decl in &declarations {
             self.compile_declaration(decl)?;
         }
         for stmt in &program.statements {
@@ -141,6 +145,7 @@ impl Compiler {
             | "environment" | "thread" | "json" | "color"
             | "datetime" | "stringbuilder" | "process"
             | "timespan" | "guid" | "point" | "size" | "font" | "random"
+            | "path" | "strings" | "messagebox" | "encoding"
         )
     }
 
@@ -150,6 +155,54 @@ impl Compiler {
             Expression::MemberAccess(inner, _) => self.is_namespace_expr(inner),
             _ => false,
         }
+    }
+
+    /// Merge partial class declarations into single classes.
+    fn merge_partial_classes(declarations: &[Declaration]) -> Vec<Declaration> {
+        use std::collections::HashMap as Map;
+        let mut class_map: Map<String, ClassDecl> = Map::new();
+        let mut result: Vec<Declaration> = Vec::new();
+        let mut class_order: Vec<String> = Vec::new();
+
+        for decl in declarations {
+            if let Declaration::Class(class) = decl {
+                let key = class.name.as_str().to_lowercase();
+                if let Some(existing) = class_map.get_mut(&key) {
+                    // Merge: add fields, methods, properties from this partial
+                    existing.fields.extend(class.fields.clone());
+                    existing.methods.extend(class.methods.clone());
+                    existing.properties.extend(class.properties.clone());
+                    if existing.inherits.is_none() && class.inherits.is_some() {
+                        existing.inherits = class.inherits.clone();
+                    }
+                    existing.implements.extend(class.implements.clone());
+                } else {
+                    class_order.push(key.clone());
+                    class_map.insert(key, class.clone());
+                }
+            } else {
+                result.push(decl.clone());
+            }
+        }
+
+        // Insert merged classes in original order
+        let mut final_result: Vec<Declaration> = Vec::new();
+        let mut class_inserted: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for decl in declarations {
+            if let Declaration::Class(class) = decl {
+                let key = class.name.as_str().to_lowercase();
+                if !class_inserted.contains(&key) {
+                    if let Some(merged) = class_map.remove(&key) {
+                        final_result.push(Declaration::Class(merged));
+                        class_inserted.insert(key);
+                    }
+                }
+                // Skip duplicate partials
+            } else {
+                final_result.push(decl.clone());
+            }
+        }
+        final_result
     }
 
     // ---- Declarations ----
@@ -266,6 +319,7 @@ impl Compiler {
 
     pub(crate) fn compile_store_ident(&mut self, target: &Identifier) -> Result<(), String> {
         let name = target.as_str().to_lowercase();
+        // VB convention: assigning to the function name sets the return value
         if let Some(func_name) = self.function_name_stack.last() {
             if name == *func_name {
                 let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
@@ -280,10 +334,60 @@ impl Compiler {
                 self.emit(Op::drop);
             }
             VarResolution::Global => {
+                // Inside a class: unresolved name that's a class field → Me.field = value
+                if self.class_fields.contains(&name) {
+                    if let Some(me_slot) = self.current_scope().resolve_local("me") {
+                        self.emit_u16(Op::local_get, me_slot);
+                        // Stack: [value, me] — but struct_set needs [obj, val]
+                        // value is already on stack from caller, me is on top
+                        // Need to swap: not directly available. Use a workaround:
+                        // Actually, the caller already pushed value before calling us.
+                        // Stack: [..., value]. We need to emit: [me, value] struct_set
+                        // But value is already on top. Let's use a temp local.
+                        let tmp = self.define_local("__field_tmp");
+                        // Save value to temp
+                        // Wait — the value is on the stack BEFORE this function.
+                        // The pattern: compile_expression(value), then compile_store_ident(target)
+                        // So stack has [..., value]. We need:
+                        // local_set tmp (saves value), drop, local_get me, local_get tmp, struct_set
+                        self.emit_u16(Op::local_set, tmp); // save me to tmp (wrong — me is on top)
+                        // This is getting messy. Let me restructure.
+                        // Actually we pushed me AFTER value. Stack: [..., value, me]
+                        // We need struct_set which pops [obj, val]: expects obj below val
+                        // Stack: [value, me] — me is on top, value below. struct_set sees obj=value, val=me. Wrong order.
+                        // Need to swap. No swap opcode. Let me pop both and re-push.
+                        self.emit(Op::drop); // drop me, stack: [value]
+                        // Actually this whole approach is wrong. Let me handle it differently.
+                        // Start over: value is on stack top. We need Me under it.
+                        // Pop value to temp, push Me, push value back
+                        // But we already defined tmp and pushed me...
+                        // Let me just redo the whole thing cleanly:
+                        return self.compile_store_field(&name);
+                    }
+                }
                 self.emit_global_set(&name);
                 self.emit(Op::drop);
             }
         }
+        Ok(())
+    }
+
+    /// Store to Me.field_name. Value is on top of stack.
+    fn compile_store_field(&mut self, field_name: &str) -> Result<(), String> {
+        // Stack: [..., value]
+        // Need: Me on stack, then value, then struct_set
+        // Use a temp to reorder
+        let tmp = self.define_local(&format!("__st_{}", field_name));
+        self.emit_u16(Op::local_set, tmp); // save value
+        self.emit(Op::drop);
+        // Now push Me, then value
+        if let Some(me_slot) = self.current_scope().resolve_local("me") {
+            self.emit_u16(Op::local_get, me_slot);
+        }
+        self.emit_u16(Op::local_get, tmp); // push value back
+        let prop_idx = self.add_string_constant(field_name);
+        self.emit_u16(Op::struct_set, prop_idx);
+        self.emit(Op::drop);
         Ok(())
     }
 

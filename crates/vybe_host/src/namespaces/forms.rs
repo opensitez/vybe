@@ -36,6 +36,30 @@ pub fn register(vm: &mut VM) {
                 obj.properties.insert("height".into(), Value::F64(30.0));
                 obj.properties.insert("left".into(), Value::F64(0.0));
                 obj.properties.insert("top".into(), Value::F64(0.0));
+                // Add Items/Columns/Rows/Controls collections for controls that need them
+                let ltype = type_str.to_lowercase();
+                if matches!(ltype.as_str(), "combobox" | "listbox" | "checkedlistbox"
+                    | "listview" | "menustrip" | "toolstrip" | "statusstrip"
+                    | "contextmenustrip" | "domainupdown" | "treeview") {
+                    let items = vybe_bytecode::value::Object::new_array(vec![]);
+                    obj.properties.insert("items".into(), Value::Object(Rc::new(RefCell::new(items))));
+                }
+                if matches!(ltype.as_str(), "datagridview" | "listview") {
+                    let cols = vybe_bytecode::value::Object::new_array(vec![]);
+                    obj.properties.insert("columns".into(), Value::Object(Rc::new(RefCell::new(cols))));
+                    let rows = vybe_bytecode::value::Object::new_array(vec![]);
+                    obj.properties.insert("rows".into(), Value::Object(Rc::new(RefCell::new(rows))));
+                }
+                if matches!(ltype.as_str(), "panel" | "groupbox" | "tabcontrol"
+                    | "tabpage" | "splitcontainer" | "flowlayoutpanel" | "tablelayoutpanel"
+                    | "form") {
+                    let controls = vybe_bytecode::value::Object::new_array(vec![]);
+                    obj.properties.insert("controls".into(), Value::Object(Rc::new(RefCell::new(controls))));
+                }
+                if matches!(ltype.as_str(), "tabcontrol") {
+                    let pages = vybe_bytecode::value::Object::new_array(vec![]);
+                    obj.properties.insert("tabpages".into(), Value::Object(Rc::new(RefCell::new(pages))));
+                }
                 Value::Object(Rc::new(RefCell::new(obj)))
             })
         });

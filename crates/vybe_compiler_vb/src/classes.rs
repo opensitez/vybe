@@ -59,21 +59,37 @@ impl Compiler {
 
         let this_slot = self.current_scope().resolve_local("me").unwrap();
 
-        // If Inherits, store parent constructor as __super on this
-        // The actual call happens via MyBase.New() in the constructor body
+        // Track class fields so unresolved names inside methods resolve to Me.field
+        let saved_fields = std::mem::take(&mut self.class_fields);
+        for field in &class.fields {
+            self.class_fields.insert(field.name.as_str().to_lowercase());
+        }
+
+        // If Inherits, always call parent constructor to attach parent methods/fields.
+        // Also store __super for explicit MyBase.New() calls.
+        let has_explicit_ctor = class.methods.iter().any(|m| matches!(m, MethodDecl::Sub(s) if s.name.as_str().eq_ignore_ascii_case("New")));
         if let Some(ref parent_type) = class.inherits {
             let parent_name = match parent_type {
                 VBType::Custom(name) => name.to_lowercase(),
                 _ => String::new(),
             };
             if !parent_name.is_empty() {
-                // Store __super = parent constructor on this
+                // Store __super on this
                 self.emit_u16(Op::local_get, this_slot);
                 let parent_idx = self.add_string_constant(&parent_name);
                 self.emit_u16(Op::global_get, parent_idx);
                 let super_idx = self.add_string_constant("__super");
                 self.emit_u16(Op::struct_set, super_idx);
                 self.emit(Op::drop);
+
+                // Auto-call parent constructor if no explicit Sub New
+                if !has_explicit_ctor {
+                    let parent_idx = self.add_string_constant(&parent_name);
+                    self.emit_u16(Op::global_get, parent_idx);
+                    self.emit_u16(Op::local_get, this_slot);
+                    self.emit_u8(Op::call, 1);
+                    self.emit(Op::drop);
+                }
             }
         }
 
@@ -95,7 +111,27 @@ impl Compiler {
             self.compile_statement(stmt)?;
         }
 
-        // Attach instance methods
+        // Before attaching child methods, save parent methods as __base_name
+        // so MyBase.Method() can access them without infinite recursion
+        if class.inherits.is_some() {
+            for method in &instance_methods {
+                let method_name = match method {
+                    MethodDecl::Sub(sub) => sub.name.as_str().to_lowercase(),
+                    MethodDecl::Function(func) => func.name.as_str().to_lowercase(),
+                };
+                let base_name = format!("__base_{}", method_name);
+                // this.__base_method = this.method
+                self.emit_u16(Op::local_get, this_slot); // obj for struct_set
+                self.emit_u16(Op::local_get, this_slot); // obj for struct_get
+                let prop_idx = self.add_string_constant(&method_name);
+                self.emit_u16(Op::struct_get, prop_idx); // value = parent's method (or null)
+                let base_idx = self.add_string_constant(&base_name);
+                self.emit_u16(Op::struct_set, base_idx); // this.__base_method = value
+                self.emit(Op::drop);
+            }
+        }
+
+        // Attach instance methods (overwrites parent's if same name = override)
         for method in &instance_methods {
             let method_name = match method {
                 MethodDecl::Sub(sub) => sub.name.as_str().to_lowercase(),
@@ -141,6 +177,7 @@ impl Compiler {
         let upvalues = self.current_scope().upvalues.clone();
         self.scopes.pop();
         self.current_chunk_idx = saved;
+        self.class_fields = saved_fields; // restore
         self.emit_ref_func(idx, &upvalues);
 
         // --- Attach Shared members to the constructor function itself ---

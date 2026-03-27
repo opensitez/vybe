@@ -65,9 +65,10 @@ pub struct VM {
     exception_handlers: Vec<ExceptionHandler>,
     /// Event loop for async operations (shared with host functions).
     pub event_loop: Rc<RefCell<EventLoop>>,
-    /// Type method table: ("TypeName", "method") → host_fn_index.
-    /// Used for resolving methods on built-in type objects (List, Dictionary, etc.).
+    /// Legacy type method table — being replaced by TypeRegistry.
     pub type_methods: HashMap<(String, String), usize>,
+    /// WASM GC-style type definitions with vtable method dispatch.
+    pub type_registry: crate::typedef::TypeRegistry,
 }
 
 impl VM {
@@ -84,6 +85,7 @@ impl VM {
             exception_handlers: Vec::new(),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             type_methods: HashMap::new(),
+            type_registry: crate::typedef::TypeRegistry::new(),
         }
     }
 
@@ -92,6 +94,11 @@ impl VM {
         let idx = self.host_fns.len();
         self.host_fns.push(f);
         self.host_registry.insert((module.to_string(), name.to_string()), idx);
+    }
+
+    /// Get a type_id by name from the TypeRegistry.
+    pub fn get_type_id(&self, name: &str) -> usize {
+        self.type_registry.get_id(name).unwrap_or(0)
     }
 
     /// Register a method on a built-in type.
@@ -408,44 +415,7 @@ impl VM {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let obj = self.pop();
-                    match &obj {
-                        Value::Object(o) => {
-                            // Check for getter: __get_{name}
-                            let getter_key = format!("__get_{}", name);
-                            let getter = o.borrow().properties.get(&getter_key).cloned();
-                            if let Some(getter_fn) = getter {
-                                self.push(getter_fn)?;
-                                self.push(obj)?;
-                                self.call_value(1)?;
-                            } else {
-                                let val = o.borrow().get(&name);
-                                if matches!(val, Value::Null) {
-                                    // Fallback: check type method table
-                                    let type_name = o.borrow().properties.get("__type")
-                                        .map(|v| format!("{}", v).to_lowercase())
-                                        .unwrap_or_default();
-                                    if !type_name.is_empty() {
-                                        if let Some(&fn_idx) = self.type_methods.get(&(type_name, name.clone())) {
-                                            // Return a HostFunction that binds this object as first arg
-                                            let mut method_obj = Object::new();
-                                            method_obj.kind = ObjectKind::HostFunction(fn_idx);
-                                            self.push(Value::Object(Rc::new(RefCell::new(method_obj))))?;
-                                        } else {
-                                            self.push(val)?;
-                                        }
-                                    } else {
-                                        self.push(val)?;
-                                    }
-                                } else {
-                                    self.push(val)?;
-                                }
-                            }
-                        }
-                        Value::String(s) if name == "length" => {
-                            self.push(Value::F64(s.len() as f64))?;
-                        }
-                        _ => self.push(Value::Null)?,
-                    }
+                    self.push(self.resolve_property(&obj, &name)?)?;
                 }
                 Op::struct_set => {
                     let idx = self.read_u16();
@@ -680,7 +650,7 @@ impl VM {
                     }
 
                     let func = Function { name, arity, chunk_index: func_idx, upvalues };
-                    let obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func) };
+                    let obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0 };
                     self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
                 }
 
@@ -948,7 +918,7 @@ impl VM {
                     _ => return Err(VMError::new("Not a function")),
                 }
             }
-            _ => return Err(VMError::new(format!("{} is not callable", callee.type_tag()))),
+            _ => return Err(VMError::new(format!("{} is not callable (type: {})", callee.type_tag(), callee))),
         }
         Ok(())
     }
@@ -1004,6 +974,136 @@ impl VM {
                 }
             } else {
                 i += 1;
+            }
+        }
+    }
+}
+
+impl VM {
+    /// WASM GC-style property/method resolution.
+    ///
+    /// Resolution order:
+    /// 1. Property getter (__get_{name})
+    /// 2. Instance property (on the object itself)
+    /// 3. TypeRegistry vtable (type_id → method table → parent chain)
+    /// 4. Legacy type_methods table (fallback for old code)
+    /// 5. Universal Object methods (type 0)
+    fn resolve_property(&self, obj: &Value, name: &str) -> Result<Value, VMError> {
+        match obj {
+            Value::Object(o) => {
+                let ob = o.borrow();
+
+                // 1. Check for getter
+                let getter_key = format!("__get_{}", name);
+                if ob.properties.contains_key(&getter_key) {
+                    return Ok(ob.properties.get(&getter_key).cloned().unwrap());
+                    // Note: caller should invoke the getter — this just returns the fn
+                    // TODO: auto-invoke getters here
+                }
+
+                // 2. Instance property
+                let val = ob.get(name);
+                if !matches!(val, Value::Null) {
+                    return Ok(val);
+                }
+
+                // 3. TypeRegistry vtable
+                let type_id = ob.type_id;
+                drop(ob); // release borrow before accessing self
+
+                if type_id > 0 {
+                    if let Some(method) = self.type_registry.resolve_method(type_id, name) {
+                        return Ok(self.method_to_value(method));
+                    }
+                }
+
+                // Also try inferring type from ObjectKind or __type property
+                let ob = o.borrow();
+                let inferred_type = ob.properties.get("__type")
+                    .map(|v| format!("{}", v).to_lowercase())
+                    .unwrap_or_else(|| match &ob.kind {
+                        ObjectKind::Array(_) => "list".into(),
+                        _ => String::new(),
+                    });
+                drop(ob);
+
+                if !inferred_type.is_empty() {
+                    if let Some(tid) = self.type_registry.get_id(&inferred_type) {
+                        if let Some(method) = self.type_registry.resolve_method(tid, name) {
+                            return Ok(self.method_to_value(method));
+                        }
+                    }
+                }
+
+                // 4. Legacy type_methods fallback
+                let found = if !inferred_type.is_empty() {
+                    self.type_methods.get(&(inferred_type.clone(), name.to_lowercase())).copied()
+                } else {
+                    None
+                };
+                let found = found.or_else(|| {
+                    self.type_methods.get(&(String::new(), name.to_lowercase())).copied()
+                });
+                if let Some(fn_idx) = found {
+                    let mut method_obj = Object::new();
+                    method_obj.kind = ObjectKind::HostFunction(fn_idx);
+                    return Ok(Value::Object(Rc::new(RefCell::new(method_obj))));
+                }
+
+                Ok(Value::Null)
+            }
+            Value::String(s) => {
+                if name == "length" {
+                    return Ok(Value::F64(s.len() as f64));
+                }
+                // String type in registry
+                if let Some(tid) = self.type_registry.get_id("string") {
+                    if let Some(method) = self.type_registry.resolve_method(tid, name) {
+                        return Ok(self.method_to_value(method));
+                    }
+                }
+                // Legacy fallback
+                if let Some(&fn_idx) = self.type_methods.get(&("string".into(), name.to_lowercase())) {
+                    let mut method_obj = Object::new();
+                    method_obj.kind = ObjectKind::HostFunction(fn_idx);
+                    return Ok(Value::Object(Rc::new(RefCell::new(method_obj))));
+                }
+                Ok(Value::Null)
+            }
+            _ => {
+                // Primitives: check Object (universal) type methods
+                if let Some(method) = self.type_registry.resolve_method(0, name) {
+                    return Ok(self.method_to_value(method));
+                }
+                if let Some(&fn_idx) = self.type_methods.get(&(String::new(), name.to_lowercase())) {
+                    let mut method_obj = Object::new();
+                    method_obj.kind = ObjectKind::HostFunction(fn_idx);
+                    return Ok(Value::Object(Rc::new(RefCell::new(method_obj))));
+                }
+                Ok(Value::Null)
+            }
+        }
+    }
+
+    /// Convert a Method (from TypeRegistry) to a callable Value.
+    fn method_to_value(&self, method: &crate::typedef::Method) -> Value {
+        match method {
+            crate::typedef::Method::HostFn(idx) => {
+                let mut obj = Object::new();
+                obj.kind = ObjectKind::HostFunction(*idx);
+                Value::Object(Rc::new(RefCell::new(obj)))
+            }
+            crate::typedef::Method::ChunkFn(idx) => {
+                // Create a Function value referencing the chunk
+                let chunk = &self.chunks[*idx];
+                let func = Function {
+                    name: Some(chunk.name.clone()),
+                    arity: chunk.arity,
+                    chunk_index: *idx,
+                    upvalues: Vec::new(),
+                };
+                let obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0 };
+                Value::Object(Rc::new(RefCell::new(obj)))
             }
         }
     }

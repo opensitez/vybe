@@ -28,9 +28,21 @@ pub fn register(vm: &mut VM) {
     let sys_dir = ensure_namespace(vm, &["System", "IO", "Directory"]);
     register_directory_methods(vm, &sys_dir);
 
+    // Path (direct shortcut)
+    let path = ensure_namespace(vm, &["Path"]);
+    set_prop(&path, "combine", host_fn_ref(vm, "wasi:filesystem", "pathCombine"));
+    set_prop(&path, "getfilename", host_fn_ref(vm, "wasi:filesystem", "pathGetFileName"));
+    set_prop(&path, "getextension", host_fn_ref(vm, "wasi:filesystem", "pathGetExtension"));
+    set_prop(&path, "getdirectoryname", host_fn_ref(vm, "wasi:filesystem", "pathGetDirectory"));
+    set_prop(&path, "getfilenamewithoutextension", host_fn_ref(vm, "wasi:filesystem", "pathGetFileNameWithoutExt"));
+    set_prop(&path, "changeextension", host_fn_ref(vm, "wasi:filesystem", "pathChangeExtension"));
+    set_prop(&path, "getfullpath", host_fn_ref(vm, "wasi:filesystem", "pathGetFullPath"));
+    set_prop(&path, "gettemppath", host_fn_ref(vm, "wasi:filesystem", "pathGetTempPath"));
+
     // IO (shortcut namespace for IO.File, IO.Path, etc.)
     let io = ensure_namespace(vm, &["IO"]);
     set_prop(&io, "file", ensure_namespace(vm, &["File"]));
+    set_prop(&io, "path", ensure_namespace(vm, &["Path"]));
 }
 
 fn register_file_methods(vm: &VM, ns: &Value) {

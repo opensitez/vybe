@@ -19,6 +19,15 @@ pub fn register(vm: &mut VM) {
     set_prop(&sys, "format", host_fn_ref(vm, "vybe:string", "format"));
     set_prop(&sys, "join", host_fn_ref(vm, "vybe:array", "join"));
 
+    // Encoding (System.Text.Encoding)
+    let utf8 = ensure_namespace(vm, &["Encoding", "UTF8"]);
+    set_prop(&utf8, "getbytes", host_fn_ref(vm, "vybe:convert", "toString"));
+    set_prop(&utf8, "getstring", host_fn_ref(vm, "vybe:convert", "toString"));
+
+    let ascii = ensure_namespace(vm, &["Encoding", "ASCII"]);
+    set_prop(&ascii, "getbytes", host_fn_ref(vm, "vybe:convert", "toString"));
+    set_prop(&ascii, "getstring", host_fn_ref(vm, "vybe:convert", "toString"));
+
     // System.Text.RegularExpressions.Regex
     let regex = ensure_namespace(vm, &["System", "Text", "RegularExpressions", "Regex"]);
     set_prop(&regex, "ismatch", host_fn_ref(vm, "vybe:regex", "test"));

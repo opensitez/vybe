@@ -39,15 +39,42 @@ impl Compiler {
                 match self.resolve_variable(&name) {
                     VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
                     VarResolution::Global => {
-                        let idx = self.add_string_constant(&name);
-                        self.emit_u16(Op::global_get, idx);
+                        // Inside a class: unresolved name that's a field → Me.field
+                        if self.class_fields.contains(&name) {
+                            if let Some(me_slot) = self.current_scope().resolve_local("me") {
+                                self.emit_u16(Op::local_get, me_slot);
+                                let prop_idx = self.add_string_constant(&name);
+                                self.emit_u16(Op::struct_get, prop_idx);
+                            } else {
+                                let idx = self.add_string_constant(&name);
+                                self.emit_u16(Op::global_get, idx);
+                            }
+                        } else {
+                            let idx = self.add_string_constant(&name);
+                            self.emit_u16(Op::global_get, idx);
+                        }
                     }
                 }
             }
             Expression::MemberAccess(obj, member) => {
-                self.compile_expression(obj)?;
-                let idx = self.add_string_constant(&member.as_str().to_lowercase());
-                self.emit_u16(Op::struct_get, idx);
+                // Check if this is a namespace.property that should be auto-called
+                // e.g. DateTime.Now, Environment.NewLine, Guid.NewGuid
+                if let Expression::Variable(ref obj_name) = **obj {
+                    let obj_lower = obj_name.as_str().to_lowercase();
+                    let mem_lower = member.as_str().to_lowercase();
+                    let full = format!("{}.{}", obj_lower, mem_lower);
+                    if let Some(()) = self.try_compile_builtin_method(&full, &[])? {
+                        // Compiled as a 0-arg host call
+                    } else {
+                        self.compile_expression(obj)?;
+                        let idx = self.add_string_constant(&mem_lower);
+                        self.emit_u16(Op::struct_get, idx);
+                    }
+                } else {
+                    self.compile_expression(obj)?;
+                    let idx = self.add_string_constant(&member.as_str().to_lowercase());
+                    self.emit_u16(Op::struct_get, idx);
+                }
             }
             Expression::ArrayAccess(arr, indices) => {
                 let name = arr.as_str().to_lowercase();
@@ -284,16 +311,16 @@ impl Compiler {
             return Ok(());
         }
 
-        // MyBase.Method(args) — call parent's method with Me
+        // MyBase.Method(args) — call parent's version via __base_method
         if matches!(obj, Expression::MyBase) {
             let meth_lower = method.as_str().to_lowercase();
+            let base_name = format!("__base_{}", meth_lower);
             match self.resolve_variable("me") {
                 VarResolution::Local(slot) => {
-                    // Get method from Me (parent attached it)
                     self.emit_u16(Op::local_get, slot);
-                    let prop_idx = self.add_string_constant(&meth_lower);
+                    let prop_idx = self.add_string_constant(&base_name);
                     self.emit_u16(Op::struct_get, prop_idx);
-                    self.emit_u16(Op::local_get, slot); // Me as this
+                    self.emit_u16(Op::local_get, slot);
                     for arg in args { self.compile_expression(arg)?; }
                     self.emit_u8(Op::call, (args.len() + 1) as u8);
                 }
@@ -390,6 +417,13 @@ impl Compiler {
             return Ok(());
         }
 
+        // Strip generic type params: "dictionary(of string, integer)" → "dictionary"
+        let name = if let Some(paren) = name.find("(of ") {
+            name[..paren].to_string()
+        } else {
+            name
+        };
+
         // Built-in types → host constructor (no struct_new needed, host creates the object)
         let host_ctor: Option<(&str, &str)> = match name.as_str() {
             "datetime"      => Some(("vybe:types", "dateTimeNew")),
@@ -411,14 +445,65 @@ impl Compiler {
             "font"          => Some(("vybe:drawing", "fontNew")),
             "random"        => Some(("vybe:threading", "randomNew")),
             "stopwatch"     => Some(("vybe:threading", "stopwatchNew")),
+            "arraylist" | "system.collections.arraylist" => Some(("vybe:types", "listNew")),
+            "hashtable" | "system.collections.hashtable" => Some(("vybe:types", "dictNew")),
+            "collection" | "system.collections.collection" => Some(("vybe:types", "listNew")),
+            "sortedlist"    => Some(("vybe:types", "dictNew")),
+            "streamreader" | "system.io.streamreader" => Some(("vybe:net", "streamReaderNew")),
+            "streamwriter" | "system.io.streamwriter" => Some(("vybe:net", "streamWriterNew")),
+            // Database
+            "sqlconnection" | "system.data.sqlclient.sqlconnection" => Some(("vybe:database", "connect")),
+            "sqlcommand" | "system.data.sqlclient.sqlcommand" => Some(("vybe:data", "dataTableNew")),  // simplified
+            "sqldataadapter" | "system.data.sqlclient.sqldataadapter" => Some(("vybe:data", "dataTableNew")),
+            "oledbconnection" | "system.data.oledb.oledbconnection" => Some(("vybe:database", "connect")),
+            "oledbcommand" | "system.data.oledb.oledbcommand" => Some(("vybe:data", "dataTableNew")),
+            "adodb.connection" => Some(("vybe:database", "connect")),
+            "adodb.recordset" | "adodb.command" => Some(("vybe:data", "dataTableNew")),
+            // Network
+            "tcpclient" | "system.net.sockets.tcpclient" => Some(("vybe:net", "tcpConnect")),
+            "tcplistener" | "system.net.sockets.tcplistener" => Some(("vybe:net", "tcpListenerNew")),
+            "udpclient" | "system.net.sockets.udpclient" => Some(("vybe:net", "udpNew")),
+            // WinForms controls — use Window.Forms namespace constructors
+            "form" => Some(("vybe:gui", "newForm")),
+            "toolstripstatuslabel" | "toolstripmenuitem" | "toolstriptextbox"
+            | "toolstripcombobox" | "toolstripseparator" => Some(("vybe:types", "listNew")), // simplified
             _ => None,
         };
 
         if let Some((module, fn_name)) = host_ctor {
-            // Push a dummy this (host will ignore or use it)
             self.emit(Op::null);
             for arg in args { self.compile_expression(arg)?; }
             let idx = self.import(module, fn_name);
+            self.emit_host_call(idx, (args.len() + 1) as u8);
+            return Ok(());
+        }
+
+        // WinForms control constructors: New Button(), New TextBox(), etc.
+        // These map to vybe:gui/new_{CapitalizedName}
+        let control_types = [
+            "button", "label", "textbox", "checkbox", "radiobutton",
+            "combobox", "listbox", "panel", "groupbox", "tabcontrol",
+            "tabpage", "datagridview", "progressbar", "trackbar",
+            "numericupdown", "datetimepicker", "richtextbox", "picturebox",
+            "menustrip", "toolstrip", "statusstrip", "splitcontainer",
+            "flowlayoutpanel", "tablelayoutpanel", "linklabel", "maskedtextbox",
+            "listview", "webbrowser", "monthcalendar", "contextmenustrip",
+            "timer", "bindingsource", "tooltip", "imagelist",
+            "openfiledialog", "savefiledialog", "folderbrowserdialog",
+            "colordialog", "fontdialog",
+        ];
+        // Also strip System.Windows.Forms. prefix
+        let bare_name = name.strip_prefix("system.windows.forms.").unwrap_or(&name);
+        if control_types.contains(&bare_name.as_ref()) {
+            // Capitalize: "textbox" → "TextBox" — use the registered host fn name
+            // The host fn is registered as "new_TextBox", "new_Button", etc.
+            // We look it up by the namespace: global "window" → "forms" → control_name
+            self.emit(Op::null);
+            for arg in args { self.compile_expression(arg)?; }
+            // Find the matching new_X host function
+            let capitalized = capitalize_control_name(bare_name);
+            let hn = format!("new_{}", capitalized);
+            let idx = self.import("vybe:gui", &hn);
             self.emit_host_call(idx, (args.len() + 1) as u8);
             return Ok(());
         }
@@ -479,4 +564,35 @@ impl Compiler {
         }
         Ok(())
     }
+}
+
+/// Capitalize control type name: "textbox" → "TextBox", "datagridview" → "DataGridView"
+fn capitalize_control_name(name: &str) -> String {
+    // Map of known control names with proper casing
+    match name {
+        "button" => "Button", "label" => "Label", "textbox" => "TextBox",
+        "checkbox" => "CheckBox", "radiobutton" => "RadioButton",
+        "combobox" => "ComboBox", "listbox" => "ListBox",
+        "panel" => "Panel", "groupbox" => "GroupBox",
+        "tabcontrol" => "TabControl", "tabpage" => "TabPage",
+        "datagridview" => "DataGridView", "progressbar" => "ProgressBar",
+        "trackbar" => "TrackBar", "numericupdown" => "NumericUpDown",
+        "datetimepicker" => "DateTimePicker", "richtextbox" => "RichTextBox",
+        "picturebox" => "PictureBox", "menustrip" => "MenuStrip",
+        "toolstrip" => "ToolStrip", "statusstrip" => "StatusStrip",
+        "splitcontainer" => "SplitContainer",
+        "flowlayoutpanel" => "FlowLayoutPanel",
+        "tablelayoutpanel" => "TableLayoutPanel",
+        "linklabel" => "LinkLabel", "maskedtextbox" => "MaskedTextBox",
+        "listview" => "ListView", "webbrowser" => "WebBrowser",
+        "monthcalendar" => "MonthCalendar",
+        "contextmenustrip" => "ContextMenuStrip",
+        "timer" => "Timer", "bindingsource" => "BindingSource",
+        "tooltip" => "ToolTip", "imagelist" => "ImageList",
+        "openfiledialog" => "OpenFileDialog",
+        "savefiledialog" => "SaveFileDialog",
+        "folderbrowserdialog" => "FolderBrowserDialog",
+        "colordialog" => "ColorDialog", "fontdialog" => "FontDialog",
+        _ => return name.to_string(),
+    }.to_string()
 }

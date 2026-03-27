@@ -268,14 +268,16 @@ impl Compiler {
             Statement::ReDim { .. } => {
                 // Simplified: treat as no-op (array already dynamic)
             }
-            // Using block — compiled as try/finally with dispose
-            Statement::Using { variable: _, resource, body } => {
+            // Using block — resource stored as the named variable
+            Statement::Using { variable, resource, body } => {
+                self.current_scope_mut().begin_scope();
                 self.compile_expression(resource)?;
-                let slot = self.define_local("__using_res");
+                let var_name = variable.as_str().to_lowercase();
+                let slot = self.define_local(&var_name);
                 self.emit_u16(Op::local_set, slot);
                 self.emit(Op::drop);
                 for s in body { self.compile_statement(s)?; }
-                // No explicit dispose in our VM, but we could call .Close() etc.
+                self.current_scope_mut().end_scope();
             }
             // SetAssignment: Set x = obj (VB6, same as assignment)
             Statement::SetAssignment { target, value } => {
