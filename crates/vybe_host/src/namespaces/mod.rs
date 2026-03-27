@@ -15,6 +15,8 @@ mod gui;
 mod net;
 mod json;
 mod types;
+mod threading;
+mod data;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -36,6 +38,8 @@ pub fn setup_namespaces(vm: &mut VM) {
     net::register(vm);
     json::register(vm);
     types::register(vm);
+    threading::register(vm);
+    data::register(vm);
 }
 
 // ---- Shared helpers used by all sub-modules ----

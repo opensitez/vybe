@@ -35,6 +35,12 @@ pub mod runtime;
 pub mod database;
 pub mod gui;
 pub mod types;
+pub mod sockets;
+pub mod crypto;
+pub mod xml;
+pub mod threading;
+pub mod data;
+pub mod drawing;
 
 use vybe_bytecode::VM;
 
@@ -57,6 +63,12 @@ pub fn register_all(vm: &mut VM) {
     runtime::register(vm);
     database::register(vm);
     types::register(vm);
+    sockets::register(vm);
+    crypto::register(vm);
+    xml::register(vm);
+    threading::register(vm);
+    data::register(vm);
+    drawing::register(vm);
     // Set up namespace objects AFTER all host functions are registered
     crate::namespaces::setup_namespaces(vm);
 }

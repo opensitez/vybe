@@ -290,6 +290,16 @@ impl Compiler {
             return Ok(());
         }
 
+        // User-defined class takes priority over built-in types
+        if self.defined_classes.contains(&name) {
+            let idx = self.add_string_constant(&name);
+            self.emit_u16(Op::global_get, idx);
+            self.emit_u16(Op::struct_new, 0);
+            for arg in args { self.compile_expression(arg)?; }
+            self.emit_u8(Op::call, (args.len() + 1) as u8);
+            return Ok(());
+        }
+
         // Built-in types → host constructor (no struct_new needed, host creates the object)
         let host_ctor: Option<(&str, &str)> = match name.as_str() {
             "datetime"      => Some(("vybe:types", "dateTimeNew")),
@@ -304,6 +314,13 @@ impl Compiler {
                             => Some(("vybe:types", "stackNew")),
             "hashset" | "hashset(of string)" | "hashset(of integer)" | "hashset(of object)"
                             => Some(("vybe:types", "hashSetNew")),
+            "datatable"     => Some(("vybe:data", "dataTableNew")),
+            "dataset"       => Some(("vybe:data", "dataSetNew")),
+            "point"         => Some(("vybe:drawing", "pointNew")),
+            "size"          => Some(("vybe:drawing", "sizeNew")),
+            "font"          => Some(("vybe:drawing", "fontNew")),
+            "random"        => Some(("vybe:threading", "randomNew")),
+            "stopwatch"     => Some(("vybe:threading", "stopwatchNew")),
             _ => None,
         };
 
