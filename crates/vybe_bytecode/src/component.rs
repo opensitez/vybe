@@ -68,6 +68,7 @@ pub struct Component {
 pub enum Language {
     VB,
     JS,
+    Wasm,
 }
 
 /// The Component Model Linker.
@@ -174,4 +175,111 @@ pub struct LinkResult {
     pub exports: HashMap<(String, String), ExportImpl>,
     /// Offset of each component's chunks in the merged array
     pub component_offsets: Vec<usize>,
+}
+
+// ============================================================
+// ESM Integration — Source Phase Imports
+// ============================================================
+
+/// A resolved module with its exports ready for binding.
+#[derive(Debug, Clone)]
+pub struct ResolvedModule {
+    /// Module source path (e.g., "./math.wasm", "./utils.js")
+    pub source: String,
+    /// Language of the module
+    pub language: Language,
+    /// Compiled bytecode chunks
+    pub chunks: Vec<crate::Chunk>,
+    /// Named exports: name → chunk_index (for functions)
+    pub exports: HashMap<String, ModuleExport>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModuleExport {
+    /// A function export: chunk index + arity
+    Function { chunk_index: usize, arity: u8 },
+    /// A constant value export
+    Value(crate::Value),
+}
+
+/// Resolves ESM-style imports at compile time.
+/// Handles: .wasm, .js, .vb files.
+///
+/// Usage:
+///   import { add, multiply } from "./math.wasm"
+///   import { format } from "./utils.js"
+///   Imports "./helpers.vb"  (VB syntax)
+pub struct ModuleResolver {
+    /// Cache of already-resolved modules (by absolute path)
+    pub cache: HashMap<String, ResolvedModule>,
+    /// Base directory for relative path resolution
+    pub base_dir: String,
+}
+
+impl ModuleResolver {
+    pub fn new(base_dir: impl Into<String>) -> Self {
+        ModuleResolver {
+            cache: HashMap::new(),
+            base_dir: base_dir.into(),
+        }
+    }
+
+    /// Resolve a module source path, returning its exports.
+    /// Loads and compiles the module if not cached.
+    pub fn resolve(&mut self, source: &str) -> Result<&ResolvedModule, String> {
+        let abs_path = self.resolve_path(source);
+        if self.cache.contains_key(&abs_path) {
+            return Ok(&self.cache[&abs_path]);
+        }
+
+        let ext = std::path::Path::new(&abs_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let module = match ext.as_str() {
+            "wasm" => self.resolve_wasm(&abs_path)?,
+            "js" => return Err(format!("JS module resolution requires vybe_compiler_js (use .vybe project for cross-language): {}", source)),
+            "vb" => return Err(format!("VB module resolution requires vybe_compiler_vb (use .vybe project for cross-language): {}", source)),
+            _ => return Err(format!("Unknown module type: {}", source)),
+        };
+
+        self.cache.insert(abs_path.clone(), module);
+        Ok(&self.cache[&abs_path])
+    }
+
+    /// Resolve a .wasm module — read binary, extract exports.
+    fn resolve_wasm(&self, path: &str) -> Result<ResolvedModule, String> {
+        let data = std::fs::read(path)
+            .map_err(|e| format!("Failed to read {}: {}", path, e))?;
+        let chunks = crate::wasm::read_wasm(&data)?;
+
+        let mut exports = HashMap::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            if chunk.name != "<script>" && !chunk.name.starts_with("func_") {
+                exports.insert(chunk.name.clone(), ModuleExport::Function {
+                    chunk_index: i,
+                    arity: chunk.arity,
+                });
+            }
+        }
+
+        Ok(ResolvedModule {
+            source: path.to_string(),
+            language: Language::Wasm,
+            chunks,
+            exports,
+        })
+    }
+
+    fn resolve_path(&self, source: &str) -> String {
+        if source.starts_with('/') || source.starts_with("C:") {
+            source.to_string()
+        } else {
+            let base = std::path::Path::new(&self.base_dir);
+            let resolved = base.join(source);
+            resolved.to_string_lossy().to_string()
+        }
+    }
 }

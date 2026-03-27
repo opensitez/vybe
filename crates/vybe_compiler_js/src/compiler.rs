@@ -22,6 +22,9 @@ pub struct Compiler {
     defined_globals: std::collections::HashSet<String>,
     /// Track names that are class constructors (for static method dispatch).
     defined_classes: std::collections::HashSet<String>,
+    /// ESM Integration: .wasm files referenced by import statements.
+    /// The CLI/runtime should load these modules before execution.
+    pub wasm_imports: Vec<String>,
 }
 
 impl Compiler {
@@ -35,6 +38,7 @@ impl Compiler {
             in_method: false,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
+            wasm_imports: Vec::new(),
         }
     }
 
@@ -47,6 +51,18 @@ impl Compiler {
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
         Ok(self.chunks)
+    }
+
+    /// Compile and return both chunks and any .wasm ESM imports found.
+    pub fn compile_with_imports(mut self, program: &Program) -> Result<(Vec<Chunk>, Vec<String>), String> {
+        for stmt in &program.body {
+            self.compile_statement(stmt)?;
+        }
+        self.emit(Op::null);
+        self.emit(Op::halt);
+        let local_count = self.current_scope().next_slot;
+        self.chunks[0].local_count = local_count;
+        Ok((self.chunks, self.wasm_imports))
     }
 
     /// Emit a global set and track the name as defined.
@@ -584,15 +600,51 @@ impl Compiler {
 
             // -- Modules --
             Statement::Import { specifiers, source } => {
-                // Host modules (vybe:*): import binds names to host function calls.
-                // User modules (./file.js): handled by the module loader before compilation.
-                // At this stage, user module imports have already been resolved and
-                // their exports injected as globals. So we just bind the names.
+                // ESM Integration (Source Phase Imports):
+                // - "vybe:*" → host module, resolve at call sites
+                // - "./*.wasm" → WASM module, load exports as globals
+                // - "./*.js" / "./*.vb" → user module, pre-resolved by loader
+                //
+                // For .wasm: we store metadata so the CLI can load the module
+                // and register its exports before execution.
+                if source.ends_with(".wasm") {
+                    // WASM ESM import: record the source + requested exports
+                    // The CLI/runtime will use ModuleResolver to load these
+                    for spec in specifiers {
+                        match spec {
+                            ImportSpecifier::Named { name, alias } => {
+                                let local = alias.as_ref().unwrap_or(name);
+                                // Emit: global_get(name) — the runtime pre-loads WASM exports as globals
+                                let idx = self.add_string_constant(&name.to_lowercase());
+                                self.emit_u16(Op::global_get, idx);
+                                let dst = self.add_string_constant(&local.to_lowercase());
+                                self.emit_u16(Op::global_set, dst);
+                                self.emit(Op::drop);
+                            }
+                            ImportSpecifier::Namespace(name) => {
+                                // import * as math from "./math.wasm"
+                                // All exports bundled as an object — handled by runtime
+                                self.emit(Op::null);
+                                let idx = self.add_string_constant(&name.to_lowercase());
+                                self.emit_u16(Op::global_set, idx);
+                                self.emit(Op::drop);
+                            }
+                            ImportSpecifier::Default(name) => {
+                                let idx = self.add_string_constant(&name.to_lowercase());
+                                self.emit_u16(Op::global_get, idx);
+                                self.emit(Op::drop);
+                            }
+                        }
+                    }
+                    // Store the wasm source for the CLI to resolve
+                    self.wasm_imports.push(source.clone());
+                    return Ok(());
+                }
+
                 for spec in specifiers {
                     match spec {
                         ImportSpecifier::Named { name, alias } => {
                             let local_name = alias.as_ref().unwrap_or(name);
-                            // For host modules: create a namespace object or bind directly
                             if source.starts_with("vybe:") {
                                 // Import from host module — we don't need to do anything here.
                                 // The compiler resolves host calls by namespace at call sites.
