@@ -3,6 +3,7 @@ pub mod scope;
 mod statements;
 mod expressions;
 mod builtins;
+mod classes;
 
 pub use compiler::Compiler;
 use vybe_bytecode::{VM, Value};

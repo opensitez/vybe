@@ -360,6 +360,34 @@ impl Compiler {
                 self.emit_host_call(import_idx, 3);
                 self.emit(Op::drop);
             }
+            // RaiseEvent EventName(args)
+            // → look up __event_EventName on Me, call if not null
+            Statement::RaiseEvent { event_name, arguments } => {
+                let name_lower = event_name.as_str().to_lowercase();
+                let handler_key = format!("__event_{}", name_lower);
+                match self.resolve_variable("me") {
+                    VarResolution::Local(slot) => {
+                        self.emit_u16(Op::local_get, slot);
+                        let key_idx = self.add_string_constant(&handler_key);
+                        self.emit_u16(Op::struct_get, key_idx);
+                        // Check if handler exists (not null)
+                        self.emit(Op::dup);
+                        self.emit(Op::null);
+                        self.emit(Op::dyn_eq);
+                        self.emit(Op::dyn_to_bool);
+                        let skip = self.emit_jump(Op::br_if_true);
+                        // Call handler with args
+                        for arg in arguments { self.compile_expression(arg)?; }
+                        self.emit_u8(Op::call, arguments.len() as u8);
+                        self.emit(Op::drop);
+                        let end = self.emit_jump(Op::br);
+                        self.patch_jump(skip);
+                        self.emit(Op::drop); // drop the null handler
+                        self.patch_jump(end);
+                    }
+                    _ => {}
+                }
+            }
             _ => {
                 // VB statement types not yet compiled
             }

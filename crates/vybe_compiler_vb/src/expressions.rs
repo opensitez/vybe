@@ -16,6 +16,24 @@ impl Compiler {
             }
             Expression::Nothing => self.emit(Op::null),
 
+            // Me (this) reference inside a class method
+            Expression::Me => {
+                match self.resolve_variable("me") {
+                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Global => self.emit(Op::null),
+                }
+            }
+
+            // MyBase reference — used for MyBase.Method() calls
+            Expression::MyBase => {
+                // MyBase resolves to Me — the parent's methods are already on the object
+                // For MyBase.New() the compiler handles it specially in method calls
+                match self.resolve_variable("me") {
+                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Global => self.emit(Op::null),
+                }
+            }
+
             Expression::Variable(id) => {
                 let name = id.as_str().to_lowercase();
                 match self.resolve_variable(&name) {
@@ -155,13 +173,53 @@ impl Compiler {
     }
 
     fn compile_method_call(&mut self, obj: &Expression, method: &Identifier, args: &[Expression]) -> Result<(), String> {
+        // MyBase.New(args) — call parent constructor with Me
+        if matches!(obj, Expression::MyBase) && method.as_str().eq_ignore_ascii_case("New") {
+            // The parent constructor is stored as __super on Me (set by Inherits compilation)
+            // Or we look it up from the class's inherits info
+            // For now: MyBase.New(args) → get parent from __super, call with Me + args
+            match self.resolve_variable("me") {
+                VarResolution::Local(slot) => {
+                    self.emit_u16(Op::local_get, slot);
+                    let super_idx = self.add_string_constant("__super");
+                    self.emit_u16(Op::struct_get, super_idx);
+                    // Push Me as first arg
+                    self.emit_u16(Op::local_get, slot);
+                    for arg in args { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call, (args.len() + 1) as u8);
+                    self.emit(Op::drop);
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        // MyBase.Method(args) — call parent's method with Me
+        if matches!(obj, Expression::MyBase) {
+            let meth_lower = method.as_str().to_lowercase();
+            match self.resolve_variable("me") {
+                VarResolution::Local(slot) => {
+                    // Get method from Me (parent attached it)
+                    self.emit_u16(Op::local_get, slot);
+                    let prop_idx = self.add_string_constant(&meth_lower);
+                    self.emit_u16(Op::struct_get, prop_idx);
+                    self.emit_u16(Op::local_get, slot); // Me as this
+                    for arg in args { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call, (args.len() + 1) as u8);
+                }
+                _ => { self.emit(Op::null); }
+            }
+            return Ok(());
+        }
+
         if let Expression::Variable(ref obj_name) = *obj {
             let obj_lower = obj_name.as_str().to_lowercase();
             let meth_lower = method.as_str().to_lowercase();
             let full_name = format!("{}.{}", obj_lower, meth_lower);
             if let Some(result) = self.try_compile_builtin_method(&full_name, args)? {
                 let _ = result;
-            } else if self.is_namespace(&obj_lower) {
+            } else if self.is_namespace(&obj_lower) || self.defined_classes.contains(&obj_lower) {
+                // Namespace or class static call — no `this`
                 self.compile_expression(obj)?;
                 let prop_idx = self.add_string_constant(&meth_lower);
                 self.emit_u16(Op::struct_get, prop_idx);
@@ -212,7 +270,9 @@ impl Compiler {
     }
 
     fn compile_new_expr(&mut self, class_name: &Identifier, args: &[Expression]) -> Result<(), String> {
-        let name = class_name.as_str().to_lowercase();
+        // Strip trailing "()" if parser included it in the name
+        let raw = class_name.as_str().to_lowercase();
+        let name = raw.trim_end_matches("()").trim_end_matches('(').to_string();
         if name == "exception" || name == "argumentexception" || name == "invalidoperationexception"
             || name == "notimplementedexception" || name == "notsupportedexception" {
             self.emit_u16(Op::struct_new, 0);

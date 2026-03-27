@@ -12,6 +12,7 @@ pub struct Compiler {
     pub(crate) current_chunk_idx: usize,
     pub(crate) line: u32,
     pub(crate) defined_globals: HashSet<String>,
+    pub(crate) defined_classes: HashSet<String>,
     pub(crate) function_name_stack: Vec<String>,
 }
 
@@ -26,6 +27,7 @@ impl Compiler {
             current_chunk_idx: 0,
             line: 1,
             defined_globals: HashSet::new(),
+            defined_classes: HashSet::new(),
             function_name_stack: Vec::new(),
         }
     }
@@ -126,7 +128,7 @@ impl Compiler {
             "math" | "console" | "convert" | "strings" | "array"
             | "window" | "file" | "io" | "directory"
             | "vybe" | "system" | "application"
-            | "environment" | "thread" | "json"
+            | "environment" | "thread" | "json" | "color"
         )
     }
 
@@ -157,6 +159,7 @@ impl Compiler {
             Declaration::Class(class) => {
                 self.compile_class(class)?;
                 let name = class.name.as_str().to_lowercase();
+                self.defined_classes.insert(name.clone());
                 self.emit_global_set(&name);
                 self.emit(Op::drop);
             }
@@ -289,13 +292,9 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_class(&mut self, _class: &ClassDecl) -> Result<(), String> {
-        // TODO: full class compilation
-        self.emit(Op::null);
-        Ok(())
-    }
+    // compile_class is in classes.rs
 
-    fn emit_ref_func(&mut self, func_idx: usize, upvalues: &[crate::scope::UpvalueDesc]) {
+    pub(crate) fn emit_ref_func(&mut self, func_idx: usize, upvalues: &[crate::scope::UpvalueDesc]) {
         let line = self.line;
         self.chunks[self.current_chunk_idx].emit_op_u16(Op::ref_func, func_idx as u16, line);
         self.chunks[self.current_chunk_idx].emit(upvalues.len() as u8, line);
