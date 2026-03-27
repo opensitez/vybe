@@ -298,6 +298,12 @@ impl Compiler {
                             => Some(("vybe:types", "listNew")),
             "dictionary" | "dictionary(of string, string)" | "dictionary(of string, object)"
                             => Some(("vybe:types", "dictNew")),
+            "queue" | "queue(of string)" | "queue(of integer)" | "queue(of object)"
+                            => Some(("vybe:types", "queueNew")),
+            "stack" | "stack(of string)" | "stack(of integer)" | "stack(of object)"
+                            => Some(("vybe:types", "stackNew")),
+            "hashset" | "hashset(of string)" | "hashset(of integer)" | "hashset(of object)"
+                            => Some(("vybe:types", "hashSetNew")),
             _ => None,
         };
 

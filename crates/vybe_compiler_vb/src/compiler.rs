@@ -130,6 +130,7 @@ impl Compiler {
             | "vybe" | "system" | "application"
             | "environment" | "thread" | "json" | "color"
             | "datetime" | "stringbuilder" | "process"
+            | "timespan" | "guid"
         )
     }
 
