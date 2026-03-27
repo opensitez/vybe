@@ -25,6 +25,7 @@ impl Value {
             Value::F64(n) => *n,
             Value::I32(n) => *n as f64,
             Value::I64(n) => *n as f64,
+            Value::Bool(b) => if *b { 1.0 } else { 0.0 },
             _ => f64::NAN,
         }
     }
@@ -34,6 +35,7 @@ impl Value {
             Value::I32(n) => *n,
             Value::I64(n) => *n as i32,
             Value::F64(n) => *n as i32,
+            Value::Bool(b) => if *b { 1 } else { 0 },
             _ => 0,
         }
     }

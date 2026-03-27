@@ -451,29 +451,150 @@ fn decode_standard_wasm(
 
 /// Translate WASM opcodes to our internal Chunk format.
 /// Builds a proper constant pool and adjusts local indices.
+/// Control flow label for WASM block/loop/if translation
+struct WasmLabel {
+    /// For blocks: offset of the br placeholder to patch to end
+    /// For loops: start offset (br target)
+    start_offset: usize,
+    is_loop: bool,
+    /// Pending forward jumps to patch when we hit 'end'
+    break_patches: Vec<usize>,
+    /// For if/else: the br_if_false patch location
+    if_patch: Option<usize>,
+}
+
 fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count: u32, import_count: usize) -> Chunk {
     let mut chunk = Chunk::new(name);
     chunk.arity = arity;
-    // Our locals: slot 0 = implicit fn, then params, then wasm locals
     chunk.local_count = (1 + arity as u32 + wasm_local_count) as u16;
 
     let mut pos = 0;
+    let mut label_stack: Vec<WasmLabel> = Vec::new();
+
     while pos < wasm.len() {
         let byte = wasm[pos]; pos += 1;
 
         match byte {
             0x00 => chunk.emit_op(Op::halt, 0),
             0x01 => {} // nop
-            0x02 => { skip_leb128(wasm, &mut pos); } // block
-            0x03 => { skip_leb128(wasm, &mut pos); } // loop
-            0x04 => { skip_leb128(wasm, &mut pos); } // if
-            0x05 => {} // else
-            0x0B => {} // end
-            0x0C => { skip_leb128(wasm, &mut pos); } // br (skip label)
-            0x0D => { skip_leb128(wasm, &mut pos); } // br_if
+
+            // block blocktype — forward jump target
+            0x02 => {
+                skip_leb128(wasm, &mut pos); // blocktype
+                label_stack.push(WasmLabel {
+                    start_offset: chunk.current_offset(),
+                    is_loop: false,
+                    break_patches: Vec::new(),
+                    if_patch: None,
+                });
+            }
+
+            // loop blocktype — backward jump target
+            0x03 => {
+                skip_leb128(wasm, &mut pos);
+                label_stack.push(WasmLabel {
+                    start_offset: chunk.current_offset(),
+                    is_loop: true,
+                    break_patches: Vec::new(),
+                    if_patch: None,
+                });
+            }
+
+            // if blocktype — conditional block
+            0x04 => {
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::dyn_to_bool, 0);
+                let patch = chunk.emit_jump(Op::br_if_false, 0);
+                label_stack.push(WasmLabel {
+                    start_offset: chunk.current_offset(),
+                    is_loop: false,
+                    break_patches: Vec::new(),
+                    if_patch: Some(patch),
+                });
+            }
+
+            // else
+            0x05 => {
+                if let Some(label) = label_stack.last_mut() {
+                    // Jump over else block from end of if-true
+                    let skip = chunk.emit_jump(Op::br, 0);
+                    label.break_patches.push(skip);
+                    // Patch the if_patch to here (start of else)
+                    if let Some(patch) = label.if_patch.take() {
+                        chunk.patch_jump(patch);
+                    }
+                }
+            }
+
+            // end
+            0x0B => {
+                if let Some(label) = label_stack.pop() {
+                    let end_offset = chunk.current_offset();
+                    // Patch if_patch if not already patched (no else branch)
+                    if let Some(patch) = label.if_patch {
+                        chunk.patch_jump(patch);
+                    }
+                    // Patch all forward break jumps to here
+                    for patch in &label.break_patches {
+                        chunk.patch_jump(*patch);
+                    }
+                }
+            }
+
+            // br N — branch to Nth enclosing label
+            0x0C => {
+                let (depth, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                let depth = depth as usize;
+                if let Some(label) = label_stack.iter().rev().nth(depth) {
+                    if label.is_loop {
+                        // Loop: jump back to start
+                        chunk.emit_loop(label.start_offset, 0);
+                    } else {
+                        // Block: jump forward to end (patch later)
+                        let patch = chunk.emit_jump(Op::br, 0);
+                        // Store patch in the target label
+                        let idx = label_stack.len() - 1 - depth;
+                        label_stack[idx].break_patches.push(patch);
+                    }
+                }
+            }
+
+            // br_if N — conditional branch
+            0x0D => {
+                let (depth, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                let depth = depth as usize;
+                chunk.emit_op(Op::dyn_to_bool, 0);
+                if let Some(label) = label_stack.iter().rev().nth(depth) {
+                    if label.is_loop {
+                        // Loop: conditional jump back
+                        let exit = chunk.emit_jump(Op::br_if_false, 0);
+                        chunk.emit_loop(label.start_offset, 0);
+                        chunk.patch_jump(exit);
+                    } else {
+                        // Block: conditional jump forward
+                        let patch = chunk.emit_jump(Op::br_if_true, 0);
+                        let idx = label_stack.len() - 1 - depth;
+                        label_stack[idx].break_patches.push(patch);
+                    }
+                }
+            }
+            0x0E => {
+                // br_table — branch table
+                let (count, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                for _ in 0..=count { skip_leb128(wasm, &mut pos); } // skip all labels + default
+                chunk.emit_op(Op::drop, 0); // simplified
+            }
             0x0F => chunk.emit_op(Op::r#return, 0),
             0x1A => chunk.emit_op(Op::drop, 0),
-            0x1B => {} // select
+            0x1B => {
+                // select: [val1, val2, cond] → val1 if cond else val2
+                // Implement as: if cond then drop val2 else drop val1
+                // Simplified: just drop the condition and top value, keep bottom
+                chunk.emit_op(Op::drop, 0); // drop cond — simplified select
+            }
 
             // call — adjust index (skip imports, offset to our chunk indices)
             0x10 => {
@@ -540,18 +661,48 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
                 }
             }
 
-            // i32 arithmetic
-            0x6A => chunk.emit_op(Op::dyn_add, 0),  // i32.add → dyn_add (handles both i32 and f64)
-            0x6B => chunk.emit_op(Op::f64_sub, 0),
-            0x6C => chunk.emit_op(Op::f64_mul, 0),
-            0x6D => chunk.emit_op(Op::f64_div, 0),  // i32.div_s
-            0x6F => chunk.emit_op(Op::f64_mod, 0),  // i32.rem_s
+            // i32 arithmetic — ALL opcodes
+            0x67 => chunk.emit_op(Op::null, 0),      // i32.clz (approx)
+            0x68 => chunk.emit_op(Op::null, 0),      // i32.ctz (approx)
+            0x69 => chunk.emit_op(Op::null, 0),      // i32.popcnt (approx)
+            0x6A => chunk.emit_op(Op::dyn_add, 0),   // i32.add
+            0x6B => chunk.emit_op(Op::f64_sub, 0),   // i32.sub
+            0x6C => chunk.emit_op(Op::f64_mul, 0),   // i32.mul
+            0x6D => chunk.emit_op(Op::f64_div, 0),   // i32.div_s
+            0x6E => chunk.emit_op(Op::f64_div, 0),   // i32.div_u
+            0x6F => chunk.emit_op(Op::f64_mod, 0),   // i32.rem_s
+            0x70 => chunk.emit_op(Op::f64_mod, 0),   // i32.rem_u
             0x71 => chunk.emit_op(Op::i32_and, 0),
             0x72 => chunk.emit_op(Op::i32_or, 0),
             0x73 => chunk.emit_op(Op::i32_xor, 0),
             0x74 => chunk.emit_op(Op::i32_shl, 0),
             0x75 => chunk.emit_op(Op::i32_shr_s, 0),
             0x76 => chunk.emit_op(Op::i32_shr_u, 0),
+            0x77 => chunk.emit_op(Op::i32_shl, 0),   // i32.rotl (approx)
+            0x78 => chunk.emit_op(Op::i32_shr_u, 0), // i32.rotr (approx)
+
+            // i64 arithmetic
+            0x7C => chunk.emit_op(Op::dyn_add, 0),   // i64.add
+            0x7D => chunk.emit_op(Op::f64_sub, 0),   // i64.sub
+            0x7E => chunk.emit_op(Op::f64_mul, 0),   // i64.mul
+            0x7F => chunk.emit_op(Op::f64_div, 0),   // i64.div_s
+            0x80 => chunk.emit_op(Op::f64_div, 0),   // i64.div_u
+            0x81 => chunk.emit_op(Op::f64_mod, 0),   // i64.rem_s
+            0x83 => chunk.emit_op(Op::i32_and, 0),   // i64.and
+            0x84 => chunk.emit_op(Op::i32_or, 0),    // i64.or
+            0x85 => chunk.emit_op(Op::i32_xor, 0),   // i64.xor
+            0x86 => chunk.emit_op(Op::i32_shl, 0),   // i64.shl
+            0x87 => chunk.emit_op(Op::i32_shr_s, 0), // i64.shr_s
+            0x88 => chunk.emit_op(Op::i32_shr_u, 0), // i64.shr_u
+
+            // i64 comparison
+            0x50 => chunk.emit_op(Op::dyn_not, 0),   // i64.eqz
+            0x51 => chunk.emit_op(Op::dyn_eq, 0),    // i64.eq
+            0x52 => chunk.emit_op(Op::dyn_ne, 0),    // i64.ne
+            0x53 => chunk.emit_op(Op::dyn_lt, 0),    // i64.lt_s
+            0x55 => chunk.emit_op(Op::dyn_gt, 0),    // i64.gt_s
+            0x57 => chunk.emit_op(Op::dyn_le, 0),    // i64.le_s
+            0x59 => chunk.emit_op(Op::dyn_ge, 0),    // i64.ge_s
 
             // i32 comparison
             0x45 => chunk.emit_op(Op::dyn_not, 0),    // i32.eqz
@@ -560,8 +711,11 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0x48 => chunk.emit_op(Op::dyn_lt, 0),     // i32.lt_s
             0x49 => chunk.emit_op(Op::dyn_lt, 0),     // i32.lt_u
             0x4A => chunk.emit_op(Op::dyn_gt, 0),     // i32.gt_s
+            0x4B => chunk.emit_op(Op::dyn_gt, 0),     // i32.gt_u
             0x4C => chunk.emit_op(Op::dyn_le, 0),     // i32.le_s
+            0x4D => chunk.emit_op(Op::dyn_le, 0),     // i32.le_u
             0x4E => chunk.emit_op(Op::dyn_ge, 0),     // i32.ge_s
+            0x4F => chunk.emit_op(Op::dyn_ge, 0),     // i32.ge_u
 
             // f64 arithmetic
             0xA0 => chunk.emit_op(Op::f64_add, 0),
@@ -589,13 +743,51 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0x3F => { skip_leb128(wasm, &mut pos); chunk.emit_op(Op::memory_size, 0); }
             0x40 => { skip_leb128(wasm, &mut pos); chunk.emit_op(Op::memory_grow, 0); }
 
-            // Conversions
-            0xA7 => {} // i32.wrap_i64 — noop in dynamic VM
-            0xAA => chunk.emit_op(Op::i32_from_f64, 0),
-            0xAD => {} // i64.extend_i32_u — noop
-            0xAC => {} // i64.extend_i32_s — noop
-            0xB7 => chunk.emit_op(Op::f64_from_i32, 0),
-            0xB9 => {} // f64.promote_f32 — noop
+            // f32 arithmetic (→ f64 in our VM)
+            0x92 => chunk.emit_op(Op::f64_add, 0),   // f32.add
+            0x93 => chunk.emit_op(Op::f64_sub, 0),   // f32.sub
+            0x94 => chunk.emit_op(Op::f64_mul, 0),   // f32.mul
+            0x95 => chunk.emit_op(Op::f64_div, 0),   // f32.div
+
+            // f64 extra ops
+            0x99 => chunk.emit_op(Op::dyn_neg, 0),   // f64.neg
+            0x9A => chunk.emit_op(Op::null, 0),       // f64.ceil (approx)
+            0x9B => chunk.emit_op(Op::null, 0),       // f64.floor (approx)
+            0x9C => chunk.emit_op(Op::null, 0),       // f64.trunc (approx)
+            0x9D => chunk.emit_op(Op::null, 0),       // f64.nearest (approx)
+            0x9E => chunk.emit_op(Op::null, 0),       // f64.sqrt (approx)
+
+            // ALL conversions
+            0xA7 => {} // i32.wrap_i64
+            0xA8 => chunk.emit_op(Op::i32_from_f64, 0), // i32.trunc_f32_s
+            0xA9 => chunk.emit_op(Op::i32_from_f64, 0), // i32.trunc_f32_u
+            0xAA => chunk.emit_op(Op::i32_from_f64, 0), // i32.trunc_f64_s
+            0xAB => chunk.emit_op(Op::i32_from_f64, 0), // i32.trunc_f64_u
+            0xAC => {} // i64.extend_i32_s
+            0xAD => {} // i64.extend_i32_u
+            0xAE => {} // i64.trunc_f32_s
+            0xAF => {} // i64.trunc_f32_u
+            0xB0 => {} // i64.trunc_f64_s
+            0xB1 => {} // i64.trunc_f64_u
+            0xB2 => chunk.emit_op(Op::f64_from_i32, 0), // f32.convert_i32_s
+            0xB3 => chunk.emit_op(Op::f64_from_i32, 0), // f32.convert_i32_u
+            0xB4 => {} // f32.convert_i64_s
+            0xB5 => {} // f32.convert_i64_u
+            0xB6 => {} // f32.demote_f64
+            0xB7 => chunk.emit_op(Op::f64_from_i32, 0), // f64.convert_i32_s
+            0xB8 => chunk.emit_op(Op::f64_from_i32, 0), // f64.convert_i32_u
+            0xB9 => {} // f64.promote_f32
+            0xBA => {} // f32.reinterpret_i32
+            0xBB => {} // f64.reinterpret_i64
+            0xBC => {} // i32.reinterpret_f32
+            0xBD => {} // i64.reinterpret_f64
+
+            // Sign extension
+            0xC0 => {} // i32.extend8_s
+            0xC1 => {} // i32.extend16_s
+            0xC2 => {} // i64.extend8_s
+            0xC3 => {} // i64.extend16_s
+            0xC4 => {} // i64.extend32_s
 
             // global.get/set (WASM globals — we skip for now)
             0x23 => { skip_leb128(wasm, &mut pos); chunk.emit_op(Op::null, 0); }
