@@ -69,8 +69,9 @@ pub fn register_all(vm: &mut VM) {
     threading::register(vm);
     data::register(vm);
     drawing::register(vm);
-    // Set up namespace objects AFTER all host functions are registered
+    // Set up namespace objects and type method table AFTER all host functions are registered
     crate::namespaces::setup_namespaces(vm);
+    crate::type_methods::register_all(vm);
 }
 
 /// Register all standard VSI modules + GUI module.

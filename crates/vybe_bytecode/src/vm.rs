@@ -65,6 +65,9 @@ pub struct VM {
     exception_handlers: Vec<ExceptionHandler>,
     /// Event loop for async operations (shared with host functions).
     pub event_loop: Rc<RefCell<EventLoop>>,
+    /// Type method table: ("TypeName", "method") → host_fn_index.
+    /// Used for resolving methods on built-in type objects (List, Dictionary, etc.).
+    pub type_methods: HashMap<(String, String), usize>,
 }
 
 impl VM {
@@ -80,6 +83,7 @@ impl VM {
             import_table: Vec::new(),
             exception_handlers: Vec::new(),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
+            type_methods: HashMap::new(),
         }
     }
 
@@ -88,6 +92,15 @@ impl VM {
         let idx = self.host_fns.len();
         self.host_fns.push(f);
         self.host_registry.insert((module.to_string(), name.to_string()), idx);
+    }
+
+    /// Register a method on a built-in type.
+    /// When struct_get on an object with __type=type_name doesn't find the property,
+    /// it falls back to this table and returns a HostFunction.
+    pub fn register_type_method(&mut self, type_name: &str, method: &str, module: &str, fn_name: &str) {
+        if let Some(&idx) = self.host_registry.get(&(module.to_string(), fn_name.to_string())) {
+            self.type_methods.insert((type_name.to_lowercase(), method.to_lowercase()), idx);
+        }
     }
 
     /// Load chunks and execute chunk 0 (the script).
@@ -401,13 +414,31 @@ impl VM {
                             let getter_key = format!("__get_{}", name);
                             let getter = o.borrow().properties.get(&getter_key).cloned();
                             if let Some(getter_fn) = getter {
-                                // Call the getter with this = obj
                                 self.push(getter_fn)?;
                                 self.push(obj)?;
                                 self.call_value(1)?;
                             } else {
                                 let val = o.borrow().get(&name);
-                                self.push(val)?;
+                                if matches!(val, Value::Null) {
+                                    // Fallback: check type method table
+                                    let type_name = o.borrow().properties.get("__type")
+                                        .map(|v| format!("{}", v).to_lowercase())
+                                        .unwrap_or_default();
+                                    if !type_name.is_empty() {
+                                        if let Some(&fn_idx) = self.type_methods.get(&(type_name, name.clone())) {
+                                            // Return a HostFunction that binds this object as first arg
+                                            let mut method_obj = Object::new();
+                                            method_obj.kind = ObjectKind::HostFunction(fn_idx);
+                                            self.push(Value::Object(Rc::new(RefCell::new(method_obj))))?;
+                                        } else {
+                                            self.push(val)?;
+                                        }
+                                    } else {
+                                        self.push(val)?;
+                                    }
+                                } else {
+                                    self.push(val)?;
+                                }
                             }
                         }
                         Value::String(s) if name == "length" => {
