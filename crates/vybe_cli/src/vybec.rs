@@ -51,11 +51,117 @@ fn main() {
     match ext.as_str() {
         "vb" => run_vb(path, dump),
         "js" => run_js(path, dump),
+        "vybe" => run_project(path, dump),
         _ => {
-            eprintln!("Error: unsupported file type '.{}'. Expected .vb or .js", ext);
-            std::process::exit(1);
+            // Check if directory has a .vybe project file
+            let vybe_path = path.join("project.vybe");
+            if vybe_path.exists() {
+                run_project(&vybe_path, dump);
+            } else {
+                eprintln!("Error: unsupported file type '.{}'. Expected .vb, .js, or .vybe", ext);
+                std::process::exit(1);
+            }
         }
     }
+}
+
+fn run_project(path: &Path, dump: bool) {
+    let toml_content = read_file(path);
+    let config = match vybe_bytecode::ProjectConfig::parse(&toml_content) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("Project error: {e}"); std::process::exit(1); }
+    };
+
+    let project_dir = path.parent().unwrap_or(Path::new("."));
+
+    // Set up VM + linker
+    let mut vm = VM::new();
+    let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
+    if config.host.gui {
+        vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    } else {
+        vybe_host::register_all(&mut vm);
+    }
+    vybe_host::setup_namespaces(&mut vm);
+
+    // Create linker and register host exports
+    let mut linker = vybe_bytecode::Linker::new();
+    linker.register_host_from_vm(&vm);
+
+    // Compile and run each source file.
+    // Library files run first (set up globals/exports), entry file runs last.
+    let mut file_chunks: Vec<(String, Vec<vybe_bytecode::Chunk>)> = Vec::new();
+
+    for file in &config.files {
+        let file_path = project_dir.join(file);
+        let source = read_file(&file_path);
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+        let chunks = match ext.as_str() {
+            "vb" => {
+                let program = match vybe_parser_basic::parse_program(&source) {
+                    Ok(p) => p,
+                    Err(e) => { eprintln!("Parse error in {}: {e:?}", file); std::process::exit(1); }
+                };
+                match vybe_compiler_vb::Compiler::new().compile(&program) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
+                }
+            }
+            "js" => {
+                vybe_compiler_js::register_js_coercion(&mut vm);
+                let program = match vybe_parser_js::parse(&source) {
+                    Ok(p) => p,
+                    Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
+                };
+                match vybe_compiler_js::Compiler::new().compile(&program) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
+                }
+            }
+            _ => { eprintln!("Unknown file type: {}", file); continue; }
+        };
+        file_chunks.push((file.clone(), chunks));
+    }
+
+    // Run library files first, entry file last
+    // Each file's chunks run independently — globals persist across runs
+    for (file, chunks) in &file_chunks {
+        if *file != config.entry {
+            if let Err(e) = vm.run(chunks.clone()) {
+                eprintln!("Runtime error in {}: {e}", file);
+            }
+        }
+    }
+
+    // Collect entry file chunks for final run
+    let all_chunks: Vec<vybe_bytecode::Chunk> = file_chunks.into_iter()
+        .find(|(f, _)| *f == config.entry)
+        .map(|(_, c)| c)
+        .unwrap_or_default();
+
+    if dump {
+        for (i, chunk) in all_chunks.iter().enumerate() {
+            println!("=== Chunk {} ({}) ===", i, chunk.name);
+            println!("  arity: {}, locals: {}", chunk.arity, chunk.local_count);
+            println!("  bytecode: {} bytes", chunk.code.len());
+            println!();
+        }
+        return;
+    }
+
+    if all_chunks.is_empty() {
+        eprintln!("No entry file compiled");
+        std::process::exit(1);
+    }
+
+    // Run entry file
+    match vm.run(all_chunks) {
+        Ok(_) => {}
+        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+    }
+
+    vybe_ui::launch_vm_form(vm, queue);
 }
 
 fn run_vb(path: &Path, dump: bool) {

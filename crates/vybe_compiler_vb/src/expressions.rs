@@ -57,8 +57,7 @@ impl Compiler {
                 }
             }
             Expression::MemberAccess(obj, member) => {
-                // Check if this is a namespace.property that should be auto-called
-                // e.g. DateTime.Now, Environment.NewLine, Guid.NewGuid
+                // Fallback: try builtin method table
                 if let Expression::Variable(ref obj_name) = **obj {
                     let obj_lower = obj_name.as_str().to_lowercase();
                     let mem_lower = member.as_str().to_lowercase();
@@ -290,6 +289,24 @@ impl Compiler {
     }
 
     fn compile_method_call(&mut self, obj: &Expression, method: &Identifier, args: &[Expression]) -> Result<(), String> {
+        // Component Model: try interface resolution on the full chain
+        // e.g. System.Math.Floor(3.7) → MemberAccess(System, Math) + method "Floor"
+        //   → flatten to ["System", "Math", "Floor"] → resolve "system.math" interface → "floor"
+        {
+            let mut parts = Self::flatten_member_chain(obj);
+            if !parts.is_empty() {
+                parts.push(method.as_str().to_string());
+                let part_refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+                if let Some((module, func)) = self.resolve_interface_call(&part_refs) {
+                    // Direct call_import — compile-time resolved, no struct_get chain
+                    for arg in args { self.compile_expression(arg)?; }
+                    let idx = self.import(&module, &func);
+                    self.emit_host_call(idx, args.len() as u8);
+                    return Ok(());
+                }
+            }
+        }
+
         // MyBase.New(args) — call parent constructor with Me
         if matches!(obj, Expression::MyBase) && method.as_str().eq_ignore_ascii_case("New") {
             // The parent constructor is stored as __super on Me (set by Inherits compilation)
@@ -566,8 +583,24 @@ impl Compiler {
     }
 }
 
+impl Compiler {
+    /// Flatten a MemberAccess chain into parts.
+    /// `System.Windows.Forms.Button` → ["System", "Windows", "Forms", "Button"]
+    pub(crate) fn flatten_member_chain(expr: &Expression) -> Vec<String> {
+        match expr {
+            Expression::Variable(name) => vec![name.as_str().to_string()],
+            Expression::MemberAccess(inner, member) => {
+                let mut parts = Self::flatten_member_chain(inner);
+                parts.push(member.as_str().to_string());
+                parts
+            }
+            _ => vec![],
+        }
+    }
+}
+
 /// Capitalize control type name: "textbox" → "TextBox", "datagridview" → "DataGridView"
-fn capitalize_control_name(name: &str) -> String {
+pub fn capitalize_control_name(name: &str) -> String {
     // Map of known control names with proper casing
     match name {
         "button" => "Button", "label" => "Label", "textbox" => "TextBox",

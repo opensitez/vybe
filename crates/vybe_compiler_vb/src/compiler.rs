@@ -14,10 +14,13 @@ pub struct Compiler {
     pub(crate) defined_globals: HashSet<String>,
     pub(crate) defined_classes: HashSet<String>,
     pub(crate) function_name_stack: Vec<String>,
-    /// Stack of loop contexts for Exit/Continue compilation.
     pub(crate) loop_stack: Vec<LoopContext>,
-    /// When compiling inside a class, the field names for implicit Me.field access
     pub(crate) class_fields: HashSet<String>,
+    /// Component Model: imported interface prefixes from `Imports` statements.
+    /// Maps prefix → interface name for compile-time resolution.
+    /// e.g. "system.windows.forms" → "system.windows.forms"
+    ///      "system.io" → "system.io"
+    pub(crate) interface_imports: Vec<String>,
 }
 
 pub(crate) struct LoopContext {
@@ -41,6 +44,27 @@ impl Compiler {
             function_name_stack: Vec::new(),
             loop_stack: Vec::new(),
             class_fields: HashSet::new(),
+            interface_imports: vec![
+                // Default imports — always available
+                "system".into(),
+                "system.console".into(),
+                "system.math".into(),
+                "system.io".into(),
+                "system.io.file".into(),
+                "system.io.path".into(),
+                "system.io.directory".into(),
+                "system.windows.forms".into(),
+                "system.collections.generic".into(),
+                "system.text".into(),
+                "system.drawing".into(),
+                "system.net".into(),
+                "system.threading".into(),
+                "system.diagnostics".into(),
+                "system.data".into(),
+                "system.security.cryptography".into(),
+                "system.xml.linq".into(),
+                "microsoft.visualbasic".into(),
+            ],
         }
     }
 
@@ -205,6 +229,142 @@ impl Compiler {
         final_result
     }
 
+    /// Component Model: resolve a dotted name to a (module, function) host import.
+    /// Tries to match the name against registered interface prefixes.
+    ///
+    /// "System.Windows.Forms.Button" with import "system.windows.forms"
+    ///   → Some(("system.windows.forms", "new_Button"))
+    ///
+    /// "Console.WriteLine" with import "system.console"
+    ///   → Some(("wasi:cli", "log")) via builtin table
+    ///
+    /// Returns None if no interface matches.
+    pub(crate) fn resolve_interface_call(&self, parts: &[&str]) -> Option<(String, String)> {
+        // Build progressively longer prefixes and check against imports
+        // e.g. for ["System", "Windows", "Forms", "Button"]:
+        //   try "system" → no match for "windows.forms.button"
+        //   try "system.windows" → no match
+        //   try "system.windows.forms" → match! func = "button"
+        let lower_parts: Vec<String> = parts.iter().map(|p| p.to_lowercase()).collect();
+
+        for prefix_len in (1..lower_parts.len()).rev() {
+            let prefix = lower_parts[..prefix_len].join(".");
+            if self.interface_imports.contains(&prefix) {
+                let func = lower_parts[prefix_len..].join(".");
+                // Map to actual host module
+                let module = match prefix.as_str() {
+                    "system.console" => "wasi:cli",
+                    "system.math" => "vybe:math",
+                    "system.io.file" => "wasi:filesystem",
+                    "system.io.path" => "wasi:filesystem",
+                    "system.io.directory" => "wasi:filesystem",
+                    "system.io" => "wasi:filesystem",
+                    "system.convert" => "vybe:convert",
+                    "system.string" => "vybe:string",
+                    "system.array" => "vybe:array",
+                    "system.environment" => "wasi:cli",
+                    "system.threading.thread" => "wasi:clocks",
+                    "system.threading" => "vybe:threading",
+                    "system.diagnostics" => "wasi:cli",
+                    "system.net" => "wasi:http",
+                    "system.net.sockets" => "vybe:net",
+                    "system.text.regularexpressions" => "vybe:regex",
+                    "system.text" => "vybe:string",
+                    "system.collections.generic" => "vybe:types",
+                    "system.data" => "vybe:data",
+                    "system.security.cryptography" => "vybe:crypto",
+                    "system.xml.linq" => "vybe:xml",
+                    "system.drawing" => "vybe:drawing",
+                    "system.windows.forms" => "vybe:gui",
+                    "microsoft.visualbasic" => "vybe:string",
+                    _ => &prefix,
+                };
+                // Map VB method names to actual host function names
+                let mapped_func = map_interface_func(module, &func);
+                return Some((module.to_string(), mapped_func));
+            }
+        }
+        None
+    }
+
+} // end impl Compiler (part 1)
+
+/// Map VB/CLR method names to actual host function names.
+/// e.g. "writeline" → "log", "getdirectoryname" → "pathGetDirectory"
+fn map_interface_func(module: &str, func: &str) -> String {
+    match (module, func) {
+        // Console
+        ("wasi:cli", "writeline") => "log".into(),
+        ("wasi:cli", "write") => "log".into(),
+        ("wasi:cli", "readline") => "readLine".into(),
+        ("wasi:cli", "error") => "error".into(),
+        // Math
+        ("vybe:math", f) => f.to_string(), // math names match
+        // Filesystem
+        ("wasi:filesystem", "readalltext") => "readFile".into(),
+        ("wasi:filesystem", "writealltext") => "writeFile".into(),
+        ("wasi:filesystem", "appendalltext") => "appendFile".into(),
+        ("wasi:filesystem", "exists") => "exists".into(),
+        ("wasi:filesystem", "delete") => "remove".into(),
+        ("wasi:filesystem", "copy") => "copy".into(),
+        ("wasi:filesystem", "move") => "rename".into(),
+        ("wasi:filesystem", "combine") => "pathCombine".into(),
+        ("wasi:filesystem", "getfilename") => "pathGetFileName".into(),
+        ("wasi:filesystem", "getextension") => "pathGetExtension".into(),
+        ("wasi:filesystem", "getdirectoryname") => "pathGetDirectory".into(),
+        ("wasi:filesystem", "getfilenamewithoutextension") => "pathGetFileNameWithoutExt".into(),
+        ("wasi:filesystem", "changeextension") => "pathChangeExtension".into(),
+        ("wasi:filesystem", "getfullpath") => "pathGetFullPath".into(),
+        ("wasi:filesystem", "gettemppath") => "pathGetTempPath".into(),
+        ("wasi:filesystem", "createdirectory") => "mkdir".into(),
+        ("wasi:filesystem", "getfiles") => "listDir".into(),
+        ("wasi:filesystem", "getcurrentdirectory") => "cwd".into(),
+        // Convert
+        ("vybe:convert", "toint32") => "cint".into(),
+        ("vybe:convert", "todouble") => "cdbl".into(),
+        ("vybe:convert", "tostring") => "toString".into(),
+        ("vybe:convert", "toboolean") => "cbool".into(),
+        ("vybe:convert", "todatetime") => "toString".into(), // simplified
+        // Environment
+        ("wasi:cli", "getenvironmentvariable") => "getEnv".into(),
+        ("wasi:cli", "machinename") => "machineName".into(),
+        ("wasi:cli", "currentdirectory") => "cwd".into(),
+        ("wasi:cli", "print") => "log".into(),
+        // Threading
+        ("wasi:clocks", "sleep") => "sleep".into(),
+        // GUI
+        ("vybe:gui", f) => {
+            // WinForms control constructors: button → new_Button
+            let cap = capitalize_control_name_for_interface(f);
+            if !cap.is_empty() {
+                format!("new_{}", cap)
+            } else {
+                f.to_string()
+            }
+        }
+        // Default: use as-is
+        (_, f) => f.to_string(),
+    }
+}
+
+fn capitalize_control_name_for_interface(name: &str) -> String {
+    match name {
+        "button" | "label" | "textbox" | "checkbox" | "radiobutton"
+        | "combobox" | "listbox" | "panel" | "groupbox" | "tabcontrol"
+        | "tabpage" | "datagridview" | "progressbar" | "trackbar"
+        | "numericupdown" | "datetimepicker" | "richtextbox" | "picturebox"
+        | "menustrip" | "toolstrip" | "statusstrip" | "splitcontainer"
+        | "flowlayoutpanel" | "tablelayoutpanel" | "linklabel" | "maskedtextbox"
+        | "listview" | "webbrowser" | "monthcalendar" | "contextmenustrip"
+        | "timer" | "bindingsource" | "tooltip" | "imagelist" => {
+            // Use the capitalize function from expressions.rs
+            super::expressions::capitalize_control_name(name)
+        }
+        _ => String::new(),
+    }
+}
+
+impl Compiler {
     // ---- Declarations ----
 
     pub(crate) fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), String> {
@@ -299,8 +459,11 @@ impl Compiler {
                 self.emit(Op::drop);
             }
             Declaration::Imports(imp) => {
-                // Imports just affects name resolution — no bytecode needed
-                // The namespace objects are already set up by the host
+                // Register as interface prefix for Component Model resolution
+                let path = imp.path.to_lowercase();
+                if !self.interface_imports.contains(&path) {
+                    self.interface_imports.push(path);
+                }
             }
             Declaration::Namespace(ns) => {
                 // Flatten namespace contents — compile all nested declarations
