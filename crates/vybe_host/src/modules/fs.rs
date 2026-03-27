@@ -145,6 +145,55 @@ pub fn register(vm: &mut VM) {
             Err(_) => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))),
         }
     }));
+
+    // --- Path functions ---
+
+    vm.register_host_fn("wasi:filesystem", "pathCombine", Box::new(|args: &[Value]| {
+        let mut path = std::path::PathBuf::from(s(args, 0));
+        for i in 1..args.len() { path.push(s(args, i)); }
+        Value::String(Rc::from(path.to_string_lossy().as_ref()))
+    }));
+
+    vm.register_host_fn("wasi:filesystem", "pathGetFileName", Box::new(|args: &[Value]| {
+        let input = s(args, 0);
+        let p = std::path::Path::new(&input);
+        Value::String(Rc::from(p.file_name().unwrap_or_default().to_string_lossy().as_ref()))
+    }));
+
+    vm.register_host_fn("wasi:filesystem", "pathGetExtension", Box::new(|args: &[Value]| {
+        let input = s(args, 0);
+        let p = std::path::Path::new(&input);
+        Value::String(Rc::from(p.extension().unwrap_or_default().to_string_lossy().as_ref()))
+    }));
+
+    vm.register_host_fn("wasi:filesystem", "pathGetDirectory", Box::new(|args: &[Value]| {
+        let input = s(args, 0);
+        let p = std::path::Path::new(&input);
+        Value::String(Rc::from(p.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default().as_str()))
+    }));
+
+    vm.register_host_fn("wasi:filesystem", "pathGetFileNameWithoutExt", Box::new(|args: &[Value]| {
+        let input = s(args, 0);
+        let p = std::path::Path::new(&input);
+        Value::String(Rc::from(p.file_stem().unwrap_or_default().to_string_lossy().as_ref()))
+    }));
+
+    vm.register_host_fn("wasi:filesystem", "pathChangeExtension", Box::new(|args: &[Value]| {
+        let mut p = std::path::PathBuf::from(s(args, 0));
+        p.set_extension(s(args, 1).trim_start_matches('.'));
+        Value::String(Rc::from(p.to_string_lossy().as_ref()))
+    }));
+
+    vm.register_host_fn("wasi:filesystem", "pathGetFullPath", Box::new(|args: &[Value]| {
+        match std::fs::canonicalize(s(args, 0)) {
+            Ok(p) => Value::String(Rc::from(p.to_string_lossy().as_ref())),
+            Err(_) => Value::String(Rc::from(s(args, 0).as_str())),
+        }
+    }));
+
+    vm.register_host_fn("wasi:filesystem", "pathGetTempPath", Box::new(|_args: &[Value]| {
+        Value::String(Rc::from(std::env::temp_dir().to_string_lossy().as_ref()))
+    }));
 }
 
 fn s(args: &[Value], idx: usize) -> String {

@@ -38,4 +38,31 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("wasi:cli", "arch", Box::new(|_args: &[Value]| {
         Value::String(Rc::from(std::env::consts::ARCH))
     }));
+
+    // Machine name
+    vm.register_host_fn("wasi:cli", "machineName", Box::new(|_args: &[Value]| {
+        let name = std::env::var("HOSTNAME")
+            .or_else(|_| std::env::var("COMPUTERNAME"))
+            .unwrap_or_else(|_| "unknown".into());
+        Value::String(Rc::from(name.as_str()))
+    }));
+
+    // User name
+    vm.register_host_fn("wasi:cli", "userName", Box::new(|_args: &[Value]| {
+        Value::String(Rc::from(std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "unknown".into()).as_str()))
+    }));
+
+    // Newline
+    vm.register_host_fn("wasi:cli", "newLine", Box::new(|_args: &[Value]| {
+        Value::String(Rc::from("\n"))
+    }));
+
+    // Tick count (ms since boot, approximated as ms since epoch)
+    vm.register_host_fn("wasi:cli", "tickCount", Box::new(|_args: &[Value]| {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        Value::F64(ms as f64)
+    }));
 }

@@ -126,6 +126,7 @@ impl Compiler {
             "math" | "console" | "convert" | "strings" | "array"
             | "window" | "file" | "io" | "directory"
             | "vybe" | "system" | "application"
+            | "environment" | "thread" | "json"
         )
     }
 
