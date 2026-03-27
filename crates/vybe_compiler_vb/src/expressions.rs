@@ -107,10 +107,11 @@ impl Compiler {
             Expression::Multiply(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::f64_mul); }
             Expression::Divide(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::f64_div); }
             Expression::IntegerDivide(a, b) => {
-                self.compile_expression(a)?; self.compile_expression(b)?;
-                self.emit(Op::f64_div);
-                let idx = self.import("vybe:math", "floor");
-                self.emit_host_call(idx, 1);
+                self.compile_expression(a)?;
+                self.emit(Op::i32_from_f64);
+                self.compile_expression(b)?;
+                self.emit(Op::i32_from_f64);
+                self.emit(Op::i32_div_s);
             }
             Expression::Modulo(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::f64_mod); }
             Expression::Exponent(a, b) => {
@@ -150,10 +151,10 @@ impl Compiler {
                 self.patch_jump(end);
             }
 
-            // Bitwise operators (Xor is both logical and bitwise in VB)
+            // Bitwise operators
             Expression::Xor(a, b) => {
                 self.compile_expression(a)?; self.compile_expression(b)?;
-                self.emit(Op::dyn_ne); // XOR: true if different
+                self.emit(Op::i32_xor);
             }
             Expression::BitShiftLeft(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::i32_shl); }
             Expression::BitShiftRight(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::i32_shr_s); }

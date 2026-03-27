@@ -981,6 +981,12 @@ impl Compiler {
             // obj.method() pattern
             if let Expression::Identifier(obj_name) = object.as_ref() {
                 if !self.is_known_variable(obj_name) {
+                    // Direct WASM opcodes for Math functions (no host call overhead)
+                    if obj_name == "Math" {
+                        if let Some(()) = self.try_math_intrinsic(property, arguments)? {
+                            return Ok(());
+                        }
+                    }
                     // obj is not a variable → it's a module namespace.
                     // Emit as import call: (module_alias, method)
                     let module = Self::js_module_alias(obj_name);
@@ -1051,9 +1057,11 @@ impl Compiler {
         }
 
         // Bare function call: func(args)
-        // Only specific JS globals are bare imports. User-defined functions
-        // are resolved via GlobalGet at runtime.
+        // Direct WASM opcodes for common JS globals
         if let Expression::Identifier(name) = callee {
+            if let Some(()) = self.try_bare_intrinsic(name, arguments)? {
+                return Ok(());
+            }
             if let Some(idx) = self.resolve_bare_import(name) {
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_host_call(idx, arguments.len() as u8);
@@ -1959,6 +1967,49 @@ impl Compiler {
 
         self.in_method = saved_method;
         Ok(())
+    }
+
+    /// Emit direct WASM opcodes for Math.* functions instead of host calls.
+    fn try_math_intrinsic(&mut self, method: &str, args: &[Expression]) -> Result<Option<()>, String> {
+        // Single-argument Math functions
+        if args.len() == 1 {
+            let op = match method {
+                "abs"   => Some(Op::f64_abs),
+                "floor" => Some(Op::f64_floor),
+                "ceil"  => Some(Op::f64_ceil),
+                "sqrt"  => Some(Op::f64_sqrt),
+                "trunc" => Some(Op::f64_trunc),
+                "round" => Some(Op::f64_nearest),
+                "sign"  => None, // multi-opcode, fall through to host
+                _ => None,
+            };
+            if let Some(op) = op {
+                self.compile_expression(&args[0])?;
+                self.emit(op);
+                return Ok(Some(()));
+            }
+        }
+        // Two-argument Math functions
+        if args.len() == 2 {
+            let op = match method {
+                "min" => Some(Op::f64_min),
+                "max" => Some(Op::f64_max),
+                _ => None,
+            };
+            if let Some(op) = op {
+                self.compile_expression(&args[0])?;
+                self.compile_expression(&args[1])?;
+                self.emit(op);
+                return Ok(Some(()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Emit direct WASM opcodes for bare JS globals.
+    /// Note: parseInt/parseFloat must stay as host calls because they parse STRINGS.
+    fn try_bare_intrinsic(&mut self, _name: &str, _args: &[Expression]) -> Result<Option<()>, String> {
+        Ok(None)
     }
 }
 

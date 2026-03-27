@@ -75,6 +75,11 @@ impl Compiler {
 
     /// Try to compile a builtin function call. Returns Ok(Some(())) if handled.
     fn try_compile_builtin_call(&mut self, fname: &str, args: &[Expression]) -> Result<Option<()>, String> {
+        // Direct WASM opcodes for Math and type conversions (no host call overhead)
+        if let Some(()) = self.try_compile_wasm_intrinsic(fname, args)? {
+            return Ok(Some(()));
+        }
+
         // Map VB function name → (host_module, host_name)
         let mapping: Option<(&str, &str)> = match fname {
             // Console
@@ -362,6 +367,86 @@ impl Compiler {
             return Ok(Some(()));
         }
 
+        Ok(None)
+    }
+
+    /// Emit direct WASM opcodes for Math functions, type conversions, and type checks.
+    /// Returns Some(()) if handled, None if not an intrinsic.
+    fn try_compile_wasm_intrinsic(&mut self, fname: &str, args: &[Expression]) -> Result<Option<()>, String> {
+        // Zero-argument intrinsics
+        if args.is_empty() {
+            match fname {
+                "lbound" => {
+                    self.emit(Op::i32_const_0);
+                    return Ok(Some(()));
+                }
+                _ => {}
+            }
+        }
+
+        // Single-argument intrinsics
+        if args.len() == 1 {
+            // Direct single-opcode intrinsics
+            let op = match fname {
+                // Math functions → f64 opcodes
+                "math.abs" | "abs" => Some(Op::f64_abs),
+                "math.floor" | "fix" | "int" => Some(Op::f64_floor),
+                "math.ceiling" | "math.ceil" => Some(Op::f64_ceil),
+                "math.sqrt" | "sqr" => Some(Op::f64_sqrt),
+                "math.truncate" => Some(Op::f64_trunc),
+                "math.round" => Some(Op::f64_nearest),
+                // Type conversions: only CBool can be a direct opcode.
+                // CInt/CDbl/CLng must stay as host calls because VB allows CInt("42").
+                "cbool" => Some(Op::dyn_to_bool),
+                // Type checks: only IsNothing/IsNull are pure type checks.
+                // IsNumeric must stay as host call (checks if string is parseable).
+                // IsObject must stay as host call (VB semantics differ from ref_is_object).
+                "isnothing" | "isnull" => Some(Op::ref_is_null),
+                _ => None,
+            };
+            if let Some(op) = op {
+                self.compile_expression(&args[0])?;
+                self.emit(op);
+                return Ok(Some(()));
+            }
+
+            // Multi-opcode intrinsics
+            match fname {
+                // CByte: truncate to 0-255
+                "cbyte" => {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::i32_from_f64);
+                    self.emit_constant(Value::I32(0xFF));
+                    self.emit(Op::i32_and);
+                    return Ok(Some(()));
+                }
+                // UBound: array length - 1
+                "ubound" => {
+                    self.compile_expression(&args[0])?;
+                    let len_idx = self.add_string_constant("length");
+                    self.emit_u16(Op::struct_get, len_idx);
+                    self.emit_constant(Value::F64(1.0));
+                    self.emit(Op::f64_sub);
+                    return Ok(Some(()));
+                }
+                _ => {}
+            }
+        }
+
+        // Two-argument Math functions → direct f64 opcodes
+        if args.len() == 2 {
+            let op = match fname {
+                "math.min" => Some(Op::f64_min),
+                "math.max" => Some(Op::f64_max),
+                _ => None,
+            };
+            if let Some(op) = op {
+                self.compile_expression(&args[0])?;
+                self.compile_expression(&args[1])?;
+                self.emit(op);
+                return Ok(Some(()));
+            }
+        }
         Ok(None)
     }
 }
