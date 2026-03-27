@@ -37,6 +37,22 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:math", "atan",  Box::new(|a| Value::F64(f(a, 0).atan())));
     vm.register_host_fn("vybe:math", "exp",   Box::new(|a| Value::F64(f(a, 0).exp())));
     vm.register_host_fn("vybe:math", "clz32", Box::new(|a| Value::F64((f(a, 0) as u32).leading_zeros() as f64)));
+
+    // VB-specific math functions
+    vm.register_host_fn("vybe:math", "fix",   Box::new(|a| Value::F64(f(a, 0).trunc()))); // truncate toward zero
+    vm.register_host_fn("vybe:math", "int",   Box::new(|a| Value::F64(f(a, 0).floor()))); // VB Int = floor
+    vm.register_host_fn("vybe:math", "sgn",   Box::new(|a| {
+        let n = f(a, 0);
+        Value::F64(if n > 0.0 { 1.0 } else if n < 0.0 { -1.0 } else { 0.0 })
+    }));
+    vm.register_host_fn("vybe:math", "rnd",   Box::new(|_a| {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        Value::F64((t as f64 % 1_000_000.0) / 1_000_000.0)
+    }));
+    vm.register_host_fn("vybe:math", "randomize", Box::new(|_a| Value::Null));
 }
 
 fn f(args: &[Value], idx: usize) -> f64 {

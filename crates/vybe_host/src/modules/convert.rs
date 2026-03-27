@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use vybe_bytecode::{VM, Value};
 
 pub fn register(vm: &mut VM) {
@@ -132,6 +133,142 @@ pub fn register(vm: &mut VM) {
             Value::String(s) => Value::Bool(!s.is_empty() && s.to_lowercase() != "false"),
             Value::Object(_) => Value::Bool(true),
         }
+    }));
+
+    // clng(value) → Long (same as cint for our VM)
+    vm.register_host_fn("vybe:convert", "clng", Box::new(|args: &[Value]| {
+        Value::F64(args.first().map(|v| v.as_f64().floor()).unwrap_or(0.0))
+    }));
+
+    // csng(value) → Single (just convert to float)
+    vm.register_host_fn("vybe:convert", "csng", Box::new(|args: &[Value]| {
+        Value::F64(args.first().map(|v| v.as_f64()).unwrap_or(0.0))
+    }));
+
+    // cbyte(value) → Byte (0-255)
+    vm.register_host_fn("vybe:convert", "cbyte", Box::new(|args: &[Value]| {
+        let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
+        Value::F64((n as u8) as f64)
+    }));
+
+    // cchar(value) → first character
+    vm.register_host_fn("vybe:convert", "cchar", Box::new(|args: &[Value]| {
+        let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        match s.chars().next() {
+            Some(c) => Value::String(Rc::from(c.to_string().as_str())),
+            None => Value::String(Rc::from("")),
+        }
+    }));
+
+    // hex(value) → hex string
+    vm.register_host_fn("vybe:convert", "hex", Box::new(|args: &[Value]| {
+        let n = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
+        Value::String(Rc::from(format!("{:X}", n).as_str()))
+    }));
+
+    // oct(value) → octal string
+    vm.register_host_fn("vybe:convert", "oct", Box::new(|args: &[Value]| {
+        let n = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
+        Value::String(Rc::from(format!("{:o}", n).as_str()))
+    }));
+
+    // str(value) → string with leading space for positive numbers (VB6 compat)
+    vm.register_host_fn("vybe:convert", "str", Box::new(|args: &[Value]| {
+        let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
+        let s = if n >= 0.0 { format!(" {}", n) } else { format!("{}", n) };
+        Value::String(Rc::from(s.as_str()))
+    }));
+
+    // typename(value) → type name string
+    vm.register_host_fn("vybe:convert", "typeName", Box::new(|args: &[Value]| {
+        let name = match args.first().unwrap_or(&Value::Null) {
+            Value::Null => "Nothing",
+            Value::Bool(_) => "Boolean",
+            Value::I32(_) => "Integer",
+            Value::I64(_) => "Long",
+            Value::F64(_) => "Double",
+            Value::String(_) => "String",
+            Value::Object(_) => "Object",
+        };
+        Value::String(Rc::from(name))
+    }));
+
+    // vartype(value) → VB VarType constant
+    vm.register_host_fn("vybe:convert", "varType", Box::new(|args: &[Value]| {
+        let vt = match args.first().unwrap_or(&Value::Null) {
+            Value::Null => 1.0,     // vbNull
+            Value::Bool(_) => 11.0, // vbBoolean
+            Value::I32(_) => 2.0,   // vbInteger
+            Value::I64(_) => 3.0,   // vbLong
+            Value::F64(_) => 5.0,   // vbDouble
+            Value::String(_) => 8.0,// vbString
+            Value::Object(_) => 9.0,// vbObject
+        };
+        Value::F64(vt)
+    }));
+
+    // isdate(value) → always false for now (we don't have a Date type in the VM)
+    vm.register_host_fn("vybe:convert", "isDate", Box::new(|_args: &[Value]| Value::Bool(false)));
+
+    // isnull(value) → same as isNothing
+    vm.register_host_fn("vybe:convert", "isNull", Box::new(|args: &[Value]| {
+        Value::Bool(matches!(args.first().unwrap_or(&Value::Null), Value::Null))
+    }));
+
+    // isempty(value) → null or empty string
+    vm.register_host_fn("vybe:convert", "isEmpty", Box::new(|args: &[Value]| {
+        match args.first().unwrap_or(&Value::Null) {
+            Value::Null => Value::Bool(true),
+            Value::String(s) => Value::Bool(s.is_empty()),
+            _ => Value::Bool(false),
+        }
+    }));
+
+    // isobject(value) → true if Object
+    vm.register_host_fn("vybe:convert", "isObject", Box::new(|args: &[Value]| {
+        Value::Bool(matches!(args.first().unwrap_or(&Value::Null), Value::Object(_)))
+    }));
+
+    // isarray(value) → true if array
+    vm.register_host_fn("vybe:convert", "isArray", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            return Value::Bool(matches!(o.kind, vybe_bytecode::value::ObjectKind::Array(_)));
+        }
+        Value::Bool(false)
+    }));
+
+    // iif(condition, trueValue, falseValue) → ternary
+    vm.register_host_fn("vybe:convert", "iif", Box::new(|args: &[Value]| {
+        let cond = match args.first().unwrap_or(&Value::Null) {
+            Value::Bool(b) => *b,
+            Value::F64(n) => *n != 0.0,
+            Value::Null => false,
+            _ => true,
+        };
+        if cond {
+            args.get(1).cloned().unwrap_or(Value::Null)
+        } else {
+            args.get(2).cloned().unwrap_or(Value::Null)
+        }
+    }));
+
+    // choose(index, val1, val2, ...) → value at index (1-based)
+    vm.register_host_fn("vybe:convert", "choose", Box::new(|args: &[Value]| {
+        let idx = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
+        if idx >= 1 && idx < args.len() {
+            args[idx].clone()
+        } else {
+            Value::Null
+        }
+    }));
+
+    // rgb(r, g, b) → color as integer
+    vm.register_host_fn("vybe:convert", "rgb", Box::new(|args: &[Value]| {
+        let r = args.first().map(|v| v.as_f64() as u32).unwrap_or(0) & 0xFF;
+        let g = args.get(1).map(|v| v.as_f64() as u32).unwrap_or(0) & 0xFF;
+        let b = args.get(2).map(|v| v.as_f64() as u32).unwrap_or(0) & 0xFF;
+        Value::F64((r | (g << 8) | (b << 16)) as f64)
     }));
 }
 

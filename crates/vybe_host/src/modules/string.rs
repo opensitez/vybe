@@ -202,6 +202,92 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:string", "ucase", Box::new(|a| Value::String(Rc::from(s(a, 0).to_uppercase().as_str()))));
     vm.register_host_fn("vybe:string", "ltrim", Box::new(|a| Value::String(Rc::from(s(a, 0).trim_start()))));
     vm.register_host_fn("vybe:string", "rtrim", Box::new(|a| Value::String(Rc::from(s(a, 0).trim_end()))));
+
+    // instrrev(str, search) → 1-based position of LAST occurrence, 0 if not found
+    vm.register_host_fn("vybe:string", "instrrev", Box::new(|a| {
+        let st = s(a, 0);
+        let search = s(a, 1);
+        match st.rfind(&search) {
+            Some(idx) => Value::F64((idx + 1) as f64),
+            None => Value::F64(0.0),
+        }
+    }));
+
+    // strreverse(str) → reversed string
+    vm.register_host_fn("vybe:string", "strreverse", Box::new(|a| {
+        Value::String(Rc::from(s(a, 0).chars().rev().collect::<String>().as_str()))
+    }));
+
+    // strcomp(str1, str2, compare?) → -1, 0, or 1
+    vm.register_host_fn("vybe:string", "strcomp", Box::new(|a| {
+        let s1 = s(a, 0);
+        let s2 = s(a, 1);
+        let binary = f(a, 2) as i32 == 0; // 0=binary, 1=text
+        let result = if binary {
+            s1.cmp(&s2)
+        } else {
+            s1.to_lowercase().cmp(&s2.to_lowercase())
+        };
+        Value::F64(match result {
+            std::cmp::Ordering::Less => -1.0,
+            std::cmp::Ordering::Equal => 0.0,
+            std::cmp::Ordering::Greater => 1.0,
+        })
+    }));
+
+    // format(value, formatStr) → formatted string
+    vm.register_host_fn("vybe:string", "format", Box::new(|a| {
+        let val = f(a, 0);
+        let fmt = s(a, 1).to_lowercase();
+        let result = match fmt.as_str() {
+            "0" | "0.0" | "#.#" | "fixed" => format!("{:.1}", val),
+            "0.00" | "#.##" | "standard" => format!("{:.2}", val),
+            "percent" => format!("{:.2}%", val * 100.0),
+            "currency" => format!("${:.2}", val),
+            "scientific" => format!("{:e}", val),
+            "yes/no" => if val != 0.0 { "Yes".into() } else { "No".into() },
+            "true/false" => if val != 0.0 { "True".into() } else { "False".into() },
+            "on/off" => if val != 0.0 { "On".into() } else { "Off".into() },
+            _ => format!("{}", val),
+        };
+        Value::String(Rc::from(result.as_str()))
+    }));
+
+    // lset(str, length) → left-align in field
+    vm.register_host_fn("vybe:string", "lset", Box::new(|a| {
+        let st = s(a, 0);
+        let len = f(a, 1) as usize;
+        Value::String(Rc::from(format!("{:<width$}", st, width = len).as_str()))
+    }));
+
+    // rset(str, length) → right-align in field
+    vm.register_host_fn("vybe:string", "rset", Box::new(|a| {
+        let st = s(a, 0);
+        let len = f(a, 1) as usize;
+        Value::String(Rc::from(format!("{:>width$}", st, width = len).as_str()))
+    }));
+
+    // filter(arr, match, include?) → filtered array
+    vm.register_host_fn("vybe:string", "filter", Box::new(|a| {
+        use std::cell::RefCell;
+        use vybe_bytecode::value::{Object, ObjectKind};
+        let match_str = s(a, 1);
+        let include = if a.len() > 2 { f(a, 2) != 0.0 } else { true };
+        let mut results = Vec::new();
+        if let Some(Value::Object(obj)) = a.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                for elem in elems {
+                    let es = format!("{}", elem);
+                    let contains = es.contains(&match_str);
+                    if (include && contains) || (!include && !contains) {
+                        results.push(elem.clone());
+                    }
+                }
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(results))))
+    }));
 }
 
 fn s(args: &[Value], idx: usize) -> String {

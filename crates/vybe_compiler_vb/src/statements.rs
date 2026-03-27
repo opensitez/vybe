@@ -1,0 +1,369 @@
+use std::rc::Rc;
+use vybe_bytecode::{Value, Op};
+use vybe_parser_basic::ast::*;
+
+use crate::compiler::{Compiler, VarResolution};
+
+impl Compiler {
+    pub(crate) fn compile_statement(&mut self, stmt: &Statement) -> Result<(), String> {
+        match stmt {
+            Statement::Dim(vars) => {
+                for var in vars {
+                    if let Some(ref init) = var.initializer {
+                        self.compile_expression(init)?;
+                    } else {
+                        self.emit(Op::null);
+                    }
+                    let name = var.name.as_str().to_lowercase();
+                    let slot = self.define_local(&name);
+                    self.emit_u16(Op::local_set, slot);
+                    self.emit(Op::drop);
+                }
+            }
+            Statement::Assignment { target, value } => {
+                self.compile_expression(value)?;
+                self.compile_store_ident(target)?;
+            }
+            Statement::MemberAssignment { object, member, value } => {
+                self.compile_expression(object)?;
+                self.compile_expression(value)?;
+                let idx = self.add_string_constant(&member.as_str().to_lowercase());
+                self.emit_u16(Op::struct_set, idx);
+                self.emit(Op::drop);
+            }
+            Statement::ArrayAssignment { array, indices, value } => {
+                self.compile_expression(value)?;
+                let name = array.as_str().to_lowercase();
+                match self.resolve_variable(&name) {
+                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Global => {
+                        let idx = self.add_string_constant(&name);
+                        self.emit_u16(Op::global_get, idx);
+                    }
+                }
+                if let Some(index) = indices.first() {
+                    self.compile_expression(index)?;
+                }
+                self.emit(Op::array_set);
+                self.emit(Op::drop);
+            }
+            Statement::If { condition, then_branch, elseif_branches, else_branch } => {
+                self.compile_expression(condition)?;
+                self.emit(Op::dyn_to_bool);
+                let else_jump = self.emit_jump(Op::br_if_false);
+                for s in then_branch { self.compile_statement(s)?; }
+                let mut end_jumps = vec![];
+                if !elseif_branches.is_empty() || else_branch.is_some() {
+                    end_jumps.push(self.emit_jump(Op::br));
+                }
+                self.patch_jump(else_jump);
+                for (cond, body) in elseif_branches {
+                    self.compile_expression(cond)?;
+                    self.emit(Op::dyn_to_bool);
+                    let next = self.emit_jump(Op::br_if_false);
+                    for s in body { self.compile_statement(s)?; }
+                    end_jumps.push(self.emit_jump(Op::br));
+                    self.patch_jump(next);
+                }
+                if let Some(els) = else_branch {
+                    for s in els { self.compile_statement(s)?; }
+                }
+                for j in end_jumps { self.patch_jump(j); }
+            }
+            Statement::For { variable, start, end, step, body } => {
+                self.current_scope_mut().begin_scope();
+                self.compile_expression(start)?;
+                let var_name = variable.as_str().to_lowercase();
+                let i_slot = self.define_local(&var_name);
+                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::drop);
+                let loop_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.compile_expression(end)?;
+                self.emit(Op::dyn_le);
+                self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+                for s in body { self.compile_statement(s)?; }
+                self.emit_u16(Op::local_get, i_slot);
+                if let Some(step_expr) = step {
+                    self.compile_expression(step_expr)?;
+                } else {
+                    self.emit_constant(Value::F64(1.0));
+                }
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+                self.current_scope_mut().end_scope();
+            }
+            Statement::ForEach { variable, collection, body } => {
+                self.current_scope_mut().begin_scope();
+                self.compile_expression(collection)?;
+                let arr_slot = self.define_local("__foreach_arr");
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__foreach_i");
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                let loop_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                let len_idx = self.add_string_constant("length");
+                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                let var_name = variable.as_str().to_lowercase();
+                let elem_slot = self.define_local(&var_name);
+                self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
+                for s in body { self.compile_statement(s)?; }
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+                self.current_scope_mut().end_scope();
+            }
+            Statement::While { condition, body } => {
+                let loop_start = self.current_offset();
+                self.compile_expression(condition)?;
+                self.emit(Op::dyn_to_bool);
+                let exit = self.emit_jump(Op::br_if_false);
+                for s in body { self.compile_statement(s)?; }
+                self.emit_loop(loop_start);
+                self.patch_jump(exit);
+            }
+            Statement::DoLoop { pre_condition, body, post_condition } => {
+                if let Some((cond_type, cond_expr)) = pre_condition {
+                    let loop_start = self.current_offset();
+                    self.compile_expression(cond_expr)?;
+                    self.emit(Op::dyn_to_bool);
+                    let exit = match cond_type {
+                        LoopConditionType::While => self.emit_jump(Op::br_if_false),
+                        LoopConditionType::Until => self.emit_jump(Op::br_if_true),
+                    };
+                    for s in body { self.compile_statement(s)?; }
+                    self.emit_loop(loop_start);
+                    self.patch_jump(exit);
+                } else {
+                    let loop_start = self.current_offset();
+                    for s in body { self.compile_statement(s)?; }
+                    if let Some((cond_type, cond_expr)) = post_condition {
+                        self.compile_expression(cond_expr)?;
+                        self.emit(Op::dyn_to_bool);
+                        match cond_type {
+                            LoopConditionType::While => {
+                                let exit = self.emit_jump(Op::br_if_false);
+                                self.emit_loop(loop_start);
+                                self.patch_jump(exit);
+                            }
+                            LoopConditionType::Until => {
+                                let exit = self.emit_jump(Op::br_if_true);
+                                self.emit_loop(loop_start);
+                                self.patch_jump(exit);
+                            }
+                        }
+                    } else {
+                        self.emit_loop(loop_start);
+                    }
+                }
+            }
+            Statement::Call { name, arguments } => {
+                let fname = name.as_str().to_lowercase();
+                if fname == "console.writeline" || fname == "console" {
+                    for arg in arguments { self.compile_expression(arg)?; }
+                    let idx = self.import("wasi:cli", "log");
+                    self.emit_host_call(idx, arguments.len() as u8);
+                    self.emit(Op::drop);
+                    return Ok(());
+                }
+                match self.resolve_variable(&fname) {
+                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Global => {
+                        let idx = self.add_string_constant(&fname);
+                        self.emit_u16(Op::global_get, idx);
+                    }
+                }
+                for arg in arguments { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, arguments.len() as u8);
+                self.emit(Op::drop);
+            }
+            Statement::ExpressionStatement(expr) => {
+                self.compile_expression(expr)?;
+                self.emit(Op::drop);
+            }
+            Statement::Return(Some(expr)) => {
+                self.compile_expression(expr)?;
+                self.emit(Op::r#return);
+            }
+            Statement::Return(None) | Statement::ExitSub | Statement::ExitFunction => {
+                self.emit(Op::null);
+                self.emit(Op::r#return);
+            }
+            Statement::ExitFor | Statement::ExitDo => {
+                // TODO: break from loops
+            }
+            Statement::Try { body, catches, finally: finally_block } => {
+                let try_start_pos = self.current_offset();
+                let line = self.line;
+                let c = &mut self.chunks[self.current_chunk_idx];
+                c.emit_op(Op::try_start, line);
+                c.emit(0, line); c.emit(0, line); c.emit(0, line); c.emit(0, line);
+                for s in body { self.compile_statement(s)?; }
+                self.emit(Op::try_end);
+                let skip = self.emit_jump(Op::br);
+                let catch_pos = self.current_offset();
+                let ip_after = try_start_pos + 5;
+                let catch_offset = catch_pos as i16 - ip_after as i16;
+                let c = &mut self.chunks[self.current_chunk_idx];
+                c.code[try_start_pos + 1] = (catch_offset >> 8) as u8;
+                c.code[try_start_pos + 2] = (catch_offset & 0xff) as u8;
+                if let Some(catch) = catches.first() {
+                    self.current_scope_mut().begin_scope();
+                    if let Some((ref var_name, _)) = catch.variable {
+                        let slot = self.define_local(&var_name.as_str().to_lowercase());
+                        self.emit_u16(Op::local_set, slot);
+                        self.emit(Op::drop);
+                    } else {
+                        self.emit(Op::drop);
+                    }
+                    for s in &catch.body { self.compile_statement(s)?; }
+                    self.current_scope_mut().end_scope();
+                } else {
+                    self.emit(Op::drop);
+                }
+                self.patch_jump(skip);
+                if let Some(fin) = finally_block {
+                    for s in fin { self.compile_statement(s)?; }
+                }
+            }
+            Statement::Throw(expr) => {
+                if let Some(e) = expr {
+                    self.compile_expression(e)?;
+                } else {
+                    self.emit(Op::null);
+                }
+                self.emit(Op::throw);
+            }
+            Statement::Const(c) => {
+                self.compile_expression(&c.value)?;
+                let name = c.name.as_str().to_lowercase();
+                let slot = self.define_local(&name);
+                self.emit_u16(Op::local_set, slot);
+                self.emit(Op::drop);
+            }
+            Statement::Select { test_expr, cases, else_block } => {
+                self.current_scope_mut().begin_scope();
+                self.compile_expression(test_expr)?;
+                let test_slot = self.define_local("__select_val");
+                self.emit_u16(Op::local_set, test_slot);
+                self.emit(Op::drop);
+                let mut end_jumps = vec![];
+                for case in cases {
+                    let mut case_false_jumps = vec![];
+                    let mut case_true_jump = None;
+                    for (ci, cond) in case.conditions.iter().enumerate() {
+                        match cond {
+                            CaseCondition::Value(expr) => {
+                                self.emit_u16(Op::local_get, test_slot);
+                                self.compile_expression(expr)?;
+                                self.emit(Op::dyn_eq);
+                                self.emit(Op::dyn_to_bool);
+                                if ci < case.conditions.len() - 1 {
+                                    case_true_jump = Some(self.emit_jump(Op::br_if_true));
+                                } else {
+                                    case_false_jumps.push(self.emit_jump(Op::br_if_false));
+                                }
+                            }
+                            CaseCondition::Range { from, to } => {
+                                self.emit_u16(Op::local_get, test_slot);
+                                self.compile_expression(from)?;
+                                self.emit(Op::dyn_ge);
+                                self.emit(Op::dyn_to_bool);
+                                let not_in_range = self.emit_jump(Op::br_if_false);
+                                self.emit_u16(Op::local_get, test_slot);
+                                self.compile_expression(to)?;
+                                self.emit(Op::dyn_le);
+                                self.emit(Op::dyn_to_bool);
+                                if ci < case.conditions.len() - 1 {
+                                    case_true_jump = Some(self.emit_jump(Op::br_if_true));
+                                    self.patch_jump(not_in_range);
+                                } else {
+                                    case_false_jumps.push(self.emit_jump(Op::br_if_false));
+                                    self.patch_jump(not_in_range);
+                                    case_false_jumps.push(self.emit_jump(Op::br));
+                                }
+                            }
+                            CaseCondition::Comparison { op, expr } => {
+                                self.emit_u16(Op::local_get, test_slot);
+                                self.compile_expression(expr)?;
+                                match op {
+                                    CompOp::Equal => self.emit(Op::dyn_eq),
+                                    CompOp::NotEqual => self.emit(Op::dyn_ne),
+                                    CompOp::LessThan => self.emit(Op::dyn_lt),
+                                    CompOp::LessThanOrEqual => self.emit(Op::dyn_le),
+                                    CompOp::GreaterThan => self.emit(Op::dyn_gt),
+                                    CompOp::GreaterThanOrEqual => self.emit(Op::dyn_ge),
+                                }
+                                self.emit(Op::dyn_to_bool);
+                                if ci < case.conditions.len() - 1 {
+                                    case_true_jump = Some(self.emit_jump(Op::br_if_true));
+                                } else {
+                                    case_false_jumps.push(self.emit_jump(Op::br_if_false));
+                                }
+                            }
+                        }
+                    }
+                    if let Some(tj) = case_true_jump { self.patch_jump(tj); }
+                    for s in &case.body { self.compile_statement(s)?; }
+                    end_jumps.push(self.emit_jump(Op::br));
+                    for fj in case_false_jumps { self.patch_jump(fj); }
+                }
+                if let Some(els) = else_block {
+                    for s in els { self.compile_statement(s)?; }
+                }
+                for ej in end_jumps { self.patch_jump(ej); }
+                self.current_scope_mut().end_scope();
+            }
+            Statement::With { object, body } => {
+                self.current_scope_mut().begin_scope();
+                self.compile_expression(object)?;
+                let with_slot = self.define_local("__with_obj");
+                self.emit_u16(Op::local_set, with_slot);
+                self.emit(Op::drop);
+                for s in body { self.compile_statement(s)?; }
+                self.current_scope_mut().end_scope();
+            }
+            Statement::AddHandler { event_target, handler } => {
+                let parts: Vec<&str> = event_target.splitn(2, '.').collect();
+                let control = parts.first().unwrap_or(&"").to_lowercase();
+                let event = parts.get(1).unwrap_or(&"Click").to_string();
+                match self.resolve_variable(&control) {
+                    VarResolution::Local(slot) => {
+                        self.emit_u16(Op::local_get, slot);
+                        let name_idx = self.add_string_constant("__control_name");
+                        self.emit_u16(Op::struct_get, name_idx);
+                    }
+                    VarResolution::Global => {
+                        self.emit_constant(Value::String(Rc::from(control.as_str())));
+                    }
+                }
+                self.emit_constant(Value::String(Rc::from(event.as_str())));
+                let handler_lower = handler.to_lowercase();
+                let handler_lower = handler_lower.trim_start_matches("me.");
+                let idx = self.add_string_constant(handler_lower);
+                self.emit_u16(Op::global_get, idx);
+                let import_idx = self.import("vybe:gui", "onEvent");
+                self.emit_host_call(import_idx, 3);
+                self.emit(Op::drop);
+            }
+            _ => {
+                // VB statement types not yet compiled
+            }
+        }
+        Ok(())
+    }
+}
