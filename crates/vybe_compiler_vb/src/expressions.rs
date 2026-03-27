@@ -296,6 +296,17 @@ impl Compiler {
     }
 
     fn compile_method_call(&mut self, obj: &Expression, method: &Identifier, args: &[Expression]) -> Result<(), String> {
+        // WinForms no-op methods — layout, refresh, etc.
+        let m = method.as_str().to_lowercase();
+        if matches!(m.as_str(),
+            "suspendlayout" | "resumelayout" | "performlayout" |
+            "refresh" | "invalidate" | "update" | "begininit" | "endinit" |
+            "dispose" | "select" | "focus" | "bringtofront" | "sendtoback"
+        ) {
+            self.emit(Op::null);
+            return Ok(());
+        }
+
         // Component Model: try interface resolution on the full chain
         // e.g. System.Math.Floor(3.7) → MemberAccess(System, Math) + method "Floor"
         //   → flatten to ["System", "Math", "Floor"] → resolve "system.math" interface → "floor"
@@ -380,9 +391,8 @@ impl Compiler {
                 let member_lower = member.as_str().to_lowercase();
                 let meth_lower = method.as_str().to_lowercase();
                 if member_lower == "controls" && meth_lower == "add" {
+                    // Pass parent object directly — controlsAdd extracts name from it
                     self.compile_expression(parent)?;
-                    let name_idx = self.add_string_constant("__control_name");
-                    self.emit_u16(Op::struct_get, name_idx);
                     for arg in args { self.compile_expression(arg)?; }
                     let import_idx = self.import("vybe:gui", "controlsAdd");
                     self.emit_host_call(import_idx, (args.len() + 1) as u8);
@@ -450,6 +460,7 @@ impl Compiler {
             .or_else(|| name.strip_prefix("system.collections."))
             .or_else(|| name.strip_prefix("system.text."))
             .or_else(|| name.strip_prefix("system.windows.forms."))
+            .or_else(|| name.strip_prefix("system.drawing."))
             .or_else(|| name.strip_prefix("adodb."))
             .unwrap_or(&name)
             .to_string();

@@ -15,6 +15,19 @@ impl Compiler {
             return Ok(());
         }
 
+        // Inside a class: bare method call → Me.method(Me, args...)
+        if self.class_methods.contains(&fname) {
+            if let Some(me_slot) = self.current_scope().resolve_local("me") {
+                self.emit_u16(Op::local_get, me_slot);
+                let prop_idx = self.add_string_constant(&fname);
+                self.emit_u16(Op::struct_get, prop_idx);
+                self.emit_u16(Op::local_get, me_slot);
+                for arg in args { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, (args.len() + 1) as u8);
+                return Ok(());
+            }
+        }
+
         // Check if name is a local variable — if so, treat as array access
         // (VB uses parens for both calls and array indexing)
         match self.resolve_variable(&fname) {
@@ -82,6 +95,11 @@ impl Compiler {
 
         // Map VB function name → (host_module, host_name)
         let mapping: Option<(&str, &str)> = match fname {
+            // Application
+            "application.run" => Some(("vybe:gui", "runApplication")),
+            "application.exit" => Some(("vybe:gui", "formClose")),
+            // WinForms layout methods (no-ops in our renderer)
+            "suspendlayout" | "resumelayout" | "performlayout" => Some(("vybe:gui", "noop")),
             // Console
             "console.writeline" => Some(("wasi:cli", "log")),
             // Type conversion

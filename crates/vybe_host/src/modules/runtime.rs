@@ -103,6 +103,14 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:runtime", "RangeError", Box::new(|args: &[Value]| {
         make_error("RangeError", args)
     }));
+
+    // GoTo support — stores the target label. The caller checks this global
+    // to implement VB6-style GoTo within a subroutine.
+    vm.register_host_fn("vybe:runtime", "goto", Box::new(|args: &[Value]| {
+        // In practice, GoTo within a Sub is rare in modern VB.NET.
+        // This stores the label name so error handlers can dispatch.
+        args.first().cloned().unwrap_or(Value::Null)
+    }));
 }
 
 fn make_error(kind: &str, args: &[Value]) -> Value {

@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::io::{BufRead, Write};
 use vybe_bytecode::{VM, Value};
 use vybe_bytecode::value::{Object, ObjectKind};
 use std::cell::RefCell;
@@ -194,7 +195,139 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("wasi:filesystem", "pathGetTempPath", Box::new(|_args: &[Value]| {
         Value::String(Rc::from(std::env::temp_dir().to_string_lossy().as_ref()))
     }));
+
+    // -- VB6 file handle I/O --
+
+    // openFile(path, mode, fileNumber) → null
+    vm.register_host_fn("wasi:filesystem", "openFile", Box::new(|args: &[Value]| {
+        let path = s(args, 0);
+        let mode = s(args, 1);
+        let fnum = args.get(2).map(|v| v.as_f64() as i32).unwrap_or(1);
+        let handle = match mode.as_str() {
+            "Input" => {
+                match std::fs::File::open(&path) {
+                    Ok(f) => FileHandle {
+                        reader: Some(std::io::BufReader::new(f)),
+                        writer: None,
+                    },
+                    Err(_) => return Value::Null,
+                }
+            }
+            "Output" => {
+                match std::fs::File::create(&path) {
+                    Ok(f) => FileHandle {
+                        reader: None,
+                        writer: Some(std::io::BufWriter::new(f)),
+                    },
+                    Err(_) => return Value::Null,
+                }
+            }
+            "Append" => {
+                match std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+                    Ok(f) => FileHandle {
+                        reader: None,
+                        writer: Some(std::io::BufWriter::new(f)),
+                    },
+                    Err(_) => return Value::Null,
+                }
+            }
+            _ => return Value::Null,
+        };
+        if let Ok(mut handles) = FILE_HANDLES.lock() {
+            handles.insert(fnum, handle);
+        }
+        Value::Null
+    }));
+
+    // closeFile(fileNumber) → null (-1 = close all)
+    vm.register_host_fn("wasi:filesystem", "closeFile", Box::new(|args: &[Value]| {
+        let fnum = args.first().map(|v| v.as_i32()).unwrap_or(-1);
+        if let Ok(mut handles) = FILE_HANDLES.lock() {
+            if fnum == -1 { handles.clear(); }
+            else { handles.remove(&fnum); }
+        }
+        Value::Null
+    }));
+
+    // printFile(fileNumber, items...) → null
+    vm.register_host_fn("wasi:filesystem", "printFile", Box::new(|args: &[Value]| {
+        let fnum = args.first().map(|v| v.as_i32()).unwrap_or(1);
+        let text: String = args[1..].iter().map(|v| format!("{}", v)).collect::<Vec<_>>().join("");
+        if let Ok(mut handles) = FILE_HANDLES.lock() {
+            if let Some(h) = handles.get_mut(&fnum) {
+                if let Some(ref mut w) = h.writer {
+                    let _ = writeln!(w, "{}", text);
+                    let _ = w.flush();
+                }
+            }
+        }
+        Value::Null
+    }));
+
+    // writeFile(fileNumber, items...) → null (CSV-style with quotes)
+    vm.register_host_fn("wasi:filesystem", "writeFile_handle", Box::new(|args: &[Value]| {
+        let fnum = args.first().map(|v| v.as_i32()).unwrap_or(1);
+        let parts: Vec<String> = args[1..].iter().map(|v| {
+            let s = format!("{}", v);
+            if s.contains(',') || s.contains('"') { format!("\"{}\"", s.replace('"', "\"\"")) }
+            else { s }
+        }).collect();
+        if let Ok(mut handles) = FILE_HANDLES.lock() {
+            if let Some(h) = handles.get_mut(&fnum) {
+                if let Some(ref mut w) = h.writer {
+                    let _ = writeln!(w, "{}", parts.join(","));
+                    let _ = w.flush();
+                }
+            }
+        }
+        Value::Null
+    }));
+
+    // lineInput(fileNumber) → string (one line)
+    vm.register_host_fn("wasi:filesystem", "lineInput", Box::new(|args: &[Value]| {
+        let fnum = args.first().map(|v| v.as_i32()).unwrap_or(1);
+        if let Ok(mut handles) = FILE_HANDLES.lock() {
+            if let Some(h) = handles.get_mut(&fnum) {
+                if let Some(ref mut r) = h.reader {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).is_ok() {
+                        return Value::String(Rc::from(line.trim_end_matches('\n').trim_end_matches('\r')));
+                    }
+                }
+            }
+        }
+        Value::String(Rc::from(""))
+    }));
+
+    // inputFile(fileNumber) → array of comma-separated values from one line
+    vm.register_host_fn("wasi:filesystem", "inputFile", Box::new(|args: &[Value]| {
+        let fnum = args.first().map(|v| v.as_i32()).unwrap_or(1);
+        if let Ok(mut handles) = FILE_HANDLES.lock() {
+            if let Some(h) = handles.get_mut(&fnum) {
+                if let Some(ref mut r) = h.reader {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).is_ok() {
+                        let vals: Vec<Value> = line.trim().split(',')
+                            .map(|s| Value::String(Rc::from(s.trim())))
+                            .collect();
+                        return Value::Object(Rc::new(RefCell::new(Object::new_array(vals))));
+                    }
+                }
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
 }
+
+use std::sync::Mutex;
+
+struct FileHandle {
+    reader: Option<std::io::BufReader<std::fs::File>>,
+    writer: Option<std::io::BufWriter<std::fs::File>>,
+}
+
+static FILE_HANDLES: std::sync::LazyLock<Mutex<std::collections::HashMap<i32, FileHandle>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 fn s(args: &[Value], idx: usize) -> String {
     args.get(idx).map(|v| format!("{}", v)).unwrap_or_default()

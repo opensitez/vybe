@@ -2,9 +2,6 @@ use std::rc::Rc;
 use vybe_bytecode::{VM, Value};
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:string", "length", Box::new(|a| {
-        Value::F64(s(a, 0).len() as f64)
-    }));
     vm.register_host_fn("vybe:string", "slice", Box::new(|a| {
         let st = s(a, 0);
         let len = st.len() as i64;
@@ -35,9 +32,6 @@ pub fn register(vm: &mut VM) {
         }
     }));
     vm.register_host_fn("vybe:string", "includes",    Box::new(|a| Value::Bool(s(a, 0).contains(&s(a, 1)))));
-    vm.register_host_fn("vybe:string", "toUpperCase", Box::new(|a| Value::String(Rc::from(s(a, 0).to_uppercase().as_str()))));
-    vm.register_host_fn("vybe:string", "toLowerCase", Box::new(|a| Value::String(Rc::from(s(a, 0).to_lowercase().as_str()))));
-    vm.register_host_fn("vybe:string", "trim",        Box::new(|a| Value::String(Rc::from(s(a, 0).trim()))));
     vm.register_host_fn("vybe:string", "split", Box::new(|a| {
         let parts: Vec<Value> = s(a, 0).split(&s(a, 1)).map(|p| Value::String(Rc::from(p))).collect();
         Value::Object(Rc::new(std::cell::RefCell::new(vybe_bytecode::value::Object::new_array(parts))))
@@ -84,36 +78,10 @@ pub fn register(vm: &mut VM) {
         Value::String(Rc::from(st.repeat(count).as_str()))
     }));
 
-    // padStart(str, targetLength, padString?) → string
-    vm.register_host_fn("vybe:string", "padStart", Box::new(|a| {
-        let st = s(a, 0);
-        let target = f(a, 1) as usize;
-        let pad = if a.len() > 2 { s(a, 2) } else { " ".into() };
-        if st.len() >= target { return Value::String(Rc::from(st.as_str())); }
-        let needed = target - st.len();
-        let padding: String = pad.chars().cycle().take(needed).collect();
-        Value::String(Rc::from(format!("{}{}", padding, st).as_str()))
-    }));
-
-    // padEnd(str, targetLength, padString?) → string
-    vm.register_host_fn("vybe:string", "padEnd", Box::new(|a| {
-        let st = s(a, 0);
-        let target = f(a, 1) as usize;
-        let pad = if a.len() > 2 { s(a, 2) } else { " ".into() };
-        if st.len() >= target { return Value::String(Rc::from(st.as_str())); }
-        let needed = target - st.len();
-        let padding: String = pad.chars().cycle().take(needed).collect();
-        Value::String(Rc::from(format!("{}{}", st, padding).as_str()))
-    }));
-
     // replaceAll(str, search, replace) → string
     vm.register_host_fn("vybe:string", "replaceAll", Box::new(|a| {
         Value::String(Rc::from(s(a, 0).replace(&s(a, 1), &s(a, 2)).as_str()))
     }));
-
-    // trimStart / trimEnd
-    vm.register_host_fn("vybe:string", "trimStart", Box::new(|a| Value::String(Rc::from(s(a, 0).trim_start()))));
-    vm.register_host_fn("vybe:string", "trimEnd",   Box::new(|a| Value::String(Rc::from(s(a, 0).trim_end()))));
 
     // --- VB-compatible string functions (available to all languages) ---
 
@@ -168,27 +136,6 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    // asc(str) → char code of first character
-    vm.register_host_fn("vybe:string", "asc", Box::new(|a| {
-        match s(a, 0).chars().next() {
-            Some(c) => Value::F64(c as u32 as f64),
-            None => Value::F64(0.0),
-        }
-    }));
-
-    // chr(code) → single character string
-    vm.register_host_fn("vybe:string", "chr", Box::new(|a| {
-        match char::from_u32(f(a, 0) as u32) {
-            Some(c) => Value::String(Rc::from(c.to_string().as_str())),
-            None => Value::String(Rc::from("")),
-        }
-    }));
-
-    // space(n) → string of n spaces
-    vm.register_host_fn("vybe:string", "space", Box::new(|a| {
-        Value::String(Rc::from(" ".repeat(f(a, 0) as usize).as_str()))
-    }));
-
     // string(n, char) → string of n copies of char
     vm.register_host_fn("vybe:string", "stringRepeat", Box::new(|a| {
         let n = f(a, 0) as usize;
@@ -196,12 +143,6 @@ pub fn register(vm: &mut VM) {
         let c = ch.chars().next().unwrap_or(' ');
         Value::String(Rc::from(c.to_string().repeat(n).as_str()))
     }));
-
-    // lcase/ucase aliases (same as toLowerCase/toUpperCase but available by VB name)
-    vm.register_host_fn("vybe:string", "lcase", Box::new(|a| Value::String(Rc::from(s(a, 0).to_lowercase().as_str()))));
-    vm.register_host_fn("vybe:string", "ucase", Box::new(|a| Value::String(Rc::from(s(a, 0).to_uppercase().as_str()))));
-    vm.register_host_fn("vybe:string", "ltrim", Box::new(|a| Value::String(Rc::from(s(a, 0).trim_start()))));
-    vm.register_host_fn("vybe:string", "rtrim", Box::new(|a| Value::String(Rc::from(s(a, 0).trim_end()))));
 
     // instrrev(str, search) → 1-based position of LAST occurrence, 0 if not found
     vm.register_host_fn("vybe:string", "instrrev", Box::new(|a| {
@@ -211,28 +152,6 @@ pub fn register(vm: &mut VM) {
             Some(idx) => Value::F64((idx + 1) as f64),
             None => Value::F64(0.0),
         }
-    }));
-
-    // strreverse(str) → reversed string
-    vm.register_host_fn("vybe:string", "strreverse", Box::new(|a| {
-        Value::String(Rc::from(s(a, 0).chars().rev().collect::<String>().as_str()))
-    }));
-
-    // strcomp(str1, str2, compare?) → -1, 0, or 1
-    vm.register_host_fn("vybe:string", "strcomp", Box::new(|a| {
-        let s1 = s(a, 0);
-        let s2 = s(a, 1);
-        let binary = f(a, 2) as i32 == 0; // 0=binary, 1=text
-        let result = if binary {
-            s1.cmp(&s2)
-        } else {
-            s1.to_lowercase().cmp(&s2.to_lowercase())
-        };
-        Value::F64(match result {
-            std::cmp::Ordering::Less => -1.0,
-            std::cmp::Ordering::Equal => 0.0,
-            std::cmp::Ordering::Greater => 1.0,
-        })
     }));
 
     // format(value, formatStr) → formatted string

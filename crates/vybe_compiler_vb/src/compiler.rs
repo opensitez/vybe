@@ -16,6 +16,7 @@ pub struct Compiler {
     pub(crate) function_name_stack: Vec<String>,
     pub(crate) loop_stack: Vec<LoopContext>,
     pub(crate) class_fields: HashSet<String>,
+    pub(crate) class_methods: HashSet<String>,
     /// Component Model: imported interface prefixes from `Imports` statements.
     pub(crate) interface_imports: Vec<String>,
     /// Known built-in types: name → (constructor_module, constructor_fn)
@@ -46,6 +47,7 @@ impl Compiler {
             function_name_stack: Vec::new(),
             loop_stack: Vec::new(),
             class_fields: HashSet::new(),
+            class_methods: HashSet::new(),
             known_types: Self::init_known_types(),
             func_signatures: std::collections::HashMap::new(),
             interface_imports: vec![
@@ -310,6 +312,7 @@ impl Compiler {
             ("dataset", "vybe:data", "dataSetNew"),
             ("point", "vybe:drawing", "pointNew"),
             ("size", "vybe:drawing", "sizeNew"),
+            ("sizef", "vybe:drawing", "sizeNew"),
             ("font", "vybe:drawing", "fontNew"),
             ("random", "vybe:threading", "randomNew"),
             ("stopwatch", "vybe:threading", "stopwatchNew"),

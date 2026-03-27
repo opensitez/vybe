@@ -746,7 +746,7 @@ pub fn PropertiesPanel() -> Element {
                                                         } else {
                                                             return Vec::new();
                                                         };
-                                                        match vybe_runtime::data_access::fetch_columns_for_query(&conn_str, &query) {
+                                                        match vybe_host::fetch_columns_for_query(&conn_str, &query) {
                                                             Ok(cols) => cols,
                                                             Err(_e) => {
                                                                 Vec::new()
@@ -881,7 +881,7 @@ pub fn PropertiesPanel() -> Element {
                                                                         let cs = da.properties.get_string("ConnectionString")?;
                                                                         if cs.is_empty() { return None; }
                                                                         let cs = resolve_conn_str(cs);
-                                                                        vybe_runtime::data_access::test_connection_and_list_tables(&cs).ok()
+                                                                        vybe_host::test_connection_and_list_tables(&cs).ok()
                                                                     }).unwrap_or_default()
                                                                 } else {
                                                                     Vec::new()
@@ -1264,7 +1264,7 @@ pub fn PropertiesPanel() -> Element {
                                                                                                 return;
                                                                                             }
                                                                                             let cs = resolve_conn_str(&cs);
-                                                                                            match vybe_runtime::data_access::test_connection_and_list_tables(&cs) {
+                                                                                            match vybe_host::test_connection_and_list_tables(&cs) {
                                                                                                 Ok(tbl_list) => {
                                                                                                     conn_status.set(format!("✓ Connected — {} tables found", tbl_list.len()));
                                                                                                     table_list.set(tbl_list);

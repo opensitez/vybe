@@ -4,67 +4,28 @@ use vybe_bytecode::{VM, Value};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:array", "push", Box::new(|args: &[Value]| {
+    // push, pop, shift, length, join, reverse, concat — removed (now direct VM opcodes)
+
+    // redim(array, newSize, preserve) → resized array
+    vm.register_host_fn("vybe:array", "redim", Box::new(|args: &[Value]| {
+        let new_size = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+        let preserve = matches!(args.get(2), Some(Value::Bool(true)));
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(ref mut elems) = o.kind {
-                for arg in &args[1..] { elems.push(arg.clone()); }
-                let len = elems.len() as f64;
-                drop(o);
-                obj.borrow_mut().properties.insert("length".into(), Value::F64(len));
-                return Value::F64(len);
-            }
-        }
-        Value::Null
-    }));
-    vm.register_host_fn("vybe:array", "pop", Box::new(|args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.borrow_mut();
-            if let ObjectKind::Array(ref mut elems) = o.kind {
-                let val = elems.pop().unwrap_or(Value::Null);
-                let len = elems.len() as f64;
-                drop(o);
-                obj.borrow_mut().properties.insert("length".into(), Value::F64(len));
-                return val;
-            }
-        }
-        Value::Null
-    }));
-    vm.register_host_fn("vybe:array", "shift", Box::new(|args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.borrow_mut();
-            if let ObjectKind::Array(ref mut elems) = o.kind {
-                if !elems.is_empty() {
-                    let val = elems.remove(0);
-                    let len = elems.len() as f64;
-                    drop(o);
-                    obj.borrow_mut().properties.insert("length".into(), Value::F64(len));
-                    return val;
+                if preserve {
+                    elems.resize(new_size, Value::Null);
+                } else {
+                    *elems = vec![Value::Null; new_size];
                 }
             }
+            drop(o);
+            return args[0].clone();
         }
-        Value::Null
+        // Not an array — create new one
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![Value::Null; new_size]))))
     }));
-    vm.register_host_fn("vybe:array", "length", Box::new(|args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
-            if let ObjectKind::Array(ref elems) = o.kind {
-                return Value::F64(elems.len() as f64);
-            }
-        }
-        Value::F64(0.0)
-    }));
-    vm.register_host_fn("vybe:array", "join", Box::new(|args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
-            if let ObjectKind::Array(ref elems) = o.kind {
-                let sep = if args.len() > 1 { format!("{}", args[1]) } else { ",".into() };
-                let parts: Vec<String> = elems.iter().map(|v| format!("{}", v)).collect();
-                return Value::String(Rc::from(parts.join(&sep).as_str()));
-            }
-        }
-        Value::String(Rc::from(""))
-    }));
+
     vm.register_host_fn("vybe:array", "indexOf", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
@@ -77,27 +38,8 @@ pub fn register(vm: &mut VM) {
         }
         Value::F64(-1.0)
     }));
-    vm.register_host_fn("vybe:array", "reverse", Box::new(|args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.borrow_mut();
-            if let ObjectKind::Array(ref mut elems) = o.kind { elems.reverse(); }
-        }
-        args.first().cloned().unwrap_or(Value::Null)
-    }));
-    vm.register_host_fn("vybe:array", "concat", Box::new(|args: &[Value]| {
-        let mut result = Vec::new();
-        for arg in args {
-            if let Value::Object(obj) = arg {
-                let o = obj.borrow();
-                if let ObjectKind::Array(ref elems) = o.kind {
-                    result.extend(elems.clone());
-                    continue;
-                }
-            }
-            result.push(arg.clone());
-        }
-        Value::Object(Rc::new(RefCell::new(Object::new_array(result))))
-    }));
+    // reverse, concat — removed (now array_reverse, array_concat opcodes)
+
     vm.register_host_fn("vybe:array", "slice", Box::new(|args: &[Value]| {
         match args.first() {
             Some(Value::Object(obj)) => {

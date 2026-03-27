@@ -1,15 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::cell::RefCell;
 
 use dioxus::prelude::*;
 use dioxus::desktop::{Config, WindowBuilder};
 
 use vybe_parser_basic::parse_program;
 use vybe_project::Project;
-use vybe_runtime::{Interpreter, ResourceEntry, RuntimeSideEffect};
-
-use crate::runtime_panel::RuntimeProject;
-use crate::FormRunner;
 
 // ---------------------------------------------------------------------------
 // Thread-local used to pass the Project into the named Dioxus App component.
@@ -166,6 +164,148 @@ fn run_js_file(path: &Path) {
 }
 
 // ---------------------------------------------------------------------------
+// Launch a form from a project's Form struct (already parsed from designer)
+// ---------------------------------------------------------------------------
+
+/// Wire event handlers by finding compiled chunks that match method names with Handles clauses.
+fn wire_handles_from_chunks(
+    program: &vybe_parser_basic::ast::Program,
+    vm: &mut vybe_bytecode::VM,
+    queue: &Rc<RefCell<vybe_host::SideEffectQueue>>,
+) {
+    use vybe_parser_basic::ast::*;
+    for decl in &program.declarations {
+        let methods = match decl {
+            Declaration::Class(c) => &c.methods,
+            _ => continue,
+        };
+        for method in methods {
+            let (name, handles) = match method {
+                MethodDecl::Sub(s) => (&s.name, &s.handles),
+                MethodDecl::Function(f) => (&f.name, &f.handles),
+            };
+            if let Some(handle_list) = handles {
+                let method_lower = name.as_str().to_lowercase();
+                // Find the compiled chunk by name
+                let chunk_idx = vm.chunks.iter().position(|c| c.name.to_lowercase() == method_lower);
+                if let Some(idx) = chunk_idx {
+                    // Create a closure value for this chunk
+                    let func = vybe_bytecode::value::Function {
+                        name: Some(method_lower.clone()),
+                        arity: vm.chunks[idx].arity,
+                        chunk_index: idx,
+                        upvalues: Vec::new(),
+                    };
+                    let obj = vybe_bytecode::value::Object {
+                        properties: std::collections::HashMap::new(),
+                        kind: vybe_bytecode::value::ObjectKind::Function(func),
+                        type_id: 0,
+                    };
+                    let func_val = vybe_bytecode::Value::Object(Rc::new(RefCell::new(obj)));
+
+                    for handle in handle_list {
+                        let parts: Vec<&str> = handle.splitn(2, '.').collect();
+                        if parts.len() == 2 {
+                            let ctrl = parts[0].to_lowercase();
+                            let event = parts[1].to_string();
+                            queue.borrow_mut().register_event(&ctrl, &event, func_val.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Scan parsed AST for Handles clauses and register event handlers with the side effect queue.
+/// Looks up the compiled function in VM globals and wires it to the control.event.
+fn wire_handles_from_ast(
+    program: &vybe_parser_basic::ast::Program,
+    vm: &vybe_bytecode::VM,
+    queue: &std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+) {
+    use vybe_parser_basic::ast::*;
+    for decl in &program.declarations {
+        let (class_name, methods) = match decl {
+            Declaration::Class(c) => (c.name.as_str().to_lowercase(), &c.methods),
+            _ => continue,
+        };
+        for method in methods {
+            let (name, handles) = match method {
+                MethodDecl::Sub(s) => (&s.name, &s.handles),
+                MethodDecl::Function(f) => (&f.name, &f.handles),
+            };
+            if let Some(handle_list) = handles {
+                let method_lower = name.as_str().to_lowercase();
+                eprintln!("[wire] checking method={} handles={:?}", method_lower, handle_list);
+                // Look up the method: first try as global, then on the class constructor
+                let func_val = vm.globals.get(&method_lower).cloned().or_else(|| {
+                    // Method is on the class — look up class global, get method property
+                    if let Some(vybe_bytecode::Value::Object(class_obj)) = vm.globals.get(&class_name) {
+                        let o = class_obj.borrow();
+                        o.properties.get(&method_lower).cloned()
+                    } else {
+                        None
+                    }
+                });
+                // Also check class properties
+                if func_val.is_none() {
+                    if let Some(class_val) = vm.globals.get(&class_name) {
+                        eprintln!("[wire] class={} type={}", class_name, class_val.type_tag());
+                        if let vybe_bytecode::Value::Object(class_obj) = class_val {
+                            let o = class_obj.borrow();
+                            eprintln!("[wire] class={} kind={:?} props={:?}", class_name, std::mem::discriminant(&o.kind), o.properties.keys().collect::<Vec<_>>());
+                        }
+                    } else {
+                        eprintln!("[wire] class={} NOT FOUND in globals", class_name);
+                    }
+                }
+                eprintln!("[wire] method={} func_found={}", method_lower, func_val.is_some());
+                if let Some(func) = func_val {
+                    for handle in handle_list {
+                        let parts: Vec<&str> = handle.splitn(2, '.').collect();
+                        if parts.len() == 2 {
+                            let ctrl = if parts[0].eq_ignore_ascii_case("Me") {
+                                class_name.clone()
+                            } else {
+                                parts[0].to_lowercase()
+                            };
+                            let event = parts[1].to_string();
+                            queue.borrow_mut().register_event(&ctrl, &event, func.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn launch_project_form(
+    form: vybe_forms::Form,
+    vm: vybe_bytecode::VM,
+    queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+) {
+    let title = if form.text.is_empty() { form.name.clone() } else { form.text.clone() };
+
+    JS_LAUNCH_FORM.with(|cell| *cell.borrow_mut() = Some(form));
+    JS_LAUNCH_TITLE.with(|cell| *cell.borrow_mut() = title.clone());
+    JS_LAUNCH_VM.with(|cell| *cell.borrow_mut() = Some(vm));
+    JS_LAUNCH_QUEUE.with(|cell| *cell.borrow_mut() = Some(queue));
+
+    let config = Config::new()
+        .with_resource_directory(PathBuf::from("."))
+        .with_window(
+            WindowBuilder::new()
+                .with_title(&title)
+                .with_resizable(true),
+        );
+
+    LaunchBuilder::desktop()
+        .with_cfg(config)
+        .launch(JsFormApp);
+}
+
+// ---------------------------------------------------------------------------
 // Public API: launch a bytecode VM form from side effects
 // ---------------------------------------------------------------------------
 
@@ -288,7 +428,25 @@ fn JsFormApp() -> Element {
             if let Some(cb) = callback {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut vm = vm_cell.borrow_mut();
-                    vm.invoke(&cb, &[])
+                    // Class methods expect Me as first arg — pass the form instance
+                    let me = vm.globals.get("__f").cloned()
+                        .or_else(|| vm.globals.get("me").cloned())
+                        .unwrap_or(vybe_bytecode::Value::Null);
+                    // Check arity to handle both class methods (need Me) and module subs (don't)
+                    let arity = match &cb {
+                        vybe_bytecode::Value::Object(obj) => {
+                            match &obj.borrow().kind {
+                                vybe_bytecode::value::ObjectKind::Function(f) => f.arity as usize,
+                                _ => 0,
+                            }
+                        }
+                        _ => 0,
+                    };
+                    if arity > 0 {
+                        vm.invoke(&cb, &[me])
+                    } else {
+                        vm.invoke(&cb, &[])
+                    }
                 }));
                 match result {
                     Ok(Ok(_)) => {}
@@ -449,8 +607,8 @@ fn JsFormApp() -> Element {
     }
 }
 
-/// Run a standalone .vb file as a console program.
-fn run_vb_file(path: &Path, extra_args: &[String]) {
+/// Run a standalone .vb file via the bytecode VM.
+fn run_vb_file(path: &Path, _extra_args: &[String]) {
     let code = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -467,32 +625,32 @@ fn run_vb_file(path: &Path, extra_args: &[String]) {
         }
     };
 
-    let mut interp = Interpreter::new();
-    interp.direct_console = true;
-    interp.set_command_line_args(extra_args.to_vec());
+    let mut vm = vybe_bytecode::VM::new();
+    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
+    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    vybe_host::setup_namespaces(&mut vm);
 
-    if let Err(e) = interp.run(&program) {
-        eprintln!("Runtime error: {:?}", e);
-        std::process::exit(1);
-    }
-
-    match interp.call_procedure(&vybe_parser_basic::ast::Identifier::new("main"), &[]) {
-        Ok(_) => {}
-        Err(vybe_runtime::RuntimeError::Exit(_)) => {}
-        Err(vybe_runtime::RuntimeError::Return(_)) => {}
-        Err(vybe_runtime::RuntimeError::Continue(_)) => {}
-        Err(vybe_runtime::RuntimeError::UndefinedFunction(_)) => {} // no Main sub found
+    let chunks = match vybe_compiler_vb::Compiler::new().compile(&program) {
+        Ok(c) => c,
         Err(e) => {
-            drain_console_effects(&mut interp);
-            eprintln!("Runtime error: {:?}", e);
+            eprintln!("Compile error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match vm.run(chunks) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Runtime error: {e}");
             std::process::exit(1);
         }
     }
-    drain_console_effects(&mut interp);
+
+    launch_vm_form(vm, queue);
 }
 
 /// Run a .vbp / .vbproj project.
-fn run_project(path: &Path, extra_args: &[String]) {
+fn run_project(path: &Path, _extra_args: &[String]) {
     let project = match vybe_project::load_project_auto(path) {
         Ok(p) => p,
         Err(e) => {
@@ -501,180 +659,88 @@ fn run_project(path: &Path, extra_args: &[String]) {
         }
     };
 
-    let has_forms = !project.forms.is_empty();
-    let mut starts_with_main = project.starts_with_main();
-
-    // Fallback: if startup_object is None, scan code for Sub Main
-    if !starts_with_main && !has_forms {
-        for cf in &project.code_files {
-            if cf.code.to_uppercase().contains("SUB MAIN") {
-                starts_with_main = true;
-                break;
-            }
+    // Compile ALL code — modules, classes, forms — into one program
+    let mut all_code = String::new();
+    for cf in &project.code_files {
+        all_code.push_str(&cf.code);
+        all_code.push('\n');
+    }
+    for fm in &project.forms {
+        if fm.is_vbnet() {
+            all_code.push_str(&fm.get_designer_code());
+            all_code.push('\n');
         }
+        all_code.push_str(&fm.get_user_code());
+        all_code.push('\n');
     }
 
-    if has_forms {
-        // Has forms → launch the GUI (handles Sub Main inside FormRunner too)
-        run_form_project(project);
-    } else if starts_with_main {
-        // Pure console project
-        run_console_project(&project, extra_args);
-    } else {
+    // Determine startup mode
+    let startup_form_name = match &project.startup_object {
+        vybe_project::StartupObject::Form(name) => Some(name.clone()),
+        vybe_project::StartupObject::None if !project.forms.is_empty() => {
+            Some(project.forms.first().unwrap().form.name.clone())
+        }
+        _ => None,
+    };
+
+    let startup_form = startup_form_name.as_ref().and_then(|_| {
+        project.get_startup_form().map(|fm| fm.form.clone())
+            .or_else(|| project.forms.first().map(|fm| fm.form.clone()))
+    });
+
+    let is_sub_main = project.starts_with_main()
+        || all_code.to_uppercase().contains("SUB MAIN");
+
+    // For form projects, we compile the class then instantiate it with
+    // `New FormName()` which calls InitializeComponent and wires events.
+
+    if startup_form.is_none() && !is_sub_main {
         eprintln!("Error: project has no forms and no Sub Main entry point");
         std::process::exit(1);
     }
-}
 
-/// Run a console-only project (Sub Main, no forms).
-fn run_console_project(project: &Project, extra_args: &[String]) {
-    let mut interp = Interpreter::new();
-    interp.direct_console = true;
-    interp.set_command_line_args(extra_args.to_vec());
+    if all_code.trim().is_empty() && startup_form.is_none() {
+        eprintln!("Error: no code to run");
+        std::process::exit(1);
+    }
 
-    let entries = collect_resource_entries(project);
-    interp.register_resource_entries(entries);
+    // For form projects, instantiate the class and run the app.
+    // InitializeComponent creates controls (emits AddControl side effects),
+    // sets properties, and wires Handles events — all via the VM.
+    if let Some(ref form) = startup_form {
+        all_code.push_str(&format!(
+            "\nDim __f As New {}()\nApplication.Run(__f)\n",
+            form.name
+        ));
+    }
 
-    for code_file in &project.code_files {
-        match parse_program(&code_file.code) {
+    // Set up VM + compile ALL code (class defs + entry point together)
+    let mut vm = vybe_bytecode::VM::new();
+    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
+    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    vybe_host::setup_namespaces(&mut vm);
+
+    if !all_code.trim().is_empty() {
+        match parse_program(&all_code) {
             Ok(program) => {
-                if let Err(e) = interp.load_code_file(&program) {
-                    eprintln!("Runtime error loading '{}': {:?}", code_file.name, e);
+                match vybe_compiler_vb::Compiler::new().compile(&program) {
+                    Ok(chunks) => {
+                        if let Err(e) = vm.run(chunks) {
+                            let msg = format!("{}", e);
+                            if !msg.starts_with("__") {
+                                eprintln!("Runtime error: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("Compile error: {e}"),
                 }
             }
-            Err(e) => {
-                eprintln!("Parse error in '{}': {:?}", code_file.name, e);
-            }
+            Err(e) => eprintln!("Parse error: {:?}", e),
         }
     }
 
-    match interp.call_procedure(&vybe_parser_basic::ast::Identifier::new("main"), &[]) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("Sub Main error: {:?}", e);
-            std::process::exit(1);
-        }
-    }
-
-    drain_console_effects(&mut interp);
+    // Launch from side effects — works for both designer and programmatic forms
+    launch_vm_form(vm, queue);
 }
 
-/// Launch a Dioxus desktop window showing the form runtime.
-/// Uses the shared FormRunner – the exact same renderer the editor uses.
-fn run_form_project(project: Project) {
-    let title = project
-        .get_startup_form()
-        .map(|f| {
-            if f.form.text.is_empty() {
-                f.form.name.clone()
-            } else {
-                f.form.text.clone()
-            }
-        })
-        .unwrap_or_else(|| project.name.clone());
 
-    LAUNCH_PROJECT.with(|cell| *cell.borrow_mut() = Some(project));
-    LAUNCH_TITLE.with(|cell| *cell.borrow_mut() = title.clone());
-
-    let config = Config::new()
-        .with_resource_directory(PathBuf::from("."))
-        .with_window(
-            WindowBuilder::new()
-                .with_title(&title)
-                .with_resizable(true),
-        );
-
-    LaunchBuilder::desktop()
-        .with_cfg(config)
-        .launch(ShellApp);
-}
-
-/// Top-level Dioxus component for the standalone shell.
-#[component]
-fn ShellApp() -> Element {
-    let project = LAUNCH_PROJECT
-        .with(|cell| cell.borrow().clone())
-        .expect("LAUNCH_PROJECT must be set before launching");
-
-    use_context_provider(|| RuntimeProject {
-        project: Signal::new(Some(project)),
-        finished: Signal::new(false),
-    });
-
-    rsx! { FormRunner {} }
-}
-
-/// Drain console side-effects from the interpreter and print them to stdout.
-fn drain_console_effects(interp: &mut Interpreter) {
-    while let Some(effect) = interp.side_effects.pop_front() {
-        match effect {
-            RuntimeSideEffect::ConsoleOutput(msg) => {
-                print!("{msg}");
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-            }
-            RuntimeSideEffect::InputBox { .. } => {}
-    
-            RuntimeSideEffect::ConsoleClear => {}
-            RuntimeSideEffect::MsgBox(msg) => println!("[MsgBox] {msg}"),
-            RuntimeSideEffect::PropertyChange { .. } => {}
-            RuntimeSideEffect::DataSourceChanged { .. } => {}
-            RuntimeSideEffect::BindingPositionChanged { .. } => {}
-            RuntimeSideEffect::FormClose { .. } => {}
-            RuntimeSideEffect::FormShowDialog { .. } => {}
-            RuntimeSideEffect::AddControl { .. } => {}
-            RuntimeSideEffect::RunApplication { .. } => {}
-            RuntimeSideEffect::Repaint { .. } => {}
-        }
-    }
-}
-
-/// Collect all resource entries from the project (resource_files + form-level resources)
-/// into a flat Vec of ResourceEntry for the runtime.
-pub fn collect_resource_entries(project: &Project) -> Vec<ResourceEntry> {
-    let mut entries = Vec::new();
-
-    // Project-level resource files
-    for mgr in &project.resource_files {
-        for item in &mgr.resources {
-            let rt = format!("{:?}", item.resource_type).to_lowercase();
-            entries.push(ResourceEntry {
-                name: item.name.clone(),
-                value: item.value.clone(),
-                resource_type: rt,
-                file_path: item.file_name.clone(),
-            });
-        }
-    }
-
-    // Legacy: also include old single resources field (backward compat)
-    for item in &project.resources.resources {
-        let rt = format!("{:?}", item.resource_type).to_lowercase();
-        // Avoid duplicates (if already in resource_files)
-        if !entries.iter().any(|e| e.name == item.name) {
-            entries.push(ResourceEntry {
-                name: item.name.clone(),
-                value: item.value.clone(),
-                resource_type: rt,
-                file_path: item.file_name.clone(),
-            });
-        }
-    }
-
-    // Form-level resources
-    for form_mod in &project.forms {
-        for item in &form_mod.resources.resources {
-            let rt = format!("{:?}", item.resource_type).to_lowercase();
-            // Prefix form resources with form name to avoid collisions
-            let key = format!("{}_{}", form_mod.form.name, item.name);
-            entries.push(ResourceEntry {
-                name: key,
-                value: item.value.clone(),
-                resource_type: rt,
-                file_path: item.file_name.clone(),
-            });
-        }
-    }
-
-    entries
-}

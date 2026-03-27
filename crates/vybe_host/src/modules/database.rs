@@ -414,3 +414,81 @@ fn substitute_params(sql: &str, params: &[String]) -> String {
     }
     result
 }
+
+// ============================================================
+// Design-time utilities (used by the IDE properties panel)
+// ============================================================
+
+/// Test a connection string and return a list of table names.
+pub fn test_connection_and_list_tables(conn_str: &str) -> Result<Vec<String>, String> {
+    sqlx::any::install_default_drivers();
+    let url = normalize_conn_str(conn_str);
+    let pool = block_on(sqlx::AnyPool::connect(&url))
+        .map_err(|e| format!("Connection failed: {}", e))?;
+    let rows: Vec<sqlx::any::AnyRow> = block_on(
+        sqlx::query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .fetch_all(&pool)
+    ).map_err(|e| format!("Query failed: {}", e))?;
+    let tables: Vec<String> = rows.iter()
+        .filter_map(|r| r.try_get::<String, _>(0).ok())
+        .filter(|n| !n.starts_with("sqlite_") && !n.starts_with("_sqlx"))
+        .collect();
+    Ok(tables)
+}
+
+/// Fetch column names for a SELECT query (design-time schema inspection).
+pub fn fetch_columns_for_query(conn_str: &str, select_cmd: &str) -> Result<Vec<String>, String> {
+    if conn_str.is_empty() || select_cmd.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::any::install_default_drivers();
+    let url = normalize_conn_str(conn_str);
+    let pool = block_on(sqlx::AnyPool::connect(&url))
+        .map_err(|e| format!("Connection failed: {}", e))?;
+    let sql = format!("{} LIMIT 0", select_cmd.trim().trim_end_matches(';'));
+    let row = block_on(sqlx::query(&sql).fetch_all(&pool));
+    match row {
+        Ok(rows) => {
+            if rows.is_empty() {
+                // Try to get columns from an empty result
+                let row2 = block_on(sqlx::query(&sql).fetch_optional(&pool));
+                if let Ok(Some(r)) = row2 {
+                    Ok(r.columns().iter().map(|c| c.name().to_string()).collect())
+                } else {
+                    // Fallback: try without LIMIT
+                    let row3 = block_on(sqlx::query(select_cmd).fetch_optional(&pool));
+                    match row3 {
+                        Ok(Some(r)) => Ok(r.columns().iter().map(|c| c.name().to_string()).collect()),
+                        _ => Ok(Vec::new()),
+                    }
+                }
+            } else {
+                Ok(rows[0].columns().iter().map(|c| c.name().to_string()).collect())
+            }
+        }
+        Err(e) => {
+            let el = e.to_string().to_lowercase();
+            if el.contains("no such table") || el.contains("does not exist") {
+                Ok(Vec::new())
+            } else {
+                Err(format!("{}", e))
+            }
+        }
+    }
+}
+
+fn normalize_conn_str(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.starts_with("data source=") || lower.starts_with("datasource=") {
+        let path = raw.split('=').nth(1).unwrap_or("").trim().trim_matches('"');
+        if path == ":memory:" {
+            "sqlite::memory:".to_string()
+        } else {
+            format!("sqlite:{}?mode=rwc", path)
+        }
+    } else if raw.starts_with("sqlite:") || raw.starts_with("postgres:") || raw.starts_with("mysql:") {
+        raw.to_string()
+    } else {
+        format!("sqlite:{}?mode=rwc", raw)
+    }
+}

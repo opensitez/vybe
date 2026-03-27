@@ -36,7 +36,7 @@ fn main() {
     let file_path = match file_arg {
         Some(f) => f,
         None => {
-            eprintln!("Usage: vybec [--dump] [--sandbox] <file.vb|file.js>");
+            eprintln!("Usage: vybec [--dump] [--sandbox] <file.vb|file.js|file.vbp|file.vbproj>");
             std::process::exit(1);
         }
     };
@@ -57,13 +57,14 @@ fn main() {
         "js" => run_js(path, dump, emit_wasm, sandbox),
         "wasm" => run_wasm(path),
         "vybe" => run_project(path, dump),
+        "vbp" | "vbproj" => vybe_cli::runner::run(path, &[]),
         _ => {
             // Check if directory has a .vybe project file
             let vybe_path = path.join("project.vybe");
             if vybe_path.exists() {
                 run_project(&vybe_path, dump);
             } else {
-                eprintln!("Error: unsupported file type '.{}'. Expected .vb, .js, or .vybe", ext);
+                eprintln!("Error: unsupported file type '.{}'. Expected .vb, .js, .vbp, .vbproj, or .vybe", ext);
                 std::process::exit(1);
             }
         }
@@ -230,7 +231,7 @@ fn run_project(path: &Path, dump: bool) {
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_ui::launch_vm_form(vm, queue);
+    vybe_cli::runner::launch_vm_form(vm, queue);
 }
 
 fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
@@ -271,7 +272,7 @@ fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_ui::launch_vm_form(vm, queue);
+    vybe_cli::runner::launch_vm_form(vm, queue);
 }
 
 fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
@@ -313,7 +314,7 @@ fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_ui::launch_vm_form(vm, queue);
+    vybe_cli::runner::launch_vm_form(vm, queue);
 }
 
 fn run_wasm(path: &Path) {
@@ -340,7 +341,7 @@ fn run_wasm(path: &Path) {
         Ok(_) => {}
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
-    vybe_ui::launch_vm_form(vm, queue);
+    vybe_cli::runner::launch_vm_form(vm, queue);
 }
 
 fn read_file(path: &Path) -> String {

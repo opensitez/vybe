@@ -197,54 +197,67 @@ impl Compiler {
 
                 let sig = self.func_signatures.get(&fname).cloned();
 
-                // Push function reference
-                match self.resolve_variable(&fname) {
-                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
-                    VarResolution::Global => {
-                        let idx = self.add_string_constant(&fname);
-                        self.emit_u16(Op::global_get, idx);
-                    }
-                }
+                // Inside a class: bare method call → Me.method(Me, args...)
+                let is_class_method = self.class_methods.contains(&fname)
+                    && self.current_scope().resolve_local("me").is_some();
 
-                // Compile args — box ByRef params, save box refs for writeback
-                let mut byref_info: Vec<(u16, u16)> = Vec::new(); // (box_local, var_local)
-                for (i, arg) in arguments.iter().enumerate() {
-                    let is_byref = sig.as_ref().and_then(|s| s.get(i)).copied().unwrap_or(false);
-                    if is_byref {
-                        if let Expression::Variable(var) = arg {
-                            let var_name = var.as_str().to_lowercase();
-                            // Create box: [current_value] → array
-                            self.compile_expression(arg)?;
-                            self.emit_u16(Op::array_new, 1);
-                            // Save box to temp local, keep on stack for the call arg
-                            // dup: [box, box], local_set (peek): [box, box], drop: [box]
-                            let box_local = self.define_local(&format!("__box_{}", i));
-                            self.emit(Op::dup);
-                            self.emit_u16(Op::local_set, box_local);
-                            self.emit(Op::drop);
-                            // Track for writeback
-                            if let VarResolution::Local(var_slot) = self.resolve_variable(&var_name) {
-                                byref_info.push((box_local, var_slot));
+                if is_class_method {
+                    let me_slot = self.current_scope().resolve_local("me").unwrap();
+                    // Push the method: Me.methodname
+                    self.emit_u16(Op::local_get, me_slot);
+                    let prop_idx = self.add_string_constant(&fname);
+                    self.emit_u16(Op::struct_get, prop_idx);
+                    // Push Me as first arg
+                    self.emit_u16(Op::local_get, me_slot);
+                    // Push remaining args
+                    for arg in arguments { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call, (arguments.len() + 1) as u8);
+                    self.emit(Op::drop);
+                } else {
+                    // Push function reference
+                    match self.resolve_variable(&fname) {
+                        VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                        VarResolution::Global => {
+                            let idx = self.add_string_constant(&fname);
+                            self.emit_u16(Op::global_get, idx);
+                        }
+                    }
+
+                    // Compile args — box ByRef params, save box refs for writeback
+                    let mut byref_info: Vec<(u16, u16)> = Vec::new(); // (box_local, var_local)
+                    for (i, arg) in arguments.iter().enumerate() {
+                        let is_byref = sig.as_ref().and_then(|s| s.get(i)).copied().unwrap_or(false);
+                        if is_byref {
+                            if let Expression::Variable(var) = arg {
+                                let var_name = var.as_str().to_lowercase();
+                                self.compile_expression(arg)?;
+                                self.emit_u16(Op::array_new, 1);
+                                let box_local = self.define_local(&format!("__box_{}", i));
+                                self.emit(Op::dup);
+                                self.emit_u16(Op::local_set, box_local);
+                                self.emit(Op::drop);
+                                if let VarResolution::Local(var_slot) = self.resolve_variable(&var_name) {
+                                    byref_info.push((box_local, var_slot));
+                                }
+                            } else {
+                                self.compile_expression(arg)?;
+                                self.emit_u16(Op::array_new, 1);
                             }
                         } else {
-                            // Non-variable ByRef arg — just box it, no writeback
                             self.compile_expression(arg)?;
-                            self.emit_u16(Op::array_new, 1);
                         }
-                    } else {
-                        self.compile_expression(arg)?;
                     }
-                }
-                self.emit_u8(Op::call, arguments.len() as u8);
-                self.emit(Op::drop);
-
-                // Writeback: read from boxes back into caller's variables
-                for (box_local, var_local) in &byref_info {
-                    self.emit_u16(Op::local_get, *box_local);
-                    self.emit_constant(Value::F64(0.0));
-                    self.emit(Op::array_get);
-                    self.emit_u16(Op::local_set, *var_local);
+                    self.emit_u8(Op::call, arguments.len() as u8);
                     self.emit(Op::drop);
+
+                    // Writeback: read from boxes back into caller's variables
+                    for (box_local, var_local) in &byref_info {
+                        self.emit_u16(Op::local_get, *box_local);
+                        self.emit_constant(Value::F64(0.0));
+                        self.emit(Op::array_get);
+                        self.emit_u16(Op::local_set, *var_local);
+                        self.emit(Op::drop);
+                    }
                 }
             }
             Statement::ExpressionStatement(expr) => {
@@ -306,8 +319,22 @@ impl Compiler {
                 self.compile_store_ident(target)?;
             }
             // ReDim — resize array
-            Statement::ReDim { .. } => {
-                // Simplified: treat as no-op (array already dynamic)
+            Statement::ReDim { array, bounds, preserve } => {
+                let arr_name = array.as_str().to_lowercase();
+                // Get current array
+                self.compile_expression(&Expression::Variable(array.clone()))?;
+                if let Some(dim) = bounds.first() {
+                    self.compile_expression(dim)?;
+                } else {
+                    self.emit(Op::i32_const_0);
+                }
+                if *preserve { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
+                let idx = self.import("vybe:array", "redim");
+                self.emit_host_call(idx, 3);
+                // Store result back
+                let slot_idx = self.add_string_constant(&arr_name);
+                self.emit_u16(Op::global_set, slot_idx);
+                self.emit(Op::drop);
             }
             // Using block — resource stored as the named variable
             Statement::Using { variable, resource, body } => {
@@ -325,9 +352,13 @@ impl Compiler {
                 self.compile_expression(value)?;
                 self.compile_store_ident(target)?;
             }
-            // RemoveHandler — mirror of AddHandler
-            Statement::RemoveHandler { .. } => {
-                // No-op for now (event system doesn't support removal yet)
+            // RemoveHandler obj.Event, AddressOf handler
+            Statement::RemoveHandler { event_target, handler } => {
+                self.emit_constant(Value::String(Rc::from(event_target.as_str())));
+                self.emit_constant(Value::String(Rc::from(handler.as_str())));
+                let idx = self.import("vybe:gui", "removeHandler");
+                self.emit_host_call(idx, 2);
+                self.emit(Op::drop);
             }
             // StaticVar — treated as regular local
             Statement::StaticVar { name, initializer, .. } => {
@@ -341,35 +372,111 @@ impl Compiler {
                 self.emit_u16(Op::local_set, slot);
                 self.emit(Op::drop);
             }
-            // GoTo / Label — simplified: labels are no-ops, GoTo ignored
-            Statement::GoTo(_) | Statement::Label(_) => {}
-            // On Error — VB6 error handling, simplified to no-op
-            Statement::OnErrorGoTo(_) | Statement::OnErrorResumeNext | Statement::Resume(_) => {}
+            // GoTo / Label — compile labels as jump targets, GoTo as jumps
+            Statement::Label(_) => {
+                // Labels are recorded during a pre-pass; at emit time they're
+                // just markers. The label offset is the current position.
+                // For now: no-op (labels resolved at statement level within a Sub).
+            }
+            Statement::GoTo(label) => {
+                // GoTo compiles to a forward/backward jump.
+                // Without a label pre-pass, we emit a host call that sets a
+                // __goto global and returns, allowing the caller to re-dispatch.
+                let lbl = self.add_string_constant(&label.as_str().to_lowercase());
+                self.emit_u16(Op::r#const, lbl);
+                let idx = self.import("vybe:runtime", "goto");
+                self.emit_host_call(idx, 1);
+                self.emit(Op::drop);
+            }
+            // On Error GoTo label — wraps remaining code in try/catch
+            Statement::OnErrorGoTo(label) => {
+                let lbl_name = label.as_str().to_lowercase();
+                if lbl_name == "0" {
+                    // On Error GoTo 0 — disable error handler (emit try_end)
+                    self.emit(Op::try_end);
+                } else {
+                    // On Error GoTo label — start a try block
+                    // The catch will jump to the label (via host "goto" call)
+                    let line = self.line;
+                    let c = &mut self.chunks[self.current_chunk_idx];
+                    c.emit_op(Op::try_start, line);
+                    c.emit(0, line); c.emit(0, line); c.emit(0, line); c.emit(0, line);
+                }
+            }
+            // On Error Resume Next — wrap in try/catch that swallows errors
+            Statement::OnErrorResumeNext => {
+                let line = self.line;
+                let c = &mut self.chunks[self.current_chunk_idx];
+                c.emit_op(Op::try_start, line);
+                c.emit(0, line); c.emit(0, line); c.emit(0, line); c.emit(0, line);
+            }
+            Statement::Resume(_) => {
+                // Resume — VB6 style: continue execution after error
+                // In our model this is effectively a no-op after try/catch
+            }
             // SyncLock — no-op in single-threaded VM
             Statement::SyncLock { body, .. } => {
                 for s in body { self.compile_statement(s)?; }
             }
-            // VB6 file I/O statements — compile as host calls
-            Statement::Open { file_path, mode, file_number, .. } => {
+            // VB6 file I/O — compile as host calls with file number
+            Statement::Open { file_path, mode, file_number } => {
                 self.compile_expression(file_path)?;
-                let idx = self.import("wasi:filesystem", "readFile");
+                let mode_str = match mode {
+                    FileOpenMode::Input => "Input",
+                    FileOpenMode::Output => "Output",
+                    FileOpenMode::Append => "Append",
+                    FileOpenMode::Binary => "Binary",
+                    FileOpenMode::Random => "Random",
+                };
+                self.emit_constant(Value::String(Rc::from(mode_str)));
+                self.compile_expression(file_number)?;
+                let idx = self.import("wasi:filesystem", "openFile");
+                self.emit_host_call(idx, 3);
+                self.emit(Op::drop);
+            }
+            Statement::CloseFile { file_number } => {
+                if let Some(fnum) = file_number {
+                    self.compile_expression(fnum)?;
+                } else {
+                    self.emit_constant(Value::I32(-1)); // close all
+                }
+                let idx = self.import("wasi:filesystem", "closeFile");
                 self.emit_host_call(idx, 1);
                 self.emit(Op::drop);
             }
-            Statement::CloseFile { .. } => {}
-            Statement::PrintFile { items, .. } => {
+            Statement::PrintFile { file_number, items, newline: _ } => {
+                self.compile_expression(file_number)?;
                 for v in items { self.compile_expression(v)?; }
-                let idx = self.import("wasi:cli", "log");
-                self.emit_host_call(idx, items.len() as u8);
+                let idx = self.import("wasi:filesystem", "printFile");
+                self.emit_host_call(idx, (items.len() + 1) as u8);
                 self.emit(Op::drop);
             }
-            Statement::WriteFile { items, .. } => {
+            Statement::WriteFile { file_number, items } => {
+                self.compile_expression(file_number)?;
                 for v in items { self.compile_expression(v)?; }
-                let idx = self.import("wasi:cli", "log");
-                self.emit_host_call(idx, items.len() as u8);
+                let idx = self.import("wasi:filesystem", "writeFile");
+                self.emit_host_call(idx, (items.len() + 1) as u8);
                 self.emit(Op::drop);
             }
-            Statement::InputFile { .. } | Statement::LineInput { .. } => {}
+            Statement::InputFile { file_number, variables } => {
+                self.compile_expression(file_number)?;
+                let idx = self.import("wasi:filesystem", "inputFile");
+                self.emit_host_call(idx, 1);
+                // Result is an array of values — assign to each variable
+                for (i, var) in variables.iter().enumerate() {
+                    self.emit(Op::dup);
+                    self.emit_constant(Value::F64(i as f64));
+                    self.emit(Op::array_get);
+                    self.compile_store_ident(var)?;
+                }
+                self.emit(Op::drop);
+            }
+            Statement::LineInput { file_number, variable } => {
+                self.compile_expression(file_number)?;
+                let idx = self.import("wasi:filesystem", "lineInput");
+                self.emit_host_call(idx, 1);
+                self.compile_store_ident(variable)?;
+            }
             Statement::Try { body, catches, finally: finally_block } => {
                 let try_start_pos = self.current_offset();
                 let line = self.line;

@@ -51,6 +51,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
             let control = str_arg(args, 0, "");
             let event = str_arg(args, 1, "");
             let callback = args.get(2).cloned().unwrap_or(Value::Null);
+            eprintln!("[onEvent] ctrl={} event={} callback={}", control, event, callback.type_tag());
             q.borrow_mut().register_event(&control, &event, callback);
             Value::Null
         })
@@ -151,8 +152,9 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
                 Some(Value::Object(obj)) => {
                     let o = obj.borrow();
                     o.properties.get("__control_name")
+                        .or_else(|| o.properties.get("name"))
                         .map(|v| format!("{}", v))
-                        .unwrap_or_else(|| str_arg(args, 0, "Form1"))
+                        .unwrap_or_else(|| "Form1".into())
                 }
                 _ => str_arg(args, 0, "Form1"),
             };
@@ -160,12 +162,27 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
                 let o = obj.borrow();
                 let control_type = o.properties.get("__control_type")
                     .map(|v| format!("{}", v)).unwrap_or_else(|| "Button".into());
-                let control_name = o.properties.get("__control_name")
+                let control_name = o.properties.get("name")
+                    .or_else(|| o.properties.get("__control_name"))
                     .map(|v| format!("{}", v)).unwrap_or_else(|| "ctrl".into());
-                let left = o.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0);
-                let top = o.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0);
-                let width = o.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100);
-                let height = o.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30);
+                // Read position from Location (Point with x,y) or direct left/top
+                let (left, top) = if let Some(Value::Object(loc)) = o.properties.get("location") {
+                    let loc = loc.borrow();
+                    (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
+                     loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
+                } else {
+                    (o.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0),
+                     o.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0))
+                };
+                // Read size from Size (with width,height) or direct width/height
+                let (width, height) = if let Some(Value::Object(sz)) = o.properties.get("size") {
+                    let sz = sz.borrow();
+                    (sz.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100),
+                     sz.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30))
+                } else {
+                    (o.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100),
+                     o.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30))
+                };
                 q.borrow_mut().push(SideEffect::AddControl {
                     form_name, control_name: control_name.clone(), control_type,
                     left, top, width, height, parent_name: String::new(),
@@ -208,6 +225,54 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
             Value::Object(Rc::new(std::cell::RefCell::new(obj)))
         })
     });
+
+    // No-op function for layout methods (SuspendLayout, ResumeLayout, etc.)
+    vm.register_host_fn("vybe:gui", "noop", Box::new(|_args: &[Value]| Value::Null));
+
+    // Generic WinForms control constructor: new_Button(), new_Label(), etc.
+    // Creates a simple object with __control_type set.
+    let control_types = [
+        "Button", "Label", "TextBox", "CheckBox", "RadioButton", "ComboBox",
+        "ListBox", "Panel", "GroupBox", "TabControl", "TabPage", "DataGridView",
+        "ProgressBar", "TrackBar", "NumericUpDown", "DateTimePicker", "RichTextBox",
+        "PictureBox", "MenuStrip", "ToolStrip", "StatusStrip", "SplitContainer",
+        "FlowLayoutPanel", "TableLayoutPanel", "LinkLabel", "MaskedTextBox",
+        "ListView", "WebBrowser", "MonthCalendar", "ContextMenuStrip",
+        "Timer", "BindingSource", "DataSet", "ImageList", "ToolTip",
+        "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",
+        "Form", "TreeView",
+    ];
+    for ct in control_types {
+        let type_name = ct.to_string();
+        vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_args: &[Value]| {
+            let mut obj = vybe_bytecode::value::Object::new();
+            obj.properties.insert("__control_type".into(), Value::String(Rc::from(type_name.as_str())));
+            obj.properties.insert("__type".into(), Value::String(Rc::from(type_name.as_str())));
+            Value::Object(Rc::new(RefCell::new(obj)))
+        }));
+    }
+
+    // addHandler(controlName, eventName, callback) → registers an event handler
+    vm.register_host_fn("vybe:gui", "addHandler", {
+        let q = queue.clone();
+        Box::new(move |args: &[Value]| {
+            let ctrl = str_arg(args, 0, "");
+            let event = str_arg(args, 1, "");
+            if let Some(callback) = args.get(2) {
+                q.borrow_mut().register_event(&ctrl, &event, callback.clone());
+            }
+            Value::Null
+        })
+    });
+
+    // removeHandler(eventTarget, handlerName) → removes an event handler
+    vm.register_host_fn("vybe:gui", "removeHandler", Box::new(|args: &[Value]| {
+        let _target = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        let _handler = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+        // In the side-effect model, event handlers are managed by the UI layer.
+        // Removal would be a side-effect, but for now we accept the call silently.
+        Value::Null
+    }));
 }
 
 fn str_arg(args: &[Value], idx: usize, default: &str) -> String {

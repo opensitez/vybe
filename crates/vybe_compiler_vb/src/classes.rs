@@ -59,10 +59,20 @@ impl Compiler {
 
         let this_slot = self.current_scope().resolve_local("me").unwrap();
 
-        // Track class fields so unresolved names inside methods resolve to Me.field
+        // Track class fields and methods so unresolved names inside methods resolve to Me.field/Me.method
         let saved_fields = std::mem::take(&mut self.class_fields);
+        let saved_methods = std::mem::take(&mut self.class_methods);
         for field in &class.fields {
             self.class_fields.insert(field.name.as_str().to_lowercase());
+        }
+        for method in &class.methods {
+            let method_name = match method {
+                MethodDecl::Sub(s) => s.name.as_str().to_lowercase(),
+                MethodDecl::Function(f) => f.name.as_str().to_lowercase(),
+            };
+            if method_name != "new" {
+                self.class_methods.insert(method_name);
+            }
         }
 
         // If Inherits, always call parent constructor to attach parent methods/fields.
@@ -73,7 +83,10 @@ impl Compiler {
                 VBType::Custom(name) => name.to_lowercase(),
                 _ => String::new(),
             };
-            if !parent_name.is_empty() {
+            // Skip WinForms/framework base types — they don't exist as user classes
+            let is_framework_type = parent_name.starts_with("system.")
+                || parent_name.contains("windows.forms");
+            if !parent_name.is_empty() && !is_framework_type {
                 // Store __super on this
                 self.emit_u16(Op::local_get, this_slot);
                 let parent_idx = self.add_string_constant(&parent_name);
@@ -106,13 +119,7 @@ impl Compiler {
             self.emit(Op::drop);
         }
 
-        // Compile constructor body (may contain MyBase.New() calls)
-        for stmt in &ctor_body {
-            self.compile_statement(stmt)?;
-        }
-
-        // Before attaching child methods, save parent methods as __base_name
-        // so MyBase.Method() can access them without infinite recursion
+        // Save parent methods as __base_name before attaching child overrides
         if class.inherits.is_some() {
             for method in &instance_methods {
                 let method_name = match method {
@@ -120,18 +127,18 @@ impl Compiler {
                     MethodDecl::Function(func) => func.name.as_str().to_lowercase(),
                 };
                 let base_name = format!("__base_{}", method_name);
-                // this.__base_method = this.method
-                self.emit_u16(Op::local_get, this_slot); // obj for struct_set
-                self.emit_u16(Op::local_get, this_slot); // obj for struct_get
+                self.emit_u16(Op::local_get, this_slot);
+                self.emit_u16(Op::local_get, this_slot);
                 let prop_idx = self.add_string_constant(&method_name);
-                self.emit_u16(Op::struct_get, prop_idx); // value = parent's method (or null)
+                self.emit_u16(Op::struct_get, prop_idx);
                 let base_idx = self.add_string_constant(&base_name);
-                self.emit_u16(Op::struct_set, base_idx); // this.__base_method = value
+                self.emit_u16(Op::struct_set, base_idx);
                 self.emit(Op::drop);
             }
         }
 
-        // Attach instance methods (overwrites parent's if same name = override)
+        // Attach instance methods BEFORE constructor body — constructor may call
+        // InitializeComponent() or other methods that need to be on Me already
         for method in &instance_methods {
             let method_name = match method {
                 MethodDecl::Sub(sub) => sub.name.as_str().to_lowercase(),
@@ -142,6 +149,47 @@ impl Compiler {
             let prop_idx = self.add_string_constant(&method_name);
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
+        }
+
+        // Compile constructor body (may call InitializeComponent, MyBase.New, etc.)
+        for stmt in &ctor_body {
+            self.compile_statement(stmt)?;
+        }
+
+        // Wire Handles clauses → emit AddHandler calls
+        // e.g. "Sub btn1_Click(...) Handles btn1.Click" → AddHandler(btn1.Click, btn1_click)
+        for method in &instance_methods {
+            let (method_name, handles) = match method {
+                MethodDecl::Sub(sub) => (sub.name.as_str().to_lowercase(), &sub.handles),
+                MethodDecl::Function(_) => continue,
+            };
+            if let Some(handle_list) = handles {
+                for handle in handle_list {
+                    // handle is like "btn1.Click" or "Me.Load"
+                    let parts: Vec<&str> = handle.splitn(2, '.').collect();
+                    if parts.len() == 2 {
+                        let ctrl = parts[0];
+                        let event = parts[1];
+                        // Emit: AddHandler(ctrl_name, event_name, method_ref)
+                        // Push control name + event name as strings
+                        let ctrl_str = if ctrl.eq_ignore_ascii_case("Me") {
+                            name.to_lowercase()
+                        } else {
+                            ctrl.to_lowercase()
+                        };
+                        self.emit_constant(Value::String(Rc::from(ctrl_str.as_str())));
+                        self.emit_constant(Value::String(Rc::from(event)));
+                        // Push the method as a closure reference
+                        self.emit_u16(Op::local_get, this_slot);
+                        let method_idx = self.add_string_constant(&method_name);
+                        self.emit_u16(Op::struct_get, method_idx);
+                        // Call host onEvent(ctrl, event, handler) — same as AddHandler
+                        let import_idx = self.import("vybe:gui", "onEvent");
+                        self.emit_host_call(import_idx, 3);
+                        self.emit(Op::drop);
+                    }
+                }
+            }
         }
 
         // Attach property getters/setters
@@ -177,7 +225,8 @@ impl Compiler {
         let upvalues = self.current_scope().upvalues.clone();
         self.scopes.pop();
         self.current_chunk_idx = saved;
-        self.class_fields = saved_fields; // restore
+        self.class_fields = saved_fields;
+        self.class_methods = saved_methods;
         self.emit_ref_func(idx, &upvalues);
 
         // --- Attach Shared members to the constructor function itself ---

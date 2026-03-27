@@ -94,11 +94,6 @@ pub fn register(vm: &mut VM) {
         Value::F64(s.trim().parse::<f64>().unwrap_or(0.0))
     }));
 
-    // isNothing(value) → true if null
-    vm.register_host_fn("vybe:convert", "isNothing", Box::new(|args: &[Value]| {
-        Value::Bool(matches!(args.first().unwrap_or(&Value::Null), Value::Null))
-    }));
-
     // isNumeric(value) → true if can be parsed as number
     vm.register_host_fn("vybe:convert", "isNumeric", Box::new(|args: &[Value]| {
         match args.first().unwrap_or(&Value::Null) {
@@ -122,19 +117,6 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    // cbool(value) → to boolean
-    vm.register_host_fn("vybe:convert", "cbool", Box::new(|args: &[Value]| {
-        match args.first().unwrap_or(&Value::Null) {
-            Value::Null | Value::Undefined => Value::Bool(false),
-            Value::Bool(b) => Value::Bool(*b),
-            Value::F64(n) => Value::Bool(*n != 0.0),
-            Value::I32(n) => Value::Bool(*n != 0),
-            Value::I64(n) => Value::Bool(*n != 0),
-            Value::String(s) => Value::Bool(!s.is_empty() && s.to_lowercase() != "false"),
-            Value::Object(_) | Value::V128(_) => Value::Bool(true),
-        }
-    }));
-
     // clng(value) → Long (same as cint for our VM)
     vm.register_host_fn("vybe:convert", "clng", Box::new(|args: &[Value]| {
         Value::F64(args.first().map(|v| v.as_f64().floor()).unwrap_or(0.0))
@@ -143,12 +125,6 @@ pub fn register(vm: &mut VM) {
     // csng(value) → Single (just convert to float)
     vm.register_host_fn("vybe:convert", "csng", Box::new(|args: &[Value]| {
         Value::F64(args.first().map(|v| v.as_f64()).unwrap_or(0.0))
-    }));
-
-    // cbyte(value) → Byte (0-255)
-    vm.register_host_fn("vybe:convert", "cbyte", Box::new(|args: &[Value]| {
-        let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
-        Value::F64((n as u8) as f64)
     }));
 
     // cchar(value) → first character
@@ -179,22 +155,6 @@ pub fn register(vm: &mut VM) {
         Value::String(Rc::from(s.as_str()))
     }));
 
-    // typename(value) → type name string
-    vm.register_host_fn("vybe:convert", "typeName", Box::new(|args: &[Value]| {
-        let name = match args.first().unwrap_or(&Value::Null) {
-            Value::Null => "Nothing",
-            Value::Undefined => "Undefined",
-            Value::Bool(_) => "Boolean",
-            Value::I32(_) => "Integer",
-            Value::I64(_) => "Long",
-            Value::F64(_) => "Double",
-            Value::String(_) => "String",
-            Value::Object(_) => "Object",
-            Value::V128(_) => "V128",
-        };
-        Value::String(Rc::from(name))
-    }));
-
     // vartype(value) → VB VarType constant
     vm.register_host_fn("vybe:convert", "varType", Box::new(|args: &[Value]| {
         let vt = match args.first().unwrap_or(&Value::Null) {
@@ -211,11 +171,6 @@ pub fn register(vm: &mut VM) {
 
     // isdate(value) → always false for now (we don't have a Date type in the VM)
     vm.register_host_fn("vybe:convert", "isDate", Box::new(|_args: &[Value]| Value::Bool(false)));
-
-    // isnull(value) → same as isNothing
-    vm.register_host_fn("vybe:convert", "isNull", Box::new(|args: &[Value]| {
-        Value::Bool(matches!(args.first().unwrap_or(&Value::Null), Value::Null))
-    }));
 
     // isempty(value) → null or empty string
     vm.register_host_fn("vybe:convert", "isEmpty", Box::new(|args: &[Value]| {
@@ -265,15 +220,6 @@ pub fn register(vm: &mut VM) {
             Some(Value::Bool(_)) => Value::Bool(target == "boolean" || target == "object"),
             _ => Value::Bool(target == "object"),
         }
-    }));
-
-    // isarray(value) → true if array
-    vm.register_host_fn("vybe:convert", "isArray", Box::new(|args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
-            return Value::Bool(matches!(o.kind, vybe_bytecode::value::ObjectKind::Array(_)));
-        }
-        Value::Bool(false)
     }));
 
     // iif(condition, trueValue, falseValue) → ternary
