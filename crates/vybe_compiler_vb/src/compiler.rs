@@ -14,6 +14,15 @@ pub struct Compiler {
     pub(crate) defined_globals: HashSet<String>,
     pub(crate) defined_classes: HashSet<String>,
     pub(crate) function_name_stack: Vec<String>,
+    /// Stack of loop contexts for Exit/Continue compilation.
+    /// Each entry: (loop_start_offset, break_jump_patches)
+    pub(crate) loop_stack: Vec<LoopContext>,
+}
+
+pub(crate) struct LoopContext {
+    pub start: usize,
+    pub break_jumps: Vec<usize>,
+    pub continue_jumps: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -29,6 +38,7 @@ impl Compiler {
             defined_globals: HashSet::new(),
             defined_classes: HashSet::new(),
             function_name_stack: Vec::new(),
+            loop_stack: Vec::new(),
         }
     }
 
@@ -195,11 +205,58 @@ impl Compiler {
                     self.emit(Op::drop);
                 }
             }
-            Declaration::Imports(_) | Declaration::Namespace(_) |
-            Declaration::Enum(_) | Declaration::Interface(_) |
-            Declaration::Structure(_) | Declaration::Delegate(_) |
-            Declaration::Event(_) => {
-                // TODO: implement these
+            Declaration::Enum(e) => {
+                // Compile enum as an object with named constants
+                self.emit_u16(Op::struct_new, 0);
+                for (i, member) in e.members.iter().enumerate() {
+                    self.emit(Op::dup);
+                    let val = member.value.as_ref()
+                        .map(|v| v.clone())
+                        .unwrap_or(Expression::IntegerLiteral(i as i32));
+                    self.compile_expression(&val)?;
+                    let prop_idx = self.add_string_constant(&member.name.as_str().to_lowercase());
+                    self.emit_u16(Op::struct_set, prop_idx);
+                    self.emit(Op::drop);
+                }
+                let name = e.name.as_str().to_lowercase();
+                self.emit_global_set(&name);
+                self.emit(Op::drop);
+            }
+            Declaration::Structure(s) => {
+                // Structure is like a lightweight class — compile same way
+                // Reuse class compilation by treating fields as class fields
+                let class = ClassDecl {
+                    visibility: s.visibility.clone(),
+                    name: s.name.clone(),
+                    is_partial: false,
+                    inherits: None,
+                    implements: vec![],
+                    properties: s.properties.clone(),
+                    methods: s.methods.clone(),
+                    fields: s.fields.clone(),
+                    is_must_inherit: false,
+                    is_not_inheritable: false,
+                    nested_classes: vec![],
+                    nested_enums: vec![],
+                };
+                self.compile_class(&class)?;
+                let name = s.name.as_str().to_lowercase();
+                self.defined_classes.insert(name.clone());
+                self.emit_global_set(&name);
+                self.emit(Op::drop);
+            }
+            Declaration::Imports(imp) => {
+                // Imports just affects name resolution — no bytecode needed
+                // The namespace objects are already set up by the host
+            }
+            Declaration::Namespace(ns) => {
+                // Flatten namespace contents — compile all nested declarations
+                for decl in &ns.declarations {
+                    self.compile_declaration(decl)?;
+                }
+            }
+            Declaration::Delegate(_) | Declaration::Interface(_) | Declaration::Event(_) => {
+                // Type declarations — no bytecode needed (duck typing in our VM)
             }
         }
         Ok(())

@@ -169,4 +169,143 @@ pub fn register(vm: &mut VM) {
     set_prop(&ca, "bottomleft", Value::F64(256.0));
     set_prop(&ca, "bottomcenter", Value::F64(512.0));
     set_prop(&ca, "bottomright", Value::F64(1024.0));
+
+    // --- Additional missing enums/classes ---
+
+    // CloseReason
+    let cr = ensure_namespace(vm, &["Window", "Forms", "CloseReason"]);
+    set_prop(&cr, "none", Value::F64(0.0));
+    set_prop(&cr, "windowsshutdown", Value::F64(1.0));
+    set_prop(&cr, "userclosing", Value::F64(3.0));
+    set_prop(&cr, "applicationexitcall", Value::F64(5.0));
+
+    // MouseButtons
+    let mb = ensure_namespace(vm, &["Window", "Forms", "MouseButtons"]);
+    set_prop(&mb, "none", Value::F64(0.0));
+    set_prop(&mb, "left", Value::F64(1.0));
+    set_prop(&mb, "right", Value::F64(2.0));
+    set_prop(&mb, "middle", Value::F64(4.0));
+
+    // More Keys
+    let keys = ensure_namespace(vm, &["Window", "Forms", "Keys"]);
+    set_prop(&keys, "shift", Value::F64(16.0));
+    set_prop(&keys, "control", Value::F64(17.0));
+    set_prop(&keys, "alt", Value::F64(18.0));
+    set_prop(&keys, "f1", Value::F64(112.0));
+    set_prop(&keys, "f2", Value::F64(113.0));
+    set_prop(&keys, "f3", Value::F64(114.0));
+    set_prop(&keys, "f4", Value::F64(115.0));
+    set_prop(&keys, "f5", Value::F64(116.0));
+    set_prop(&keys, "f6", Value::F64(117.0));
+    set_prop(&keys, "f7", Value::F64(118.0));
+    set_prop(&keys, "f8", Value::F64(119.0));
+    set_prop(&keys, "f9", Value::F64(120.0));
+    set_prop(&keys, "f10", Value::F64(121.0));
+    set_prop(&keys, "f11", Value::F64(122.0));
+    set_prop(&keys, "f12", Value::F64(123.0));
+
+    // MessageBox.Show
+    let msgbox = ensure_namespace(vm, &["Window", "Forms", "MessageBox"]);
+    set_prop(&msgbox, "show", host_fn_ref(vm, "vybe:gui", "msgBox"));
+
+    // Application.Exit
+    let app = ensure_namespace(vm, &["Window", "Forms", "Application"]);
+    set_prop(&app, "run", host_fn_ref(vm, "vybe:gui", "runApplication"));
+    set_prop(&app, "exit", host_fn_ref(vm, "wasi:cli", "exit"));
+
+    // Event args — empty objects
+    let null = Value::Null;
+    let swf = ensure_namespace(vm, &["Window", "Forms"]);
+    set_prop(&swf, "keyeventargs", null.clone());
+    set_prop(&swf, "keypresseventargs", null.clone());
+    set_prop(&swf, "mouseeventargs", null.clone());
+    set_prop(&swf, "painteventargs", null.clone());
+    set_prop(&swf, "formclosedeventargs", null.clone());
+    set_prop(&swf, "formclosingeventargs", null);
+
+    // --- Mirror under System.Windows.Forms.* ---
+    // All the above are under Window.Forms, also make them available under System.Windows.Forms
+    let sys_wf = ensure_namespace(vm, &["System", "Windows", "Forms"]);
+
+    // DialogResult
+    let sys_dr = ensure_namespace(vm, &["System", "Windows", "Forms", "DialogResult"]);
+    for (k, v) in &[("none",0),("ok",1),("cancel",2),("abort",3),("retry",4),("ignore",5),("yes",6),("no",7)] {
+        set_prop(&sys_dr, k, Value::F64(*v as f64));
+    }
+
+    // MessageBoxButtons
+    let sys_mbb = ensure_namespace(vm, &["System", "Windows", "Forms", "MessageBoxButtons"]);
+    for (k, v) in &[("ok",0),("okcancel",1),("abortretryignore",2),("yesnocancel",3),("yesno",4),("retrycancel",5)] {
+        set_prop(&sys_mbb, k, Value::F64(*v as f64));
+    }
+
+    // MessageBoxIcon
+    let sys_mbi = ensure_namespace(vm, &["System", "Windows", "Forms", "MessageBoxIcon"]);
+    for (k, v) in &[("none",0),("error",16),("question",32),("warning",48),("information",64)] {
+        set_prop(&sys_mbi, k, Value::F64(*v as f64));
+    }
+
+    // Keys
+    let sys_keys = ensure_namespace(vm, &["System", "Windows", "Forms", "Keys"]);
+    for (k, v) in &[
+        ("none",0),("back",8),("tab",9),("return",13),("enter",13),("escape",27),
+        ("space",32),("left",37),("up",38),("right",39),("down",40),
+        ("delete",46),("insert",45),("shift",16),("shiftkey",16),
+        ("control",17),("controlkey",17),("alt",18),("menu",18),
+        ("f1",112),("f2",113),("f3",114),("f4",115),("f5",116),("f6",117),
+        ("f7",118),("f8",119),("f9",120),("f10",121),("f11",122),("f12",123),
+    ] {
+        set_prop(&sys_keys, k, Value::F64(*v as f64));
+    }
+
+    // DockStyle
+    let sys_ds = ensure_namespace(vm, &["System", "Windows", "Forms", "DockStyle"]);
+    for (k, v) in &[("none",0),("top",1),("bottom",2),("left",3),("right",4),("fill",5)] {
+        set_prop(&sys_ds, k, Value::F64(*v as f64));
+    }
+
+    // AnchorStyles
+    let sys_as = ensure_namespace(vm, &["System", "Windows", "Forms", "AnchorStyles"]);
+    for (k, v) in &[("none",0),("top",1),("bottom",2),("left",4),("right",8)] {
+        set_prop(&sys_as, k, Value::F64(*v as f64));
+    }
+
+    // FormBorderStyle
+    let sys_fbs = ensure_namespace(vm, &["System", "Windows", "Forms", "FormBorderStyle"]);
+    for (k, v) in &[("none",0),("fixedsingle",1),("fixeddialog",3),("sizable",4),("fixedtoolwindow",5),("sizabletoolwindow",6)] {
+        set_prop(&sys_fbs, k, Value::F64(*v as f64));
+    }
+
+    // FormStartPosition
+    let sys_fsp = ensure_namespace(vm, &["System", "Windows", "Forms", "FormStartPosition"]);
+    for (k, v) in &[("manual",0),("centerscreen",1),("windowsdefaultlocation",2),("windowsdefaultbounds",3),("centerparent",4)] {
+        set_prop(&sys_fsp, k, Value::F64(*v as f64));
+    }
+
+    // FormWindowState
+    let sys_fws = ensure_namespace(vm, &["System", "Windows", "Forms", "FormWindowState"]);
+    for (k, v) in &[("normal",0),("minimized",1),("maximized",2)] {
+        set_prop(&sys_fws, k, Value::F64(*v as f64));
+    }
+
+    // CloseReason
+    let sys_cr = ensure_namespace(vm, &["System", "Windows", "Forms", "CloseReason"]);
+    for (k, v) in &[("none",0),("windowsshutdown",1),("userclosing",3),("applicationexitcall",5)] {
+        set_prop(&sys_cr, k, Value::F64(*v as f64));
+    }
+
+    // MouseButtons
+    let sys_mb = ensure_namespace(vm, &["System", "Windows", "Forms", "MouseButtons"]);
+    for (k, v) in &[("none",0),("left",1),("right",2),("middle",4)] {
+        set_prop(&sys_mb, k, Value::F64(*v as f64));
+    }
+
+    // MessageBox
+    let sys_msgbox = ensure_namespace(vm, &["System", "Windows", "Forms", "MessageBox"]);
+    set_prop(&sys_msgbox, "show", host_fn_ref(vm, "vybe:gui", "msgBox"));
+
+    // Application
+    let sys_app = ensure_namespace(vm, &["System", "Windows", "Forms", "Application"]);
+    set_prop(&sys_app, "run", host_fn_ref(vm, "vybe:gui", "runApplication"));
+    set_prop(&sys_app, "exit", host_fn_ref(vm, "wasi:cli", "exit"));
 }

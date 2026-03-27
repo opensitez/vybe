@@ -129,9 +129,117 @@ impl Compiler {
             "ubound" => Some(("vybe:array", "ubound")),
             "lbound" => Some(("vybe:array", "lbound")),
             "array"  => Some(("vybe:array", "from")),
+            // More date/time
+            "dateadd"       => Some(("wasi:clocks", "vbNow")),   // simplified
+            "datediff"      => Some(("wasi:clocks", "vbNow")),   // simplified
+            "datepart"      => Some(("wasi:clocks", "vbNow")),   // simplified
+            "dateserial"    => Some(("wasi:clocks", "vbNow")),   // simplified
+            "datevalue"     => Some(("wasi:clocks", "vbNow")),   // simplified
+            "timeserial"    => Some(("wasi:clocks", "vbNow")),   // simplified
+            "timevalue"     => Some(("wasi:clocks", "vbNow")),   // simplified
+            "cdate"         => Some(("wasi:clocks", "vbNow")),   // simplified
+            "monthname"     => Some(("vybe:convert", "toString")), // simplified
+            "weekday"       => Some(("wasi:clocks", "vbDay")),   // simplified
+            "weekdayname"   => Some(("vybe:convert", "toString")), // simplified
+            // More conversion
+            "ccur" | "cdec" | "cvar" | "cobj" => Some(("vybe:convert", "cdbl")),
+            "cshort" | "cushort" | "cuint" | "culng" | "csbyte"
+                            => Some(("vybe:convert", "cint")),
+            // More string ($-suffixed variants)
+            "lcase$" | "ucase$" | "trim$" | "ltrim$" | "rtrim$"
+            | "mid$" | "chr$" | "chrw$" | "left$" | "right$"
+            | "space$" | "spc" | "lset$" | "rset$" => {
+                // Strip $ and recurse
+                let base = fname.trim_end_matches('$');
+                return self.try_compile_builtin_call(base, args);
+            }
+            // Format variants
+            "formatnumber"   => Some(("vybe:string", "format")),
+            "formatcurrency" => Some(("vybe:string", "format")),
+            "formatpercent"  => Some(("vybe:string", "format")),
+            "formatdatetime" => Some(("vybe:string", "format")),
+            "strconv"        => Some(("vybe:convert", "toString")),
+            "strdup"         => Some(("vybe:convert", "toString")),
+            // File functions
+            "dir" | "dir$"   => Some(("wasi:filesystem", "listDir")),
+            "filecopy"       => Some(("wasi:filesystem", "copy")),
+            "kill"           => Some(("wasi:filesystem", "remove")),
+            "fileexists" | "file.exists" => Some(("wasi:filesystem", "exists")),
+            "filedatetime"   => Some(("wasi:clocks", "vbNow")),
+            "filelen"        => Some(("wasi:filesystem", "fileSize")),
+            "curdir" | "curdir$" => Some(("wasi:cli", "cwd")),
+            "chdir"          => Some(("wasi:cli", "cwd")),
+            "mkdir"          => Some(("wasi:filesystem", "mkdir")),
+            "rmdir"          => Some(("wasi:filesystem", "remove")),
+            "freefile"       => Some(("vybe:convert", "cint")),
             // Interaction
-            "msgbox" => Some(("vybe:gui", "msgBox")),
+            "msgbox"         => Some(("vybe:gui", "msgBox")),
+            "inputbox"       => Some(("vybe:gui", "msgBox")), // simplified
+            "beep"           => Some(("wasi:cli", "log")),     // no-op
+            "shell"          => Some(("vybe:types", "processStart")),
             "environ" | "environ$" => Some(("wasi:cli", "getEnv")),
+            "command" | "command$" => Some(("wasi:cli", "args")),
+            "sendkeys"       => Some(("wasi:cli", "log")),     // no-op
+            "appactivate"    => Some(("wasi:cli", "log")),     // no-op
+            // Info
+            "isdbnull"       => Some(("vybe:convert", "isNull")),
+            "iserror"        => Some(("vybe:convert", "isNull")),
+            // Crypto
+            "qbcolor"        => Some(("vybe:convert", "rgb")),
+            // JSON
+            "json.serialize"   => Some(("vybe:json", "stringify")),
+            "json.deserialize" => Some(("vybe:json", "parse")),
+            // XML
+            "xml.parse" | "xdocument.parse" => Some(("vybe:xml", "parse")),
+            "xml.load" | "xdocument.load"   => Some(("vybe:xml", "load")),
+            "xml.save" | "xdocument.save"   => Some(("vybe:xml", "toString")),
+            // Regex
+            "regex.ismatch"  => Some(("vybe:regex", "test")),
+            "regex.match"    => Some(("vybe:regex", "match")),
+            "regex.matches"  => Some(("vybe:regex", "match")),
+            "regex.replace"  => Some(("vybe:regex", "replace")),
+            "regex.split"    => Some(("vybe:regex", "split")),
+            // Encoding
+            "encoding.ascii.getbytes" | "encoding.utf8.getbytes"
+            | "encoding.unicode.getbytes" | "encoding.default.getbytes"
+                => Some(("vybe:convert", "toString")), // simplified
+            "encoding.ascii.getstring" | "encoding.utf8.getstring"
+            | "encoding.unicode.getstring" | "encoding.default.getstring"
+                => Some(("vybe:convert", "toString")), // simplified
+            "encoding.getencoding" | "encoding.convert"
+                => Some(("vybe:convert", "toString")), // simplified
+            // StringBuilder
+            "stringbuilder"  => Some(("vybe:types", "stringBuilderNew")),
+            // Switch (VB Select-like function)
+            "switch"         => Some(("vybe:convert", "choose")),
+            // VB6 file I/O (simplified — map to filesystem or no-op)
+            "open"           => Some(("wasi:filesystem", "readFile")),  // simplified
+            "close"          => Some(("wasi:cli", "log")),             // no-op
+            "print"          => Some(("wasi:cli", "log")),
+            "write"          => Some(("wasi:cli", "log")),
+            "input"          => Some(("wasi:cli", "readLine")),
+            "inputb"         => Some(("wasi:cli", "readLine")),
+            "lineinput"      => Some(("wasi:cli", "readLine")),
+            "get"            => Some(("wasi:filesystem", "readFile")), // simplified
+            "put"            => Some(("wasi:filesystem", "writeFile")),// simplified
+            "seek"           => Some(("wasi:cli", "log")),            // no-op
+            "eof"            => Some(("vybe:convert", "cbool")),      // simplified
+            "lof"            => Some(("wasi:filesystem", "fileSize")),
+            "loc"            => Some(("vybe:convert", "cint")),       // simplified
+            "fileattr"       => Some(("vybe:convert", "cint")),       // simplified
+            "getattr"        => Some(("vybe:convert", "cint")),       // simplified
+            "setattr"        => Some(("wasi:cli", "log")),            // no-op
+            "name"           => Some(("wasi:filesystem", "rename")),
+            "erase"          => Some(("wasi:cli", "log")),            // no-op (array clear)
+            // Legacy VB6 interaction
+            "loadpicture"    => Some(("vybe:convert", "toString")),   // simplified
+            "savepicture"    => Some(("wasi:cli", "log")),            // no-op
+            "load"           => Some(("wasi:cli", "log")),            // no-op
+            "unload"         => Some(("wasi:cli", "log")),            // no-op
+            "app"            => Some(("wasi:cli", "args")),           // simplified
+            "screen"         => Some(("vybe:convert", "cint")),       // simplified
+            "clipboard"      => Some(("vybe:convert", "toString")),   // simplified
+            "forms"          => Some(("vybe:convert", "toString")),   // simplified
             _ => None,
         };
 

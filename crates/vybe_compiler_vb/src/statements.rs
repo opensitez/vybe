@@ -2,7 +2,7 @@ use std::rc::Rc;
 use vybe_bytecode::{Value, Op};
 use vybe_parser_basic::ast::*;
 
-use crate::compiler::{Compiler, VarResolution};
+use crate::compiler::{Compiler, VarResolution, LoopContext};
 
 impl Compiler {
     pub(crate) fn compile_statement(&mut self, stmt: &Statement) -> Result<(), String> {
@@ -83,7 +83,12 @@ impl Compiler {
                 self.emit(Op::dyn_le);
                 self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
+                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
+                let ctx = self.loop_stack.pop().unwrap();
+                // Patch continue jumps to step
+                let step_offset = self.current_offset();
+                for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
                 self.emit_u16(Op::local_get, i_slot);
                 if let Some(step_expr) = step {
                     self.compile_expression(step_expr)?;
@@ -95,6 +100,7 @@ impl Compiler {
                 self.emit(Op::drop);
                 self.emit_loop(loop_start);
                 self.patch_jump(exit);
+                for bj in &ctx.break_jumps { self.patch_jump(*bj); }
                 self.current_scope_mut().end_scope();
             }
             Statement::ForEach { variable, collection, body } => {
@@ -118,13 +124,17 @@ impl Compiler {
                 let var_name = variable.as_str().to_lowercase();
                 let elem_slot = self.define_local(&var_name);
                 self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
+                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
+                let ctx = self.loop_stack.pop().unwrap();
+                for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_constant(Value::F64(1.0));
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit_loop(loop_start);
                 self.patch_jump(exit);
+                for bj in &ctx.break_jumps { self.patch_jump(*bj); }
                 self.current_scope_mut().end_scope();
             }
             Statement::While { condition, body } => {
@@ -132,44 +142,49 @@ impl Compiler {
                 self.compile_expression(condition)?;
                 self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
+                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
+                let ctx = self.loop_stack.pop().unwrap();
+                for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
                 self.emit_loop(loop_start);
                 self.patch_jump(exit);
+                for bj in &ctx.break_jumps { self.patch_jump(*bj); }
             }
             Statement::DoLoop { pre_condition, body, post_condition } => {
+                let loop_start = self.current_offset();
+                let mut exit_jump = None;
                 if let Some((cond_type, cond_expr)) = pre_condition {
-                    let loop_start = self.current_offset();
                     self.compile_expression(cond_expr)?;
                     self.emit(Op::dyn_to_bool);
-                    let exit = match cond_type {
+                    exit_jump = Some(match cond_type {
                         LoopConditionType::While => self.emit_jump(Op::br_if_false),
                         LoopConditionType::Until => self.emit_jump(Op::br_if_true),
-                    };
-                    for s in body { self.compile_statement(s)?; }
-                    self.emit_loop(loop_start);
-                    self.patch_jump(exit);
-                } else {
-                    let loop_start = self.current_offset();
-                    for s in body { self.compile_statement(s)?; }
-                    if let Some((cond_type, cond_expr)) = post_condition {
-                        self.compile_expression(cond_expr)?;
-                        self.emit(Op::dyn_to_bool);
-                        match cond_type {
-                            LoopConditionType::While => {
-                                let exit = self.emit_jump(Op::br_if_false);
-                                self.emit_loop(loop_start);
-                                self.patch_jump(exit);
-                            }
-                            LoopConditionType::Until => {
-                                let exit = self.emit_jump(Op::br_if_true);
-                                self.emit_loop(loop_start);
-                                self.patch_jump(exit);
-                            }
-                        }
-                    } else {
-                        self.emit_loop(loop_start);
-                    }
+                    });
                 }
+                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
+                for s in body { self.compile_statement(s)?; }
+                let ctx = self.loop_stack.pop().unwrap();
+                for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
+                if let Some((cond_type, cond_expr)) = post_condition {
+                    self.compile_expression(cond_expr)?;
+                    self.emit(Op::dyn_to_bool);
+                    match cond_type {
+                        LoopConditionType::While => {
+                            let ex = self.emit_jump(Op::br_if_false);
+                            self.emit_loop(loop_start);
+                            self.patch_jump(ex);
+                        }
+                        LoopConditionType::Until => {
+                            let ex = self.emit_jump(Op::br_if_true);
+                            self.emit_loop(loop_start);
+                            self.patch_jump(ex);
+                        }
+                    }
+                } else {
+                    self.emit_loop(loop_start);
+                }
+                if let Some(ej) = exit_jump { self.patch_jump(ej); }
+                for bj in &ctx.break_jumps { self.patch_jump(*bj); }
             }
             Statement::Call { name, arguments } => {
                 let fname = name.as_str().to_lowercase();
@@ -203,9 +218,115 @@ impl Compiler {
                 self.emit(Op::null);
                 self.emit(Op::r#return);
             }
-            Statement::ExitFor | Statement::ExitDo => {
-                // TODO: break from loops
+            Statement::ExitProperty | Statement::ExitTry => {
+                self.emit(Op::null);
+                self.emit(Op::r#return);
             }
+            Statement::ExitFor | Statement::ExitDo | Statement::ExitWhile | Statement::ExitSelect => {
+                let j = self.emit_jump(Op::br);
+                if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.break_jumps.push(j);
+                }
+            }
+            Statement::Continue(cont_type) => {
+                let j = self.emit_jump(Op::br);
+                if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.continue_jumps.push(j);
+                }
+            }
+            // CompoundAssignment: x += 1, x -= 2, etc.
+            Statement::CompoundAssignment { target, operator, value, .. } => {
+                let name = target.as_str().to_lowercase();
+                match self.resolve_variable(&name) {
+                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Global => {
+                        let idx = self.add_string_constant(&name);
+                        self.emit_u16(Op::global_get, idx);
+                    }
+                }
+                self.compile_expression(value)?;
+                match operator {
+                    CompoundOp::AddAssign => self.emit(Op::dyn_add),
+                    CompoundOp::SubtractAssign => self.emit(Op::f64_sub),
+                    CompoundOp::MultiplyAssign => self.emit(Op::f64_mul),
+                    CompoundOp::DivideAssign => self.emit(Op::f64_div),
+                    CompoundOp::IntDivideAssign => {
+                        self.emit(Op::f64_div);
+                        let idx = self.import("vybe:math", "floor");
+                        self.emit_host_call(idx, 1);
+                    }
+                    CompoundOp::ConcatAssign => self.emit(Op::str_concat),
+                    CompoundOp::ExponentAssign => {
+                        let idx = self.import("vybe:math", "pow");
+                        self.emit_host_call(idx, 2);
+                    }
+                    _ => self.emit(Op::dyn_add),
+                }
+                self.compile_store_ident(target)?;
+            }
+            // ReDim — resize array
+            Statement::ReDim { .. } => {
+                // Simplified: treat as no-op (array already dynamic)
+            }
+            // Using block — compiled as try/finally with dispose
+            Statement::Using { variable: _, resource, body } => {
+                self.compile_expression(resource)?;
+                let slot = self.define_local("__using_res");
+                self.emit_u16(Op::local_set, slot);
+                self.emit(Op::drop);
+                for s in body { self.compile_statement(s)?; }
+                // No explicit dispose in our VM, but we could call .Close() etc.
+            }
+            // SetAssignment: Set x = obj (VB6, same as assignment)
+            Statement::SetAssignment { target, value } => {
+                self.compile_expression(value)?;
+                self.compile_store_ident(target)?;
+            }
+            // RemoveHandler — mirror of AddHandler
+            Statement::RemoveHandler { .. } => {
+                // No-op for now (event system doesn't support removal yet)
+            }
+            // StaticVar — treated as regular local
+            Statement::StaticVar { name, initializer, .. } => {
+                if let Some(init) = initializer {
+                    self.compile_expression(init)?;
+                } else {
+                    self.emit(Op::null);
+                }
+                let n = name.as_str().to_lowercase();
+                let slot = self.define_local(&n);
+                self.emit_u16(Op::local_set, slot);
+                self.emit(Op::drop);
+            }
+            // GoTo / Label — simplified: labels are no-ops, GoTo ignored
+            Statement::GoTo(_) | Statement::Label(_) => {}
+            // On Error — VB6 error handling, simplified to no-op
+            Statement::OnErrorGoTo(_) | Statement::OnErrorResumeNext | Statement::Resume(_) => {}
+            // SyncLock — no-op in single-threaded VM
+            Statement::SyncLock { body, .. } => {
+                for s in body { self.compile_statement(s)?; }
+            }
+            // VB6 file I/O statements — compile as host calls
+            Statement::Open { file_path, mode, file_number, .. } => {
+                self.compile_expression(file_path)?;
+                let idx = self.import("wasi:filesystem", "readFile");
+                self.emit_host_call(idx, 1);
+                self.emit(Op::drop);
+            }
+            Statement::CloseFile { .. } => {}
+            Statement::PrintFile { items, .. } => {
+                for v in items { self.compile_expression(v)?; }
+                let idx = self.import("wasi:cli", "log");
+                self.emit_host_call(idx, items.len() as u8);
+                self.emit(Op::drop);
+            }
+            Statement::WriteFile { items, .. } => {
+                for v in items { self.compile_expression(v)?; }
+                let idx = self.import("wasi:cli", "log");
+                self.emit_host_call(idx, items.len() as u8);
+                self.emit(Op::drop);
+            }
+            Statement::InputFile { .. } | Statement::LineInput { .. } => {}
             Statement::Try { body, catches, finally: finally_block } => {
                 let try_start_pos = self.current_offset();
                 let line = self.line;

@@ -117,9 +117,99 @@ impl Compiler {
                 self.patch_jump(end);
             }
 
-            // Bitwise
+            // Bitwise operators (Xor is both logical and bitwise in VB)
+            Expression::Xor(a, b) => {
+                self.compile_expression(a)?; self.compile_expression(b)?;
+                self.emit(Op::dyn_ne); // XOR: true if different
+            }
             Expression::BitShiftLeft(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::i32_shl); }
             Expression::BitShiftRight(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::i32_shr_s); }
+
+            // Is / IsNot — reference equality
+            Expression::Is(a, b) => {
+                self.compile_expression(a)?; self.compile_expression(b)?;
+                self.emit(Op::dyn_eq);
+            }
+            Expression::IsNot(a, b) => {
+                self.compile_expression(a)?; self.compile_expression(b)?;
+                self.emit(Op::dyn_ne);
+            }
+
+            // TypeOf expr Is Type
+            Expression::TypeOf { expr, type_name } => {
+                self.compile_expression(expr)?;
+                let idx = self.import("vybe:convert", "typeName");
+                self.emit_host_call(idx, 1);
+                self.emit_constant(Value::String(Rc::from(type_name.as_str())));
+                self.emit(Op::dyn_eq);
+            }
+
+            // Like — string pattern matching (simplified)
+            Expression::Like(a, b) => {
+                self.compile_expression(a)?; self.compile_expression(b)?;
+                // Simplified: treat as string equality
+                self.emit(Op::dyn_eq);
+            }
+
+            // AddressOf funcName (stored as string by parser)
+            Expression::AddressOf(name) => {
+                let func_name = name.to_lowercase();
+                let idx = self.add_string_constant(&func_name);
+                self.emit_u16(Op::global_get, idx);
+            }
+
+            // Date literal
+            Expression::DateLiteral(s) => {
+                self.emit_constant(Value::String(Rc::from(s.as_str())));
+            }
+
+            // Await — suspend fiber until promise resolves (same as JS await)
+            Expression::Await(expr) => {
+                self.compile_expression(expr)?;
+                self.emit(Op::r#await);
+            }
+
+            // WithTarget — reference to the With block's target object
+            Expression::WithTarget => {
+                match self.resolve_variable("__with_obj") {
+                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    _ => self.emit(Op::null),
+                }
+            }
+
+            // Query (LINQ) — not yet compiled, emit null
+            Expression::Query(_) => {
+                self.emit(Op::null);
+            }
+
+            // XML literal — emit as null (would need XML serialization)
+            Expression::XmlLiteral(_) => {
+                self.emit(Op::null);
+            }
+
+            // New with initializers — compile New then set properties
+            Expression::NewWithInitializer(class_name, args, inits) => {
+                self.compile_new_expr(class_name, args)?;
+                for (prop, val) in inits {
+                    self.emit(Op::dup);
+                    self.compile_expression(val)?;
+                    let idx = self.add_string_constant(&prop.to_lowercase());
+                    self.emit_u16(Op::struct_set, idx);
+                    self.emit(Op::drop);
+                }
+            }
+
+            // New collection from initializer
+            Expression::NewFromInitializer(class_name, args, items) => {
+                self.compile_new_expr(class_name, args)?;
+                // Push items into the collection — simplified: just create array
+                for item in items {
+                    self.compile_expression(item)?;
+                }
+                if !items.is_empty() {
+                    self.emit_u16(Op::array_new, items.len() as u16);
+                }
+            }
 
             // Function call
             Expression::Call(name, args) => {
