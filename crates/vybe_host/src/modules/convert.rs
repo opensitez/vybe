@@ -84,6 +84,55 @@ pub fn register(vm: &mut VM) {
         }
         Value::String(Rc::from(result.as_str()))
     }));
+
+    // --- VB-compatible conversion functions ---
+
+    // val(str) → parse as number, 0 on failure
+    vm.register_host_fn("vybe:convert", "val", Box::new(|args: &[Value]| {
+        let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        Value::F64(s.trim().parse::<f64>().unwrap_or(0.0))
+    }));
+
+    // isNothing(value) → true if null
+    vm.register_host_fn("vybe:convert", "isNothing", Box::new(|args: &[Value]| {
+        Value::Bool(matches!(args.first().unwrap_or(&Value::Null), Value::Null))
+    }));
+
+    // isNumeric(value) → true if can be parsed as number
+    vm.register_host_fn("vybe:convert", "isNumeric", Box::new(|args: &[Value]| {
+        match args.first().unwrap_or(&Value::Null) {
+            Value::F64(n) => Value::Bool(!n.is_nan()),
+            Value::I32(_) | Value::I64(_) => Value::Bool(true),
+            Value::String(s) => Value::Bool(s.trim().parse::<f64>().is_ok()),
+            _ => Value::Bool(false),
+        }
+    }));
+
+    // cint(value) → floor to integer
+    vm.register_host_fn("vybe:convert", "cint", Box::new(|args: &[Value]| {
+        Value::F64(args.first().map(|v| v.as_f64().floor()).unwrap_or(0.0))
+    }));
+
+    // cdbl(value) → to double (identity for numbers, parse for strings)
+    vm.register_host_fn("vybe:convert", "cdbl", Box::new(|args: &[Value]| {
+        match args.first().unwrap_or(&Value::Null) {
+            Value::String(s) => Value::F64(s.trim().parse::<f64>().unwrap_or(0.0)),
+            v => Value::F64(v.as_f64()),
+        }
+    }));
+
+    // cbool(value) → to boolean
+    vm.register_host_fn("vybe:convert", "cbool", Box::new(|args: &[Value]| {
+        match args.first().unwrap_or(&Value::Null) {
+            Value::Null => Value::Bool(false),
+            Value::Bool(b) => Value::Bool(*b),
+            Value::F64(n) => Value::Bool(*n != 0.0),
+            Value::I32(n) => Value::Bool(*n != 0),
+            Value::I64(n) => Value::Bool(*n != 0),
+            Value::String(s) => Value::Bool(!s.is_empty() && s.to_lowercase() != "false"),
+            Value::Object(_) => Value::Bool(true),
+        }
+    }));
 }
 
 fn base64_encode(data: &[u8]) -> String {

@@ -9,5 +9,15 @@ license.workspace = true
 name = "vybe"
 path = "src/main.rs"
 
+[[bin]]
+name = "vybec"
+path = "src/vybec.rs"
+
 [dependencies]
 vybe_ui = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_parser_basic = { workspace = true }
+vybe_parser_js = { workspace = true }
+vybe_compiler_vb = { workspace = true }
+vybe_compiler_js = { workspace = true }
+vybe_host = { workspace = true }

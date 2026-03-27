@@ -110,6 +110,98 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:string", "replaceAll", Box::new(|a| {
         Value::String(Rc::from(s(a, 0).replace(&s(a, 1), &s(a, 2)).as_str()))
     }));
+
+    // trimStart / trimEnd
+    vm.register_host_fn("vybe:string", "trimStart", Box::new(|a| Value::String(Rc::from(s(a, 0).trim_start()))));
+    vm.register_host_fn("vybe:string", "trimEnd",   Box::new(|a| Value::String(Rc::from(s(a, 0).trim_end()))));
+
+    // --- VB-compatible string functions (available to all languages) ---
+
+    // left(str, n) → first n characters
+    vm.register_host_fn("vybe:string", "left", Box::new(|a| {
+        let st = s(a, 0);
+        let n = f(a, 1) as usize;
+        let end = n.min(st.len());
+        Value::String(Rc::from(&st[..end]))
+    }));
+
+    // right(str, n) → last n characters
+    vm.register_host_fn("vybe:string", "right", Box::new(|a| {
+        let st = s(a, 0);
+        let n = f(a, 1) as usize;
+        let start = st.len().saturating_sub(n);
+        Value::String(Rc::from(&st[start..]))
+    }));
+
+    // mid(str, start, length?) → substring (1-based start like VB)
+    vm.register_host_fn("vybe:string", "mid", Box::new(|a| {
+        let st = s(a, 0);
+        let start = ((f(a, 1) as usize).saturating_sub(1)).min(st.len());
+        let end = if a.len() > 2 {
+            (start + f(a, 2) as usize).min(st.len())
+        } else {
+            st.len()
+        };
+        Value::String(Rc::from(&st[start..end]))
+    }));
+
+    // instr(str, search) → 1-based position, 0 if not found
+    // instr(start, str, search) → 1-based position starting from start
+    vm.register_host_fn("vybe:string", "instr", Box::new(|a| {
+        if a.len() >= 3 {
+            // instr(start, str, search)
+            let start = (f(a, 0) as usize).saturating_sub(1);
+            let st = s(a, 1);
+            let search = s(a, 2);
+            match st[start..].find(&search) {
+                Some(idx) => Value::F64((start + idx + 1) as f64),
+                None => Value::F64(0.0),
+            }
+        } else {
+            // instr(str, search)
+            let st = s(a, 0);
+            let search = s(a, 1);
+            match st.find(&search) {
+                Some(idx) => Value::F64((idx + 1) as f64),
+                None => Value::F64(0.0),
+            }
+        }
+    }));
+
+    // asc(str) → char code of first character
+    vm.register_host_fn("vybe:string", "asc", Box::new(|a| {
+        match s(a, 0).chars().next() {
+            Some(c) => Value::F64(c as u32 as f64),
+            None => Value::F64(0.0),
+        }
+    }));
+
+    // chr(code) → single character string
+    vm.register_host_fn("vybe:string", "chr", Box::new(|a| {
+        match char::from_u32(f(a, 0) as u32) {
+            Some(c) => Value::String(Rc::from(c.to_string().as_str())),
+            None => Value::String(Rc::from("")),
+        }
+    }));
+
+    // space(n) → string of n spaces
+    vm.register_host_fn("vybe:string", "space", Box::new(|a| {
+        Value::String(Rc::from(" ".repeat(f(a, 0) as usize).as_str()))
+    }));
+
+    // string(n, char) → string of n copies of char
+    vm.register_host_fn("vybe:string", "stringRepeat", Box::new(|a| {
+        let n = f(a, 0) as usize;
+        let ch = s(a, 1);
+        let c = ch.chars().next().unwrap_or(' ');
+        Value::String(Rc::from(c.to_string().repeat(n).as_str()))
+    }));
+
+    // lcase/ucase aliases (same as toLowerCase/toUpperCase but available by VB name)
+    vm.register_host_fn("vybe:string", "lcase", Box::new(|a| Value::String(Rc::from(s(a, 0).to_lowercase().as_str()))));
+    vm.register_host_fn("vybe:string", "ucase", Box::new(|a| Value::String(Rc::from(s(a, 0).to_uppercase().as_str()))));
+    vm.register_host_fn("vybe:string", "ltrim", Box::new(|a| Value::String(Rc::from(s(a, 0).trim_start()))));
+    vm.register_host_fn("vybe:string", "rtrim", Box::new(|a| Value::String(Rc::from(s(a, 0).trim_end()))));
 }
 
 fn s(args: &[Value], idx: usize) -> String {

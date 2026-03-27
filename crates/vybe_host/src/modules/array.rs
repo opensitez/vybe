@@ -204,6 +204,62 @@ pub fn register(vm: &mut VM) {
         }
         Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
     }));
+
+    // --- VB-compatible array functions ---
+
+    // ubound(arr) → last valid index (length - 1)
+    vm.register_host_fn("vybe:array", "ubound", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                return Value::F64(elems.len() as f64 - 1.0);
+            }
+        }
+        Value::F64(-1.0)
+    }));
+
+    // lbound(arr) → always 0
+    vm.register_host_fn("vybe:array", "lbound", Box::new(|_| Value::F64(0.0)));
+
+    // unshift(arr, value) → prepend element, return new length
+    vm.register_host_fn("vybe:array", "unshift", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut o = obj.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = o.kind {
+                for i in (1..args.len()).rev() {
+                    elems.insert(0, args[i].clone());
+                }
+                let len = elems.len() as f64;
+                drop(o);
+                obj.borrow_mut().properties.insert("length".into(), Value::F64(len));
+                return Value::F64(len);
+            }
+        }
+        Value::Null
+    }));
+
+    // splice(arr, start, deleteCount, ...items) → removed elements
+    vm.register_host_fn("vybe:array", "splice", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let start = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let delete_count = args.get(2).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let insert_items: Vec<Value> = args.iter().skip(3).cloned().collect();
+            let mut o = obj.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = o.kind {
+                let start = start.min(elems.len());
+                let end = (start + delete_count).min(elems.len());
+                let removed: Vec<Value> = elems.drain(start..end).collect();
+                for (i, item) in insert_items.into_iter().enumerate() {
+                    elems.insert(start + i, item);
+                }
+                let len = elems.len() as f64;
+                drop(o);
+                obj.borrow_mut().properties.insert("length".into(), Value::F64(len));
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(removed))));
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
 }
 
 fn norm(args: &[Value], idx: usize, default: i64, len: i64) -> usize {

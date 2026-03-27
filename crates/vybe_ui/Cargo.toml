@@ -14,6 +14,7 @@ vybe_bytecode = { workspace = true }
 vybe_parser_js = { workspace = true }
 vybe_compiler_js = { workspace = true }
 vybe_host = { workspace = true }
+vybe_compiler_vb = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 

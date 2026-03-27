@@ -65,7 +65,17 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     vm.register_host_fn("vybe:gui", "runApplication", {
         let q = q.clone();
         Box::new(move |args: &[Value]| {
-            q.borrow_mut().push(SideEffect::RunApplication { form_name: str_arg(args, 0, "Form1") });
+            // Accept either a string name or a form object
+            let form_name = match args.first() {
+                Some(Value::Object(obj)) => {
+                    let o = obj.borrow();
+                    o.properties.get("__control_name")
+                        .map(|v| format!("{}", v))
+                        .unwrap_or_else(|| str_arg(args, 0, "Form1"))
+                }
+                _ => str_arg(args, 0, "Form1"),
+            };
+            q.borrow_mut().push(SideEffect::RunApplication { form_name });
             Value::Null
         })
     });
@@ -81,6 +91,121 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
         Box::new(move |args: &[Value]| {
             q.borrow_mut().push(SideEffect::FormClose { form_name: str_arg(args, 0, "Form1") });
             Value::Null
+        })
+    });
+
+    // --- WinForms-style OOP API ---
+    // newControl(controlType) → creates an object representing a control
+    // The object has __control_type, __control_name, and methods
+    vm.register_host_fn("vybe:gui", "newControl", {
+        let q = q.clone();
+        Box::new(move |args: &[Value]| {
+            use vybe_bytecode::value::Object;
+            static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+            let control_type = str_arg(args, 0, "Button");
+            let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let name = format!("{}_{}", control_type, id);
+            let mut obj = Object::new();
+            obj.properties.insert("__control_type".into(), Value::String(Rc::from(control_type.as_str())));
+            obj.properties.insert("__control_name".into(), Value::String(Rc::from(name.as_str())));
+            obj.properties.insert("name".into(), Value::String(Rc::from(name.as_str())));
+            // Default size
+            obj.properties.insert("width".into(), Value::F64(100.0));
+            obj.properties.insert("height".into(), Value::F64(30.0));
+            obj.properties.insert("left".into(), Value::F64(0.0));
+            obj.properties.insert("top".into(), Value::F64(0.0));
+            Value::Object(Rc::new(std::cell::RefCell::new(obj)))
+        })
+    });
+
+    // controlSetProperty(controlObj, property, value)
+    // Pushes a PropertyChange side effect using the control's __control_name
+    vm.register_host_fn("vybe:gui", "controlSetProperty", {
+        let q = q.clone();
+        Box::new(move |args: &[Value]| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.borrow();
+                let control_name = o.properties.get("__control_name")
+                    .map(|v| format!("{}", v))
+                    .unwrap_or_default();
+                let property = str_arg(args, 1, "");
+                let value = vm_to_prop(args.get(2).cloned().unwrap_or(Value::Null));
+                // Also store on the object itself for later reads
+                drop(o);
+                obj.borrow_mut().properties.insert(property.to_lowercase(), args.get(2).cloned().unwrap_or(Value::Null));
+                q.borrow_mut().push(SideEffect::PropertyChange {
+                    object: control_name, property, value,
+                });
+            }
+            Value::Null
+        })
+    });
+
+    // controlsAdd(formName, controlObj) — adds a control to a form
+    // Reads __control_type, __control_name, and position from the object
+    vm.register_host_fn("vybe:gui", "controlsAdd", {
+        let q = q.clone();
+        Box::new(move |args: &[Value]| {
+            // Accept either a string or a form object as first arg
+            let form_name = match args.first() {
+                Some(Value::Object(obj)) => {
+                    let o = obj.borrow();
+                    o.properties.get("__control_name")
+                        .map(|v| format!("{}", v))
+                        .unwrap_or_else(|| str_arg(args, 0, "Form1"))
+                }
+                _ => str_arg(args, 0, "Form1"),
+            };
+            if let Some(Value::Object(obj)) = args.get(1) {
+                let o = obj.borrow();
+                let control_type = o.properties.get("__control_type")
+                    .map(|v| format!("{}", v)).unwrap_or_else(|| "Button".into());
+                let control_name = o.properties.get("__control_name")
+                    .map(|v| format!("{}", v)).unwrap_or_else(|| "ctrl".into());
+                let left = o.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0);
+                let top = o.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0);
+                let width = o.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100);
+                let height = o.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30);
+                q.borrow_mut().push(SideEffect::AddControl {
+                    form_name, control_name: control_name.clone(), control_type,
+                    left, top, width, height, parent_name: String::new(),
+                });
+                // Emit any properties that were set before adding
+                // Capitalize first letter to match WinForms convention (text → Text)
+                for (key, val) in &o.properties {
+                    if key.starts_with("__") || key == "name" || key == "left" || key == "top"
+                        || key == "width" || key == "height" { continue; }
+                    let prop_name = capitalize_first(key);
+                    q.borrow_mut().push(SideEffect::PropertyChange {
+                        object: control_name.clone(),
+                        property: prop_name,
+                        value: vm_to_prop(val.clone()),
+                    });
+                }
+            }
+            Value::Null
+        })
+    });
+
+    // newForm(title?) → creates a form object
+    vm.register_host_fn("vybe:gui", "newForm", {
+        let q = q.clone();
+        Box::new(move |args: &[Value]| {
+            use vybe_bytecode::value::Object;
+            let title = str_arg(args, 0, "Form1");
+            let name = title.clone();
+            let mut obj = Object::new();
+            obj.properties.insert("__control_type".into(), Value::String(Rc::from("Form")));
+            obj.properties.insert("__control_name".into(), Value::String(Rc::from(name.as_str())));
+            obj.properties.insert("name".into(), Value::String(Rc::from(name.as_str())));
+            obj.properties.insert("text".into(), Value::String(Rc::from(title.as_str())));
+            obj.properties.insert("width".into(), Value::F64(800.0));
+            obj.properties.insert("height".into(), Value::F64(600.0));
+            q.borrow_mut().push(SideEffect::PropertyChange {
+                object: name.clone(), property: "Text".into(),
+                value: PropValue::String(title),
+            });
+            Value::Object(Rc::new(std::cell::RefCell::new(obj)))
         })
     });
 }
@@ -100,5 +225,13 @@ fn vm_to_prop(v: Value) -> PropValue {
         Value::F64(n) => PropValue::Float(n),
         Value::String(s) => PropValue::String(s.to_string()),
         Value::Object(_) => PropValue::String(format!("{}", v)),
+    }
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
     }
 }

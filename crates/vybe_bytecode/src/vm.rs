@@ -58,7 +58,7 @@ pub struct VM {
     open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
     host_fns: Vec<HostFn>,
     /// Registry: (module, name) → index into host_fns.
-    host_registry: HashMap<(String, String), usize>,
+    pub host_registry: HashMap<(String, String), usize>,
     /// Import resolution table: import_index → host_fn_index.
     import_table: Vec<usize>,
     /// Exception handler stack (WASM exception proposal).
@@ -902,6 +902,17 @@ impl VM {
                 match &o.kind {
                     ObjectKind::Function(func) => {
                         self.call_function(func, argc)?;
+                    }
+                    ObjectKind::HostFunction(idx) => {
+                        // Call host function directly — same as call_import
+                        let idx = *idx;
+                        drop(o);
+                        let args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
+                        // Pop args + callee
+                        for _ in 0..argc { self.stack.pop(); }
+                        self.stack.pop(); // callee
+                        let result = (self.host_fns[idx])(&args);
+                        self.push(result)?;
                     }
                     _ => return Err(VMError::new("Not a function")),
                 }

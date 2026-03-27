@@ -55,6 +55,8 @@ pub fn register_all(vm: &mut VM) {
     collections::register(vm);
     runtime::register(vm);
     database::register(vm);
+    // Set up namespace objects AFTER all host functions are registered
+    crate::namespaces::setup_namespaces(vm);
 }
 
 /// Register all standard VSI modules + GUI module.
@@ -64,4 +66,6 @@ pub fn register_all_with_gui(
 ) {
     register_all(vm);
     gui::register(vm, queue);
+    // Re-setup namespaces to include GUI functions
+    crate::namespaces::setup_namespaces(vm);
 }

@@ -64,6 +64,7 @@ impl Value {
                     ObjectKind::Ordinary => "object",
                     ObjectKind::Array(_) => "array",
                     ObjectKind::Function(_) => "function",
+                    ObjectKind::HostFunction(_) => "function",
                 }
             }
         }
@@ -113,6 +114,7 @@ impl fmt::Display for Value {
                     ObjectKind::Function(func) => {
                         write!(f, "[function {}]", func.name.as_deref().unwrap_or("anonymous"))
                     }
+                    ObjectKind::HostFunction(idx) => write!(f, "[host function {}]", idx),
                     ObjectKind::Ordinary => write!(f, "[object]"),
                 }
             }
@@ -132,6 +134,8 @@ pub enum ObjectKind {
     Ordinary,
     Array(Vec<Value>),
     Function(Function),
+    /// A reference to a host function by its index in the VM's host_fns table.
+    HostFunction(usize),
 }
 
 impl Object {

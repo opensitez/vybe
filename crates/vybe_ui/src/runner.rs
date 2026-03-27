@@ -166,6 +166,84 @@ fn run_js_file(path: &Path) {
 }
 
 // ---------------------------------------------------------------------------
+// Public API: launch a bytecode VM form from side effects
+// ---------------------------------------------------------------------------
+
+/// Build a form from side effects and launch a Dioxus window.
+/// Called by both `run_js_file` and `vybec` after compiling and running bytecode.
+/// If no RunApplication side effect was emitted, just prints console output.
+pub fn launch_vm_form(
+    vm: vybe_bytecode::VM,
+    queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+) {
+    let effects = queue.borrow_mut().drain();
+    let mut run_form_name = None;
+    let mut form_title = String::new();
+    let mut form = vybe_forms::Form::new("VMForm");
+    form.width = 800;
+    form.height = 600;
+
+    for effect in &effects {
+        match effect {
+            vybe_host::SideEffect::RunApplication { form_name: name } => {
+                run_form_name = Some(name.clone());
+            }
+            vybe_host::SideEffect::AddControl {
+                control_name, control_type, left, top, width, height, ..
+            } => {
+                let ct = vybe_forms::control::ControlType::from_name(control_type)
+                    .unwrap_or(vybe_forms::control::ControlType::Label);
+                let mut ctrl = vybe_forms::Control::new(ct, control_name.clone(), *left, *top);
+                ctrl.bounds = vybe_forms::Bounds::new(*left, *top, *width, *height);
+                form.controls.push(ctrl);
+            }
+            vybe_host::SideEffect::PropertyChange { object, property, value } => {
+                let val_str = value.as_string();
+                if Some(object.clone()) == run_form_name || object == "VMForm"
+                    || run_form_name.as_ref().is_some_and(|n| n == object)
+                {
+                    match property.as_str() {
+                        "Text" => { form.text = val_str.clone(); form_title = val_str; }
+                        "Width" => { form.width = val_str.parse().unwrap_or(800); }
+                        "Height" => { form.height = val_str.parse().unwrap_or(600); }
+                        _ => {}
+                    }
+                } else {
+                    if let Some(ctrl) = form.controls.iter_mut().find(|c| c.name == *object) {
+                        ctrl.properties.set(property.clone(), val_str);
+                    }
+                }
+            }
+            vybe_host::SideEffect::ConsoleOutput(msg) => print!("{msg}"),
+            vybe_host::SideEffect::MsgBox { text, title } => println!("[MsgBox] {title}: {text}"),
+            _ => {}
+        }
+    }
+
+    if let Some(name) = run_form_name {
+        if form_title.is_empty() { form_title = name.clone(); }
+        form.name = name;
+
+        JS_LAUNCH_FORM.with(|cell| *cell.borrow_mut() = Some(form));
+        JS_LAUNCH_TITLE.with(|cell| *cell.borrow_mut() = form_title.clone());
+        JS_LAUNCH_VM.with(|cell| *cell.borrow_mut() = Some(vm));
+        JS_LAUNCH_QUEUE.with(|cell| *cell.borrow_mut() = Some(queue));
+
+        let config = Config::new()
+            .with_resource_directory(PathBuf::from("."))
+            .with_window(
+                WindowBuilder::new()
+                    .with_title(&form_title)
+                    .with_resizable(true),
+            );
+
+        LaunchBuilder::desktop()
+            .with_cfg(config)
+            .launch(JsFormApp);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // JS Form runner — Dioxus component with event dispatch to bytecode VM
 // ---------------------------------------------------------------------------
 
