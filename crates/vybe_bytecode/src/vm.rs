@@ -549,6 +549,88 @@ impl VM {
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_mul(b)))?;
                 }
+                Op::i32_div_s => {
+                    let b = self.pop().as_i32();
+                    let a = self.pop().as_i32();
+                    self.push(Value::I32(if b == 0 { 0 } else { a.wrapping_div(b) }))?;
+                }
+                Op::i32_div_u => {
+                    let b = self.pop().as_i32() as u32;
+                    let a = self.pop().as_i32() as u32;
+                    self.push(Value::I32(if b == 0 { 0 } else { (a / b) as i32 }))?;
+                }
+                Op::i32_rem_s => {
+                    let b = self.pop().as_i32();
+                    let a = self.pop().as_i32();
+                    self.push(Value::I32(if b == 0 { 0 } else { a.wrapping_rem(b) }))?;
+                }
+                Op::i32_rem_u => {
+                    let b = self.pop().as_i32() as u32;
+                    let a = self.pop().as_i32() as u32;
+                    self.push(Value::I32(if b == 0 { 0 } else { (a % b) as i32 }))?;
+                }
+
+                // -- i64 arithmetic --
+                Op::i64_add => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_add(b)))?; }
+                Op::i64_sub => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_sub(b)))?; }
+                Op::i64_mul => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_mul(b)))?; }
+                Op::i64_div_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(if b == 0 { 0 } else { a.wrapping_div(b) }))?; }
+                Op::i64_div_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(if b == 0 { 0 } else { (a / b) as i64 }))?; }
+                Op::i64_rem_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(if b == 0 { 0 } else { a.wrapping_rem(b) }))?; }
+                Op::i64_rem_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(if b == 0 { 0 } else { (a % b) as i64 }))?; }
+                Op::i64_and => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a & b))?; }
+                Op::i64_or  => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a | b))?; }
+                Op::i64_xor => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a ^ b))?; }
+                Op::i64_shl   => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a << (b & 0x3f)))?; }
+                Op::i64_shr_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a >> (b & 0x3f)))?; }
+                Op::i64_shr_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64((a >> (b & 0x3f)) as i64))?; }
+                Op::i64_rotl => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(a.rotate_left((b & 0x3f) as u32) as i64))?; }
+                Op::i64_rotr => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(a.rotate_right((b & 0x3f) as u32) as i64))?; }
+                Op::i64_clz => { let a = self.pop().as_i64(); self.push(Value::I64(a.leading_zeros() as i64))?; }
+                Op::i64_ctz => { let a = self.pop().as_i64(); self.push(Value::I64(a.trailing_zeros() as i64))?; }
+                Op::i64_popcnt => { let a = self.pop().as_i64(); self.push(Value::I64(a.count_ones() as i64))?; }
+
+                // -- f64 math --
+                Op::f64_abs => { let a = self.pop().as_f64(); self.push(Value::F64(a.abs()))?; }
+                Op::f64_ceil => { let a = self.pop().as_f64(); self.push(Value::F64(a.ceil()))?; }
+                Op::f64_floor => { let a = self.pop().as_f64(); self.push(Value::F64(a.floor()))?; }
+                Op::f64_trunc => { let a = self.pop().as_f64(); self.push(Value::F64(a.trunc()))?; }
+                Op::f64_nearest => { let a = self.pop().as_f64(); self.push(Value::F64(a.round()))?; }
+                Op::f64_sqrt => { let a = self.pop().as_f64(); self.push(Value::F64(a.sqrt()))?; }
+                Op::f64_min => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.min(b)))?; }
+                Op::f64_max => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.max(b)))?; }
+                Op::f64_copysign => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.copysign(b)))?; }
+
+                // -- f32 (promoted to f64) --
+                Op::f32_abs => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).abs() as f64))?; }
+                Op::f32_neg => { let a = self.pop().as_f64(); self.push(Value::F64(-(a as f32) as f64))?; }
+                Op::f32_ceil => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).ceil() as f64))?; }
+                Op::f32_floor => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).floor() as f64))?; }
+                Op::f32_trunc => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).trunc() as f64))?; }
+                Op::f32_nearest => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).round() as f64))?; }
+                Op::f32_sqrt => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).sqrt() as f64))?; }
+                Op::f32_min => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).min(b as f32) as f64))?; }
+                Op::f32_max => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).max(b as f32) as f64))?; }
+                Op::f32_copysign => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).copysign(b as f32) as f64))?; }
+
+                // -- WASM select --
+                Op::select => {
+                    let cond = self.pop().as_i32();
+                    let val2 = self.pop();
+                    let val1 = self.pop();
+                    self.push(if cond != 0 { val1 } else { val2 })?;
+                }
+
+                // -- i32 rotation and bit counting --
+                Op::i32_rotl => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32(a.rotate_left(b & 0x1f) as i32))?; }
+                Op::i32_rotr => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32(a.rotate_right(b & 0x1f) as i32))?; }
+                Op::i32_clz => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.leading_zeros() as i32))?; }
+                Op::i32_ctz => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.trailing_zeros() as i32))?; }
+                Op::i32_popcnt => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.count_ones() as i32))?; }
+
+                // -- eqz --
+                Op::i32_eqz => { let a = self.pop().as_i32(); self.push(Value::Bool(a == 0))?; }
+                Op::i64_eqz => { let a = self.pop().as_i64(); self.push(Value::Bool(a == 0))?; }
 
                 // -- String --
                 Op::str_concat => {
@@ -1051,6 +1133,128 @@ impl VM {
                         self.memory[addr] = val;
                     }
                 }
+                Op::f32_load => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 4 <= self.memory.len() {
+                        let val = f32::from_le_bytes([self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3]]);
+                        self.push(Value::F64(val as f64))?;
+                    } else { self.push(Value::F64(0.0))?; }
+                }
+                Op::f32_store => {
+                    let val = self.pop().as_f64() as f32;
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 4 <= self.memory.len() {
+                        let bytes = val.to_le_bytes();
+                        self.memory[addr..addr+4].copy_from_slice(&bytes);
+                    }
+                }
+                Op::i32_load8_s => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr < self.memory.len() {
+                        self.push(Value::I32(self.memory[addr] as i8 as i32))?;
+                    } else { self.push(Value::I32(0))?; }
+                }
+                Op::i32_load16_s => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 2 <= self.memory.len() {
+                        let val = i16::from_le_bytes([self.memory[addr], self.memory[addr+1]]);
+                        self.push(Value::I32(val as i32))?;
+                    } else { self.push(Value::I32(0))?; }
+                }
+                Op::i32_load16_u => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 2 <= self.memory.len() {
+                        let val = u16::from_le_bytes([self.memory[addr], self.memory[addr+1]]);
+                        self.push(Value::I32(val as i32))?;
+                    } else { self.push(Value::I32(0))?; }
+                }
+                Op::i32_store16 => {
+                    let val = self.pop().as_i32() as i16;
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 2 <= self.memory.len() {
+                        let bytes = val.to_le_bytes();
+                        self.memory[addr..addr+2].copy_from_slice(&bytes);
+                    }
+                }
+                Op::i64_load8_s => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr < self.memory.len() { self.push(Value::I64(self.memory[addr] as i8 as i64))?; }
+                    else { self.push(Value::I64(0))?; }
+                }
+                Op::i64_load8_u => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr < self.memory.len() { self.push(Value::I64(self.memory[addr] as i64))?; }
+                    else { self.push(Value::I64(0))?; }
+                }
+                Op::i64_load16_s => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 2 <= self.memory.len() {
+                        let val = i16::from_le_bytes([self.memory[addr], self.memory[addr+1]]);
+                        self.push(Value::I64(val as i64))?;
+                    } else { self.push(Value::I64(0))?; }
+                }
+                Op::i64_load16_u => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 2 <= self.memory.len() {
+                        let val = u16::from_le_bytes([self.memory[addr], self.memory[addr+1]]);
+                        self.push(Value::I64(val as i64))?;
+                    } else { self.push(Value::I64(0))?; }
+                }
+                Op::i64_load32_s => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 4 <= self.memory.len() {
+                        let val = i32::from_le_bytes([self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3]]);
+                        self.push(Value::I64(val as i64))?;
+                    } else { self.push(Value::I64(0))?; }
+                }
+                Op::i64_load32_u => {
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 4 <= self.memory.len() {
+                        let val = u32::from_le_bytes([self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3]]);
+                        self.push(Value::I64(val as i64))?;
+                    } else { self.push(Value::I64(0))?; }
+                }
+                Op::i64_store8 => {
+                    let val = self.pop().as_i64() as u8;
+                    let addr = self.pop().as_i32() as usize;
+                    if addr < self.memory.len() { self.memory[addr] = val; }
+                }
+                Op::i64_store16 => {
+                    let val = self.pop().as_i64() as i16;
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 2 <= self.memory.len() {
+                        let bytes = val.to_le_bytes();
+                        self.memory[addr..addr+2].copy_from_slice(&bytes);
+                    }
+                }
+                Op::i64_store32 => {
+                    let val = self.pop().as_i64() as i32;
+                    let addr = self.pop().as_i32() as usize;
+                    if addr + 4 <= self.memory.len() {
+                        let bytes = val.to_le_bytes();
+                        self.memory[addr..addr+4].copy_from_slice(&bytes);
+                    }
+                }
+
+                // -- Conversions --
+                Op::i32_wrap_i64 => { let a = self.pop().as_i64(); self.push(Value::I32(a as i32))?; }
+                Op::i64_extend_i32_s => { let a = self.pop().as_i32(); self.push(Value::I64(a as i64))?; }
+                Op::i64_extend_i32_u => { let a = self.pop().as_i32() as u32; self.push(Value::I64(a as i64))?; }
+                Op::i64_trunc_f64_s => { let a = self.pop().as_f64(); self.push(Value::I64(a as i64))?; }
+                Op::i64_trunc_f64_u => { let a = self.pop().as_f64(); self.push(Value::I64(a as u64 as i64))?; }
+                Op::f64_promote_f32 => { /* f32 already stored as f64 */ }
+                Op::f32_demote_f64 => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32) as f64))?; }
+                Op::i32_reinterpret_f32 => { let a = self.pop().as_f64() as f32; self.push(Value::I32(a.to_bits() as i32))?; }
+                Op::i64_reinterpret_f64 => { let a = self.pop().as_f64(); self.push(Value::I64(a.to_bits() as i64))?; }
+                Op::f32_reinterpret_i32 => { let a = self.pop().as_i32(); self.push(Value::F64(f32::from_bits(a as u32) as f64))?; }
+                Op::f64_reinterpret_i64 => { let a = self.pop().as_i64(); self.push(Value::F64(f64::from_bits(a as u64)))?; }
+
+                // -- Sign extension --
+                Op::i32_extend8_s => { let a = self.pop().as_i32() as i8; self.push(Value::I32(a as i32))?; }
+                Op::i32_extend16_s => { let a = self.pop().as_i32() as i16; self.push(Value::I32(a as i32))?; }
+                Op::i64_extend8_s => { let a = self.pop().as_i64() as i8; self.push(Value::I64(a as i64))?; }
+                Op::i64_extend16_s => { let a = self.pop().as_i64() as i16; self.push(Value::I64(a as i64))?; }
+                Op::i64_extend32_s => { let a = self.pop().as_i64() as i32; self.push(Value::I64(a as i64))?; }
 
                 // -- Multi-value --
                 Op::pack => {

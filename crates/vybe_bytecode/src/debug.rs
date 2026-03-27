@@ -24,7 +24,15 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         // No operands
         Op::drop | Op::dup |
         Op::f64_add | Op::f64_sub | Op::f64_mul | Op::f64_div | Op::f64_mod | Op::f64_neg |
-        Op::i32_add | Op::i32_sub | Op::i32_mul |
+        Op::f64_abs | Op::f64_ceil | Op::f64_floor | Op::f64_trunc | Op::f64_nearest | Op::f64_sqrt |
+        Op::f64_min | Op::f64_max | Op::f64_copysign |
+        Op::f32_abs | Op::f32_neg | Op::f32_ceil | Op::f32_floor | Op::f32_trunc | Op::f32_nearest | Op::f32_sqrt |
+        Op::f32_min | Op::f32_max | Op::f32_copysign |
+        Op::i32_add | Op::i32_sub | Op::i32_mul | Op::i32_div_s | Op::i32_div_u | Op::i32_rem_s | Op::i32_rem_u |
+        Op::i32_rotl | Op::i32_rotr | Op::i32_clz | Op::i32_ctz | Op::i32_popcnt | Op::i32_eqz |
+        Op::i64_add | Op::i64_sub | Op::i64_mul | Op::i64_div_s | Op::i64_div_u | Op::i64_rem_s | Op::i64_rem_u |
+        Op::i64_and | Op::i64_or | Op::i64_xor | Op::i64_shl | Op::i64_shr_s | Op::i64_shr_u |
+        Op::i64_rotl | Op::i64_rotr | Op::i64_clz | Op::i64_ctz | Op::i64_popcnt | Op::i64_eqz |
         Op::str_concat |
         Op::i32_and | Op::i32_or | Op::i32_xor | Op::i32_not | Op::i32_shl | Op::i32_shr_s | Op::i32_shr_u |
         Op::eq | Op::ne | Op::f64_lt | Op::f64_gt | Op::f64_le | Op::f64_ge |
@@ -39,6 +47,12 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::array_get | Op::array_set |
         Op::ref_is_null | Op::ref_is_string | Op::ref_is_number | Op::ref_is_bool | Op::ref_is_object | Op::ref_is_func |
         Op::f64_from_i32 | Op::i32_from_f64 |
+        Op::i32_wrap_i64 | Op::i64_extend_i32_s | Op::i64_extend_i32_u |
+        Op::i64_trunc_f64_s | Op::i64_trunc_f64_u |
+        Op::f64_promote_f32 | Op::f32_demote_f64 |
+        Op::i32_reinterpret_f32 | Op::i64_reinterpret_f64 | Op::f32_reinterpret_i32 | Op::f64_reinterpret_i64 |
+        Op::i32_extend8_s | Op::i32_extend16_s | Op::i64_extend8_s | Op::i64_extend16_s | Op::i64_extend32_s |
+        Op::select |
         Op::try_end | Op::throw |
         Op::inherit | Op::iter_get | Op::iter_next | Op::spread |
         Op::memory_size | Op::end | Op::unpack => {
@@ -90,7 +104,12 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
 
         // Memory load/store — no operand, just opcode (addr on stack)
         Op::i32_load | Op::i32_store | Op::i64_load | Op::i64_store |
-        Op::f64_load | Op::f64_store | Op::i32_load8_u | Op::i32_store8 => {
+        Op::f64_load | Op::f64_store | Op::f32_load | Op::f32_store |
+        Op::i32_load8_s | Op::i32_load8_u | Op::i32_load16_s | Op::i32_load16_u |
+        Op::i32_store8 | Op::i32_store16 |
+        Op::i64_load8_s | Op::i64_load8_u | Op::i64_load16_s | Op::i64_load16_u |
+        Op::i64_load32_s | Op::i64_load32_u |
+        Op::i64_store8 | Op::i64_store16 | Op::i64_store32 => {
             (format!("{:?}", op), offset + 1)
         }
 

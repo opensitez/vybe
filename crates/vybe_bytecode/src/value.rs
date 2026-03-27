@@ -40,6 +40,16 @@ impl Value {
         }
     }
 
+    pub fn as_i64(&self) -> i64 {
+        match self {
+            Value::I64(n) => *n,
+            Value::I32(n) => *n as i64,
+            Value::F64(n) => *n as i64,
+            Value::Bool(b) => if *b { 1 } else { 0 },
+            _ => 0,
+        }
+    }
+
     pub fn as_bool(&self) -> bool {
         matches!(self, Value::Bool(true))
     }

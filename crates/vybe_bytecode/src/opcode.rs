@@ -43,6 +43,10 @@ pub enum Op {
     i32_add,
     i32_sub,
     i32_mul,
+    i32_div_s,
+    i32_div_u,
+    i32_rem_s,
+    i32_rem_u,
 
     // -- String --
     str_concat,      // String + String → String
@@ -56,6 +60,11 @@ pub enum Op {
     i32_shl,
     i32_shr_s,      // signed shift right
     i32_shr_u,      // unsigned shift right
+    i32_rotl,        // rotate left
+    i32_rotr,        // rotate right
+    i32_clz,         // count leading zeros
+    i32_ctz,         // count trailing zeros
+    i32_popcnt,      // population count
 
     // -- Comparison --
     eq,              // same-type equality → Bool
@@ -154,6 +163,52 @@ pub enum Op {
     /// Prevents stack overflow on deep recursion.
     return_call,     // [return_call, u8 arg_count]
 
+    // -- i64 arithmetic --
+    i64_add,
+    i64_sub,
+    i64_mul,
+    i64_div_s,
+    i64_div_u,
+    i64_rem_s,
+    i64_rem_u,
+    i64_and,
+    i64_or,
+    i64_xor,
+    i64_shl,
+    i64_shr_s,
+    i64_shr_u,
+    i64_rotl,
+    i64_rotr,
+    i64_clz,
+    i64_ctz,
+    i64_popcnt,
+
+    // -- f64 math --
+    f64_abs,
+    f64_ceil,
+    f64_floor,
+    f64_trunc,
+    f64_nearest,
+    f64_sqrt,
+    f64_min,
+    f64_max,
+    f64_copysign,
+
+    // -- f32 (promoted to f64 in our VM) --
+    f32_abs,
+    f32_neg,
+    f32_ceil,
+    f32_floor,
+    f32_trunc,
+    f32_nearest,
+    f32_sqrt,
+    f32_min,
+    f32_max,
+    f32_copysign,
+
+    // -- WASM select --
+    select,          // [val1, val2, cond] → val1 if cond!=0 else val2
+
     // -- Linear memory (WASM MVP) --
     /// Memory operations on the VM's byte buffer.
     memory_size,     // → [i32 page_count]
@@ -164,8 +219,45 @@ pub enum Op {
     i64_store,       // [addr, value] → []
     f64_load,        // [addr] → [f64 value]
     f64_store,       // [addr, value] → []
+    f32_load,        // [addr] → [f32 as f64]
+    f32_store,       // [addr, f64 as f32] → []
+    i32_load8_s,     // [addr] → [i32 sign-extended byte]
     i32_load8_u,     // [addr] → [i32 byte]
+    i32_load16_s,    // [addr] → [i32 sign-extended i16]
+    i32_load16_u,    // [addr] → [i32 zero-extended u16]
+    i32_store16,     // [addr, value] → []
     i32_store8,      // [addr, byte] → []
+    i64_load8_s,
+    i64_load8_u,
+    i64_load16_s,
+    i64_load16_u,
+    i64_load32_s,
+    i64_load32_u,
+    i64_store8,
+    i64_store16,
+    i64_store32,
+
+    // -- Conversions --
+    i32_wrap_i64,
+    i64_extend_i32_s,
+    i64_extend_i32_u,
+    i64_trunc_f64_s,
+    i64_trunc_f64_u,
+    f64_promote_f32,
+    f32_demote_f64,
+    i32_reinterpret_f32,
+    i64_reinterpret_f64,
+    f32_reinterpret_i32,
+    f64_reinterpret_i64,
+    i32_extend8_s,
+    i32_extend16_s,
+    i64_extend8_s,
+    i64_extend16_s,
+    i64_extend32_s,
+
+    // -- WASM eqz --
+    i32_eqz,
+    i64_eqz,
 
     // -- Multi-value (WASM multi-value) --
     /// Pack N values from stack into an array.

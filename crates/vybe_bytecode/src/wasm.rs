@@ -227,18 +227,116 @@ fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)]) -> Vec<u8>
                 Op::i32_add => body.push(0x6A),
                 Op::i32_sub => body.push(0x6B),
                 Op::i32_mul => body.push(0x6C),
+                Op::i32_div_s => body.push(0x6D),
+                Op::i32_div_u => body.push(0x6E),
+                Op::i32_rem_s => body.push(0x6F),
+                Op::i32_rem_u => body.push(0x70),
                 Op::i32_and => body.push(0x71),
                 Op::i32_or => body.push(0x72),
                 Op::i32_xor => body.push(0x73),
                 Op::i32_shl => body.push(0x74),
                 Op::i32_shr_s => body.push(0x75),
+                Op::i32_shr_u => body.push(0x76),
+                Op::i32_rotl => body.push(0x77),
+                Op::i32_rotr => body.push(0x78),
+                Op::i32_clz => body.push(0x67),
+                Op::i32_ctz => body.push(0x68),
+                Op::i32_popcnt => body.push(0x69),
+                Op::i32_eqz => body.push(0x45),
+
+                // i64
+                Op::i64_add => body.push(0x7C),
+                Op::i64_sub => body.push(0x7D),
+                Op::i64_mul => body.push(0x7E),
+                Op::i64_div_s => body.push(0x7F),
+                Op::i64_div_u => body.push(0x80),
+                Op::i64_rem_s => body.push(0x81),
+                Op::i64_rem_u => body.push(0x82),
+                Op::i64_and => body.push(0x83),
+                Op::i64_or => body.push(0x84),
+                Op::i64_xor => body.push(0x85),
+                Op::i64_shl => body.push(0x86),
+                Op::i64_shr_s => body.push(0x87),
+                Op::i64_shr_u => body.push(0x88),
+                Op::i64_rotl => body.push(0x89),
+                Op::i64_rotr => body.push(0x8A),
+                Op::i64_clz => body.push(0x79),
+                Op::i64_ctz => body.push(0x7A),
+                Op::i64_popcnt => body.push(0x7B),
+                Op::i64_eqz => body.push(0x50),
+
+                // f64 math
+                Op::f64_abs => body.push(0x99),
+                Op::f64_neg => body.push(0x9A),
+                Op::f64_ceil => body.push(0x9B),
+                Op::f64_floor => body.push(0x9C),
+                Op::f64_trunc => body.push(0x9D),
+                Op::f64_nearest => body.push(0x9E),
+                Op::f64_sqrt => body.push(0x9F),
+                Op::f64_min => body.push(0xA4),
+                Op::f64_max => body.push(0xA5),
+                Op::f64_copysign => body.push(0xA6),
+
+                // f32 math
+                Op::f32_abs => body.push(0x8B),
+                Op::f32_neg => body.push(0x8C),
+                Op::f32_ceil => body.push(0x8D),
+                Op::f32_floor => body.push(0x8E),
+                Op::f32_trunc => body.push(0x8F),
+                Op::f32_nearest => body.push(0x90),
+                Op::f32_sqrt => body.push(0x91),
+                Op::f32_min => body.push(0x96),
+                Op::f32_max => body.push(0x97),
+                Op::f32_copysign => body.push(0x98),
+
+                // select
+                Op::select => body.push(0x1B),
+
+                // conversions
+                Op::i32_from_f64 => body.push(0xAA),
+                Op::f64_from_i32 => body.push(0xB7),
+                Op::i32_wrap_i64 => body.push(0xA7),
+                Op::i64_extend_i32_s => body.push(0xAC),
+                Op::i64_extend_i32_u => body.push(0xAD),
+                Op::i64_trunc_f64_s => body.push(0xB0),
+                Op::i64_trunc_f64_u => body.push(0xB1),
+                Op::f64_promote_f32 => body.push(0xB9),
+                Op::f32_demote_f64 => body.push(0xB6),
+                Op::i32_reinterpret_f32 => body.push(0xBC),
+                Op::i64_reinterpret_f64 => body.push(0xBD),
+                Op::f32_reinterpret_i32 => body.push(0xBA),
+                Op::f64_reinterpret_i64 => body.push(0xBB),
+                Op::i32_extend8_s => body.push(0xC0),
+                Op::i32_extend16_s => body.push(0xC1),
+                Op::i64_extend8_s => body.push(0xC2),
+                Op::i64_extend16_s => body.push(0xC3),
+                Op::i64_extend32_s => body.push(0xC4),
 
                 Op::memory_size => { body.push(0x3F); body.push(0x00); }
                 Op::memory_grow => { body.push(0x40); body.push(0x00); }
                 Op::i32_load => { body.push(0x28); body.push(0x02); body.push(0x00); }
-                Op::i32_store => { body.push(0x36); body.push(0x02); body.push(0x00); }
+                Op::i64_load => { body.push(0x29); body.push(0x03); body.push(0x00); }
+                Op::f32_load => { body.push(0x2A); body.push(0x02); body.push(0x00); }
                 Op::f64_load => { body.push(0x2B); body.push(0x03); body.push(0x00); }
+                Op::i32_load8_s => { body.push(0x2C); body.push(0x00); body.push(0x00); }
+                Op::i32_load8_u => { body.push(0x2D); body.push(0x00); body.push(0x00); }
+                Op::i32_load16_s => { body.push(0x2E); body.push(0x01); body.push(0x00); }
+                Op::i32_load16_u => { body.push(0x2F); body.push(0x01); body.push(0x00); }
+                Op::i64_load8_s => { body.push(0x30); body.push(0x00); body.push(0x00); }
+                Op::i64_load8_u => { body.push(0x31); body.push(0x00); body.push(0x00); }
+                Op::i64_load16_s => { body.push(0x32); body.push(0x01); body.push(0x00); }
+                Op::i64_load16_u => { body.push(0x33); body.push(0x01); body.push(0x00); }
+                Op::i64_load32_s => { body.push(0x34); body.push(0x02); body.push(0x00); }
+                Op::i64_load32_u => { body.push(0x35); body.push(0x02); body.push(0x00); }
+                Op::i32_store => { body.push(0x36); body.push(0x02); body.push(0x00); }
+                Op::i64_store => { body.push(0x37); body.push(0x03); body.push(0x00); }
+                Op::f32_store => { body.push(0x38); body.push(0x02); body.push(0x00); }
                 Op::f64_store => { body.push(0x39); body.push(0x03); body.push(0x00); }
+                Op::i32_store8 => { body.push(0x3A); body.push(0x00); body.push(0x00); }
+                Op::i32_store16 => { body.push(0x3B); body.push(0x01); body.push(0x00); }
+                Op::i64_store8 => { body.push(0x3C); body.push(0x00); body.push(0x00); }
+                Op::i64_store16 => { body.push(0x3D); body.push(0x01); body.push(0x00); }
+                Op::i64_store32 => { body.push(0x3E); body.push(0x02); body.push(0x00); }
 
                 Op::null => { body.push(0x42); write_leb128_i64(&mut body, 0); } // i64.const 0
                 Op::r#true => { body.push(0x42); write_leb128_i64(&mut body, 1); }
@@ -466,7 +564,7 @@ struct WasmLabel {
 fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count: u32, import_count: usize) -> Chunk {
     let mut chunk = Chunk::new(name);
     chunk.arity = arity;
-    chunk.local_count = (1 + arity as u32 + wasm_local_count) as u16;
+    chunk.local_count = 1 + arity as u16 + wasm_local_count as u16;
 
     let mut pos = 0;
     let mut label_stack: Vec<WasmLabel> = Vec::new();
@@ -589,12 +687,7 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             }
             0x0F => chunk.emit_op(Op::r#return, 0),
             0x1A => chunk.emit_op(Op::drop, 0),
-            0x1B => {
-                // select: [val1, val2, cond] → val1 if cond else val2
-                // Implement as: if cond then drop val2 else drop val1
-                // Simplified: just drop the condition and top value, keep bottom
-                chunk.emit_op(Op::drop, 0); // drop cond — simplified select
-            }
+            0x1B => chunk.emit_op(Op::select, 0),
 
             // call — adjust index (skip imports, offset to our chunk indices)
             0x10 => {
@@ -662,50 +755,60 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             }
 
             // i32 arithmetic — ALL opcodes
-            0x67 => chunk.emit_op(Op::null, 0),      // i32.clz (approx)
-            0x68 => chunk.emit_op(Op::null, 0),      // i32.ctz (approx)
-            0x69 => chunk.emit_op(Op::null, 0),      // i32.popcnt (approx)
-            0x6A => chunk.emit_op(Op::dyn_add, 0),   // i32.add
-            0x6B => chunk.emit_op(Op::f64_sub, 0),   // i32.sub
-            0x6C => chunk.emit_op(Op::f64_mul, 0),   // i32.mul
-            0x6D => chunk.emit_op(Op::f64_div, 0),   // i32.div_s
-            0x6E => chunk.emit_op(Op::f64_div, 0),   // i32.div_u
-            0x6F => chunk.emit_op(Op::f64_mod, 0),   // i32.rem_s
-            0x70 => chunk.emit_op(Op::f64_mod, 0),   // i32.rem_u
+            0x67 => chunk.emit_op(Op::i32_clz, 0),
+            0x68 => chunk.emit_op(Op::i32_ctz, 0),
+            0x69 => chunk.emit_op(Op::i32_popcnt, 0),
+            0x6A => chunk.emit_op(Op::i32_add, 0),
+            0x6B => chunk.emit_op(Op::i32_sub, 0),
+            0x6C => chunk.emit_op(Op::i32_mul, 0),
+            0x6D => chunk.emit_op(Op::i32_div_s, 0),
+            0x6E => chunk.emit_op(Op::i32_div_u, 0),
+            0x6F => chunk.emit_op(Op::i32_rem_s, 0),
+            0x70 => chunk.emit_op(Op::i32_rem_u, 0),
             0x71 => chunk.emit_op(Op::i32_and, 0),
             0x72 => chunk.emit_op(Op::i32_or, 0),
             0x73 => chunk.emit_op(Op::i32_xor, 0),
             0x74 => chunk.emit_op(Op::i32_shl, 0),
             0x75 => chunk.emit_op(Op::i32_shr_s, 0),
             0x76 => chunk.emit_op(Op::i32_shr_u, 0),
-            0x77 => chunk.emit_op(Op::i32_shl, 0),   // i32.rotl (approx)
-            0x78 => chunk.emit_op(Op::i32_shr_u, 0), // i32.rotr (approx)
+            0x77 => chunk.emit_op(Op::i32_rotl, 0),
+            0x78 => chunk.emit_op(Op::i32_rotr, 0),
 
-            // i64 arithmetic
-            0x7C => chunk.emit_op(Op::dyn_add, 0),   // i64.add
-            0x7D => chunk.emit_op(Op::f64_sub, 0),   // i64.sub
-            0x7E => chunk.emit_op(Op::f64_mul, 0),   // i64.mul
-            0x7F => chunk.emit_op(Op::f64_div, 0),   // i64.div_s
-            0x80 => chunk.emit_op(Op::f64_div, 0),   // i64.div_u
-            0x81 => chunk.emit_op(Op::f64_mod, 0),   // i64.rem_s
-            0x83 => chunk.emit_op(Op::i32_and, 0),   // i64.and
-            0x84 => chunk.emit_op(Op::i32_or, 0),    // i64.or
-            0x85 => chunk.emit_op(Op::i32_xor, 0),   // i64.xor
-            0x86 => chunk.emit_op(Op::i32_shl, 0),   // i64.shl
-            0x87 => chunk.emit_op(Op::i32_shr_s, 0), // i64.shr_s
-            0x88 => chunk.emit_op(Op::i32_shr_u, 0), // i64.shr_u
+            // i64 arithmetic — ALL opcodes
+            0x79 => chunk.emit_op(Op::i64_clz, 0),
+            0x7A => chunk.emit_op(Op::i64_ctz, 0),
+            0x7B => chunk.emit_op(Op::i64_popcnt, 0),
+            0x7C => chunk.emit_op(Op::i64_add, 0),
+            0x7D => chunk.emit_op(Op::i64_sub, 0),
+            0x7E => chunk.emit_op(Op::i64_mul, 0),
+            0x7F => chunk.emit_op(Op::i64_div_s, 0),
+            0x80 => chunk.emit_op(Op::i64_div_u, 0),
+            0x81 => chunk.emit_op(Op::i64_rem_s, 0),
+            0x82 => chunk.emit_op(Op::i64_rem_u, 0),
+            0x83 => chunk.emit_op(Op::i64_and, 0),
+            0x84 => chunk.emit_op(Op::i64_or, 0),
+            0x85 => chunk.emit_op(Op::i64_xor, 0),
+            0x86 => chunk.emit_op(Op::i64_shl, 0),
+            0x87 => chunk.emit_op(Op::i64_shr_s, 0),
+            0x88 => chunk.emit_op(Op::i64_shr_u, 0),
+            0x89 => chunk.emit_op(Op::i64_rotl, 0),
+            0x8A => chunk.emit_op(Op::i64_rotr, 0),
 
             // i64 comparison
-            0x50 => chunk.emit_op(Op::dyn_not, 0),   // i64.eqz
+            0x50 => chunk.emit_op(Op::i64_eqz, 0),
             0x51 => chunk.emit_op(Op::dyn_eq, 0),    // i64.eq
             0x52 => chunk.emit_op(Op::dyn_ne, 0),    // i64.ne
             0x53 => chunk.emit_op(Op::dyn_lt, 0),    // i64.lt_s
+            0x54 => chunk.emit_op(Op::dyn_lt, 0),    // i64.lt_u
             0x55 => chunk.emit_op(Op::dyn_gt, 0),    // i64.gt_s
+            0x56 => chunk.emit_op(Op::dyn_gt, 0),    // i64.gt_u
             0x57 => chunk.emit_op(Op::dyn_le, 0),    // i64.le_s
+            0x58 => chunk.emit_op(Op::dyn_le, 0),    // i64.le_u
             0x59 => chunk.emit_op(Op::dyn_ge, 0),    // i64.ge_s
+            0x5A => chunk.emit_op(Op::dyn_ge, 0),    // i64.ge_u
 
             // i32 comparison
-            0x45 => chunk.emit_op(Op::dyn_not, 0),    // i32.eqz
+            0x45 => chunk.emit_op(Op::i32_eqz, 0),
             0x46 => chunk.emit_op(Op::dyn_eq, 0),     // i32.eq
             0x47 => chunk.emit_op(Op::dyn_ne, 0),     // i32.ne
             0x48 => chunk.emit_op(Op::dyn_lt, 0),     // i32.lt_s
@@ -717,81 +820,130 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0x4E => chunk.emit_op(Op::dyn_ge, 0),     // i32.ge_s
             0x4F => chunk.emit_op(Op::dyn_ge, 0),     // i32.ge_u
 
-            // f64 arithmetic
+            // f64 arithmetic — ALL opcodes
             0xA0 => chunk.emit_op(Op::f64_add, 0),
             0xA1 => chunk.emit_op(Op::f64_sub, 0),
             0xA2 => chunk.emit_op(Op::f64_mul, 0),
             0xA3 => chunk.emit_op(Op::f64_div, 0),
+            0xA4 => chunk.emit_op(Op::f64_min, 0),
+            0xA5 => chunk.emit_op(Op::f64_max, 0),
+            0xA6 => chunk.emit_op(Op::f64_copysign, 0),
+
+            // f32 comparison
+            0x5B => chunk.emit_op(Op::dyn_eq, 0),    // f32.eq
+            0x5C => chunk.emit_op(Op::dyn_ne, 0),    // f32.ne
+            0x5D => chunk.emit_op(Op::dyn_lt, 0),    // f32.lt
+            0x5E => chunk.emit_op(Op::dyn_gt, 0),    // f32.gt
+            0x5F => chunk.emit_op(Op::dyn_le, 0),    // f32.le
+            0x60 => chunk.emit_op(Op::dyn_ge, 0),    // f32.ge
 
             // f64 comparison
-            0x61 => chunk.emit_op(Op::dyn_eq, 0),
-            0x62 => chunk.emit_op(Op::dyn_ne, 0),
-            0x63 => chunk.emit_op(Op::dyn_lt, 0),
-            0x64 => chunk.emit_op(Op::dyn_gt, 0),
-            0x65 => chunk.emit_op(Op::dyn_le, 0),
-            0x66 => chunk.emit_op(Op::dyn_ge, 0),
+            0x61 => chunk.emit_op(Op::dyn_eq, 0),    // f64.eq
+            0x62 => chunk.emit_op(Op::dyn_ne, 0),    // f64.ne
+            0x63 => chunk.emit_op(Op::dyn_lt, 0),    // f64.lt
+            0x64 => chunk.emit_op(Op::dyn_gt, 0),    // f64.gt
+            0x65 => chunk.emit_op(Op::dyn_le, 0),    // f64.le
+            0x66 => chunk.emit_op(Op::dyn_ge, 0),    // f64.ge
 
-            // Memory
+            // Memory — ALL load/store opcodes
             0x28 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i32_load, 0); }
             0x29 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_load, 0); }
+            0x2A => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::f32_load, 0); }
             0x2B => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::f64_load, 0); }
+            0x2C => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i32_load8_s, 0); }
             0x2D => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i32_load8_u, 0); }
+            0x2E => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i32_load16_s, 0); }
+            0x2F => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i32_load16_u, 0); }
+            0x30 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_load8_s, 0); }
+            0x31 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_load8_u, 0); }
+            0x32 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_load16_s, 0); }
+            0x33 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_load16_u, 0); }
+            0x34 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_load32_s, 0); }
+            0x35 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_load32_u, 0); }
             0x36 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i32_store, 0); }
             0x37 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_store, 0); }
+            0x38 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::f32_store, 0); }
             0x39 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::f64_store, 0); }
             0x3A => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i32_store8, 0); }
+            0x3B => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i32_store16, 0); }
+            0x3C => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_store8, 0); }
+            0x3D => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_store16, 0); }
+            0x3E => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::i64_store32, 0); }
             0x3F => { skip_leb128(wasm, &mut pos); chunk.emit_op(Op::memory_size, 0); }
             0x40 => { skip_leb128(wasm, &mut pos); chunk.emit_op(Op::memory_grow, 0); }
 
-            // f32 arithmetic (→ f64 in our VM)
-            0x92 => chunk.emit_op(Op::f64_add, 0),   // f32.add
-            0x93 => chunk.emit_op(Op::f64_sub, 0),   // f32.sub
-            0x94 => chunk.emit_op(Op::f64_mul, 0),   // f32.mul
-            0x95 => chunk.emit_op(Op::f64_div, 0),   // f32.div
+            // f32 arithmetic — ALL opcodes
+            0x8B => chunk.emit_op(Op::f32_abs, 0),
+            0x8C => chunk.emit_op(Op::f32_neg, 0),
+            0x8D => chunk.emit_op(Op::f32_ceil, 0),
+            0x8E => chunk.emit_op(Op::f32_floor, 0),
+            0x8F => chunk.emit_op(Op::f32_trunc, 0),
+            0x90 => chunk.emit_op(Op::f32_nearest, 0),
+            0x91 => chunk.emit_op(Op::f32_sqrt, 0),
+            0x92 => chunk.emit_op(Op::f64_add, 0),   // f32.add (promoted)
+            0x93 => chunk.emit_op(Op::f64_sub, 0),   // f32.sub (promoted)
+            0x94 => chunk.emit_op(Op::f64_mul, 0),   // f32.mul (promoted)
+            0x95 => chunk.emit_op(Op::f64_div, 0),   // f32.div (promoted)
+            0x96 => chunk.emit_op(Op::f32_min, 0),
+            0x97 => chunk.emit_op(Op::f32_max, 0),
+            0x98 => chunk.emit_op(Op::f32_copysign, 0),
 
-            // f64 extra ops
-            0x99 => chunk.emit_op(Op::dyn_neg, 0),   // f64.neg
-            0x9A => chunk.emit_op(Op::null, 0),       // f64.ceil (approx)
-            0x9B => chunk.emit_op(Op::null, 0),       // f64.floor (approx)
-            0x9C => chunk.emit_op(Op::null, 0),       // f64.trunc (approx)
-            0x9D => chunk.emit_op(Op::null, 0),       // f64.nearest (approx)
-            0x9E => chunk.emit_op(Op::null, 0),       // f64.sqrt (approx)
+            // f64 extra ops — ALL opcodes
+            0x99 => chunk.emit_op(Op::f64_abs, 0),
+            0x9A => chunk.emit_op(Op::f64_neg, 0),
+            0x9B => chunk.emit_op(Op::f64_ceil, 0),
+            0x9C => chunk.emit_op(Op::f64_floor, 0),
+            0x9D => chunk.emit_op(Op::f64_trunc, 0),
+            0x9E => chunk.emit_op(Op::f64_nearest, 0),
+            0x9F => chunk.emit_op(Op::f64_sqrt, 0),
 
             // ALL conversions
-            0xA7 => {} // i32.wrap_i64
+            0xA7 => chunk.emit_op(Op::i32_wrap_i64, 0),
             0xA8 => chunk.emit_op(Op::i32_from_f64, 0), // i32.trunc_f32_s
             0xA9 => chunk.emit_op(Op::i32_from_f64, 0), // i32.trunc_f32_u
             0xAA => chunk.emit_op(Op::i32_from_f64, 0), // i32.trunc_f64_s
             0xAB => chunk.emit_op(Op::i32_from_f64, 0), // i32.trunc_f64_u
-            0xAC => {} // i64.extend_i32_s
-            0xAD => {} // i64.extend_i32_u
-            0xAE => {} // i64.trunc_f32_s
-            0xAF => {} // i64.trunc_f32_u
-            0xB0 => {} // i64.trunc_f64_s
-            0xB1 => {} // i64.trunc_f64_u
+            0xAC => chunk.emit_op(Op::i64_extend_i32_s, 0),
+            0xAD => chunk.emit_op(Op::i64_extend_i32_u, 0),
+            0xAE => chunk.emit_op(Op::i64_trunc_f64_s, 0), // i64.trunc_f32_s (f32=f64 in VM)
+            0xAF => chunk.emit_op(Op::i64_trunc_f64_u, 0), // i64.trunc_f32_u
+            0xB0 => chunk.emit_op(Op::i64_trunc_f64_s, 0),
+            0xB1 => chunk.emit_op(Op::i64_trunc_f64_u, 0),
             0xB2 => chunk.emit_op(Op::f64_from_i32, 0), // f32.convert_i32_s
             0xB3 => chunk.emit_op(Op::f64_from_i32, 0), // f32.convert_i32_u
-            0xB4 => {} // f32.convert_i64_s
-            0xB5 => {} // f32.convert_i64_u
-            0xB6 => {} // f32.demote_f64
+            0xB4 => chunk.emit_op(Op::f64_from_i32, 0), // f32.convert_i64_s (i64→f64)
+            0xB5 => chunk.emit_op(Op::f64_from_i32, 0), // f32.convert_i64_u
+            0xB6 => chunk.emit_op(Op::f32_demote_f64, 0),
             0xB7 => chunk.emit_op(Op::f64_from_i32, 0), // f64.convert_i32_s
             0xB8 => chunk.emit_op(Op::f64_from_i32, 0), // f64.convert_i32_u
-            0xB9 => {} // f64.promote_f32
-            0xBA => {} // f32.reinterpret_i32
-            0xBB => {} // f64.reinterpret_i64
-            0xBC => {} // i32.reinterpret_f32
-            0xBD => {} // i64.reinterpret_f64
+            0xB9 => chunk.emit_op(Op::f64_promote_f32, 0),
+            0xBA => chunk.emit_op(Op::f32_reinterpret_i32, 0),
+            0xBB => chunk.emit_op(Op::f64_reinterpret_i64, 0),
+            0xBC => chunk.emit_op(Op::i32_reinterpret_f32, 0),
+            0xBD => chunk.emit_op(Op::i64_reinterpret_f64, 0),
 
             // Sign extension
-            0xC0 => {} // i32.extend8_s
-            0xC1 => {} // i32.extend16_s
-            0xC2 => {} // i64.extend8_s
-            0xC3 => {} // i64.extend16_s
-            0xC4 => {} // i64.extend32_s
+            0xC0 => chunk.emit_op(Op::i32_extend8_s, 0),
+            0xC1 => chunk.emit_op(Op::i32_extend16_s, 0),
+            0xC2 => chunk.emit_op(Op::i64_extend8_s, 0),
+            0xC3 => chunk.emit_op(Op::i64_extend16_s, 0),
+            0xC4 => chunk.emit_op(Op::i64_extend32_s, 0),
 
-            // global.get/set (WASM globals — we skip for now)
-            0x23 => { skip_leb128(wasm, &mut pos); chunk.emit_op(Op::null, 0); }
-            0x24 => { skip_leb128(wasm, &mut pos); chunk.emit_op(Op::drop, 0); }
+            // global.get/set — WASM globals mapped to global_get/set with index as name
+            0x23 => {
+                let (idx, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                let name = format!("__wasm_global_{}", idx);
+                let ci = chunk.add_constant(Value::String(Rc::from(name.as_str())));
+                chunk.emit_op_u16(Op::global_get, ci, 0);
+            }
+            0x24 => {
+                let (idx, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                let name = format!("__wasm_global_{}", idx);
+                let ci = chunk.add_constant(Value::String(Rc::from(name.as_str())));
+                chunk.emit_op_u16(Op::global_set, ci, 0);
+            }
 
             // call_indirect
             0x11 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); }
