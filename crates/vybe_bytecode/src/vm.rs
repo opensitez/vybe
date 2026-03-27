@@ -239,6 +239,24 @@ impl VM {
         }
     }
 
+    /// JSPI: Resolve a suspended promise and resume execution.
+    /// Called by the runtime/event loop when an async operation completes.
+    /// `promise_id` identifies which suspension to resume.
+    /// `value` is the resolved value that becomes the return of the host call.
+    pub fn jspi_resolve(&mut self, promise_id: u64, value: Value) -> Result<Value, VMError> {
+        let fiber = self.event_loop.borrow_mut().resolve_promise(promise_id, value);
+        if let Some(fiber) = fiber {
+            self.resume_fiber(fiber)
+        } else {
+            Ok(Value::Null)
+        }
+    }
+
+    /// Check if there are any JSPI-suspended fibers waiting for resolution.
+    pub fn has_pending_jspi(&self) -> bool {
+        self.event_loop.borrow().has_pending()
+    }
+
     /// Save the current execution state to a Fiber.
     fn save_fiber(&mut self) -> Fiber {
         let frames = self.frames.drain(..).map(|f| SavedFrame {
@@ -896,6 +914,30 @@ impl VM {
                     if import_idx < self.import_table.len() {
                         let host_idx = self.import_table[import_idx];
                         let result = (self.host_fns[host_idx])(&args);
+
+                        // JSPI: if host function returned a pending Promise,
+                        // transparently suspend and resume when resolved.
+                        // The calling code doesn't need `await` — it looks synchronous.
+                        if let Value::Object(ref obj) = result {
+                            let o = obj.borrow();
+                            let is_pending = o.properties.get("__type")
+                                .map(|v| format!("{}", v) == "Promise")
+                                .unwrap_or(false)
+                                && o.properties.get("__state")
+                                    .map(|v| format!("{}", v) == "pending")
+                                    .unwrap_or(false);
+                            if is_pending {
+                                let promise_id = o.properties.get("__id")
+                                    .map(|v| v.as_f64() as u64)
+                                    .unwrap_or(0);
+                                drop(o);
+                                // JSPI suspend: save entire VM state as a fiber
+                                let fiber = self.save_fiber();
+                                self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
+                                return Err(VMError::new(format!("__jspi__:{}", promise_id)));
+                            }
+                        }
+
                         self.push(result)?;
                     } else {
                         return Err(VMError::new(format!("Unresolved import index: {}", import_idx)));
@@ -2333,15 +2375,35 @@ impl VM {
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
 
-                // -- JS Promise Integration --
+                // -- JS Promise Integration (JSPI) --
                 Op::promise_suspend => {
-                    // Same as await but using native WASM suspend semantics.
-                    // The promise/value is on TOS. If it's already resolved, continue.
-                    // If pending, the event loop handles suspension.
+                    // Explicit JSPI suspend point. Like await, but can be inserted
+                    // by the compiler for synchronous-looking code that calls async APIs.
                     let val = self.pop();
-                    self.push(val)?;
-                    // In a real WASM runtime, this would suspend the WASM instance.
-                    // In our VM, it's handled by the existing await mechanism.
+                    if let Value::Object(ref obj) = val {
+                        let o = obj.borrow();
+                        let is_pending = o.properties.get("__type")
+                            .map(|v| format!("{}", v) == "Promise")
+                            .unwrap_or(false)
+                            && o.properties.get("__state")
+                                .map(|v| format!("{}", v) == "pending")
+                                .unwrap_or(false);
+                        if is_pending {
+                            let promise_id = o.properties.get("__id")
+                                .map(|v| v.as_f64() as u64)
+                                .unwrap_or(0);
+                            drop(o);
+                            let fiber = self.save_fiber();
+                            self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
+                            return Err(VMError::new(format!("__jspi__:{}", promise_id)));
+                        }
+                        let resolved = o.properties.get("__value").cloned().unwrap_or(Value::Null);
+                        drop(o);
+                        self.push(resolved)?;
+                    } else {
+                        // Not a promise — return value as-is
+                        self.push(val)?;
+                    }
                 }
 
                 // -- Stubs --

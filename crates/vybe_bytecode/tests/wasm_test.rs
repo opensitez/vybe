@@ -1101,3 +1101,176 @@ fn memory64_grow_and_load() {
     let result = run_chunks(vec![chunk]);
     match result { Value::I32(42) => {} _ => panic!("Expected I32(42), got {:?}", result) }
 }
+
+// ============================================================
+// JSPI (JavaScript Promise Integration)
+// ============================================================
+
+fn make_promise(id: u64, state: &str, value: Value) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert("__type".into(), Value::String(Rc::from("Promise")));
+    obj.properties.insert("__id".into(), Value::F64(id as f64));
+    obj.properties.insert("__state".into(), Value::String(Rc::from(state)));
+    obj.properties.insert("__value".into(), value);
+    Value::Object(Rc::new(RefCell::new(obj)))
+}
+
+#[test]
+fn jspi_resolved_promise_returns_immediately() {
+    // Host function returns an already-resolved promise.
+    // JSPI should extract the value without suspending.
+    let mut vm = VM::new();
+    vm.register_host_fn("test", "fetch_sync", Box::new(|_args: &[Value]| {
+        make_promise(1, "fulfilled", Value::String(Rc::from("data from server")))
+    }));
+
+    let mut chunk = Chunk::new("<test>");
+    let idx = chunk.add_import("test", "fetch_sync");
+    chunk.emit_op_u16(Op::call_import, idx, 0);
+    chunk.emit(0, 0); // 0 args
+
+    // The result is a fulfilled promise — JSPI should NOT suspend.
+    // It should push the promise object (call_import doesn't auto-unwrap fulfilled).
+    // To unwrap, we use promise_suspend opcode.
+    chunk.emit_op(Op::promise_suspend, 0);
+    chunk.emit_op(Op::halt, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    match &result {
+        Value::String(s) if s.as_ref() == "data from server" => {}
+        _ => panic!("Expected 'data from server', got {:?}", result),
+    }
+}
+
+#[test]
+fn jspi_non_promise_passes_through() {
+    // Host function returns a plain value (not a promise).
+    // JSPI should pass it through unchanged.
+    let mut vm = VM::new();
+    vm.register_host_fn("test", "compute", Box::new(|_args: &[Value]| {
+        Value::I32(42)
+    }));
+
+    let mut chunk = Chunk::new("<test>");
+    let idx = chunk.add_import("test", "compute");
+    chunk.emit_op_u16(Op::call_import, idx, 0);
+    chunk.emit(0, 0);
+    chunk.emit_op(Op::halt, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    match result { Value::I32(42) => {} _ => panic!("Expected I32(42), got {:?}", result) }
+}
+
+#[test]
+fn jspi_pending_promise_suspends() {
+    // Host function returns a pending promise.
+    // JSPI should suspend the fiber and return a special error.
+    let mut vm = VM::new();
+    vm.register_host_fn("test", "slow_fetch", Box::new(|_args: &[Value]| {
+        make_promise(99, "pending", Value::Null)
+    }));
+
+    let mut chunk = Chunk::new("<test>");
+    let idx = chunk.add_import("test", "slow_fetch");
+    chunk.emit_op_u16(Op::call_import, idx, 0);
+    chunk.emit(0, 0);
+    // This should never reach — the host call suspends via JSPI
+    chunk.emit_op(Op::halt, 0);
+
+    let result = vm.run(vec![chunk]);
+    // Should get a JSPI suspension error
+    match result {
+        Err(e) => {
+            let msg = format!("{}", e);
+            assert!(msg.contains("__jspi__:99"), "Expected JSPI suspension, got: {}", msg);
+        }
+        Ok(v) => panic!("Expected JSPI suspension, got Ok({:?})", v),
+    }
+}
+
+#[test]
+fn jspi_suspend_then_resume() {
+    // Full JSPI cycle: host returns pending → suspend → resolve → resume.
+    let mut vm = VM::new();
+    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let out = output.clone();
+
+    vm.register_host_fn("test", "log", Box::new(move |args: &[Value]| {
+        out.borrow_mut().push(format!("{}", args.first().unwrap_or(&Value::Null)));
+        Value::Null
+    }));
+    vm.register_host_fn("test", "async_load", Box::new(|_args: &[Value]| {
+        make_promise(42, "pending", Value::Null)
+    }));
+
+    let mut chunk = Chunk::new("<test>");
+
+    // Step 1: log "before"
+    let msg1 = chunk.add_constant(Value::String(Rc::from("before")));
+    chunk.emit_op_u16(Op::r#const, msg1, 0);
+    let log_idx = chunk.add_import("test", "log");
+    chunk.emit_op_u16(Op::call_import, log_idx, 0);
+    chunk.emit(1, 0);
+    chunk.emit_op(Op::drop, 0);
+
+    // Step 2: call async_load — this suspends via JSPI
+    let load_idx = chunk.add_import("test", "async_load");
+    chunk.emit_op_u16(Op::call_import, load_idx, 0);
+    chunk.emit(0, 0);
+
+    // Step 3: log the result (only reached after resume)
+    chunk.emit_op_u16(Op::call_import, log_idx, 0);
+    chunk.emit(1, 0);
+    chunk.emit_op(Op::drop, 0);
+
+    // Step 4: log "after"
+    let msg2 = chunk.add_constant(Value::String(Rc::from("after")));
+    chunk.emit_op_u16(Op::r#const, msg2, 0);
+    chunk.emit_op_u16(Op::call_import, log_idx, 0);
+    chunk.emit(1, 0);
+    chunk.emit_op(Op::drop, 0);
+
+    chunk.emit_op(Op::halt, 0);
+
+    // Run — should suspend at async_load
+    let result = vm.run(vec![chunk]);
+    assert!(result.is_err());
+    assert_eq!(*output.borrow(), vec!["before"]);
+    assert!(vm.has_pending_jspi());
+
+    // Resolve the promise — this resumes execution
+    vm.jspi_resolve(42, Value::String(Rc::from("loaded data"))).unwrap();
+
+    // Now "after" should have been logged
+    assert_eq!(*output.borrow(), vec!["before", "loaded data", "after"]);
+    assert!(!vm.has_pending_jspi());
+}
+
+#[test]
+fn jspi_promise_suspend_opcode() {
+    // Test the promise_suspend opcode with a fulfilled promise
+    let mut chunk = Chunk::new("<test>");
+    // Create a fulfilled promise manually via constants
+    let type_k = chunk.add_constant(Value::String(Rc::from("__type")));
+    let type_v = chunk.add_constant(Value::String(Rc::from("Promise")));
+    let state_k = chunk.add_constant(Value::String(Rc::from("__state")));
+    let state_v = chunk.add_constant(Value::String(Rc::from("fulfilled")));
+    let value_k = chunk.add_constant(Value::String(Rc::from("__value")));
+    let value_v = chunk.add_constant(Value::I32(99));
+
+    // Build object: {__type: "Promise", __state: "fulfilled", __value: 99}
+    chunk.emit_op_u16(Op::r#const, type_k, 0);
+    chunk.emit_op_u16(Op::r#const, type_v, 0);
+    chunk.emit_op_u16(Op::r#const, state_k, 0);
+    chunk.emit_op_u16(Op::r#const, state_v, 0);
+    chunk.emit_op_u16(Op::r#const, value_k, 0);
+    chunk.emit_op_u16(Op::r#const, value_v, 0);
+    chunk.emit_op_u16(Op::struct_new, 3, 0);
+
+    // promise_suspend should extract the value
+    chunk.emit_op(Op::promise_suspend, 0);
+    chunk.emit_op(Op::halt, 0);
+
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(99) => {} _ => panic!("Expected I32(99), got {:?}", result) }
+}
