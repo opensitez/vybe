@@ -1,6 +1,7 @@
 use vybe_bytecode::*;
 use vybe_bytecode::value::*;
 use std::rc::Rc;
+use std::cell::RefCell;
 
 // ============================================================
 // Helper: build chunks, write to WASM, read back
@@ -689,4 +690,414 @@ fn wasm_writer_magic() {
     let bytes = wasm::write_wasm(&vec![chunk]);
     assert_eq!(&bytes[0..4], &[0x00, 0x61, 0x73, 0x6D]);
     assert_eq!(&bytes[4..8], &[0x01, 0x00, 0x00, 0x00]);
+}
+
+// ============================================================
+// JS String Builtins
+// ============================================================
+
+#[test]
+fn str_length_op() {
+    let mut chunk = Chunk::new("test");
+    let cs = chunk.add_constant(Value::String(Rc::from("hello")));
+    chunk.emit_op_u16(Op::r#const, cs, 0);
+    chunk.emit_op(Op::str_length, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
+}
+
+#[test]
+fn str_to_upper_lower() {
+    let mut chunk = Chunk::new("test");
+    let cs = chunk.add_constant(Value::String(Rc::from("Hello")));
+    chunk.emit_op_u16(Op::r#const, cs, 0);
+    chunk.emit_op(Op::str_to_upper, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match &result { Value::String(s) if s.as_ref() == "HELLO" => {} _ => panic!("Expected HELLO, got {:?}", result) }
+}
+
+#[test]
+fn str_char_code_and_from() {
+    let mut chunk = Chunk::new("test");
+    // chr(65) → "A"
+    let c65 = chunk.add_constant(Value::I32(65));
+    chunk.emit_op_u16(Op::r#const, c65, 0);
+    chunk.emit_op(Op::str_from_char_code, 0);
+    // "A" → char_code_at(0) → 65
+    chunk.emit_op(Op::i32_const_0, 0);
+    chunk.emit_op(Op::str_char_code_at, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(65) => {} _ => panic!("Expected I32(65), got {:?}", result) }
+}
+
+#[test]
+fn str_index_of_op() {
+    let mut chunk = Chunk::new("test");
+    let cs = chunk.add_constant(Value::String(Rc::from("hello world")));
+    let cn = chunk.add_constant(Value::String(Rc::from("world")));
+    chunk.emit_op_u16(Op::r#const, cs, 0);
+    chunk.emit_op_u16(Op::r#const, cn, 0);
+    chunk.emit_op(Op::str_index_of, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(6) => {} _ => panic!("Expected I32(6), got {:?}", result) }
+}
+
+#[test]
+fn str_substring_op() {
+    let mut chunk = Chunk::new("test");
+    let cs = chunk.add_constant(Value::String(Rc::from("hello world")));
+    let c0 = chunk.add_constant(Value::I32(0));
+    let c5 = chunk.add_constant(Value::I32(5));
+    chunk.emit_op_u16(Op::r#const, cs, 0);
+    chunk.emit_op_u16(Op::r#const, c0, 0);
+    chunk.emit_op_u16(Op::r#const, c5, 0);
+    chunk.emit_op(Op::str_substring, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match &result { Value::String(s) if s.as_ref() == "hello" => {} _ => panic!("Expected hello, got {:?}", result) }
+}
+
+#[test]
+fn str_replace_op() {
+    let mut chunk = Chunk::new("test");
+    let cs = chunk.add_constant(Value::String(Rc::from("hello world")));
+    let co = chunk.add_constant(Value::String(Rc::from("world")));
+    let cn = chunk.add_constant(Value::String(Rc::from("rust")));
+    chunk.emit_op_u16(Op::r#const, cs, 0);
+    chunk.emit_op_u16(Op::r#const, co, 0);
+    chunk.emit_op_u16(Op::r#const, cn, 0);
+    chunk.emit_op(Op::str_replace, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match &result { Value::String(s) if s.as_ref() == "hello rust" => {} _ => panic!("Expected 'hello rust', got {:?}", result) }
+}
+
+#[test]
+fn str_split_op() {
+    let mut chunk = Chunk::new("test");
+    let cs = chunk.add_constant(Value::String(Rc::from("a,b,c")));
+    let cd = chunk.add_constant(Value::String(Rc::from(",")));
+    chunk.emit_op_u16(Op::r#const, cs, 0);
+    chunk.emit_op_u16(Op::r#const, cd, 0);
+    chunk.emit_op(Op::str_split, 0);
+    chunk.emit_op(Op::array_length, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(3) => {} _ => panic!("Expected I32(3), got {:?}", result) }
+}
+
+#[test]
+fn str_trim_op() {
+    let mut chunk = Chunk::new("test");
+    let cs = chunk.add_constant(Value::String(Rc::from("  hello  ")));
+    chunk.emit_op_u16(Op::r#const, cs, 0);
+    chunk.emit_op(Op::str_trim, 0);
+    chunk.emit_op(Op::str_length, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
+}
+
+#[test]
+fn str_starts_ends_contains() {
+    let mut chunk = Chunk::new("test");
+    let cs = chunk.add_constant(Value::String(Rc::from("hello world")));
+    let cp = chunk.add_constant(Value::String(Rc::from("hello")));
+    chunk.emit_op_u16(Op::r#const, cs, 0);
+    chunk.emit_op_u16(Op::r#const, cp, 0);
+    chunk.emit_op(Op::str_starts_with, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::Bool(true) => {} _ => panic!("Expected Bool(true), got {:?}", result) }
+}
+
+// ============================================================
+// Array Builtins
+// ============================================================
+
+#[test]
+fn array_length_op() {
+    let mut chunk = Chunk::new("test");
+    let c1 = chunk.add_constant(Value::I32(10));
+    let c2 = chunk.add_constant(Value::I32(20));
+    let c3 = chunk.add_constant(Value::I32(30));
+    chunk.emit_op_u16(Op::r#const, c1, 0);
+    chunk.emit_op_u16(Op::r#const, c2, 0);
+    chunk.emit_op_u16(Op::r#const, c3, 0);
+    chunk.emit_op_u16(Op::array_new, 3, 0);
+    chunk.emit_op(Op::array_length, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(3) => {} _ => panic!("Expected I32(3), got {:?}", result) }
+}
+
+#[test]
+fn array_push_pop() {
+    let mut chunk = Chunk::new("test");
+    // Create [10, 20]
+    let c10 = chunk.add_constant(Value::I32(10));
+    let c20 = chunk.add_constant(Value::I32(20));
+    let c30 = chunk.add_constant(Value::I32(30));
+    chunk.emit_op_u16(Op::r#const, c10, 0);
+    chunk.emit_op_u16(Op::r#const, c20, 0);
+    chunk.emit_op_u16(Op::array_new, 2, 0);
+    // push 30
+    chunk.emit_op_u16(Op::r#const, c30, 0);
+    chunk.emit_op(Op::array_push, 0);
+    // pop → should get 30
+    chunk.emit_op(Op::array_pop, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(30) => {} _ => panic!("Expected I32(30), got {:?}", result) }
+}
+
+#[test]
+fn array_new_default_op() {
+    let mut chunk = Chunk::new("test");
+    let c5 = chunk.add_constant(Value::I32(5));
+    chunk.emit_op_u16(Op::r#const, c5, 0);
+    chunk.emit_op(Op::array_new_default, 0);
+    chunk.emit_op(Op::array_length, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
+}
+
+#[test]
+fn array_concat_op() {
+    let mut chunk = Chunk::new("test");
+    let c1 = chunk.add_constant(Value::I32(1));
+    let c2 = chunk.add_constant(Value::I32(2));
+    let c3 = chunk.add_constant(Value::I32(3));
+    chunk.emit_op_u16(Op::r#const, c1, 0);
+    chunk.emit_op_u16(Op::r#const, c2, 0);
+    chunk.emit_op_u16(Op::array_new, 2, 0);
+    chunk.emit_op_u16(Op::r#const, c3, 0);
+    chunk.emit_op_u16(Op::array_new, 1, 0);
+    chunk.emit_op(Op::array_concat, 0);
+    chunk.emit_op(Op::array_length, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(3) => {} _ => panic!("Expected I32(3), got {:?}", result) }
+}
+
+// ============================================================
+// SIMD (i32x4)
+// ============================================================
+
+#[test]
+fn simd_i32x4_add() {
+    let mut chunk = Chunk::new("test");
+    // splat 10 → [10, 10, 10, 10]
+    let c10 = chunk.add_constant(Value::I32(10));
+    chunk.emit_op_u16(Op::r#const, c10, 0);
+    chunk.emit_op(Op::i32x4_splat, 0);
+    // splat 5 → [5, 5, 5, 5]
+    let c5 = chunk.add_constant(Value::I32(5));
+    chunk.emit_op_u16(Op::r#const, c5, 0);
+    chunk.emit_op(Op::i32x4_splat, 0);
+    // add → [15, 15, 15, 15]
+    chunk.emit_op(Op::i32x4_add, 0);
+    // extract lane 0 → 15
+    chunk.emit_op_u8(Op::i32x4_extract_lane, 0, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(15) => {} _ => panic!("Expected I32(15), got {:?}", result) }
+}
+
+#[test]
+fn simd_f64x2_mul() {
+    let mut chunk = Chunk::new("test");
+    let c3 = chunk.add_constant(Value::F64(3.0));
+    chunk.emit_op_u16(Op::r#const, c3, 0);
+    chunk.emit_op(Op::f64x2_splat, 0);
+    let c7 = chunk.add_constant(Value::F64(7.0));
+    chunk.emit_op_u16(Op::r#const, c7, 0);
+    chunk.emit_op(Op::f64x2_splat, 0);
+    chunk.emit_op(Op::f64x2_mul, 0);
+    chunk.emit_op_u8(Op::f64x2_extract_lane, 0, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::F64(v) if v == 21.0 => {} _ => panic!("Expected F64(21.0), got {:?}", result) }
+}
+
+#[test]
+fn simd_v128_bitwise() {
+    let mut chunk = Chunk::new("test");
+    // [0xFF, 0xFF, ...] AND [0x0F, 0x0F, ...] = [0x0F, 0x0F, ...]
+    let c_ff = chunk.add_constant(Value::I32(0xFF));
+    chunk.emit_op_u16(Op::r#const, c_ff, 0);
+    chunk.emit_op(Op::i8x16_splat, 0);
+    let c_0f = chunk.add_constant(Value::I32(0x0F));
+    chunk.emit_op_u16(Op::r#const, c_0f, 0);
+    chunk.emit_op(Op::i8x16_splat, 0);
+    chunk.emit_op(Op::v128_and, 0);
+    chunk.emit_op_u8(Op::i8x16_extract_lane_u, 0, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(0x0F) => {} _ => panic!("Expected I32(0x0F), got {:?}", result) }
+}
+
+// ============================================================
+// Atomics (single-threaded correctness)
+// ============================================================
+
+#[test]
+fn atomic_rmw_add() {
+    let mut chunk = Chunk::new("test");
+    // Grow memory
+    let c1 = chunk.add_constant(Value::I32(1));
+    chunk.emit_op_u16(Op::r#const, c1, 0);
+    chunk.emit_op(Op::memory_grow, 0);
+    chunk.emit_op(Op::drop, 0);
+    // Store 100 at addr 0
+    let c0 = chunk.add_constant(Value::I32(0));
+    let c100 = chunk.add_constant(Value::I32(100));
+    chunk.emit_op_u16(Op::r#const, c0, 0);
+    chunk.emit_op_u16(Op::r#const, c100, 0);
+    chunk.emit_op(Op::i32_atomic_store, 0);
+    // atomic_rmw_add(0, 42) → old=100, new=142
+    chunk.emit_op_u16(Op::r#const, c0, 0);
+    let c42 = chunk.add_constant(Value::I32(42));
+    chunk.emit_op_u16(Op::r#const, c42, 0);
+    chunk.emit_op(Op::i32_atomic_rmw_add, 0);
+    // Returns old value (100)
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(100) => {} _ => panic!("Expected I32(100), got {:?}", result) }
+}
+
+#[test]
+fn atomic_cmpxchg() {
+    let mut chunk = Chunk::new("test");
+    let c1 = chunk.add_constant(Value::I32(1));
+    chunk.emit_op_u16(Op::r#const, c1, 0);
+    chunk.emit_op(Op::memory_grow, 0);
+    chunk.emit_op(Op::drop, 0);
+    // Store 50 at addr 0
+    let c0 = chunk.add_constant(Value::I32(0));
+    let c50 = chunk.add_constant(Value::I32(50));
+    chunk.emit_op_u16(Op::r#const, c0, 0);
+    chunk.emit_op_u16(Op::r#const, c50, 0);
+    chunk.emit_op(Op::i32_atomic_store, 0);
+    // cmpxchg(addr=0, expected=50, replacement=99) → old=50, swap happens
+    let c99 = chunk.add_constant(Value::I32(99));
+    chunk.emit_op_u16(Op::r#const, c0, 0);
+    chunk.emit_op_u16(Op::r#const, c50, 0);
+    chunk.emit_op_u16(Op::r#const, c99, 0);
+    chunk.emit_op(Op::i32_atomic_rmw_cmpxchg, 0);
+    chunk.emit_op(Op::drop, 0); // drop old (50)
+    // Load → should be 99
+    chunk.emit_op_u16(Op::r#const, c0, 0);
+    chunk.emit_op(Op::i32_atomic_load, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(99) => {} _ => panic!("Expected I32(99), got {:?}", result) }
+}
+
+// ============================================================
+// i31ref (tagged small integers)
+// ============================================================
+
+#[test]
+fn i31ref_roundtrip() {
+    let mut chunk = Chunk::new("test");
+    let c42 = chunk.add_constant(Value::I32(42));
+    chunk.emit_op_u16(Op::r#const, c42, 0);
+    chunk.emit_op(Op::i31_new, 0);
+    chunk.emit_op(Op::i31_get_s, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(42) => {} _ => panic!("Expected I32(42), got {:?}", result) }
+}
+
+#[test]
+fn i31ref_negative() {
+    let mut chunk = Chunk::new("test");
+    // -1 & 0x7FFF_FFFF = 0x7FFF_FFFF, sign extend from bit 30 → -1
+    let cn1 = chunk.add_constant(Value::I32(-1));
+    chunk.emit_op_u16(Op::r#const, cn1, 0);
+    chunk.emit_op(Op::i31_new, 0);
+    chunk.emit_op(Op::i31_get_s, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(-1) => {} _ => panic!("Expected I32(-1), got {:?}", result) }
+}
+
+// ============================================================
+// ref_cast / br_on_cast
+// ============================================================
+
+#[test]
+fn ref_cast_success() {
+    let mut chunk = Chunk::new("test");
+    let cs = chunk.add_constant(Value::String(Rc::from("hello")));
+    let ct = chunk.add_constant(Value::String(Rc::from("string")));
+    chunk.emit_op_u16(Op::r#const, cs, 0);
+    chunk.emit_op_u16(Op::ref_cast, ct, 0);
+    // Should not trap — value stays on stack
+    chunk.emit_op(Op::str_length, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
+}
+
+// ============================================================
+// call_ref (typed function references)
+// ============================================================
+
+#[test]
+fn call_ref_basic() {
+    // Chunk 0: script — create closure, call via call_ref
+    let mut script = Chunk::new("<script>");
+    // Chunk 1: double function (x → x * 2)
+    let mut double_chunk = Chunk::new("double");
+    double_chunk.arity = 1;
+    double_chunk.local_count = 2;
+    double_chunk.emit_op_u16(Op::local_get, 1, 0);
+    let c2 = double_chunk.add_constant(Value::F64(2.0));
+    double_chunk.emit_op_u16(Op::r#const, c2, 0);
+    double_chunk.emit_op(Op::f64_mul, 0);
+    double_chunk.emit_op(Op::r#return, 0);
+
+    // Script: ref_func 1, push arg 21, call_ref 1
+    script.emit_op_u16(Op::ref_func, 1, 0);
+    script.emit(0, 0); // 0 upvalues
+    let c21 = script.add_constant(Value::F64(21.0));
+    script.emit_op_u16(Op::r#const, c21, 0);
+    script.emit_op_u8(Op::call_ref, 1, 0);
+    script.emit_op(Op::halt, 0);
+
+    let result = run_chunks(vec![script, double_chunk]);
+    match result { Value::F64(v) if v == 42.0 => {} _ => panic!("Expected F64(42.0), got {:?}", result) }
+}
+
+// ============================================================
+// Memory64
+// ============================================================
+
+#[test]
+fn memory64_grow_and_load() {
+    let mut chunk = Chunk::new("test");
+    // Grow with i64
+    let c1 = chunk.add_constant(Value::I64(1));
+    chunk.emit_op_u16(Op::r#const, c1, 0);
+    chunk.emit_op(Op::i64_memory_grow, 0);
+    chunk.emit_op(Op::drop, 0);
+    // Store 42 at i64 addr 0
+    let c0 = chunk.add_constant(Value::I64(0));
+    let c42 = chunk.add_constant(Value::I32(42));
+    chunk.emit_op_u16(Op::r#const, c0, 0);
+    chunk.emit_op_u16(Op::r#const, c42, 0);
+    chunk.emit_op(Op::i32_store_64, 0);
+    // Load back
+    chunk.emit_op_u16(Op::r#const, c0, 0);
+    chunk.emit_op(Op::i32_load_64, 0);
+    chunk.emit_op(Op::halt, 0);
+    let result = run_chunks(vec![chunk]);
+    match result { Value::I32(42) => {} _ => panic!("Expected I32(42), got {:?}", result) }
 }

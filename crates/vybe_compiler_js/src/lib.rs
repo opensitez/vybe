@@ -44,6 +44,7 @@ pub fn register_js_coercion(vm: &mut VM) {
                     _ => "object",
                 }
             }
+            Value::V128(_) => "object",
         };
         Value::String(Rc::from(s))
     }));
@@ -85,7 +86,7 @@ fn js_truthy(v: &Value) -> bool {
         Value::I32(n) => *n != 0,
         Value::I64(n) => *n != 0,
         Value::String(s) => !s.is_empty(),
-        Value::Object(_) => true,
+        Value::Object(_) | Value::V128(_) => true,
     }
 }
 
@@ -98,7 +99,7 @@ fn js_to_number(v: &Value) -> f64 {
         Value::I32(n) => *n as f64,
         Value::I64(n) => *n as f64,
         Value::String(s) => s.trim().parse().unwrap_or(f64::NAN),
-        Value::Object(_) => f64::NAN,
+        Value::Object(_) | Value::V128(_) => f64::NAN,
     }
 }
 

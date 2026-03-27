@@ -224,7 +224,7 @@ fn vm_to_prop(v: Value) -> PropValue {
         Value::I64(n) => PropValue::Int(n),
         Value::F64(n) => PropValue::Float(n),
         Value::String(s) => PropValue::String(s.to_string()),
-        Value::Object(_) => PropValue::String(format!("{}", v)),
+        Value::Object(_) | Value::V128(_) => PropValue::String(format!("{}", v)),
     }
 }
 

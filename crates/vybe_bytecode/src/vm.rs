@@ -327,6 +327,77 @@ impl VM {
         }
     }
 
+    // -- SIMD helpers --
+    fn simd_i32x4_binop(&mut self, f: impl Fn(i32, i32) -> i32) -> Result<(), VMError> {
+        let b = self.pop(); let a = self.pop();
+        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+            let mut out = [0u8; 16];
+            for i in 0..4 {
+                let la = i32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap());
+                let lb = i32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap());
+                out[i*4..i*4+4].copy_from_slice(&f(la, lb).to_le_bytes());
+            }
+            self.push(Value::V128(out))
+        } else { self.push(Value::V128([0; 16])) }
+    }
+    fn simd_f64x2_binop(&mut self, f: impl Fn(f64, f64) -> f64) -> Result<(), VMError> {
+        let b = self.pop(); let a = self.pop();
+        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+            let mut out = [0u8; 16];
+            for i in 0..2 {
+                let la = f64::from_le_bytes(va[i*8..i*8+8].try_into().unwrap());
+                let lb = f64::from_le_bytes(vb[i*8..i*8+8].try_into().unwrap());
+                out[i*8..i*8+8].copy_from_slice(&f(la, lb).to_le_bytes());
+            }
+            self.push(Value::V128(out))
+        } else { self.push(Value::V128([0; 16])) }
+    }
+    fn simd_f64x2_cmp(&mut self, f: impl Fn(f64, f64) -> bool) -> Result<(), VMError> {
+        let b = self.pop(); let a = self.pop();
+        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+            let mut out = [0u8; 16];
+            for i in 0..2 {
+                let la = f64::from_le_bytes(va[i*8..i*8+8].try_into().unwrap());
+                let lb = f64::from_le_bytes(vb[i*8..i*8+8].try_into().unwrap());
+                let mask: u64 = if f(la, lb) { u64::MAX } else { 0 };
+                out[i*8..i*8+8].copy_from_slice(&mask.to_le_bytes());
+            }
+            self.push(Value::V128(out))
+        } else { self.push(Value::V128([0; 16])) }
+    }
+    fn simd_f32x4_binop(&mut self, f: impl Fn(f32, f32) -> f32) -> Result<(), VMError> {
+        let b = self.pop(); let a = self.pop();
+        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+            let mut out = [0u8; 16];
+            for i in 0..4 {
+                let la = f32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap());
+                let lb = f32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap());
+                out[i*4..i*4+4].copy_from_slice(&f(la, lb).to_le_bytes());
+            }
+            self.push(Value::V128(out))
+        } else { self.push(Value::V128([0; 16])) }
+    }
+    fn simd_i8x16_binop(&mut self, f: impl Fn(u8, u8) -> u8) -> Result<(), VMError> {
+        let b = self.pop(); let a = self.pop();
+        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+            let mut out = [0u8; 16];
+            for i in 0..16 { out[i] = f(va[i], vb[i]); }
+            self.push(Value::V128(out))
+        } else { self.push(Value::V128([0; 16])) }
+    }
+    fn simd_i16x8_binop(&mut self, f: impl Fn(i16, i16) -> i16) -> Result<(), VMError> {
+        let b = self.pop(); let a = self.pop();
+        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+            let mut out = [0u8; 16];
+            for i in 0..8 {
+                let la = i16::from_le_bytes([va[i*2], va[i*2+1]]);
+                let lb = i16::from_le_bytes([vb[i*2], vb[i*2+1]]);
+                out[i*2..i*2+2].copy_from_slice(&f(la, lb).to_le_bytes());
+            }
+            self.push(Value::V128(out))
+        } else { self.push(Value::V128([0; 16])) }
+    }
+
     /// Test if a value matches a type name (used by ref_test, ref_cast, br_on_cast).
     fn test_type(&self, val: &Value, target_name: &str) -> bool {
         match val {
@@ -357,6 +428,7 @@ impl VM {
                 target_name == "integer" || target_name == "double" || target_name == "number" || target_name == "object"
             }
             Value::Bool(_) => target_name == "boolean" || target_name == "object",
+            Value::V128(_) => target_name == "v128",
             Value::Null => false,
         }
     }
@@ -392,9 +464,18 @@ impl VM {
             }
 
             let byte = self.read_byte();
-            let op = match Op::from_byte(byte) {
-                Some(op) => op,
-                None => return Err(VMError::new(format!("Invalid opcode: {}", byte))),
+            let op = if byte == 0xFE {
+                // Extended opcode: prefix 0xFE + extension byte
+                let ext = self.read_byte();
+                match Op::from_two_bytes(byte, ext) {
+                    Some(op) => op,
+                    None => return Err(VMError::new(format!("Invalid extended opcode: 0xFE 0x{:02X}", ext))),
+                }
+            } else {
+                match Op::from_byte(byte) {
+                    Some(op) => op,
+                    None => return Err(VMError::new(format!("Invalid opcode: {}", byte))),
+                }
             };
 
             match op {
@@ -888,6 +969,7 @@ impl VM {
                             target_name == "integer" || target_name == "double" || target_name == "object"
                         }
                         Value::Bool(_) => target_name == "boolean" || target_name == "object",
+                        Value::V128(_) => target_name == "v128",
                         Value::Null => false,
                     };
                     self.push(Value::Bool(result))?;
@@ -1926,6 +2008,218 @@ impl VM {
                     self.push(val)?;
                 }
 
+                // -- SIMD (128-bit vectors) --
+                Op::v128_load => {
+                    let addr = self.pop().as_i32() as usize;
+                    let mut bytes = [0u8; 16];
+                    if addr + 16 <= self.memory.len() {
+                        bytes.copy_from_slice(&self.memory[addr..addr+16]);
+                    }
+                    self.push(Value::V128(bytes))?;
+                }
+                Op::v128_store => {
+                    let val = self.pop();
+                    let addr = self.pop().as_i32() as usize;
+                    if let Value::V128(bytes) = val {
+                        if addr + 16 <= self.memory.len() {
+                            self.memory[addr..addr+16].copy_from_slice(&bytes);
+                        }
+                    }
+                }
+                Op::v128_const => {
+                    let mut bytes = [0u8; 16];
+                    for i in 0..16 { bytes[i] = self.read_byte(); }
+                    self.push(Value::V128(bytes))?;
+                }
+
+                // i32x4 ops
+                Op::i32x4_splat => {
+                    let v = self.pop().as_i32();
+                    let mut bytes = [0u8; 16];
+                    for i in 0..4 { bytes[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); }
+                    self.push(Value::V128(bytes))?;
+                }
+                Op::i32x4_add => { self.simd_i32x4_binop(|a, b| a.wrapping_add(b))?; }
+                Op::i32x4_sub => { self.simd_i32x4_binop(|a, b| a.wrapping_sub(b))?; }
+                Op::i32x4_mul => { self.simd_i32x4_binop(|a, b| a.wrapping_mul(b))?; }
+                Op::i32x4_eq =>  { self.simd_i32x4_binop(|a, b| if a == b { -1 } else { 0 })?; }
+                Op::i32x4_gt_s => { self.simd_i32x4_binop(|a, b| if a > b { -1 } else { 0 })?; }
+                Op::i32x4_lt_s => { self.simd_i32x4_binop(|a, b| if a < b { -1 } else { 0 })?; }
+                Op::i32x4_shl => {
+                    let shift = self.pop().as_i32() as u32 & 31;
+                    if let Value::V128(a) = self.pop() {
+                        let mut out = [0u8; 16];
+                        for i in 0..4 {
+                            let v = i32::from_le_bytes([a[i*4], a[i*4+1], a[i*4+2], a[i*4+3]]);
+                            out[i*4..i*4+4].copy_from_slice(&(v << shift).to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+                Op::i32x4_shr_s => {
+                    let shift = self.pop().as_i32() as u32 & 31;
+                    if let Value::V128(a) = self.pop() {
+                        let mut out = [0u8; 16];
+                        for i in 0..4 {
+                            let v = i32::from_le_bytes([a[i*4], a[i*4+1], a[i*4+2], a[i*4+3]]);
+                            out[i*4..i*4+4].copy_from_slice(&(v >> shift).to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+                Op::i32x4_shr_u => {
+                    let shift = self.pop().as_i32() as u32 & 31;
+                    if let Value::V128(a) = self.pop() {
+                        let mut out = [0u8; 16];
+                        for i in 0..4 {
+                            let v = u32::from_le_bytes([a[i*4], a[i*4+1], a[i*4+2], a[i*4+3]]);
+                            out[i*4..i*4+4].copy_from_slice(&(v >> shift).to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+                Op::i32x4_extract_lane => {
+                    let lane = self.read_byte() as usize & 3;
+                    if let Value::V128(a) = self.pop() {
+                        let v = i32::from_le_bytes([a[lane*4], a[lane*4+1], a[lane*4+2], a[lane*4+3]]);
+                        self.push(Value::I32(v))?;
+                    } else { self.push(Value::I32(0))?; }
+                }
+                Op::i32x4_replace_lane => {
+                    let lane = self.read_byte() as usize & 3;
+                    let val = self.pop().as_i32();
+                    if let Value::V128(mut a) = self.pop() {
+                        a[lane*4..lane*4+4].copy_from_slice(&val.to_le_bytes());
+                        self.push(Value::V128(a))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+
+                // f64x2 ops
+                Op::f64x2_splat => {
+                    let v = self.pop().as_f64();
+                    let mut bytes = [0u8; 16];
+                    bytes[0..8].copy_from_slice(&v.to_le_bytes());
+                    bytes[8..16].copy_from_slice(&v.to_le_bytes());
+                    self.push(Value::V128(bytes))?;
+                }
+                Op::f64x2_add => { self.simd_f64x2_binop(|a, b| a + b)?; }
+                Op::f64x2_sub => { self.simd_f64x2_binop(|a, b| a - b)?; }
+                Op::f64x2_mul => { self.simd_f64x2_binop(|a, b| a * b)?; }
+                Op::f64x2_div => { self.simd_f64x2_binop(|a, b| a / b)?; }
+                Op::f64x2_min => { self.simd_f64x2_binop(|a, b| a.min(b))?; }
+                Op::f64x2_max => { self.simd_f64x2_binop(|a, b| a.max(b))?; }
+                Op::f64x2_eq => { self.simd_f64x2_cmp(|a, b| a == b)?; }
+                Op::f64x2_lt => { self.simd_f64x2_cmp(|a, b| a < b)?; }
+                Op::f64x2_le => { self.simd_f64x2_cmp(|a, b| a <= b)?; }
+                Op::f64x2_sqrt => {
+                    if let Value::V128(a) = self.pop() {
+                        let mut out = [0u8; 16];
+                        for i in 0..2 {
+                            let v = f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap());
+                            out[i*8..i*8+8].copy_from_slice(&v.sqrt().to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+                Op::f64x2_abs => {
+                    if let Value::V128(a) = self.pop() {
+                        let mut out = [0u8; 16];
+                        for i in 0..2 {
+                            let v = f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap());
+                            out[i*8..i*8+8].copy_from_slice(&v.abs().to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+                Op::f64x2_neg => {
+                    if let Value::V128(a) = self.pop() {
+                        let mut out = [0u8; 16];
+                        for i in 0..2 {
+                            let v = f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap());
+                            out[i*8..i*8+8].copy_from_slice(&(-v).to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+                Op::f64x2_extract_lane => {
+                    let lane = self.read_byte() as usize & 1;
+                    if let Value::V128(a) = self.pop() {
+                        let v = f64::from_le_bytes(a[lane*8..lane*8+8].try_into().unwrap());
+                        self.push(Value::F64(v))?;
+                    } else { self.push(Value::F64(0.0))?; }
+                }
+                Op::f64x2_replace_lane => {
+                    let lane = self.read_byte() as usize & 1;
+                    let val = self.pop().as_f64();
+                    if let Value::V128(mut a) = self.pop() {
+                        a[lane*8..lane*8+8].copy_from_slice(&val.to_le_bytes());
+                        self.push(Value::V128(a))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+
+                // f32x4, i8x16, i16x8 — same patterns, delegate to helpers
+                Op::f32x4_splat => { let v = self.pop().as_f64() as f32; let b = v.to_le_bytes(); let mut out = [0u8;16]; for i in 0..4 { out[i*4..i*4+4].copy_from_slice(&b); } self.push(Value::V128(out))?; }
+                Op::f32x4_add => { self.simd_f32x4_binop(|a,b| a+b)?; }
+                Op::f32x4_sub => { self.simd_f32x4_binop(|a,b| a-b)?; }
+                Op::f32x4_mul => { self.simd_f32x4_binop(|a,b| a*b)?; }
+                Op::f32x4_div => { self.simd_f32x4_binop(|a,b| a/b)?; }
+                Op::f32x4_extract_lane => { let lane = self.read_byte() as usize & 3; if let Value::V128(a) = self.pop() { let v = f32::from_le_bytes(a[lane*4..lane*4+4].try_into().unwrap()); self.push(Value::F64(v as f64))?; } else { self.push(Value::F64(0.0))?; } }
+                Op::f32x4_replace_lane => { let lane = self.read_byte() as usize & 3; let val = self.pop().as_f64() as f32; if let Value::V128(mut a) = self.pop() { a[lane*4..lane*4+4].copy_from_slice(&val.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                Op::i8x16_splat => { let v = self.pop().as_i32() as u8; self.push(Value::V128([v;16]))?; }
+                Op::i8x16_add => { self.simd_i8x16_binop(|a,b| a.wrapping_add(b))?; }
+                Op::i8x16_sub => { self.simd_i8x16_binop(|a,b| a.wrapping_sub(b))?; }
+                Op::i8x16_eq =>  { self.simd_i8x16_binop(|a,b| if a==b {0xFF} else {0})?; }
+                Op::i8x16_extract_lane_s => { let lane = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[lane] as i8 as i32))?; } else { self.push(Value::I32(0))?; } }
+                Op::i8x16_extract_lane_u => { let lane = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[lane] as i32))?; } else { self.push(Value::I32(0))?; } }
+                Op::i8x16_replace_lane => { let lane = self.read_byte() as usize & 15; let val = self.pop().as_i32() as u8; if let Value::V128(mut a) = self.pop() { a[lane] = val; self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                Op::i8x16_shuffle => { let mut indices = [0u8;16]; for i in 0..16 { indices[i] = self.read_byte(); } let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let combined: Vec<u8> = va.iter().chain(vb.iter()).copied().collect(); let mut out = [0u8;16]; for i in 0..16 { out[i] = combined.get(indices[i] as usize).copied().unwrap_or(0); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                Op::i8x16_swizzle => { let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let mut out = [0u8;16]; for i in 0..16 { let idx = vb[i] as usize; out[i] = if idx < 16 { va[idx] } else { 0 }; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                Op::i16x8_splat => { let v = self.pop().as_i32() as i16; let b = v.to_le_bytes(); let mut out = [0u8;16]; for i in 0..8 { out[i*2..i*2+2].copy_from_slice(&b); } self.push(Value::V128(out))?; }
+                Op::i16x8_add => { self.simd_i16x8_binop(|a,b| a.wrapping_add(b))?; }
+                Op::i16x8_sub => { self.simd_i16x8_binop(|a,b| a.wrapping_sub(b))?; }
+                Op::i16x8_mul => { self.simd_i16x8_binop(|a,b| a.wrapping_mul(b))?; }
+                Op::i16x8_extract_lane_s => { let lane = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { let v = i16::from_le_bytes([a[lane*2], a[lane*2+1]]); self.push(Value::I32(v as i32))?; } else { self.push(Value::I32(0))?; } }
+                Op::i16x8_extract_lane_u => { let lane = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { let v = u16::from_le_bytes([a[lane*2], a[lane*2+1]]); self.push(Value::I32(v as i32))?; } else { self.push(Value::I32(0))?; } }
+                Op::i16x8_replace_lane => { let lane = self.read_byte() as usize & 7; let val = self.pop().as_i32() as i16; if let Value::V128(mut a) = self.pop() { a[lane*2..lane*2+2].copy_from_slice(&val.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+
+                // v128 bitwise
+                Op::v128_and => { if let (Value::V128(a), Value::V128(b)) = (self.pop(), self.pop()) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] & b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                Op::v128_or  => { if let (Value::V128(a), Value::V128(b)) = (self.pop(), self.pop()) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] | b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                Op::v128_xor => { if let (Value::V128(a), Value::V128(b)) = (self.pop(), self.pop()) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] ^ b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                Op::v128_not => { if let Value::V128(a) = self.pop() { let mut out = [0u8;16]; for i in 0..16 { out[i] = !a[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                Op::v128_andnot => { if let (Value::V128(b), Value::V128(a)) = (self.pop(), self.pop()) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] & !b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                Op::v128_any_true => { if let Value::V128(a) = self.pop() { self.push(Value::I32(if a.iter().any(|&b| b != 0) { 1 } else { 0 }))?; } else { self.push(Value::I32(0))?; } }
+                Op::v128_bitselect => { let mask = self.pop(); let v2 = self.pop(); let v1 = self.pop(); if let (Value::V128(a), Value::V128(b), Value::V128(m)) = (v1, v2, mask) { let mut out = [0u8;16]; for i in 0..16 { out[i] = (a[i] & m[i]) | (b[i] & !m[i]); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+
+                // -- Atomics (single-threaded: same as non-atomic for now) --
+                Op::atomic_fence => {} // no-op in single-threaded
+                Op::i32_atomic_load => { let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { let v = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.push(Value::I32(v))?; } else { self.push(Value::I32(0))?; } }
+                Op::i32_atomic_store => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { self.memory[addr..addr+4].copy_from_slice(&v.to_le_bytes()); } }
+                Op::i32_atomic_rmw_add => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&old.wrapping_add(v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
+                Op::i32_atomic_rmw_sub => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&old.wrapping_sub(v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
+                Op::i32_atomic_rmw_and => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&(old & v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
+                Op::i32_atomic_rmw_or  => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&(old | v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
+                Op::i32_atomic_rmw_xor => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&(old ^ v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
+                Op::i32_atomic_rmw_xchg => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&v.to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
+                Op::i32_atomic_rmw_cmpxchg => { let replacement = self.pop().as_i32(); let expected = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); if old == expected { self.memory[addr..addr+4].copy_from_slice(&replacement.to_le_bytes()); } self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
+                Op::i64_atomic_load => { let addr = self.pop().as_i32() as usize; if addr+8 <= self.memory.len() { let v = i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap()); self.push(Value::I64(v))?; } else { self.push(Value::I64(0))?; } }
+                Op::i64_atomic_store => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; if addr+8 <= self.memory.len() { self.memory[addr..addr+8].copy_from_slice(&v.to_le_bytes()); } }
+                Op::i64_atomic_rmw_add => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; if addr+8 <= self.memory.len() { let old = i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap()); self.memory[addr..addr+8].copy_from_slice(&old.wrapping_add(v).to_le_bytes()); self.push(Value::I64(old))?; } else { self.push(Value::I64(0))?; } }
+                Op::i64_atomic_rmw_sub => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; if addr+8 <= self.memory.len() { let old = i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap()); self.memory[addr..addr+8].copy_from_slice(&old.wrapping_sub(v).to_le_bytes()); self.push(Value::I64(old))?; } else { self.push(Value::I64(0))?; } }
+                Op::i64_atomic_rmw_cmpxchg => { let repl = self.pop().as_i64(); let exp = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; if addr+8 <= self.memory.len() { let old = i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap()); if old == exp { self.memory[addr..addr+8].copy_from_slice(&repl.to_le_bytes()); } self.push(Value::I64(old))?; } else { self.push(Value::I64(0))?; } }
+                Op::memory_atomic_wait32 => { self.pop(); self.pop(); self.pop(); self.push(Value::I32(1))?; } // not-equal (single-threaded)
+                Op::memory_atomic_notify => { self.pop(); self.pop(); self.push(Value::I32(0))?; } // 0 woken (single-threaded)
+
+                // -- Memory64 --
+                Op::i64_memory_size => { self.push(Value::I64((self.memory.len() / 65536) as i64))?; }
+                Op::i64_memory_grow => { let pages = self.pop().as_i64() as usize; let old = self.memory.len() / 65536; self.memory.resize(self.memory.len() + pages * 65536, 0); self.push(Value::I64(old as i64))?; }
+                Op::i32_load_64 => { let addr = self.pop().as_i64() as usize; if addr+4 <= self.memory.len() { self.push(Value::I32(i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap())))?; } else { self.push(Value::I32(0))?; } }
+                Op::i64_load_64 => { let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.push(Value::I64(i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap())))?; } else { self.push(Value::I64(0))?; } }
+                Op::f64_load_64 => { let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.push(Value::F64(f64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap())))?; } else { self.push(Value::F64(0.0))?; } }
+                Op::i32_store_64 => { let v = self.pop().as_i32(); let addr = self.pop().as_i64() as usize; if addr+4 <= self.memory.len() { self.memory[addr..addr+4].copy_from_slice(&v.to_le_bytes()); } }
+                Op::i64_store_64 => { let v = self.pop().as_i64(); let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.memory[addr..addr+8].copy_from_slice(&v.to_le_bytes()); } }
+                Op::f64_store_64 => { let v = self.pop().as_f64(); let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.memory[addr..addr+8].copy_from_slice(&v.to_le_bytes()); } }
+
                 // -- Stubs --
                 Op::iter_get | Op::iter_next | Op::spread => {
                     return Err(VMError::new("Iteration not yet implemented"));
@@ -2140,5 +2434,6 @@ fn dyn_truthy(v: &Value) -> bool {
         Value::I64(n) => *n != 0,
         Value::String(s) => !s.is_empty(),
         Value::Object(_) => true,
+        Value::V128(b) => b.iter().any(|&x| x != 0),
     }
 }

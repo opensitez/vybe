@@ -131,7 +131,7 @@ pub fn register(vm: &mut VM) {
             Value::I32(n) => Value::Bool(*n != 0),
             Value::I64(n) => Value::Bool(*n != 0),
             Value::String(s) => Value::Bool(!s.is_empty() && s.to_lowercase() != "false"),
-            Value::Object(_) => Value::Bool(true),
+            Value::Object(_) | Value::V128(_) => Value::Bool(true),
         }
     }));
 
@@ -189,6 +189,7 @@ pub fn register(vm: &mut VM) {
             Value::F64(_) => "Double",
             Value::String(_) => "String",
             Value::Object(_) => "Object",
+            Value::V128(_) => "V128",
         };
         Value::String(Rc::from(name))
     }));
@@ -202,7 +203,7 @@ pub fn register(vm: &mut VM) {
             Value::I64(_) => 3.0,   // vbLong
             Value::F64(_) => 5.0,   // vbDouble
             Value::String(_) => 8.0,// vbString
-            Value::Object(_) => 9.0,// vbObject
+            Value::Object(_) | Value::V128(_) => 9.0,// vbObject
         };
         Value::F64(vt)
     }));

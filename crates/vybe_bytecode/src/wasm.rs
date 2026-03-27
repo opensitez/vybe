@@ -1221,6 +1221,7 @@ fn encode_value(out: &mut Vec<u8>, val: &Value) {
         Value::F64(n) => { out.push(4); out.extend_from_slice(&n.to_le_bytes()); }
         Value::String(s) => { out.push(5); write_name(out, s); }
         Value::Object(_) => out.push(0),
+        Value::V128(b) => { out.push(6); out.extend_from_slice(b); }
     }
 }
 

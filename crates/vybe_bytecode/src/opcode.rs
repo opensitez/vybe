@@ -7,7 +7,7 @@
 /// - `u16`: two bytes big-endian after the opcode.
 /// - `u8`: one byte after the opcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+#[repr(u16)]
 #[allow(non_camel_case_types)]
 pub enum Op {
     // -- Stack --
@@ -378,15 +378,157 @@ pub enum Op {
     /// [continuation, value] → suspends; other resumes with [value]
     switch,          // [switch, u16 tag_idx]
 
+    // -- SIMD (128-bit vectors for data manipulation) --
+    // Core v128 operations for bulk data processing.
+    // Each v128 value is 16 bytes in linear memory or on the stack.
+    v128_load,       // [addr] → [v128]  (load 16 bytes)
+    v128_store,      // [addr, v128] → []
+    v128_const,      // push 16-byte immediate
+
+    // i32x4: 4 lanes of i32 (bulk integer math, pixel ops)
+    i32x4_splat,     // [i32] → [v128] (broadcast to all 4 lanes)
+    i32x4_add,       // [v128, v128] → [v128]
+    i32x4_sub,
+    i32x4_mul,
+    i32x4_extract_lane, // [v128, u8 lane] → [i32]
+    i32x4_replace_lane, // [v128, u8 lane, i32] → [v128]
+    i32x4_eq,        // [v128, v128] → [v128] (lane-wise compare)
+    i32x4_gt_s,
+    i32x4_lt_s,
+    i32x4_shl,       // [v128, i32 shift] → [v128]
+    i32x4_shr_s,
+    i32x4_shr_u,
+
+    // f64x2: 2 lanes of f64 (bulk float math, scientific computing)
+    f64x2_splat,     // [f64] → [v128]
+    f64x2_add,
+    f64x2_sub,
+    f64x2_mul,
+    f64x2_div,
+    f64x2_extract_lane, // [v128, u8 lane] → [f64]
+    f64x2_replace_lane,
+    f64x2_sqrt,
+    f64x2_min,
+    f64x2_max,
+    f64x2_abs,
+    f64x2_neg,
+    f64x2_eq,
+    f64x2_lt,
+    f64x2_le,
+
+    // f32x4: 4 lanes of f32 (image/audio processing)
+    f32x4_splat,
+    f32x4_add,
+    f32x4_sub,
+    f32x4_mul,
+    f32x4_div,
+    f32x4_extract_lane,
+    f32x4_replace_lane,
+
+    // i8x16: 16 lanes of i8 (byte-level ops, string scanning)
+    i8x16_splat,     // [i32] → [v128] (broadcast low byte)
+    i8x16_extract_lane_s, // [v128, u8] → [i32] (sign-extended)
+    i8x16_extract_lane_u,
+    i8x16_replace_lane,
+    i8x16_add,
+    i8x16_sub,
+    i8x16_eq,
+    i8x16_shuffle,   // [v128, v128, u8x16 indices] → [v128]
+    i8x16_swizzle,   // [v128, v128 indices] → [v128]
+
+    // i16x8: 8 lanes of i16 (audio samples, Unicode)
+    i16x8_splat,
+    i16x8_add,
+    i16x8_sub,
+    i16x8_mul,
+    i16x8_extract_lane_s,
+    i16x8_extract_lane_u,
+    i16x8_replace_lane,
+
+    // v128 bitwise
+    v128_and,
+    v128_or,
+    v128_xor,
+    v128_not,
+    v128_andnot,     // a & ~b
+    v128_any_true,   // [v128] → [i32] (any lane nonzero?)
+    v128_bitselect,  // [v1, v2, mask] → [(v1 & mask) | (v2 & ~mask)]
+
+    // -- Threads / Atomics (shared memory for parallel data processing) --
+    // Atomic operations on linear memory for lock-free concurrency.
+    atomic_fence,
+    i32_atomic_load,      // [addr] → [i32]
+    i32_atomic_store,     // [addr, val] → []
+    i32_atomic_rmw_add,   // [addr, val] → [old]  (read-modify-write)
+    i32_atomic_rmw_sub,
+    i32_atomic_rmw_and,
+    i32_atomic_rmw_or,
+    i32_atomic_rmw_xor,
+    i32_atomic_rmw_xchg,  // [addr, val] → [old]  (exchange)
+    i32_atomic_rmw_cmpxchg, // [addr, expected, replacement] → [old]
+    i64_atomic_load,
+    i64_atomic_store,
+    i64_atomic_rmw_add,
+    i64_atomic_rmw_sub,
+    i64_atomic_rmw_cmpxchg,
+    /// Wait until memory location changes (blocks thread).
+    /// [addr, expected, timeout_ns] → [i32: 0=ok, 1=not-equal, 2=timed-out]
+    memory_atomic_wait32,
+    /// Wake N threads waiting on address.
+    /// [addr, count] → [i32 woken]
+    memory_atomic_notify,
+
+    // -- Memory64 (>4GB addressing) --
+    // 64-bit variants for large datasets.
+    i64_memory_size,  // → [i64 pages]
+    i64_memory_grow,  // [i64 pages] → [i64 old_size]
+    i32_load_64,      // [i64 addr] → [i32] (64-bit address)
+    i64_load_64,      // [i64 addr] → [i64]
+    f64_load_64,      // [i64 addr] → [f64]
+    i32_store_64,     // [i64 addr, i32] → []
+    i64_store_64,     // [i64 addr, i64] → []
+    f64_store_64,     // [i64 addr, f64] → []
+
     halt,
 }
 
 impl Op {
     pub fn from_byte(byte: u8) -> Option<Op> {
-        if byte <= Op::halt as u8 {
-            Some(unsafe { std::mem::transmute(byte) })
+        let val = byte as u16;
+        if val <= Op::halt as u16 {
+            Some(unsafe { std::mem::transmute(val) })
         } else {
             None
         }
+    }
+
+    /// Decode a two-byte opcode. First byte < 256 → single-byte op.
+    /// First byte == 0xFE → extended op, second byte is the extension index.
+    pub fn from_two_bytes(b1: u8, b2: u8) -> Option<Op> {
+        let val = if b1 == 0xFE {
+            256u16 + b2 as u16
+        } else {
+            b1 as u16
+        };
+        if val <= Op::halt as u16 {
+            Some(unsafe { std::mem::transmute(val) })
+        } else {
+            None
+        }
+    }
+
+    /// Encode opcode to bytes. Returns 1 byte if < 256, 2 bytes (0xFE prefix) otherwise.
+    pub fn encode(self) -> (u8, Option<u8>) {
+        let val = self as u16;
+        if val < 256 {
+            (val as u8, None)
+        } else {
+            (0xFE, Some((val - 256) as u8))
+        }
+    }
+
+    /// Byte size when encoded.
+    pub fn encoded_len(self) -> usize {
+        if (self as u16) < 256 { 1 } else { 2 }
     }
 }

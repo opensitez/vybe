@@ -114,8 +114,7 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                let len_idx = self.add_string_constant("length");
-                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::str_length); // works for both arrays and strings
                 self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
                 self.emit_u16(Op::local_get, arr_slot);

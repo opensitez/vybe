@@ -153,5 +153,9 @@ fn stringify(v: &Value) -> String {
                 }
             }
         }
+        Value::V128(b) => {
+            let parts: Vec<String> = b.iter().map(|x| x.to_string()).collect();
+            format!("[{}]", parts.join(","))
+        }
     }
 }

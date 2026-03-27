@@ -15,10 +15,21 @@ pub fn disassemble(chunk: &Chunk) -> String {
 
 fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
     let byte = chunk.code[offset];
-    let op = match Op::from_byte(byte) {
-        Some(op) => op,
-        None => return (format!("UNKNOWN({})", byte), offset + 1),
+    let (op, base) = if byte == 0xFE && offset + 1 < chunk.code.len() {
+        let ext = chunk.code[offset + 1];
+        match Op::from_two_bytes(byte, ext) {
+            Some(op) => (op, offset + 2),
+            None => return (format!("UNKNOWN(0xFE 0x{:02X})", ext), offset + 2),
+        }
+    } else {
+        match Op::from_byte(byte) {
+            Some(op) => (op, offset + 1),
+            None => return (format!("UNKNOWN({})", byte), offset + 1),
+        }
     };
+    // `base` now points past the opcode byte(s). All operand offsets below
+    // used `offset + 1` for single-byte ops. Replace with `base`.
+    let offset = base - 1; // compatibility: rest of code uses offset+1 for first operand
 
     match op {
         // No operands
@@ -70,7 +81,30 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::array_join | Op::array_reverse | Op::array_contains | Op::array_index_of |
         Op::array_new_default | Op::array_fill | Op::array_copy | Op::array_concat | Op::array_shift |
         // Stack switching (no-operand forms)
-        Op::cont_new => {
+        Op::cont_new |
+        // SIMD
+        Op::i32x4_add | Op::i32x4_sub | Op::i32x4_mul | Op::i32x4_eq | Op::i32x4_gt_s | Op::i32x4_lt_s |
+        Op::f64x2_add | Op::f64x2_sub | Op::f64x2_mul | Op::f64x2_div | Op::f64x2_sqrt |
+        Op::f64x2_min | Op::f64x2_max | Op::f64x2_abs | Op::f64x2_neg | Op::f64x2_eq | Op::f64x2_lt | Op::f64x2_le |
+        Op::f32x4_add | Op::f32x4_sub | Op::f32x4_mul | Op::f32x4_div |
+        Op::i8x16_add | Op::i8x16_sub | Op::i8x16_eq |
+        Op::i16x8_add | Op::i16x8_sub | Op::i16x8_mul |
+        Op::v128_and | Op::v128_or | Op::v128_xor | Op::v128_not | Op::v128_andnot | Op::v128_any_true |
+        Op::v128_bitselect |
+        Op::i32x4_splat | Op::f64x2_splat | Op::f32x4_splat | Op::i8x16_splat | Op::i16x8_splat |
+        Op::v128_load | Op::v128_store |
+        // Atomics
+        Op::atomic_fence |
+        Op::i32_atomic_load | Op::i32_atomic_store |
+        Op::i32_atomic_rmw_add | Op::i32_atomic_rmw_sub | Op::i32_atomic_rmw_and |
+        Op::i32_atomic_rmw_or | Op::i32_atomic_rmw_xor | Op::i32_atomic_rmw_xchg | Op::i32_atomic_rmw_cmpxchg |
+        Op::i64_atomic_load | Op::i64_atomic_store |
+        Op::i64_atomic_rmw_add | Op::i64_atomic_rmw_sub | Op::i64_atomic_rmw_cmpxchg |
+        Op::memory_atomic_wait32 | Op::memory_atomic_notify |
+        // Memory64
+        Op::i64_memory_size | Op::i64_memory_grow |
+        Op::i32_load_64 | Op::i64_load_64 | Op::f64_load_64 |
+        Op::i32_store_64 | Op::i64_store_64 | Op::f64_store_64 => {
             (format!("{:?}", op), offset + 1)
         }
 
@@ -93,7 +127,13 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::upvalue_get | Op::upvalue_set | Op::call | Op::call_ref | Op::str_concat_n |
         Op::return_call | Op::return_call_indirect | Op::return_call_ref |
         Op::call_indirect | Op::pack |
-        Op::br_label | Op::br_if_label => {
+        Op::br_label | Op::br_if_label |
+        // SIMD lane ops (u8 lane index)
+        Op::i32x4_extract_lane | Op::i32x4_replace_lane | Op::i32x4_shl | Op::i32x4_shr_s | Op::i32x4_shr_u |
+        Op::f64x2_extract_lane | Op::f64x2_replace_lane |
+        Op::f32x4_extract_lane | Op::f32x4_replace_lane |
+        Op::i8x16_extract_lane_s | Op::i8x16_extract_lane_u | Op::i8x16_replace_lane |
+        Op::i16x8_extract_lane_s | Op::i16x8_extract_lane_u | Op::i16x8_replace_lane => {
             let arg = chunk.code[offset + 1];
             (format!("{:?} {}", op, arg), offset + 2)
         }
@@ -132,6 +172,21 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             let count = chunk.code[offset + 1] as usize;
             let total = 2 + count * 3;
             (format!("try_table handlers={}", count), offset + total)
+        }
+
+        // v128.const: 16-byte immediate
+        Op::v128_const => {
+            (format!("v128.const [16 bytes]"), offset + 17)
+        }
+
+        // i8x16.shuffle: 16-byte lane indices
+        Op::i8x16_shuffle => {
+            (format!("i8x16.shuffle [16 indices]"), offset + 17)
+        }
+
+        // i8x16.swizzle: no operand (both vectors on stack)
+        Op::i8x16_swizzle => {
+            (format!("{:?}", op), offset + 1)
         }
 
         // Memory load/store — no operand, just opcode (addr on stack)

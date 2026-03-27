@@ -153,6 +153,7 @@ pub fn register(vm: &mut VM) {
                     _ => "object",
                 }
             }
+            Value::V128(_) => "v128",
         };
         Value::String(Rc::from(tag))
     }));
@@ -205,5 +206,6 @@ fn truthy(v: &Value) -> bool {
         Value::I64(n) => *n != 0,
         Value::String(s) => !s.is_empty(),
         Value::Object(_) => true,
+        Value::V128(b) => b.iter().any(|&x| x != 0),
     }
 }

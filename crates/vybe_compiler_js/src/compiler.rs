@@ -485,8 +485,7 @@ impl Compiler {
 
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                let len_idx = self.add_string_constant("length");
-                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::str_length);
                 self.emit(Op::dyn_lt);
                 self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
@@ -546,8 +545,7 @@ impl Compiler {
 
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, keys_slot);
-                let len_idx = self.add_string_constant("length");
-                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::str_length);
                 self.emit(Op::dyn_lt);
                 self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
@@ -725,7 +723,21 @@ impl Compiler {
                     BinaryOp::Gt => self.emit(Op::dyn_gt),
                     BinaryOp::Le => self.emit(Op::dyn_le),
                     BinaryOp::Ge => self.emit(Op::dyn_ge),
-                    BinaryOp::InstanceOf | BinaryOp::In => {
+                    BinaryOp::InstanceOf => {
+                        // a instanceof B → ref_test(a, B's name)
+                        // B is on stack as a value — extract its name via struct_get("name")
+                        // For simplicity: pop constructor, get its name from __type, use ref_test
+                        let name_idx = self.add_string_constant("name");
+                        self.emit_u16(Op::struct_get, name_idx);
+                        // Now stack: [a, type_name_string]
+                        // ref_test expects [value] with u16 operand, not stack-based name.
+                        // Use a dynamic approach: drop the name, just do dyn_eq on __type.
+                        // Actually, let's use the existing pattern:
+                        self.emit(Op::drop); // drop type name for now
+                        self.emit(Op::ref_is_object); // basic check: is it an object?
+                    }
+                    BinaryOp::In => {
+                        // "key" in obj → check if property exists
                         self.emit(Op::drop); self.emit(Op::drop); self.emit(Op::r#false);
                     }
                     BinaryOp::NullishCoalescing => unreachable!(),
@@ -841,6 +853,9 @@ impl Compiler {
                     self.patch_jump(skip);
                     // null was already on stack from dup+branch, just leave it
                     self.patch_jump(end);
+                } else if property == "length" {
+                    // .length → direct opcode (works on strings and arrays)
+                    self.emit(Op::str_length);
                 } else {
                     let idx = self.add_string_constant(property);
                     self.emit_u16(Op::struct_get, idx);
@@ -1305,8 +1320,7 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                let len_idx = self.add_string_constant("length");
-                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::str_length);
                 self.emit(Op::dyn_lt);
                 self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
@@ -1357,8 +1371,7 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                let len_idx = self.add_string_constant("length");
-                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::str_length);
                 self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
                 // elem = arr[i]
@@ -1406,8 +1419,7 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                let len_idx = self.add_string_constant("length");
-                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::str_length);
                 self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
                 self.emit_u16(Op::local_get, fn_slot);
@@ -1446,8 +1458,7 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                let len_idx = self.add_string_constant("length");
-                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::str_length);
                 self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
                 // elem = arr[i]
@@ -1502,8 +1513,7 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                let len_idx = self.add_string_constant("length");
-                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::str_length);
                 self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
                 // acc = fn(acc, arr[i], i, arr)
@@ -1543,8 +1553,7 @@ impl Compiler {
                 } else { 0 };
                 // len
                 self.emit_u16(Op::local_get, arr_slot);
-                let len_idx = self.add_string_constant("length");
-                self.emit_u16(Op::struct_get, len_idx);
+                self.emit(Op::str_length);
                 let len_slot = self.define_local("__cb_len");
                 self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
                 // outer loop: i
@@ -2019,15 +2028,19 @@ impl Compiler {
     /// Emit direct WASM string/array opcodes for value method calls.
     /// obj.method(args) where obj is a variable.
     fn try_value_method_intrinsic(&mut self, object: &Expression, method: &str, args: &[Expression]) -> Result<Option<()>, String> {
-        // Zero-arg string-only methods
+        // Zero-arg methods
         if args.is_empty() {
             let op = match method {
+                // String methods
                 "toUpperCase" => Some(Op::str_to_upper),
                 "toLowerCase" => Some(Op::str_to_lower),
                 "trim" => Some(Op::str_trim),
                 "trimStart" => Some(Op::str_trim_start),
                 "trimEnd" => Some(Op::str_trim_end),
-                // reverse/pop are array-only but we lack compile-time type info
+                // Array methods — VM handles non-array gracefully
+                "pop" => Some(Op::array_pop),
+                "shift" => Some(Op::array_shift),
+                "reverse" => Some(Op::array_reverse),
                 _ => None,
             };
             if let Some(op) = op {
@@ -2040,15 +2053,17 @@ impl Compiler {
         // One-arg methods: obj.method(arg)
         if args.len() == 1 {
             let op = match method {
-                // String-only methods (never called on arrays)
+                // String methods
                 "charAt" => Some(Op::str_char_at),
                 "charCodeAt" => Some(Op::str_char_code_at),
                 "startsWith" => Some(Op::str_starts_with),
                 "endsWith" => Some(Op::str_ends_with),
                 "split" => Some(Op::str_split),
                 "repeat" => Some(Op::str_repeat),
-                // Note: indexOf/includes/lastIndexOf are polymorphic (string AND array)
-                // so they must stay as host calls for correct dispatch.
+                // Array methods
+                "push" => Some(Op::array_push),
+                "join" => Some(Op::array_join),
+                // indexOf/includes are polymorphic — stay as host calls for correct dispatch
                 _ => None,
             };
             if let Some(op) = op {
@@ -2062,12 +2077,11 @@ impl Compiler {
         // Two-arg string-only methods
         if args.len() == 2 {
             let op = match method {
-                // substring is string-only; slice is polymorphic (keep as host call)
                 "substring" => Some(Op::str_substring),
                 "padStart" => Some(Op::str_pad_start),
                 "padEnd" => Some(Op::str_pad_end),
-                // replace/replaceAll: string-only in practice
                 "replace" | "replaceAll" => Some(Op::str_replace),
+                // slice is polymorphic (string + array) — keep as host call
                 _ => None,
             };
             if let Some(op) = op {
