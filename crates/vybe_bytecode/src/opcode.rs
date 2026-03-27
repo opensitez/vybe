@@ -104,6 +104,11 @@ pub enum Op {
     ref_is_object,
     ref_is_func,
 
+    // -- Type test (WASM GC: ref.test) --
+    /// Test if object is of type (or subtype). Uses TypeRegistry.
+    /// Stack: [value] → [bool]. Operand: u16 constant index (type name).
+    ref_test,        // [ref_test, u16 type_name_idx]
+
     // -- Conversions --
     f64_from_i32,    // WASM: f64.convert_i32_s
     i32_from_f64,    // WASM: i32.trunc_f64_s

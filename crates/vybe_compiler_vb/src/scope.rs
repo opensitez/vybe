@@ -5,6 +5,7 @@ pub struct Local {
     pub name: String,
     pub depth: u32,
     pub is_captured: bool,
+    pub is_byref: bool,
     pub slot: u16,
 }
 
@@ -29,16 +30,32 @@ impl Scope {
 
     pub fn new_function() -> Self {
         let mut scope = Self::new();
-        scope.locals.push(Local { name: String::new(), depth: 0, is_captured: false, slot: 0 });
+        scope.locals.push(Local { name: String::new(), depth: 0, is_captured: false, is_byref: false, slot: 0 });
         scope.next_slot = 1;
         scope
     }
 
     pub fn define_local(&mut self, name: &str) -> u16 {
         let slot = self.next_slot;
-        self.locals.push(Local { name: name.to_string(), depth: self.depth, is_captured: false, slot });
+        self.locals.push(Local { name: name.to_string(), depth: self.depth, is_captured: false, is_byref: false, slot });
         self.next_slot += 1;
         slot
+    }
+
+    pub fn define_byref_local(&mut self, name: &str) -> u16 {
+        let slot = self.next_slot;
+        self.locals.push(Local { name: name.to_string(), depth: self.depth, is_captured: false, is_byref: true, slot });
+        self.next_slot += 1;
+        slot
+    }
+
+    pub fn is_byref(&self, name: &str) -> bool {
+        for local in self.locals.iter().rev() {
+            if local.name.eq_ignore_ascii_case(name) {
+                return local.is_byref;
+            }
+        }
+        false
     }
 
     pub fn resolve_local(&self, name: &str) -> Option<u16> {

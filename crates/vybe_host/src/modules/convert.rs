@@ -229,6 +229,42 @@ pub fn register(vm: &mut VM) {
         Value::Bool(matches!(args.first().unwrap_or(&Value::Null), Value::Object(_)))
     }));
 
+    // isTypeOf(value, typeName) → check if value's type matches or inherits from typeName
+    // Checks __type property and __class_name for user classes
+    vm.register_host_fn("vybe:convert", "isTypeOf", Box::new(|args: &[Value]| {
+        let target = args.get(1).map(|v| format!("{}", v).to_lowercase()).unwrap_or_default();
+        match args.first() {
+            Some(Value::Object(obj)) => {
+                let o = obj.borrow();
+                // Check __type property
+                if let Some(t) = o.properties.get("__type") {
+                    if format!("{}", t).to_lowercase() == target { return Value::Bool(true); }
+                }
+                // Check __control_type
+                if let Some(t) = o.properties.get("__control_type") {
+                    if format!("{}", t).to_lowercase() == target { return Value::Bool(true); }
+                }
+                // Check __class_name (for user classes that store class info)
+                if let Some(t) = o.properties.get("__class") {
+                    if format!("{}", t).to_lowercase() == target { return Value::Bool(true); }
+                }
+                // For arrays, check "array" or "list"
+                if matches!(o.kind, vybe_bytecode::value::ObjectKind::Array(_)) {
+                    if target == "array" || target == "list" { return Value::Bool(true); }
+                }
+                // Everything is an Object
+                if target == "object" { return Value::Bool(true); }
+                Value::Bool(false)
+            }
+            Some(Value::String(_)) => Value::Bool(target == "string" || target == "object"),
+            Some(Value::F64(_)) | Some(Value::I32(_)) | Some(Value::I64(_)) => {
+                Value::Bool(target == "integer" || target == "double" || target == "number" || target == "object")
+            }
+            Some(Value::Bool(_)) => Value::Bool(target == "boolean" || target == "object"),
+            _ => Value::Bool(target == "object"),
+        }
+    }));
+
     // isarray(value) → true if array
     vm.register_host_fn("vybe:convert", "isArray", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {

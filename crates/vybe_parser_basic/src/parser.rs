@@ -750,7 +750,7 @@ fn parse_param_list(pair: Pair<Rule>) -> ParseResult<Vec<Parameter>> {
 
 fn parse_parameter(pair: Pair<Rule>) -> ParseResult<Parameter> {
     let inner = pair.into_inner();
-    let mut pass_type = ParameterPassType::ByRef;
+    let mut pass_type = ParameterPassType::ByVal;
     let mut name = Identifier::new("");
     let mut param_type = None;
     let mut is_optional = false;

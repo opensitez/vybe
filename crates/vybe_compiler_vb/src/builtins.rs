@@ -34,8 +34,42 @@ impl Compiler {
                 self.emit_u16(Op::global_get, idx);
             }
         }
-        for arg in args { self.compile_expression(arg)?; }
+        // Box ByRef args if function signature is known
+        let sig = self.func_signatures.get(&fname).cloned();
+        let mut byref_info: Vec<(u16, u16)> = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let is_byref = sig.as_ref().and_then(|s| s.get(i)).copied().unwrap_or(false);
+            if is_byref {
+                if let Expression::Variable(var) = arg {
+                    let var_name = var.as_str().to_lowercase();
+                    self.compile_expression(arg)?;
+                    self.emit_u16(Op::array_new, 1);
+                    let box_local = self.define_local(&format!("__box_{}", i));
+                    self.emit(Op::dup);
+                    self.emit_u16(Op::local_set, box_local);
+                    self.emit(Op::drop);
+                    if let VarResolution::Local(var_slot) = self.resolve_variable(&var_name) {
+                        byref_info.push((box_local, var_slot));
+                    }
+                } else {
+                    self.compile_expression(arg)?;
+                    self.emit_u16(Op::array_new, 1);
+                }
+            } else {
+                self.compile_expression(arg)?;
+            }
+        }
         self.emit_u8(Op::call, args.len() as u8);
+
+        // Writeback ByRef vars from boxes
+        for (box_local, var_local) in &byref_info {
+            self.emit_u16(Op::local_get, *box_local);
+            self.emit_constant(Value::F64(0.0));
+            self.emit(Op::array_get);
+            self.emit_u16(Op::local_set, *var_local);
+            self.emit(Op::drop);
+        }
+
         Ok(())
     }
 

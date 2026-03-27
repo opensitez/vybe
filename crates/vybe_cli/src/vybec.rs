@@ -229,15 +229,6 @@ fn read_file(path: &Path) -> String {
 
 fn dump_chunks(chunks: &[vybe_bytecode::Chunk]) {
     for (i, chunk) in chunks.iter().enumerate() {
-        println!("=== Chunk {} ({}) ===", i, chunk.name);
-        println!("  arity: {}, locals: {}", chunk.arity, chunk.local_count);
-        if !chunk.imports.is_empty() {
-            println!("  imports:");
-            for (j, imp) in chunk.imports.iter().enumerate() {
-                println!("    [{}] {}:{}", j, imp.module, imp.name);
-            }
-        }
-        println!("  bytecode: {} bytes", chunk.code.len());
-        println!();
+        println!("{}", vybe_bytecode::debug::disassemble(chunk));
     }
 }

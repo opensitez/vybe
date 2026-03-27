@@ -37,7 +37,14 @@ impl Compiler {
             Expression::Variable(id) => {
                 let name = id.as_str().to_lowercase();
                 match self.resolve_variable(&name) {
-                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Local(slot) => {
+                        self.emit_u16(Op::local_get, slot);
+                        // ByRef params are boxes — dereference with array_get 0
+                        if self.current_scope().is_byref(&name) {
+                            self.emit_constant(Value::F64(0.0));
+                            self.emit(Op::array_get);
+                        }
+                    }
                     VarResolution::Global => {
                         // Inside a class: unresolved name that's a field → Me.field
                         if self.class_fields.contains(&name) {
@@ -161,13 +168,12 @@ impl Compiler {
                 self.emit(Op::dyn_ne);
             }
 
-            // TypeOf expr Is Type
+            // TypeOf expr Is Type — resolved via TypeRegistry
             Expression::TypeOf { expr, type_name } => {
                 self.compile_expression(expr)?;
-                let idx = self.import("vybe:convert", "typeName");
-                self.emit_host_call(idx, 1);
-                self.emit_constant(Value::String(Rc::from(type_name.as_str())));
-                self.emit(Op::dyn_eq);
+                // Emit the target type name as a constant, then ref_is_type opcode
+                let type_idx = self.add_string_constant(&type_name.to_lowercase());
+                self.emit_u16(Op::ref_test, type_idx);
             }
 
             // Like — string pattern matching (simplified)
@@ -434,98 +440,40 @@ impl Compiler {
             return Ok(());
         }
 
-        // Strip generic type params: "dictionary(of string, integer)" → "dictionary"
-        let name = if let Some(paren) = name.find("(of ") {
-            name[..paren].to_string()
-        } else {
-            name
-        };
+        // Strip generic type params and fully-qualified prefixes
+        let name = name.find("(of ").map(|p| name[..p].to_string()).unwrap_or(name);
+        let bare = name
+            .strip_prefix("system.data.sqlclient.").or_else(|| name.strip_prefix("system.data.oledb."))
+            .or_else(|| name.strip_prefix("system.net.sockets."))
+            .or_else(|| name.strip_prefix("system.io."))
+            .or_else(|| name.strip_prefix("system.collections."))
+            .or_else(|| name.strip_prefix("system.text."))
+            .or_else(|| name.strip_prefix("system.windows.forms."))
+            .or_else(|| name.strip_prefix("adodb."))
+            .unwrap_or(&name)
+            .to_string();
 
-        // Built-in types → host constructor (no struct_new needed, host creates the object)
-        let host_ctor: Option<(&str, &str)> = match name.as_str() {
-            "datetime"      => Some(("vybe:types", "dateTimeNew")),
-            "stringbuilder" | "system.text.stringbuilder" => Some(("vybe:types", "stringBuilderNew")),
-            "list" | "list(of string)" | "list(of integer)" | "list(of object)" | "list(of double)"
-                            => Some(("vybe:types", "listNew")),
-            "dictionary" | "dictionary(of string, string)" | "dictionary(of string, object)"
-                            => Some(("vybe:types", "dictNew")),
-            "queue" | "queue(of string)" | "queue(of integer)" | "queue(of object)"
-                            => Some(("vybe:types", "queueNew")),
-            "stack" | "stack(of string)" | "stack(of integer)" | "stack(of object)"
-                            => Some(("vybe:types", "stackNew")),
-            "hashset" | "hashset(of string)" | "hashset(of integer)" | "hashset(of object)"
-                            => Some(("vybe:types", "hashSetNew")),
-            "datatable"     => Some(("vybe:data", "dataTableNew")),
-            "dataset"       => Some(("vybe:data", "dataSetNew")),
-            "point"         => Some(("vybe:drawing", "pointNew")),
-            "size"          => Some(("vybe:drawing", "sizeNew")),
-            "font"          => Some(("vybe:drawing", "fontNew")),
-            "random"        => Some(("vybe:threading", "randomNew")),
-            "stopwatch"     => Some(("vybe:threading", "stopwatchNew")),
-            "arraylist" | "system.collections.arraylist" => Some(("vybe:types", "listNew")),
-            "hashtable" | "system.collections.hashtable" => Some(("vybe:types", "dictNew")),
-            "collection" | "system.collections.collection" => Some(("vybe:types", "listNew")),
-            "sortedlist"    => Some(("vybe:types", "dictNew")),
-            "streamreader" | "system.io.streamreader" => Some(("vybe:net", "streamReaderNew")),
-            "streamwriter" | "system.io.streamwriter" => Some(("vybe:net", "streamWriterNew")),
-            // Database
-            "sqlconnection" | "system.data.sqlclient.sqlconnection" => Some(("vybe:database", "connect")),
-            "sqlcommand" | "system.data.sqlclient.sqlcommand" => Some(("vybe:data", "dataTableNew")),  // simplified
-            "sqldataadapter" | "system.data.sqlclient.sqldataadapter" => Some(("vybe:data", "dataTableNew")),
-            "oledbconnection" | "system.data.oledb.oledbconnection" => Some(("vybe:database", "connect")),
-            "oledbcommand" | "system.data.oledb.oledbcommand" => Some(("vybe:data", "dataTableNew")),
-            "adodb.connection" => Some(("vybe:database", "connect")),
-            "adodb.recordset" | "adodb.command" => Some(("vybe:data", "dataTableNew")),
-            // Network
-            "tcpclient" | "system.net.sockets.tcpclient" => Some(("vybe:net", "tcpConnect")),
-            "tcplistener" | "system.net.sockets.tcplistener" => Some(("vybe:net", "tcpListenerNew")),
-            "udpclient" | "system.net.sockets.udpclient" => Some(("vybe:net", "udpNew")),
-            // WinForms controls — use Window.Forms namespace constructors
-            "form" => Some(("vybe:gui", "newForm")),
-            "toolstripstatuslabel" | "toolstripmenuitem" | "toolstriptextbox"
-            | "toolstripcombobox" | "toolstripseparator" => Some(("vybe:types", "listNew")), // simplified
-            _ => None,
-        };
-
-        if let Some((module, fn_name)) = host_ctor {
+        // 1. TypeRegistry known_types table — single lookup, no hardcoded match
+        if let Some(&(module, func)) = self.known_types.get(&bare) {
             self.emit(Op::null);
             for arg in args { self.compile_expression(arg)?; }
-            let idx = self.import(module, fn_name);
+            let idx = self.import(module, func);
             self.emit_host_call(idx, (args.len() + 1) as u8);
             return Ok(());
         }
 
-        // WinForms control constructors: New Button(), New TextBox(), etc.
-        // These map to vybe:gui/new_{CapitalizedName}
-        let control_types = [
-            "button", "label", "textbox", "checkbox", "radiobutton",
-            "combobox", "listbox", "panel", "groupbox", "tabcontrol",
-            "tabpage", "datagridview", "progressbar", "trackbar",
-            "numericupdown", "datetimepicker", "richtextbox", "picturebox",
-            "menustrip", "toolstrip", "statusstrip", "splitcontainer",
-            "flowlayoutpanel", "tablelayoutpanel", "linklabel", "maskedtextbox",
-            "listview", "webbrowser", "monthcalendar", "contextmenustrip",
-            "timer", "bindingsource", "tooltip", "imagelist",
-            "openfiledialog", "savefiledialog", "folderbrowserdialog",
-            "colordialog", "fontdialog",
-        ];
-        // Also strip System.Windows.Forms. prefix
-        let bare_name = name.strip_prefix("system.windows.forms.").unwrap_or(&name);
-        if control_types.contains(&bare_name.as_ref()) {
-            // Capitalize: "textbox" → "TextBox" — use the registered host fn name
-            // The host fn is registered as "new_TextBox", "new_Button", etc.
-            // We look it up by the namespace: global "window" → "forms" → control_name
+        // 2. WinForms controls: check capitalize_control_name
+        let capitalized = capitalize_control_name(&bare);
+        if !capitalized.is_empty() && capitalized != bare {
             self.emit(Op::null);
             for arg in args { self.compile_expression(arg)?; }
-            // Find the matching new_X host function
-            let capitalized = capitalize_control_name(bare_name);
             let hn = format!("new_{}", capitalized);
             let idx = self.import("vybe:gui", &hn);
             self.emit_host_call(idx, (args.len() + 1) as u8);
             return Ok(());
         }
 
-        // User-defined class: look up constructor from globals
+        // 3. User-defined class: look up constructor from globals
         let idx = self.add_string_constant(&name);
         self.emit_u16(Op::global_get, idx);
         self.emit_u16(Op::struct_new, 0);

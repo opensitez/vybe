@@ -729,6 +729,47 @@ impl VM {
                 Op::f64_const_0 => self.push(Value::F64(0.0))?,
 
                 // -- Type checks --
+                // ref_test: TypeOf...Is using TypeRegistry hierarchy
+                Op::ref_test => {
+                    let type_name_idx = self.read_u16();
+                    let target_name = self.constant_str(type_name_idx);
+                    let val = self.pop();
+                    let result = match &val {
+                        Value::Object(o) => {
+                            let ob = o.borrow();
+                            // Check type_id via TypeRegistry
+                            if ob.type_id > 0 {
+                                if let Some(target_id) = self.type_registry.get_id(&target_name) {
+                                    self.type_registry.is_subtype(ob.type_id, target_id)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                // Fallback: check __type property name match
+                                let obj_type = ob.properties.get("__type")
+                                    .map(|v| format!("{}", v).to_lowercase())
+                                    .or_else(|| ob.properties.get("__control_type")
+                                        .map(|v| format!("{}", v).to_lowercase()))
+                                    .unwrap_or_default();
+                                if obj_type == target_name { true }
+                                else if let Some(tid) = self.type_registry.get_id(&obj_type) {
+                                    if let Some(target_id) = self.type_registry.get_id(&target_name) {
+                                        self.type_registry.is_subtype(tid, target_id)
+                                    } else { false }
+                                } else {
+                                    target_name == "object" // everything is Object
+                                }
+                            }
+                        }
+                        Value::String(_) => target_name == "string" || target_name == "object",
+                        Value::F64(_) | Value::I32(_) | Value::I64(_) => {
+                            target_name == "integer" || target_name == "double" || target_name == "object"
+                        }
+                        Value::Bool(_) => target_name == "boolean" || target_name == "object",
+                        Value::Null => false,
+                    };
+                    self.push(Value::Bool(result))?;
+                }
                 Op::ref_is_null => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Null)))?; }
                 Op::ref_is_string => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::String(_))))?; }
                 Op::ref_is_number => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::F64(_) | Value::I32(_) | Value::I64(_))))?; }

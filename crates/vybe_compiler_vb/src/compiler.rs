@@ -17,10 +17,12 @@ pub struct Compiler {
     pub(crate) loop_stack: Vec<LoopContext>,
     pub(crate) class_fields: HashSet<String>,
     /// Component Model: imported interface prefixes from `Imports` statements.
-    /// Maps prefix → interface name for compile-time resolution.
-    /// e.g. "system.windows.forms" → "system.windows.forms"
-    ///      "system.io" → "system.io"
     pub(crate) interface_imports: Vec<String>,
+    /// Known built-in types: name → (constructor_module, constructor_fn)
+    pub(crate) known_types: std::collections::HashMap<String, (&'static str, &'static str)>,
+    /// Declared function signatures: name → vec of is_byref per param
+    /// Used to box/unbox ByRef args at call sites.
+    pub(crate) func_signatures: std::collections::HashMap<String, Vec<bool>>,
 }
 
 pub(crate) struct LoopContext {
@@ -44,6 +46,8 @@ impl Compiler {
             function_name_stack: Vec::new(),
             loop_stack: Vec::new(),
             class_fields: HashSet::new(),
+            known_types: Self::init_known_types(),
+            func_signatures: std::collections::HashMap::new(),
             interface_imports: vec![
                 // Default imports — always available
                 "system".into(),
@@ -287,6 +291,42 @@ impl Compiler {
         None
     }
 
+    fn init_known_types() -> std::collections::HashMap<String, (&'static str, &'static str)> {
+        let mut m = std::collections::HashMap::new();
+        // All built-in types with their constructor host functions
+        for (name, module, func) in &[
+            ("list", "vybe:types", "listNew"),
+            ("dictionary", "vybe:types", "dictNew"),
+            ("queue", "vybe:types", "queueNew"),
+            ("stack", "vybe:types", "stackNew"),
+            ("hashset", "vybe:types", "hashSetNew"),
+            ("arraylist", "vybe:types", "listNew"),
+            ("hashtable", "vybe:types", "dictNew"),
+            ("collection", "vybe:types", "listNew"),
+            ("sortedlist", "vybe:types", "dictNew"),
+            ("datetime", "vybe:types", "dateTimeNew"),
+            ("stringbuilder", "vybe:types", "stringBuilderNew"),
+            ("datatable", "vybe:data", "dataTableNew"),
+            ("dataset", "vybe:data", "dataSetNew"),
+            ("point", "vybe:drawing", "pointNew"),
+            ("size", "vybe:drawing", "sizeNew"),
+            ("font", "vybe:drawing", "fontNew"),
+            ("random", "vybe:threading", "randomNew"),
+            ("stopwatch", "vybe:threading", "stopwatchNew"),
+            ("sqlconnection", "vybe:database", "connect"),
+            ("tcpclient", "vybe:net", "tcpConnect"),
+            ("tcplistener", "vybe:net", "tcpListenerNew"),
+            ("udpclient", "vybe:net", "udpNew"),
+            ("streamreader", "vybe:net", "streamReaderNew"),
+            ("streamwriter", "vybe:net", "streamWriterNew"),
+            // WinForms controls (handled separately via capitalize)
+            ("form", "vybe:gui", "newForm"),
+        ] {
+            m.insert(name.to_string(), (*module, *func));
+        }
+        m
+    }
+
 } // end impl Compiler (part 1)
 
 /// Map VB/CLR method names to actual host function names.
@@ -370,14 +410,23 @@ impl Compiler {
     pub(crate) fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), String> {
         match decl {
             Declaration::Sub(sub) => {
-                self.compile_sub(sub)?;
+                // Record signature for ByRef call-site boxing
+                let sig: Vec<bool> = sub.parameters.iter()
+                    .map(|p| p.pass_type == ParameterPassType::ByRef)
+                    .collect();
                 let name = sub.name.as_str().to_lowercase();
+                self.func_signatures.insert(name.clone(), sig);
+                self.compile_sub(sub)?;
                 self.emit_global_set(&name);
                 self.emit(Op::drop);
             }
             Declaration::Function(func) => {
-                self.compile_function(func)?;
+                let sig: Vec<bool> = func.parameters.iter()
+                    .map(|p| p.pass_type == ParameterPassType::ByRef)
+                    .collect();
                 let name = func.name.as_str().to_lowercase();
+                self.func_signatures.insert(name.clone(), sig);
+                self.compile_function(func)?;
                 self.emit_global_set(&name);
                 self.emit(Op::drop);
             }
@@ -493,8 +542,21 @@ impl Compiler {
         }
         match self.resolve_variable(&name) {
             VarResolution::Local(slot) => {
-                self.emit_u16(Op::local_set, slot);
-                self.emit(Op::drop);
+                if self.current_scope().is_byref(&name) {
+                    // ByRef: write to box[0] — stack has [value]
+                    // Need: [box, 0, value] for array_set
+                    let tmp = self.define_local("__byref_tmp");
+                    self.emit_u16(Op::local_set, tmp);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, slot); // box
+                    self.emit_constant(Value::F64(0.0));  // index 0
+                    self.emit_u16(Op::local_get, tmp);    // value
+                    self.emit(Op::array_set);
+                    self.emit(Op::drop);
+                } else {
+                    self.emit_u16(Op::local_set, slot);
+                    self.emit(Op::drop);
+                }
             }
             VarResolution::Global => {
                 // Inside a class: unresolved name that's a class field → Me.field = value
@@ -561,7 +623,13 @@ impl Compiler {
         let idx = self.chunks.len();
         self.chunks.push(chunk);
         let mut scope = Scope::new_function();
-        for param in &sub.parameters { scope.define_local(&param.name.as_str().to_lowercase()); }
+        for param in &sub.parameters {
+            if param.pass_type == ParameterPassType::ByRef {
+                scope.define_byref_local(&param.name.as_str().to_lowercase());
+            } else {
+                scope.define_local(&param.name.as_str().to_lowercase());
+            }
+        }
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;
         self.scopes.push(scope);
@@ -588,7 +656,13 @@ impl Compiler {
         let idx = self.chunks.len();
         self.chunks.push(chunk);
         let mut scope = Scope::new_function();
-        for param in params { scope.define_local(&param.name.as_str().to_lowercase()); }
+        for param in params {
+            if param.pass_type == ParameterPassType::ByRef {
+                scope.define_byref_local(&param.name.as_str().to_lowercase());
+            } else {
+                scope.define_local(&param.name.as_str().to_lowercase());
+            }
+        }
         if return_var.is_some() { scope.define_local("__return_val"); }
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;

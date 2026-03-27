@@ -31,6 +31,10 @@ pub struct TypeDef {
     pub methods: HashMap<String, Method>,
     /// Field names (optional, for documentation)
     pub fields: Vec<String>,
+    /// Constructor method (called by `New TypeName()`)
+    pub constructor: Option<Method>,
+    /// Enum constants: name → value (for compile-time resolution)
+    pub constants: HashMap<String, i64>,
 }
 
 impl TypeDef {
@@ -40,6 +44,8 @@ impl TypeDef {
             parent: None,
             methods: HashMap::new(),
             fields: Vec::new(),
+            constructor: None,
+            constants: HashMap::new(),
         }
     }
 
@@ -127,5 +133,48 @@ impl TypeRegistry {
     /// Add a host method by looking up the host registry.
     pub fn add_host_method(&mut self, type_id: usize, method_name: &str, host_fn_idx: usize) {
         self.add_method(type_id, method_name, Method::HostFn(host_fn_idx));
+    }
+
+    /// Set constructor for a type.
+    pub fn set_constructor(&mut self, type_id: usize, m: Method) {
+        if let Some(typedef) = self.types.get_mut(type_id) {
+            typedef.constructor = Some(m);
+        }
+    }
+
+    /// Add a constant to a type (for enums).
+    pub fn add_constant(&mut self, type_id: usize, name: &str, value: i64) {
+        if let Some(typedef) = self.types.get_mut(type_id) {
+            typedef.constants.insert(name.to_lowercase(), value);
+        }
+    }
+
+    /// Look up a constructor for a type.
+    pub fn get_constructor(&self, type_id: usize) -> Option<&Method> {
+        self.types.get(type_id)?.constructor.as_ref()
+    }
+
+    /// Look up a constant on a type (for enums).
+    pub fn get_constant(&self, type_id: usize, name: &str) -> Option<i64> {
+        let key = name.to_lowercase();
+        self.types.get(type_id)?.constants.get(&key).copied()
+    }
+
+    /// Check if type_id is a subtype of target_id (walks parent chain).
+    pub fn is_subtype(&self, type_id: usize, target_id: usize) -> bool {
+        if type_id == target_id { return true; }
+        let mut tid = type_id;
+        loop {
+            if let Some(typedef) = self.types.get(tid) {
+                if let Some(parent) = typedef.parent {
+                    if parent == target_id { return true; }
+                    tid = parent;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
     }
 }

@@ -48,7 +48,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         // u16 operand
         Op::r#const | Op::local_get | Op::local_set | Op::global_get | Op::global_set |
         Op::struct_get | Op::struct_set | Op::struct_new | Op::array_new | Op::class_new | Op::method_def |
-        Op::block | Op::r#loop | Op::memory_grow | Op::canon_lift | Op::canon_lower => {
+        Op::block | Op::r#loop | Op::memory_grow | Op::canon_lift | Op::canon_lower | Op::ref_test => {
             let idx = chunk.read_u16(offset + 1);
             let extra = if op == Op::r#const && (idx as usize) < chunk.constants.len() {
                 format!(" ({})", chunk.constants[idx as usize])

@@ -60,6 +60,9 @@ pub fn register_all(vm: &mut VM) {
     // --- List / Array ---
     let list_id = {
         let mut t = TypeDef::new("List");
+        if let Some(idx) = h(vm, "vybe:types", "listNew") {
+            t.constructor = Some(Method::HostFn(idx));
+        }
         for (method, module, fname) in &[
             ("add", "vybe:types", "listAdd"),
             ("remove", "vybe:types", "listRemove"),
@@ -413,5 +416,114 @@ pub fn register_all(vm: &mut VM) {
     {
         let t = TypeDef::new("Promise");
         vm.type_registry.register(t);
+    }
+
+    // ============================================================
+    // Register constructors for all types
+    // ============================================================
+    let ctor_mappings: &[(&str, &str, &str)] = &[
+        ("Dictionary", "vybe:types", "dictNew"),
+        ("Queue", "vybe:types", "queueNew"),
+        ("Stack", "vybe:types", "stackNew"),
+        ("HashSet", "vybe:types", "hashSetNew"),
+        ("StringBuilder", "vybe:types", "stringBuilderNew"),
+        ("DateTime", "vybe:types", "dateTimeNew"),
+        ("SqlConnection", "vybe:database", "connect"),
+        ("TcpClient", "vybe:net", "tcpConnect"),
+        ("TcpListener", "vybe:net", "tcpListenerNew"),
+        ("UdpClient", "vybe:net", "udpNew"),
+        ("StreamReader", "vybe:net", "streamReaderNew"),
+        ("StreamWriter", "vybe:net", "streamWriterNew"),
+        ("Stopwatch", "vybe:threading", "stopwatchNew"),
+        ("Random", "vybe:threading", "randomNew"),
+        ("DataTable", "vybe:data", "dataTableNew"),
+        ("DataSet", "vybe:data", "dataSetNew"),
+        ("Point", "vybe:drawing", "pointNew"),
+        ("Size", "vybe:drawing", "sizeNew"),
+        ("Font", "vybe:drawing", "fontNew"),
+    ];
+    for (type_name, module, fname) in ctor_mappings {
+        if let (Some(tid), Some(idx)) = (vm.type_registry.get_id(type_name), h(vm, module, fname)) {
+            vm.type_registry.set_constructor(tid, Method::HostFn(idx));
+        }
+    }
+
+    // ============================================================
+    // Register enum types with compile-time constants
+    // ============================================================
+    register_enums(vm);
+}
+
+fn register_enums(vm: &mut VM) {
+    // DialogResult
+    let id = vm.type_registry.register(TypeDef::new("DialogResult"));
+    for (name, val) in &[("none",0),("ok",1),("cancel",2),("abort",3),("retry",4),("ignore",5),("yes",6),("no",7)] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // MessageBoxButtons
+    let id = vm.type_registry.register(TypeDef::new("MessageBoxButtons"));
+    for (name, val) in &[("ok",0),("okcancel",1),("abortretryignore",2),("yesnocancel",3),("yesno",4),("retrycancel",5)] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // MessageBoxIcon
+    let id = vm.type_registry.register(TypeDef::new("MessageBoxIcon"));
+    for (name, val) in &[("none",0),("error",16),("question",32),("warning",48),("information",64)] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // Keys
+    let id = vm.type_registry.register(TypeDef::new("Keys"));
+    for (name, val) in &[
+        ("none",0),("back",8),("tab",9),("return",13),("enter",13),("escape",27),
+        ("space",32),("left",37),("up",38),("right",39),("down",40),
+        ("delete",46),("insert",45),("shift",16),("control",17),("alt",18),
+        ("f1",112),("f2",113),("f3",114),("f4",115),("f5",116),("f6",117),
+        ("f7",118),("f8",119),("f9",120),("f10",121),("f11",122),("f12",123),
+    ] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // FormBorderStyle
+    let id = vm.type_registry.register(TypeDef::new("FormBorderStyle"));
+    for (name, val) in &[("none",0),("fixedsingle",1),("fixeddialog",3),("sizable",4),("fixedtoolwindow",5),("sizabletoolwindow",6)] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // FormStartPosition
+    let id = vm.type_registry.register(TypeDef::new("FormStartPosition"));
+    for (name, val) in &[("manual",0),("centerscreen",1),("windowsdefaultlocation",2),("windowsdefaultbounds",3),("centerparent",4)] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // FormWindowState
+    let id = vm.type_registry.register(TypeDef::new("FormWindowState"));
+    for (name, val) in &[("normal",0),("minimized",1),("maximized",2)] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // DockStyle
+    let id = vm.type_registry.register(TypeDef::new("DockStyle"));
+    for (name, val) in &[("none",0),("top",1),("bottom",2),("left",3),("right",4),("fill",5)] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // AnchorStyles
+    let id = vm.type_registry.register(TypeDef::new("AnchorStyles"));
+    for (name, val) in &[("none",0),("top",1),("bottom",2),("left",4),("right",8)] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // CloseReason
+    let id = vm.type_registry.register(TypeDef::new("CloseReason"));
+    for (name, val) in &[("none",0),("windowsshutdown",1),("userclosing",3),("applicationexitcall",5)] {
+        vm.type_registry.add_constant(id, name, *val);
+    }
+
+    // MouseButtons
+    let id = vm.type_registry.register(TypeDef::new("MouseButtons"));
+    for (name, val) in &[("none",0),("left",1),("right",2),("middle",4)] {
+        vm.type_registry.add_constant(id, name, *val);
     }
 }

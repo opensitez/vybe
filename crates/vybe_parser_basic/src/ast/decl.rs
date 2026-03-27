@@ -180,7 +180,7 @@ impl Default for Visibility {
 
 impl Default for ParameterPassType {
     fn default() -> Self {
-        ParameterPassType::ByRef
+        ParameterPassType::ByVal
     }
 }
 

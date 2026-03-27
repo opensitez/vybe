@@ -195,6 +195,10 @@ impl Compiler {
                     self.emit(Op::drop);
                     return Ok(());
                 }
+
+                let sig = self.func_signatures.get(&fname).cloned();
+
+                // Push function reference
                 match self.resolve_variable(&fname) {
                     VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
                     VarResolution::Global => {
@@ -202,9 +206,47 @@ impl Compiler {
                         self.emit_u16(Op::global_get, idx);
                     }
                 }
-                for arg in arguments { self.compile_expression(arg)?; }
+
+                // Compile args — box ByRef params, save box refs for writeback
+                let mut byref_info: Vec<(u16, u16)> = Vec::new(); // (box_local, var_local)
+                for (i, arg) in arguments.iter().enumerate() {
+                    let is_byref = sig.as_ref().and_then(|s| s.get(i)).copied().unwrap_or(false);
+                    if is_byref {
+                        if let Expression::Variable(var) = arg {
+                            let var_name = var.as_str().to_lowercase();
+                            // Create box: [current_value] → array
+                            self.compile_expression(arg)?;
+                            self.emit_u16(Op::array_new, 1);
+                            // Save box to temp local, keep on stack for the call arg
+                            // dup: [box, box], local_set (peek): [box, box], drop: [box]
+                            let box_local = self.define_local(&format!("__box_{}", i));
+                            self.emit(Op::dup);
+                            self.emit_u16(Op::local_set, box_local);
+                            self.emit(Op::drop);
+                            // Track for writeback
+                            if let VarResolution::Local(var_slot) = self.resolve_variable(&var_name) {
+                                byref_info.push((box_local, var_slot));
+                            }
+                        } else {
+                            // Non-variable ByRef arg — just box it, no writeback
+                            self.compile_expression(arg)?;
+                            self.emit_u16(Op::array_new, 1);
+                        }
+                    } else {
+                        self.compile_expression(arg)?;
+                    }
+                }
                 self.emit_u8(Op::call, arguments.len() as u8);
                 self.emit(Op::drop);
+
+                // Writeback: read from boxes back into caller's variables
+                for (box_local, var_local) in &byref_info {
+                    self.emit_u16(Op::local_get, *box_local);
+                    self.emit_constant(Value::F64(0.0));
+                    self.emit(Op::array_get);
+                    self.emit_u16(Op::local_set, *var_local);
+                    self.emit(Op::drop);
+                }
             }
             Statement::ExpressionStatement(expr) => {
                 self.compile_expression(expr)?;
