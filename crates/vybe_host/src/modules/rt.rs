@@ -142,6 +142,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:rt", "typeof", Box::new(|args: &[Value]| {
         let tag = match args.first().unwrap_or(&Value::Null) {
             Value::Null => "null",
+            Value::Undefined => "undefined",
             Value::Bool(_) => "boolean",
             Value::I32(_) | Value::I64(_) | Value::F64(_) => "number",
             Value::String(_) => "string",
@@ -199,7 +200,7 @@ pub fn register(vm: &mut VM) {
 
 fn truthy(v: &Value) -> bool {
     match v {
-        Value::Null => false,
+        Value::Null | Value::Undefined => false,
         Value::Bool(b) => *b,
         Value::F64(n) => *n != 0.0 && !n.is_nan(),
         Value::I32(n) => *n != 0,

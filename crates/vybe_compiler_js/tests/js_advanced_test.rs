@@ -183,7 +183,8 @@ fn test_typeof() {
     assert_eq!(run_js_one("console.log(typeof 42)"), "number");
     assert_eq!(run_js_one(r#"console.log(typeof "hello")"#), "string");
     assert_eq!(run_js_one("console.log(typeof true)"), "boolean");
-    assert_eq!(run_js_one("console.log(typeof null)"), "undefined"); // JS quirk: typeof null → our VM maps to undefined
+    assert_eq!(run_js_one("console.log(typeof null)"), "object"); // JS spec: typeof null === "object"
+    assert_eq!(run_js_one("console.log(typeof undefined)"), "undefined");
 }
 
 // ============================================================

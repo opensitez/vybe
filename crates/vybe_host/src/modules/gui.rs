@@ -218,7 +218,7 @@ fn i32_arg(args: &[Value], idx: usize, default: i32) -> i32 {
 }
 fn vm_to_prop(v: Value) -> PropValue {
     match v {
-        Value::Null => PropValue::Null,
+        Value::Null | Value::Undefined => PropValue::Null,
         Value::Bool(b) => PropValue::Bool(b),
         Value::I32(n) => PropValue::Int(n as i64),
         Value::I64(n) => PropValue::Int(n),

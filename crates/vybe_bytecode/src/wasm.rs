@@ -1214,7 +1214,7 @@ fn read_i16(code: &[u8], ip: &mut usize) -> i16 {
 
 fn encode_value(out: &mut Vec<u8>, val: &Value) {
     match val {
-        Value::Null => out.push(0),
+        Value::Null | Value::Undefined => out.push(0),
         Value::Bool(b) => { out.push(1); out.push(if *b { 1 } else { 0 }); }
         Value::I32(n) => { out.push(2); out.extend_from_slice(&n.to_le_bytes()); }
         Value::I64(n) => { out.push(3); out.extend_from_slice(&n.to_le_bytes()); }

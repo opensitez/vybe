@@ -399,6 +399,8 @@ impl Compiler {
                 "cbool" => Some(Op::dyn_to_bool),
                 // Type checks
                 "isnothing" | "isnull" => Some(Op::ref_is_null),
+                "isarray" => Some(Op::ref_is_array),
+                "typename" => Some(Op::ref_typeof),
                 // String builtins (wasm:js-string proposal)
                 "len" => Some(Op::str_length),
                 "ucase" => Some(Op::str_to_upper),
@@ -441,6 +443,26 @@ impl Compiler {
                     self.emit(Op::str_char_code_at);
                     return Ok(Some(()));
                 }
+                // Space(n) → str_repeat(" ", n)
+                "space" | "space$" | "spc" => {
+                    self.emit_constant(Value::String(Rc::from(" ")));
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::i32_from_f64);
+                    self.emit(Op::str_repeat);
+                    return Ok(Some(()));
+                }
+                // String.IsNullOrEmpty(s) → ref_is_null OR str_length == 0
+                "string.isnullorempty" => {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::dup);
+                    self.emit(Op::ref_is_null);
+                    let done = self.emit_jump(Op::br_if_true);
+                    self.emit(Op::str_length);
+                    self.emit(Op::i32_const_0);
+                    self.emit(Op::dyn_eq);
+                    self.patch_jump(done);
+                    return Ok(Some(()));
+                }
                 _ => {}
             }
         }
@@ -453,6 +475,7 @@ impl Compiler {
                 "split" => Some(Op::str_split),
                 "join" => Some(Op::array_join),
                 "string" | "string$" => Some(Op::str_repeat),
+                "strcomp" => Some(Op::str_compare),
                 _ => None,
             };
             if let Some(op) = op {
@@ -464,6 +487,15 @@ impl Compiler {
 
             // Multi-opcode two-arg intrinsics
             match fname {
+                // InStrRev(s, needle) → str_last_index_of + 1
+                "instrrev" => {
+                    self.compile_expression(&args[0])?;
+                    self.compile_expression(&args[1])?;
+                    self.emit(Op::str_last_index_of);
+                    self.emit_constant(Value::I32(1));
+                    self.emit(Op::i32_add);
+                    return Ok(Some(()));
+                }
                 // InStr(s, needle) → str_index_of + 1 (VB is 1-based: 1=first, 0=not found)
                 "instr" => {
                     self.compile_expression(&args[0])?;

@@ -1021,7 +1021,7 @@ fn test_typeof_undeclared() {
 
 #[test]
 fn test_typeof_null() {
-    assert_eq!(run_js_one(r#"console.log(typeof null)"#), "undefined");
+    assert_eq!(run_js_one(r#"console.log(typeof null)"#), "object"); // JS spec
 }
 
 #[test]

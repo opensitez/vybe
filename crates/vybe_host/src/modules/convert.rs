@@ -125,7 +125,7 @@ pub fn register(vm: &mut VM) {
     // cbool(value) → to boolean
     vm.register_host_fn("vybe:convert", "cbool", Box::new(|args: &[Value]| {
         match args.first().unwrap_or(&Value::Null) {
-            Value::Null => Value::Bool(false),
+            Value::Null | Value::Undefined => Value::Bool(false),
             Value::Bool(b) => Value::Bool(*b),
             Value::F64(n) => Value::Bool(*n != 0.0),
             Value::I32(n) => Value::Bool(*n != 0),
@@ -183,6 +183,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:convert", "typeName", Box::new(|args: &[Value]| {
         let name = match args.first().unwrap_or(&Value::Null) {
             Value::Null => "Nothing",
+            Value::Undefined => "Undefined",
             Value::Bool(_) => "Boolean",
             Value::I32(_) => "Integer",
             Value::I64(_) => "Long",
@@ -197,7 +198,7 @@ pub fn register(vm: &mut VM) {
     // vartype(value) → VB VarType constant
     vm.register_host_fn("vybe:convert", "varType", Box::new(|args: &[Value]| {
         let vt = match args.first().unwrap_or(&Value::Null) {
-            Value::Null => 1.0,     // vbNull
+            Value::Null | Value::Undefined => 1.0,     // vbNull
             Value::Bool(_) => 11.0, // vbBoolean
             Value::I32(_) => 2.0,   // vbInteger
             Value::I64(_) => 3.0,   // vbLong

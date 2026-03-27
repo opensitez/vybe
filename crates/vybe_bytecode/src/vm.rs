@@ -429,7 +429,7 @@ impl VM {
             }
             Value::Bool(_) => target_name == "boolean" || target_name == "object",
             Value::V128(_) => target_name == "v128",
-            Value::Null => false,
+            Value::Null | Value::Undefined => false,
         }
     }
 
@@ -512,7 +512,7 @@ impl VM {
                 Op::global_get => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
-                    let val = self.globals.get(&name).cloned().unwrap_or(Value::Null);
+                    let val = self.globals.get(&name).cloned().unwrap_or(Value::Undefined);
                     self.push(val)?;
                 }
                 Op::global_set => {
@@ -925,6 +925,7 @@ impl VM {
 
                 // -- Immediates --
                 Op::null => self.push(Value::Null)?,
+                Op::undefined => self.push(Value::Undefined)?,
                 Op::r#true => self.push(Value::Bool(true))?,
                 Op::r#false => self.push(Value::Bool(false))?,
                 Op::i32_const_0 => self.push(Value::I32(0))?,
@@ -970,7 +971,7 @@ impl VM {
                         }
                         Value::Bool(_) => target_name == "boolean" || target_name == "object",
                         Value::V128(_) => target_name == "v128",
-                        Value::Null => false,
+                        Value::Null | Value::Undefined => false,
                     };
                     self.push(Value::Bool(result))?;
                 }
@@ -1028,7 +1029,7 @@ impl VM {
                     self.push(Value::I32(v & 0x7FFF_FFFF))?;
                 }
 
-                Op::ref_is_null => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Null)))?; }
+                Op::ref_is_null => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Null | Value::Undefined)))?; }
                 Op::ref_is_string => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::String(_))))?; }
                 Op::ref_is_number => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::F64(_) | Value::I32(_) | Value::I64(_))))?; }
                 Op::ref_is_bool => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Bool(_))))?; }
@@ -1799,6 +1800,64 @@ impl VM {
                     } else { Rc::from("") };
                     self.push(Value::String(r))?;
                 }
+                // Unicode code points (beyond BMP — emoji, CJK)
+                Op::str_from_code_point => {
+                    let cp = self.pop().as_i32() as u32;
+                    let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
+                    self.push(Value::String(Rc::from(ch.to_string().as_str())))?;
+                }
+                Op::str_code_point_at => {
+                    let idx = self.pop().as_i32() as usize;
+                    let s = self.pop();
+                    let cp = if let Value::String(s) = &s {
+                        s.chars().nth(idx).map(|c| c as i32).unwrap_or(-1)
+                    } else { -1 };
+                    self.push(Value::I32(cp))?;
+                }
+                // Bulk char code operations
+                Op::str_into_char_codes => {
+                    let s = self.pop();
+                    let codes: Vec<Value> = if let Value::String(s) = &s {
+                        s.chars().map(|c| Value::I32(c as i32)).collect()
+                    } else { vec![] };
+                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(codes)))))?;
+                }
+                Op::str_from_char_codes => {
+                    let arr = self.pop();
+                    let s = if let Value::Object(obj) = &arr {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(a) = &o.kind {
+                            a.iter().filter_map(|v| char::from_u32(v.as_i32() as u32)).collect::<String>()
+                        } else { String::new() }
+                    } else { String::new() };
+                    self.push(Value::String(Rc::from(s.as_str())))?;
+                }
+                // Type discrimination opcodes
+                Op::ref_typeof => {
+                    let v = self.pop();
+                    let tag = match &v {
+                        Value::Undefined => "undefined",
+                        Value::Null => "object",  // JS spec: typeof null === "object"
+                        Value::Bool(_) => "boolean",
+                        Value::I32(_) | Value::I64(_) | Value::F64(_) => "number",
+                        Value::String(_) => "string",
+                        Value::V128(_) => "v128",
+                        Value::Object(o) => {
+                            let ob = o.borrow();
+                            match &ob.kind {
+                                ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "function",
+                                ObjectKind::Array(_) => "array",
+                                _ => "object",
+                            }
+                        }
+                    };
+                    self.push(Value::String(Rc::from(tag)))?;
+                }
+                Op::ref_is_array => {
+                    let v = self.pop();
+                    let is_arr = matches!(&v, Value::Object(o) if matches!(o.borrow().kind, ObjectKind::Array(_)));
+                    self.push(Value::Bool(is_arr))?;
+                }
 
                 // -- Array builtins --
                 Op::array_length => {
@@ -2220,6 +2279,71 @@ impl VM {
                 Op::i64_store_64 => { let v = self.pop().as_i64(); let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.memory[addr..addr+8].copy_from_slice(&v.to_le_bytes()); } }
                 Op::f64_store_64 => { let v = self.pop().as_f64(); let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.memory[addr..addr+8].copy_from_slice(&v.to_le_bytes()); } }
 
+                // -- Relaxed SIMD FMA --
+                Op::f32x4_relaxed_madd => {
+                    let c = self.pop(); let b = self.pop(); let a = self.pop();
+                    if let (Value::V128(va), Value::V128(vb), Value::V128(vc)) = (a, b, c) {
+                        let mut out = [0u8; 16];
+                        for i in 0..4 {
+                            let fa = f32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap());
+                            let fb = f32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap());
+                            let fc = f32::from_le_bytes(vc[i*4..i*4+4].try_into().unwrap());
+                            out[i*4..i*4+4].copy_from_slice(&fa.mul_add(fb, fc).to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+                Op::f32x4_relaxed_nmadd => {
+                    let c = self.pop(); let b = self.pop(); let a = self.pop();
+                    if let (Value::V128(va), Value::V128(vb), Value::V128(vc)) = (a, b, c) {
+                        let mut out = [0u8; 16];
+                        for i in 0..4 {
+                            let fa = f32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap());
+                            let fb = f32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap());
+                            let fc = f32::from_le_bytes(vc[i*4..i*4+4].try_into().unwrap());
+                            out[i*4..i*4+4].copy_from_slice(&(-fa).mul_add(fb, fc).to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+                Op::f64x2_relaxed_madd => {
+                    let c = self.pop(); let b = self.pop(); let a = self.pop();
+                    if let (Value::V128(va), Value::V128(vb), Value::V128(vc)) = (a, b, c) {
+                        let mut out = [0u8; 16];
+                        for i in 0..2 {
+                            let fa = f64::from_le_bytes(va[i*8..i*8+8].try_into().unwrap());
+                            let fb = f64::from_le_bytes(vb[i*8..i*8+8].try_into().unwrap());
+                            let fc = f64::from_le_bytes(vc[i*8..i*8+8].try_into().unwrap());
+                            out[i*8..i*8+8].copy_from_slice(&fa.mul_add(fb, fc).to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+                Op::f64x2_relaxed_nmadd => {
+                    let c = self.pop(); let b = self.pop(); let a = self.pop();
+                    if let (Value::V128(va), Value::V128(vb), Value::V128(vc)) = (a, b, c) {
+                        let mut out = [0u8; 16];
+                        for i in 0..2 {
+                            let fa = f64::from_le_bytes(va[i*8..i*8+8].try_into().unwrap());
+                            let fb = f64::from_le_bytes(vb[i*8..i*8+8].try_into().unwrap());
+                            let fc = f64::from_le_bytes(vc[i*8..i*8+8].try_into().unwrap());
+                            out[i*8..i*8+8].copy_from_slice(&(-fa).mul_add(fb, fc).to_le_bytes());
+                        }
+                        self.push(Value::V128(out))?;
+                    } else { self.push(Value::V128([0; 16]))?; }
+                }
+
+                // -- JS Promise Integration --
+                Op::promise_suspend => {
+                    // Same as await but using native WASM suspend semantics.
+                    // The promise/value is on TOS. If it's already resolved, continue.
+                    // If pending, the event loop handles suspension.
+                    let val = self.pop();
+                    self.push(val)?;
+                    // In a real WASM runtime, this would suspend the WASM instance.
+                    // In our VM, it's handled by the existing await mechanism.
+                }
+
                 // -- Stubs --
                 Op::iter_get | Op::iter_next | Op::spread => {
                     return Err(VMError::new("Iteration not yet implemented"));
@@ -2427,7 +2551,7 @@ impl VM {
 
 fn dyn_truthy(v: &Value) -> bool {
     match v {
-        Value::Null => false,
+        Value::Null | Value::Undefined => false,
         Value::Bool(b) => *b,
         Value::F64(n) => *n != 0.0 && !n.is_nan(),
         Value::I32(n) => *n != 0,

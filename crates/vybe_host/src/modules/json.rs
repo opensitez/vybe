@@ -128,7 +128,7 @@ fn find_colon(s: &str) -> Option<usize> {
 
 fn stringify(v: &Value) -> String {
     match v {
-        Value::Null => "null".into(),
+        Value::Null | Value::Undefined => "null".into(),
         Value::Bool(b) => b.to_string(),
         Value::I32(n) => n.to_string(),
         Value::I64(n) => n.to_string(),

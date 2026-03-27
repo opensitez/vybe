@@ -53,7 +53,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::dyn_le | Op::dyn_ge | Op::dyn_neg | Op::dyn_not | Op::dyn_to_bool |
         Op::r#await | Op::set_timer |
         Op::r#return | Op::halt |
-        Op::null | Op::r#true | Op::r#false |
+        Op::null | Op::undefined | Op::r#true | Op::r#false |
         Op::i32_const_0 | Op::i32_const_1 | Op::f64_const_0 |
         Op::array_get | Op::array_set |
         Op::ref_is_null | Op::ref_is_string | Op::ref_is_number | Op::ref_is_bool | Op::ref_is_object | Op::ref_is_func |
@@ -76,6 +76,9 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::str_starts_with | Op::str_ends_with | Op::str_contains |
         Op::str_replace | Op::str_split | Op::str_repeat |
         Op::str_pad_start | Op::str_pad_end | Op::str_reverse |
+        Op::str_from_code_point | Op::str_code_point_at |
+        Op::str_into_char_codes | Op::str_from_char_codes |
+        Op::ref_typeof | Op::ref_is_array |
         // Array builtins
         Op::array_length | Op::array_push | Op::array_pop | Op::array_slice |
         Op::array_join | Op::array_reverse | Op::array_contains | Op::array_index_of |
@@ -104,7 +107,12 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         // Memory64
         Op::i64_memory_size | Op::i64_memory_grow |
         Op::i32_load_64 | Op::i64_load_64 | Op::f64_load_64 |
-        Op::i32_store_64 | Op::i64_store_64 | Op::f64_store_64 => {
+        Op::i32_store_64 | Op::i64_store_64 | Op::f64_store_64 |
+        // Relaxed SIMD FMA
+        Op::f32x4_relaxed_madd | Op::f32x4_relaxed_nmadd |
+        Op::f64x2_relaxed_madd | Op::f64x2_relaxed_nmadd |
+        // Promise integration
+        Op::promise_suspend => {
             (format!("{:?}", op), offset + 1)
         }
 

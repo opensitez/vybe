@@ -666,7 +666,8 @@ impl Compiler {
             Expression::String(s) => { self.emit_constant(Value::String(Rc::from(s.as_str()))); }
             Expression::Boolean(true) => self.emit(Op::r#true),
             Expression::Boolean(false) => self.emit(Op::r#false),
-            Expression::Null | Expression::Undefined => self.emit(Op::null),
+            Expression::Null => self.emit(Op::null),
+            Expression::Undefined => self.emit(Op::undefined),
             Expression::This => {
                 if self.in_method { self.emit_u16(Op::local_get, 1); }
                 else { self.emit(Op::null); }
@@ -943,7 +944,7 @@ impl Compiler {
                 self.emit(Op::r#await);
             }
             Expression::TemplateLiteral { quasis, expressions } => {
-                let to_str = self.import("js:coerce", "toString");
+                // str_concat_n handles type coercion (format!("{}", v)) so no toString call needed
                 let mut count = 0u8;
                 for (i, quasi) in quasis.iter().enumerate() {
                     if !quasi.is_empty() || expressions.is_empty() {
@@ -952,7 +953,6 @@ impl Compiler {
                     }
                     if i < expressions.len() {
                         self.compile_expression(&expressions[i])?;
-                        self.emit_host_call(to_str, 1);
                         count += 1;
                     }
                 }
@@ -961,8 +961,7 @@ impl Compiler {
             }
             Expression::Typeof(arg) => {
                 self.compile_expression(arg)?;
-                let idx = self.import("js:coerce", "typeof");
-                self.emit_host_call(idx, 1);
+                self.emit(Op::ref_typeof); // direct opcode replaces host call
             }
             Expression::Void(arg) => {
                 self.compile_expression(arg)?;
@@ -996,11 +995,14 @@ impl Compiler {
             // obj.method() pattern
             if let Expression::Identifier(obj_name) = object.as_ref() {
                 if !self.is_known_variable(obj_name) {
-                    // Direct WASM opcodes for Math functions (no host call overhead)
+                    // Direct WASM opcodes for namespace functions
                     if obj_name == "Math" {
                         if let Some(()) = self.try_math_intrinsic(property, arguments)? {
                             return Ok(());
                         }
+                    }
+                    if let Some(()) = self.try_namespace_intrinsic(obj_name, property, arguments)? {
+                        return Ok(());
                     }
                     // obj is not a variable → it's a module namespace.
                     // Emit as import call: (module_alias, method)
@@ -1336,10 +1338,9 @@ impl Compiler {
                 let val_slot = self.define_local("__cb_val");
                 self.emit_u16(Op::local_set, val_slot);    // val_slot = val (TOS)
                 self.emit(Op::drop);                        // pop val from stack
-                let push_idx = self.import("vybe:array", "push");
                 self.emit_u16(Op::local_get, result_slot); // push result_arr
                 self.emit_u16(Op::local_get, val_slot);    // push val
-                self.emit_host_call(push_idx, 2);          // push(result_arr, val)
+                self.emit(Op::array_push);                  // direct opcode
                 self.emit(Op::drop);                        // discard push return
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
@@ -1388,10 +1389,9 @@ impl Compiler {
                 self.emit_u8(Op::call, 3);
                 self.emit(Op::dyn_to_bool);
                 let skip = self.emit_jump(Op::br_if_false);
-                let push_idx = self.import("vybe:array", "push");
                 self.emit_u16(Op::local_get, result_slot);
                 self.emit_u16(Op::local_get, elem_slot);
-                self.emit_host_call(push_idx, 2);
+                self.emit(Op::array_push);
                 self.emit(Op::drop);
                 self.patch_jump(skip);
                 // i++
@@ -2025,6 +2025,44 @@ impl Compiler {
         Ok(None)
     }
 
+    /// Emit direct WASM opcodes for namespace.method() calls (String.*, Array.*, Number.*).
+    fn try_namespace_intrinsic(&mut self, ns: &str, method: &str, args: &[Expression]) -> Result<Option<()>, String> {
+        match (ns, method, args.len()) {
+            // String.fromCharCode(n) → str_from_char_code
+            ("String", "fromCharCode", 1) => {
+                self.compile_expression(&args[0])?;
+                self.emit(Op::i32_from_f64);
+                self.emit(Op::str_from_char_code);
+                Ok(Some(()))
+            }
+            // Array.isArray(x) → ref_is_object check + array kind
+            // Simplified: use host call (proper isArray needs kind check)
+            // Number.isInteger(x) → trunc check
+            ("Number", "isInteger", 1) => {
+                self.compile_expression(&args[0])?;
+                self.emit(Op::dup);
+                self.emit(Op::f64_trunc);
+                self.emit(Op::dyn_eq);
+                Ok(Some(()))
+            }
+            // Number.isNaN(x) → x != x
+            ("Number", "isNaN", 1) => {
+                self.compile_expression(&args[0])?;
+                self.emit(Op::dup);
+                self.emit(Op::dyn_eq); // NaN != NaN → false
+                self.emit(Op::dyn_not);
+                Ok(Some(()))
+            }
+            // Array.isArray(x) → ref_is_array
+            ("Array", "isArray", 1) => {
+                self.compile_expression(&args[0])?;
+                self.emit(Op::ref_is_array);
+                Ok(Some(()))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Emit direct WASM string/array opcodes for value method calls.
     /// obj.method(args) where obj is a variable.
     fn try_value_method_intrinsic(&mut self, object: &Expression, method: &str, args: &[Expression]) -> Result<Option<()>, String> {
@@ -2063,6 +2101,7 @@ impl Compiler {
                 // Array methods
                 "push" => Some(Op::array_push),
                 "join" => Some(Op::array_join),
+                "concat" => Some(Op::array_concat),
                 // indexOf/includes are polymorphic — stay as host calls for correct dispatch
                 _ => None,
             };

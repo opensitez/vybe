@@ -7,8 +7,10 @@ use std::rc::Rc;
 /// The compiler is responsible for emitting type checks and conversions.
 #[derive(Clone, Debug)]
 pub enum Value {
-    /// No value / null / nothing / nil — universal "absence" marker.
+    /// Explicitly empty — VB Nothing, JS null.
     Null,
+    /// Uninitialized / missing — JS undefined. VB compiler doesn't emit this.
+    Undefined,
     Bool(bool),
     I32(i32),
     I64(i64),
@@ -67,6 +69,7 @@ impl Value {
     pub fn type_tag(&self) -> &'static str {
         match self {
             Value::Null => "null",
+            Value::Undefined => "undefined",
             Value::Bool(_) => "bool",
             Value::I32(_) => "i32",
             Value::I64(_) => "i64",
@@ -90,7 +93,9 @@ impl Value {
     /// must be compiled as host calls or bytecode sequences.
     pub fn eq(&self, other: &Value) -> bool {
         match (self, other) {
-            (Value::Null, Value::Null) => true,
+            (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
+            // null == undefined is true in JS loose equality, but this is strict eq
+            // JS loose eq is handled by js_loose_eq in the JS compiler
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::I32(a), Value::I32(b)) => a == b,
             (Value::I64(a), Value::I64(b)) => a == b,
@@ -108,6 +113,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Null => write!(f, "null"),
+            Value::Undefined => write!(f, "undefined"),
             Value::Bool(b) => write!(f, "{}", b),
             Value::I32(n) => write!(f, "{}", n),
             Value::I64(n) => write!(f, "{}", n),

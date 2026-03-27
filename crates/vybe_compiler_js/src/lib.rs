@@ -33,7 +33,8 @@ pub fn register_js_coercion(vm: &mut VM) {
     vm.register_host_fn("js:coerce", "typeof", Box::new(|args: &[Value]| {
         let v = args.first().unwrap_or(&Value::Null);
         let s = match v {
-            Value::Null => "undefined",
+            Value::Null => "object",  // JS spec: typeof null === "object"
+            Value::Undefined => "undefined",
             Value::Bool(_) => "boolean",
             Value::F64(_) | Value::I32(_) | Value::I64(_) => "number",
             Value::String(_) => "string",
@@ -80,7 +81,7 @@ pub fn register_js_coercion(vm: &mut VM) {
 
 fn js_truthy(v: &Value) -> bool {
     match v {
-        Value::Null => false,
+        Value::Null | Value::Undefined => false,
         Value::Bool(b) => *b,
         Value::F64(n) => *n != 0.0 && !n.is_nan(),
         Value::I32(n) => *n != 0,
@@ -93,6 +94,7 @@ fn js_truthy(v: &Value) -> bool {
 fn js_to_number(v: &Value) -> f64 {
     match v {
         Value::Null => 0.0,
+        Value::Undefined => f64::NAN, // JS spec: Number(undefined) === NaN
         Value::Bool(true) => 1.0,
         Value::Bool(false) => 0.0,
         Value::F64(n) => *n,
@@ -105,7 +107,9 @@ fn js_to_number(v: &Value) -> f64 {
 
 fn js_loose_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Null, Value::Null) => true,
+        // null == undefined (and vice versa) is true in JS
+        (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) |
+        (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
         (Value::F64(x), Value::String(s)) | (Value::String(s), Value::F64(x)) => {
             *x == s.trim().parse::<f64>().unwrap_or(f64::NAN)
         }

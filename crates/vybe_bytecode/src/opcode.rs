@@ -101,7 +101,8 @@ pub enum Op {
     array_new,       // [array_new, u16 elem_count]; stack [elem, ...] → [arr]
 
     // -- Immediate values --
-    null,
+    null,            // push Null (VB Nothing, JS null)
+    undefined,       // push Undefined (JS undefined, missing args)
     r#true,
     r#false,
     i32_const_0,
@@ -346,6 +347,19 @@ pub enum Op {
     str_slice,       // [str, i32 start, i32 end] → [str] (same as substring)
     str_char_at,     // [str, i32 index] → [str single-char]
     str_reverse,     // [str] → [str]
+    // JS String Builtins: Unicode code points (beyond BMP)
+    str_from_code_point, // [i32 code_point] → [str]  (handles emoji, CJK)
+    str_code_point_at,   // [str, i32 index] → [i32 code_point]
+    // JS String Builtins: bulk char code operations
+    str_into_char_codes, // [str] → [array of i32]  (efficient string → code array)
+    str_from_char_codes, // [array of i32] → [str]  (efficient code array → string)
+
+    // -- Type discrimination (combines ref.test + typeof) --
+    /// Returns a type tag string: "null","boolean","number","string","object","function","array","v128"
+    /// Replaces JS typeof and VB TypeName with a single opcode.
+    ref_typeof,      // [value] → [str]
+    /// Test if value is an array (GC array kind check).
+    ref_is_array,    // [value] → [bool]
 
     // -- Array builtins (WASM GC array.* + extras) --
     array_length,    // [array] → [i32]                 (GC: array.len)
@@ -377,6 +391,14 @@ pub enum Op {
     /// Resume a continuation and immediately suspend the current one (symmetric switch).
     /// [continuation, value] → suspends; other resumes with [value]
     switch,          // [switch, u16 tag_idx]
+
+    /// Terminate execution. MUST be in the first 256 opcodes (single-byte).
+    halt,
+
+    // ================================================================
+    // Extended opcodes (>= 256, encoded as 0xFE prefix + extension byte)
+    // These are less frequently used and don't need single-byte encoding.
+    // ================================================================
 
     // -- SIMD (128-bit vectors for data manipulation) --
     // Core v128 operations for bulk data processing.
@@ -489,7 +511,17 @@ pub enum Op {
     i64_store_64,     // [i64 addr, i64] → []
     f64_store_64,     // [i64 addr, f64] → []
 
-    halt,
+    // -- Relaxed SIMD (fused multiply-add, shipped) --
+    f32x4_relaxed_madd,  // [a, b, c] → [a*b + c] (FMA, per-lane)
+    f32x4_relaxed_nmadd, // [a, b, c] → [-(a*b) + c]
+    f64x2_relaxed_madd,  // [a, b, c] → [a*b + c]
+    f64x2_relaxed_nmadd,
+
+    // -- JS Promise Integration (Phase 3) --
+    /// Suspend on a JS Promise. The runtime resolves the promise and resumes.
+    /// Stack: [promise_value] → [resolved_value]
+    /// Replaces async/await host call overhead with native WASM suspend.
+    promise_suspend,
 }
 
 impl Op {
@@ -506,29 +538,30 @@ impl Op {
     /// First byte == 0xFE → extended op, second byte is the extension index.
     pub fn from_two_bytes(b1: u8, b2: u8) -> Option<Op> {
         let val = if b1 == 0xFE {
-            256u16 + b2 as u16
+            (Op::halt as u16) + 1 + b2 as u16
         } else {
             b1 as u16
         };
-        if val <= Op::halt as u16 {
+        if val <= Op::promise_suspend as u16 {
             Some(unsafe { std::mem::transmute(val) })
         } else {
             None
         }
     }
 
-    /// Encode opcode to bytes. Returns 1 byte if < 256, 2 bytes (0xFE prefix) otherwise.
+    /// Encode opcode to bytes. Single byte if <= halt, 0xFE prefix if extended.
     pub fn encode(self) -> (u8, Option<u8>) {
         let val = self as u16;
-        if val < 256 {
+        let halt_val = Op::halt as u16;
+        if val <= halt_val {
             (val as u8, None)
         } else {
-            (0xFE, Some((val - 256) as u8))
+            (0xFE, Some((val - halt_val - 1) as u8))
         }
     }
 
-    /// Byte size when encoded.
     pub fn encoded_len(self) -> usize {
-        if (self as u16) < 256 { 1 } else { 2 }
+        if (self as u16) <= Op::halt as u16 { 1 } else { 2 }
     }
+
 }
