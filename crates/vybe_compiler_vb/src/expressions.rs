@@ -273,8 +273,10 @@ impl Compiler {
         // Strip trailing "()" if parser included it in the name
         let raw = class_name.as_str().to_lowercase();
         let name = raw.trim_end_matches("()").trim_end_matches('(').to_string();
-        if name == "exception" || name == "argumentexception" || name == "invalidoperationexception"
-            || name == "notimplementedexception" || name == "notsupportedexception" {
+
+        // Built-in exception types
+        if matches!(name.as_str(), "exception" | "argumentexception" | "invalidoperationexception"
+            | "notimplementedexception" | "notsupportedexception") {
             self.emit_u16(Op::struct_new, 0);
             self.emit(Op::dup);
             if let Some(msg_arg) = args.first() {
@@ -285,13 +287,35 @@ impl Compiler {
             let msg_idx = self.add_string_constant("message");
             self.emit_u16(Op::struct_set, msg_idx);
             self.emit(Op::drop);
-        } else {
-            let idx = self.add_string_constant(&name);
-            self.emit_u16(Op::global_get, idx);
-            self.emit_u16(Op::struct_new, 0);
-            for arg in args { self.compile_expression(arg)?; }
-            self.emit_u8(Op::call, (args.len() + 1) as u8);
+            return Ok(());
         }
+
+        // Built-in types → host constructor (no struct_new needed, host creates the object)
+        let host_ctor: Option<(&str, &str)> = match name.as_str() {
+            "datetime"      => Some(("vybe:types", "dateTimeNew")),
+            "stringbuilder" | "system.text.stringbuilder" => Some(("vybe:types", "stringBuilderNew")),
+            "list" | "list(of string)" | "list(of integer)" | "list(of object)" | "list(of double)"
+                            => Some(("vybe:types", "listNew")),
+            "dictionary" | "dictionary(of string, string)" | "dictionary(of string, object)"
+                            => Some(("vybe:types", "dictNew")),
+            _ => None,
+        };
+
+        if let Some((module, fn_name)) = host_ctor {
+            // Push a dummy this (host will ignore or use it)
+            self.emit(Op::null);
+            for arg in args { self.compile_expression(arg)?; }
+            let idx = self.import(module, fn_name);
+            self.emit_host_call(idx, (args.len() + 1) as u8);
+            return Ok(());
+        }
+
+        // User-defined class: look up constructor from globals
+        let idx = self.add_string_constant(&name);
+        self.emit_u16(Op::global_get, idx);
+        self.emit_u16(Op::struct_new, 0);
+        for arg in args { self.compile_expression(arg)?; }
+        self.emit_u8(Op::call, (args.len() + 1) as u8);
         Ok(())
     }
 

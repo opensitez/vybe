@@ -34,6 +34,7 @@ pub mod collections;
 pub mod runtime;
 pub mod database;
 pub mod gui;
+pub mod types;
 
 use vybe_bytecode::VM;
 
@@ -55,6 +56,7 @@ pub fn register_all(vm: &mut VM) {
     collections::register(vm);
     runtime::register(vm);
     database::register(vm);
+    types::register(vm);
     // Set up namespace objects AFTER all host functions are registered
     crate::namespaces::setup_namespaces(vm);
 }

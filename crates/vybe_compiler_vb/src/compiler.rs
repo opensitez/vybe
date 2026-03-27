@@ -129,6 +129,7 @@ impl Compiler {
             | "window" | "file" | "io" | "directory"
             | "vybe" | "system" | "application"
             | "environment" | "thread" | "json" | "color"
+            | "datetime" | "stringbuilder" | "process"
         )
     }
 
