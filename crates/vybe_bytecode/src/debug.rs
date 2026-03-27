@@ -40,13 +40,15 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::ref_is_null | Op::ref_is_string | Op::ref_is_number | Op::ref_is_bool | Op::ref_is_object | Op::ref_is_func |
         Op::f64_from_i32 | Op::i32_from_f64 |
         Op::try_end | Op::throw |
-        Op::inherit | Op::iter_get | Op::iter_next | Op::spread => {
+        Op::inherit | Op::iter_get | Op::iter_next | Op::spread |
+        Op::memory_size | Op::end | Op::unpack => {
             (format!("{:?}", op), offset + 1)
         }
 
         // u16 operand
         Op::r#const | Op::local_get | Op::local_set | Op::global_get | Op::global_set |
-        Op::struct_get | Op::struct_set | Op::struct_new | Op::array_new | Op::class_new | Op::method_def => {
+        Op::struct_get | Op::struct_set | Op::struct_new | Op::array_new | Op::class_new | Op::method_def |
+        Op::block | Op::r#loop | Op::memory_grow | Op::canon_lift | Op::canon_lower => {
             let idx = chunk.read_u16(offset + 1);
             let extra = if op == Op::r#const && (idx as usize) < chunk.constants.len() {
                 format!(" ({})", chunk.constants[idx as usize])
@@ -57,7 +59,9 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         }
 
         // u8 operand
-        Op::upvalue_get | Op::upvalue_set | Op::call | Op::str_concat_n => {
+        Op::upvalue_get | Op::upvalue_set | Op::call | Op::str_concat_n |
+        Op::return_call | Op::call_indirect | Op::pack |
+        Op::br_label | Op::br_if_label => {
             let arg = chunk.code[offset + 1];
             (format!("{:?} {}", op, arg), offset + 2)
         }
@@ -82,6 +86,20 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             let uv_count = chunk.code[offset + 3] as usize;
             let total = 4 + uv_count * 2;
             (format!("Closure func={} upvalues={}", func_idx, uv_count), offset + total)
+        }
+
+        // Memory load/store — no operand, just opcode (addr on stack)
+        Op::i32_load | Op::i32_store | Op::i64_load | Op::i64_store |
+        Op::f64_load | Op::f64_store | Op::i32_load8_u | Op::i32_store8 => {
+            (format!("{:?}", op), offset + 1)
+        }
+
+        // br_table: u8 count, u8 default, then count × u8 labels
+        Op::br_table => {
+            let count = chunk.code[offset + 1] as usize;
+            let default = chunk.code[offset + 2];
+            let total = 3 + count;
+            (format!("br_table count={} default={}", count, default), offset + total)
         }
 
         // TryStart: u16 catch, u16 finally

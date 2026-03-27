@@ -69,6 +69,21 @@ pub struct VM {
     pub type_methods: HashMap<(String, String), usize>,
     /// WASM GC-style type definitions with vtable method dispatch.
     pub type_registry: crate::typedef::TypeRegistry,
+    /// Linear memory (WASM MVP) — byte buffer for binary data.
+    pub memory: Vec<u8>,
+    /// Function table (WASM MVP) — for call_indirect.
+    pub func_table: Vec<Value>,
+    /// Block label stack for structured control flow.
+    label_stack: Vec<LabelEntry>,
+}
+
+/// Entry in the structured control flow label stack.
+#[derive(Debug, Clone)]
+struct LabelEntry {
+    /// Instruction offset to jump to on `br` (end of block, or start of loop).
+    target: usize,
+    /// True if this is a loop (continue jumps to start), false if block (break jumps to end).
+    is_loop: bool,
 }
 
 impl VM {
@@ -86,6 +101,9 @@ impl VM {
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             type_methods: HashMap::new(),
             type_registry: crate::typedef::TypeRegistry::new(),
+            memory: Vec::new(),
+            func_table: Vec::new(),
+            label_stack: Vec::new(),
         }
     }
 
@@ -415,6 +433,18 @@ impl VM {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let obj = self.pop();
+                    // Check for getter first — needs auto-invoke (can't do in resolve_property
+                    // because it needs mutable self for call_value)
+                    if let Value::Object(ref o) = obj {
+                        let getter_key = format!("__get_{}", name);
+                        let getter = o.borrow().properties.get(&getter_key).cloned();
+                        if let Some(getter_fn) = getter {
+                            self.push(getter_fn)?;
+                            self.push(obj)?;
+                            self.call_value(1)?;
+                            continue;
+                        }
+                    }
                     self.push(self.resolve_property(&obj, &name)?)?;
                 }
                 Op::struct_set => {
@@ -882,6 +912,201 @@ impl VM {
                     }
                 }
 
+                // -- Tail call --
+                Op::return_call => {
+                    let argc = self.read_byte() as usize;
+                    // Reuse current frame: move args to base, reset IP
+                    let base = self.frame().base;
+                    let args_start = self.stack.len() - argc;
+                    // Copy callee + args down to base
+                    let callee_idx = args_start - 1;
+                    for i in 0..=argc {
+                        self.stack[base + i] = self.stack[callee_idx + i].clone();
+                    }
+                    self.stack.truncate(base + 1 + argc);
+                    // Pop current frame and call
+                    self.frames.pop();
+                    self.call_value(argc)?;
+                }
+
+                // -- Linear memory --
+                Op::memory_size => {
+                    let pages = (self.memory.len() / 65536) as i32;
+                    self.push(Value::I32(pages))?;
+                }
+                Op::memory_grow => {
+                    let pages = self.pop().as_f64() as usize;
+                    let old_pages = self.memory.len() / 65536;
+                    self.memory.resize(self.memory.len() + pages * 65536, 0);
+                    self.push(Value::I32(old_pages as i32))?;
+                }
+                Op::i32_load => {
+                    let addr = self.pop().as_f64() as usize;
+                    if addr + 4 <= self.memory.len() {
+                        let val = i32::from_le_bytes([self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3]]);
+                        self.push(Value::I32(val))?;
+                    } else {
+                        self.push(Value::I32(0))?;
+                    }
+                }
+                Op::i32_store => {
+                    let val = self.pop().as_f64() as i32;
+                    let addr = self.pop().as_f64() as usize;
+                    if addr + 4 <= self.memory.len() {
+                        let bytes = val.to_le_bytes();
+                        self.memory[addr..addr+4].copy_from_slice(&bytes);
+                    }
+                }
+                Op::i64_load => {
+                    let addr = self.pop().as_f64() as usize;
+                    if addr + 8 <= self.memory.len() {
+                        let val = i64::from_le_bytes([
+                            self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3],
+                            self.memory[addr+4], self.memory[addr+5], self.memory[addr+6], self.memory[addr+7],
+                        ]);
+                        self.push(Value::I64(val))?;
+                    } else {
+                        self.push(Value::I64(0))?;
+                    }
+                }
+                Op::i64_store => {
+                    let val = self.pop().as_f64() as i64;
+                    let addr = self.pop().as_f64() as usize;
+                    if addr + 8 <= self.memory.len() {
+                        let bytes = val.to_le_bytes();
+                        self.memory[addr..addr+8].copy_from_slice(&bytes);
+                    }
+                }
+                Op::f64_load => {
+                    let addr = self.pop().as_f64() as usize;
+                    if addr + 8 <= self.memory.len() {
+                        let val = f64::from_le_bytes([
+                            self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3],
+                            self.memory[addr+4], self.memory[addr+5], self.memory[addr+6], self.memory[addr+7],
+                        ]);
+                        self.push(Value::F64(val))?;
+                    } else {
+                        self.push(Value::F64(0.0))?;
+                    }
+                }
+                Op::f64_store => {
+                    let val = self.pop().as_f64();
+                    let addr = self.pop().as_f64() as usize;
+                    if addr + 8 <= self.memory.len() {
+                        let bytes = val.to_le_bytes();
+                        self.memory[addr..addr+8].copy_from_slice(&bytes);
+                    }
+                }
+                Op::i32_load8_u => {
+                    let addr = self.pop().as_f64() as usize;
+                    if addr < self.memory.len() {
+                        self.push(Value::I32(self.memory[addr] as i32))?;
+                    } else {
+                        self.push(Value::I32(0))?;
+                    }
+                }
+                Op::i32_store8 => {
+                    let val = self.pop().as_f64() as u8;
+                    let addr = self.pop().as_f64() as usize;
+                    if addr < self.memory.len() {
+                        self.memory[addr] = val;
+                    }
+                }
+
+                // -- Multi-value --
+                Op::pack => {
+                    let count = self.read_byte() as usize;
+                    let start = self.stack.len() - count;
+                    let values: Vec<Value> = self.stack.drain(start..).collect();
+                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(values)))))?;
+                }
+                Op::unpack => {
+                    let arr = self.pop();
+                    if let Value::Object(obj) = arr {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(ref elems) = o.kind {
+                            let elems = elems.clone();
+                            drop(o);
+                            for elem in elems {
+                                self.push(elem)?;
+                            }
+                        }
+                    }
+                }
+
+                // -- Block/loop structured control --
+                Op::block => {
+                    let end_offset = self.read_u16() as usize;
+                    let ip = self.frame().ip;
+                    self.label_stack.push(LabelEntry { target: ip + end_offset, is_loop: false });
+                }
+                Op::r#loop => {
+                    let _body_size = self.read_u16();
+                    let ip = self.frame().ip;
+                    // Loop target is the start (current position, after reading the operand)
+                    self.label_stack.push(LabelEntry { target: ip, is_loop: true });
+                }
+                Op::end => {
+                    self.label_stack.pop();
+                }
+                Op::br_label => {
+                    let depth = self.read_byte() as usize;
+                    if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
+                        let target = entry.target;
+                        let ci = self.frame().chunk_index;
+                        self.frames.last_mut().unwrap().ip = target;
+                        // If branching out of a block (not loop), pop labels
+                        if !entry.is_loop {
+                            let len = self.label_stack.len();
+                            self.label_stack.truncate(len - depth - 1);
+                        }
+                    }
+                }
+                Op::br_if_label => {
+                    let depth = self.read_byte() as usize;
+                    let cond = self.pop();
+                    if dyn_truthy(&cond) {
+                        if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
+                            let target = entry.target;
+                            self.frames.last_mut().unwrap().ip = target;
+                            if !entry.is_loop {
+                                let len = self.label_stack.len();
+                                self.label_stack.truncate(len - depth - 1);
+                            }
+                        }
+                    }
+                }
+                Op::br_table => {
+                    let count = self.read_byte() as usize;
+                    let default_depth = self.read_byte() as usize;
+                    let mut labels = Vec::with_capacity(count);
+                    for _ in 0..count { labels.push(self.read_byte() as usize); }
+                    let idx = self.pop().as_f64() as usize;
+                    let depth = if idx < count { labels[idx] } else { default_depth };
+                    if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
+                        let target = entry.target;
+                        self.frames.last_mut().unwrap().ip = target;
+                    }
+                }
+
+                // -- call_indirect --
+                Op::call_indirect => {
+                    let argc = self.read_byte() as usize;
+                    // Table index is on stack before args
+                    let table_idx_pos = self.stack.len() - 1 - argc;
+                    let table_idx = self.stack[table_idx_pos].as_f64() as usize;
+                    if table_idx < self.func_table.len() {
+                        self.stack[table_idx_pos] = self.func_table[table_idx].clone();
+                        self.call_value(argc)?;
+                    } else {
+                        return Err(VMError::new(format!("call_indirect: table index {} out of bounds", table_idx)));
+                    }
+                }
+
+                // -- Component Model (stubs for now) --
+                Op::canon_lift => { let _ = self.read_u16(); }
+                Op::canon_lower => { let _ = self.read_u16(); }
+
                 // -- Stubs --
                 Op::iter_get | Op::iter_next | Op::spread => {
                     return Err(VMError::new("Iteration not yet implemented"));
@@ -988,20 +1213,12 @@ impl VM {
     /// 3. TypeRegistry vtable (type_id → method table → parent chain)
     /// 4. Legacy type_methods table (fallback for old code)
     /// 5. Universal Object methods (type 0)
-    fn resolve_property(&self, obj: &Value, name: &str) -> Result<Value, VMError> {
+    pub fn resolve_property(&self, obj: &Value, name: &str) -> Result<Value, VMError> {
         match obj {
             Value::Object(o) => {
                 let ob = o.borrow();
 
-                // 1. Check for getter
-                let getter_key = format!("__get_{}", name);
-                if ob.properties.contains_key(&getter_key) {
-                    return Ok(ob.properties.get(&getter_key).cloned().unwrap());
-                    // Note: caller should invoke the getter — this just returns the fn
-                    // TODO: auto-invoke getters here
-                }
-
-                // 2. Instance property
+                // 1. Instance property (getters handled in struct_get opcode directly)
                 let val = ob.get(name);
                 if !matches!(val, Value::Null) {
                     return Ok(val);

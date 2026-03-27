@@ -144,6 +144,55 @@ pub enum Op {
     method_def,      // [method_def, u16 name]
     inherit,
 
+    // -- Tail call (WASM tail call proposal) --
+    /// return_call: reuses current frame for tail-call optimization.
+    /// Prevents stack overflow on deep recursion.
+    return_call,     // [return_call, u8 arg_count]
+
+    // -- Linear memory (WASM MVP) --
+    /// Memory operations on the VM's byte buffer.
+    memory_size,     // → [i32 page_count]
+    memory_grow,     // [pages] → [old_size or -1]
+    i32_load,        // [addr] → [i32 value]
+    i32_store,       // [addr, value] → []
+    i64_load,        // [addr] → [i64 value]
+    i64_store,       // [addr, value] → []
+    f64_load,        // [addr] → [f64 value]
+    f64_store,       // [addr, value] → []
+    i32_load8_u,     // [addr] → [i32 byte]
+    i32_store8,      // [addr, byte] → []
+
+    // -- Multi-value (WASM multi-value) --
+    /// Pack N values from stack into an array.
+    pack,            // [pack, u8 count] → [array]
+    /// Unpack array onto stack.
+    unpack,          // [array] → [val, val, ...]
+
+    // -- Block/loop structured control (WASM MVP) --
+    /// Begin a block with a label. break jumps to end.
+    block,           // [block, u16 end_offset]
+    /// Begin a loop. continue jumps to start.
+    r#loop,          // [loop, u16 body_size]
+    /// End of block/loop.
+    end,
+    /// Branch to enclosing label: [br_label, u8 depth]
+    /// depth 0 = innermost block, 1 = next outer, etc.
+    br_label,
+    /// Conditional branch to label.
+    br_if_label,     // [br_if_label, u8 depth]
+    /// Branch table (switch): [br_table, u8 count, u8 default, u8 label0, u8 label1, ...]
+    br_table,
+
+    // -- Function tables / call_indirect (WASM MVP) --
+    /// Call a function from the function table by index.
+    call_indirect,   // [call_indirect, u8 arg_count]; stack: [fn_table_idx, args...] → [result]
+
+    // -- Component Model (WASM Component Model) --
+    /// Lift a value to a component interface type.
+    canon_lift,      // [canon_lift, u16 interface_idx]
+    /// Lower a component interface type to core value.
+    canon_lower,     // [canon_lower, u16 interface_idx]
+
     halt,
 }
 
