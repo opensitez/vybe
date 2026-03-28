@@ -260,9 +260,19 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     for ct in control_types {
         let type_name = ct.to_string();
         vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_args: &[Value]| {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static COUNTER: AtomicU32 = AtomicU32::new(1);
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let name = format!("{}_{}", type_name, id);
             let mut obj = vybe_bytecode::value::Object::new();
             obj.properties.insert("__control_type".into(), Value::String(Rc::from(type_name.as_str())));
+            obj.properties.insert("__control_name".into(), Value::String(Rc::from(name.as_str())));
             obj.properties.insert("__type".into(), Value::String(Rc::from(type_name.as_str())));
+            obj.properties.insert("name".into(), Value::String(Rc::from(name.as_str())));
+            obj.properties.insert("width".into(), Value::F64(100.0));
+            obj.properties.insert("height".into(), Value::F64(30.0));
+            obj.properties.insert("left".into(), Value::F64(0.0));
+            obj.properties.insert("top".into(), Value::F64(0.0));
             Value::Object(Rc::new(RefCell::new(obj)))
         }));
     }

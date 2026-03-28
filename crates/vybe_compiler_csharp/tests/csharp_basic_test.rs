@@ -14,6 +14,7 @@ fn run_cs(source: &str) -> Vec<String> {
         out.borrow_mut().push(parts.join(" "));
         Value::Null
     }));
+    vybe_host::setup_namespaces(&mut vm);
     let chunks = vybe_compiler_csharp::Compiler::new().compile(&unit)
         .unwrap_or_else(|e| panic!("Compile error: {e}"));
     vm.run(chunks).unwrap_or_else(|e| panic!("Runtime error: {e}"));

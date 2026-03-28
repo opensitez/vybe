@@ -15,6 +15,7 @@ fn run_vb(source: &str) -> Vec<String> {
         out.borrow_mut().push(parts.join(" "));
         Value::Null
     }));
+    vybe_host::setup_namespaces(&mut vm);
     // Re-setup namespaces after our log override
     vybe_host::setup_namespaces(&mut vm);
 

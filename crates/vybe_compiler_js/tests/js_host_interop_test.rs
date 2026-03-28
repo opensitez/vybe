@@ -17,6 +17,7 @@ fn run_js(code: &str) -> Vec<String> {
         out.borrow_mut().push(parts.join(" "));
         Value::Null
     }));
+    vybe_host::setup_namespaces(&mut vm);
     let chunks = vybe_compiler_js::Compiler::new().compile(&program).expect("compile failed");
     vm.run(chunks).expect("runtime error");
     output.borrow().clone()
@@ -38,6 +39,7 @@ fn run_js_vm(code: &str) -> (vybe_bytecode::VM, Rc<RefCell<Vec<String>>>) {
         out.borrow_mut().push(parts.join(" "));
         Value::Null
     }));
+    vybe_host::setup_namespaces(&mut vm);
     let chunks = vybe_compiler_js::Compiler::new().compile(&program).expect("compile failed");
     vm.run(chunks).expect("runtime error");
     (vm, output)

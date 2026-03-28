@@ -131,7 +131,12 @@ pub fn register_all(vm: &mut VM) {
         vm.register_host_fn("vybe:gui", "showForm", Box::new(|_| Value::Null));
         vm.register_host_fn("vybe:gui", "closeForm", Box::new(|_| Value::Null));
         vm.register_host_fn("vybe:gui", "noop", Box::new(|_| Value::Null));
+        vm.register_host_fn("vybe:gui", "runApplication", Box::new(|_| Value::Null));
+        vm.register_host_fn("vybe:gui", "onEvent", Box::new(|_| Value::Null));
+        vm.register_host_fn("vybe:gui", "controlsAdd", Box::new(|_| Value::Null));
     }
+    // DO NOT call setup_namespaces here — tests override host fns after register_all.
+    // setup_namespaces must be called AFTER all host fn registrations.
 }
 
 /// Register modules based on granted capabilities.
@@ -198,7 +203,7 @@ pub fn register_all_with_gui(
 ) {
     register_all(vm);
     gui::register(vm, queue);
-    crate::namespaces::setup_namespaces(vm);
+    // DO NOT call setup_namespaces here — callers do it after all overrides.
 }
 
 /// Register with capabilities + GUI.

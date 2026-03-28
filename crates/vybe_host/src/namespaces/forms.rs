@@ -19,53 +19,23 @@ pub fn register(vm: &mut VM) {
 
     for type_name in &control_types {
         let hn = format!("new_{}", type_name);
-        let type_str = type_name.to_string();
-        vm.register_host_fn("vybe:gui", &hn, {
-            let type_str = type_str.clone();
-            Box::new(move |_args: &[Value]| {
-                use vybe_bytecode::value::Object;
-                use std::sync::atomic::{AtomicU32, Ordering};
-                static COUNTER: AtomicU32 = AtomicU32::new(1);
-                let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-                let name = format!("{}_{}", type_str, id);
-                let mut obj = Object::new();
-                obj.properties.insert("__control_type".into(), Value::String(Rc::from(type_str.as_str())));
-                obj.properties.insert("__control_name".into(), Value::String(Rc::from(name.as_str())));
-                obj.properties.insert("name".into(), Value::String(Rc::from(name.as_str())));
-                obj.properties.insert("width".into(), Value::F64(100.0));
-                obj.properties.insert("height".into(), Value::F64(30.0));
-                obj.properties.insert("left".into(), Value::F64(0.0));
-                obj.properties.insert("top".into(), Value::F64(0.0));
-                // Add Items/Columns/Rows/Controls collections for controls that need them
-                let ltype = type_str.to_lowercase();
-                if matches!(ltype.as_str(), "combobox" | "listbox" | "checkedlistbox"
-                    | "listview" | "menustrip" | "toolstrip" | "statusstrip"
-                    | "contextmenustrip" | "domainupdown" | "treeview") {
-                    let items = vybe_bytecode::value::Object::new_array(vec![]);
-                    obj.properties.insert("items".into(), Value::Object(Rc::new(RefCell::new(items))));
-                }
-                if matches!(ltype.as_str(), "datagridview" | "listview") {
-                    let cols = vybe_bytecode::value::Object::new_array(vec![]);
-                    obj.properties.insert("columns".into(), Value::Object(Rc::new(RefCell::new(cols))));
-                    let rows = vybe_bytecode::value::Object::new_array(vec![]);
-                    obj.properties.insert("rows".into(), Value::Object(Rc::new(RefCell::new(rows))));
-                }
-                if matches!(ltype.as_str(), "panel" | "groupbox" | "tabcontrol"
-                    | "tabpage" | "splitcontainer" | "flowlayoutpanel" | "tablelayoutpanel"
-                    | "form") {
-                    let controls = vybe_bytecode::value::Object::new_array(vec![]);
-                    obj.properties.insert("controls".into(), Value::Object(Rc::new(RefCell::new(controls))));
-                }
-                if matches!(ltype.as_str(), "tabcontrol") {
-                    let pages = vybe_bytecode::value::Object::new_array(vec![]);
-                    obj.properties.insert("tabpages".into(), Value::Object(Rc::new(RefCell::new(pages))));
-                }
-                Value::Object(Rc::new(RefCell::new(obj)))
-            })
-        });
+        // Only create namespace references — host functions are registered by gui::register
+        // If not registered yet (non-GUI context), register a stub
+        if vm.host_registry.get(&("vybe:gui".to_string(), hn.clone())).is_none() {
+            let type_str = type_name.to_string();
+            vm.register_host_fn("vybe:gui", &hn, {
+                let type_str = type_str.clone();
+                Box::new(move |_args: &[Value]| {
+                    use vybe_bytecode::value::Object;
+                    let mut obj = Object::new();
+                    obj.properties.insert("__control_type".into(), Value::String(Rc::from(type_str.as_str())));
+                    obj.properties.insert("name".into(), Value::String(Rc::from(type_str.to_lowercase().as_str())));
+                    Value::Object(Rc::new(RefCell::new(obj)))
+                })
+            });
+        }
         set_prop(&forms, &type_name.to_lowercase(), host_fn_ref(vm, "vybe:gui", &hn));
         // Also register as bare global: Button, TextBox, etc.
-        // This allows `new Button()` after `using System.Windows.Forms;`
         let bare_fn = host_fn_ref(vm, "vybe:gui", &hn);
         vm.globals.insert(type_name.to_lowercase(), bare_fn);
     }

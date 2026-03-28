@@ -327,6 +327,19 @@ impl Compiler {
                     self.emit_host_call(idx, args.len() as u8);
                     return Ok(());
                 }
+                // Namespace object resolution: chain struct_get for each part
+                let lower_parts: Vec<String> = parts.iter().map(|s| s.to_lowercase()).collect();
+                if self.is_namespace(&lower_parts[0]) && lower_parts[0] != "console" {
+                    let root_idx = self.add_string_constant(&lower_parts[0]);
+                    self.emit_u16(Op::global_get, root_idx);
+                    for part in &lower_parts[1..] {
+                        let idx = self.add_string_constant(part);
+                        self.emit_u16(Op::struct_get, idx);
+                    }
+                    for arg in args { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call, args.len() as u8);
+                    return Ok(());
+                }
             }
         }
 
@@ -530,23 +543,21 @@ impl Compiler {
             .unwrap_or(&name)
             .to_string();
 
-        // 1. TypeRegistry known_types table — single lookup, no hardcoded match
+        // 1. TypeRegistry known_types table — direct call, no null prefix
         if let Some(&(module, func)) = self.known_types.get(&bare) {
-            self.emit(Op::null);
             for arg in args { self.compile_expression(arg)?; }
             let idx = self.import(module, func);
-            self.emit_host_call(idx, (args.len() + 1) as u8);
+            self.emit_host_call(idx, args.len() as u8);
             return Ok(());
         }
 
-        // 2. WinForms controls: check capitalize_control_name
+        // 2. WinForms controls
         let capitalized = capitalize_control_name(&bare);
         if !capitalized.is_empty() && capitalized != bare {
-            self.emit(Op::null);
             for arg in args { self.compile_expression(arg)?; }
             let hn = format!("new_{}", capitalized);
             let idx = self.import("vybe:gui", &hn);
-            self.emit_host_call(idx, (args.len() + 1) as u8);
+            self.emit_host_call(idx, args.len() as u8);
             return Ok(());
         }
 

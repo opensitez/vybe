@@ -18,6 +18,7 @@ fn compile_vb_gui(source: &str) -> (Vec<String>, Vec<SideEffect>) {
         Value::Null
     }));
     vybe_host::setup_namespaces(&mut vm);
+    vybe_host::setup_namespaces(&mut vm);
 
     let chunks = vybe_compiler_vb::Compiler::new().compile(&program)
         .unwrap_or_else(|e| panic!("Compile error: {e}"));

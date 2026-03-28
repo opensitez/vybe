@@ -26,6 +26,7 @@ fn run_vb(source: &str) -> Vec<String> {
         out.borrow_mut().push(parts.join(" "));
         Value::Null
     }));
+    vybe_host::setup_namespaces(&mut vm);
     let chunks = vybe_compiler_vb::Compiler::new().compile(&program)
         .unwrap_or_else(|e| panic!("Compile error: {e}"));
     vm.run(chunks).unwrap_or_else(|e| panic!("Runtime error: {e}"));

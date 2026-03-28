@@ -231,7 +231,8 @@ impl Compiler {
             }
             Statement::Call { name, arguments } => {
                 let fname = name.as_str().to_lowercase();
-                if fname == "console.writeline" || fname == "console" {
+                if fname == "console.writeline" || fname == "console.write" || fname == "console" {
+                    // Console.WriteLine uses call_import so tests can override wasi:cli log
                     for arg in arguments { self.compile_expression(arg)?; }
                     let idx = self.import("wasi:cli", "log");
                     self.emit_host_call(idx, arguments.len() as u8);

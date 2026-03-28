@@ -1916,20 +1916,33 @@ impl Compiler {
     }
 
     fn compile_call(&mut self, callee: &Expression, args: &[Expression]) -> Result<(), String> {
-        // Direct Console.WriteLine / Console.Write handling
+        // Console.* — uses call_import so tests can override wasi:cli log
         if let Expression::MemberAccess(obj, method) = callee {
             if let Expression::Identifier(ref obj_name) = **obj {
                 let obj_lower = obj_name.to_lowercase();
                 let meth_lower = method.to_lowercase();
-                if obj_lower == "console" && (meth_lower == "writeline" || meth_lower == "write") {
-                    for arg in args { self.compile_expression(arg)?; }
-                    let idx = self.import("wasi:cli", "log");
-                    self.emit_host_call(idx, args.len() as u8);
-                    return Ok(());
+                if obj_lower == "console" {
+                    let host = match meth_lower.as_str() {
+                        "writeline" | "write" => Some(("wasi:cli", "log")),
+                        "readline" => Some(("wasi:cli", "readLine")),
+                        "error" => Some(("wasi:cli", "error")),
+                        _ => None,
+                    };
+                    if let Some((module, func)) = host {
+                        for arg in args { self.compile_expression(arg)?; }
+                        let idx = self.import(module, func);
+                        self.emit_host_call(idx, args.len() as u8);
+                        return Ok(());
+                    }
                 }
-                if obj_lower == "console" && meth_lower == "readline" {
-                    let idx = self.import("wasi:cli", "readLine");
-                    self.emit_host_call(idx, 0);
+                // Other namespaces — resolve via global namespace objects
+                if self.is_namespace(&obj_lower) && obj_lower != "console" {
+                    let ns_idx = self.add_string_constant(&obj_lower);
+                    self.emit_u16(Op::global_get, ns_idx);
+                    let meth_idx = self.add_string_constant(&meth_lower);
+                    self.emit_u16(Op::struct_get, meth_idx);
+                    for arg in args { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call, args.len() as u8);
                     return Ok(());
                 }
             }
@@ -2197,7 +2210,7 @@ impl Compiler {
     fn compile_new(&mut self, class_name: &str, args: &[Expression]) -> Result<(), String> {
         let lower = class_name.to_lowercase();
 
-        // Strip generic type params: List<int> → list, Dictionary<string,int> → dictionary
+        // Strip generic type params: List<int> → list
         let bare = lower
             .find('<').map(|p| lower[..p].to_string()).unwrap_or_else(|| lower.clone());
         // Strip namespace prefixes
@@ -2213,7 +2226,7 @@ impl Compiler {
             .unwrap_or(&bare)
             .to_string();
 
-        // Built-in exception types
+        // Exception types → simple object with message
         if matches!(bare.as_str(), "exception" | "argumentexception" | "invalidoperationexception"
             | "notimplementedexception" | "notsupportedexception" | "nullreferenceexception"
             | "indexoutofrangeexception" | "argumentnullexception") {
@@ -2230,42 +2243,29 @@ impl Compiler {
             return Ok(());
         }
 
-        // User-defined class takes priority
-        if self.defined_classes.contains(&bare) {
-            let idx = self.add_string_constant(&bare);
-            self.emit_u16(Op::global_get, idx);
-            self.emit_u16(Op::struct_new, 0);
-            for arg in args { self.compile_expression(arg)?; }
-            self.emit_u8(Op::call, (args.len() + 1) as u8);
-            return Ok(());
-        }
-
-        // Known types table
-        if let Some(&(module, func)) = self.known_types.get(&bare) {
-            self.emit(Op::null);
-            for arg in args { self.compile_expression(arg)?; }
-            let idx = self.import(module, func);
-            self.emit_host_call(idx, (args.len() + 1) as u8);
-            return Ok(());
-        }
-
-        // WinForms controls
-        let capitalized = capitalize_control_name(&bare);
-        if !capitalized.is_empty() && capitalized != bare {
-            self.emit(Op::null);
-            for arg in args { self.compile_expression(arg)?; }
-            let hn = format!("new_{}", capitalized);
-            let idx = self.import("vybe:gui", &hn);
-            self.emit_host_call(idx, (args.len() + 1) as u8);
-            return Ok(());
-        }
-
-        // Fallback: user-defined class from globals
+        // Unified new: look up constructor from globals.
+        // - User-defined classes: global is a Function → struct_new + call(args+1)
+        // - Host types (Button, Point, List): global is a HostFunction → call(args)
+        // - Both resolve via the same global_get.
         let idx = self.add_string_constant(&bare);
         self.emit_u16(Op::global_get, idx);
-        self.emit_u16(Op::struct_new, 0);
-        for arg in args { self.compile_expression(arg)?; }
-        self.emit_u8(Op::call, (args.len() + 1) as u8);
+
+        if self.defined_classes.contains(&bare) {
+            // User class: create empty object, call constructor with it
+            self.emit_u16(Op::struct_new, 0);
+            // Set __type for instanceof
+            self.emit(Op::dup);
+            self.emit_constant(Value::String(Rc::from(bare.as_str())));
+            let type_idx = self.add_string_constant("__type");
+            self.emit_u16(Op::struct_set, type_idx);
+            self.emit(Op::drop);
+            for arg in args { self.compile_expression(arg)?; }
+            self.emit_u8(Op::call, (args.len() + 1) as u8);
+        } else {
+            // Host constructor (Button, Point, List, etc): just call it
+            for arg in args { self.compile_expression(arg)?; }
+            self.emit_u8(Op::call, args.len() as u8);
+        }
         Ok(())
     }
 

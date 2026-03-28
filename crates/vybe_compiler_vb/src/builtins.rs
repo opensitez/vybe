@@ -147,15 +147,39 @@ impl Compiler {
             return Ok(Some(()));
         }
 
+        // Namespace resolution: "application.run", "math.pow", "window.forms.button", etc.
+        // Resolve via global namespace objects. Console excluded (uses call_import for test overrides).
+        if fname.contains('.') {
+            let all_parts: Vec<&str> = fname.split('.').collect();
+            if all_parts.len() >= 2 && self.is_namespace(all_parts[0]) && all_parts[0] != "console" {
+                // Chain: global_get root → struct_get part1 → struct_get part2 → ...
+                let root_idx = self.add_string_constant(all_parts[0]);
+                self.emit_u16(Op::global_get, root_idx);
+                for part in &all_parts[1..] {
+                    let idx = self.add_string_constant(part);
+                    self.emit_u16(Op::struct_get, idx);
+                }
+                // Known constants (Math.PI, Math.E) — don't call, just access
+                let last = *all_parts.last().unwrap();
+                let is_constant = matches!(last, "pi" | "e" | "maxvalue" | "minvalue"
+                    | "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon");
+                if !is_constant {
+                    for arg in args { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call, args.len() as u8);
+                }
+                return Ok(Some(()));
+            }
+        }
+
         // Map VB function name → (host_module, host_name)
+        // These are fallbacks for cases not covered by namespace resolution.
         let mapping: Option<(&str, &str)> = match fname {
-            // Application
-            "application.run" => Some(("vybe:gui", "runApplication")),
-            "application.exit" => Some(("vybe:gui", "formClose")),
+            // Console — uses call_import so tests can override wasi:cli log
+            "console.writeline" | "console.write" => Some(("wasi:cli", "log")),
+            "console.error.writeline" | "console.error" => Some(("wasi:cli", "error")),
+            "console.readline" => Some(("wasi:cli", "readLine")),
             // WinForms layout methods (no-ops in our renderer)
             "suspendlayout" | "resumelayout" | "performlayout" => Some(("vybe:gui", "noop")),
-            // Console
-            "console.writeline" => Some(("wasi:cli", "log")),
             // Type conversion
             "cstr"  => Some(("vybe:convert", "toString")),
             "cint"  => Some(("vybe:convert", "cint")),
@@ -370,61 +394,38 @@ impl Compiler {
     /// Returns Ok(Some(())) if handled, Ok(None) if not a known builtin.
     pub(crate) fn try_compile_builtin_method(&mut self, full_name: &str, args: &[Expression]) -> Result<Option<()>, String> {
         // Map dotted name → (host_module, host_name)
-        let mapping: Option<(&str, &str)> = match full_name {
-            // Console
-            "console.writeline" | "console.write" => Some(("wasi:cli", "log")),
-            "console.error.writeline" | "console.error" => Some(("wasi:cli", "error")),
-            // Math
-            // math.floor/ceil/abs/sqrt/trunc/round/min/max handled as intrinsic opcodes
-            "math.pow"      => Some(("vybe:math", "pow")),
-            "math.sin"      => Some(("vybe:math", "sin")),
-            "math.cos"      => Some(("vybe:math", "cos")),
-            "math.tan"      => Some(("vybe:math", "tan")),
-            "math.log"      => Some(("vybe:math", "log")),
-            "math.sign"     => Some(("vybe:math", "sign")),
-            // String
-            "string.isnullorempty" => Some(("vybe:string", "length")),
-            // Convert
-            // convert.toint32 handled as intrinsic opcode (i32_from_f64)
-            "convert.todouble"  => Some(("vybe:convert", "parseFloat")),
-            "convert.tostring"  => Some(("vybe:convert", "toString")),
-            "convert.todatetime" => Some(("vybe:types", "dateTimeNow")),
-            // DateTime properties accessed as Namespace.Property
-            "datetime.now"   => Some(("vybe:types", "dateTimeNow")),
-            "datetime.today" => Some(("vybe:types", "dateTimeNow")),
-            "datetime.utcnow" => Some(("vybe:types", "dateTimeNow")),
-            // Application
-            "application.run" => Some(("vybe:gui", "runApplication")),
-            _ => None,
-        };
-
-        if let Some((module, name)) = mapping {
-            // Special case: String.IsNullOrEmpty returns length == 0
-            if full_name == "string.isnullorempty" {
-                self.compile_expression(&args[0])?;
-                let idx = self.import("vybe:string", "length");
-                self.emit_host_call(idx, 1);
-                self.emit_constant(Value::F64(0.0));
-                self.emit(Op::dyn_eq);
-                return Ok(Some(()));
-            }
-
-            // Special case: Application.Run may take an object
-            if full_name == "application.run" {
-                if let Some(arg) = args.first() {
-                    self.compile_expression(arg)?;
-                } else {
-                    self.emit_constant(Value::String(Rc::from("Form1")));
+        // Namespace resolution for dotted method calls: Console.WriteLine, Math.Pow, etc.
+        // All known namespace prefixes resolve via global namespace objects.
+        {
+            let all_parts: Vec<&str> = full_name.split('.').collect();
+            if all_parts.len() >= 2 && self.is_namespace(all_parts[0])
+                && all_parts[0] != "console"
+            {
+                // Special case: String.IsNullOrEmpty
+                if full_name == "string.isnullorempty" {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_length);
+                    self.emit(Op::i32_const_0);
+                    self.emit(Op::dyn_eq);
+                    return Ok(Some(()));
                 }
-                let idx = self.import(module, name);
-                self.emit_host_call(idx, 1);
+                // Chain: global_get root → struct_get part1 → ... → call (or property access)
+                let root_idx = self.add_string_constant(all_parts[0]);
+                self.emit_u16(Op::global_get, root_idx);
+                for part in &all_parts[1..] {
+                    let idx = self.add_string_constant(part);
+                    self.emit_u16(Op::struct_get, idx);
+                }
+                // Known constants — don't call, just access the value
+                let last = *all_parts.last().unwrap();
+                let is_constant = matches!(last, "pi" | "e" | "maxvalue" | "minvalue"
+                    | "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon");
+                if !is_constant {
+                    for arg in args { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call, args.len() as u8);
+                }
                 return Ok(Some(()));
             }
-
-            for arg in args { self.compile_expression(arg)?; }
-            let idx = self.import(module, name);
-            self.emit_host_call(idx, args.len() as u8);
-            return Ok(Some(()));
         }
 
         Ok(None)
