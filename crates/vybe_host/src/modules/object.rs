@@ -55,4 +55,63 @@ pub fn register(vm: &mut VM) {
         }
         args.first().cloned().unwrap_or(Value::Null)
     }));
+
+    // "key" in obj → hasProperty(key, obj)
+    vm.register_host_fn("vybe:object", "hasProperty", Box::new(|args: &[Value]| {
+        let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        if let Some(Value::Object(obj)) = args.get(1) {
+            let o = obj.borrow();
+            Value::Bool(o.properties.contains_key(&key))
+        } else {
+            Value::Bool(false)
+        }
+    }));
+
+    // delete obj.prop → deleteProperty(obj, key)
+    vm.register_host_fn("vybe:object", "deleteProperty", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            obj.borrow_mut().properties.remove(&key);
+            Value::Bool(true)
+        } else {
+            Value::Bool(false)
+        }
+    }));
+
+    // Object.freeze(obj) — mark as frozen (simplified: no-op, returns obj)
+    vm.register_host_fn("vybe:object", "freeze", Box::new(|args: &[Value]| {
+        args.first().cloned().unwrap_or(Value::Null)
+    }));
+
+    // Object.fromEntries([[k,v], ...]) → obj
+    vm.register_host_fn("vybe:object", "fromEntries", Box::new(|args: &[Value]| {
+        let mut obj = Object::new();
+        if let Some(Value::Object(arr)) = args.first() {
+            let a = arr.borrow();
+            if let ObjectKind::Array(entries) = &a.kind {
+                for entry in entries {
+                    if let Value::Object(pair) = entry {
+                        let p = pair.borrow();
+                        if let ObjectKind::Array(kv) = &p.kind {
+                            if kv.len() >= 2 {
+                                let k = format!("{}", kv[0]);
+                                obj.properties.insert(k, kv[1].clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }));
+
+    // Object.hasOwn(obj, key) — ES2022
+    vm.register_host_fn("vybe:object", "hasOwn", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            Value::Bool(obj.borrow().properties.contains_key(&key))
+        } else {
+            Value::Bool(false)
+        }
+    }));
 }

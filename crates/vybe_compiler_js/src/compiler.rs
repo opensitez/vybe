@@ -9,6 +9,7 @@ struct LoopContext {
     start_offset: usize,
     break_patches: Vec<usize>,
     continue_patches: Vec<usize>,
+    label: Option<String>,
 }
 
 pub struct Compiler {
@@ -25,6 +26,8 @@ pub struct Compiler {
     /// ESM Integration: .wasm files referenced by import statements.
     /// The CLI/runtime should load these modules before execution.
     pub wasm_imports: Vec<String>,
+    /// Label for the next loop (set by Labeled statement)
+    pending_label: Option<String>,
 }
 
 impl Compiler {
@@ -35,6 +38,7 @@ impl Compiler {
             current_chunk_idx: 0,
             loop_stack: Vec::new(),
             line: 1,
+            pending_label: None,
             in_method: false,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
@@ -335,7 +339,7 @@ impl Compiler {
             }
             Statement::While { test, body } => {
                 let start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
                 self.compile_expression(test)?;
                 self.emit_to_bool();
                 let exit = self.emit_jump(Op::br_if_false);
@@ -348,7 +352,7 @@ impl Compiler {
             }
             Statement::DoWhile { body, test } => {
                 let start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
                 self.compile_statement(body)?;
                 for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
                 self.compile_expression(test)?;
@@ -370,7 +374,7 @@ impl Compiler {
                     }
                 }
                 let start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
                 let exit = if let Some(test) = test {
                     self.compile_expression(test)?;
                     self.emit_to_bool();
@@ -390,13 +394,32 @@ impl Compiler {
                 else { self.emit(Op::null); }
                 self.emit(Op::r#return);
             }
-            Statement::Break(_) => {
+            Statement::Break(label) => {
                 let p = self.emit_jump(Op::br);
-                if let Some(ctx) = self.loop_stack.last_mut() { ctx.break_patches.push(p); }
+                // Find the loop context matching the label (or innermost if no label)
+                if let Some(lbl) = label {
+                    for ctx in self.loop_stack.iter_mut().rev() {
+                        if ctx.label.as_deref() == Some(lbl) {
+                            ctx.break_patches.push(p);
+                            break;
+                        }
+                    }
+                } else if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.break_patches.push(p);
+                }
             }
-            Statement::Continue(_) => {
+            Statement::Continue(label) => {
                 let p = self.emit_jump(Op::br);
-                if let Some(ctx) = self.loop_stack.last_mut() { ctx.continue_patches.push(p); }
+                if let Some(lbl) = label {
+                    for ctx in self.loop_stack.iter_mut().rev() {
+                        if ctx.label.as_deref() == Some(lbl) {
+                            ctx.continue_patches.push(p);
+                            break;
+                        }
+                    }
+                } else if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.continue_patches.push(p);
+                }
             }
             Statement::Throw(expr) => { self.compile_expression(expr)?; self.emit(Op::throw); }
             Statement::Try { block, handler, finalizer } => {
@@ -448,7 +471,7 @@ impl Compiler {
             }
             Statement::Switch { discriminant, cases } => {
                 self.compile_expression(discriminant)?;
-                self.loop_stack.push(LoopContext { start_offset: 0, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { start_offset: 0, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
                 let mut next: Option<usize> = None;
                 for case in cases {
                     if let Some(p) = next.take() { self.patch_jump(p); }
@@ -468,6 +491,12 @@ impl Compiler {
             Statement::ClassDeclaration(class) => {
                 self.compile_class(class)?;
                 if let Some(name) = &class.name {
+                    // Set name property on the constructor for instanceof support
+                    self.emit(Op::dup);
+                    self.emit_constant(Value::String(Rc::from(name.as_str())));
+                    let name_idx = self.add_string_constant("name");
+                    self.emit_u16(Op::struct_set, name_idx);
+                    self.emit(Op::drop);
                     self.defined_classes.insert(name.clone());
                     if self.scopes.len() == 1 && self.current_scope().depth == 0 {
                         self.emit_global_set(name);
@@ -497,7 +526,7 @@ impl Compiler {
 
                 // Loop start: __i < __arr.length
                 let loop_start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: loop_start, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { start_offset: loop_start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
 
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
@@ -557,7 +586,7 @@ impl Compiler {
 
                 // Loop: __i < __keys.length
                 let loop_start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: loop_start, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { start_offset: loop_start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
 
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, keys_slot);
@@ -595,7 +624,13 @@ impl Compiler {
                 for p in ctx.break_patches { self.patch_jump(p); }
                 self.current_scope_mut().end_scope();
             }
-            Statement::Labeled { body, .. } => { self.compile_statement(body)?; }
+            Statement::Labeled { label, body } => {
+                // Compile body — if it's a loop, the loop will push a LoopContext
+                // We set a pending label so the next loop picks it up
+                self.pending_label = Some(label.clone());
+                self.compile_statement(body)?;
+                self.pending_label = None;
+            }
             Statement::Empty => {}
 
             // -- Modules --
@@ -761,7 +796,10 @@ impl Compiler {
                     BinaryOp::Mul => self.emit(Op::f64_mul),
                     BinaryOp::Div => self.emit(Op::f64_div),
                     BinaryOp::Mod => self.emit(Op::f64_mod),
-                    BinaryOp::Exp => self.emit(Op::f64_mul), // TODO
+                    BinaryOp::Exp => {
+                        let idx = self.import("vybe:math", "pow");
+                        self.emit_host_call(idx, 2);
+                    }
                     BinaryOp::BitAnd => self.emit(Op::i32_and),
                     BinaryOp::BitOr => self.emit(Op::i32_or),
                     BinaryOp::BitXor => self.emit(Op::i32_xor),
@@ -777,21 +815,25 @@ impl Compiler {
                     BinaryOp::Le => self.emit(Op::dyn_le),
                     BinaryOp::Ge => self.emit(Op::dyn_ge),
                     BinaryOp::InstanceOf => {
-                        // a instanceof B → ref_test(a, B's name)
-                        // B is on stack as a value — extract its name via struct_get("name")
-                        // For simplicity: pop constructor, get its name from __type, use ref_test
+                        // a instanceof B → check if a.__type == B.name or a's prototype chain includes B
+                        // Stack: [a, B]
+                        // Get constructor name from B
                         let name_idx = self.add_string_constant("name");
-                        self.emit_u16(Op::struct_get, name_idx);
-                        // Now stack: [a, type_name_string]
-                        // ref_test expects [value] with u16 operand, not stack-based name.
-                        // Use a dynamic approach: drop the name, just do dyn_eq on __type.
-                        // Actually, let's use the existing pattern:
-                        self.emit(Op::drop); // drop type name for now
-                        self.emit(Op::ref_is_object); // basic check: is it an object?
+                        self.emit_u16(Op::struct_get, name_idx); // [a, B_name]
+                        // Swap to get [B_name, a], then get a.__type
+                        // Actually: save B_name, get a.__type, compare
+                        let tmp = self.define_local("__instanceof_tmp");
+                        self.emit_u16(Op::local_set, tmp); self.emit(Op::drop); // save B_name
+                        // a is on stack — get its __type
+                        let type_idx = self.add_string_constant("__type");
+                        self.emit_u16(Op::struct_get, type_idx); // a.__type
+                        self.emit_u16(Op::local_get, tmp); // B_name
+                        self.emit(Op::dyn_eq); // a.__type == B.name
                     }
                     BinaryOp::In => {
-                        // "key" in obj → check if property exists
-                        self.emit(Op::drop); self.emit(Op::drop); self.emit(Op::r#false);
+                        // "key" in obj → host call hasProperty(key, obj)
+                        let idx = self.import("vybe:object", "hasProperty");
+                        self.emit_host_call(idx, 2);
                     }
                     BinaryOp::NullishCoalescing => unreachable!(),
                 }
@@ -933,9 +975,17 @@ impl Compiler {
                         return Ok(());
                     }
                 }
-                // User class: push constructor, create empty obj, call
+                // User class: push constructor, create empty obj with __type, call
                 self.compile_expression(callee)?;
                 self.emit_u16(Op::struct_new, 0);
+                // Set __type on the new object for instanceof support
+                if let Expression::Identifier(class_name) = callee.as_ref() {
+                    self.emit(Op::dup);
+                    self.emit_constant(Value::String(Rc::from(class_name.as_str())));
+                    let type_idx = self.add_string_constant("__type");
+                    self.emit_u16(Op::struct_set, type_idx);
+                    self.emit(Op::drop);
+                }
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, (arguments.len() + 1) as u8);
             }
@@ -1020,7 +1070,25 @@ impl Compiler {
                 self.emit(Op::drop);
                 self.emit(Op::null);
             }
-            Expression::Delete(_) => { self.emit(Op::r#true); }
+            Expression::Delete(target) => {
+                // delete obj.prop → remove property from object
+                match target.as_ref() {
+                    Expression::Member { object, property, .. } => {
+                        self.compile_expression(object)?;
+                        let prop = property.to_lowercase();
+                        let idx = self.import("vybe:object", "deleteProperty");
+                        self.emit_constant(Value::String(std::rc::Rc::from(prop.as_str())));
+                        self.emit_host_call(idx, 2);
+                    }
+                    Expression::ComputedMember { object, property } => {
+                        self.compile_expression(object)?;
+                        self.compile_expression(property)?;
+                        let idx = self.import("vybe:object", "deleteProperty");
+                        self.emit_host_call(idx, 2);
+                    }
+                    _ => { self.emit(Op::r#true); }
+                }
+            }
             Expression::Spread(inner) => { self.compile_expression(inner)?; }
             Expression::Sequence(exprs) => {
                 for (i, e) in exprs.iter().enumerate() {
@@ -1067,10 +1135,54 @@ impl Compiler {
                 }
             }
 
+            // Function.prototype.call/apply/bind
+            match property.as_str() {
+                "call" => {
+                    // fn.call(thisArg, arg1, arg2, ...) → call fn with args (skip thisArg for non-methods)
+                    self.compile_expression(object)?; // fn
+                    // Skip thisArg (first argument), pass the rest
+                    for arg in arguments.iter().skip(1) { self.compile_expression(arg)?; }
+                    let argc = if arguments.is_empty() { 0 } else { (arguments.len() - 1) as u8 };
+                    self.emit_u8(Op::call, argc);
+                    return Ok(());
+                }
+                "apply" => {
+                    // fn.apply(thisArg, argsArray) → call fn with thisArg
+                    // Simplified: call fn(thisArg) — args array expansion not trivial
+                    self.compile_expression(object)?;
+                    if let Some(this_arg) = arguments.first() {
+                        self.compile_expression(this_arg)?;
+                    } else {
+                        self.emit(Op::null);
+                    }
+                    self.emit_u8(Op::call, 1);
+                    return Ok(());
+                }
+                "bind" => {
+                    // fn.bind(thisArg) → return fn (simplified: no partial application)
+                    self.compile_expression(object)?;
+                    if !arguments.is_empty() { self.emit(Op::drop); }
+                    for arg in arguments { self.compile_expression(arg)?; self.emit(Op::drop); }
+                    self.compile_expression(object)?;
+                    return Ok(());
+                }
+                "hasOwnProperty" => {
+                    // obj.hasOwnProperty(key) → hasProperty(key, obj)
+                    if let Some(key) = arguments.first() {
+                        self.compile_expression(key)?;
+                        self.compile_expression(object)?;
+                        let idx = self.import("vybe:object", "hasProperty");
+                        self.emit_host_call(idx, 2);
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+
             // Array higher-order methods — desugar to forEach + push pattern
             // These methods need VM callbacks (calling JS functions from loops).
             // We desugar them in the compiler to bytecode loops that use `call`.
-            if matches!(property.as_str(), "map" | "filter" | "forEach" | "find" | "reduce" | "sort") {
+            if matches!(property.as_str(), "map" | "filter" | "forEach" | "find" | "reduce" | "sort" | "some" | "every" | "findIndex") {
                 if self.compile_array_callback_method(object, property, arguments)? {
                     return Ok(());
                 }
@@ -1710,9 +1822,139 @@ impl Compiler {
                 self.current_scope_mut().end_scope();
                 Ok(true)
             }
-            "some" | "every" | "findIndex" | "flatMap" => {
-                // TODO: implement these similarly
-                Ok(false) // fall through to regular method call
+            "some" => {
+                // arr.some(fn) → loop, return true if any fn(elem) is truthy
+                self.current_scope_mut().begin_scope();
+                let cb = &arguments[0];
+                let arr_slot = self.define_local("__some_arr");
+                let i_slot = self.define_local("__some_i");
+                let len_slot = self.define_local("__some_len");
+                self.compile_expression(object)?;
+                self.emit(Op::dup);
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                self.emit(Op::str_length); // array length
+                self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
+                self.emit_constant(Value::F64(0.0));
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                let loop_start = self.current_offset();
+                // i < len
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, len_slot);
+                self.emit(Op::dyn_lt);
+                let exit = self.emit_jump(Op::br_if_false);
+                // callback(arr[i])
+                self.compile_expression(cb)?;
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                self.emit_u8(Op::call, 1);
+                // if truthy, return true
+                self.emit(Op::dyn_to_bool);
+                let found = self.emit_jump(Op::br_if_true);
+                // i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                // exit lands here (loop condition failed) — not found
+                self.patch_jump(exit);
+                self.emit(Op::r#false);
+                let end = self.emit_jump(Op::br);
+                // found lands here — callback was truthy
+                self.patch_jump(found);
+                self.emit(Op::r#true);
+                self.patch_jump(end);
+                self.current_scope_mut().end_scope();
+                Ok(true)
+            }
+            "every" => {
+                // arr.every(fn) → loop, return false if any fn(elem) is falsy
+                self.current_scope_mut().begin_scope();
+                let cb = &arguments[0];
+                let arr_slot = self.define_local("__every_arr");
+                let i_slot = self.define_local("__every_i");
+                let len_slot = self.define_local("__every_len");
+                self.compile_expression(object)?;
+                self.emit(Op::dup);
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                self.emit(Op::str_length);
+                self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
+                self.emit_constant(Value::F64(0.0));
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                let loop_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, len_slot);
+                self.emit(Op::dyn_lt);
+                let exit = self.emit_jump(Op::br_if_false);
+                self.compile_expression(cb)?;
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                self.emit_u8(Op::call, 1);
+                self.emit(Op::dyn_to_bool);
+                self.emit(Op::dyn_not);
+                let failed = self.emit_jump(Op::br_if_true);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                // exit lands here (loop finished) — all passed
+                self.patch_jump(exit);
+                self.emit(Op::r#true);
+                let end = self.emit_jump(Op::br);
+                // failed lands here — callback was falsy
+                self.patch_jump(failed);
+                self.emit(Op::r#false);
+                self.patch_jump(end);
+                self.current_scope_mut().end_scope();
+                Ok(true)
+            }
+            "findIndex" => {
+                // arr.findIndex(fn) → loop, return index if fn(elem) truthy, else -1
+                self.current_scope_mut().begin_scope();
+                let cb = &arguments[0];
+                let arr_slot = self.define_local("__fi_arr");
+                let i_slot = self.define_local("__fi_i");
+                let len_slot = self.define_local("__fi_len");
+                self.compile_expression(object)?;
+                self.emit(Op::dup);
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                self.emit(Op::str_length);
+                self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
+                self.emit_constant(Value::F64(0.0));
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                let loop_start = self.current_offset();
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, len_slot);
+                self.emit(Op::dyn_lt);
+                let exit = self.emit_jump(Op::br_if_false);
+                self.compile_expression(cb)?;
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
+                self.emit_u8(Op::call, 1);
+                self.emit(Op::dyn_to_bool);
+                let found = self.emit_jump(Op::br_if_true);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_loop(loop_start);
+                // exit lands here (loop finished) — not found
+                self.patch_jump(exit);
+                self.emit_constant(Value::F64(-1.0));
+                let end = self.emit_jump(Op::br);
+                // found lands here — callback was truthy
+                self.patch_jump(found);
+                self.emit_u16(Op::local_get, i_slot); // found index
+                self.patch_jump(end);
+                self.current_scope_mut().end_scope();
+                Ok(true)
+            }
+            "flatMap" => {
+                Ok(false) // fall through to host call
             }
             _ => Ok(false),
         }
@@ -1731,6 +1973,10 @@ impl Compiler {
             AssignOp::ShlAssign => self.emit(Op::i32_shl),
             AssignOp::ShrAssign => self.emit(Op::i32_shr_s),
             AssignOp::UShrAssign => self.emit(Op::i32_shr_u),
+            AssignOp::ExpAssign => {
+                let idx = self.import("vybe:math", "pow");
+                self.emit_host_call(idx, 2);
+            }
             _ => {}
         }
     }
@@ -2111,6 +2357,22 @@ impl Compiler {
                 self.emit(Op::ref_is_array);
                 Ok(Some(()))
             }
+            // Array.from(iterable) → convert to array (simplified: clone if already array)
+            ("Array", "from", 1) => {
+                self.compile_expression(&args[0])?;
+                let idx = self.import("vybe:array", "from");
+                self.emit_host_call(idx, 1);
+                Ok(Some(()))
+            }
+            // Object.keys/values/entries/assign/freeze/fromEntries/hasOwn
+            ("Object", "keys", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:object", "keys"); self.emit_host_call(idx, 1); Ok(Some(())) }
+            ("Object", "values", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:object", "values"); self.emit_host_call(idx, 1); Ok(Some(())) }
+            ("Object", "entries", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:object", "entries"); self.emit_host_call(idx, 1); Ok(Some(())) }
+            ("Object", "freeze", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:object", "freeze"); self.emit_host_call(idx, 1); Ok(Some(())) }
+            ("Object", "fromEntries", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:object", "fromEntries"); self.emit_host_call(idx, 1); Ok(Some(())) }
+            ("Object", "hasOwn", 2) => { self.compile_expression(&args[0])?; self.compile_expression(&args[1])?; let idx = self.import("vybe:object", "hasOwn"); self.emit_host_call(idx, 2); Ok(Some(())) }
+            ("JSON", "parse", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:json", "parse"); self.emit_host_call(idx, 1); Ok(Some(())) }
+            ("JSON", "stringify", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:json", "stringify"); self.emit_host_call(idx, 1); Ok(Some(())) }
             _ => Ok(None),
         }
     }
@@ -2127,6 +2389,19 @@ impl Compiler {
                 "trim" => Some(Op::str_trim),
                 "trimStart" => Some(Op::str_trim_start),
                 "trimEnd" => Some(Op::str_trim_end),
+                "toString" => {
+                    self.compile_expression(object)?;
+                    let idx = self.import("vybe:convert", "toString");
+                    self.emit_host_call(idx, 1);
+                    return Ok(Some(()));
+                }
+                "join" => {
+                    // join() with no args → join with ","
+                    self.compile_expression(object)?;
+                    self.emit_constant(Value::String(Rc::from(",")));
+                    self.emit(Op::array_join);
+                    return Ok(Some(()));
+                }
                 // Array methods — VM handles non-array gracefully
                 "pop" => Some(Op::array_pop),
                 "shift" => Some(Op::array_shift),
@@ -2154,7 +2429,8 @@ impl Compiler {
                 "push" => Some(Op::array_push),
                 "join" => Some(Op::array_join),
                 "concat" => Some(Op::array_concat),
-                // indexOf/includes are polymorphic — stay as host calls for correct dispatch
+                "indexOf" => Some(Op::str_index_of),
+                "fill" => Some(Op::array_fill),
                 _ => None,
             };
             if let Some(op) = op {

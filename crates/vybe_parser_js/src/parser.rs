@@ -632,6 +632,16 @@ impl Parser {
     }
 
     fn parse_expression_statement(&mut self) -> Result<Statement, String> {
+        // Check for labeled statement: `identifier :`
+        if let TokenKind::Identifier(ref name) = self.current_kind() {
+            if self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].kind == TokenKind::Colon {
+                let label = name.clone();
+                self.advance(); // skip identifier
+                self.advance(); // skip colon
+                let body = self.parse_statement()?;
+                return Ok(Statement::Labeled { label, body: Box::new(body) });
+            }
+        }
         let expr = self.parse_expression()?;
         self.eat_semicolon();
         Ok(Statement::Expression(expr))

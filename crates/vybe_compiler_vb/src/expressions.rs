@@ -314,6 +314,11 @@ impl Compiler {
             let mut parts = Self::flatten_member_chain(obj);
             if !parts.is_empty() {
                 parts.push(method.as_str().to_string());
+                // Try WASM intrinsic first (e.g. Math.Floor → f64_floor opcode)
+                let dotted = parts.iter().map(|s| s.to_lowercase()).collect::<Vec<_>>().join(".");
+                if let Some(()) = self.try_compile_wasm_intrinsic(&dotted, args)? {
+                    return Ok(());
+                }
                 let part_refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
                 if let Some((module, func)) = self.resolve_interface_call(&part_refs) {
                     // Direct call_import — compile-time resolved, no struct_get chain

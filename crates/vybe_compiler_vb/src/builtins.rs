@@ -390,7 +390,7 @@ impl Compiler {
 
     /// Emit direct WASM opcodes for Math functions, type conversions, and type checks.
     /// Returns Some(()) if handled, None if not an intrinsic.
-    fn try_compile_wasm_intrinsic(&mut self, fname: &str, args: &[Expression]) -> Result<Option<()>, String> {
+    pub(crate) fn try_compile_wasm_intrinsic(&mut self, fname: &str, args: &[Expression]) -> Result<Option<()>, String> {
         // Zero-argument intrinsics
         if args.is_empty() {
             match fname {
