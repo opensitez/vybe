@@ -959,8 +959,13 @@ impl VM {
                     }
 
                     let func = Function { name, arity, chunk_index: func_idx, upvalues };
-                    let obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0 };
-                    self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
+                    let mut obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0 };
+                    // Add to function table for call_indirect
+                    let table_idx = self.func_table.len();
+                    obj.properties.insert("__table_idx".into(), Value::F64(table_idx as f64));
+                    let func_val = Value::Object(Rc::new(RefCell::new(obj)));
+                    self.func_table.push(func_val.clone());
+                    self.push(func_val)?;
                 }
 
                 // -- Host functions --

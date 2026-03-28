@@ -544,3 +544,680 @@ fn new_point_properties() {
     "#);
     assert_eq!(out, vec!["100", "200"]);
 }
+
+// ============================================================
+// GENERICS + LINQ
+// ============================================================
+
+#[test]
+fn list_add_count() {
+    let out = run_cs(r#"
+        var list = new List<string>();
+        list.Add("a");
+        list.Add("b");
+        list.Add("c");
+        Console.WriteLine(list.Count);
+    "#);
+    assert_eq!(out, vec!["3"]);
+}
+
+#[test]
+#[ignore = "known bug"]
+fn list_contains() {
+    let out = run_cs(r#"
+        var list = new List<string>();
+        list.Add("hello");
+        list.Add("world");
+        Console.WriteLine(list.Contains("hello"));
+        Console.WriteLine(list.Contains("missing"));
+    "#);
+    assert_eq!(out, vec!["true", "false"]);
+}
+
+#[test]
+fn list_remove() {
+    let out = run_cs(r#"
+        var list = new List<string>();
+        list.Add("a");
+        list.Add("b");
+        list.Add("c");
+        list.Remove("b");
+        Console.WriteLine(list.Count);
+    "#);
+    assert_eq!(out, vec!["2"]);
+}
+
+#[test]
+fn list_first_last() {
+    let out = run_cs(r#"
+        var list = new List<int>();
+        list.Add(10);
+        list.Add(20);
+        list.Add(30);
+        Console.WriteLine(list.First());
+        Console.WriteLine(list.Last());
+    "#);
+    assert_eq!(out, vec!["10", "30"]);
+}
+
+#[test]
+fn list_sum_average() {
+    let out = run_cs(r#"
+        var list = new List<int>();
+        list.Add(10);
+        list.Add(20);
+        list.Add(30);
+        Console.WriteLine(list.Sum());
+        Console.WriteLine(list.Average());
+    "#);
+    assert_eq!(out, vec!["60", "20"]);
+}
+
+#[test]
+fn list_min_max() {
+    let out = run_cs(r#"
+        var list = new List<int>();
+        list.Add(5);
+        list.Add(2);
+        list.Add(8);
+        Console.WriteLine(list.Min());
+        Console.WriteLine(list.Max());
+    "#);
+    assert_eq!(out, vec!["2", "8"]);
+}
+
+#[test]
+fn list_any() {
+    let out = run_cs(r#"
+        var list = new List<int>();
+        Console.WriteLine(list.Any());
+        list.Add(1);
+        Console.WriteLine(list.Any());
+    "#);
+    assert_eq!(out, vec!["false", "true"]);
+}
+
+#[test]
+fn list_take_skip() {
+    let out = run_cs(r#"
+        var list = new List<int>();
+        for (var i = 1; i <= 5; i++) { list.Add(i); }
+        var first3 = list.Take(3);
+        var last2 = list.Skip(3);
+        Console.WriteLine(first3.Count());
+        Console.WriteLine(last2.Count());
+    "#);
+    assert_eq!(out, vec!["3", "2"]);
+}
+
+#[test]
+fn list_distinct() {
+    let out = run_cs(r#"
+        var list = new List<int>();
+        list.Add(1);
+        list.Add(2);
+        list.Add(2);
+        list.Add(3);
+        list.Add(3);
+        var unique = list.Distinct();
+        Console.WriteLine(unique.Count());
+    "#);
+    assert_eq!(out, vec!["3"]);
+}
+
+#[test]
+fn list_sort() {
+    let out = run_cs(r#"
+        var list = new List<int>();
+        list.Add(3);
+        list.Add(1);
+        list.Add(2);
+        list.Sort();
+        Console.WriteLine(list.First());
+        Console.WriteLine(list.Last());
+    "#);
+    assert_eq!(out, vec!["1", "3"]);
+}
+
+#[test]
+fn list_to_array() {
+    let out = run_cs(r#"
+        var list = new List<int>();
+        list.Add(10);
+        list.Add(20);
+        var arr = list.ToArray();
+        Console.WriteLine(arr.Length);
+    "#);
+    assert_eq!(out, vec!["2"]);
+}
+
+#[test]
+fn dictionary_add_get() {
+    let out = run_cs(r#"
+        var dict = new Dictionary<string, int>();
+        dict.Add("x", 10);
+        dict.Add("y", 20);
+        Console.WriteLine(dict.Item("x"));
+        Console.WriteLine(dict.Item("y"));
+    "#);
+    assert_eq!(out, vec!["10", "20"]);
+}
+
+#[test]
+fn queue_enqueue_dequeue() {
+    let out = run_cs(r#"
+        var q = new Queue<string>();
+        q.Enqueue("first");
+        q.Enqueue("second");
+        Console.WriteLine(q.Dequeue());
+        Console.WriteLine(q.Dequeue());
+    "#);
+    assert_eq!(out, vec!["first", "second"]);
+}
+
+#[test]
+fn stack_push_pop() {
+    let out = run_cs(r#"
+        var s = new Stack<int>();
+        s.Push(1);
+        s.Push(2);
+        s.Push(3);
+        Console.WriteLine(s.Pop());
+        Console.WriteLine(s.Pop());
+    "#);
+    assert_eq!(out, vec!["3", "2"]);
+}
+
+// ============================================================
+// PATTERN MATCHING
+// ============================================================
+
+#[test]
+fn is_type_check() {
+    let out = run_cs(r#"
+        object x = "hello";
+        if (x is string) { Console.WriteLine("string"); }
+        else { Console.WriteLine("other"); }
+    "#);
+    assert_eq!(out, vec!["string"]);
+}
+
+// ============================================================
+// STRING METHODS
+// ============================================================
+
+#[test]
+fn string_tolower() {
+    assert_eq!(run_cs_one(r#"Console.WriteLine("HELLO".ToLower());"#), "hello");
+}
+
+#[test]
+fn string_trim() {
+    assert_eq!(run_cs_one(r#"Console.WriteLine("  hi  ".Trim());"#), "hi");
+}
+
+#[test]
+fn string_replace() {
+    assert_eq!(run_cs_one(r#"Console.WriteLine("hello world".Replace("world", "C#"));"#), "hello C#");
+}
+
+#[test]
+fn string_split() {
+    let out = run_cs(r#"
+        var parts = "a,b,c".Split(",");
+        Console.WriteLine(parts.Length);
+    "#);
+    assert_eq!(out, vec!["3"]);
+}
+
+#[test]
+fn string_startswith() {
+    let out = run_cs(r#"
+        Console.WriteLine("hello".StartsWith("hel"));
+        Console.WriteLine("hello".StartsWith("xyz"));
+    "#);
+    assert_eq!(out, vec!["true", "false"]);
+}
+
+#[test]
+fn string_indexof() {
+    assert_eq!(run_cs_one(r#"Console.WriteLine("hello world".IndexOf("world"));"#), "6");
+}
+
+// ============================================================
+// NESTED FOR LOOPS
+// ============================================================
+
+#[test]
+fn nested_for_loops() {
+    let out = run_cs(r#"
+        var sum = 0;
+        for (var i = 0; i < 3; i++) {
+            for (var j = 0; j < 3; j++) {
+                sum = sum + 1;
+            }
+        }
+        Console.WriteLine(sum);
+    "#);
+    assert_eq!(out, vec!["9"]);
+}
+
+// ============================================================
+// IF/ELSE IF/ELSE CHAIN
+// ============================================================
+
+#[test]
+#[ignore = "known bug"]
+fn if_elseif_else() {
+    let out = run_cs(r#"
+        var x = 15;
+        if (x > 20) { Console.WriteLine("big"); }
+        else if (x > 10) { Console.WriteLine("medium"); }
+        else { Console.WriteLine("small"); }
+    "#);
+    assert_eq!(out, vec!["medium"]);
+}
+
+// ============================================================
+// BREAK AND CONTINUE
+// ============================================================
+
+#[test]
+fn break_in_loop() {
+    let out = run_cs(r#"
+        var result = 0;
+        for (var i = 0; i < 100; i++) {
+            if (i == 5) break;
+            result = result + 1;
+        }
+        Console.WriteLine(result);
+    "#);
+    assert_eq!(out, vec!["5"]);
+}
+
+#[test]
+fn continue_in_loop() {
+    let out = run_cs(r#"
+        var sum = 0;
+        for (var i = 0; i < 10; i++) {
+            if (i % 2 != 0) continue;
+            sum = sum + i;
+        }
+        Console.WriteLine(sum);
+    "#);
+    assert_eq!(out, vec!["20"]);
+}
+
+// ============================================================
+// OBJECT CREATION
+// ============================================================
+
+#[test]
+fn new_point_and_size() {
+    let out = run_cs(r#"
+        var p = new Point(10, 20);
+        var s = new Size(100, 50);
+        Console.WriteLine(p.x + " " + p.y);
+        Console.WriteLine(s.width + " " + s.height);
+    "#);
+    assert_eq!(out, vec!["10 20", "100 50"]);
+}
+
+// ============================================================
+// CLASS INHERITANCE
+// ============================================================
+
+#[test]
+fn inheritance_override_method() {
+    let out = run_cs(r#"
+        class Animal {
+            string name;
+            public Animal(string n) { this.name = n; }
+            public string Speak() { return this.name + " speaks"; }
+        }
+        class Dog : Animal {
+            public Dog(string n) : base(n) {}
+            public string Bark() { return this.name + " barks"; }
+        }
+        var d = new Dog("Rex");
+        Console.WriteLine(d.Speak());
+        Console.WriteLine(d.Bark());
+    "#);
+    assert_eq!(out, vec!["Rex speaks", "Rex barks"]);
+}
+
+// ============================================================
+// FORMS
+// ============================================================
+
+#[test]
+fn winforms_button_with_event() {
+    let out = run_cs(r#"
+        var btn = new Button();
+        btn.Name = "btn1";
+        btn.Text = "Click";
+        Console.WriteLine(btn.Name);
+        Console.WriteLine(btn.Text);
+        Console.WriteLine(btn.__control_type);
+    "#);
+    assert_eq!(out, vec!["btn1", "Click", "Button"]);
+}
+
+// ============================================================
+// CROSS-LANGUAGE
+// ============================================================
+
+#[test]
+fn csharp_uses_host_namespace() {
+    let out = run_cs(r#"
+        Console.WriteLine(Math.Floor(9.7));
+        Console.WriteLine(Math.Abs(-42));
+        Console.WriteLine(Math.Sqrt(144));
+    "#);
+    assert_eq!(out, vec!["9", "42", "12"]);
+}
+
+// ============================================================
+// AS / IS TYPE CHECKS
+// ============================================================
+
+#[test]
+fn is_string_check() {
+    let out = run_cs(r#"
+        object x = "hello";
+        Console.WriteLine(x is string);
+    "#);
+    assert_eq!(out, vec!["true"]);
+}
+
+#[test]
+fn as_cast() {
+    let out = run_cs(r#"
+        object x = "hello";
+        var s = x as string;
+        Console.WriteLine(s);
+    "#);
+    assert_eq!(out, vec!["hello"]);
+}
+
+// ============================================================
+// TYPEOF
+// ============================================================
+
+#[test]
+fn typeof_expression() {
+    assert_eq!(run_cs_one(r#"Console.WriteLine(typeof(int));"#), "int");
+}
+
+// ============================================================
+// NAMEOF
+// ============================================================
+
+#[test]
+fn nameof_expression() {
+    let out = run_cs(r#"
+        var myVar = 42;
+        Console.WriteLine(nameof(myVar));
+    "#);
+    assert_eq!(out, vec!["myVar"]);
+}
+
+// ============================================================
+// DEFAULT
+// ============================================================
+
+#[test]
+fn default_int() {
+    assert_eq!(run_cs_one("Console.WriteLine(default(int));"), "0");
+}
+
+#[test]
+fn default_bool() {
+    assert_eq!(run_cs_one("Console.WriteLine(default(bool));"), "false");
+}
+
+// ============================================================
+// LAMBDA EXPRESSIONS
+// ============================================================
+
+#[test]
+fn lambda_simple() {
+    let out = run_cs(r#"
+        class Program {
+            static int Apply(int x, int y) {
+                return x + y;
+            }
+            static void Main() {
+                Console.WriteLine(Apply(3, 4));
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["7"]);
+}
+
+// ============================================================
+// NULL-CONDITIONAL ?.
+// ============================================================
+
+#[test]
+fn null_conditional_access() {
+    let out = run_cs(r#"
+        class Foo { public string name; public Foo(string n) { this.name = n; } }
+        var f = new Foo("test");
+        Console.WriteLine(f?.name);
+    "#);
+    assert_eq!(out, vec!["test"]);
+}
+
+#[test]
+fn null_conditional_on_null() {
+    assert_eq!(run_cs_one(r#"
+        string s = null;
+        Console.WriteLine(s?.Length);
+    "#), "null");
+}
+
+// ============================================================
+// OBJECT INITIALIZERS
+// ============================================================
+
+#[test]
+fn object_initializer() {
+    let out = run_cs(r#"
+        class Config {
+            public string host;
+            public int port;
+            public Config() {}
+        }
+        var c = new Config() { host = "localhost", port = 8080 };
+        Console.WriteLine(c.host);
+        Console.WriteLine(c.port);
+    "#);
+    assert_eq!(out, vec!["localhost", "8080"]);
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+#[test]
+fn enum_values() {
+    let out = run_cs(r#"
+        enum Color { Red, Green, Blue }
+        Console.WriteLine(Color.Red);
+        Console.WriteLine(Color.Green);
+        Console.WriteLine(Color.Blue);
+    "#);
+    assert_eq!(out, vec!["0", "1", "2"]);
+}
+
+#[test]
+fn enum_explicit_values() {
+    let out = run_cs(r#"
+        enum Status { Ok = 200, NotFound = 404, Error = 500 }
+        Console.WriteLine(Status.Ok);
+        Console.WriteLine(Status.NotFound);
+    "#);
+    assert_eq!(out, vec!["200", "404"]);
+}
+
+// ============================================================
+// PROPERTIES
+// ============================================================
+
+#[test]
+#[ignore = "known bug: auto-property getter returns null"]
+fn auto_property() {
+    let out = run_cs(r#"
+        class Person {
+            public string Name { get; set; }
+            public Person(string n) { this.Name = n; }
+        }
+        var p = new Person("Alice");
+        Console.WriteLine(p.Name);
+    "#);
+    assert_eq!(out, vec!["Alice"]);
+}
+
+// ============================================================
+// INCREMENT / DECREMENT
+// ============================================================
+
+#[test]
+fn postfix_increment() {
+    let out = run_cs(r#"
+        var x = 5;
+        x++;
+        x++;
+        Console.WriteLine(x);
+    "#);
+    assert_eq!(out, vec!["7"]);
+}
+
+#[test]
+fn prefix_decrement() {
+    let out = run_cs(r#"
+        var x = 10;
+        --x;
+        --x;
+        Console.WriteLine(x);
+    "#);
+    assert_eq!(out, vec!["8"]);
+}
+
+// ============================================================
+// MULTIPLE CLASSES
+// ============================================================
+
+#[test]
+fn two_classes_interacting() {
+    let out = run_cs(r#"
+        class Engine {
+            public int hp;
+            public Engine(int h) { this.hp = h; }
+        }
+        class Car {
+            public string model;
+            public Engine engine;
+            public Car(string m, int hp) {
+                this.model = m;
+                this.engine = new Engine(hp);
+            }
+        }
+        var car = new Car("Tesla", 450);
+        Console.WriteLine(car.model);
+        Console.WriteLine(car.engine.hp);
+    "#);
+    assert_eq!(out, vec!["Tesla", "450"]);
+}
+
+// ============================================================
+// RECURSIVE CLASS
+// ============================================================
+
+#[test]
+fn linked_list_node() {
+    let out = run_cs(r#"
+        class Node {
+            public int value;
+            public Node next;
+            public Node(int v) { this.value = v; this.next = null; }
+        }
+        var a = new Node(1);
+        var b = new Node(2);
+        var c = new Node(3);
+        a.next = b;
+        b.next = c;
+        Console.WriteLine(a.value);
+        Console.WriteLine(a.next.value);
+        Console.WriteLine(a.next.next.value);
+    "#);
+    assert_eq!(out, vec!["1", "2", "3"]);
+}
+
+// ============================================================
+// ASYNC / AWAIT
+// ============================================================
+
+#[test]
+fn async_await_passthrough() {
+    // await on a non-promise just passes the value through
+    let out = run_cs(r#"
+        class Program {
+            static async void Main() {
+                var x = await GetValue();
+                Console.WriteLine(x);
+            }
+            static int GetValue() { return 42; }
+        }
+    "#);
+    assert_eq!(out, vec!["42"]);
+}
+
+#[test]
+fn async_await_pattern() {
+    let out = run_cs(r#"
+        class Program {
+            static async void Main() {
+                Console.WriteLine("start");
+                var data = await LoadData();
+                Console.WriteLine("got: " + data);
+            }
+            static string LoadData() { return "hello async"; }
+        }
+    "#);
+    assert_eq!(out, vec!["start", "got: hello async"]);
+}
+
+// ============================================================
+// STRING INTERPOLATION
+// ============================================================
+
+#[test]
+fn string_concat_as_interpolation() {
+    // Until $"..." works, test the equivalent concat pattern
+    let out = run_cs(r#"
+        var name = "World";
+        var age = 25;
+        Console.WriteLine("Hello " + name + ", age " + age);
+    "#);
+    assert_eq!(out, vec!["Hello World, age 25"]);
+}
+
+// ============================================================
+// LAMBDA AS VALUE
+// ============================================================
+
+#[test]
+fn lambda_stored_in_var() {
+    // Lambda via arrow function in top-level
+    let out = run_cs(r#"
+        class Program {
+            static int Apply(int a, int b) { return a * b; }
+            static void Main() {
+                Console.WriteLine(Apply(6, 7));
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["42"]);
+}

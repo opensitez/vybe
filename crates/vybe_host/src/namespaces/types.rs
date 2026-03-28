@@ -38,21 +38,25 @@ fn register_stringbuilder_ns(vm: &mut VM) {
 fn register_collections_ns(vm: &mut VM) {
     let coll = ensure_namespace(vm, &["System", "Collections", "Generic"]);
 
-    // Queue
+    // Namespace paths
     let queue_ns = ensure_namespace(vm, &["System", "Collections", "Generic", "Queue"]);
     set_prop(&queue_ns, "new", host_fn_ref(vm, "vybe:types", "queueNew"));
-
-    // Stack
     let stack_ns = ensure_namespace(vm, &["System", "Collections", "Generic", "Stack"]);
     set_prop(&stack_ns, "new", host_fn_ref(vm, "vybe:types", "stackNew"));
-
-    // HashSet
     let hs_ns = ensure_namespace(vm, &["System", "Collections", "Generic", "HashSet"]);
     set_prop(&hs_ns, "new", host_fn_ref(vm, "vybe:types", "hashSetNew"));
-
-    // Keep existing List/Dictionary
     set_prop(&coll, "list", host_fn_ref(vm, "vybe:types", "listNew"));
     set_prop(&coll, "dictionary", host_fn_ref(vm, "vybe:types", "dictNew"));
+
+    // Bare globals for `new List<T>()`, `new Dictionary<K,V>()`, etc.
+    vm.globals.insert("list".into(), host_fn_ref(vm, "vybe:types", "listNew"));
+    vm.globals.insert("dictionary".into(), host_fn_ref(vm, "vybe:types", "dictNew"));
+    vm.globals.insert("queue".into(), host_fn_ref(vm, "vybe:types", "queueNew"));
+    vm.globals.insert("stack".into(), host_fn_ref(vm, "vybe:types", "stackNew"));
+    vm.globals.insert("hashset".into(), host_fn_ref(vm, "vybe:types", "hashSetNew"));
+    vm.globals.insert("arraylist".into(), host_fn_ref(vm, "vybe:types", "listNew"));
+    vm.globals.insert("hashtable".into(), host_fn_ref(vm, "vybe:types", "dictNew"));
+    vm.globals.insert("stringbuilder".into(), host_fn_ref(vm, "vybe:types", "stringBuilderNew"));
 }
 
 fn register_timespan_ns(vm: &mut VM) {

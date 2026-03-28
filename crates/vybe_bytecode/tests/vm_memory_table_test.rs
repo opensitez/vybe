@@ -300,3 +300,44 @@ fn multiple_chunks_cross_call() {
     let result = vm.run(vec![main, double, quad]).unwrap();
     assert_eq!(result.as_f64(), 10.0); // double(5) = 10
 }
+
+#[test]
+fn call_indirect_vm_function() {
+    let mut vm = VM::new();
+
+    // Chunk 1: function that returns 99
+    let mut f = Chunk::new("get99");
+    f.arity = 0;
+    f.local_count = 1;
+    let val = f.add_constant(Value::F64(99.0));
+    f.emit_op_u16(Op::r#const, val, 0);
+    f.emit_op(Op::r#return, 0);
+
+    // Script: ref_func creates function + adds to func_table
+    // Then get __table_idx and use call_indirect
+    let mut main = Chunk::new("<script>");
+    main.local_count = 2;
+
+    // ref_func 1 → pushes function object
+    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit(0, 0); // 0 upvalues
+
+    // Get __table_idx from the function object
+    let idx_name = main.add_constant(Value::String(Rc::from("__table_idx")));
+    main.emit(Op::dup as u8, 0);
+    main.emit_op_u16(Op::struct_get, idx_name, 0);
+
+    // Stack: [func_obj, table_idx]
+    // Save func_obj to local, keep table_idx for call_indirect
+    let tmp = 1u16;
+    // Swap: drop func_obj from under table_idx
+    // Actually struct_get popped func_obj and pushed table_idx
+    // So stack: [table_idx]
+
+    // call_indirect with 0 args
+    main.emit_op_u8(Op::call_indirect, 0, 0);
+    main.emit_op(Op::halt, 0);
+
+    let result = vm.run(vec![main, f]).unwrap();
+    assert_eq!(result.as_f64(), 99.0);
+}

@@ -29,10 +29,15 @@ pub fn register(vm: &mut VM) {
             if type_str == "Set" {
                 return dispatch_set(&obj, &method, call_args);
             }
+
+            // List methods (includes LINQ)
+            if type_str == "List" {
+                return dispatch_list(&obj, &method, call_args);
+            }
         }
 
-        // Not a builtin collection — return Null (caller falls through to regular method call)
-        Value::Null
+        // Not a builtin collection — return Undefined (caller falls through to regular method call)
+        Value::Undefined
     }));
 
     // awaitPromise(value) — if value is a Promise, extract its resolved value
@@ -133,6 +138,230 @@ fn make_promise(state: &str, value: Value) -> Value {
     obj.properties.insert("__state".into(), Value::String(Rc::from(state)));
     obj.properties.insert("__value".into(), value);
     Value::Object(Rc::new(RefCell::new(obj)))
+}
+
+fn dispatch_list(obj: &Value, method: &str, args: &[Value]) -> Value {
+    let o = match obj { Value::Object(o) => o, _ => return Value::Null };
+
+    match method {
+        "Add" | "add" => {
+            let item = args.first().cloned().unwrap_or(Value::Null);
+            let mut ob = o.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = ob.kind {
+                elems.push(item);
+                let len = elems.len() as f64;
+                ob.properties.insert("count".into(), Value::F64(len));
+                ob.properties.insert("length".into(), Value::F64(len));
+            }
+            Value::Null // void return — handled
+        }
+        "Remove" | "remove" => {
+            let item_str = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let mut ob = o.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = ob.kind {
+                let before = elems.len();
+                elems.retain(|e| format!("{}", e) != item_str);
+                let removed = elems.len() < before;
+                let len = elems.len() as f64;
+                ob.properties.insert("count".into(), Value::F64(len));
+                ob.properties.insert("length".into(), Value::F64(len));
+                return Value::Bool(removed);
+            }
+            Value::Bool(false)
+        }
+        "RemoveAt" | "removeat" => {
+            let idx = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
+            let mut ob = o.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = ob.kind {
+                if idx < elems.len() {
+                    elems.remove(idx);
+                    let len = elems.len() as f64;
+                    ob.properties.insert("count".into(), Value::F64(len));
+                    ob.properties.insert("length".into(), Value::F64(len));
+                }
+            }
+            Value::Null
+        }
+        "Clear" | "clear" => {
+            let mut ob = o.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = ob.kind {
+                elems.clear();
+                ob.properties.insert("count".into(), Value::F64(0.0));
+                ob.properties.insert("length".into(), Value::F64(0.0));
+            }
+            Value::Null
+        }
+        "Contains" | "contains" => {
+            let search = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                return Value::Bool(elems.iter().any(|e| format!("{}", e) == search));
+            }
+            Value::Bool(false)
+        }
+        "IndexOf" | "indexof" => {
+            let search = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                for (i, e) in elems.iter().enumerate() {
+                    if format!("{}", e) == search { return Value::F64(i as f64); }
+                }
+            }
+            Value::F64(-1.0)
+        }
+        "Insert" | "insert" => {
+            let idx = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
+            let item = args.get(1).cloned().unwrap_or(Value::Null);
+            let mut ob = o.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = ob.kind {
+                if idx <= elems.len() { elems.insert(idx, item); }
+                let len = elems.len() as f64;
+                ob.properties.insert("count".into(), Value::F64(len));
+                ob.properties.insert("length".into(), Value::F64(len));
+            }
+            Value::Null
+        }
+        "Item" | "item" | "get_Item" => {
+            let idx = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                return elems.get(idx).cloned().unwrap_or(Value::Null);
+            }
+            Value::Null
+        }
+        "Count" | "count" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                return Value::F64(elems.len() as f64);
+            }
+            Value::F64(0.0)
+        }
+        "Reverse" | "reverse" => {
+            let mut ob = o.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = ob.kind {
+                elems.reverse();
+            }
+            obj.clone()
+        }
+        "Sort" | "sort" => {
+            let mut ob = o.borrow_mut();
+            if let ObjectKind::Array(ref mut elems) = ob.kind {
+                elems.sort_by(|a, b| a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            obj.clone()
+        }
+        "ToArray" | "toarray" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(elems.clone()))));
+            }
+            Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+        }
+        // LINQ methods — work on any List/Array
+        "Where" | "where" => {
+            // Where(predicate) — can't call VM function from host, return filtered copy
+            // For now, return self (LINQ needs VM callback support)
+            Value::Null // fallback to compiler-desugared version
+        }
+        "Select" | "select" => {
+            Value::Null // fallback
+        }
+        "First" | "first" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                return elems.first().cloned().unwrap_or(Value::Null);
+            }
+            Value::Null
+        }
+        "Last" | "last" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                return elems.last().cloned().unwrap_or(Value::Null);
+            }
+            Value::Null
+        }
+        "Any" | "any" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                return Value::Bool(!elems.is_empty());
+            }
+            Value::Bool(false)
+        }
+        "Sum" | "sum" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                let sum: f64 = elems.iter().map(|e| e.as_f64()).sum();
+                return Value::F64(sum);
+            }
+            Value::F64(0.0)
+        }
+        "Min" | "min" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                if let Some(min) = elems.iter().map(|e| e.as_f64()).reduce(f64::min) {
+                    return Value::F64(min);
+                }
+            }
+            Value::Null
+        }
+        "Max" | "max" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                if let Some(max) = elems.iter().map(|e| e.as_f64()).reduce(f64::max) {
+                    return Value::F64(max);
+                }
+            }
+            Value::Null
+        }
+        "Average" | "average" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                if !elems.is_empty() {
+                    let sum: f64 = elems.iter().map(|e| e.as_f64()).sum();
+                    return Value::F64(sum / elems.len() as f64);
+                }
+            }
+            Value::Null
+        }
+        "Distinct" | "distinct" => {
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                let mut seen = std::collections::HashSet::new();
+                let mut result = Vec::new();
+                for e in elems {
+                    let s = format!("{}", e);
+                    if seen.insert(s) { result.push(e.clone()); }
+                }
+                let mut new_obj = Object::new_array(result);
+                new_obj.properties.insert("__type".into(), Value::String(Rc::from("List")));
+                return Value::Object(Rc::new(RefCell::new(new_obj)));
+            }
+            obj.clone()
+        }
+        "Take" | "take" => {
+            let n = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                let taken: Vec<Value> = elems.iter().take(n).cloned().collect();
+                let mut new_obj = Object::new_array(taken);
+                new_obj.properties.insert("__type".into(), Value::String(Rc::from("List")));
+                return Value::Object(Rc::new(RefCell::new(new_obj)));
+            }
+            obj.clone()
+        }
+        "Skip" | "skip" => {
+            let n = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                let skipped: Vec<Value> = elems.iter().skip(n).cloned().collect();
+                let mut new_obj = Object::new_array(skipped);
+                new_obj.properties.insert("__type".into(), Value::String(Rc::from("List")));
+                return Value::Object(Rc::new(RefCell::new(new_obj)));
+            }
+            obj.clone()
+        }
+        _ => Value::Undefined, // not handled — compiler falls through to struct_get
+    }
 }
 
 fn dispatch_map(obj: &Value, method: &str, args: &[Value]) -> Value {

@@ -2218,10 +2218,26 @@ impl Compiler {
             _ => {}
         }
 
-        // General instance method call: obj.method(this, args)
+        // Try runtime callMethod dispatch (handles List, Map, Set, Dict, Queue, Stack)
+        self.compile_expression(obj)?;
+        self.emit_constant(Value::String(Rc::from(method)));
+        for arg in args { self.compile_expression(arg)?; }
+        let cm_idx = self.import("vybe:runtime", "callMethod");
+        self.emit_host_call(cm_idx, (args.len() + 2) as u8);
+        // If callMethod returned non-Undefined, it handled it — we're done
+        // (Null is a valid return value from handled methods; Undefined means "not handled")
+        self.emit(Op::dup);
+        self.emit(Op::undefined);
+        self.emit(Op::eq);
+        let not_handled = self.emit_jump(Op::br_if_true); // undefined = not handled
+        let done = self.emit_jump(Op::br); // handled — skip fallback
+        self.patch_jump(not_handled);
+        self.emit(Op::drop); // drop undefined
+
+        // Fallback: general instance method call via struct_get
         self.compile_expression(obj)?;
         let method_idx = self.add_string_constant(&method_lower);
-        self.emit(Op::dup); // keep obj for 'this' arg
+        self.emit(Op::dup);
         self.emit_u16(Op::struct_get, method_idx);
         // Stack: [obj, method_fn] — need [method_fn, obj, args...]
         // Swap: not a direct opcode, so we use local
@@ -2237,6 +2253,7 @@ impl Compiler {
         self.emit_u16(Op::local_get, tmp2_slot);
         for arg in args { self.compile_expression(arg)?; }
         self.emit_u8(Op::call, (args.len() + 1) as u8); // +1 for this
+        self.patch_jump(done);
         Ok(())
     }
 
