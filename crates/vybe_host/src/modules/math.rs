@@ -1,6 +1,16 @@
 use vybe_bytecode::{VM, Value};
 
 pub fn register(vm: &mut VM) {
+    // Core math — also available as opcodes, but registered as host fns
+    // so namespace objects can reference them
+    vm.register_host_fn("vybe:math", "floor",  Box::new(|a| Value::F64(f(a, 0).floor())));
+    vm.register_host_fn("vybe:math", "ceil",   Box::new(|a| Value::F64(f(a, 0).ceil())));
+    vm.register_host_fn("vybe:math", "abs",    Box::new(|a| Value::F64(f(a, 0).abs())));
+    vm.register_host_fn("vybe:math", "sqrt",   Box::new(|a| Value::F64(f(a, 0).sqrt())));
+    vm.register_host_fn("vybe:math", "trunc",  Box::new(|a| Value::F64(f(a, 0).trunc())));
+    vm.register_host_fn("vybe:math", "round",  Box::new(|a| Value::F64(f(a, 0).round())));
+    vm.register_host_fn("vybe:math", "min",    Box::new(|a| Value::F64(f(a, 0).min(f(a, 1)))));
+    vm.register_host_fn("vybe:math", "max",    Box::new(|a| Value::F64(f(a, 0).max(f(a, 1)))));
     vm.register_host_fn("vybe:math", "pow",    Box::new(|a| Value::F64(f(a, 0).powf(f(a, 1)))));
     vm.register_host_fn("vybe:math", "random", Box::new(|_| {
         let t = std::time::SystemTime::now()

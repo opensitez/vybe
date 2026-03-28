@@ -558,6 +558,9 @@ impl Compiler {
         for m in &instance_methods {
             self.class_methods.insert(m.name.to_lowercase());
         }
+        for m in &static_methods {
+            self.class_methods.insert(m.name.to_lowercase());
+        }
 
         // Call base constructor if Inherits
         if let Some(ref parent) = class.base_type {
@@ -736,12 +739,20 @@ impl Compiler {
             self.emit(Op::drop);
         }
 
-        // Static methods
+        // Static methods — attach to class object AND register as globals for bare calls
         for method in static_methods {
             self.emit(Op::dup);
             self.compile_static_method(method)?;
-            let pidx = self.add_string_constant(&method.name.to_lowercase());
+            let mname = method.name.to_lowercase();
+            // Attach to class object
+            let pidx = self.add_string_constant(&mname);
             self.emit_u16(Op::struct_set, pidx);
+            self.emit(Op::drop);
+            // Also store as global for bare calls from other static methods
+            self.emit(Op::dup);
+            let pidx2 = self.add_string_constant(&mname);
+            self.emit_u16(Op::struct_get, pidx2);
+            self.emit_global_set(&mname);
             self.emit(Op::drop);
         }
 
@@ -1029,12 +1040,17 @@ impl Compiler {
             }
 
             Statement::ForEach { var_name, iterable, body } => {
+                // Desugar: foreach (var x in arr) → { var __arr = arr; var __i = 0; while (__i < __arr.length) { var x = __arr[__i]; body; __i++; } }
                 self.current_scope_mut().begin_scope();
 
                 self.compile_expression(iterable)?;
-                self.emit(Op::iter_get);
-                let iter_slot = self.define_local("__iter");
-                self.emit_u16(Op::local_set, iter_slot);
+                let arr_slot = self.define_local("__foreach_arr");
+                self.emit_u16(Op::local_set, arr_slot);
+                self.emit(Op::drop);
+
+                self.emit_constant(Value::F64(0.0));
+                let i_slot = self.define_local("__foreach_i");
+                self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
 
                 let var_slot = self.define_local(var_name);
@@ -1046,11 +1062,17 @@ impl Compiler {
                     continue_jumps: Vec::new(),
                 });
 
-                self.emit_u16(Op::local_get, iter_slot);
-                self.emit(Op::iter_next);
-                self.emit(Op::dup);
-                let exit_j = self.emit_jump(Op::br_if_null);
+                // i < arr.length
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit(Op::str_length);
+                self.emit(Op::dyn_lt);
+                let exit_j = self.emit_jump(Op::br_if_false);
 
+                // var x = arr[i]
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::array_get);
                 self.emit_u16(Op::local_set, var_slot);
                 self.emit(Op::drop);
 
@@ -1060,9 +1082,15 @@ impl Compiler {
                 let continue_jumps: Vec<usize> = ctx.continue_jumps.clone();
                 for j in &continue_jumps { self.patch_jump(*j); }
 
+                // i++
+                self.emit_u16(Op::local_get, i_slot);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::drop);
+
                 self.emit_loop(loop_start);
                 self.patch_jump(exit_j);
-                self.emit(Op::drop); // drop the null from iter_next
 
                 let ctx = self.loop_stack.pop().unwrap();
                 for j in &ctx.break_jumps { self.patch_jump(*j); }
