@@ -545,6 +545,12 @@ impl Compiler {
         for (fname, _, _, _) in &fields {
             self.class_fields.insert(fname.to_lowercase());
         }
+        // Auto-properties are treated as fields (direct struct_get/struct_set)
+        for p in &properties {
+            if p.is_auto {
+                self.class_fields.insert(p.name.to_lowercase());
+            }
+        }
         // Inherit parent fields/methods
         if let Some(ref parent) = class.base_type {
             let parent_lower = parent.to_lowercase();
@@ -622,6 +628,18 @@ impl Compiler {
             }
         }
 
+        // Initialize auto-properties to null BEFORE constructor body
+        for prop in &properties {
+            if prop.is_auto {
+                let prop_name = prop.name.to_lowercase();
+                self.emit_u16(Op::local_get, this_slot);
+                self.emit(Op::null);
+                let pidx = self.add_string_constant(&prop_name);
+                self.emit_u16(Op::struct_set, pidx);
+                self.emit(Op::drop);
+            }
+        }
+
         // Attach instance methods BEFORE constructor body
         for method in &instance_methods {
             self.emit_u16(Op::local_get, this_slot);
@@ -636,9 +654,12 @@ impl Compiler {
             self.compile_statement(stmt)?;
         }
 
-        // Attach property getters/setters
+        // Attach property getters/setters (non-auto only)
         for prop in &properties {
             let prop_name = prop.name.to_lowercase();
+            if prop.is_auto {
+                continue;
+            }
             if let Some(ref getter_body) = prop.getter {
                 self.emit_u16(Op::local_get, this_slot);
                 self.compile_property_getter(&prop_name, getter_body)?;
@@ -652,15 +673,6 @@ impl Compiler {
                 self.compile_property_setter(&prop_name, value_param, setter_body)?;
                 let set_name = format!("__set_{}", prop_name);
                 let pidx = self.add_string_constant(&set_name);
-                self.emit_u16(Op::struct_set, pidx);
-                self.emit(Op::drop);
-            }
-            // Auto-properties: generate backing field
-            if prop.is_auto {
-                self.emit_u16(Op::local_get, this_slot);
-                self.emit(Op::null);
-                let backing = format!("__backing_{}", prop_name);
-                let pidx = self.add_string_constant(&backing);
                 self.emit_u16(Op::struct_set, pidx);
                 self.emit(Op::drop);
             }
@@ -971,7 +983,11 @@ impl Compiler {
                 if else_if.is_empty() && else_body.is_none() {
                     self.patch_jump(else_j);
                 } else {
-                    let end_j = self.emit_jump(Op::br);
+                    // Collect all jumps that need to go to the very end
+                    let mut end_jumps: Vec<usize> = Vec::new();
+
+                    // Jump from the then-branch to end
+                    end_jumps.push(self.emit_jump(Op::br));
                     self.patch_jump(else_j);
 
                     for (cond, body) in else_if {
@@ -979,20 +995,17 @@ impl Compiler {
                         self.emit(Op::dyn_to_bool);
                         let next_j = self.emit_jump(Op::br_if_false);
                         for s in body { self.compile_statement(s)?; }
-                        let skip_j = self.emit_jump(Op::br);
+                        // Jump from this branch to end
+                        end_jumps.push(self.emit_jump(Op::br));
                         self.patch_jump(next_j);
-                        // Chain end jumps — we need to patch skip_j to end
-                        // For simplicity, use the last jump
-                        self.patch_jump(skip_j);
-                        // Note: this is simplified — a proper impl would
-                        // collect all end jumps. For now the last else_if
-                        // falls through correctly.
                     }
 
                     if let Some(ref else_stmts) = else_body {
                         for s in else_stmts { self.compile_statement(s)?; }
                     }
-                    self.patch_jump(end_j);
+
+                    // Patch all end jumps to here
+                    for j in &end_jumps { self.patch_jump(*j); }
                 }
             }
 

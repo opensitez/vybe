@@ -20,13 +20,18 @@ impl Parser {
         while !self.at_end() {
             match self.current() {
                 TokenKind::Using => {
-                    self.advance();
-                    let mut parts = vec![self.expect_ident()?];
-                    while self.eat(TokenKind::Dot) {
-                        parts.push(self.expect_ident()?);
+                    // Disambiguate: `using (...)` is a statement, `using Ident...` is a directive
+                    if self.peek_at(1) == Some(&TokenKind::LParen) {
+                        top_level_statements.push(self.parse_statement()?);
+                    } else {
+                        self.advance();
+                        let mut parts = vec![self.expect_ident()?];
+                        while self.eat(TokenKind::Dot) {
+                            parts.push(self.expect_ident()?);
+                        }
+                        self.expect(TokenKind::Semicolon)?;
+                        usings.push(parts.join("."));
                     }
-                    self.expect(TokenKind::Semicolon)?;
-                    usings.push(parts.join("."));
                 }
                 TokenKind::Namespace => {
                     self.advance();
@@ -370,6 +375,7 @@ impl Parser {
                 Ok(Statement::Throw(expr))
             }
             TokenKind::Try => self.parse_try(),
+            TokenKind::Using => self.parse_using_statement(),
             TokenKind::Var => self.parse_local_var_decl(),
             TokenKind::Semicolon => { self.advance(); Ok(Statement::Empty) }
             // Type keyword followed by identifier — local declaration
@@ -545,6 +551,20 @@ impl Parser {
         }
         let finally_body = if self.eat(TokenKind::Finally) { Some(self.parse_block()?) } else { None };
         Ok(Statement::TryCatchFinally { try_body, catches, finally_body })
+    }
+
+    fn parse_using_statement(&mut self) -> Result<Statement, String> {
+        self.expect(TokenKind::Using)?;
+        self.expect(TokenKind::LParen)?;
+        // using (var x = expr) { body } or using (Type x = expr) { body }
+        let is_var = self.eat(TokenKind::Var);
+        let _type_name = if !is_var { Some(self.parse_type_name()?) } else { None };
+        let var_name = self.expect_ident()?;
+        self.expect(TokenKind::Assign)?;
+        let initializer = self.parse_expression()?;
+        self.expect(TokenKind::RParen)?;
+        let body = self.parse_block()?;
+        Ok(Statement::Using { var_name, initializer, body })
     }
 
     fn parse_local_var_decl(&mut self) -> Result<Statement, String> {
@@ -801,6 +821,41 @@ impl Parser {
                 let expr = self.parse_expression()?;
                 self.expect(TokenKind::RParen)?;
                 Ok(expr)
+            }
+            TokenKind::InterpolatedStart(ref text) => {
+                let mut parts: Vec<StringPart> = Vec::new();
+                let first_text = text.clone();
+                self.advance();
+                if !first_text.is_empty() {
+                    parts.push(StringPart::Text(first_text));
+                }
+                // Parse expression
+                parts.push(StringPart::Expr(self.parse_expression()?));
+                // Continue with InterpolatedMid / InterpolatedEnd
+                loop {
+                    match self.current() {
+                        TokenKind::InterpolatedMid(ref text) => {
+                            let mid_text = text.clone();
+                            self.advance();
+                            if !mid_text.is_empty() {
+                                parts.push(StringPart::Text(mid_text));
+                            }
+                            parts.push(StringPart::Expr(self.parse_expression()?));
+                        }
+                        TokenKind::InterpolatedEnd(ref text) => {
+                            let end_text = text.clone();
+                            self.advance();
+                            if !end_text.is_empty() {
+                                parts.push(StringPart::Text(end_text));
+                            }
+                            break;
+                        }
+                        _ => {
+                            return Err(format!("Expected InterpolatedMid or InterpolatedEnd, got {:?}", self.current()));
+                        }
+                    }
+                }
+                Ok(Expression::InterpolatedString(parts))
             }
             TokenKind::Identifier(ref name) => {
                 let name = name.clone();

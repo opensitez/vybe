@@ -807,7 +807,6 @@ fn nested_for_loops() {
 // ============================================================
 
 #[test]
-#[ignore = "known bug"]
 fn if_elseif_else() {
     let out = run_cs(r#"
         var x = 15;
@@ -1066,7 +1065,6 @@ fn enum_explicit_values() {
 // ============================================================
 
 #[test]
-#[ignore = "known bug: auto-property getter returns null"]
 fn auto_property() {
     let out = run_cs(r#"
         class Person {
@@ -1218,6 +1216,181 @@ fn lambda_stored_in_var() {
                 Console.WriteLine(Apply(6, 7));
             }
         }
+    "#);
+    assert_eq!(out, vec!["42"]);
+}
+
+// ============================================================
+// IF/ELSE IF/ELSE CHAIN (EXTENDED)
+// ============================================================
+
+#[test]
+fn if_elseif_else_first_branch() {
+    let out = run_cs(r#"
+        var x = 30;
+        if (x > 20) { Console.WriteLine("big"); }
+        else if (x > 10) { Console.WriteLine("medium"); }
+        else { Console.WriteLine("small"); }
+    "#);
+    assert_eq!(out, vec!["big"]);
+}
+
+#[test]
+fn if_elseif_else_last_branch() {
+    let out = run_cs(r#"
+        var x = 5;
+        if (x > 20) { Console.WriteLine("big"); }
+        else if (x > 10) { Console.WriteLine("medium"); }
+        else { Console.WriteLine("small"); }
+    "#);
+    assert_eq!(out, vec!["small"]);
+}
+
+#[test]
+fn if_elseif_chain_multiple() {
+    let out = run_cs(r#"
+        var x = 2;
+        if (x == 1) { Console.WriteLine("one"); }
+        else if (x == 2) { Console.WriteLine("two"); }
+        else if (x == 3) { Console.WriteLine("three"); }
+        else { Console.WriteLine("other"); }
+    "#);
+    assert_eq!(out, vec!["two"]);
+}
+
+// ============================================================
+// AUTO-PROPERTY (EXTENDED)
+// ============================================================
+
+#[test]
+fn auto_property_multiple() {
+    let out = run_cs(r#"
+        class Car {
+            public string Model { get; set; }
+            public int Year { get; set; }
+            public Car(string m, int y) { this.Model = m; this.Year = y; }
+        }
+        var c = new Car("Tesla", 2024);
+        Console.WriteLine(c.Model);
+        Console.WriteLine(c.Year);
+    "#);
+    assert_eq!(out, vec!["Tesla", "2024"]);
+}
+
+#[test]
+fn auto_property_set_after_construction() {
+    let out = run_cs(r#"
+        class Item {
+            public string Name { get; set; }
+            public Item() {}
+        }
+        var item = new Item();
+        item.Name = "Widget";
+        Console.WriteLine(item.Name);
+    "#);
+    assert_eq!(out, vec!["Widget"]);
+}
+
+// ============================================================
+// STRING INTERPOLATION
+// ============================================================
+
+#[test]
+fn string_interpolation_basic() {
+    let out = run_cs(r#"
+        var name = "World";
+        Console.WriteLine($"Hello {name}!");
+    "#);
+    assert_eq!(out, vec!["Hello World!"]);
+}
+
+#[test]
+fn string_interpolation_multiple_exprs() {
+    let out = run_cs(r#"
+        var a = "Alice";
+        var age = 30;
+        Console.WriteLine($"{a} is {age} years old");
+    "#);
+    assert_eq!(out, vec!["Alice is 30 years old"]);
+}
+
+#[test]
+fn string_interpolation_expression() {
+    let out = run_cs(r#"
+        var x = 3;
+        var y = 4;
+        Console.WriteLine($"sum is {x + y}");
+    "#);
+    assert_eq!(out, vec!["sum is 7"]);
+}
+
+// ============================================================
+// LAMBDA AS CALLBACK
+// ============================================================
+
+#[test]
+fn lambda_as_callback_to_method() {
+    let out = run_cs(r#"
+        class Util {
+            public int Apply(int x) {
+                return x * 2;
+            }
+        }
+        var u = new Util();
+        Console.WriteLine(u.Apply(21));
+    "#);
+    assert_eq!(out, vec!["42"]);
+}
+
+#[test]
+fn lambda_expression_arrow() {
+    let out = run_cs(r#"
+        var fn = x => x + 1;
+        Console.WriteLine(fn(9));
+    "#);
+    assert_eq!(out, vec!["10"]);
+}
+
+#[test]
+fn lambda_expression_stored_and_called() {
+    let out = run_cs(r#"
+        var twice = x => x * 2;
+        var result = twice(5);
+        Console.WriteLine(result);
+    "#);
+    assert_eq!(out, vec!["10"]);
+}
+
+// ============================================================
+// USING STATEMENT
+// ============================================================
+
+#[test]
+fn using_statement_basic() {
+    let out = run_cs(r#"
+        class Resource {
+            public string name;
+            public Resource(string n) { this.name = n; }
+        }
+        using (var r = new Resource("test")) {
+            Console.WriteLine(r.name);
+        }
+    "#);
+    assert_eq!(out, vec!["test"]);
+}
+
+#[test]
+fn using_statement_scope() {
+    let out = run_cs(r#"
+        class Res {
+            public int value;
+            public Res(int v) { this.value = v; }
+        }
+        var total = 0;
+        using (var r = new Res(42)) {
+            total = r.value;
+        }
+        Console.WriteLine(total);
     "#);
     assert_eq!(out, vec!["42"]);
 }
