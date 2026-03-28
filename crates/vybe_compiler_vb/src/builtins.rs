@@ -10,40 +10,18 @@ impl Compiler {
     pub(crate) fn compile_call_expr(&mut self, name: &Identifier, args: &[Expression]) -> Result<(), String> {
         let fname = name.as_str().to_lowercase();
 
-        // Me.Show() / Me.Close() / Me.Hide() inside a class
+        // Me.Method() inside a class — generic object method call
         if fname.starts_with("me.") {
             if let Some(me_slot) = self.current_scope().resolve_local("me") {
                 let method = &fname[3..];
-                match method {
-                    "show" => {
-                        self.emit_u16(Op::local_get, me_slot);
-                        let idx = self.import("vybe:gui", "showForm");
-                        self.emit_host_call(idx, 1);
-                        return Ok(());
-                    }
-                    "close" => {
-                        self.emit_u16(Op::local_get, me_slot);
-                        let idx = self.import("vybe:gui", "closeForm");
-                        self.emit_host_call(idx, 1);
-                        return Ok(());
-                    }
-                    "hide" => {
-                        self.emit(Op::null);
-                        return Ok(());
-                    }
-                    _ => {
-                        // Me.OtherMethod() → resolve as class method call
-                        if self.class_methods.contains(method) {
-                            self.emit_u16(Op::local_get, me_slot);
-                            let prop_idx = self.add_string_constant(method);
-                            self.emit_u16(Op::struct_get, prop_idx);
-                            self.emit_u16(Op::local_get, me_slot);
-                            for arg in args { self.compile_expression(arg)?; }
-                            self.emit_u8(Op::call, (args.len() + 1) as u8);
-                            return Ok(());
-                        }
-                    }
-                }
+                // Generic: struct_get on Me, call with Me as this
+                self.emit_u16(Op::local_get, me_slot);
+                let prop_idx = self.add_string_constant(method);
+                self.emit_u16(Op::struct_get, prop_idx);
+                self.emit_u16(Op::local_get, me_slot);
+                for arg in args { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, (args.len() + 1) as u8);
+                return Ok(());
             }
         }
 

@@ -9,3 +9,7 @@ license.workspace = true
 vybe_parser_basic = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_host = { workspace = true }
+
+[dev-dependencies]
+vybe_parser_js = { workspace = true }
+vybe_compiler_js = { workspace = true }

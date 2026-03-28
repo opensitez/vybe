@@ -382,34 +382,28 @@ impl Compiler {
             return Ok(());
         }
 
-        // Me.Show() / Me.Close() — Expression::Me variant
+        // Me.Method() — method call on Me object
         if matches!(*obj, Expression::Me) {
             if let Some(me_slot) = self.current_scope().resolve_local("me") {
                 let meth_lower = method.as_str().to_lowercase();
                 match meth_lower.as_str() {
-                    "show" => {
-                        self.emit_u16(Op::local_get, me_slot);
-                        let idx = self.import("vybe:gui", "showForm");
-                        self.emit_host_call(idx, 1);
-                        return Ok(());
-                    }
-                    "close" => {
-                        self.emit_u16(Op::local_get, me_slot);
-                        let idx = self.import("vybe:gui", "closeForm");
-                        self.emit_host_call(idx, 1);
+                    // No-op layout methods
+                    "suspendlayout" | "resumelayout" | "performlayout"
+                    | "refresh" | "invalidate" | "update" | "begininit" | "endinit"
+                    | "dispose" | "select" | "bringtofront" | "sendtoback" => {
+                        self.emit(Op::null);
                         return Ok(());
                     }
                     _ => {
-                        // Me.OtherMethod() → class method call
-                        if self.class_methods.contains(&meth_lower) {
-                            self.emit_u16(Op::local_get, me_slot);
-                            let prop_idx = self.add_string_constant(&meth_lower);
-                            self.emit_u16(Op::struct_get, prop_idx);
-                            self.emit_u16(Op::local_get, me_slot);
-                            for arg in args { self.compile_expression(arg)?; }
-                            self.emit_u8(Op::call, (args.len() + 1) as u8);
-                            return Ok(());
-                        }
+                        // Try object method first (controls have show/close/focus on them)
+                        // If not found at runtime, falls through gracefully
+                        self.emit_u16(Op::local_get, me_slot);
+                        let prop_idx = self.add_string_constant(&meth_lower);
+                        self.emit_u16(Op::struct_get, prop_idx);
+                        self.emit_u16(Op::local_get, me_slot); // this
+                        for arg in args { self.compile_expression(arg)?; }
+                        self.emit_u8(Op::call, (args.len() + 1) as u8);
+                        return Ok(());
                     }
                 }
             }

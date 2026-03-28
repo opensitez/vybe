@@ -240,39 +240,23 @@ impl Compiler {
                     return Ok(());
                 }
 
-                // Me.Show() / Me.Close() inside a class
+                // Me.Method() inside a class — generic object method call
                 if fname.starts_with("me.") {
                     if let Some(me_slot) = self.current_scope().resolve_local("me") {
                         let method = &fname[3..];
-                        match method {
-                            "show" => {
-                                self.emit_u16(Op::local_get, me_slot);
-                                let idx = self.import("vybe:gui", "showForm");
-                                self.emit_host_call(idx, 1);
-                                self.emit(Op::drop);
-                                return Ok(());
-                            }
-                            "close" => {
-                                self.emit_u16(Op::local_get, me_slot);
-                                let idx = self.import("vybe:gui", "closeForm");
-                                self.emit_host_call(idx, 1);
-                                self.emit(Op::drop);
-                                return Ok(());
-                            }
-                            _ => {
-                                // Me.Method() → resolve as class method
-                                if self.class_methods.contains(method) {
-                                    self.emit_u16(Op::local_get, me_slot);
-                                    let prop_idx = self.add_string_constant(method);
-                                    self.emit_u16(Op::struct_get, prop_idx);
-                                    self.emit_u16(Op::local_get, me_slot);
-                                    for arg in arguments { self.compile_expression(arg)?; }
-                                    self.emit_u8(Op::call, (arguments.len() + 1) as u8);
-                                    self.emit(Op::drop);
-                                    return Ok(());
-                                }
-                            }
+                        // No-op layout methods
+                        if matches!(method, "suspendlayout" | "resumelayout" | "performlayout") {
+                            return Ok(());
                         }
+                        // Generic: struct_get method on Me, call with Me as this
+                        self.emit_u16(Op::local_get, me_slot);
+                        let prop_idx = self.add_string_constant(method);
+                        self.emit_u16(Op::struct_get, prop_idx);
+                        self.emit_u16(Op::local_get, me_slot);
+                        for arg in arguments { self.compile_expression(arg)?; }
+                        self.emit_u8(Op::call, (arguments.len() + 1) as u8);
+                        self.emit(Op::drop);
+                        return Ok(());
                     }
                 }
 

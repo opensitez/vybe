@@ -126,17 +126,69 @@ impl VM {
     }
 
 
-    /// Load chunks and execute chunk 0 (the script).
+    /// Load chunks and execute the script chunk (first in the new set).
+    /// Appends to existing chunks so cross-language calls work (functions reference chunk indices).
     /// Resolves the import table against registered host functions.
     pub fn run(&mut self, chunks: Vec<Chunk>) -> Result<Value, VMError> {
-        self.chunks = chunks;
-        if self.chunks.is_empty() {
+        if chunks.is_empty() {
             return Ok(Value::Null);
         }
+        let script_idx = self.chunks.len(); // offset for new chunks
+        // Offset ref_func indices in the new chunks so they point to correct positions
+        let mut adjusted = chunks;
+        if script_idx > 0 {
+            for chunk in &mut adjusted {
+                let code = &mut chunk.code;
+                let mut ip = 0;
+                while ip < code.len() {
+                    let op_byte = code[ip];
+                    if let Some(op) = Op::from_byte(op_byte) {
+                        match op {
+                            Op::ref_func => {
+                                // ref_func has u16 chunk_index operand
+                                if ip + 2 < code.len() {
+                                    let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
+                                    let new_idx = old_idx + script_idx as u16;
+                                    code[ip + 1] = (new_idx >> 8) as u8;
+                                    code[ip + 2] = (new_idx & 0xff) as u8;
+                                }
+                                ip += 3 + 1; // op + u16 + upvalue_count byte
+                                // Skip upvalue descriptors
+                                if ip - 1 < code.len() {
+                                    let uv_count = code[ip - 1] as usize;
+                                    ip += uv_count * 2;
+                                }
+                                continue;
+                            }
+                            _ => {}
+                        }
+                        ip += op.encoded_len();
+                        // Skip operands based on opcode
+                        match op {
+                            Op::r#const | Op::local_get | Op::local_set | Op::global_get
+                            | Op::global_set | Op::struct_get | Op::struct_set | Op::struct_new
+                            | Op::array_new | Op::ref_test => { ip += 2; }
+                            Op::call | Op::call_ref | Op::upvalue_get | Op::upvalue_set
+                            | Op::str_concat_n => { ip += 1; }
+                            Op::call_import => { ip += 3; } // u16 + u8
+                            Op::br | Op::br_if_true | Op::br_if_false | Op::br_if_null
+                            | Op::r#loop => { ip += 2; }
+                            Op::try_start => { ip += 4; }
+                            _ => {}
+                        }
+                    } else if op_byte == 0xFE && ip + 1 < code.len() {
+                        ip += 2; // extended opcode
+                    } else {
+                        ip += 1;
+                    }
+                }
+            }
+        }
+        self.chunks.extend(adjusted);
 
-        // Resolve imports from chunk 0's import table
+        // Resolve imports from the new script chunk's import table
         self.import_table.clear();
-        for import in &self.chunks[0].imports {
+        for import in &self.chunks[script_idx].imports {
             let key = (import.module.clone(), import.name.clone());
             match self.host_registry.get(&key) {
                 Some(&idx) => self.import_table.push(idx),
@@ -147,13 +199,13 @@ impl VM {
         }
 
         self.frames.push(CallFrame {
-            chunk_index: 0,
+            chunk_index: script_idx,
             ip: 0,
             base: 0,
             upvalues: Vec::new(),
         });
 
-        let local_count = self.chunks[0].local_count as usize;
+        let local_count = self.chunks[script_idx].local_count as usize;
         for _ in 0..local_count {
             self.stack.push(Value::Null);
         }

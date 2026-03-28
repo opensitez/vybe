@@ -257,8 +257,62 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
         "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",
         "Form", "TreeView",
     ];
+    // Register control methods as host functions (shared across all instances)
+    let q_show = q.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_show", Box::new(move |args: &[Value]| {
+        let name = if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            o.properties.get("name").or_else(|| o.properties.get("__control_name"))
+                .map(|v| format!("{}", v)).unwrap_or_else(|| "Form1".into())
+        } else { "Form1".into() };
+        q_show.borrow_mut().push(SideEffect::FormShow { form_name: name });
+        Value::Null
+    }));
+    let q_close = q.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_close", Box::new(move |args: &[Value]| {
+        let name = if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            o.properties.get("name").or_else(|| o.properties.get("__control_name"))
+                .map(|v| format!("{}", v)).unwrap_or_else(|| "Form1".into())
+        } else { "Form1".into() };
+        q_close.borrow_mut().push(SideEffect::FormClose { form_name: name });
+        Value::Null
+    }));
+    vm.register_host_fn("vybe:gui", "__ctrl_focus", Box::new(|_| Value::Null));
+    vm.register_host_fn("vybe:gui", "__ctrl_hide", Box::new(|_| Value::Null));
+
+    // Get method refs for attaching to control objects
+    let show_ref = {
+        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__ctrl_show".into())).unwrap();
+        let mut o = vybe_bytecode::value::Object::new();
+        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
+        Value::Object(Rc::new(RefCell::new(o)))
+    };
+    let close_ref = {
+        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__ctrl_close".into())).unwrap();
+        let mut o = vybe_bytecode::value::Object::new();
+        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
+        Value::Object(Rc::new(RefCell::new(o)))
+    };
+    let focus_ref = {
+        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__ctrl_focus".into())).unwrap();
+        let mut o = vybe_bytecode::value::Object::new();
+        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
+        Value::Object(Rc::new(RefCell::new(o)))
+    };
+    let hide_ref = {
+        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__ctrl_hide".into())).unwrap();
+        let mut o = vybe_bytecode::value::Object::new();
+        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
+        Value::Object(Rc::new(RefCell::new(o)))
+    };
+
     for ct in control_types {
         let type_name = ct.to_string();
+        let show = show_ref.clone();
+        let close = close_ref.clone();
+        let focus = focus_ref.clone();
+        let hide = hide_ref.clone();
         vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_args: &[Value]| {
             use std::sync::atomic::{AtomicU32, Ordering};
             static COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -273,6 +327,11 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
             obj.properties.insert("height".into(), Value::F64(30.0));
             obj.properties.insert("left".into(), Value::F64(0.0));
             obj.properties.insert("top".into(), Value::F64(0.0));
+            // Methods on the control object
+            obj.properties.insert("show".into(), show.clone());
+            obj.properties.insert("close".into(), close.clone());
+            obj.properties.insert("focus".into(), focus.clone());
+            obj.properties.insert("hide".into(), hide.clone());
             Value::Object(Rc::new(RefCell::new(obj)))
         }));
     }
