@@ -34,7 +34,7 @@ pub enum TokenKind {
     AndAssign, OrAssign, XorAssign, ShlAssign, ShrAssign,
     Increment, Decrement,
     Arrow, // =>
-    Dot, QuestionDot, // . ?.
+    Dot, DotDot, QuestionDot, // . .. ?.
     Question, QuestionQuestion, // ? ??
     Colon,
     Semicolon, Comma,

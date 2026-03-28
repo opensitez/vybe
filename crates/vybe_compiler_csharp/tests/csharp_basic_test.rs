@@ -1498,3 +1498,207 @@ fn out_parameter_pass_through() {
     "#);
     assert_eq!(out, vec!["true"]);
 }
+
+// ============================================================
+// RECORDS
+// ============================================================
+
+#[test]
+fn record_basic() {
+    let out = run_cs(r#"
+        record Person(string Name, int Age);
+        class Program {
+            static void Main() {
+                var p = new Person("Alice", 30);
+                Console.WriteLine(p.Name);
+                Console.WriteLine(p.Age);
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["Alice", "30"]);
+}
+
+#[test]
+fn record_tostring() {
+    let out = run_cs(r#"
+        record Point(int X, int Y) {
+            public string Display() {
+                return "Point(" + X + ", " + Y + ")";
+            }
+        }
+        class Program {
+            static void Main() {
+                var p = new Point(3, 7);
+                Console.WriteLine(p.Display());
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["Point(3, 7)"]);
+}
+
+#[test]
+fn record_with_body() {
+    let out = run_cs(r#"
+        record Car(string Make, int Year) {
+            public string Info() {
+                return Make + " " + Year;
+            }
+        }
+        class Program {
+            static void Main() {
+                var c = new Car("Toyota", 2024);
+                Console.WriteLine(c.Info());
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["Toyota 2024"]);
+}
+
+// ============================================================
+// TUPLES
+// ============================================================
+
+#[test]
+fn tuple_basic() {
+    let out = run_cs(r#"
+        class Program {
+            static void Main() {
+                var t = (1, "hello", true);
+                Console.WriteLine(t[0]);
+                Console.WriteLine(t[1]);
+                Console.WriteLine(t[2]);
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["1", "hello", "true"]);
+}
+
+#[test]
+fn tuple_two_elements() {
+    let out = run_cs(r#"
+        class Program {
+            static void Main() {
+                var pair = (10, 20);
+                var sum = pair[0] + pair[1];
+                Console.WriteLine(sum);
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["30"]);
+}
+
+// ============================================================
+// NULLABLE TYPES
+// ============================================================
+
+#[test]
+fn nullable_type_parses() {
+    let out = run_cs(r#"
+        class Program {
+            static void Main() {
+                string? name = "hello";
+                int? x = 42;
+                Console.WriteLine(name);
+                Console.WriteLine(x);
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["hello", "42"]);
+}
+
+// ============================================================
+// RANGE / SLICE
+// ============================================================
+
+#[test]
+fn range_slice_array() {
+    let out = run_cs(r#"
+        class Program {
+            static void Main() {
+                var arr = new int[] { 10, 20, 30, 40, 50 };
+                var sub = arr[1..3];
+                Console.WriteLine(sub[0]);
+                Console.WriteLine(sub[1]);
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["20", "30"]);
+}
+
+#[test]
+fn range_slice_string() {
+    let out = run_cs(r#"
+        class Program {
+            static void Main() {
+                string s = "Hello World";
+                var sub = s[0..5];
+                Console.WriteLine(sub);
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["Hello"]);
+}
+
+// ============================================================
+// TYPE KEYWORDS AS NAMESPACES
+// ============================================================
+
+#[test]
+fn int_parse() {
+    assert_eq!(run_cs_one(r#"Console.WriteLine(int.Parse("42"));"#), "42");
+}
+
+#[test]
+fn double_parse() {
+    assert_eq!(run_cs_one(r#"Console.WriteLine(double.Parse("3.14"));"#), "3.14");
+}
+
+#[test]
+fn int_maxvalue() {
+    let out = run_cs_one("Console.WriteLine(int.MaxValue > 0);");
+    assert_eq!(out, "true");
+}
+
+// ============================================================
+// STATIC CLASS METHOD VIA CLASS NAME
+// ============================================================
+
+#[test]
+fn static_class_method_call() {
+    let out = run_cs(r#"
+        class MathHelper {
+            public static int Square(int x) { return x * x; }
+            public static int Double(int x) { return x * 2; }
+        }
+        Console.WriteLine(MathHelper.Square(5));
+        Console.WriteLine(MathHelper.Double(7));
+    "#);
+    assert_eq!(out, vec!["25", "14"]);
+}
+
+// ============================================================
+// CHAINED METHOD CALLS
+// ============================================================
+
+#[test]
+fn chained_string_methods() {
+    assert_eq!(run_cs_one(r#"Console.WriteLine("  Hello World  ".Trim().ToUpper());"#), "HELLO WORLD");
+}
+
+// ============================================================
+// FOREACH ON LIST
+// ============================================================
+
+#[test]
+fn foreach_on_list() {
+    let out = run_cs(r#"
+        var list = new List<string>();
+        list.Add("a");
+        list.Add("b");
+        list.Add("c");
+        foreach (var item in list) {
+            Console.WriteLine(item);
+        }
+    "#);
+    assert_eq!(out, vec!["a", "b", "c"]);
+}

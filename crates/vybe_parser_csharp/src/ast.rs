@@ -297,6 +297,7 @@ pub enum BinaryOp {
     And, Or, // logical
     BitAnd, BitOr, BitXor, Shl, Shr,
     NullCoalescing,
+    Range, // ..
 }
 
 #[derive(Debug, Clone, PartialEq)]

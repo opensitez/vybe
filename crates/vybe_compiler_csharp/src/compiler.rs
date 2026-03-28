@@ -320,6 +320,7 @@ impl Compiler {
     fn is_namespace(&self, name: &str) -> bool {
         matches!(name.to_lowercase().as_str(),
             "math" | "console" | "convert" | "string" | "array"
+            | "int" | "double" | "float" | "bool" | "long" | "byte" | "object"
             | "file" | "io" | "directory" | "path"
             | "system" | "application" | "environment"
             | "thread" | "json" | "color" | "datetime"
@@ -1619,9 +1620,18 @@ impl Compiler {
 
             // -- Indexer --
             Expression::Index(obj, index) => {
-                self.compile_expression(obj)?;
-                self.compile_expression(index)?;
-                self.emit(Op::array_get);
+                // Check for range: arr[start..end] → slice(arr, start, end)
+                if let Expression::Binary(BinaryOp::Range, start, end) = index.as_ref() {
+                    self.compile_expression(obj)?;
+                    self.compile_expression(start)?;
+                    self.compile_expression(end)?;
+                    let slice_idx = self.import("vybe:array", "slice");
+                    self.emit_host_call(slice_idx, 3);
+                } else {
+                    self.compile_expression(obj)?;
+                    self.compile_expression(index)?;
+                    self.emit(Op::array_get);
+                }
             }
 
             // -- Invocation --
@@ -1833,6 +1843,10 @@ impl Compiler {
                 // This shouldn't normally be reached
             }
             BinaryOp::And | BinaryOp::Or => unreachable!(),
+            BinaryOp::Range => {
+                // Range is normally handled at the Index level (arr[start..end]).
+                // Standalone range: just leave both values on stack (drop left, keep right).
+            }
         }
         Ok(())
     }
@@ -2287,11 +2301,19 @@ impl Compiler {
         let tmp2_slot = self.define_local("__tmp_obj");
         self.emit_u16(Op::local_set, tmp2_slot);
         self.emit(Op::drop);
-        // Push method, then obj (this), then args
+        // Push method, then args. For static class calls, don't pass this.
         self.emit_u16(Op::local_get, tmp_slot);
-        self.emit_u16(Op::local_get, tmp2_slot);
-        for arg in args { self.compile_expression(arg)?; }
-        self.emit_u8(Op::call, (args.len() + 1) as u8); // +1 for this
+        let is_static_call = if let Expression::Identifier(ref obj_name) = *obj {
+            self.defined_classes.contains(&obj_name.to_lowercase())
+        } else { false };
+        if is_static_call {
+            for arg in args { self.compile_expression(arg)?; }
+            self.emit_u8(Op::call, args.len() as u8);
+        } else {
+            self.emit_u16(Op::local_get, tmp2_slot); // this
+            for arg in args { self.compile_expression(arg)?; }
+            self.emit_u8(Op::call, (args.len() + 1) as u8);
+        }
         self.patch_jump(done);
         Ok(())
     }

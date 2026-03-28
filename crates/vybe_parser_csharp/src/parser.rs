@@ -67,6 +67,9 @@ impl Parser {
                 | TokenKind::Class | TokenKind::Struct | TokenKind::Interface | TokenKind::Enum => {
                     members.push(self.parse_type_decl()?);
                 }
+                TokenKind::Identifier(ref s) if s == "record" => {
+                    members.push(self.parse_type_decl()?);
+                }
                 _ => {
                     // Top-level statement (C# 9+)
                     top_level_statements.push(self.parse_statement()?);
@@ -164,6 +167,90 @@ impl Parser {
                 let members = self.parse_class_body()?;
                 self.expect(TokenKind::RBrace)?;
                 Ok(TypeDecl::Interface(InterfaceDecl { name, members }))
+            }
+            TokenKind::Identifier(ref s) if s == "record" => {
+                self.advance();
+                let name = self.expect_ident()?;
+                // Record with positional parameters: record Person(string Name, int Age);
+                let mut members = Vec::new();
+                if self.check(TokenKind::LParen) {
+                    let params = self.parse_params()?;
+                    // Generate fields for each parameter
+                    for p in &params {
+                        members.push(MemberDecl::Field {
+                            name: p.name.clone(),
+                            type_name: p.type_name.clone(),
+                            initializer: None,
+                            is_static: false,
+                            access: Access::Public,
+                        });
+                    }
+                    // Generate constructor with unique param names to avoid
+                    // field/param name collision in the compiler
+                    let ctor_params: Vec<Parameter> = params.iter().map(|p| Parameter {
+                        name: format!("__r_{}", p.name),
+                        type_name: p.type_name.clone(),
+                        default: p.default.clone(),
+                        is_params: p.is_params,
+                        is_ref: p.is_ref,
+                        is_out: p.is_out,
+                    }).collect();
+                    let mut ctor_body = Vec::new();
+                    for (i, p) in params.iter().enumerate() {
+                        ctor_body.push(Statement::Assignment {
+                            target: Expression::MemberAccess(
+                                Box::new(Expression::This),
+                                p.name.clone(),
+                            ),
+                            value: Expression::Identifier(ctor_params[i].name.clone()),
+                        });
+                    }
+                    members.push(MemberDecl::Constructor(ConstructorDecl {
+                        params: ctor_params,
+                        body: ctor_body,
+                        base_args: None,
+                        access: Access::Public,
+                    }));
+                    // Generate ToString method
+                    // Build: "Name { field1 = val1, field2 = val2 }"
+                    let mut parts: Vec<StringPart> = Vec::new();
+                    parts.push(StringPart::Text(format!("{} {{ ", name)));
+                    for (i, p) in params.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(StringPart::Text(", ".into()));
+                        }
+                        parts.push(StringPart::Text(format!("{} = ", p.name)));
+                        parts.push(StringPart::Expr(Expression::MemberAccess(
+                            Box::new(Expression::This),
+                            p.name.clone(),
+                        )));
+                    }
+                    parts.push(StringPart::Text(" }".into()));
+                    members.push(MemberDecl::Method(MethodDecl {
+                        name: "ToString".into(),
+                        return_type: Some("string".into()),
+                        params: Vec::new(),
+                        body: vec![Statement::Return(Some(Expression::InterpolatedString(parts)))],
+                        is_static: false,
+                        is_override: true,
+                        is_virtual: false,
+                        is_abstract: false,
+                        is_async: false,
+                        access: Access::Public,
+                    }));
+                }
+                // Allow optional body { ... } or just ;
+                if self.eat(TokenKind::LBrace) {
+                    let extra = self.parse_class_body_named(&name)?;
+                    members.extend(extra);
+                    self.expect(TokenKind::RBrace)?;
+                } else {
+                    self.eat(TokenKind::Semicolon);
+                }
+                Ok(TypeDecl::Class(ClassDecl {
+                    name, is_partial, is_static, is_abstract,
+                    base_type: None, interfaces: Vec::new(), members,
+                }))
             }
             _ => Err(format!("Expected class/struct/enum/interface, got {:?} at line {}", self.current(), self.line())),
         }
@@ -717,8 +804,16 @@ impl Parser {
                 expr = Expression::NullConditionalAccess(Box::new(expr), member);
             } else if self.eat(TokenKind::LBracket) {
                 let index = self.parse_expression()?;
-                self.expect(TokenKind::RBracket)?;
-                expr = Expression::Index(Box::new(expr), Box::new(index));
+                // Check for range: arr[start..end]
+                if self.eat(TokenKind::DotDot) {
+                    let end = self.parse_expression()?;
+                    self.expect(TokenKind::RBracket)?;
+                    let range = Expression::Binary(BinaryOp::Range, Box::new(index), Box::new(end));
+                    expr = Expression::Index(Box::new(expr), Box::new(range));
+                } else {
+                    self.expect(TokenKind::RBracket)?;
+                    expr = Expression::Index(Box::new(expr), Box::new(index));
+                }
             } else if self.check(TokenKind::LParen) && self.is_callable(&expr) {
                 self.advance();
                 let args = self.parse_args()?;
@@ -816,11 +911,21 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
-                // Could be cast: (Type)expr or grouping: (expr)
-                // Try grouping
+                // Could be cast: (Type)expr, grouping: (expr), or tuple: (a, b, ...)
                 let expr = self.parse_expression()?;
-                self.expect(TokenKind::RParen)?;
-                Ok(expr)
+                if self.eat(TokenKind::Comma) {
+                    // Tuple literal: (a, b, ...)
+                    let mut elements = vec![expr];
+                    while !self.check(TokenKind::RParen) && !self.at_end() {
+                        elements.push(self.parse_expression()?);
+                        if !self.eat(TokenKind::Comma) { break; }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    Ok(Expression::ArrayInit(elements))
+                } else {
+                    self.expect(TokenKind::RParen)?;
+                    Ok(expr)
+                }
             }
             TokenKind::InterpolatedStart(ref text) => {
                 let mut parts: Vec<StringPart> = Vec::new();
@@ -873,6 +978,17 @@ impl Parser {
                 }
                 Ok(Expression::Identifier(name))
             }
+            // Type keywords as identifiers in expression context (int.Parse, string.IsNullOrEmpty)
+            TokenKind::Int => { self.advance(); Ok(Expression::Identifier("int".into())) }
+            TokenKind::String_ => { self.advance(); Ok(Expression::Identifier("string".into())) }
+            TokenKind::Double => { self.advance(); Ok(Expression::Identifier("double".into())) }
+            TokenKind::Float => { self.advance(); Ok(Expression::Identifier("float".into())) }
+            TokenKind::Bool => { self.advance(); Ok(Expression::Identifier("bool".into())) }
+            TokenKind::Long => { self.advance(); Ok(Expression::Identifier("long".into())) }
+            TokenKind::Byte => { self.advance(); Ok(Expression::Identifier("byte".into())) }
+            TokenKind::Object => { self.advance(); Ok(Expression::Identifier("object".into())) }
+            // Cast: (int)expr, (string)expr
+            TokenKind::Void => { self.advance(); Ok(Expression::Identifier("void".into())) }
             _ => Err(format!("Unexpected token {:?} at line {}", self.current(), self.line())),
         }
     }

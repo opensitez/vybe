@@ -154,6 +154,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             let start = pos;
             let mut is_float = false;
             while pos < chars.len() && (chars[pos].is_ascii_digit() || chars[pos] == '.' || chars[pos] == '_') {
+                // Stop at '..' (range operator)
+                if chars[pos] == '.' && pos + 1 < chars.len() && chars[pos + 1] == '.' {
+                    break;
+                }
                 if chars[pos] == '.' { is_float = true; }
                 pos += 1;
             }
@@ -327,7 +331,14 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                     }
                 } else { TokenKind::Question }
             }
-            '.' => TokenKind::Dot,
+            '.' => {
+                if pos + 1 < chars.len() && chars[pos + 1] == '.' {
+                    pos += 1;
+                    TokenKind::DotDot
+                } else {
+                    TokenKind::Dot
+                }
+            }
             ',' => TokenKind::Comma,
             ':' => TokenKind::Colon,
             ';' => TokenKind::Semicolon,

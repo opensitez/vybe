@@ -90,6 +90,27 @@ fn register_guid_ns(vm: &mut VM) {
 }
 
 fn register_primitives_ns(vm: &mut VM) {
+    // Primitive type namespaces: int.Parse, string.IsNullOrEmpty, etc.
+    let int_ns = ensure_namespace(vm, &["int"]);
+    set_prop(&int_ns, "parse", host_fn_ref(vm, "vybe:convert", "cint"));
+    set_prop(&int_ns, "tryparse", host_fn_ref(vm, "vybe:convert", "cint"));
+    set_prop(&int_ns, "maxvalue", Value::F64(i32::MAX as f64));
+    set_prop(&int_ns, "minvalue", Value::F64(i32::MIN as f64));
+
+    let string_ns = ensure_namespace(vm, &["string"]);
+    set_prop(&string_ns, "isnullorempty", host_fn_ref(vm, "vybe:string", "isNullOrEmpty"));
+    set_prop(&string_ns, "isnullorwhitespace", host_fn_ref(vm, "vybe:string", "isNullOrEmpty"));
+    set_prop(&string_ns, "join", host_fn_ref(vm, "vybe:string", "join"));
+    set_prop(&string_ns, "format", host_fn_ref(vm, "vybe:string", "format"));
+
+    let double_ns = ensure_namespace(vm, &["double"]);
+    set_prop(&double_ns, "parse", host_fn_ref(vm, "vybe:convert", "cdbl"));
+    set_prop(&double_ns, "nan", Value::F64(f64::NAN));
+    set_prop(&double_ns, "positiveinfinity", Value::F64(f64::INFINITY));
+
+    let bool_ns = ensure_namespace(vm, &["bool"]);
+    set_prop(&bool_ns, "parse", host_fn_ref(vm, "vybe:convert", "cbool"));
+
     // System.Double
     let dbl = ensure_namespace(vm, &["System", "Double"]);
     set_prop(&dbl, "parse", host_fn_ref(vm, "vybe:types", "doubleParse"));
