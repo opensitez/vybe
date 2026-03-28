@@ -74,7 +74,7 @@ fn test_a02_method_call_on_class_instance() {
 // A3. Chained method calls
 // Known bug: `this` in object literal methods resolves to null, so chained calls fail.
 #[test]
-#[ignore]
+#[ignore = "known bug"]
 fn test_a03_chained_method_calls() {
     let code = r#"
         class Builder {
@@ -153,7 +153,7 @@ fn test_a07_closure_mutation() {
 // Known bug: Arrow functions in class methods do not capture `this` from the enclosing method.
 // Expected: 3, Actual: 0 (this.ticks is not incremented because `this` is not bound in the arrow).
 #[test]
-#[ignore]
+#[ignore = "known bug"]
 fn test_a08_arrow_in_method_captures_this() {
     let code = r#"
         class Timer {
@@ -224,7 +224,7 @@ fn test_a11_static_method_on_class() {
 // Known bug: fn.call(thisArg, ...) does not bind `this` to thisArg.
 // Expected: "Hello Alice", Actual: "Hello null" (this.name resolves to null).
 #[test]
-#[ignore]
+#[ignore = "known bug"]
 fn test_a12_function_call_with_this_arg() {
     let code = r#"
         function greet(greeting) {
@@ -317,7 +317,7 @@ fn test_b18_object_keys_values_entries() {
 // Known bug: Object.assign with 3+ args only merges the first source.
 // Expected: "1 2 3", Actual: "1 null null" (second and third sources ignored).
 #[test]
-#[ignore]
+#[ignore = "known bug"]
 fn test_b19_object_assign_merges() {
     let code = r#"
         let a = { x: 1 };
@@ -540,7 +540,7 @@ fn test_d36_method_override() {
 // Known bug: `static count = 0` field declarations cause "Unresolved import" error at runtime.
 // The compiler emits the field as a module import rather than a class static property.
 #[test]
-#[ignore]
+#[ignore = "known bug"]
 fn test_d37_static_methods() {
     let code = r#"
         class Counter {
@@ -597,7 +597,7 @@ fn test_d40_setter_dispatch() {
 // D41. Class expression (anonymous)
 // Known limitation: class expressions are not supported in the parser/compiler.
 #[test]
-#[ignore] // Parser does not support class expressions (only class declarations).
+#[ignore = "known bug"]
 fn test_d41_class_expression() {
     let code = r#"
         let MyClass = class {
@@ -685,7 +685,7 @@ fn test_e45_invoke_with_multiple_args() {
 // Known bug: `let obj = { ... }` does not store into globals (only `var` or top-level declarations
 // that use global_set). The VM globals map does not contain `obj` after run.
 #[test]
-#[ignore]
+#[ignore = "known bug"]
 fn test_e46_invoke_method_on_global_object() {
     let code = r#"
         let obj = {
@@ -745,7 +745,7 @@ fn test_e48_multiple_invokes_preserve_state() {
 // E49. invoke class method with this
 // Known limitation: invoking a class method extracted from an instance does not bind `this`.
 #[test]
-#[ignore] // Detached method invocation loses `this` binding.
+#[ignore = "known bug"]
 fn test_e49_invoke_class_method_with_this() {
     let code = r#"
         class Adder {
@@ -813,7 +813,7 @@ fn test_e51_invoke_after_class_definition() {
 // Known bug: `let` inside a block does not create a new scope — the inner `x` shadows the outer
 // for the rest of the function. Expected: ["inner", "outer"], Actual: ["inner", "inner"].
 #[test]
-#[ignore]
+#[ignore = "known bug"]
 fn test_f52_block_scope_let_doesnt_leak() {
     let code = r#"
         let x = "outer";
@@ -831,7 +831,7 @@ fn test_f52_block_scope_let_doesnt_leak() {
 // Known bug: `var` inside a block within a function is not hoisted to function scope.
 // Expected: 42, Actual: "undefined" (var is treated like let).
 #[test]
-#[ignore]
+#[ignore = "known bug"]
 fn test_f53_var_hoisting() {
     let code = r#"
         function test() {
@@ -849,7 +849,7 @@ fn test_f53_var_hoisting() {
 // Known bug: `let` in a for-loop does not create a fresh binding per iteration.
 // All closures capture the same variable. Expected: "0 1 2 3 4", Actual: "5 5 5 5 5".
 #[test]
-#[ignore]
+#[ignore = "known bug"]
 fn test_f54_closure_over_loop_let() {
     let code = r#"
         let fns = [];

@@ -249,6 +249,22 @@ impl Compiler {
         self.class_methods = saved_methods;
         self.emit_ref_func(idx, &upvalues);
 
+        // If Inherits, copy parent's Shared methods to this constructor
+        if let Some(ref parent_type) = class.inherits {
+            let parent_name = match parent_type {
+                VBType::Custom(pn) => pn.to_lowercase(),
+                _ => String::new(),
+            };
+            if !parent_name.is_empty() && !parent_name.starts_with("system.") {
+                self.emit(Op::dup);
+                let parent_idx = self.add_string_constant(&parent_name);
+                self.emit_u16(Op::global_get, parent_idx);
+                let assign_idx = self.import("vybe:object", "assign");
+                self.emit_host_call(assign_idx, 2);
+                self.emit(Op::drop);
+            }
+        }
+
         // --- Attach Shared members to the constructor function itself ---
         for method in &shared_methods {
             let method_name = match method {

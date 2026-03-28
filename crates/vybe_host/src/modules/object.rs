@@ -115,8 +115,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    // a instanceof B → check if B.name is in a's type ancestry
-    // Walk a's constructor chain (__super on instance → constructor, then __parent on constructors)
+    // a instanceof B → check if B.name is in a.__types array
     vm.register_host_fn("vybe:object", "instanceOf", Box::new(|args: &[Value]| {
         let target_name = if let Some(Value::Object(ctor)) = args.get(1) {
             ctor.borrow().properties.get("name").map(|v| format!("{}", v)).unwrap_or_default()
@@ -127,24 +126,16 @@ pub fn register(vm: &mut VM) {
 
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
-            // Direct __type check
-            if let Some(t) = o.properties.get("__type") {
-                if format!("{}", t) == target_name { return Value::Bool(true); }
+            // Check __types array
+            if let Some(Value::Object(types)) = o.properties.get("__types") {
+                let t = types.borrow();
+                if let ObjectKind::Array(ref elems) = t.kind {
+                    return Value::Bool(elems.iter().any(|e| format!("{}", e) == target_name));
+                }
             }
-            // Walk the __super chain on the instance (each __super is a parent constructor)
-            let mut current = o.properties.get("__super").cloned();
-            drop(o);
-            for _ in 0..20 {
-                let next = if let Some(Value::Object(ref sup)) = current {
-                    let s = sup.borrow();
-                    if let Some(n) = s.properties.get("name") {
-                        if format!("{}", n) == target_name { return Value::Bool(true); }
-                    }
-                    s.properties.get("__parent").cloned()
-                } else {
-                    break;
-                };
-                current = next;
+            // Fallback: check __type directly
+            if let Some(t) = o.properties.get("__type") {
+                return Value::Bool(format!("{}", t) == target_name);
             }
         }
         Value::Bool(false)

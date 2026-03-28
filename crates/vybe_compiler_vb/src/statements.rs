@@ -46,24 +46,32 @@ impl Compiler {
                 let idx = self.add_string_constant(&member_lower);
                 self.emit_u16(Op::struct_set, idx);
                 self.emit(Op::drop);
-                // If assigning to Me.property inside a class, also emit setProperty side effect
-                // for the form runner. (controlSetProperty is always available as no-op in non-GUI)
-                if matches!(*object, Expression::Me) {
-                    if let Some(me_slot) = self.current_scope().resolve_local("me") {
-                        self.emit_u16(Op::local_get, me_slot);
-                        let cap = {
-                            let mut c = member_lower.chars();
-                            match c.next() {
-                                None => String::new(),
-                                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                            }
-                        };
-                        self.emit_constant(Value::String(Rc::from(cap.as_str())));
-                        self.compile_expression(value)?;
-                        let set_idx = self.import("vybe:gui", "controlSetProperty");
-                        self.emit_host_call(set_idx, 3);
-                        self.emit(Op::drop);
-                    }
+                // Emit controlSetProperty side effect for Me.property or classField.property
+                // inside a class. (controlSetProperty is always available as no-op in non-GUI)
+                let emit_side_effect = if matches!(*object, Expression::Me) {
+                    self.current_scope().resolve_local("me").is_some()
+                } else if let Expression::Variable(ref name) = *object {
+                    // If the variable is a class field, emit side effect
+                    self.class_fields.contains(&name.as_str().to_lowercase())
+                        && self.current_scope().resolve_local("me").is_some()
+                } else {
+                    false
+                };
+                if emit_side_effect {
+                    // Push the object again for the host call
+                    self.compile_expression(object)?;
+                    let cap = {
+                        let mut c = member_lower.chars();
+                        match c.next() {
+                            None => String::new(),
+                            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                        }
+                    };
+                    self.emit_constant(Value::String(Rc::from(cap.as_str())));
+                    self.compile_expression(value)?;
+                    let set_idx = self.import("vybe:gui", "controlSetProperty");
+                    self.emit_host_call(set_idx, 3);
+                    self.emit(Op::drop);
                 }
             }
             Statement::ArrayAssignment { array, indices, value } => {

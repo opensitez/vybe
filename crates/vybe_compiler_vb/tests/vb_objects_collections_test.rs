@@ -406,7 +406,7 @@ Console.WriteLine(dict.Item("key"))
 }
 
 #[test]
-#[ignore = "known bug: dict.Keys() result not iterable via For Each"]
+#[ignore = "known bug"]
 fn c26_dictionary_iterate_keys() {
     let out = run_vb(r#"
 Dim dict As New Dictionary(Of String, String)
@@ -424,7 +424,7 @@ Next
 }
 
 #[test]
-#[ignore = "known bug: dict.Values() result not iterable via For Each"]
+#[ignore = "known bug"]
 fn c27_dictionary_iterate_values() {
     let out = run_vb(r#"
 Dim dict As New Dictionary(Of String, Integer)
@@ -441,7 +441,7 @@ Console.WriteLine(total)
 }
 
 #[test]
-#[ignore = "known bug: dict.Item() return value not usable in arithmetic expression (NaN)"]
+#[ignore = "known bug"]
 fn c28_dictionary_integer_values() {
     let out = run_vb(r#"
 Dim dict As New Dictionary(Of String, Integer)
@@ -560,7 +560,7 @@ Console.WriteLine(arr(3))
 }
 
 #[test]
-#[ignore = "known bug: UBound returns array length instead of upper bound (off by one)"]
+#[ignore = "known bug"]
 fn e36_array_ubound() {
     let out = run_vb(r#"
 Dim arr(5) As Integer
@@ -570,7 +570,7 @@ Console.WriteLine(UBound(arr))
 }
 
 #[test]
-#[ignore = "known bug: For Each on array with null slots iterates all slots including nulls"]
+#[ignore = "known bug"]
 fn e37_array_for_each() {
     let out = run_vb(r#"
 Dim arr(3) As Integer
@@ -585,7 +585,7 @@ Next
 }
 
 #[test]
-#[ignore = "known bug: ReDim without Preserve doesn't clear to default values"]
+#[ignore = "known bug"]
 fn e38_array_redim() {
     let out = run_vb(r#"
 Dim arr(3) As Integer
@@ -658,7 +658,7 @@ Console.WriteLine(arr(0))
 }
 
 #[test]
-#[ignore = "known bug: Dim result() As Integer = FnCall() — function call in array initializer not supported"]
+#[ignore = "known bug"]
 fn e43_array_returned_from_function() {
     let out = run_vb(r#"
 Function MakeArr() As Integer()
@@ -677,7 +677,7 @@ Console.WriteLine(result(2))
 }
 
 #[test]
-#[ignore = "known bug: nested array indexing arr(0)(1) not supported"]
+#[ignore = "known bug"]
 fn e44_array_of_arrays() {
     let out = run_vb(r#"
 Dim outer(2) As Object
@@ -835,7 +835,7 @@ Console.WriteLine(d.Value)
 }
 
 #[test]
-#[ignore = "known bug: method call on object retrieved from List.Item() fails (null is not callable)"]
+#[ignore = "known bug"]
 fn f52_object_in_collection_method_called() {
     let out = run_vb(r#"
 Class Calc

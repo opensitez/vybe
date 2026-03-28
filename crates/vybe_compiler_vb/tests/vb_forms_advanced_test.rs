@@ -386,7 +386,6 @@ Console.WriteLine(f.GetValue())
 
 /// C12. Panel with Button inside -- Controls.Add on Panel, not Form.
 #[test]
-#[ignore = "known bug: Panel.Controls.Add does not set parent_name on AddControl side effect"]
 fn c12_panel_with_button_inside() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -409,7 +408,6 @@ Dim f As New Form1()
 
 /// C13. GroupBox with RadioButtons inside.
 #[test]
-#[ignore = "known bug: GroupBox.Controls.Add does not set parent_name"]
 fn c13_groupbox_with_radiobuttons() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -439,7 +437,6 @@ Dim f As New Form1()
 
 /// C14. Panel position + child control position (should be relative).
 #[test]
-#[ignore = "known bug: nested container child positions not relative"]
 fn c14_panel_child_position() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -477,7 +474,6 @@ Dim f As New Form1()
 
 /// C15. Multiple panels each with own controls.
 #[test]
-#[ignore = "known bug: multiple container.Controls.Add chains not fully supported"]
 fn c15_multiple_panels_with_controls() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -505,7 +501,6 @@ Dim f As New Form1()
 
 /// C16. Nested: Panel inside GroupBox inside Form.
 #[test]
-#[ignore = "known bug: deeply nested container.Controls.Add not supported"]
 fn c16_nested_panel_in_groupbox() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -536,7 +531,6 @@ Dim f As New Form1()
 
 /// D17. Handler creates New Button(), sets properties, adds to form.
 #[test]
-#[ignore = "known bug: dynamic New Button() inside method body not emitting AddControl"]
 fn d17_handler_creates_button() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -559,7 +553,6 @@ f.AddButton()
 
 /// D18. Handler creates control based on runtime condition.
 #[test]
-#[ignore = "known bug: conditional New inside method not emitting AddControl"]
 fn d18_handler_conditional_create() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -587,7 +580,6 @@ f.AddControl(True)
 
 /// D19. Handler creates multiple controls in loop.
 #[test]
-#[ignore = "known bug: New control in For loop inside method not emitting AddControl"]
 fn d19_handler_creates_controls_in_loop() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -612,7 +604,6 @@ f.AddButtons(3)
 
 /// D20. Handler creates TextBox and wires it with AddHandler.
 #[test]
-#[ignore = "known bug: AddHandler on dynamically created control not registering event"]
 fn d20_handler_creates_and_wires() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -772,7 +763,6 @@ Dim f As New Form1()
 
 /// F27. Timer with Interval property set.
 #[test]
-#[ignore = "known bug: Timer.Interval property assignment not emitting PropertyChange"]
 fn f27_timer_interval_property() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -796,7 +786,6 @@ Dim f As New Form1()
 
 /// F28. Timer.Tick Handles clause.
 #[test]
-#[ignore = "known bug: Handles tmr.Tick not registering Tick event"]
 fn f28_timer_tick_handles() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -822,7 +811,6 @@ Dim f As New Form1()
 
 /// G29. ComboBox.Items.Add -- adds items.
 #[test]
-#[ignore = "known bug: ComboBox.Items.Add not compiled as host call"]
 fn g29_combobox_items_add() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -844,7 +832,6 @@ Dim f As New Form1()
 
 /// G30. ListBox.Items.Add -- adds items.
 #[test]
-#[ignore = "known bug: ListBox.Items.Add not compiled as host call"]
 fn g30_listbox_items_add() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -886,7 +873,6 @@ Dim f As New Form1()
 
 /// G32. ListBox with multiple items added.
 #[test]
-#[ignore = "known bug: ListBox.Items.Add chain not compiled"]
 fn g32_listbox_multiple_items() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -914,7 +900,6 @@ Dim f As New Form1()
 
 /// H33. Control with Anchor property set.
 #[test]
-#[ignore = "known bug: Anchor enum property not emitting PropertyChange"]
 fn h33_control_anchor_property() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -940,7 +925,6 @@ Dim f As New Form1()
 
 /// H34. Control with Dock property set.
 #[test]
-#[ignore = "known bug: Dock enum property not emitting PropertyChange"]
 fn h34_control_dock_property() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -960,7 +944,6 @@ Dim f As New Form1()
 
 /// H35. Multiple controls with different Anchor values.
 #[test]
-#[ignore = "known bug: AnchorStyles enum values not resolved"]
 fn h35_multiple_anchors() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -988,7 +971,6 @@ Dim f As New Form1()
 
 /// I36. Handler receives sender parameter -- can reference it.
 #[test]
-#[ignore = "known bug: sender parameter in handler body not accessible as typed object"]
 fn i36_handler_sender_parameter() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -1010,7 +992,6 @@ Dim f As New Form1()
 
 /// I37. Handler receives e parameter.
 #[test]
-#[ignore = "known bug: e parameter in handler body not accessible"]
 fn i37_handler_e_parameter() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -1201,7 +1182,6 @@ Dim f As New Form1()
 
 /// K45. TabControl with TabPages.
 #[test]
-#[ignore = "known bug: TabControl.TabPages.Add not compiled as host call"]
 fn k45_tabcontrol_with_tabpages() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms

@@ -378,7 +378,7 @@ Console.WriteLine(Echo("a&b"))
 /// on it inside the function, it resolves to null because the parameter binding
 /// doesn't propagate the object's method table correctly.
 #[test]
-#[ignore = "known bug: calling method on object passed as function argument returns null"]
+#[ignore = "known bug"]
 fn b16_passing_object_as_argument() {
     let out = run_vb(r#"
 Public Class Item
@@ -508,7 +508,6 @@ Console.WriteLine(String.IsNullOrEmpty("hello"))
 /// KNOWN BUG: Convert.ToString/ToInt32 triggers "Unresolved import: vybe:math floor"
 /// because the namespace resolution path incorrectly routes through math intrinsics.
 #[test]
-#[ignore = "known bug: Convert.ToString triggers unresolved import for vybe:math"]
 fn c25_convert_tostring_toint32() {
     let out = run_vb(r#"
 Console.WriteLine(Convert.ToString(42))
@@ -521,7 +520,6 @@ Console.WriteLine(Convert.ToInt32("123"))
 /// KNOWN BUG: System.Math.Floor (4-part dotted name) triggers "Unresolved import: vybe:math floor"
 /// — the fully qualified path doesn't resolve to the WASM intrinsic correctly.
 #[test]
-#[ignore = "known bug: fully qualified System.Math.Floor triggers unresolved import"]
 fn c26_system_math_floor_fully_qualified() {
     let out = run_vb(r#"
 Console.WriteLine(System.Math.Floor(9.9))
@@ -1105,7 +1103,6 @@ Console.WriteLine(p.second)
 /// KNOWN BUG: Array indexed assignment fails with "null is not callable"
 /// (same root cause as b74_array_operations).
 #[test]
-#[ignore = "known bug: array indexed assignment fails"]
 fn f49_object_in_array_access_via_index() {
     let out = run_vb(r#"
 Public Class Item
@@ -1155,7 +1152,7 @@ Console.WriteLine(b.GetCount())
 /// KNOWN BUG: The parser does not support Property with explicit Get/Set blocks.
 /// It only supports auto-property syntax (Public Property Name As String).
 #[test]
-#[ignore = "known bug: parser does not support Property with Get/Set blocks"]
+#[ignore = "known bug"]
 fn f51_property_get_set() {
     let out = run_vb(r#"
 Public Class Person
@@ -1183,7 +1180,7 @@ Console.WriteLine(p.Name)
 /// F52. Property with backing field pattern
 /// KNOWN BUG: Same as F51 — parser does not support Property with Get/Set blocks.
 #[test]
-#[ignore = "known bug: parser does not support Property with Get/Set blocks"]
+#[ignore = "known bug"]
 fn f52_property_with_backing_field() {
     let out = run_vb(r#"
 Public Class Temperature
@@ -1381,7 +1378,6 @@ Console.WriteLine(CStr(True))
 /// KNOWN BUG: CInt("42") returns NaN instead of 42 — string-to-integer conversion
 /// doesn't parse the string correctly, treating it as a direct numeric cast.
 #[test]
-#[ignore = "known bug: CInt of string returns NaN instead of parsing"]
 fn h61_cint_cdbl_conversions() {
     let out = run_vb(r#"
 Console.WriteLine(CInt("42"))
@@ -1465,7 +1461,7 @@ Console.WriteLine(100 \ 7)
 /// with "null is not callable" because the field's method table isn't properly
 /// resolved when calling a.GetVal() inside B's method.
 #[test]
-#[ignore = "known bug: method call on field object fails with null is not callable"]
+#[ignore = "known bug"]
 fn b67_cross_class_method_chain() {
     let out = run_vb(r#"
 Public Class A
@@ -1599,7 +1595,6 @@ Console.WriteLine(2 ^ 10)
 /// KNOWN BUG: Dim arr(4) As Integer with indexed assignment arr(i) = value
 /// fails with "null is not callable" — array index assignment syntax issue.
 #[test]
-#[ignore = "known bug: array indexed assignment fails with null is not callable"]
 fn b74_array_operations() {
     let out = run_vb(r#"
 Dim arr(4) As Integer

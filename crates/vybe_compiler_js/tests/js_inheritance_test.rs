@@ -222,7 +222,6 @@ fn test_09_derived_adds_method_base_still_works() {
 // 10. instanceof through chain (c instanceof A)
 // =============================================================================
 #[test]
-#[ignore = "known bug: instanceof only checks direct __type, not prototype chain"]
 fn test_10_instanceof_through_chain() {
     let code = r#"
         class A {}
@@ -272,7 +271,6 @@ fn test_12_static_method_on_derived() {
 // 13. Static inherited from base (Derived.staticMethod)
 // =============================================================================
 #[test]
-#[ignore = "known bug: static methods are not inherited — only set on declaring class constructor"]
 fn test_13_static_inherited_from_base() {
     let code = r#"
         class Base {
@@ -478,7 +476,7 @@ fn test_23_factory_static_create() {
 // 24. Method returns this (fluent API)
 // =============================================================================
 #[test]
-#[ignore = "known bug: chained method calls on returned this fail — callMethod dispatch loses context"]
+#[ignore = "known bug: chained method calls re-evaluate object instead of using return value"]
 fn test_24_fluent_api_returns_this() {
     let code = r#"
         class Builder {
@@ -499,7 +497,6 @@ fn test_24_fluent_api_returns_this() {
 // 25. Base class with default param values
 // =============================================================================
 #[test]
-#[ignore = "known bug: default parameter values in constructor resolve to null"]
 fn test_25_default_param_values() {
     let code = r#"
         class Config {

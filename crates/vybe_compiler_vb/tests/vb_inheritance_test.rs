@@ -480,7 +480,6 @@ Console.WriteLine(MathHelper.Double(5))
 // 18. Shared method inherited by derived
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "known bug: shared methods are attached to the constructor function, not inherited by derived class constructors"]
 fn t18_shared_method_inherited_by_derived() {
     let out = run_vb(r#"
 Class Base

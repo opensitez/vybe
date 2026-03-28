@@ -2309,9 +2309,17 @@ impl Compiler {
 
         self.compile_class_constructor_full(&ctor, &regular_methods, &getters, &setters, &class.super_class)?;
         // Constructor closure is now on the stack.
-        // Attach static methods and properties to the constructor object.
+        // If extends, copy parent's static methods to this constructor via Object.assign
+        if let Some(ref super_expr) = class.super_class {
+            self.emit(Op::dup);
+            self.compile_expression(super_expr)?;
+            let idx = self.import("vybe:object", "assign");
+            self.emit_host_call(idx, 2);
+            self.emit(Op::drop);
+        }
+        // Attach own static methods and properties (overwrite inherited if same name)
         for (method_name, method_fn) in &static_methods {
-            self.emit(Op::dup); // keep constructor on stack
+            self.emit(Op::dup);
             self.compile_function(method_fn)?;
             let prop_idx = self.add_string_constant(method_name);
             self.emit_u16(Op::struct_set, prop_idx);
@@ -2355,6 +2363,28 @@ impl Compiler {
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;
         self.scopes.push(scope);
+
+        // Default parameter initialization
+        for param in &ctor.params {
+            if let Some(ref default_expr) = param.default {
+                let slot = self.current_scope().resolve_local(&param.name).unwrap();
+                self.emit_u16(Op::local_get, slot);
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_null);
+                let is_null = self.emit_jump(Op::br_if_true);
+                self.emit(Op::undefined);
+                self.emit(Op::eq);
+                let is_undef = self.emit_jump(Op::br_if_true);
+                let skip = self.emit_jump(Op::br);
+                self.patch_jump(is_null);
+                self.emit(Op::drop);
+                self.patch_jump(is_undef);
+                self.compile_expression(default_expr)?;
+                self.emit_u16(Op::local_set, slot);
+                self.emit(Op::drop);
+                self.patch_jump(skip);
+            }
+        }
 
         // If extends: set this.__super = parent constructor
         if let Some(super_expr) = super_class {
@@ -2436,6 +2466,46 @@ impl Compiler {
 
         // Compile remaining constructor body after methods are attached
         for stmt in &rest_stmts { self.compile_statement(stmt)?; }
+
+        // Push class name to this.__types array for instanceof chain support
+        // After super() + constructor body, this.__types has parent types. Append ours.
+        {
+            let types_idx = self.add_string_constant("__types");
+            self.emit_u16(Op::local_get, 1); // this
+            self.emit_u16(Op::struct_get, types_idx); // this.__types (array or null)
+            // If null/undefined, create empty array
+            self.emit(Op::dup);
+            self.emit(Op::ref_is_null);
+            let has_types = self.emit_jump(Op::br_if_false);
+            self.emit(Op::drop); // drop null
+            self.emit_u16(Op::array_new, 0); // create []
+            self.patch_jump(has_types);
+            // Push class name
+            self.emit_constant(Value::String(Rc::from(ctor.name.as_deref().unwrap_or("<class>"))));
+            self.emit(Op::array_push);
+            // Store back
+            self.emit_u16(Op::local_get, 1);
+            // swap: [array, this] → need [this, array] for struct_set
+            let tmp = self.define_local("__types_tmp");
+            self.emit_u16(Op::local_set, tmp); self.emit(Op::drop); // save this
+            // stack: [array], need [this, array]
+            // Actually array is top, this is in tmp
+            self.emit_u16(Op::local_get, tmp); // push this
+            // swap positions: emit as struct_set expects [obj, val]
+            // But array is below this now... Let me restructure
+            // stack after local_get tmp: [array, this]
+            // struct_set pops val then obj: val=this, obj=array — WRONG
+            // Need: [this, array] for struct_set("__types")
+            // Use another temp
+            let arr_tmp = self.define_local("__arr_tmp");
+            self.emit(Op::drop); // drop this that we just pushed
+            // stack: [array]
+            self.emit_u16(Op::local_set, arr_tmp); self.emit(Op::drop); // save array
+            self.emit_u16(Op::local_get, 1); // this
+            self.emit_u16(Op::local_get, arr_tmp); // array
+            self.emit_u16(Op::struct_set, types_idx);
+            self.emit(Op::drop);
+        }
 
         self.emit_u16(Op::local_get, 1); // return this
         self.emit(Op::r#return);

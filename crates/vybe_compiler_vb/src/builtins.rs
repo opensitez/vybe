@@ -208,23 +208,18 @@ impl Compiler {
             "rset"       => Some(("vybe:string", "rset")),
             "filter"     => Some(("vybe:string", "filter")),
             // Math functions
-            "abs"   => Some(("vybe:math", "abs")),
-            "sqr" | "sqrt" => Some(("vybe:math", "sqrt")),
-            "fix"   => Some(("vybe:math", "fix")),
-            "sgn"   => Some(("vybe:math", "sgn")),
-            "rnd"   => Some(("vybe:math", "rnd")),
-            "randomize" => Some(("vybe:math", "randomize")),
-            "int"   => Some(("vybe:math", "int")),
+            // abs, sqr, fix, int handled as intrinsic opcodes above
+            "sgn"   => Some(("vybe:math", "sign")),
+            "rnd"   => Some(("vybe:math", "random")),
+            "randomize" => Some(("vybe:math", "random")),
             "log"   => Some(("vybe:math", "log")),
             "exp"   => Some(("vybe:math", "exp")),
             "sin"   => Some(("vybe:math", "sin")),
             "cos"   => Some(("vybe:math", "cos")),
             "tan"   => Some(("vybe:math", "tan")),
             "atn" | "atan" => Some(("vybe:math", "atan")),
-            "round" => Some(("vybe:math", "round")),
-            "math.floor"   => Some(("vybe:math", "floor")),
-            "math.abs"     => Some(("vybe:math", "abs")),
-            "math.sqrt"    => Some(("vybe:math", "sqrt")),
+            // round handled as intrinsic opcode (f64_nearest)
+            // math.floor, math.abs, math.sqrt handled as intrinsic opcodes
             // Date/Time functions
             "now"          => Some(("wasi:clocks", "vbNow")),
             "date" | "today" => Some(("wasi:clocks", "vbDate")),
@@ -380,24 +375,17 @@ impl Compiler {
             "console.writeline" | "console.write" => Some(("wasi:cli", "log")),
             "console.error.writeline" | "console.error" => Some(("wasi:cli", "error")),
             // Math
-            "math.floor"    => Some(("vybe:math", "floor")),
-            "math.ceiling" | "math.ceil" => Some(("vybe:math", "ceil")),
-            "math.abs"      => Some(("vybe:math", "abs")),
-            "math.sqrt"     => Some(("vybe:math", "sqrt")),
+            // math.floor/ceil/abs/sqrt/trunc/round/min/max handled as intrinsic opcodes
             "math.pow"      => Some(("vybe:math", "pow")),
-            "math.min"      => Some(("vybe:math", "min")),
-            "math.max"      => Some(("vybe:math", "max")),
-            "math.round"    => Some(("vybe:math", "round")),
             "math.sin"      => Some(("vybe:math", "sin")),
             "math.cos"      => Some(("vybe:math", "cos")),
             "math.tan"      => Some(("vybe:math", "tan")),
             "math.log"      => Some(("vybe:math", "log")),
             "math.sign"     => Some(("vybe:math", "sign")),
-            "math.truncate" => Some(("vybe:math", "trunc")),
             // String
             "string.isnullorempty" => Some(("vybe:string", "length")),
             // Convert
-            "convert.toint32" | "convert.toint" => Some(("vybe:math", "floor")),
+            // convert.toint32 handled as intrinsic opcode (i32_from_f64)
             "convert.todouble"  => Some(("vybe:convert", "parseFloat")),
             "convert.tostring"  => Some(("vybe:convert", "toString")),
             "convert.todatetime" => Some(("vybe:types", "dateTimeNow")),
@@ -461,13 +449,15 @@ impl Compiler {
             // Direct single-opcode intrinsics
             let op = match fname {
                 // Math functions → f64 opcodes
-                "math.abs" | "abs" => Some(Op::f64_abs),
-                "math.floor" | "fix" | "int" => Some(Op::f64_floor),
-                "math.ceiling" | "math.ceil" => Some(Op::f64_ceil),
-                "math.sqrt" | "sqr" => Some(Op::f64_sqrt),
-                "math.truncate" => Some(Op::f64_trunc),
-                "math.round" => Some(Op::f64_nearest),
-                // Type conversions
+                "math.abs" | "abs" | "system.math.abs" => Some(Op::f64_abs),
+                "math.floor" | "fix" | "int" | "system.math.floor" => Some(Op::f64_floor),
+                "math.ceiling" | "math.ceil" | "system.math.ceiling" | "system.math.ceil" => Some(Op::f64_ceil),
+                "math.sqrt" | "sqr" | "system.math.sqrt" => Some(Op::f64_sqrt),
+                "math.truncate" | "system.math.truncate" => Some(Op::f64_trunc),
+                "math.round" | "round" | "system.math.round" => Some(Op::f64_nearest),
+                // Type conversions → opcodes
+                "convert.toint32" | "convert.toint" | "cint" => Some(Op::i32_from_f64),
+                "convert.todouble" | "cdbl" => Some(Op::f64_from_i32),
                 "cbool" => Some(Op::dyn_to_bool),
                 // Type checks
                 "isnothing" | "isnull" => Some(Op::ref_is_null),
@@ -542,8 +532,8 @@ impl Compiler {
         // Two-argument intrinsics
         if args.len() == 2 {
             let op = match fname {
-                "math.min" => Some(Op::f64_min),
-                "math.max" => Some(Op::f64_max),
+                "math.min" | "system.math.min" => Some(Op::f64_min),
+                "math.max" | "system.math.max" => Some(Op::f64_max),
                 "split" => Some(Op::str_split),
                 "join" => Some(Op::array_join),
                 "string" | "string$" => Some(Op::str_repeat),

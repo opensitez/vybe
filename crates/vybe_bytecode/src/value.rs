@@ -42,6 +42,7 @@ impl Value {
             Value::I64(n) => *n as i32,
             Value::F64(n) => *n as i32,
             Value::Bool(b) => if *b { 1 } else { 0 },
+            Value::String(s) => s.trim().parse::<f64>().map(|f| f as i32).unwrap_or(0),
             _ => 0,
         }
     }

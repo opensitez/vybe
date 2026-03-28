@@ -1621,7 +1621,6 @@ Dim f As New Form1()
 
 /// G06. Setting form BackColor as string.
 #[test]
-#[ignore = "known bug: Me.BackColor on form does not emit PropertyChange side effect"]
 fn g06_form_backcolor_string() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -1635,7 +1634,7 @@ Dim f As New Form1()
     let effects = drain(&queue);
     let has_backcolor = effects.iter().any(|e| {
         if let vybe_host::SideEffect::PropertyChange { property, .. } = e {
-            property == "BackColor"
+            property == "Backcolor" || property == "BackColor"
         } else { false }
     });
     assert!(has_backcolor, "Expected BackColor property, got {:?}", effects);
