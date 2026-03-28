@@ -369,9 +369,69 @@ impl Compiler {
             return Ok(());
         }
 
+        // Me.Show() / Me.Close() — Expression::Me variant
+        if matches!(*obj, Expression::Me) {
+            if let Some(me_slot) = self.current_scope().resolve_local("me") {
+                let meth_lower = method.as_str().to_lowercase();
+                match meth_lower.as_str() {
+                    "show" => {
+                        self.emit_u16(Op::local_get, me_slot);
+                        let idx = self.import("vybe:gui", "showForm");
+                        self.emit_host_call(idx, 1);
+                        return Ok(());
+                    }
+                    "close" => {
+                        self.emit_u16(Op::local_get, me_slot);
+                        let idx = self.import("vybe:gui", "closeForm");
+                        self.emit_host_call(idx, 1);
+                        return Ok(());
+                    }
+                    _ => {
+                        // Me.OtherMethod() → class method call
+                        if self.class_methods.contains(&meth_lower) {
+                            self.emit_u16(Op::local_get, me_slot);
+                            let prop_idx = self.add_string_constant(&meth_lower);
+                            self.emit_u16(Op::struct_get, prop_idx);
+                            self.emit_u16(Op::local_get, me_slot);
+                            for arg in args { self.compile_expression(arg)?; }
+                            self.emit_u8(Op::call, (args.len() + 1) as u8);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
         if let Expression::Variable(ref obj_name) = *obj {
             let obj_lower = obj_name.as_str().to_lowercase();
             let meth_lower = method.as_str().to_lowercase();
+
+            // Me.Show() / Me.Close() inside a class → emit GUI host calls
+            if obj_lower == "me" && self.current_scope().resolve_local("me").is_some() {
+                let me_slot = self.current_scope().resolve_local("me").unwrap();
+                match meth_lower.as_str() {
+                    "show" => {
+                        self.emit_u16(Op::local_get, me_slot);
+                        let idx = self.import("vybe:gui", "showForm");
+                        self.emit_host_call(idx, 1);
+                        return Ok(());
+                    }
+                    "close" => {
+                        self.emit_u16(Op::local_get, me_slot);
+                        let idx = self.import("vybe:gui", "closeForm");
+                        self.emit_host_call(idx, 1);
+                        return Ok(());
+                    }
+                    "showdialog" => {
+                        self.emit_u16(Op::local_get, me_slot);
+                        let idx = self.import("vybe:gui", "showFormDialog");
+                        self.emit_host_call(idx, 1);
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+
             let full_name = format!("{}.{}", obj_lower, meth_lower);
             if let Some(result) = self.try_compile_builtin_method(&full_name, args)? {
                 let _ = result;

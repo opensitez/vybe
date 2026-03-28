@@ -128,7 +128,6 @@ Application.Run(f)
 
 /// A03. Form.Show emits FormShow side effect.
 #[test]
-#[ignore = "known bug: Me.Show() not resolved as host call on plain class"]
 fn a03_form_show_emits_form_show() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -146,7 +145,6 @@ Dim f As New Form1()
 
 /// A04. Form.Close emits FormClose side effect.
 #[test]
-#[ignore = "known bug: Me.Close() not resolved as host call on plain class"]
 fn a04_form_close_emits_form_close() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -164,7 +162,6 @@ Dim f As New Form1()
 
 /// A05. Form with custom title via Me.Text assignment.
 #[test]
-#[ignore = "known bug: Me.Text assignment on plain class does not emit PropertyChange side effect"]
 fn a05_form_custom_title_via_me_text() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -1050,7 +1047,6 @@ Dim f As New Form1()
 
 /// E02. InitializeComponent sets form text.
 #[test]
-#[ignore = "known bug: Me.Text assignment does not emit PropertyChange side effect for the form"]
 fn e02_initialize_component_sets_form_text() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -1170,7 +1166,6 @@ Dim f As New Form1()
 
 /// E06. InitializeComponent with form size settings.
 #[test]
-#[ignore = "known bug: Me.Text and Me.Size in InitializeComponent do not emit PropertyChange side effects"]
 fn e06_initialize_component_form_size() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms

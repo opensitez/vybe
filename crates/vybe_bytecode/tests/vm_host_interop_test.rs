@@ -991,7 +991,6 @@ fn invoke_modifies_global() {
 
 // 27. invoke() a host function wrapper (ObjectKind::HostFunction)
 #[test]
-#[ignore = "known bug: invoke() calls execute() after HostFunction call_value, but no frame is pushed"]
 fn invoke_host_function_object() {
     let mut vm = VM::new();
     vm.register_host_fn("test", "greet", Box::new(|args: &[Value]| {

@@ -470,20 +470,66 @@ impl Compiler {
                 }
             }
             Statement::Switch { discriminant, cases } => {
+                // JS switch with fallthrough: once a case matches, execute all subsequent
+                // case bodies until a break is hit.
                 self.compile_expression(discriminant)?;
                 self.loop_stack.push(LoopContext { start_offset: 0, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
-                let mut next: Option<usize> = None;
-                for case in cases {
-                    if let Some(p) = next.take() { self.patch_jump(p); }
+
+                // Phase 1: emit all case tests, jumping to their body positions
+                let mut test_jumps: Vec<(usize, usize)> = Vec::new(); // (case_idx, jump_to_body)
+                let mut default_idx: Option<usize> = None;
+                let mut next_test_patch: Option<usize> = None;
+                for (i, case) in cases.iter().enumerate() {
+                    if let Some(p) = next_test_patch.take() { self.patch_jump(p); }
                     if let Some(test) = &case.test {
                         self.emit(Op::dup);
                         self.compile_expression(test)?;
                         self.emit(Op::eq);
-                        next = Some(self.emit_jump(Op::br_if_false));
+                        let body_jump = self.emit_jump(Op::br_if_true);
+                        test_jumps.push((i, body_jump));
+                        next_test_patch = None;
+                    } else {
+                        default_idx = Some(i);
                     }
-                    for s in &case.consequent { self.compile_statement(s)?; }
                 }
-                if let Some(p) = next { self.patch_jump(p); }
+                // If no case matched, jump to default or end
+                let to_default_or_end = self.emit_jump(Op::br);
+
+                // Phase 2: emit all case bodies sequentially (fallthrough order)
+                let mut body_offsets: Vec<usize> = Vec::new();
+                for (i, case) in cases.iter().enumerate() {
+                    body_offsets.push(self.current_offset());
+                    for s in &case.consequent { self.compile_statement(s)?; }
+                    // No implicit break — falls through to next case body
+                }
+                let end_offset = self.current_offset();
+
+                // Phase 3: patch test jumps to body positions
+                for (case_idx, jump) in &test_jumps {
+                    if *case_idx < body_offsets.len() {
+                        let target = body_offsets[*case_idx];
+                        let jump_ip = *jump + 2; // after the br_if_true + offset
+                        let offset = target as i16 - jump_ip as i16;
+                        let c = &mut self.chunks[self.current_chunk_idx];
+                        c.code[*jump] = (offset >> 8) as u8;
+                        c.code[*jump + 1] = (offset & 0xff) as u8;
+                    }
+                }
+
+                // Patch default/end jump
+                if let Some(di) = default_idx {
+                    if di < body_offsets.len() {
+                        let target = body_offsets[di];
+                        let jump_ip = to_default_or_end + 2;
+                        let offset = target as i16 - jump_ip as i16;
+                        let c = &mut self.chunks[self.current_chunk_idx];
+                        c.code[to_default_or_end] = (offset >> 8) as u8;
+                        c.code[to_default_or_end + 1] = (offset & 0xff) as u8;
+                    }
+                } else {
+                    self.patch_jump(to_default_or_end);
+                }
+
                 let ctx = self.loop_stack.pop().unwrap();
                 for p in ctx.break_patches { self.patch_jump(p); }
                 self.emit(Op::drop);
@@ -497,6 +543,14 @@ impl Compiler {
                     let name_idx = self.add_string_constant("name");
                     self.emit_u16(Op::struct_set, name_idx);
                     self.emit(Op::drop);
+                    // Set __parent to parent constructor for instanceof chain
+                    if let Some(ref super_expr) = class.super_class {
+                        self.emit(Op::dup);
+                        self.compile_expression(super_expr)?;
+                        let parent_idx = self.add_string_constant("__parent");
+                        self.emit_u16(Op::struct_set, parent_idx);
+                        self.emit(Op::drop);
+                    }
                     self.defined_classes.insert(name.clone());
                     if self.scopes.len() == 1 && self.current_scope().depth == 0 {
                         self.emit_global_set(name);
@@ -767,12 +821,18 @@ impl Compiler {
                 self.emit(Op::null);
             }
             Expression::Identifier(name) => {
-                match self.resolve_variable(name) {
-                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
-                    VarResolution::Upvalue(idx) => self.emit_u8(Op::upvalue_get, idx),
-                    VarResolution::Global => {
-                        let idx = self.add_string_constant(name);
-                        self.emit_u16(Op::global_get, idx);
+                // JS built-in globals
+                match name.as_str() {
+                    "NaN" => { self.emit_constant(Value::F64(f64::NAN)); }
+                    "Infinity" => { self.emit_constant(Value::F64(f64::INFINITY)); }
+                    "undefined" => { self.emit(Op::undefined); }
+                    _ => match self.resolve_variable(name) {
+                        VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                        VarResolution::Upvalue(idx) => self.emit_u8(Op::upvalue_get, idx),
+                        VarResolution::Global => {
+                            let idx = self.add_string_constant(name);
+                            self.emit_u16(Op::global_get, idx);
+                        }
                     }
                 }
             }
@@ -806,29 +866,18 @@ impl Compiler {
                     BinaryOp::Shl => self.emit(Op::i32_shl),
                     BinaryOp::Shr => self.emit(Op::i32_shr_s),
                     BinaryOp::UShr => self.emit(Op::i32_shr_u),
-                    BinaryOp::Eq => self.emit(Op::dyn_eq),
-                    BinaryOp::Neq => self.emit(Op::dyn_ne),
-                    BinaryOp::SEq => self.emit(Op::dyn_eq),
-                    BinaryOp::SNeq => self.emit(Op::dyn_ne),
+                    BinaryOp::Eq => self.emit(Op::dyn_eq),   // == (loose, with coercion)
+                    BinaryOp::Neq => self.emit(Op::dyn_ne),  // != (loose)
+                    BinaryOp::SEq => self.emit(Op::eq),      // === (strict, no coercion)
+                    BinaryOp::SNeq => self.emit(Op::ne),     // !== (strict)
                     BinaryOp::Lt => self.emit(Op::dyn_lt),
                     BinaryOp::Gt => self.emit(Op::dyn_gt),
                     BinaryOp::Le => self.emit(Op::dyn_le),
                     BinaryOp::Ge => self.emit(Op::dyn_ge),
                     BinaryOp::InstanceOf => {
-                        // a instanceof B → check if a.__type == B.name or a's prototype chain includes B
-                        // Stack: [a, B]
-                        // Get constructor name from B
-                        let name_idx = self.add_string_constant("name");
-                        self.emit_u16(Op::struct_get, name_idx); // [a, B_name]
-                        // Swap to get [B_name, a], then get a.__type
-                        // Actually: save B_name, get a.__type, compare
-                        let tmp = self.define_local("__instanceof_tmp");
-                        self.emit_u16(Op::local_set, tmp); self.emit(Op::drop); // save B_name
-                        // a is on stack — get its __type
-                        let type_idx = self.add_string_constant("__type");
-                        self.emit_u16(Op::struct_get, type_idx); // a.__type
-                        self.emit_u16(Op::local_get, tmp); // B_name
-                        self.emit(Op::dyn_eq); // a.__type == B.name
+                        // a instanceof B → host call that checks __type chain
+                        let idx = self.import("vybe:object", "instanceOf");
+                        self.emit_host_call(idx, 2);
                     }
                     BinaryOp::In => {
                         // "key" in obj → host call hasProperty(key, obj)
@@ -994,41 +1043,87 @@ impl Compiler {
                 self.emit_u16(Op::array_new, elements.len() as u16);
             }
             Expression::Object(properties) => {
-                let mut count = 0u16;
-                for prop in properties {
-                    match prop {
-                        PropertyDef::KeyValue { key, value } => {
-                            self.emit_constant(Value::String(Rc::from(key.as_str())));
-                            self.compile_expression(value)?;
-                            count += 1;
-                        }
-                        PropertyDef::Shorthand(name) => {
-                            self.emit_constant(Value::String(Rc::from(name.as_str())));
-                            match self.resolve_variable(name) {
-                                VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
-                                VarResolution::Upvalue(idx) => self.emit_u8(Op::upvalue_get, idx),
-                                VarResolution::Global => {
-                                    let idx = self.add_string_constant(name);
-                                    self.emit_u16(Op::global_get, idx);
-                                }
+                let has_spread = properties.iter().any(|p| matches!(p, PropertyDef::Spread(_)));
+                if has_spread {
+                    // Object with spread: build incrementally via struct_set
+                    self.emit_u16(Op::struct_new, 0); // start with empty object
+                    for prop in properties {
+                        match prop {
+                            PropertyDef::KeyValue { key, value } => {
+                                self.emit(Op::dup);
+                                self.compile_expression(value)?;
+                                let idx = self.add_string_constant(key);
+                                self.emit_u16(Op::struct_set, idx);
+                                self.emit(Op::drop);
                             }
-                            count += 1;
+                            PropertyDef::Shorthand(name) => {
+                                self.emit(Op::dup);
+                                match self.resolve_variable(name) {
+                                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                                    VarResolution::Upvalue(idx) => self.emit_u8(Op::upvalue_get, idx),
+                                    VarResolution::Global => { let idx = self.add_string_constant(name); self.emit_u16(Op::global_get, idx); }
+                                }
+                                let idx = self.add_string_constant(name);
+                                self.emit_u16(Op::struct_set, idx);
+                                self.emit(Op::drop);
+                            }
+                            PropertyDef::Method { key, value } => {
+                                self.emit(Op::dup);
+                                self.compile_method(value)?;
+                                let idx = self.add_string_constant(key);
+                                self.emit_u16(Op::struct_set, idx);
+                                self.emit(Op::drop);
+                            }
+                            PropertyDef::Spread(src) => {
+                                self.compile_expression(src)?;
+                                let idx = self.import("vybe:object", "assign");
+                                self.emit_host_call(idx, 2);
+                            }
+                            PropertyDef::Computed { key, value } => {
+                                // TODO: computed + spread combo
+                                self.emit(Op::dup);
+                                self.compile_expression(value)?;
+                                // Would need dynamic struct_set
+                                self.emit(Op::drop);
+                                self.emit(Op::drop);
+                                let _ = key;
+                            }
                         }
-                        PropertyDef::Method { key, value } => {
-                            self.emit_constant(Value::String(Rc::from(key.as_str())));
-                            self.compile_function(value)?;
-                            count += 1;
-                        }
-                        PropertyDef::Computed { key, value } => {
-                            // Key is an expression — evaluate it to get the string key
-                            self.compile_expression(key)?;
-                            self.compile_expression(value)?;
-                            count += 1;
-                        }
-                        PropertyDef::Spread(_) => {}
                     }
+                } else {
+                    // No spread: use efficient struct_new with k/v pairs on stack
+                    let mut count = 0u16;
+                    for prop in properties {
+                        match prop {
+                            PropertyDef::KeyValue { key, value } => {
+                                self.emit_constant(Value::String(Rc::from(key.as_str())));
+                                self.compile_expression(value)?;
+                                count += 1;
+                            }
+                            PropertyDef::Shorthand(name) => {
+                                self.emit_constant(Value::String(Rc::from(name.as_str())));
+                                match self.resolve_variable(name) {
+                                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                                    VarResolution::Upvalue(idx) => self.emit_u8(Op::upvalue_get, idx),
+                                    VarResolution::Global => { let idx = self.add_string_constant(name); self.emit_u16(Op::global_get, idx); }
+                                }
+                                count += 1;
+                            }
+                            PropertyDef::Method { key, value } => {
+                                self.emit_constant(Value::String(Rc::from(key.as_str())));
+                                self.compile_method(value)?; // method, not function — adds `this` as local 0
+                                count += 1;
+                            }
+                            PropertyDef::Computed { key, value } => {
+                                self.compile_expression(key)?;
+                                self.compile_expression(value)?;
+                                count += 1;
+                            }
+                            PropertyDef::Spread(_) => unreachable!(),
+                        }
+                    }
+                    self.emit_u16(Op::struct_new, count);
                 }
-                self.emit_u16(Op::struct_new, count);
             }
             Expression::Function(func) => { self.compile_function(func)?; }
             Expression::ArrowFunction { params, body, is_async } => {
@@ -1111,6 +1206,20 @@ impl Compiler {
     ///   1. If `func` is NOT a known variable → bare import: ("vybe:convert", func) for known globals
     ///   2. Otherwise → regular function call
     fn compile_call(&mut self, callee: &Expression, arguments: &[Expression]) -> Result<(), String> {
+        // super.method(args) → this.__base_method(this, args)
+        if let Expression::Member { object, property, .. } = callee {
+            if matches!(object.as_ref(), Expression::Super) {
+                let base_name = format!("__base_{}", property);
+                self.emit_u16(Op::local_get, 1); // this
+                let prop_idx = self.add_string_constant(&base_name);
+                self.emit_u16(Op::struct_get, prop_idx);
+                self.emit_u16(Op::local_get, 1); // this as first arg
+                for arg in arguments { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, (arguments.len() + 1) as u8);
+                return Ok(());
+            }
+        }
+
         if let Expression::Member { object, property, .. } = callee {
             // obj.method() pattern
             if let Expression::Identifier(obj_name) = object.as_ref() {
@@ -1995,13 +2104,22 @@ impl Compiler {
                 self.emit(Op::drop);
             }
             Expression::Member { object, property, .. } => {
+                // Stack: [value]. Need [obj, value] for struct_set.
+                // Save value to temp, push obj, push value back.
+                let tmp = self.define_local("__store_tmp");
+                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
                 self.compile_expression(object)?;
+                self.emit_u16(Op::local_get, tmp);
                 let idx = self.add_string_constant(property);
                 self.emit_u16(Op::struct_set, idx);
+                self.emit(Op::drop); // drop struct_set result
             }
             Expression::ComputedMember { object, property } => {
+                let tmp = self.define_local("__store_tmp2");
+                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
                 self.compile_expression(object)?;
                 self.compile_expression(property)?;
+                self.emit_u16(Op::local_get, tmp);
                 self.emit(Op::array_set);
             }
             _ => { self.emit(Op::drop); }
@@ -2023,14 +2141,24 @@ impl Compiler {
         self.current_chunk_idx = idx;
         self.scopes.push(scope);
 
-        // Emit default parameter initialization
+        // Emit default parameter initialization: if param is null/undefined, use default
         for param in &func.params {
             if let Some(ref default_expr) = param.default {
-                // if (param is null) { param = default; }
                 let slot = self.current_scope().resolve_local(&param.name).unwrap();
                 self.emit_u16(Op::local_get, slot);
+                // Check for both null and undefined (missing args are padded with Null)
+                self.emit(Op::dup);
                 self.emit(Op::ref_is_null);
-                let skip = self.emit_jump(Op::br_if_false); // if NOT null, skip
+                let is_null = self.emit_jump(Op::br_if_true);
+                // Check undefined
+                self.emit(Op::undefined);
+                self.emit(Op::eq);
+                let is_undef = self.emit_jump(Op::br_if_true);
+                // Not null/undefined — skip default
+                let skip = self.emit_jump(Op::br);
+                self.patch_jump(is_null);
+                self.emit(Op::drop); // drop the dup
+                self.patch_jump(is_undef);
                 self.compile_expression(default_expr)?;
                 self.emit_u16(Op::local_set, slot);
                 self.emit(Op::drop);
@@ -2163,7 +2291,16 @@ impl Compiler {
         }
 
         let ctor_params = constructor.as_ref().map(|c| c.params.clone()).unwrap_or_default();
+        let had_constructor = constructor.is_some();
         let mut ctor_body = constructor.map(|c| c.body).unwrap_or_default();
+        // If derived class has no explicit constructor, auto-insert super() call
+        if !had_constructor && class.super_class.is_some() {
+            ctor_body.insert(0, Statement::Expression(Expression::Call {
+                callee: Box::new(Expression::Super),
+                arguments: vec![],
+                optional: false,
+            }));
+        }
         // Prepend field initializers before the constructor body
         for (i, stmt) in field_init_stmts.into_iter().enumerate() {
             ctor_body.insert(i, stmt);
@@ -2228,10 +2365,47 @@ impl Compiler {
             self.emit(Op::drop);
         }
 
-        // Compile constructor body (may contain super() calls)
-        for stmt in &ctor.body { self.compile_statement(stmt)?; }
+        // Split constructor body at super() call: emit super() first, then attach
+        // methods (so parent methods are overridden by child), then rest of constructor.
+        // If no super(), methods are attached before the entire body.
+        let mut super_stmts: Vec<&Statement> = Vec::new();
+        let mut rest_stmts: Vec<&Statement> = Vec::new();
+        let mut found_super = false;
+        for stmt in &ctor.body {
+            if !found_super {
+                let is_super = matches!(stmt,
+                    Statement::Expression(Expression::Call { callee, .. })
+                    if matches!(callee.as_ref(), Expression::Super)
+                );
+                super_stmts.push(stmt);
+                if is_super { found_super = true; }
+            } else {
+                rest_stmts.push(stmt);
+            }
+        }
+        // If no super() found, all statements go to rest (methods attached first)
+        if !found_super {
+            rest_stmts = super_stmts;
+            super_stmts = Vec::new();
+        }
+        // Emit super() and pre-super statements
+        for stmt in &super_stmts { self.compile_statement(stmt)?; }
 
-        // Attach regular methods to this
+        // Save parent methods as __base_name before child overrides them
+        if super_class.is_some() {
+            for (method_name, _) in methods.iter() {
+                self.emit_u16(Op::local_get, 1); // this
+                self.emit(Op::dup);
+                let prop_idx = self.add_string_constant(method_name);
+                self.emit_u16(Op::struct_get, prop_idx); // parent's version (or null)
+                let base_name = format!("__base_{}", method_name);
+                let base_idx = self.add_string_constant(&base_name);
+                self.emit_u16(Op::struct_set, base_idx);
+                self.emit(Op::drop);
+            }
+        }
+
+        // Attach child methods (overwrite parent's)
         for (method_name, method_fn) in methods {
             self.emit_u16(Op::local_get, 1); // this
             self.compile_method(method_fn)?;
@@ -2259,6 +2433,9 @@ impl Compiler {
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
         }
+
+        // Compile remaining constructor body after methods are attached
+        for stmt in &rest_stmts { self.compile_statement(stmt)?; }
 
         self.emit_u16(Op::local_get, 1); // return this
         self.emit(Op::r#return);

@@ -9,12 +9,27 @@ impl Compiler {
         match stmt {
             Statement::Dim(vars) => {
                 for var in vars {
-                    if let Some(ref init) = var.initializer {
+                    if let Some(ref bounds) = var.array_bounds {
+                        // Dim arr(N) — VB arrays are 0..N inclusive, so size = N+1
+                        if let Some(bound_expr) = bounds.first() {
+                            self.compile_expression(bound_expr)?;
+                            // Add 1 to get size (VB upper bound is inclusive)
+                            self.emit_constant(Value::F64(1.0));
+                            self.emit(Op::dyn_add);
+                            self.emit(Op::array_new_default);
+                        } else {
+                            // Dim arr() — empty array
+                            self.emit_u16(Op::array_new, 0);
+                        }
+                    } else if let Some(ref init) = var.initializer {
                         self.compile_expression(init)?;
                     } else {
                         self.emit(Op::null);
                     }
                     let name = var.name.as_str().to_lowercase();
+                    if var.array_bounds.is_some() {
+                        self.known_arrays.insert(name.clone());
+                    }
                     let slot = self.define_local(&name);
                     self.emit_u16(Op::local_set, slot);
                     self.emit(Op::drop);
@@ -27,12 +42,32 @@ impl Compiler {
             Statement::MemberAssignment { object, member, value } => {
                 self.compile_expression(object)?;
                 self.compile_expression(value)?;
-                let idx = self.add_string_constant(&member.as_str().to_lowercase());
+                let member_lower = member.as_str().to_lowercase();
+                let idx = self.add_string_constant(&member_lower);
                 self.emit_u16(Op::struct_set, idx);
                 self.emit(Op::drop);
+                // If assigning to Me.property inside a class, also emit setProperty side effect
+                // for the form runner. (controlSetProperty is always available as no-op in non-GUI)
+                if matches!(*object, Expression::Me) {
+                    if let Some(me_slot) = self.current_scope().resolve_local("me") {
+                        self.emit_u16(Op::local_get, me_slot);
+                        let cap = {
+                            let mut c = member_lower.chars();
+                            match c.next() {
+                                None => String::new(),
+                                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                            }
+                        };
+                        self.emit_constant(Value::String(Rc::from(cap.as_str())));
+                        self.compile_expression(value)?;
+                        let set_idx = self.import("vybe:gui", "controlSetProperty");
+                        self.emit_host_call(set_idx, 3);
+                        self.emit(Op::drop);
+                    }
+                }
             }
             Statement::ArrayAssignment { array, indices, value } => {
-                self.compile_expression(value)?;
+                // Stack order for array_set: obj (bottom), key, val (top)
                 let name = array.as_str().to_lowercase();
                 match self.resolve_variable(&name) {
                     VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
@@ -44,6 +79,7 @@ impl Compiler {
                 if let Some(index) = indices.first() {
                     self.compile_expression(index)?;
                 }
+                self.compile_expression(value)?;
                 self.emit(Op::array_set);
                 self.emit(Op::drop);
             }
@@ -193,6 +229,42 @@ impl Compiler {
                     self.emit_host_call(idx, arguments.len() as u8);
                     self.emit(Op::drop);
                     return Ok(());
+                }
+
+                // Me.Show() / Me.Close() inside a class
+                if fname.starts_with("me.") {
+                    if let Some(me_slot) = self.current_scope().resolve_local("me") {
+                        let method = &fname[3..];
+                        match method {
+                            "show" => {
+                                self.emit_u16(Op::local_get, me_slot);
+                                let idx = self.import("vybe:gui", "showForm");
+                                self.emit_host_call(idx, 1);
+                                self.emit(Op::drop);
+                                return Ok(());
+                            }
+                            "close" => {
+                                self.emit_u16(Op::local_get, me_slot);
+                                let idx = self.import("vybe:gui", "closeForm");
+                                self.emit_host_call(idx, 1);
+                                self.emit(Op::drop);
+                                return Ok(());
+                            }
+                            _ => {
+                                // Me.Method() → resolve as class method
+                                if self.class_methods.contains(method) {
+                                    self.emit_u16(Op::local_get, me_slot);
+                                    let prop_idx = self.add_string_constant(method);
+                                    self.emit_u16(Op::struct_get, prop_idx);
+                                    self.emit_u16(Op::local_get, me_slot);
+                                    for arg in arguments { self.compile_expression(arg)?; }
+                                    self.emit_u8(Op::call, (arguments.len() + 1) as u8);
+                                    self.emit(Op::drop);
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
                 }
 
                 let sig = self.func_signatures.get(&fname).cloned();

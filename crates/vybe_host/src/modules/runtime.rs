@@ -189,6 +189,23 @@ fn dispatch_map(obj: &Value, method: &str, args: &[Value]) -> Value {
             }
             Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
         }
+        "values" => {
+            let ob = o.borrow();
+            if let Some(Value::Object(data)) = ob.properties.get("__data") {
+                let vals: Vec<Value> = data.borrow().properties.values().cloned().collect();
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(vals))));
+            }
+            Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+        }
+        "clear" => {
+            let ob = o.borrow();
+            if let Some(Value::Object(data)) = ob.properties.get("__data") {
+                data.borrow_mut().properties.clear();
+            }
+            drop(ob);
+            o.borrow_mut().properties.insert("size".into(), Value::F64(0.0));
+            obj.clone()
+        }
         _ => Value::Null,
     }
 }
@@ -243,6 +260,18 @@ fn dispatch_set(obj: &Value, method: &str, args: &[Value]) -> Value {
                 }
             }
             Value::Bool(false)
+        }
+        "clear" => {
+            let ob = o.borrow();
+            if let Some(Value::Object(items)) = ob.properties.get("__items") {
+                let mut ir = items.borrow_mut();
+                if let ObjectKind::Array(ref mut elems) = ir.kind {
+                    elems.clear();
+                }
+            }
+            drop(ob);
+            o.borrow_mut().properties.insert("size".into(), Value::F64(0.0));
+            obj.clone()
         }
         "values" => {
             let ob = o.borrow();

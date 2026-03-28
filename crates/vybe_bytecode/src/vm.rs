@@ -285,6 +285,13 @@ impl VM {
         }
 
         self.call_value(args.len())?;
+
+        // HostFunction calls are handled inline by call_value (no frame pushed).
+        // If no frame was pushed, the result is already on the stack.
+        if self.frames.is_empty() {
+            return Ok(self.stack.pop().unwrap_or(Value::Null));
+        }
+
         self.execute()
     }
 
@@ -1114,12 +1121,21 @@ impl VM {
                     let b = self.pop();
                     let a = self.pop();
                     let result = match (&a, &b) {
-                        (Value::Null, Value::Null) => true,
+                        // null == null, undefined == undefined, null == undefined
+                        (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
+                        (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
                         (Value::Bool(x), Value::Bool(y)) => x == y,
                         (Value::F64(x), Value::F64(y)) => if x.is_nan() || y.is_nan() { false } else { x == y },
                         (Value::I32(x), Value::I32(y)) => x == y,
                         (Value::F64(x), Value::I32(y)) => *x == *y as f64,
                         (Value::I32(x), Value::F64(y)) => *x as f64 == *y,
+                        // String == Number coercion
+                        (Value::String(s), Value::F64(n)) | (Value::F64(n), Value::String(s)) => {
+                            if let Ok(sv) = s.parse::<f64>() { sv == *n } else { false }
+                        }
+                        (Value::String(s), Value::I32(n)) | (Value::I32(n), Value::String(s)) => {
+                            if let Ok(sv) = s.parse::<f64>() { sv == *n as f64 } else { false }
+                        }
                         (Value::String(x), Value::String(y)) => x == y,
                         (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
                         _ => false,
@@ -1130,12 +1146,19 @@ impl VM {
                     let b = self.pop();
                     let a = self.pop();
                     let result = match (&a, &b) {
-                        (Value::Null, Value::Null) => false,
+                        (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => false,
+                        (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => false,
                         (Value::Bool(x), Value::Bool(y)) => x != y,
                         (Value::F64(x), Value::F64(y)) => if x.is_nan() || y.is_nan() { true } else { x != y },
                         (Value::I32(x), Value::I32(y)) => x != y,
                         (Value::F64(x), Value::I32(y)) => *x != *y as f64,
                         (Value::I32(x), Value::F64(y)) => *x as f64 != *y,
+                        (Value::String(s), Value::F64(n)) | (Value::F64(n), Value::String(s)) => {
+                            if let Ok(sv) = s.parse::<f64>() { sv != *n } else { true }
+                        }
+                        (Value::String(s), Value::I32(n)) | (Value::I32(n), Value::String(s)) => {
+                            if let Ok(sv) = s.parse::<f64>() { sv != *n as f64 } else { true }
+                        }
                         (Value::String(x), Value::String(y)) => x != y,
                         (Value::Object(x), Value::Object(y)) => !Rc::ptr_eq(x, y),
                         _ => true,

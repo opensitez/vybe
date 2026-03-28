@@ -238,7 +238,6 @@ Console.WriteLine(cfg.GetUrl())
 /// because the compiler doesn't resolve bare GetSpecies() to the parent class method
 /// when called from a derived class method.
 #[test]
-#[ignore = "known bug: inherited method not resolved via bare name in derived class"]
 fn a08_method_calls_inherited_method() {
     let out = run_vb(r#"
 Public Class Animal

@@ -227,7 +227,6 @@ Console.WriteLine(c.C)
 // 9. Constructor chain through 3 levels
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "known bug: child ctor assignment to parent field does not resolve to Me.field because parent fields are not in child class_fields"]
 fn t09_constructor_chain_three_levels() {
     let out = run_vb(r#"
 Class Level1
@@ -351,7 +350,6 @@ Console.WriteLine(c.Ready)
 // 13. Base field set in Base.New, read from Derived method
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "known bug: child method reading parent field by bare name does not resolve to Me.field because parent fields are not in child class_fields"]
 fn t13_base_field_set_in_ctor_read_from_derived() {
     let out = run_vb(r#"
 Class Base
@@ -429,7 +427,6 @@ Console.WriteLine(c.Compute())
 // 16. Two different derived classes from same base — independent
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "known bug: child ctor assignment to parent field does not resolve to Me.field because parent fields are not in child class_fields"]
 fn t16_two_derived_classes_independent() {
     let out = run_vb(r#"
 Class Base
@@ -505,7 +502,6 @@ Console.WriteLine(Child.StaticHello())
 // 19. Property Get/Set on base class
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "known bug: property getter does not push property name onto function_name_stack so PropertyName = value return pattern fails"]
 fn t19_property_get_set_on_base() {
     let out = run_vb(r#"
 Class Person
@@ -532,7 +528,6 @@ Console.WriteLine(p.Name)
 // 20. Derived accesses base Property
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "known bug: property getter does not push property name onto function_name_stack so PropertyName = value return pattern fails"]
 fn t20_derived_accesses_base_property() {
     let out = run_vb(r#"
 Class Base

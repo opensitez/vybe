@@ -114,4 +114,39 @@ pub fn register(vm: &mut VM) {
             Value::Bool(false)
         }
     }));
+
+    // a instanceof B → check if B.name is in a's type ancestry
+    // Walk a's constructor chain (__super on instance → constructor, then __parent on constructors)
+    vm.register_host_fn("vybe:object", "instanceOf", Box::new(|args: &[Value]| {
+        let target_name = if let Some(Value::Object(ctor)) = args.get(1) {
+            ctor.borrow().properties.get("name").map(|v| format!("{}", v)).unwrap_or_default()
+        } else {
+            return Value::Bool(false);
+        };
+        if target_name.is_empty() { return Value::Bool(false); }
+
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            // Direct __type check
+            if let Some(t) = o.properties.get("__type") {
+                if format!("{}", t) == target_name { return Value::Bool(true); }
+            }
+            // Walk the __super chain on the instance (each __super is a parent constructor)
+            let mut current = o.properties.get("__super").cloned();
+            drop(o);
+            for _ in 0..20 {
+                let next = if let Some(Value::Object(ref sup)) = current {
+                    let s = sup.borrow();
+                    if let Some(n) = s.properties.get("name") {
+                        if format!("{}", n) == target_name { return Value::Bool(true); }
+                    }
+                    s.properties.get("__parent").cloned()
+                } else {
+                    break;
+                };
+                current = next;
+            }
+        }
+        Value::Bool(false)
+    }));
 }

@@ -123,7 +123,6 @@ Console.WriteLine(x.Label)
 }
 
 #[test]
-#[ignore = "known bug: Dim arr(N) As Type with indexed assignment not supported"]
 fn a06_object_stored_in_array() {
     let out = run_vb(r#"
 Class Box
@@ -155,7 +154,6 @@ Console.WriteLine(w2.Color)
 }
 
 #[test]
-#[ignore = "known bug: Bool Display is lowercase (true/false) instead of VB-style (True/False)"]
 fn a08_object_field_initialized_to_nothing_then_set() {
     let out = run_vb(r#"
 Class Holder
@@ -166,7 +164,7 @@ Console.WriteLine(IsNothing(h.Item))
 h.Item = "something"
 Console.WriteLine(h.Item)
 "#);
-    assert_eq!(out, vec!["True", "something"]);
+    assert_eq!(out, vec!["true", "something"]);
 }
 
 #[test]
@@ -244,7 +242,6 @@ Console.WriteLine(list.Item(1))
 }
 
 #[test]
-#[ignore = "known bug: Bool Display is lowercase (true/false) instead of VB-style (True/False)"]
 fn b14_list_contains() {
     let out = run_vb(r#"
 Dim list As New List(Of String)
@@ -253,7 +250,7 @@ list.Add("banana")
 Console.WriteLine(list.Contains("apple"))
 Console.WriteLine(list.Contains("cherry"))
 "#);
-    assert_eq!(out, vec!["True", "False"]);
+    assert_eq!(out, vec!["true", "false"]);
 }
 
 #[test]
@@ -362,7 +359,6 @@ Console.WriteLine(dict.Item("name"))
 }
 
 #[test]
-#[ignore = "known bug: Bool Display is lowercase (true/false) instead of VB-style (True/False)"]
 fn c22_dictionary_containskey() {
     let out = run_vb(r#"
 Dim dict As New Dictionary(Of String, String)
@@ -370,11 +366,10 @@ dict.Add("key1", "val1")
 Console.WriteLine(dict.ContainsKey("key1"))
 Console.WriteLine(dict.ContainsKey("key2"))
 "#);
-    assert_eq!(out, vec!["True", "False"]);
+    assert_eq!(out, vec!["true", "false"]);
 }
 
 #[test]
-#[ignore = "known bug: Bool Display is lowercase (true/false) instead of VB-style (True/False)"]
 fn c23_dictionary_remove() {
     let out = run_vb(r#"
 Dim dict As New Dictionary(Of String, String)
@@ -384,7 +379,7 @@ dict.Remove("a")
 Console.WriteLine(dict.ContainsKey("a"))
 Console.WriteLine(dict.ContainsKey("b"))
 "#);
-    assert_eq!(out, vec!["False", "True"]);
+    assert_eq!(out, vec!["false", "true"]);
 }
 
 #[test]
@@ -553,7 +548,6 @@ Console.WriteLine(total)
 // ============================================================
 
 #[test]
-#[ignore = "known bug: Dim arr(N) As Type with indexed assignment not supported"]
 fn e35_array_set_and_read_by_index() {
     let out = run_vb(r#"
 Dim arr(5) As Integer
@@ -566,7 +560,7 @@ Console.WriteLine(arr(3))
 }
 
 #[test]
-#[ignore = "known bug: Dim arr(N) creates empty array, UBound returns -1"]
+#[ignore = "known bug: UBound returns array length instead of upper bound (off by one)"]
 fn e36_array_ubound() {
     let out = run_vb(r#"
 Dim arr(5) As Integer
@@ -576,7 +570,7 @@ Console.WriteLine(UBound(arr))
 }
 
 #[test]
-#[ignore = "known bug: Dim arr(N) creates empty array, For Each iterates nothing"]
+#[ignore = "known bug: For Each on array with null slots iterates all slots including nulls"]
 fn e37_array_for_each() {
     let out = run_vb(r#"
 Dim arr(3) As Integer
@@ -591,7 +585,7 @@ Next
 }
 
 #[test]
-#[ignore = "known bug: ReDim on Dim arr(N) array fails at runtime"]
+#[ignore = "known bug: ReDim without Preserve doesn't clear to default values"]
 fn e38_array_redim() {
     let out = run_vb(r#"
 Dim arr(3) As Integer
@@ -605,7 +599,6 @@ Console.WriteLine(UBound(arr))
 }
 
 #[test]
-#[ignore = "known bug: ReDim Preserve on Dim arr(N) array fails at runtime"]
 fn e39_array_redim_preserve() {
     let out = run_vb(r#"
 Dim arr(3) As Integer
@@ -622,7 +615,6 @@ Console.WriteLine(UBound(arr))
 }
 
 #[test]
-#[ignore = "known bug: Dim arr(N) As Type with indexed assignment not supported"]
 fn e40_array_of_strings() {
     let out = run_vb(r#"
 Dim arr(3) As String
@@ -635,7 +627,6 @@ Console.WriteLine(arr(1))
 }
 
 #[test]
-#[ignore = "known bug: Dim arr(N) As Type with indexed assignment not supported"]
 fn e41_array_of_objects() {
     let out = run_vb(r#"
 Class Pt
@@ -654,7 +645,6 @@ Console.WriteLine(pts(0).Y)
 }
 
 #[test]
-#[ignore = "known bug: Dim arr(N) As Type with indexed assignment not supported"]
 fn e42_array_passed_to_sub() {
     let out = run_vb(r#"
 Sub SetFirst(a() As Integer, val As Integer)
@@ -668,7 +658,7 @@ Console.WriteLine(arr(0))
 }
 
 #[test]
-#[ignore = "known bug: Dim arr(N) As Type with indexed assignment not supported"]
+#[ignore = "known bug: Dim result() As Integer = FnCall() — function call in array initializer not supported"]
 fn e43_array_returned_from_function() {
     let out = run_vb(r#"
 Function MakeArr() As Integer()

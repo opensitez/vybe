@@ -33,7 +33,7 @@ pub mod data;
 pub mod drawing;
 pub mod rt;
 
-use vybe_bytecode::VM;
+use vybe_bytecode::{VM, Value};
 use std::collections::HashSet;
 
 /// Capability flags for host module access.
@@ -124,6 +124,14 @@ impl Capabilities {
 /// All capabilities granted.
 pub fn register_all(vm: &mut VM) {
     register_with_capabilities(vm, &Capabilities::all());
+    // Register no-op GUI stubs so compiled code that emits controlSetProperty/showForm/closeForm
+    // doesn't fail with "Unresolved import" in non-GUI contexts.
+    if vm.host_registry.get(&("vybe:gui".to_string(), "controlSetProperty".to_string())).is_none() {
+        vm.register_host_fn("vybe:gui", "controlSetProperty", Box::new(|_| Value::Null));
+        vm.register_host_fn("vybe:gui", "showForm", Box::new(|_| Value::Null));
+        vm.register_host_fn("vybe:gui", "closeForm", Box::new(|_| Value::Null));
+        vm.register_host_fn("vybe:gui", "noop", Box::new(|_| Value::Null));
+    }
 }
 
 /// Register modules based on granted capabilities.

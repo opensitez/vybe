@@ -46,7 +46,6 @@ fn run_js_vm(code: &str) -> (vybe_bytecode::VM, Rc<RefCell<Vec<String>>>) {
 // A1. Method call on object literal
 // Known bug: `this` in object literal methods resolves to null instead of the object.
 #[test]
-#[ignore]
 fn test_a01_method_call_on_object_literal() {
     let code = r#"
         let obj = {
@@ -94,7 +93,6 @@ fn test_a03_chained_method_calls() {
 // In JS, calling a method via a detached reference uses globalThis (or undefined in strict mode).
 // Our VM does not rebind `this` for detached method calls.
 #[test]
-#[ignore] // Expected: method loses `this`, returns undefined for this.x. VM may crash or return wrong value.
 fn test_a04_method_stored_in_variable() {
     let code = r#"
         let obj = { x: 42, getX() { return this.x; } };
@@ -246,7 +244,6 @@ fn test_a12_function_call_with_this_arg() {
 // Known bug: `this` in object literal methods resolves to null instead of the receiver.
 // Expected: "hi from test", Actual: "hi from null".
 #[test]
-#[ignore]
 fn test_b13_object_literal_with_methods() {
     let code = r#"
         let obj = {
@@ -284,7 +281,6 @@ fn test_b15_property_shorthand() {
 // B16. Spread in object
 // Known limitation: spread in object literals is parsed but not compiled (no-op in compiler).
 #[test]
-#[ignore] // Compiler skips PropertyDef::Spread — spread properties are silently dropped.
 fn test_b16_spread_in_object() {
     let code = r#"
         let other = { a: 1, b: 2 };
@@ -618,7 +614,6 @@ fn test_d41_class_expression() {
 // Known bug: `this.count++` in class methods does not work — the increment does not take effect.
 // Expected: "3 101", Actual: "0 100" (inc() doesn't modify instance state).
 #[test]
-#[ignore]
 fn test_d42_multiple_instances_independent_state() {
     let code = r#"
         class Counter {
@@ -638,7 +633,6 @@ fn test_d42_multiple_instances_independent_state() {
 // Known bug: Calling a method on `this` inside a constructor fails with "null is not callable".
 // The method lookup on the partially-constructed instance does not find the method.
 #[test]
-#[ignore]
 fn test_d43_constructor_calling_methods() {
     let code = r#"
         class Validator {
@@ -918,7 +912,6 @@ fn test_f57_closure_returned_called_later() {
 // is not properly shared across methods in the returned object literal.
 // Expected: 12, Actual: NaN.
 #[test]
-#[ignore]
 fn test_f58_multiple_closures_sharing_state() {
     let code = r#"
         function makeStore() {
@@ -966,7 +959,6 @@ fn test_f59_closure_inside_class_method() {
 // G60. null == undefined (true in JS)
 // Known limitation: VM does not implement Abstract Equality (==) for null/undefined.
 #[test]
-#[ignore] // VM dyn_eq does not special-case null == undefined.
 fn test_g60_null_loose_equals_undefined() {
     assert_eq!(run_js_one("console.log(null == undefined)"), "true");
 }
@@ -1013,7 +1005,6 @@ fn test_g66_string_plus_number_concats() {
 // Known bug: String-to-number coercion for subtraction is not implemented.
 // Expected: 2, Actual: NaN (the VM does not coerce "5" to 5 for arithmetic minus).
 #[test]
-#[ignore]
 fn test_g67_string_minus_number_numeric() {
     assert_eq!(run_js_one(r#"console.log("5" - 3)"#), "2");
 }
@@ -1094,7 +1085,6 @@ fn test_h72_labeled_continue() {
 // Known bug: Switch does not implement fallthrough — only the matched case body runs.
 // Expected: "abc" (JS fallthrough), Actual: "a" (only case 1 body executes).
 #[test]
-#[ignore]
 fn test_h73_switch_fallthrough() {
     let code = r#"
         let result = "";

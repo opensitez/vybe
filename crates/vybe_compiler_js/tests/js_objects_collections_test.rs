@@ -93,7 +93,6 @@ fn test_a06_object_in_array() {
 
 // A7. Object spread: {...obj, extra: 1}
 #[test]
-#[ignore = "known bug: compiler skips PropertyDef::Spread — spread properties are silently dropped"]
 fn test_a07_object_spread() {
     let code = r#"
         let base = { a: 1, b: 2 };
@@ -205,7 +204,6 @@ fn test_b15_map_delete() {
 
 // B16. Map.clear
 #[test]
-#[ignore = "known bug: Map.clear() is not implemented in callMethod dispatch"]
 fn test_b16_map_clear() {
     let code = r#"
         let m = new Map();
@@ -314,7 +312,6 @@ fn test_c23_set_delete() {
 
 // C24. Set.clear
 #[test]
-#[ignore = "known bug: Set.clear() is not implemented in callMethod dispatch"]
 fn test_c24_set_clear() {
     let code = r#"
         let s = new Set();

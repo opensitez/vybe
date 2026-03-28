@@ -59,7 +59,15 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     vm.register_host_fn("vybe:gui", "showForm", {
         let q = q.clone();
         Box::new(move |args: &[Value]| {
-            q.borrow_mut().push(SideEffect::FormShow { form_name: str_arg(args, 0, "Form1") });
+            let form_name = match args.first() {
+                Some(Value::Object(obj)) => {
+                    let o = obj.borrow();
+                    o.properties.get("name").or_else(|| o.properties.get("__control_name"))
+                        .map(|v| format!("{}", v)).unwrap_or_else(|| "Form1".into())
+                }
+                _ => str_arg(args, 0, "Form1"),
+            };
+            q.borrow_mut().push(SideEffect::FormShow { form_name });
             Value::Null
         })
     });
@@ -90,7 +98,15 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     vm.register_host_fn("vybe:gui", "closeForm", {
         let q = q.clone();
         Box::new(move |args: &[Value]| {
-            q.borrow_mut().push(SideEffect::FormClose { form_name: str_arg(args, 0, "Form1") });
+            let form_name = match args.first() {
+                Some(Value::Object(obj)) => {
+                    let o = obj.borrow();
+                    o.properties.get("name").or_else(|| o.properties.get("__control_name"))
+                        .map(|v| format!("{}", v)).unwrap_or_else(|| "Form1".into())
+                }
+                _ => str_arg(args, 0, "Form1"),
+            };
+            q.borrow_mut().push(SideEffect::FormClose { form_name });
             Value::Null
         })
     });

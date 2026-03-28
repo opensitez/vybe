@@ -608,6 +608,7 @@ fn dyn_eq_nan_is_false() {
 
 #[test]
 fn dyn_ne_different_types() {
+    // With loose equality: 5 == "5" is true (string→number coercion), so 5 != "5" is false
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     let a = chunk.add_constant(Value::I32(5));
@@ -616,7 +617,7 @@ fn dyn_ne_different_types() {
     chunk.emit_op_u16(Op::r#const, b, 0);
     chunk.emit_op(Op::dyn_ne, 0);
     chunk.emit_op(Op::halt, 0);
-    assert_bool(&run_chunks(vec![chunk]), true);
+    assert_bool(&run_chunks(vec![chunk]), false);
 }
 
 #[test]

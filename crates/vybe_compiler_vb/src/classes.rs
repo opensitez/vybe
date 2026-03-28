@@ -65,6 +65,23 @@ impl Compiler {
         for field in &class.fields {
             self.class_fields.insert(field.name.as_str().to_lowercase());
         }
+        // Add parent class's fields and methods so derived class can resolve inherited names
+        if let Some(ref parent_type) = class.inherits {
+            let parent_name = match parent_type {
+                VBType::Custom(name) => name.to_lowercase(),
+                _ => String::new(),
+            };
+            if let Some(parent_fields) = self.class_field_map.get(&parent_name) {
+                for f in parent_fields {
+                    self.class_fields.insert(f.clone());
+                }
+            }
+            if let Some(parent_methods) = self.class_method_map.get(&parent_name) {
+                for m in parent_methods {
+                    self.class_methods.insert(m.clone());
+                }
+            }
+        }
         for method in &class.methods {
             let method_name = match method {
                 MethodDecl::Sub(s) => s.name.as_str().to_lowercase(),
@@ -198,7 +215,7 @@ impl Compiler {
 
             if let Some(ref getter_body) = prop.getter {
                 self.emit_u16(Op::local_get, this_slot);
-                self.compile_property_accessor(&format!("get_{}", prop_name), 1, getter_body, true)?;
+                self.compile_property_accessor(&format!("get_{}", prop_name), 1, getter_body, true, Some(&prop_name))?;
                 let get_name = format!("__get_{}", prop_name);
                 let prop_idx = self.add_string_constant(&get_name);
                 self.emit_u16(Op::struct_set, prop_idx);
@@ -225,6 +242,9 @@ impl Compiler {
         let upvalues = self.current_scope().upvalues.clone();
         self.scopes.pop();
         self.current_chunk_idx = saved;
+        // Store this class's full field/method sets (own + inherited) for future derived classes
+        self.class_field_map.insert(name.to_lowercase(), self.class_fields.clone());
+        self.class_method_map.insert(name.to_lowercase(), self.class_methods.clone());
         self.class_fields = saved_fields;
         self.class_methods = saved_methods;
         self.emit_ref_func(idx, &upvalues);
@@ -386,7 +406,7 @@ impl Compiler {
     }
 
     /// Compile a property getter/setter body as a closure.
-    fn compile_property_accessor(&mut self, label: &str, arity: u8, body: &[Statement], has_return: bool) -> Result<(), String> {
+    fn compile_property_accessor(&mut self, label: &str, arity: u8, body: &[Statement], has_return: bool, prop_name: Option<&str>) -> Result<(), String> {
         let mut chunk = Chunk::new(label);
         chunk.arity = arity;
         let idx = self.chunks.len();
@@ -405,11 +425,18 @@ impl Compiler {
             let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
             self.emit_u16(Op::local_set, rv_slot);
             self.emit(Op::drop);
+            // Push property name so `PropertyName = value` sets __return_val
+            if let Some(pn) = prop_name {
+                self.function_name_stack.push(pn.to_string());
+            }
         }
 
         for stmt in body { self.compile_statement(stmt)?; }
 
         if has_return {
+            if prop_name.is_some() {
+                self.function_name_stack.pop();
+            }
             let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
             self.emit_u16(Op::local_get, rv_slot);
         } else {

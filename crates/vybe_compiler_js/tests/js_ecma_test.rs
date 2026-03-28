@@ -184,11 +184,10 @@ fn test_object_values() {
 
 #[test]
 fn test_strict_vs_loose_equality() {
-    // For now both use dyn_eq. This test documents current behavior.
     assert_eq!(run_js_one("console.log(1 === 1)"), "true");
     assert_eq!(run_js_one("console.log(1 === 2)"), "false");
-    assert_eq!(run_js_one(r#"console.log("1" === 1)"#), "false"); // different types
-    assert_eq!(run_js_one(r#"console.log("1" == 1)"#), "false");  // our dyn_eq doesn't coerce string→number
+    assert_eq!(run_js_one(r#"console.log("1" === 1)"#), "false"); // strict: different types
+    assert_eq!(run_js_one(r#"console.log("1" == 1)"#), "true");   // loose: string→number coercion
 }
 
 // ============================================================

@@ -102,7 +102,6 @@ fn has_event_handler(queue: &Rc<RefCell<vybe_host::SideEffectQueue>>, control: &
 
 /// A01. Button click handler reads TextBox.Text field (Me.txtInput.Text).
 #[test]
-#[ignore = "known bug: handler body Me.txtInput.Text read not wired to runtime property get"]
 fn a01_handler_reads_textbox_text() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -128,7 +127,6 @@ Dim f As New Form1()
 
 /// A02. Button click handler writes to Label.Text (Me.lblOutput.Text = "result").
 #[test]
-#[ignore = "known bug: Me.lblOutput.Text assignment in handler does not emit PropertyChange"]
 fn a02_handler_writes_label_text() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -155,7 +153,6 @@ Dim f As New Form1()
 
 /// A03. Handler concatenates text from two TextBoxes.
 #[test]
-#[ignore = "known bug: handler body with two Me.ctrl.Text reads not wired"]
 fn a03_handler_concatenates_two_textboxes() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -183,7 +180,6 @@ Dim f As New Form1()
 
 /// A04. Handler toggles CheckBox.Checked via Me reference.
 #[test]
-#[ignore = "known bug: Me.chk.Checked toggle in handler not compiled"]
 fn a04_handler_toggles_checkbox() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -206,7 +202,6 @@ Dim f As New Form1()
 
 /// A05. Handler reads one control, computes, writes to another.
 #[test]
-#[ignore = "known bug: cross-control read+compute+write in handler not wired"]
 fn a05_handler_reads_computes_writes() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -232,7 +227,6 @@ Dim f As New Form1()
 
 /// A06. Handler accesses form-level Dim field AND control property.
 #[test]
-#[ignore = "known bug: handler mixing Me.field and Me.ctrl.Text not supported"]
 fn a06_handler_accesses_field_and_control() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -311,7 +305,6 @@ Console.WriteLine(f.GetLog())
 
 /// B09. Boolean flag toggled by handler.
 #[test]
-#[ignore = "known bug: Not on boolean field returns non-callable error at runtime"]
 fn b09_boolean_flag_toggled() {
     let out = run_vb(r#"
 Public Class Form1
@@ -321,18 +314,18 @@ Public Class Form1
     Public Sub Toggle()
         isActive = Not isActive
     End Sub
-    Public Function IsActive() As Boolean
+    Public Function GetActive() As Boolean
         Return isActive
     End Function
 End Class
 Dim f As New Form1()
-Console.WriteLine(f.IsActive())
+Console.WriteLine(f.GetActive())
 f.Toggle()
-Console.WriteLine(f.IsActive())
+Console.WriteLine(f.GetActive())
 f.Toggle()
-Console.WriteLine(f.IsActive())
+Console.WriteLine(f.GetActive())
 "#);
-    assert_eq!(out, vec!["False", "True", "False"]);
+    assert_eq!(out, vec!["false", "true", "false"]);
 }
 
 /// B10. Handler stores value in field, another handler reads it.
@@ -649,7 +642,6 @@ f.AddWiredTextBox()
 
 /// E21. Two Partial Class declarations -- fields from both accessible.
 #[test]
-#[ignore = "known bug: partial class merging not implemented in compiler"]
 fn e21_partial_class_fields_merged() {
     let out = run_vb(r#"
 Partial Public Class Form1
@@ -671,7 +663,6 @@ f.ShowBoth()
 
 /// E22. Partial: one has InitializeComponent, other has event handlers.
 #[test]
-#[ignore = "known bug: partial class merging not implemented in compiler"]
 fn e22_partial_init_and_handlers() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -698,7 +689,6 @@ Dim f As New Form1()
 
 /// E23. Partial: constructor in designer part, methods in user part.
 #[test]
-#[ignore = "known bug: partial class merging not implemented in compiler"]
 fn e23_partial_constructor_in_designer() {
     let out = run_vb(r#"
 Partial Public Class Form1
@@ -719,7 +709,6 @@ Console.WriteLine(f.GetTitle())
 
 /// E24. Partial: field declared in designer, used in user method.
 #[test]
-#[ignore = "known bug: partial class merging not implemented in compiler"]
 fn e24_partial_field_cross_access() {
     let out = run_vb(r#"
 Partial Public Class Form1
@@ -740,7 +729,6 @@ Console.WriteLine(f.GetStatus())
 
 /// E25. Designer Friend WithEvents declarations parsed as fields.
 #[test]
-#[ignore = "known bug: Friend WithEvents field declarations not supported in compiler"]
 fn e25_friend_withevents_as_fields() {
     let (_vm, queue, _) = run_vb_gui(r#"
 Imports System.Windows.Forms

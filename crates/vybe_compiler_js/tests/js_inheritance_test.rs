@@ -129,7 +129,6 @@ fn test_05_super_with_arguments() {
 // 6. super.method() calls parent version
 // =============================================================================
 #[test]
-#[ignore = "known bug: super.method() resolves to null — parent method lookup not implemented"]
 fn test_06_super_method_call() {
     let code = r#"
         class Base {
@@ -307,7 +306,6 @@ fn test_14_method_calls_this_other_method() {
 // 15. Override that calls super.method() then adds logic
 // =============================================================================
 #[test]
-#[ignore = "known bug: super.method() resolves to null — parent method lookup not implemented"]
 fn test_15_override_calls_super_then_extends() {
     let code = r#"
         class Logger {
@@ -405,7 +403,6 @@ fn test_19_derived_overrides_getter() {
 // 20. No constructor in derived -- auto super()
 // =============================================================================
 #[test]
-#[ignore = "known bug: derived class without explicit constructor does not auto-call super()"]
 fn test_20_no_constructor_auto_super() {
     let code = r#"
         class Base {

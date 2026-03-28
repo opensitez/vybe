@@ -30,6 +30,8 @@ impl Value {
             Value::I32(n) => *n as f64,
             Value::I64(n) => *n as f64,
             Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+            Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
+            Value::Null => 0.0,
             _ => f64::NAN,
         }
     }

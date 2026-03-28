@@ -10,6 +10,43 @@ impl Compiler {
     pub(crate) fn compile_call_expr(&mut self, name: &Identifier, args: &[Expression]) -> Result<(), String> {
         let fname = name.as_str().to_lowercase();
 
+        // Me.Show() / Me.Close() / Me.Hide() inside a class
+        if fname.starts_with("me.") {
+            if let Some(me_slot) = self.current_scope().resolve_local("me") {
+                let method = &fname[3..];
+                match method {
+                    "show" => {
+                        self.emit_u16(Op::local_get, me_slot);
+                        let idx = self.import("vybe:gui", "showForm");
+                        self.emit_host_call(idx, 1);
+                        return Ok(());
+                    }
+                    "close" => {
+                        self.emit_u16(Op::local_get, me_slot);
+                        let idx = self.import("vybe:gui", "closeForm");
+                        self.emit_host_call(idx, 1);
+                        return Ok(());
+                    }
+                    "hide" => {
+                        self.emit(Op::null);
+                        return Ok(());
+                    }
+                    _ => {
+                        // Me.OtherMethod() → resolve as class method call
+                        if self.class_methods.contains(method) {
+                            self.emit_u16(Op::local_get, me_slot);
+                            let prop_idx = self.add_string_constant(method);
+                            self.emit_u16(Op::struct_get, prop_idx);
+                            self.emit_u16(Op::local_get, me_slot);
+                            for arg in args { self.compile_expression(arg)?; }
+                            self.emit_u8(Op::call, (args.len() + 1) as u8);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
         // Try builtin mapping first
         if let Some(()) = self.try_compile_builtin_call(&fname, args)? {
             return Ok(());
@@ -26,6 +63,23 @@ impl Compiler {
                 self.emit_u8(Op::call, (args.len() + 1) as u8);
                 return Ok(());
             }
+        }
+
+        // Check if name is a known array — treat as array access
+        // (VB uses parens for both calls and array indexing)
+        if self.known_arrays.contains(&fname) {
+            match self.resolve_variable(&fname) {
+                VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                VarResolution::Global => {
+                    let idx = self.add_string_constant(&fname);
+                    self.emit_u16(Op::global_get, idx);
+                }
+            }
+            if let Some(index) = args.first() {
+                self.compile_expression(index)?;
+                self.emit(Op::array_get);
+            }
+            return Ok(());
         }
 
         // Check if name is a local variable — if so, treat as array access

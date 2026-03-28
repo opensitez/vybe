@@ -17,6 +17,9 @@ pub struct Compiler {
     pub(crate) loop_stack: Vec<LoopContext>,
     pub(crate) class_fields: HashSet<String>,
     pub(crate) class_methods: HashSet<String>,
+    /// Stores each class's field/method names so derived classes can inherit them
+    pub(crate) class_field_map: std::collections::HashMap<String, HashSet<String>>,
+    pub(crate) class_method_map: std::collections::HashMap<String, HashSet<String>>,
     /// Component Model: imported interface prefixes from `Imports` statements.
     pub(crate) interface_imports: Vec<String>,
     /// Known built-in types: name → (constructor_module, constructor_fn)
@@ -24,6 +27,8 @@ pub struct Compiler {
     /// Declared function signatures: name → vec of is_byref per param
     /// Used to box/unbox ByRef args at call sites.
     pub(crate) func_signatures: std::collections::HashMap<String, Vec<bool>>,
+    /// Names known to hold arrays (from Dim arr(N) declarations)
+    pub(crate) known_arrays: HashSet<String>,
 }
 
 pub(crate) struct LoopContext {
@@ -48,8 +53,11 @@ impl Compiler {
             loop_stack: Vec::new(),
             class_fields: HashSet::new(),
             class_methods: HashSet::new(),
+            class_field_map: std::collections::HashMap::new(),
+            class_method_map: std::collections::HashMap::new(),
             known_types: Self::init_known_types(),
             func_signatures: std::collections::HashMap::new(),
+            known_arrays: HashSet::new(),
             interface_imports: vec![
                 // Default imports — always available
                 "system".into(),
@@ -442,12 +450,25 @@ impl Compiler {
             }
             Declaration::Variable(vars) => {
                 for var in vars {
-                    if let Some(ref init) = var.initializer {
+                    if let Some(ref bounds) = var.array_bounds {
+                        // Dim arr(N) — VB arrays are 0..N inclusive, so size = N+1
+                        if let Some(bound_expr) = bounds.first() {
+                            self.compile_expression(bound_expr)?;
+                            self.emit_constant(Value::F64(1.0));
+                            self.emit(Op::dyn_add);
+                            self.emit(Op::array_new_default);
+                        } else {
+                            self.emit_u16(Op::array_new, 0);
+                        }
+                    } else if let Some(ref init) = var.initializer {
                         self.compile_expression(init)?;
                     } else {
                         self.emit(Op::null);
                     }
                     let name = var.name.as_str().to_lowercase();
+                    if var.array_bounds.is_some() {
+                        self.known_arrays.insert(name.clone());
+                    }
                     if self.scopes.len() == 1 && self.current_scope().depth == 0 {
                         self.emit_global_set(&name);
                         self.emit(Op::drop);
