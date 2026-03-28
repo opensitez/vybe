@@ -19,7 +19,7 @@ pub fn register(vm: &mut VM) {
     let font = ensure_namespace(vm, &["System", "Drawing", "Font"]);
     set_prop(&font, "new", host_fn_ref(vm, "vybe:drawing", "fontNew"));
 
-    // Direct shortcuts
+    // Direct shortcuts — namespace objects with .new
     let pt_s = ensure_namespace(vm, &["Point"]);
     set_prop(&pt_s, "new", host_fn_ref(vm, "vybe:drawing", "pointNew"));
 
@@ -28,4 +28,10 @@ pub fn register(vm: &mut VM) {
 
     let font_s = ensure_namespace(vm, &["Font"]);
     set_prop(&font_s, "new", host_fn_ref(vm, "vybe:drawing", "fontNew"));
+
+    // Also register as bare callable globals for `new Point(10, 20)` pattern
+    vm.globals.insert("point".into(), host_fn_ref(vm, "vybe:drawing", "pointNew"));
+    vm.globals.insert("size".into(), host_fn_ref(vm, "vybe:drawing", "sizeNew"));
+    vm.globals.insert("sizef".into(), host_fn_ref(vm, "vybe:drawing", "sizeNew"));
+    vm.globals.insert("font".into(), host_fn_ref(vm, "vybe:drawing", "fontNew"));
 }

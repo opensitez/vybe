@@ -51,7 +51,6 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
             let control = str_arg(args, 0, "");
             let event = str_arg(args, 1, "");
             let callback = args.get(2).cloned().unwrap_or(Value::Null);
-            eprintln!("[onEvent] ctrl={} event={} callback={}", control, event, callback.type_tag());
             q.borrow_mut().register_event(&control, &event, callback);
             Value::Null
         })

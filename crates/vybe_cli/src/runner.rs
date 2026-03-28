@@ -41,9 +41,10 @@ pub fn run(path: &Path, extra_args: &[String]) {
         "vb" => run_vb_file(path, extra_args),
         "vbp" | "vbproj" => run_project(path, extra_args),
         "js" => run_js_file(path),
+        "cs" => run_cs_file(path),
         _ => {
             eprintln!(
-                "Error: unsupported file type '.{}'. Expected .vb, .vbp, .vbproj, or .js",
+                "Error: unsupported file type '.{}'. Expected .vb, .vbp, .vbproj, .js, or .cs",
                 ext
             );
             std::process::exit(1);
@@ -605,6 +606,48 @@ fn JsFormApp() -> Element {
             })}
         }
     }
+}
+
+/// Run a standalone .cs file via the bytecode VM.
+fn run_cs_file(path: &Path) {
+    let code = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error reading file: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let unit = match vybe_parser_csharp::parse(&code) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("Parse error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut vm = vybe_bytecode::VM::new();
+    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
+    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    vybe_host::setup_namespaces(&mut vm);
+
+    let chunks = match vybe_compiler_csharp::Compiler::new().compile(&unit) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Compile error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match vm.run(chunks) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Runtime error: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    launch_vm_form(vm, queue);
 }
 
 /// Run a standalone .vb file via the bytecode VM.

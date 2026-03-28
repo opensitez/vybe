@@ -64,9 +64,14 @@ pub fn register(vm: &mut VM) {
             })
         });
         set_prop(&forms, &type_name.to_lowercase(), host_fn_ref(vm, "vybe:gui", &hn));
+        // Also register as bare global: Button, TextBox, etc.
+        // This allows `new Button()` after `using System.Windows.Forms;`
+        let bare_fn = host_fn_ref(vm, "vybe:gui", &hn);
+        vm.globals.insert(type_name.to_lowercase(), bare_fn);
     }
 
     set_prop(&forms, "form", host_fn_ref(vm, "vybe:gui", "newForm"));
+    vm.globals.insert("form".into(), host_fn_ref(vm, "vybe:gui", "newForm"));
 
     // --- WinForms Constants & Enums ---
 

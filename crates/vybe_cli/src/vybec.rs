@@ -58,13 +58,14 @@ fn main() {
         "wasm" => run_wasm(path),
         "vybe" => run_project(path, dump),
         "vbp" | "vbproj" => vybe_cli::runner::run(path, &[]),
+        "cs" => vybe_cli::runner::run(path, &[]),
         _ => {
             // Check if directory has a .vybe project file
             let vybe_path = path.join("project.vybe");
             if vybe_path.exists() {
                 run_project(&vybe_path, dump);
             } else {
-                eprintln!("Error: unsupported file type '.{}'. Expected .vb, .js, .vbp, .vbproj, or .vybe", ext);
+                eprintln!("Error: unsupported file type '.{}'. Expected .vb, .js, .cs, .vbp, .vbproj, or .vybe", ext);
                 std::process::exit(1);
             }
         }

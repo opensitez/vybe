@@ -1,0 +1,11 @@
+[package]
+name = "vybe_compiler_csharp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vybe_parser_csharp = { path = "../vybe_parser_csharp" }
+vybe_bytecode = { path = "../vybe_bytecode" }
+
+[dev-dependencies]
+vybe_host = { path = "../vybe_host" }
