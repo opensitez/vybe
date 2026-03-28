@@ -115,14 +115,13 @@ impl Parser {
                 let mut interfaces = Vec::new();
                 if self.eat(TokenKind::Colon) {
                     let first = self.parse_type_name()?;
-                    // First could be base class or interface
                     base_type = Some(first);
                     while self.eat(TokenKind::Comma) {
                         interfaces.push(self.parse_type_name()?);
                     }
                 }
                 self.expect(TokenKind::LBrace)?;
-                let members = self.parse_class_body()?;
+                let members = self.parse_class_body_named(&name)?;
                 self.expect(TokenKind::RBrace)?;
                 Ok(TypeDecl::Class(ClassDecl {
                     name, is_partial, is_static, is_abstract,
@@ -166,9 +165,16 @@ impl Parser {
     }
 
     fn parse_class_body(&mut self) -> Result<Vec<MemberDecl>, String> {
+        self.parse_class_body_with_name(None)
+    }
+
+    fn parse_class_body_named(&mut self, class_name: &str) -> Result<Vec<MemberDecl>, String> {
+        self.parse_class_body_with_name(Some(class_name.to_string()))
+    }
+
+    fn parse_class_body_with_name(&mut self, class_name: Option<String>) -> Result<Vec<MemberDecl>, String> {
         let mut members = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
-            // Skip attributes
             if self.check(TokenKind::LBracket) {
                 self.advance();
                 let mut depth = 1;
@@ -179,12 +185,16 @@ impl Parser {
                 }
                 continue;
             }
-            members.push(self.parse_member_decl()?);
+            members.push(self.parse_member_decl_with_class(class_name.as_deref())?);
         }
         Ok(members)
     }
 
     fn parse_member_decl(&mut self) -> Result<MemberDecl, String> {
+        self.parse_member_decl_with_class(None)
+    }
+
+    fn parse_member_decl_with_class(&mut self, class_name: Option<&str>) -> Result<MemberDecl, String> {
         let mut access = Access::Private;
         let mut is_static = false;
         let mut is_override = false;
@@ -220,10 +230,12 @@ impl Parser {
         }
 
         // Constructor: ClassName(params) { body }
-        // Check if current token is the class name followed by (
         if let TokenKind::Identifier(ref name) = self.current() {
             let name = name.clone();
-            if self.peek_at(1) == Some(&TokenKind::LParen) && !self.is_type_name_next() {
+            let is_constructor = self.peek_at(1) == Some(&TokenKind::LParen)
+                && (class_name.map(|cn| cn.eq_ignore_ascii_case(&name)).unwrap_or(false)
+                    || !self.is_type_name_next());
+            if is_constructor {
                 self.advance(); // skip name
                 let params = self.parse_params()?;
                 let base_args = if self.eat(TokenKind::Colon) {

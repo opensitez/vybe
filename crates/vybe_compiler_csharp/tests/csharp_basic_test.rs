@@ -313,7 +313,6 @@ fn array_length() {
 // ============================================================
 
 #[test]
-#[ignore = "known bug"]
 fn try_catch_basic() {
     let out = run_cs(r#"
         try {
@@ -372,7 +371,6 @@ fn string_plus_number() {
 // ============================================================
 
 #[test]
-#[ignore = "known bug"]
 fn do_while_loop() {
     let out = run_cs(r#"
         var i = 0;
@@ -389,7 +387,6 @@ fn do_while_loop() {
 // ============================================================
 
 #[test]
-#[ignore = "known bug"]
 fn switch_basic() {
     let out = run_cs(r#"
         var x = 2;
@@ -410,7 +407,7 @@ fn switch_basic() {
 // ============================================================
 
 #[test]
-#[ignore = "known bug"]
+#[ignore = "known bug: nested this.obj.prop chain returns 0"]
 fn class_calling_another_class() {
     let out = run_cs(r#"
         class Point {

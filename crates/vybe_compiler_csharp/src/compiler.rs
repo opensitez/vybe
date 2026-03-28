@@ -1139,17 +1139,12 @@ impl Compiler {
 
                 self.compile_expression(condition)?;
                 self.emit(Op::dyn_to_bool);
-                self.emit_jump(Op::br_if_false); // exits if false
+                let exit = self.emit_jump(Op::br_if_false);
                 self.emit_loop(loop_start);
+                self.patch_jump(exit);
 
-                let exit_offset = self.current_offset();
-                // Patch the br_if_false to jump to here — but actually emit_jump
-                // already set up the placeholder. We need to capture it.
-                // Fix: re-do with proper structure
                 let ctx = self.loop_stack.pop().unwrap();
                 for j in &ctx.break_jumps { self.patch_jump(*j); }
-                // The br_if_false goes to after the loop automatically via patch
-                let _ = exit_offset;
             }
 
             Statement::Switch { expr, cases } => {
@@ -1365,6 +1360,13 @@ impl Compiler {
         self.emit_u16(Op::local_set, switch_slot);
         self.emit(Op::drop);
 
+        // Push loop context so break statements work inside switch
+        self.loop_stack.push(LoopContext {
+            start: 0,
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+        });
+
         let mut end_jumps: Vec<usize> = Vec::new();
 
         for case in cases {
@@ -1399,6 +1401,8 @@ impl Compiler {
             }
         }
 
+        let ctx = self.loop_stack.pop().unwrap();
+        for j in &ctx.break_jumps { self.patch_jump(*j); }
         for j in &end_jumps { self.patch_jump(*j); }
         Ok(())
     }
@@ -1424,13 +1428,14 @@ impl Compiler {
         self.emit(Op::try_end);
         let end_j = self.emit_jump(Op::br);
 
-        // Patch catch offset
+        // Patch catch offset (relative to IP after try_start's 4 operand bytes)
         if !catches.is_empty() {
             let catch_pos = self.current_offset();
-            let try_start_code_pos = try_start_offset + 2; // after op bytes
+            let ip_after_try_start = try_start_offset + 5; // 1 op byte + 4 operand bytes
+            let relative_offset = catch_pos as i16 - ip_after_try_start as i16;
             let c = &mut self.chunks[self.current_chunk_idx];
-            c.code[try_start_code_pos] = (catch_pos >> 8) as u8;
-            c.code[try_start_code_pos + 1] = (catch_pos & 0xff) as u8;
+            c.code[try_start_offset + 1] = (relative_offset >> 8) as u8;
+            c.code[try_start_offset + 2] = (relative_offset & 0xff) as u8;
 
             for catch_clause in catches {
                 self.current_scope_mut().begin_scope();
