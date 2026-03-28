@@ -119,6 +119,7 @@ pub struct Compiler {
     line: u32,
     defined_globals: HashSet<String>,
     defined_classes: HashSet<String>,
+    defined_interfaces: HashSet<String>,
     function_name_stack: Vec<String>,
     loop_stack: Vec<LoopContext>,
     class_fields: HashSet<String>,
@@ -138,6 +139,7 @@ impl Compiler {
             line: 1,
             defined_globals: HashSet::new(),
             defined_classes: HashSet::new(),
+            defined_interfaces: HashSet::new(),
             function_name_stack: Vec::new(),
             loop_stack: Vec::new(),
             class_fields: HashSet::new(),
@@ -181,10 +183,16 @@ impl Compiler {
             }
         }
 
-        // First pass: register class names so New works
+        // First pass: register class and interface names
         for member in &unit.members {
-            if let TypeDecl::Class(class) = member {
-                self.defined_classes.insert(class.name.to_lowercase());
+            match member {
+                TypeDecl::Class(class) => {
+                    self.defined_classes.insert(class.name.to_lowercase());
+                }
+                TypeDecl::Interface(iface) => {
+                    self.defined_interfaces.insert(iface.name.to_lowercase());
+                }
+                _ => {}
             }
         }
 
@@ -436,7 +444,7 @@ impl Compiler {
                 };
                 self.compile_class(&class)
             }
-            TypeDecl::Interface(_) => Ok(()), // Interfaces are type-only, no code
+            TypeDecl::Interface(iface) => self.compile_interface(iface),
         }
     }
 
@@ -459,6 +467,21 @@ impl Compiler {
             val += 1;
         }
         self.emit_global_set(&e.name.to_lowercase());
+        self.emit(Op::drop);
+        Ok(())
+    }
+
+    fn compile_interface(&mut self, iface: &InterfaceDecl) -> Result<(), String> {
+        // Compile interface as an empty marker object stored as a global.
+        // Duck typing means any class with the right methods "implements" it.
+        self.emit_u16(Op::struct_new, 0);
+        // Store the interface name so it can be referenced
+        let name_idx = self.add_string_constant("__interface_name");
+        self.emit(Op::dup);
+        self.emit_constant(Value::String(Rc::from(iface.name.as_str())));
+        self.emit_u16(Op::struct_set, name_idx);
+        self.emit(Op::drop);
+        self.emit_global_set(&iface.name.to_lowercase());
         self.emit(Op::drop);
         Ok(())
     }
@@ -577,7 +600,8 @@ impl Compiler {
                     "form" | "control" | "usercontrol" | "panel" | "component"
                     | "object" | "eventargs" | "exception"
                 );
-            if !parent_lower.is_empty() && !is_framework {
+            let is_interface = self.defined_interfaces.contains(&parent_lower);
+            if !parent_lower.is_empty() && !is_framework && !is_interface {
                 // Store __super
                 self.emit_u16(Op::local_get, this_slot);
                 let parent_idx = self.add_string_constant(&parent_lower);
@@ -614,8 +638,9 @@ impl Compiler {
             self.emit(Op::drop);
         }
 
-        // Save base methods for override
-        if class.base_type.is_some() {
+        // Save base methods for override (skip for interface implementations)
+        let base_is_class = class.base_type.as_ref().map(|b| !self.defined_interfaces.contains(&b.to_lowercase())).unwrap_or(false);
+        if base_is_class {
             for method in &instance_methods {
                 let base_name = format!("__base_{}", method.name.to_lowercase());
                 self.emit_u16(Op::local_get, this_slot);
@@ -696,12 +721,13 @@ impl Compiler {
 
         self.emit_ref_func(idx, &upvalues);
 
-        // Inherit parent's static members
+        // Inherit parent's static members (skip for interface implementations)
         if let Some(ref parent) = class.base_type {
             let parent_lower = parent.to_lowercase();
             let is_fw = parent_lower.starts_with("system.")
                 || matches!(parent_lower.as_str(), "form" | "control" | "usercontrol" | "panel" | "component" | "object" | "exception");
-            if !parent_lower.is_empty() && !is_fw {
+            let is_iface = self.defined_interfaces.contains(&parent_lower);
+            if !parent_lower.is_empty() && !is_fw && !is_iface {
                 self.emit(Op::dup);
                 let parent_idx = self.add_string_constant(&parent_lower);
                 self.emit_u16(Op::global_get, parent_idx);

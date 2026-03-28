@@ -1394,3 +1394,107 @@ fn using_statement_scope() {
     "#);
     assert_eq!(out, vec!["42"]);
 }
+
+// ============================================================
+// INTERFACES
+// ============================================================
+
+#[test]
+fn interface_basic() {
+    // Define an interface + a class that implements it, call via class instance
+    let out = run_cs(r#"
+        interface IGreeter {
+            string Greet();
+        }
+        class HelloGreeter : IGreeter {
+            public string Greet() {
+                return "Hello from interface!";
+            }
+        }
+        var g = new HelloGreeter();
+        Console.WriteLine(g.Greet());
+    "#);
+    assert_eq!(out, vec!["Hello from interface!"]);
+}
+
+#[test]
+fn interface_multiple_methods() {
+    let out = run_cs(r#"
+        interface ICalc {
+            int Add(int a, int b);
+            int Mul(int a, int b);
+        }
+        class Calc : ICalc {
+            public int Add(int a, int b) { return a + b; }
+            public int Mul(int a, int b) { return a * b; }
+        }
+        var c = new Calc();
+        Console.WriteLine(c.Add(3, 4));
+        Console.WriteLine(c.Mul(3, 4));
+    "#);
+    assert_eq!(out, vec!["7", "12"]);
+}
+
+// ============================================================
+// PARAMS ARRAYS
+// ============================================================
+
+#[test]
+fn params_array_explicit() {
+    // params parameter receives an explicit array
+    let out = run_cs(r#"
+        class Program {
+            static int Sum(params int[] numbers) {
+                var total = 0;
+                for (var i = 0; i < numbers.Length; i++) {
+                    total = total + numbers[i];
+                }
+                return total;
+            }
+            static void Main() {
+                var arr = new int[] {1, 2, 3, 4, 5};
+                Console.WriteLine(Sum(arr));
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["15"]);
+}
+
+// ============================================================
+// REF / OUT PARAMETERS
+// ============================================================
+
+#[test]
+fn ref_parameter_pass_through() {
+    // ref parameter passes the value through (no writeback — known limitation)
+    let out = run_cs(r#"
+        class Program {
+            static int Double(ref int x) {
+                return x * 2;
+            }
+            static void Main() {
+                int val = 21;
+                Console.WriteLine(Double(ref val));
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["42"]);
+}
+
+#[test]
+fn out_parameter_pass_through() {
+    // out parameter works as a regular parameter
+    let out = run_cs(r#"
+        class Program {
+            static bool TryParse(string s, out int result) {
+                result = 42;
+                return true;
+            }
+            static void Main() {
+                int x = 0;
+                Console.WriteLine(TryParse("42", out x));
+            }
+        }
+    "#);
+    assert_eq!(out, vec!["true"]);
+}
