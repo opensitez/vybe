@@ -1240,9 +1240,11 @@ impl Compiler {
             }
 
             Statement::Block(stmts) => {
-                self.current_scope_mut().begin_scope();
+                // If all children are LocalDecl, this is a multi-variable decl — don't scope
+                let all_decls = stmts.iter().all(|s| matches!(s, Statement::LocalDecl { .. }));
+                if !all_decls { self.current_scope_mut().begin_scope(); }
                 for s in stmts { self.compile_statement(s)?; }
-                let _popped = self.current_scope_mut().end_scope();
+                if !all_decls { let _popped = self.current_scope_mut().end_scope(); }
             }
 
             Statement::Empty => {}
@@ -2020,6 +2022,14 @@ impl Compiler {
                         self.emit_host_call(idx, args.len() as u8);
                         return Ok(());
                     }
+                }
+                // string.Join(sep, arr) → array_join opcode
+                if obj_lower == "string" && meth_lower == "join" && args.len() == 2 {
+                    // array_join expects [array, delimiter] on stack
+                    self.compile_expression(&args[1])?; // array
+                    self.compile_expression(&args[0])?; // delimiter
+                    self.emit(Op::array_join);
+                    return Ok(());
                 }
                 // Other namespaces — resolve via global namespace objects
                 if self.is_namespace(&obj_lower) && obj_lower != "console" {

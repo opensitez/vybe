@@ -468,11 +468,27 @@ impl Parser {
             // Type keyword followed by identifier — local declaration
             TokenKind::Int | TokenKind::String_ | TokenKind::Double | TokenKind::Float
             | TokenKind::Bool | TokenKind::Char | TokenKind::Long | TokenKind::Byte | TokenKind::Object => {
-                self.parse_typed_local_decl()
+                self.parse_typed_local_decl_as_stmt()
             }
             _ => {
-                // Could be: expression statement, or typed local decl (e.g. MyClass x = ...)
-                // Try expression first
+                // Check for typed local decl: Identifier Identifier = ...
+                // e.g. Foo f = null; or MyClass obj = new MyClass();
+                if let TokenKind::Identifier(_) = self.current() {
+                    if let Some(TokenKind::Identifier(_)) = self.peek_at(1) {
+                        return self.parse_typed_local_decl_as_stmt();
+                    }
+                    // Also handle dotted type: System.IO.Stream s = ...
+                    if let Some(TokenKind::Dot) = self.peek_at(1) {
+                        // Could be dotted type or member access — try typed decl
+                        let saved = self.pos;
+                        if let Ok(stmts) = self.parse_typed_local_decl() {
+                            return Ok(Self::flatten_decls(stmts));
+                        }
+                        self.pos = saved; // backtrack
+                    }
+                }
+
+                // Expression statement or assignment
                 let expr = self.parse_expression()?;
                 // Check for compound assignment
                 let stmt = match self.current() {
@@ -668,12 +684,36 @@ impl Parser {
         Ok(Statement::LocalDecl { name, type_name, initializer, is_var })
     }
 
-    fn parse_typed_local_decl(&mut self) -> Result<Statement, String> {
+    fn parse_typed_local_decl_as_stmt(&mut self) -> Result<Statement, String> {
+        let stmts = self.parse_typed_local_decl()?;
+        Ok(Self::flatten_decls(stmts))
+    }
+
+    fn flatten_decls(stmts: Vec<Statement>) -> Statement {
+        if stmts.len() == 1 {
+            stmts.into_iter().next().unwrap()
+        } else {
+            Statement::Block(stmts)
+        }
+    }
+
+    fn parse_typed_local_decl(&mut self) -> Result<Vec<Statement>, String> {
         let type_name = self.parse_type_name()?;
         let name = self.expect_ident()?;
         let initializer = if self.eat(TokenKind::Assign) { Some(self.parse_expression()?) } else { None };
+        let mut stmts = vec![Statement::LocalDecl {
+            name, type_name: Some(type_name.clone()), initializer, is_var: false,
+        }];
+        // Check for multi-variable: int a = 1, b = 2;
+        while self.eat(TokenKind::Comma) {
+            let n = self.expect_ident()?;
+            let init = if self.eat(TokenKind::Assign) { Some(self.parse_expression()?) } else { None };
+            stmts.push(Statement::LocalDecl {
+                name: n, type_name: Some(type_name.clone()), initializer: init, is_var: false,
+            });
+        }
         self.expect(TokenKind::Semicolon)?;
-        Ok(Statement::LocalDecl { name, type_name: Some(type_name), initializer, is_var: false })
+        Ok(stmts)
     }
 
     // ================================================================
@@ -787,6 +827,10 @@ impl Parser {
         loop {
             if self.eat(TokenKind::Dot) {
                 let member = self.expect_ident()?;
+                // Skip generic type args: Method<T>(...) or Method<T, U>(...)
+                if self.check(TokenKind::Lt) && self.is_generic_args_ahead() {
+                    self.skip_generic_args();
+                }
                 if self.check(TokenKind::LParen) {
                     // Method call
                     self.advance();
@@ -910,8 +954,16 @@ impl Parser {
                 }
             }
             TokenKind::LParen => {
+                // Check for cast: (Type)expr — type keyword or known type followed by )
+                if self.is_cast_ahead() {
+                    self.advance(); // skip (
+                    let type_name = self.parse_type_name()?;
+                    self.expect(TokenKind::RParen)?;
+                    let inner = self.parse_unary()?;
+                    return Ok(Expression::Cast(type_name, Box::new(inner)));
+                }
                 self.advance();
-                // Could be cast: (Type)expr, grouping: (expr), or tuple: (a, b, ...)
+                // Could be grouping: (expr) or tuple: (a, b, ...)
                 let expr = self.parse_expression()?;
                 if self.eat(TokenKind::Comma) {
                     // Tuple literal: (a, b, ...)
@@ -1057,7 +1109,17 @@ impl Parser {
                 name.push(',');
                 name.push_str(&self.parse_type_name()?);
             }
-            self.expect(TokenKind::Gt)?;
+            // Handle >> as two closing angle brackets (nested generics: List<List<int>>)
+            if self.eat(TokenKind::Gt) {
+                // Normal single >
+            } else if self.check(TokenKind::Shr) {
+                // >> — consume as one > and leave the other for the outer generic
+                // Replace Shr with Gt in the token stream
+                self.tokens[self.pos].kind = TokenKind::Gt;
+                // Don't advance — the Gt will be consumed by the outer parse_type_name
+            } else {
+                return Err(format!("Expected > in generic type, got {:?} at line {}", self.current(), self.line()));
+            }
             name.push('>');
         }
         // Array: string[]
@@ -1133,5 +1195,72 @@ impl Parser {
 
     fn is_callable(&self, expr: &Expression) -> bool {
         matches!(expr, Expression::Identifier(_) | Expression::MemberAccess(_, _))
+    }
+
+    /// Check if `<` at current position is the start of generic type arguments (not a comparison).
+    /// Heuristic: scan for balanced `<`/`>` and check if `(` follows.
+    fn is_generic_args_ahead(&self) -> bool {
+        let mut i = self.pos + 1; // skip the `<`
+        let mut depth = 1;
+        while i < self.tokens.len() && depth > 0 {
+            match &self.tokens[i].kind {
+                TokenKind::Lt => depth += 1,
+                TokenKind::Gt => depth -= 1,
+                TokenKind::Shr => { depth -= 2; } // >> counts as two >
+                TokenKind::Semicolon | TokenKind::LBrace | TokenKind::RBrace => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        // After balanced <>, should see ( for a generic method call
+        depth == 0 && i < self.tokens.len() && matches!(self.tokens[i].kind, TokenKind::LParen)
+    }
+
+    /// Skip generic type arguments: <T>, <T, U>, etc.
+    fn skip_generic_args(&mut self) {
+        if !self.eat(TokenKind::Lt) { return; }
+        let mut depth = 1;
+        while depth > 0 && !self.at_end() {
+            match self.current() {
+                TokenKind::Lt => { depth += 1; self.advance(); }
+                TokenKind::Gt => { depth -= 1; self.advance(); }
+                TokenKind::Shr => { depth -= 2; self.advance(); }
+                _ => { self.advance(); }
+            }
+        }
+    }
+
+    /// Check if the current `(` starts a cast expression: `(type)expr`
+    /// Looks for `(` type_keyword `)` pattern.
+    fn is_cast_ahead(&self) -> bool {
+        if !self.check(TokenKind::LParen) { return false; }
+        // peek_at(0) is LParen, peek_at(1) should be a type keyword
+        let next = self.peek_at(1);
+        let is_type = matches!(next,
+            Some(TokenKind::Int | TokenKind::String_ | TokenKind::Double | TokenKind::Float
+                | TokenKind::Bool | TokenKind::Char | TokenKind::Long | TokenKind::Byte | TokenKind::Object)
+        );
+        if !is_type { return false; }
+        // Check if the token after the type keyword is `)` — simple cast like (int)
+        // Or `[]` then `)` — array cast like (int[])
+        let after_type = self.peek_at(2);
+        if matches!(after_type, Some(TokenKind::RParen)) {
+            return true;
+        }
+        // (int[])expr
+        if matches!(after_type, Some(TokenKind::LBracket)) {
+            if matches!(self.peek_at(3), Some(TokenKind::RBracket)) {
+                if matches!(self.peek_at(4), Some(TokenKind::RParen)) {
+                    return true;
+                }
+            }
+        }
+        // (int?)expr
+        if matches!(after_type, Some(TokenKind::Question)) {
+            if matches!(self.peek_at(3), Some(TokenKind::RParen)) {
+                return true;
+            }
+        }
+        false
     }
 }
