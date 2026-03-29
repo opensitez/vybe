@@ -80,6 +80,13 @@ fn show_properties(ui: &mut Ui, state: &mut EditorState, sel_id: Option<uuid::Uu
                     p.get_string("BorderStyle").unwrap_or_default().to_string(),
                     // ProgressBar/TrackBar value
                     p.get_string("Value").unwrap_or_else(|| "0").to_string(),
+                    // DataBindings — bindable properties for visual controls
+                    p.get_string("DataBindings.Text").unwrap_or_default().to_string(),
+                    p.get_string("DataBindings.Checked").unwrap_or_default().to_string(),
+                    p.get_string("DataBindings.Value").unwrap_or_default().to_string(),
+                    p.get_string("DataBindings.SelectedValue").unwrap_or_default().to_string(),
+                    p.get_string("DataBindings.Visible").unwrap_or_default().to_string(),
+                    p.get_string("DataBindings.Enabled").unwrap_or_default().to_string(),
                 )
             })
         });
@@ -106,6 +113,8 @@ fn show_properties(ui: &mut Ui, state: &mut EditorState, sel_id: Option<uuid::Uu
             mut multiline,
             mut border_style,
             mut value,
+            mut db_text, mut db_checked, mut db_value,
+            mut db_selected_value, mut db_visible, mut db_enabled,
         )) = snap else {
             ui.label("Control not found.");
             return;
@@ -279,6 +288,12 @@ fn show_properties(ui: &mut Ui, state: &mut EditorState, sel_id: Option<uuid::Uu
                     ctrl.properties.set("BindingSource", binding_source);
                     ctrl.properties.set("DisplayMember", display_member);
                     ctrl.properties.set("ValueMember",   value_member);
+                    ctrl.properties.set("DataBindings.Text",          db_text);
+                    ctrl.properties.set("DataBindings.Checked",       db_checked);
+                    ctrl.properties.set("DataBindings.Value",         db_value);
+                    ctrl.properties.set("DataBindings.SelectedValue", db_selected_value);
+                    ctrl.properties.set("DataBindings.Visible",       db_visible);
+                    ctrl.properties.set("DataBindings.Enabled",       db_enabled);
                     ctrl.tab_index = tab_index;
                 }
                 match ctrl.control_type {

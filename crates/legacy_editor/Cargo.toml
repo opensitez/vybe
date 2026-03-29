@@ -1,12 +1,12 @@
 [package]
-name = "vybe_editor"
+name = "legacy_editor"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "vybe_editor"
+name = "legacy_editor"
 path = "src/main.rs"
 
 [dependencies]
@@ -16,6 +16,7 @@ vybe_project = { workspace = true }
 vybe_host = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_compiler_vb = { workspace = true }
+vybe_cli = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 
