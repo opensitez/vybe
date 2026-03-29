@@ -1,6 +1,13 @@
 use ropey::Rope;
 use crate::language::LanguageDef;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LexerState {
+    #[default]
+    Normal,
+    InBlockComment,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Whitespace,
@@ -20,17 +27,45 @@ pub struct TokenSpan {
     pub kind: TokenKind,
 }
 
-// Tokenize a single line, returning tokens with absolute byte offsets (document-relative)
-fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef) -> Vec<TokenSpan> {
+pub struct Editor {
+    pub rope: Rope,
+    pub line_tokens: Vec<Vec<TokenSpan>>,
+    pub line_states: Vec<LexerState>,
+    pub folds: Vec<(usize, usize)>, // foldable ranges: (start_li, end_li)
+    pub collapsed_starts: std::collections::HashSet<usize>, // line indices that are COLLAPSED
+}
+
+// Tokenize a single line, returning tokens and the final state for the next line
+fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef, mut state: LexerState) -> (Vec<TokenSpan>, LexerState) {
     let bytes = line.as_bytes();
     let mut i = 0usize;
     let n = bytes.len();
     let mut out = Vec::new();
 
-    // Basic comment marker check (we'll improve this to be 100% dynamic later)
-    let is_hash_comment = lang.keywords.contains("None") || lang.keywords.contains("elif"); // heuristic for python/shell
+    let line_comment = lang.comments.as_ref().and_then(|c| c.line_comment.as_ref());
+    let block_comment = lang.comments.as_ref().and_then(|c| c.block_comment.as_ref());
     
     while i < n {
+        if state == LexerState::InBlockComment {
+            let start = i;
+            if let Some((_, end_marker)) = block_comment {
+                let emb = end_marker.as_bytes();
+                let mut found = false;
+                while i < n {
+                    if i + emb.len() <= n && &bytes[i..i+emb.len()] == emb {
+                        i += emb.len();
+                        state = LexerState::Normal;
+                        found = true;
+                        break;
+                    }
+                    i += 1;
+                }
+                out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::BlockComment });
+                if found { continue; }
+            } else { i = n; out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::BlockComment }); }
+            continue;
+        }
+
         let b = bytes[i];
         if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
             let start = i;
@@ -39,27 +74,28 @@ fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef) -> Vec<Toke
             out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::Whitespace });
             continue;
         }
-        // Handle Line Comments (Dynamic-ish)
-        if b == b'/' && i + 1 < n && bytes[i+1] == b'/' {
-            let start = i;
-            i = n;
-            out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::LineComment });
-            continue;
+
+        // Check Line Comment (Dynamic)
+        if let Some(prefix) = line_comment {
+            let pb = prefix.as_bytes();
+            if i + pb.len() <= n && &bytes[i..i+pb.len()] == pb {
+                let start = i;
+                i = n;
+                out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::LineComment });
+                continue;
+            }
         }
-        if b == b'#' && is_hash_comment {
-            let start = i;
-            i = n;
-            out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::LineComment });
-            continue;
+
+        // Check Block Comment Start (Dynamic)
+        if let Some((start_marker, _)) = block_comment {
+            let smb = start_marker.as_bytes();
+            if i + smb.len() <= n && &bytes[i..i+smb.len()] == smb {
+                state = LexerState::InBlockComment;
+                // Re-loop will hit the InBlockComment case immediately
+                continue;
+            }
         }
-        if b == b'/' && i + 1 < n && bytes[i+1] == b'*' {
-            let start = i;
-            i += 2;
-            while i + 1 < n && !(bytes[i] == b'*' && bytes[i+1] == b'/') { i += 1; }
-            if i + 1 < n { i += 2; } else { i = n; }
-            out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::BlockComment });
-            continue;
-        }
+
         if b == b'\'' || b == b'"' {
             let quote = b;
             let start = i;
@@ -90,19 +126,15 @@ fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef) -> Vec<Toke
         i += 1;
         out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::Punct });
     }
-    out
+    (out, state)
 }
 
-pub struct Editor {
-    pub rope: Rope,
-    pub line_tokens: Vec<Vec<TokenSpan>>,
-    pub folds: Vec<(usize, usize)>,
-}
+// Redundant struct def removed
 
 impl Editor {
     pub fn from_text(text: &str, lang: &LanguageDef) -> Self {
         let rope = Rope::from_str(text);
-        let mut ed = Self { rope, line_tokens: Vec::new(), folds: Vec::new() };
+        let mut ed = Self { rope, line_tokens: Vec::new(), line_states: Vec::new(), folds: Vec::new(), collapsed_starts: std::collections::HashSet::new() };
         ed.retokenize_all(lang);
         ed
     }
@@ -141,33 +173,52 @@ impl Editor {
     /// Retokenize the entire buffer and update line_tokens and folds.
     pub fn retokenize_all(&mut self, lang: &LanguageDef) {
         self.line_tokens.clear();
+        self.line_states.clear();
         let mut byte_offset = 0usize;
+        let mut state = LexerState::Normal;
         for line_idx in 0..self.rope.len_lines() {
+            self.line_states.push(state);
             let line = self.rope.line(line_idx).to_string();
-            let tokens = tokenize_line(&line, byte_offset, lang);
+            let (tokens, next_state) = tokenize_line(&line, byte_offset, lang, state);
             self.line_tokens.push(tokens);
+            state = next_state;
             byte_offset += line.len();
         }
-        self.recompute_folds();
+        self.recompute_folds(lang);
     }
 
     /// Retokenize a range of lines (inclusive start..=end)
     pub fn retokenize_range(&mut self, start_line: usize, end_line: usize, lang: &LanguageDef) {
         if start_line >= self.rope.len_lines() { return; }
-        let end_line = std::cmp::min(end_line, self.rope.len_lines() - 1);
+        
+        let mut li = start_line;
         let mut byte_offset = 0usize;
         for i in 0..start_line { byte_offset += self.rope.line(i).len_bytes(); }
-        for li in start_line..=end_line {
+        
+        let mut state = self.line_states[li];
+        
+        while li < self.rope.len_lines() {
+            // Store the state at START of line
+            if li < self.line_states.len() { self.line_states[li] = state; }
+            else { self.line_states.push(state); }
+
             let line = self.rope.line(li).to_string();
-            let tokens = tokenize_line(&line, byte_offset, lang);
-            if li < self.line_tokens.len() {
-                self.line_tokens[li] = tokens;
-            } else {
-                self.line_tokens.push(tokens);
-            }
+            let (tokens, next_state) = tokenize_line(&line, byte_offset, lang, state);
+            
+            if li < self.line_tokens.len() { self.line_tokens[li] = tokens; }
+            else { self.line_tokens.push(tokens); }
+
             byte_offset += line.len();
+            li += 1;
+            
+            // If we've passed the requested range AND the state has stabilized, we can stop
+            if li > end_line {
+                if li < self.line_states.len() && self.line_states[li] == next_state { break; }
+                if li == self.rope.len_lines() { break; }
+            }
+            state = next_state;
         }
-        self.recompute_folds();
+        self.recompute_folds(lang);
     }
 
     /// Return a flat token list across all lines (useful for backends)
@@ -179,25 +230,34 @@ impl Editor {
         out
     }
 
-    fn recompute_folds(&mut self) {
+    pub fn toggle_fold(&mut self, line_idx: usize) {
+        if self.collapsed_starts.contains(&line_idx) { 
+            self.collapsed_starts.remove(&line_idx); 
+        } else {
+            if self.folds.iter().any(|(s, _)| *s == line_idx) {
+                self.collapsed_starts.insert(line_idx);
+            }
+        }
+    }
+
+    fn recompute_folds(&mut self, lang: &LanguageDef) {
         self.folds.clear();
-        // Simple folding: match braces { } and also indent-based folds
-        let mut stack: Vec<usize> = Vec::new();
-        for (li, _line) in (0..self.rope.len_lines()).enumerate() {
-            let s = self.rope.line(li).to_string();
-            for ch in s.chars() {
-                if ch == '{' {
-                    stack.push(li);
-                } else if ch == '}' {
+        if lang.brackets.is_empty() { return; }
+        
+        for (open, close) in &lang.brackets {
+            let mut stack: Vec<usize> = Vec::new();
+            for li in 0..self.rope.len_lines() {
+                let line = self.rope.line(li).to_string();
+                let trimmed = line.trim();
+                if trimmed.contains(open) { stack.push(li); }
+                if trimmed.contains(close) {
                     if let Some(start) = stack.pop() {
-                        if li > start + 0 {
-                            self.folds.push((start, li));
-                        }
+                        if li > start { self.folds.push((start, li)); }
                     }
                 }
             }
         }
-        // Note: indent-based folding could be added here as well
+        self.folds.sort_by_key(|(s, _)| *s);
     }
 
     pub fn folds(&self) -> &Vec<(usize, usize)> { &self.folds }

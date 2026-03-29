@@ -69,7 +69,6 @@ pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: 
     });
 }
 
-/// A Professional CodeEditor Widget with pixel-perfect caret and baseline physics.
 pub struct CodeEditorWidget {
     editor: cosmic_text::Editor<'static>,
     my_editor: MyEditor,
@@ -84,13 +83,13 @@ impl CodeEditorWidget {
     pub fn new(my_editor: MyEditor, font_system: &mut FontSystem) -> Self {
         let metrics = Metrics::new(14.0, 20.0).scale(SCALE);
         let lang_def = load_language("rust").unwrap_or_else(|| LanguageDef {
-            keywords: HashSet::new(), type_keywords: HashSet::new(), constants: HashSet::new(), operators: HashSet::new()
+            keywords: HashSet::new(), type_keywords: HashSet::new(), constants: HashSet::new(), operators: HashSet::new(), comments: None, brackets: Vec::new(),
         });
         
-        let mut my_editor = my_editor;
-        my_editor.retokenize_all(&lang_def);
+        let mut editor_internal = my_editor;
+        editor_internal.retokenize_all(&lang_def);
         let mut buffer = Buffer::new(font_system, metrics);
-        buffer.set_text(font_system, &my_editor.rope.to_string(), &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
+        buffer.set_text(font_system, &editor_internal.rope.to_string(), &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
         
         let digit_color = Color::rgb(0x85, 0x85, 0x85);
         let mut swash_cache = SwashCache::new();
@@ -100,7 +99,7 @@ impl CodeEditorWidget {
             lab.set_text(font_system, &format!("{}", i), &Attrs::new().family(Family::Monospace).color(digit_color), Shaping::Advanced, None);
             lab.shape_until_scroll(font_system, false);
             if let Some(r) = lab.layout_runs().next() {
-                if let Some(g) = r.glyphs.first() {
+                for g in r.glyphs {
                     let pg = g.physical((0.0, 0.0), 1.0);
                     if let Some(img) = swash_cache.get_image(font_system, pg.cache_key) {
                         let mut p = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)).unwrap();
@@ -110,14 +109,14 @@ impl CodeEditorWidget {
                             p.pixels_mut()[idx] = ColorU8::from_rgba((r as f32 * af) as u8, (g as f32 * af) as u8, (b as f32 * af) as u8, (255.0 * af) as u8).premultiply();
                         }
                         digit_cache.push(CachedGlyph { pixmap: p, left: img.placement.left, top: img.placement.top });
-                        continue;
+                        break;
                     }
                 }
             }
-            digit_cache.push(CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 });
+            if digit_cache.len() <= i { digit_cache.push(CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 }); }
         }
 
-        Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, metrics, glyph_cache: HashMap::new(), digit_cache, needs_reshape: true }
+        Self { editor: cosmic_text::Editor::new(buffer), my_editor: editor_internal, lang_def, metrics, glyph_cache: HashMap::new(), digit_cache, needs_reshape: true }
     }
 
     pub fn set_language(&mut self, lang_name: &str) {
@@ -132,6 +131,26 @@ impl CodeEditorWidget {
         (rect.left() + SIDEBAR_WIDTH * SCALE, rect.top())
     }
 
+    fn is_line_hidden(&self, line_idx: usize) -> bool {
+        for (start, end) in &self.my_editor.folds {
+            if self.my_editor.collapsed_starts.contains(start) {
+                if line_idx > *start && line_idx <= *end { return true; }
+            }
+        }
+        false
+    }
+
+    fn get_visual_y_shift(&self, line_idx: usize) -> f32 {
+        let mut hidden_lines = 0;
+        for (start, end) in &self.my_editor.folds {
+            if self.my_editor.collapsed_starts.contains(start) {
+                let current_hidden = end - start;
+                if line_idx > *end { hidden_lines += current_hidden; }
+            }
+        }
+        hidden_lines as f32 * self.metrics.line_height
+    }
+
     pub fn render(&mut self, pixmap: &mut Pixmap, font_system: &mut FontSystem, swash_cache: &mut SwashCache, rect: Rect) {
         if self.needs_reshape {
             apply_highlighting(&mut self.editor, &self.my_editor, &Attrs::new().family(Family::Monospace), &self.lang_def);
@@ -140,73 +159,130 @@ impl CodeEditorWidget {
         }
 
         let (x_off, y_off) = self.get_offsets(rect);
-        
-        // Sidebar BG
         let mut side_paint = Paint::default(); side_paint.set_color_rgba8(0x2d, 0x2d, 0x2d, 0xff);
         pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.top(), SIDEBAR_WIDTH * SCALE, rect.height()).unwrap(), &side_paint, Transform::identity(), None);
 
         let selection = self.editor.selection_bounds();
 
+        // Solve borrow conflict: first extract all necessary layout info
+        let mut runs_to_draw = Vec::new();
         self.editor.with_buffer(|buffer| {
-            let mut last_para = None;
             for run in buffer.layout_runs() {
-                // Line Number Logic - Aligned with actual run vertical position
-                if last_para != Some(run.line_i) {
-                    let s = format!("{}", run.line_i + 1);
-                    let mut digit_x = (rect.left() + SIDEBAR_WIDTH * SCALE) as i32 - 15;
-                    for ch in s.chars().rev() {
-                        if let Some(digit) = ch.to_digit(10) {
-                            let cg = &self.digit_cache[digit as usize];
-                            // Y is baseline (y_off + run.line_y) minus cg top
-                            let y = (y_off + run.line_y) as i32 - cg.top;
-                            pixmap.draw_pixmap(digit_x - cg.pixmap.width() as i32 + cg.left, y, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
-                            digit_x -= 10 * SCALE as i32;
-                        }
-                    }
-                    last_para = Some(run.line_i);
-                }
-
-                // Highlight Logic - Aligned with run.line_top
-                if let Some((s_start, s_end)) = selection {
-                    if let Some((hx, hw)) = run.highlight(s_start, s_end) {
-                        let mut sp = Paint::default(); sp.set_color_rgba8(0x26, 0x4f, 0x78, 0xff);
-                        pixmap.fill_rect(Rect::from_xywh(x_off + hx, y_off + run.line_top, hw, run.line_height).unwrap(), &sp, Transform::identity(), None);
-                    }
-                }
-
-                // Glyph Render - Aligned with run.line_y (baseline)
-                for glyph in run.glyphs {
-                    let pg = glyph.physical((x_off, y_off + run.line_y), 1.0);
-                    let gc = glyph.color_opt.unwrap_or(Color::rgb(0xee, 0xee, 0xee));
-                    let cg = self.glyph_cache.entry((pg.cache_key, gc)).or_insert_with(|| {
-                        if let Some(img) = swash_cache.get_image(font_system, pg.cache_key) {
-                            let mut p = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)).unwrap();
-                            let (r, g, b, a) = (gc.r(), gc.g(), gc.b(), gc.a());
-                            for (idx, &alpha) in img.data.iter().enumerate() {
-                                let af = (alpha as f32 / 255.0) * (a as f32 / 255.0);
-                                p.pixels_mut()[idx] = ColorU8::from_rgba((r as f32 * af) as u8, (g as f32 * af) as u8, (b as f32 * af) as u8, (255.0 * af) as u8).premultiply();
-                            }
-                            CachedGlyph { pixmap: p, left: img.placement.left, top: img.placement.top }
-                        } else { CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 } }
-                    });
-                    // draw_pixmap at (pg.x + left, pg.y - top). pg.y is baseline.
-                    pixmap.draw_pixmap(pg.x + cg.left, pg.y - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                if !self.is_line_hidden(run.line_i) {
+                    let y_shift = self.get_visual_y_shift(run.line_i);
+                    runs_to_draw.push((run.line_i, run.line_y, run.line_top, run.line_height, y_shift, run.glyphs.to_vec(), run.highlight(selection.and_then(|(s, e)| Some((s, e))).unwrap_or((cosmic_text::Cursor::new(0,0), cosmic_text::Cursor::new(0,0))).0, selection.and_then(|(s, e)| Some((s, e))).unwrap_or((cosmic_text::Cursor::new(0,0), cosmic_text::Cursor::new(0,0))).1)));
                 }
             }
         });
 
+        let mut last_para = None;
+        for (line_i, line_y, line_top, line_height, y_shift, glyphs, highlight) in runs_to_draw {
+            let current_y_off = y_off - y_shift;
+            
+            if last_para != Some(line_i) {
+                let s = format!("{}", line_i + 1);
+                let mut digit_x = (rect.left() + SIDEBAR_WIDTH * SCALE) as i32 - 15;
+                for ch in s.chars().rev() {
+                    if let Some(digit) = ch.to_digit(10) {
+                        let cg = &self.digit_cache[digit as usize];
+                        let y = (current_y_off + line_y) as i32 - cg.top;
+                        pixmap.draw_pixmap(digit_x - cg.pixmap.width() as i32 + cg.left, y, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                        digit_x -= 10 * SCALE as i32;
+                    }
+                }
+                if self.my_editor.folds.iter().any(|(s, _)| *s == line_i) {
+                    let is_collapsed = self.my_editor.collapsed_starts.contains(&line_i);
+                    let icon = if is_collapsed { "+" } else { "-" };
+                    let color = if is_collapsed { Color::rgb(0x56, 0x9c, 0xd6) } else { Color::rgb(0x85, 0x85, 0x85) };
+                    App::draw_ui_text(pixmap, font_system, swash_cache, icon, rect.left() + 5.0 * SCALE, current_y_off + line_y - 14.0 * SCALE, color);
+                }
+                last_para = Some(line_i);
+            }
+
+            if let Some((s_start, s_end)) = selection {
+                // We re-calculate highlight to avoid lifetime issues or pass it in
+                if let Some((hx, hw)) = highlight {
+                    let mut sp = Paint::default(); sp.set_color_rgba8(0x26, 0x4f, 0x78, 0xff);
+                    pixmap.fill_rect(Rect::from_xywh(x_off + hx, current_y_off + line_top, hw, line_height).unwrap(), &sp, Transform::identity(), None);
+                }
+            }
+
+            for glyph in glyphs {
+                let pg = glyph.physical((x_off, current_y_off + line_y), 1.0);
+                let gc = glyph.color_opt.unwrap_or(Color::rgb(0xee, 0xee, 0xee));
+                let cg = self.glyph_cache.entry((pg.cache_key, gc)).or_insert_with(|| {
+                    if let Some(img) = swash_cache.get_image(font_system, pg.cache_key) {
+                        let mut p = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)).unwrap();
+                        let (r, g, b, a) = (gc.r(), gc.g(), gc.b(), gc.a());
+                        for (idx, &alpha) in img.data.iter().enumerate() {
+                            let af = (alpha as f32 / 255.0) * (a as f32 / 255.0);
+                            p.pixels_mut()[idx] = ColorU8::from_rgba((r as f32 * af) as u8, (g as f32 * af) as u8, (b as f32 * af) as u8, (255.0 * af) as u8).premultiply();
+                        }
+                        CachedGlyph { pixmap: p, left: img.placement.left, top: img.placement.top }
+                    } else { CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 } }
+                });
+                pixmap.draw_pixmap(pg.x + cg.left, pg.y - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+            }
+        }
+
         if let Some((cx, cy)) = self.editor.cursor_position() {
-            let mut cp = Paint::default(); cp.set_color_rgba8(0xff, 0xff, 0xff, 0xff);
-            // cx/cy are already in buffer physical space. Add widget top-left.
-            pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, y_off + cy as f32, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None);
+            let mut cursor_render_info = None;
+            self.editor.with_buffer(|buffer| {
+                for run in buffer.layout_runs() {
+                    if cy >= run.line_top as i32 && cy < (run.line_top + run.line_height) as i32 {
+                        if !self.is_line_hidden(run.line_i) {
+                            let y_shift = self.get_visual_y_shift(run.line_i);
+                            cursor_render_info = Some(y_shift);
+                        }
+                        break;
+                    }
+                }
+            });
+            if let Some(y_shift) = cursor_render_info {
+                let mut cp = Paint::default(); cp.set_color_rgba8(0xff, 0xff, 0xff, 0xff);
+                pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, y_off - y_shift + cy as f32, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None);
+            }
         }
     }
 
     pub fn handle_mouse(&mut self, font_system: &mut FontSystem, x: f32, y: f32, rect: Rect, click: Option<u32>) {
         let (x_off, y_off) = self.get_offsets(rect);
-        // Translate physical window mouse into buffer-space physics units.
+        
+        let mut toggle_li = None;
+        if let Some(1) = click {
+            if x < x_off && x > rect.left() {
+                self.editor.with_buffer(|buffer| {
+                    for run in buffer.layout_runs() {
+                        if self.is_line_hidden(run.line_i) { continue; }
+                        let y_shift = self.get_visual_y_shift(run.line_i);
+                        let vy = y_off - y_shift + run.line_top;
+                        if y >= vy && y < vy + run.line_height {
+                            toggle_li = Some(run.line_i);
+                            break;
+                        }
+                    }
+                });
+            }
+        }
+        if let Some(li) = toggle_li { self.my_editor.toggle_fold(li); return; }
+
+        let visual_y = y - y_off;
+        let mut total_shift = 0.0;
+        self.editor.with_buffer(|buffer| {
+            for run in buffer.layout_runs() {
+                if self.is_line_hidden(run.line_i) { continue; }
+                let y_shift = self.get_visual_y_shift(run.line_i);
+                let current_run_y = run.line_top - y_shift;
+                if visual_y >= current_run_y && visual_y < (current_run_y + run.line_height) {
+                    total_shift = y_shift;
+                    break;
+                }
+            }
+        });
+
         let ex = (x - x_off) as i32;
-        let ey = (y - y_off) as i32;
+        let ey = (y - y_off + total_shift) as i32;
+        
         if let Some(count) = click {
             match count {
                 1 => self.editor.action(font_system, Action::Click { x: ex, y: ey }),
@@ -340,7 +416,7 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let window = Arc::new(event_loop.create_window(WindowAttributes::default()
-            .with_title("Vybe Editor")
+            .with_title("Vybe Editor (Professional)")
             .with_inner_size(winit::dpi::LogicalSize::new(1000.0, 800.0))).unwrap());
         let context = Context::new(window.clone()).unwrap();
         let surface = Surface::new(&context, window.clone()).unwrap();
