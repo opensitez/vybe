@@ -748,7 +748,7 @@ fn invoke_chunk_function_returns_value() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_val, &[]).unwrap();
@@ -784,7 +784,7 @@ fn invoke_with_args_as_locals() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_val, &[Value::F64(3.0), Value::F64(7.0)]).unwrap();
@@ -821,7 +821,7 @@ fn invoke_clears_stack_between_calls() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let r1 = vm.invoke(&func_val, &[Value::F64(5.0)]).unwrap();
@@ -870,7 +870,7 @@ fn invoke_preserves_globals() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let r1 = vm.invoke(&func_val, &[]).unwrap();
@@ -920,7 +920,7 @@ fn invoke_function_calls_host() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_val, &[Value::F64(7.0)]).unwrap();
@@ -970,7 +970,7 @@ fn invoke_modifies_global() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let read_fn = Value::Object(Rc::new(RefCell::new(Object {
@@ -981,7 +981,7 @@ fn invoke_modifies_global() {
             chunk_index: 2,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     vm.invoke(&set_fn, &[]).unwrap();
@@ -1011,7 +1011,7 @@ fn invoke_host_function_object() {
     let host_fn_val = Value::Object(Rc::new(RefCell::new(Object {
         properties: HashMap::new(),
         kind: ObjectKind::HostFunction(0),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&host_fn_val, &[Value::String(Rc::from("World"))]).unwrap();
@@ -1098,7 +1098,7 @@ fn invoke_twice_globals_updated() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let r1 = vm.invoke(&func_val, &[Value::I32(10)]).unwrap();
@@ -1152,7 +1152,7 @@ fn invoke_function_calls_another_vm_function() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&outer_val, &[Value::I32(5)]).unwrap();
@@ -1419,7 +1419,7 @@ fn callback_modifies_global_subsequent_reads() {
             chunk_index: 2,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     // Before callback

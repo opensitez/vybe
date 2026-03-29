@@ -166,7 +166,7 @@ fn run_project(path: &Path, dump: bool) {
                         let obj = vybe_bytecode::value::Object {
                             properties: std::collections::HashMap::new(),
                             kind: vybe_bytecode::value::ObjectKind::Function(func),
-                            type_id: 0,
+                            type_id: 0, fields: Vec::new(),
                         };
                         let val = vybe_bytecode::Value::Object(
                             Rc::new(RefCell::new(obj))
@@ -232,7 +232,7 @@ fn run_project(path: &Path, dump: bool) {
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue);
+    vybe_cli::runner::launch_vm_form(vm, queue, None);
 }
 
 fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
@@ -273,7 +273,7 @@ fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue);
+    vybe_cli::runner::launch_vm_form(vm, queue, None);
 }
 
 fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
@@ -315,7 +315,7 @@ fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue);
+    vybe_cli::runner::launch_vm_form(vm, queue, None);
 }
 
 fn run_wasm(path: &Path) {
@@ -342,7 +342,7 @@ fn run_wasm(path: &Path) {
         Ok(_) => {}
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
-    vybe_cli::runner::launch_vm_form(vm, queue);
+    vybe_cli::runner::launch_vm_form(vm, queue, None);
 }
 
 fn read_file(path: &Path) -> String {

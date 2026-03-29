@@ -157,6 +157,10 @@ pub struct Object {
     pub kind: ObjectKind,
     /// WASM GC-style type reference. 0 = Object (untyped), >0 = specific type.
     pub type_id: usize,
+    /// Indexed fields — fixed-layout storage for typed objects (WASM GC struct fields).
+    /// Field i is accessed by index when the type's field layout is known.
+    /// Dynamic properties spill into `properties` HashMap.
+    pub fields: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,11 +174,21 @@ pub enum ObjectKind {
 
 impl Object {
     pub fn new() -> Self {
-        Object { properties: HashMap::new(), kind: ObjectKind::Ordinary, type_id: 0 }
+        Object { properties: HashMap::new(), kind: ObjectKind::Ordinary, type_id: 0, fields: Vec::new() }
     }
 
     pub fn new_typed(type_id: usize) -> Self {
-        Object { properties: HashMap::new(), kind: ObjectKind::Ordinary, type_id }
+        Object { properties: HashMap::new(), kind: ObjectKind::Ordinary, type_id, fields: Vec::new() }
+    }
+
+    /// Create a typed object with pre-allocated indexed fields.
+    pub fn new_typed_with_fields(type_id: usize, field_count: usize) -> Self {
+        Object {
+            properties: HashMap::new(),
+            kind: ObjectKind::Ordinary,
+            type_id,
+            fields: vec![Value::Null; field_count],
+        }
     }
 
     pub fn new_array(elements: Vec<Value>) -> Self {
@@ -182,7 +196,8 @@ impl Object {
         let mut obj = Object {
             properties: HashMap::new(),
             kind: ObjectKind::Array(elements),
-            type_id: 0, // Will be set to Array/List type_id by the host
+            type_id: 0,
+            fields: Vec::new(),
         };
         obj.properties.insert("length".into(), Value::F64(len as f64));
         obj

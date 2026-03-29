@@ -14,7 +14,7 @@ pub use chunk::{Chunk, Import};
 pub use vm::{VM, HostFn};
 pub use error::VMError;
 pub use event_loop::EventLoop;
-pub use typedef::{TypeDef, TypeRegistry, Method};
+pub use typedef::{TypeDef, TypeRegistry, Method, FieldDef, ResourceTable};
 pub mod component;
 pub mod project;
 pub use component::{Component, Linker, LinkResult, Interface, FuncSig, ValType, Language, ExportImpl, ModuleResolver, ResolvedModule, ModuleExport, ImportPolicy};

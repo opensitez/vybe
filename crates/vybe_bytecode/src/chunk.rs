@@ -9,6 +9,20 @@ pub struct Import {
     pub name: String,
 }
 
+/// A compile-time type definition — WASM GC type section entry.
+/// Describes a class/struct with named fields and vtable methods.
+/// Loaded into TypeRegistry before execution.
+#[derive(Debug, Clone)]
+pub struct TypeEntry {
+    pub name: String,
+    /// Parent type name (for inheritance). Empty = inherits from Object.
+    pub parent: String,
+    /// Field names in order. Field i is at `fields[i]` in the object's indexed storage.
+    pub fields: Vec<String>,
+    /// Vtable: method_name → chunk_index. Methods are shared across all instances.
+    pub methods: Vec<(String, usize)>,
+}
+
 /// A compiled chunk of bytecode — one per function/script.
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -22,6 +36,10 @@ pub struct Chunk {
     /// Each entry is a (module, name) pair.
     /// CallHost operand indexes into this table.
     pub imports: Vec<Import>,
+    /// Type table — WASM GC type section. Only on the script chunk (chunk 0).
+    /// Each entry defines a class type with fields and vtable methods.
+    /// Loaded into VM's TypeRegistry before execution.
+    pub types: Vec<TypeEntry>,
 }
 
 impl Chunk {
@@ -34,6 +52,7 @@ impl Chunk {
             arity: 0,
             local_count: 0,
             imports: Vec::new(),
+            types: Vec::new(),
         }
     }
 

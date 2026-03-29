@@ -581,7 +581,7 @@ fn invoke_zero_args_arity_zero() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
@@ -617,7 +617,7 @@ fn invoke_fewer_args_padding() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_obj, &[Value::I32(100)]).unwrap();
@@ -657,7 +657,7 @@ fn invoke_exact_args() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_obj, &[Value::I32(10), Value::I32(20), Value::I32(30)]).unwrap();
@@ -694,7 +694,7 @@ fn invoke_returning_value() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
@@ -734,7 +734,7 @@ fn invoke_returning_object() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
@@ -788,7 +788,7 @@ fn invoke_host_function() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let result = vm.invoke(&wrapper_obj, &[Value::I32(9)]).unwrap();
@@ -827,7 +827,7 @@ fn invoke_stack_clean_between_invocations() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let r1 = vm.invoke(&func_obj, &[Value::I32(5)]).unwrap();
@@ -880,7 +880,7 @@ fn invoke_preserves_globals() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     let getter_obj = Value::Object(Rc::new(RefCell::new(Object {
@@ -891,7 +891,7 @@ fn invoke_preserves_globals() {
             chunk_index: 2,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     // Set global to 42
@@ -932,7 +932,7 @@ fn invoke_function_that_uses_struct_get() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
 
     // Create an object {x: 99}

@@ -222,5 +222,6 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             let finally = chunk.read_u16(offset + 3);
             (format!("TryStart catch={} finally={}", catch, finally), offset + 5)
         }
+        Op::set_type_id => (format!("set_type_id"), offset + 1),
     }
 }

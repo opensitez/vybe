@@ -442,8 +442,18 @@ impl Compiler {
             let full_name = format!("{}.{}", obj_lower, meth_lower);
             if let Some(result) = self.try_compile_builtin_method(&full_name, args)? {
                 let _ = result;
-            } else if self.is_namespace(&obj_lower) || self.defined_classes.contains(&obj_lower) {
-                // Namespace or class static call — no `this`
+            } else if self.is_namespace(&obj_lower) {
+                // Namespace call — no `this`
+                self.compile_expression(obj)?;
+                let prop_idx = self.add_string_constant(&meth_lower);
+                self.emit_u16(Op::struct_get, prop_idx);
+                for arg in args { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, args.len() as u8);
+            } else if self.defined_classes.contains(&obj_lower)
+                && !matches!(self.resolve_variable(&obj_lower), VarResolution::Local(_))
+                && !self.class_fields.contains(&obj_lower)
+            {
+                // Static class call — name is ONLY a class, not a variable or field
                 self.compile_expression(obj)?;
                 let prop_idx = self.add_string_constant(&meth_lower);
                 self.emit_u16(Op::struct_get, prop_idx);
@@ -542,6 +552,8 @@ impl Compiler {
             for arg in args { self.compile_expression(arg)?; }
             let idx = self.import(module, func);
             self.emit_host_call(idx, args.len() as u8);
+            // Stamp type_id from __tid_<name> global (WASM GC)
+            self.emit_set_type_id(&bare);
             return Ok(());
         }
 
@@ -552,6 +564,8 @@ impl Compiler {
             let hn = format!("new_{}", capitalized);
             let idx = self.import("vybe:gui", &hn);
             self.emit_host_call(idx, args.len() as u8);
+            // Stamp type_id from __tid_<controltype> global (WASM GC)
+            self.emit_set_type_id(&capitalized.to_lowercase());
             return Ok(());
         }
 
@@ -652,6 +666,13 @@ pub fn capitalize_control_name(name: &str) -> String {
         "contextmenustrip" => "ContextMenuStrip",
         "timer" => "Timer", "bindingsource" => "BindingSource",
         "tooltip" => "ToolTip", "imagelist" => "ImageList",
+        "hscrollbar" => "HScrollBar", "vscrollbar" => "VScrollBar",
+        "bindingnavigator" => "BindingNavigator",
+        "dataset" => "DataSet", "datatable" => "DataTable",
+        "dataadapter" => "DataAdapter",
+        "treeview" => "TreeView", "notifyicon" => "NotifyIcon",
+        "errorprovider" => "ErrorProvider", "helpprovider" => "HelpProvider",
+        "backgroundworker" => "BackgroundWorker",
         "openfiledialog" => "OpenFileDialog",
         "savefiledialog" => "SaveFileDialog",
         "folderbrowserdialog" => "FolderBrowserDialog",

@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use vybe_bytecode::{Chunk, Value, Op};
+use vybe_bytecode::chunk::TypeEntry;
 use vybe_parser_basic::ast::*;
 
 use crate::compiler::Compiler;
@@ -154,15 +155,23 @@ impl Compiler {
             }
         }
 
-        // Attach instance methods BEFORE constructor body — constructor may call
-        // InitializeComponent() or other methods that need to be on Me already
+        // Compile instance methods and collect chunk indices for vtable.
+        // Methods are BOTH:
+        // 1. Attached to this (backward compat — existing code uses struct_get)
+        // 2. Registered in the type table (vtable — new GC path)
+        let mut method_entries: Vec<(String, usize)> = Vec::new();
         for method in &instance_methods {
             let method_name = match method {
                 MethodDecl::Sub(sub) => sub.name.as_str().to_lowercase(),
                 MethodDecl::Function(func) => func.name.as_str().to_lowercase(),
             };
+            // Compile method chunk — pushes closure ref onto stack
             self.emit_u16(Op::local_get, this_slot);
             self.compile_method_decl(method)?;
+            // Record chunk index for type table (the chunk was just added)
+            let chunk_idx = self.chunks.len() - 1;
+            method_entries.push((method_name.clone(), chunk_idx));
+            // Attach to instance (backward compat)
             let prop_idx = self.add_string_constant(&method_name);
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
@@ -233,6 +242,18 @@ impl Compiler {
             }
         }
 
+        // Stamp type_id on this (WASM GC).
+        // The type_id is resolved at VM load time from the type table.
+        // We emit a placeholder constant — the VM's load_type_table sets globals
+        // that map class names to type_ids.
+        {
+            let tid_name = format!("__tid_{}", name.to_lowercase());
+            let tid_idx = self.add_string_constant(&tid_name);
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_u16(Op::global_get, tid_idx);
+            self.emit(Op::set_type_id);
+        }
+
         // Return this
         self.emit_u16(Op::local_get, this_slot);
         self.emit(Op::r#return);
@@ -247,6 +268,24 @@ impl Compiler {
         self.class_method_map.insert(name.to_lowercase(), self.class_methods.clone());
         self.class_fields = saved_fields;
         self.class_methods = saved_methods;
+
+        // --- WASM GC: Register type entry in compile-time type table ---
+        let parent_name = class.inherits.as_ref().map(|t| match t {
+            VBType::Custom(n) => n.to_lowercase(),
+            _ => String::new(),
+        }).unwrap_or_default();
+        let field_names: Vec<String> = class.fields.iter()
+            .map(|f| f.name.as_str().to_lowercase())
+            .collect();
+        let type_entry_idx = self.type_entries.len();
+        self.type_entries.push(TypeEntry {
+            name: name.to_lowercase(),
+            parent: parent_name,
+            fields: field_names,
+            methods: method_entries,
+        });
+        self.class_type_ids.insert(name.to_lowercase(), type_entry_idx);
+
         self.emit_ref_func(idx, &upvalues);
 
         // If Inherits, copy parent's Shared methods to this constructor
@@ -290,8 +329,8 @@ impl Compiler {
                 let idx = self.chunks.len();
                 self.chunks.push(chunk);
 
-                let mut scope = Scope::new_function();
-                scope.define_local("me");
+                let mut scope = Scope::new_function(); // slot 0 = callee (reserved by new_function)
+                scope.define_local("me");              // slot 1 = this (first arg)
                 for param in &sub.parameters {
                     scope.define_local(&param.name.as_str().to_lowercase());
                 }
@@ -317,8 +356,8 @@ impl Compiler {
                 let idx = self.chunks.len();
                 self.chunks.push(chunk);
 
-                let mut scope = Scope::new_function();
-                scope.define_local("me");
+                let mut scope = Scope::new_function(); // slot 0 = callee
+                scope.define_local("me");              // slot 1 = this
                 for param in &func.parameters {
                     scope.define_local(&param.name.as_str().to_lowercase());
                 }
@@ -428,8 +467,8 @@ impl Compiler {
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
-        let mut scope = Scope::new_function();
-        scope.define_local("me");
+        let mut scope = Scope::new_function(); // slot 0 = callee
+        scope.define_local("me");              // slot 1 = this
         if has_return { scope.define_local("__return_val"); }
 
         let saved = self.current_chunk_idx;
@@ -476,8 +515,8 @@ impl Compiler {
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
-        let mut scope = Scope::new_function();
-        scope.define_local("me");
+        let mut scope = Scope::new_function(); // slot 0 = callee
+        scope.define_local("me");              // slot 1 = this
         scope.define_local(param_name);
 
         let saved = self.current_chunk_idx;

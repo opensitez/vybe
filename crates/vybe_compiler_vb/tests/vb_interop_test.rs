@@ -381,7 +381,6 @@ Console.WriteLine(Echo("a&b"))
 /// on it inside the function, it resolves to null because the parameter binding
 /// doesn't propagate the object's method table correctly.
 #[test]
-#[ignore = "known bug"]
 fn b16_passing_object_as_argument() {
     let out = run_vb(r#"
 Public Class Item
@@ -1464,7 +1463,7 @@ Console.WriteLine(100 \ 7)
 /// with "null is not callable" because the field's method table isn't properly
 /// resolved when calling a.GetVal() inside B's method.
 #[test]
-#[ignore = "known bug"]
+#[ignore = "known bug: class field storing another class instance — method call on field returns null"]
 fn b67_cross_class_method_chain() {
     let out = run_vb(r#"
 Public Class A

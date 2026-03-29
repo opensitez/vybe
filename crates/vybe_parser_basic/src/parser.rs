@@ -46,6 +46,10 @@ pub fn parse_program(source: &str) -> ParseResult<Program> {
                                     declarations.extend(parse_module_decl(stmt_pair)?);
                                 } else if stmt_pair.as_rule() == Rule::namespace_decl {
                                     declarations.push(parse_namespace_decl(stmt_pair)?);
+                                } else if stmt_pair.as_rule() == Rule::dim_statement {
+                                    // Top-level Dim → Statement::Dim so it executes in source
+                                    // order with other statements (not hoisted before them).
+                                    statements.push(parse_statement(stmt_pair)?);
                                 } else if let Some(decl) = try_parse_declaration(stmt_pair.clone())? {
                                     declarations.push(decl);
                                 } else {

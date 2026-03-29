@@ -2,7 +2,7 @@
 //! Each type gets a vtable with methods resolved via the host function registry.
 //! This replaces the legacy type_methods table with proper WASM GC-style dispatch.
 
-use vybe_bytecode::{VM, TypeDef, Method};
+use vybe_bytecode::{VM, TypeDef, Method, Value};
 
 pub fn register_all(vm: &mut VM) {
     // Helper: look up host fn index by (module, name)
@@ -373,28 +373,40 @@ pub fn register_all(vm: &mut VM) {
         vm.type_registry.register(t);
     }
 
-    // --- Map/Set (JS collections) ---
+    // --- Map (JS collection) ---
     {
         let mut t = TypeDef::new("Map");
         for (method, fname) in &[
             ("set", "mapSet"), ("get", "mapGet"), ("has", "mapHas"),
-            ("delete", "mapDelete"), ("keys", "mapKeys"),
+            ("delete", "mapDelete"), ("keys", "mapKeys"), ("clear", "mapClear"),
         ] {
             if let Some(idx) = h(vm, "vybe:collections", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
+        // size/count via listCount
+        if let Some(idx) = h(vm, "vybe:types", "listCount") {
+            t.methods.insert("size".to_string(), Method::HostFn(idx));
+            t.methods.insert("count".to_string(), Method::HostFn(idx));
+        }
         t.parent = Some(0);
         vm.type_registry.register(t);
     }
+
+    // --- Set (JS collection) ---
     {
         let mut t = TypeDef::new("Set");
         for (method, fname) in &[
-            ("add", "setAdd"), ("has", "setHas"), ("delete", "setDelete"), ("values", "setValues"),
+            ("add", "setAdd"), ("has", "setHas"), ("delete", "setDelete"),
+            ("values", "setValues"), ("clear", "setClear"),
         ] {
             if let Some(idx) = h(vm, "vybe:collections", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
+        }
+        if let Some(idx) = h(vm, "vybe:types", "listCount") {
+            t.methods.insert("size".to_string(), Method::HostFn(idx));
+            t.methods.insert("count".to_string(), Method::HostFn(idx));
         }
         t.parent = Some(0);
         vm.type_registry.register(t);
@@ -416,6 +428,57 @@ pub fn register_all(vm: &mut VM) {
     // --- Promise (JS) ---
     {
         let t = TypeDef::new("Promise");
+        vm.type_registry.register(t);
+    }
+
+    // ============================================================
+    // GUI Control type hierarchy
+    // ============================================================
+    // Control is the abstract base for all UI controls
+    let control_id = {
+        let mut t = TypeDef::new("Control");
+        // Common control methods — resolved via gui host functions
+        for (method, module, fname) in &[
+            ("show", "vybe:gui", "__ctrl_show"),
+            ("close", "vybe:gui", "__ctrl_close"),
+            ("focus", "vybe:gui", "__ctrl_focus"),
+            ("hide", "vybe:gui", "__ctrl_hide"),
+        ] {
+            if let Some(idx) = h(vm, module, fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0); // inherits from Object
+        vm.type_registry.register(t)
+    };
+
+    // Register all concrete control types as subtypes of Control
+    let control_type_names = [
+        "Button", "Label", "TextBox", "CheckBox", "RadioButton", "ComboBox",
+        "ListBox", "Panel", "GroupBox", "TabControl", "TabPage", "DataGridView",
+        "ProgressBar", "TrackBar", "NumericUpDown", "DateTimePicker", "RichTextBox",
+        "PictureBox", "MenuStrip", "ToolStrip", "StatusStrip", "SplitContainer",
+        "FlowLayoutPanel", "TableLayoutPanel", "LinkLabel", "MaskedTextBox",
+        "ListView", "WebBrowser", "MonthCalendar", "ContextMenuStrip",
+        "Timer", "BindingSource", "DataSet", "ImageList", "ToolTip",
+        "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",
+        "TreeView",
+    ];
+    for ct in &control_type_names {
+        vm.type_registry.register(TypeDef::new(ct).with_parent(control_id));
+    }
+    // Form is special — inherits from Control, adds its own methods
+    {
+        let mut t = TypeDef::new("Form");
+        for (method, module, fname) in &[
+            ("show", "vybe:gui", "__ctrl_show"),
+            ("close", "vybe:gui", "__ctrl_close"),
+        ] {
+            if let Some(idx) = h(vm, module, fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(control_id);
         vm.type_registry.register(t);
     }
 
@@ -449,10 +512,40 @@ pub fn register_all(vm: &mut VM) {
         }
     }
 
+    // Register GUI control constructors (new_Button, new_TextBox, etc.)
+    let gui_ctors = [
+        "Button", "Label", "TextBox", "CheckBox", "RadioButton", "ComboBox",
+        "ListBox", "Panel", "GroupBox", "TabControl", "TabPage", "DataGridView",
+        "ProgressBar", "TrackBar", "NumericUpDown", "DateTimePicker", "RichTextBox",
+        "PictureBox", "MenuStrip", "ToolStrip", "StatusStrip", "SplitContainer",
+        "FlowLayoutPanel", "TableLayoutPanel", "LinkLabel", "MaskedTextBox",
+        "ListView", "WebBrowser", "MonthCalendar", "ContextMenuStrip",
+        "Timer", "BindingSource", "DataSet", "ImageList", "ToolTip",
+        "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",
+        "Form", "TreeView",
+    ];
+    for ct in &gui_ctors {
+        let fn_name = format!("new_{}", ct);
+        if let (Some(tid), Some(idx)) = (vm.type_registry.get_id(ct), h(vm, "vybe:gui", &fn_name)) {
+            vm.type_registry.set_constructor(tid, Method::HostFn(idx));
+        }
+    }
+
     // ============================================================
     // Register enum types with compile-time constants
     // ============================================================
     register_enums(vm);
+
+    // ============================================================
+    // Export __tid_<name> globals for all registered types.
+    // This allows compilers to emit set_type_id at construction sites.
+    // ============================================================
+    for typedef in &vm.type_registry.types {
+        let key = format!("__tid_{}", typedef.name.to_lowercase());
+        if let Some(tid) = vm.type_registry.get_id(&typedef.name) {
+            vm.globals.insert(key, Value::I32(tid as i32));
+        }
+    }
 }
 
 fn register_enums(vm: &mut VM) {

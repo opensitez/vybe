@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use vybe_bytecode::{Chunk, Op, Value};
+use vybe_bytecode::chunk::TypeEntry;
 use vybe_parser_csharp::ast::*;
 
 // ============================================================
@@ -128,6 +129,8 @@ pub struct Compiler {
     class_method_map: HashMap<String, HashSet<String>>,
     interface_imports: Vec<String>,
     known_types: HashMap<String, (&'static str, &'static str)>,
+    type_entries: Vec<TypeEntry>,
+    class_type_ids: HashMap<String, usize>,
 }
 
 impl Compiler {
@@ -147,6 +150,8 @@ impl Compiler {
             class_field_map: HashMap::new(),
             class_method_map: HashMap::new(),
             known_types: Self::init_known_types(),
+            type_entries: Vec::new(),
+            class_type_ids: HashMap::new(),
             interface_imports: vec![
                 "system".into(),
                 "system.console".into(),
@@ -218,6 +223,8 @@ impl Compiler {
         self.emit(Op::halt);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
+        // Attach WASM GC type table to script chunk
+        self.chunks[0].types = self.type_entries;
         Ok(self.chunks)
     }
 
@@ -595,12 +602,33 @@ impl Compiler {
         // Call base constructor if Inherits
         if let Some(ref parent) = class.base_type {
             let parent_lower = parent.to_lowercase();
+            let is_form_type = matches!(parent_lower.as_str(),
+                "form" | "usercontrol" | "panel");
             let is_framework = parent_lower.starts_with("system.")
                 || parent_lower.contains("windows.forms")
                 || matches!(parent_lower.as_str(),
                     "form" | "control" | "usercontrol" | "panel" | "component"
                     | "object" | "eventargs" | "exception"
                 );
+            // For Form/Control base types, call the host constructor to set up
+            // __control_name, __control_type, and other GUI properties.
+            if is_form_type {
+                self.emit_u16(Op::local_get, this_slot);
+                self.emit_constant(Value::String(Rc::from(name.to_lowercase().as_str())));
+                let name_idx = self.add_string_constant("__control_name");
+                self.emit_u16(Op::struct_set, name_idx);
+                self.emit(Op::drop);
+                self.emit_u16(Op::local_get, this_slot);
+                self.emit_constant(Value::String(Rc::from("Form")));
+                let type_idx = self.add_string_constant("__control_type");
+                self.emit_u16(Op::struct_set, type_idx);
+                self.emit(Op::drop);
+                self.emit_u16(Op::local_get, this_slot);
+                self.emit_constant(Value::String(Rc::from(name.as_str())));
+                let text_idx = self.add_string_constant("name");
+                self.emit_u16(Op::struct_set, text_idx);
+                self.emit(Op::drop);
+            }
             let is_interface = self.defined_interfaces.contains(&parent_lower);
             if !parent_lower.is_empty() && !is_framework && !is_interface {
                 // Store __super
@@ -667,9 +695,15 @@ impl Compiler {
         }
 
         // Attach instance methods BEFORE constructor body
+        // Also track chunk indices for WASM GC type table
+        let mut method_entries: Vec<(String, usize)> = Vec::new();
         for method in &instance_methods {
             self.emit_u16(Op::local_get, this_slot);
             self.compile_instance_method(method)?;
+            // Record chunk index for type table (the chunk was just added)
+            let chunk_idx = self.chunks.len() - 1;
+            method_entries.push((method.name.to_lowercase(), chunk_idx));
+            // Attach to instance (backward compat)
             let prop_idx = self.add_string_constant(&method.name.to_lowercase());
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
@@ -704,6 +738,15 @@ impl Compiler {
             }
         }
 
+        // Stamp type_id on this (WASM GC).
+        {
+            let tid_name = format!("__tid_{}", name.to_lowercase());
+            let tid_idx = self.add_string_constant(&tid_name);
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_u16(Op::global_get, tid_idx);
+            self.emit(Op::set_type_id);
+        }
+
         // Return this
         self.emit_u16(Op::local_get, this_slot);
         self.emit(Op::r#return);
@@ -719,6 +762,23 @@ impl Compiler {
         self.class_method_map.insert(name.to_lowercase(), self.class_methods.clone());
         self.class_fields = saved_fields;
         self.class_methods = saved_methods;
+
+        // --- WASM GC: Register type entry in compile-time type table ---
+        let parent_name = class.base_type.as_ref()
+            .map(|b| b.to_lowercase())
+            .unwrap_or_default();
+        let field_names: Vec<String> = fields.iter()
+            .filter(|(_, _, _, is_static)| !is_static)
+            .map(|(fname, _, _, _)| fname.to_lowercase())
+            .collect();
+        let type_entry_idx = self.type_entries.len();
+        self.type_entries.push(TypeEntry {
+            name: name.to_lowercase(),
+            parent: parent_name,
+            fields: field_names,
+            methods: method_entries,
+        });
+        self.class_type_ids.insert(name.to_lowercase(), type_entry_idx);
 
         self.emit_ref_func(idx, &upvalues);
 
@@ -1264,6 +1324,9 @@ impl Compiler {
                         let idx = self.add_string_constant(&lower);
                         self.emit_u16(Op::struct_set, idx);
                         self.emit(Op::drop);
+                        // No controlSetProperty here — this is a plain field (e.g. currentText = "x"),
+                        // not a control property. Control property side effects are emitted
+                        // in the MemberAccess branch (e.g. txtDisplay.Text = "x").
                         return Ok(());
                     }
                 }
@@ -1281,11 +1344,46 @@ impl Compiler {
                 }
             }
             Expression::MemberAccess(obj, prop) => {
+                let should_emit_side_effect = if matches!(obj.as_ref(), Expression::This) {
+                    self.current_scope().resolve_local("this").is_some()
+                } else if let Expression::Identifier(name) = obj.as_ref() {
+                    self.class_fields.contains(&name.to_lowercase())
+                        && self.current_scope().resolve_local("this").is_some()
+                } else { false };
+
                 self.compile_expression(obj)?;
                 self.compile_expression(value)?;
-                let idx = self.add_string_constant(&prop.to_lowercase());
-                self.emit_u16(Op::struct_set, idx);
-                self.emit(Op::drop);
+
+                if should_emit_side_effect {
+                    // Save value to temp before struct_set (avoid re-evaluation doubling)
+                    let tmp = self.define_local("__csp_val");
+                    self.emit(Op::dup);
+                    self.emit_u16(Op::local_set, tmp);
+                    self.emit(Op::drop);
+
+                    let idx = self.add_string_constant(&prop.to_lowercase());
+                    self.emit_u16(Op::struct_set, idx);
+                    self.emit(Op::drop);
+
+                    // controlSetProperty with saved value
+                    self.compile_expression(obj)?;
+                    let cap_prop = {
+                        let mut c = prop.chars();
+                        match c.next() {
+                            None => String::new(),
+                            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                        }
+                    };
+                    self.emit_constant(Value::String(Rc::from(cap_prop.as_str())));
+                    self.emit_u16(Op::local_get, tmp);
+                    let set_idx = self.import("vybe:gui", "controlSetProperty");
+                    self.emit_host_call(set_idx, 3);
+                    self.emit(Op::drop);
+                } else {
+                    let idx = self.add_string_constant(&prop.to_lowercase());
+                    self.emit_u16(Op::struct_set, idx);
+                    self.emit(Op::drop);
+                }
             }
             Expression::Index(obj, index) => {
                 self.compile_expression(obj)?;
@@ -1318,7 +1416,7 @@ impl Compiler {
                     | "mousemove" | "mouseclick" | "doubleclick" | "enter" | "leave"
                     | "validating" | "validated" | "tick" | "valuechanged"
                 ) {
-                    // Get the control name
+                    // Get the control name (user-set via .Name property)
                     self.compile_expression(obj)?;
                     let name_idx = self.add_string_constant("name");
                     self.emit_u16(Op::struct_get, name_idx);

@@ -39,7 +39,7 @@ impl std::fmt::Display for PropValue {
 
 /// Side effects that any language runtime can produce.
 /// The UI renderer consumes these — it doesn't know which language produced them.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum SideEffect {
     ConsoleOutput(String),
     ConsoleClear,
@@ -84,6 +84,8 @@ pub enum SideEffect {
 
     RunApplication {
         form_name: String,
+        /// The form object reference — stored for event handler `this` dispatch.
+        form_object: Option<vybe_bytecode::Value>,
     },
 
     InputBox {
@@ -150,13 +152,18 @@ impl SideEffectQueue {
 
     /// Register an event handler callback for a control+event pair.
     pub fn register_event(&mut self, control: &str, event: &str, callback: Value) {
-        let key = format!("{}.{}", control, event);
+        let key = format!("{}.{}", control.to_lowercase(), event);
         self.event_handlers.insert(key, callback);
     }
 
-    /// Look up a registered event handler.
+    /// List all registered event handler keys (for debugging).
+    pub fn event_handler_keys(&self) -> Vec<String> {
+        self.event_handlers.keys().cloned().collect()
+    }
+
+    /// Look up a registered event handler (case-insensitive on control name).
     pub fn get_event_handler(&self, control: &str, event: &str) -> Option<&Value> {
-        let key = format!("{}.{}", control, event);
+        let key = format!("{}.{}", control.to_lowercase(), event);
         self.event_handlers.get(&key)
     }
 

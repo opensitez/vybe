@@ -1,0 +1,337 @@
+//! Tests for the WASM GC type system integration.
+//!
+//! Covers:
+//! - TypeRegistry registration and get_id
+//! - Subtype checking (is_subtype) with inheritance chains
+//! - Method resolution through vtable (resolve_method)
+//! - ref_test opcode with registered types
+//! - Cross-language instanceof using __type and __types properties
+
+use vybe_bytecode::{VM, Value, Chunk, Op, TypeDef, Method};
+use vybe_bytecode::value::{Object, ObjectKind};
+use std::rc::Rc;
+use std::cell::RefCell;
+
+// ============================================================
+// TypeRegistry unit tests
+// ============================================================
+
+#[test]
+fn test_type_registration_and_lookup() {
+    let mut vm = VM::new();
+
+    // Object (type 0) is always pre-registered
+    assert_eq!(vm.type_registry.get_id("Object"), Some(0));
+    assert_eq!(vm.type_registry.get_id("object"), Some(0)); // case-insensitive
+
+    // Register new types
+    let list_id = vm.type_registry.register(TypeDef::new("List").with_parent(0));
+    let dict_id = vm.type_registry.register(TypeDef::new("Dictionary").with_parent(0));
+
+    assert!(list_id > 0);
+    assert!(dict_id > 0);
+    assert_ne!(list_id, dict_id);
+
+    // Lookup by name
+    assert_eq!(vm.type_registry.get_id("List"), Some(list_id));
+    assert_eq!(vm.type_registry.get_id("list"), Some(list_id)); // case-insensitive
+    assert_eq!(vm.type_registry.get_id("Dictionary"), Some(dict_id));
+
+    // Unknown type
+    assert_eq!(vm.type_registry.get_id("NonExistent"), None);
+}
+
+#[test]
+fn test_subtype_checking_direct_parent() {
+    let mut vm = VM::new();
+
+    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
+    let button_id = vm.type_registry.register(TypeDef::new("Button").with_parent(control_id));
+
+    // Button is a subtype of Control
+    assert!(vm.type_registry.is_subtype(button_id, control_id));
+    // Button is a subtype of Object
+    assert!(vm.type_registry.is_subtype(button_id, 0));
+    // Control is a subtype of Object
+    assert!(vm.type_registry.is_subtype(control_id, 0));
+    // Everything is a subtype of itself
+    assert!(vm.type_registry.is_subtype(button_id, button_id));
+    assert!(vm.type_registry.is_subtype(control_id, control_id));
+    // Object is NOT a subtype of Button
+    assert!(!vm.type_registry.is_subtype(0, button_id));
+    // Control is NOT a subtype of Button
+    assert!(!vm.type_registry.is_subtype(control_id, button_id));
+}
+
+#[test]
+fn test_subtype_checking_deep_chain() {
+    let mut vm = VM::new();
+
+    // Object -> Control -> TextBoxBase -> TextBox -> RichTextBox
+    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
+    let textbox_base_id = vm.type_registry.register(TypeDef::new("TextBoxBase").with_parent(control_id));
+    let textbox_id = vm.type_registry.register(TypeDef::new("TextBox").with_parent(textbox_base_id));
+    let rich_id = vm.type_registry.register(TypeDef::new("RichTextBox").with_parent(textbox_id));
+
+    // RichTextBox is a subtype of everything above it
+    assert!(vm.type_registry.is_subtype(rich_id, textbox_id));
+    assert!(vm.type_registry.is_subtype(rich_id, textbox_base_id));
+    assert!(vm.type_registry.is_subtype(rich_id, control_id));
+    assert!(vm.type_registry.is_subtype(rich_id, 0)); // Object
+
+    // Siblings are not subtypes of each other
+    let label_id = vm.type_registry.register(TypeDef::new("Label").with_parent(control_id));
+    assert!(!vm.type_registry.is_subtype(label_id, textbox_id));
+    assert!(!vm.type_registry.is_subtype(textbox_id, label_id));
+    // But both are subtypes of Control
+    assert!(vm.type_registry.is_subtype(label_id, control_id));
+    assert!(vm.type_registry.is_subtype(textbox_id, control_id));
+}
+
+#[test]
+fn test_method_resolution_own_type() {
+    let mut vm = VM::new();
+
+    // Register a host function
+    vm.register_host_fn("test", "listAdd", Box::new(|_| Value::Null));
+    let host_idx = *vm.host_registry.get(&("test".to_string(), "listAdd".to_string())).unwrap();
+
+    // Register List type with an "add" method
+    let list_id = vm.type_registry.register(
+        TypeDef::new("List").with_parent(0).host_method("add", host_idx)
+    );
+
+    // Resolve method on List
+    let method = vm.type_registry.resolve_method(list_id, "add");
+    assert!(method.is_some());
+    match method.unwrap() {
+        Method::HostFn(idx) => assert_eq!(*idx, host_idx),
+        _ => panic!("Expected HostFn"),
+    }
+}
+
+#[test]
+fn test_method_resolution_inherited() {
+    let mut vm = VM::new();
+
+    vm.register_host_fn("test", "toString", Box::new(|_| Value::String(Rc::from("str"))));
+    let to_string_idx = *vm.host_registry.get(&("test".to_string(), "toString".to_string())).unwrap();
+
+    // Add toString to Object (type 0)
+    vm.type_registry.add_host_method(0, "tostring", to_string_idx);
+
+    // Register List inheriting from Object
+    let list_id = vm.type_registry.register(TypeDef::new("List").with_parent(0));
+
+    // List should inherit toString from Object
+    let method = vm.type_registry.resolve_method(list_id, "tostring");
+    assert!(method.is_some());
+    match method.unwrap() {
+        Method::HostFn(idx) => assert_eq!(*idx, to_string_idx),
+        _ => panic!("Expected HostFn"),
+    }
+}
+
+#[test]
+fn test_method_resolution_override() {
+    let mut vm = VM::new();
+
+    vm.register_host_fn("test", "base_count", Box::new(|_| Value::F64(0.0)));
+    let base_fn = *vm.host_registry.get(&("test".to_string(), "base_count".to_string())).unwrap();
+    vm.register_host_fn("test", "list_count", Box::new(|_| Value::F64(42.0)));
+    let override_fn = *vm.host_registry.get(&("test".to_string(), "list_count".to_string())).unwrap();
+
+    // Object has a count method
+    vm.type_registry.add_host_method(0, "count", base_fn);
+
+    // List overrides count
+    let list_id = vm.type_registry.register(
+        TypeDef::new("List").with_parent(0).host_method("count", override_fn)
+    );
+
+    // List.count should resolve to the override
+    let method = vm.type_registry.resolve_method(list_id, "count");
+    match method.unwrap() {
+        Method::HostFn(idx) => assert_eq!(*idx, override_fn),
+        _ => panic!("Expected HostFn"),
+    }
+
+    // Object.count should still be the base
+    let method = vm.type_registry.resolve_method(0, "count");
+    match method.unwrap() {
+        Method::HostFn(idx) => assert_eq!(*idx, base_fn),
+        _ => panic!("Expected HostFn"),
+    }
+}
+
+// ============================================================
+// ref_test opcode tests
+// ============================================================
+
+fn make_typed_object(type_name: &str) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert("__type".into(), Value::String(Rc::from(type_name)));
+    Value::Object(Rc::new(RefCell::new(obj)))
+}
+
+fn make_typed_object_with_id(type_id: usize, type_name: &str) -> Value {
+    let mut obj = Object::new_typed(type_id);
+    obj.properties.insert("__type".into(), Value::String(Rc::from(type_name)));
+    Value::Object(Rc::new(RefCell::new(obj)))
+}
+
+#[test]
+fn test_ref_test_opcode_with_type_string() {
+    // Create a VM with types registered
+    let mut vm = VM::new();
+    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
+    let _button_id = vm.type_registry.register(TypeDef::new("Button").with_parent(control_id));
+
+    // Build a chunk that: push a Button object, ref_test "control"
+    let mut chunk = Chunk::new("<test>");
+    // Push a Button object (using __type property)
+    let obj = make_typed_object("Button");
+    let const_idx = chunk.add_constant(obj);
+    chunk.emit_op_u16(Op::r#const, const_idx, 0);
+    // ref_test with "control" type name
+    let type_name_idx = chunk.add_constant(Value::String(Rc::from("control")));
+    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
+    chunk.emit_op(Op::r#return, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert!(matches!(result, Value::Bool(true)), "Button should be a subtype of Control, got {:?}", result);
+}
+
+#[test]
+fn test_ref_test_opcode_with_type_id() {
+    let mut vm = VM::new();
+    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
+    let button_id = vm.type_registry.register(TypeDef::new("Button").with_parent(control_id));
+
+    // Build chunk with a typed object (type_id set)
+    let mut chunk = Chunk::new("<test>");
+    let obj = make_typed_object_with_id(button_id, "Button");
+    let const_idx = chunk.add_constant(obj);
+    chunk.emit_op_u16(Op::r#const, const_idx, 0);
+    let type_name_idx = chunk.add_constant(Value::String(Rc::from("control")));
+    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
+    chunk.emit_op(Op::r#return, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert!(matches!(result, Value::Bool(true)), "Button (type_id) should be a subtype of Control, got {:?}", result);
+}
+
+#[test]
+fn test_ref_test_opcode_negative() {
+    let mut vm = VM::new();
+    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
+    let _button_id = vm.type_registry.register(TypeDef::new("Button").with_parent(control_id));
+    let _list_id = vm.type_registry.register(TypeDef::new("List").with_parent(0));
+
+    // A List is NOT a Button
+    let mut chunk = Chunk::new("<test>");
+    let obj = make_typed_object("List");
+    let const_idx = chunk.add_constant(obj);
+    chunk.emit_op_u16(Op::r#const, const_idx, 0);
+    let type_name_idx = chunk.add_constant(Value::String(Rc::from("button")));
+    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
+    chunk.emit_op(Op::r#return, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert!(matches!(result, Value::Bool(false)), "List should NOT be a subtype of Button, got {:?}", result);
+}
+
+#[test]
+fn test_ref_test_with_js_types_array() {
+    // JS classes use __types array for inheritance chain
+    let mut vm = VM::new();
+
+    let mut chunk = Chunk::new("<test>");
+    // Create an object with __types = ["Animal", "Dog"]
+    let mut obj = Object::new();
+    let types_arr = Object::new_array(vec![
+        Value::String(Rc::from("Animal")),
+        Value::String(Rc::from("Dog")),
+    ]);
+    obj.properties.insert("__types".into(), Value::Object(Rc::new(RefCell::new(types_arr))));
+    obj.properties.insert("__type".into(), Value::String(Rc::from("Dog")));
+
+    let const_idx = chunk.add_constant(Value::Object(Rc::new(RefCell::new(obj))));
+    chunk.emit_op_u16(Op::r#const, const_idx, 0);
+    let type_name_idx = chunk.add_constant(Value::String(Rc::from("animal")));
+    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
+    chunk.emit_op(Op::r#return, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert!(matches!(result, Value::Bool(true)), "Dog (via __types) should match Animal, got {:?}", result);
+}
+
+#[test]
+fn test_ref_test_primitives() {
+    let mut vm = VM::new();
+
+    // String is "string"
+    let mut chunk = Chunk::new("<test>");
+    let str_idx = chunk.add_constant(Value::String(Rc::from("hello")));
+    chunk.emit_op_u16(Op::r#const, str_idx, 0);
+    let type_name_idx = chunk.add_constant(Value::String(Rc::from("string")));
+    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
+    chunk.emit_op(Op::r#return, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert!(matches!(result, Value::Bool(true)), "String should match 'string', got {:?}", result);
+}
+
+// ============================================================
+// Component Model resource tests
+// ============================================================
+
+#[test]
+fn test_resource_table_basic() {
+    use vybe_bytecode::ResourceTable;
+
+    let mut table = ResourceTable::new();
+    let handle = table.create(1, Value::String(Rc::from("data")));
+    assert!(table.is_valid(handle));
+
+    let borrowed = table.borrow(handle).unwrap();
+    assert!(matches!(borrowed, Value::String(_)));
+
+    table.release_borrow(handle);
+    let dropped = table.drop_resource(handle).unwrap();
+    assert!(matches!(dropped, Value::String(_)));
+    assert!(!table.is_valid(handle));
+}
+
+#[test]
+fn test_resource_table_borrow_prevents_drop() {
+    use vybe_bytecode::ResourceTable;
+
+    let mut table = ResourceTable::new();
+    let handle = table.create(1, Value::Null);
+    let _ = table.borrow(handle);
+
+    // Can't drop while borrowed
+    assert!(table.drop_resource(handle).is_err());
+
+    // Release, then drop succeeds
+    table.release_borrow(handle);
+    assert!(table.drop_resource(handle).is_ok());
+}
+
+#[test]
+fn test_register_resource_in_type_registry() {
+    let mut vm = VM::new();
+    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
+
+    // Register a resource type with parent
+    let mut td = TypeDef::new("FileHandle");
+    td.parent = Some(control_id);
+    td.is_resource = true;
+    let file_tid = vm.type_registry.register(td);
+
+    assert!(file_tid > 0);
+    assert_eq!(vm.type_registry.get_id("FileHandle"), Some(file_tid));
+    assert!(vm.type_registry.is_subtype(file_tid, control_id));
+    assert!(vm.type_registry.is_subtype(file_tid, 0)); // Object
+}

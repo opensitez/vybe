@@ -522,6 +522,11 @@ pub enum Op {
     /// Stack: [promise_value] → [resolved_value]
     /// Replaces async/await host call overhead with native WASM suspend.
     promise_suspend,
+
+    // -- WASM GC Type System --
+    /// Stamp type_id on TOS object. Stack: [obj, type_id_i32] → [obj]
+    /// Used by compilers after struct_new to mark the object's type.
+    set_type_id,
 }
 
 impl Op {
@@ -542,7 +547,7 @@ impl Op {
         } else {
             b1 as u16
         };
-        if val <= Op::promise_suspend as u16 {
+        if val <= Op::set_type_id as u16 {
             Some(unsafe { std::mem::transmute(val) })
         } else {
             None

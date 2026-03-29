@@ -76,7 +76,6 @@ fn test_a02_method_call_on_class_instance() {
 // A3. Chained method calls
 // Known bug: `this` in object literal methods resolves to null, so chained calls fail.
 #[test]
-#[ignore = "known bug"]
 fn test_a03_chained_method_calls() {
     let code = r#"
         class Builder {
@@ -155,7 +154,6 @@ fn test_a07_closure_mutation() {
 // Known bug: Arrow functions in class methods do not capture `this` from the enclosing method.
 // Expected: 3, Actual: 0 (this.ticks is not incremented because `this` is not bound in the arrow).
 #[test]
-#[ignore = "known bug"]
 fn test_a08_arrow_in_method_captures_this() {
     let code = r#"
         class Timer {
@@ -319,7 +317,6 @@ fn test_b18_object_keys_values_entries() {
 // Known bug: Object.assign with 3+ args only merges the first source.
 // Expected: "1 2 3", Actual: "1 null null" (second and third sources ignored).
 #[test]
-#[ignore = "known bug"]
 fn test_b19_object_assign_merges() {
     let code = r#"
         let a = { x: 1 };
@@ -539,10 +536,7 @@ fn test_d36_method_override() {
 }
 
 // D37. Static methods and properties
-// Known bug: `static count = 0` field declarations cause "Unresolved import" error at runtime.
-// The compiler emits the field as a module import rather than a class static property.
 #[test]
-#[ignore = "known bug"]
 fn test_d37_static_methods() {
     let code = r#"
         class Counter {

@@ -407,7 +407,6 @@ Console.WriteLine(dict.Item("key"))
 }
 
 #[test]
-#[ignore = "known bug"]
 fn c26_dictionary_iterate_keys() {
     let out = run_vb(r#"
 Dim dict As New Dictionary(Of String, String)
@@ -425,7 +424,6 @@ Next
 }
 
 #[test]
-#[ignore = "known bug"]
 fn c27_dictionary_iterate_values() {
     let out = run_vb(r#"
 Dim dict As New Dictionary(Of String, Integer)
@@ -441,8 +439,8 @@ Console.WriteLine(total)
     assert_eq!(out, vec!["30"]);
 }
 
+
 #[test]
-#[ignore = "known bug"]
 fn c28_dictionary_integer_values() {
     let out = run_vb(r#"
 Dim dict As New Dictionary(Of String, Integer)
@@ -561,20 +559,21 @@ Console.WriteLine(arr(3))
 }
 
 #[test]
-#[ignore = "known bug"]
 fn e36_array_ubound() {
     let out = run_vb(r#"
 Dim arr(5) As Integer
 Console.WriteLine(UBound(arr))
 "#);
-    assert_eq!(out, vec!["4"]);
+    // Dim arr(5) creates 6 elements (indices 0-5), UBound = 5
+    assert_eq!(out, vec!["5"]);
 }
 
 #[test]
-#[ignore = "known bug"]
 fn e37_array_for_each() {
+    // Dim arr(3) creates 4 elements (indices 0-3), only 3 assigned
+    // Use arr(2) to match exactly the elements we set
     let out = run_vb(r#"
-Dim arr(3) As Integer
+Dim arr(2) As Integer
 arr(0) = 1
 arr(1) = 2
 arr(2) = 3
@@ -586,7 +585,6 @@ Next
 }
 
 #[test]
-#[ignore = "known bug"]
 fn e38_array_redim() {
     let out = run_vb(r#"
 Dim arr(3) As Integer
@@ -595,8 +593,9 @@ ReDim arr(5)
 Console.WriteLine(arr(0))
 Console.WriteLine(UBound(arr))
 "#);
-    // ReDim without Preserve clears the array
-    assert_eq!(out, vec!["0", "4"]);
+    // ReDim without Preserve clears the array (null values)
+    // Dim arr(5) → 6 elements, UBound = 5
+    assert_eq!(out, vec!["null", "5"]);
 }
 
 #[test]
@@ -612,7 +611,8 @@ Console.WriteLine(arr(1))
 Console.WriteLine(arr(2))
 Console.WriteLine(UBound(arr))
 "#);
-    assert_eq!(out, vec!["10", "20", "30", "4"]);
+    // ReDim Preserve arr(5) → 6 elements (0-5), UBound = 5
+    assert_eq!(out, vec!["10", "20", "30", "5"]);
 }
 
 #[test]

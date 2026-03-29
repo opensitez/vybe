@@ -180,7 +180,7 @@ fn call_indirect_basic() {
     let func_val = Value::Object(Rc::new(RefCell::new(Object {
         properties: std::collections::HashMap::new(),
         kind: ObjectKind::Function(func),
-        type_id: 0,
+        type_id: 0, fields: Vec::new(),
     })));
     vm.func_table.push(func_val);
 

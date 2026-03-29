@@ -731,7 +731,6 @@ fn test_f54_class_iterate_array_field() {
 
 // F55. Two instances with independent array fields
 #[test]
-#[ignore = "known bug"]
 fn test_f55_independent_instances() {
     let code = r#"
         class Stack {

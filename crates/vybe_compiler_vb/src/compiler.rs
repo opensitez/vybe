@@ -2,6 +2,7 @@ use std::rc::Rc;
 use std::collections::HashSet;
 
 use vybe_bytecode::{Chunk, Value, Op};
+use vybe_bytecode::chunk::TypeEntry;
 use vybe_parser_basic::ast::*;
 
 use crate::scope::Scope;
@@ -29,6 +30,11 @@ pub struct Compiler {
     pub(crate) func_signatures: std::collections::HashMap<String, Vec<bool>>,
     /// Names known to hold arrays (from Dim arr(N) declarations)
     pub(crate) known_arrays: HashSet<String>,
+    /// WASM GC type table: compile-time type definitions for classes.
+    /// Loaded into VM's TypeRegistry before execution.
+    pub(crate) type_entries: Vec<TypeEntry>,
+    /// Class name → index into type_entries (for set_type_id at construction sites).
+    pub(crate) class_type_ids: std::collections::HashMap<String, usize>,
 }
 
 pub(crate) struct LoopContext {
@@ -58,6 +64,8 @@ impl Compiler {
             known_types: Self::init_known_types(),
             func_signatures: std::collections::HashMap::new(),
             known_arrays: HashSet::new(),
+            type_entries: Vec::new(),
+            class_type_ids: std::collections::HashMap::new(),
             interface_imports: vec![
                 // Default imports — always available
                 "system".into(),
@@ -101,6 +109,8 @@ impl Compiler {
         self.emit(Op::halt);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
+        // Attach WASM GC type table to script chunk
+        self.chunks[0].types = self.type_entries;
         Ok(self.chunks)
     }
 
@@ -416,6 +426,18 @@ fn capitalize_control_name_for_interface(name: &str) -> String {
 }
 
 impl Compiler {
+    /// Emit set_type_id for the TOS object using __tid_<name> global.
+    /// If the global doesn't exist at runtime, the I32(0) default is harmless (Object type).
+    /// Emit set_type_id for the TOS object using __tid_<name> global.
+    /// Stack: [obj] → [obj] (type_id stamped in-place).
+    pub(crate) fn emit_set_type_id(&mut self, type_name: &str) {
+        let tid_name = format!("__tid_{}", type_name.to_lowercase());
+        let tid_idx = self.add_string_constant(&tid_name);
+        // set_type_id pops type_id, peeks obj — leaves obj on stack
+        self.emit_u16(Op::global_get, tid_idx);
+        self.emit(Op::set_type_id);
+    }
+
     // ---- Declarations ----
 
     pub(crate) fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), String> {

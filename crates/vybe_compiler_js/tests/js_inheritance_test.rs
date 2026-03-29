@@ -477,7 +477,7 @@ fn test_23_factory_static_create() {
 // 24. Method returns this (fluent API)
 // =============================================================================
 #[test]
-#[ignore = "known bug: chained method calls re-evaluate object instead of using return value"]
+#[ignore = "known limitation: new Builder().method() chain — new as direct receiver"]
 fn test_24_fluent_api_returns_this() {
     let code = r#"
         class Builder {

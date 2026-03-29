@@ -198,6 +198,31 @@ impl VM {
             }
         }
 
+        // Load type table from the script chunk (WASM GC type section).
+        // Registers user-defined class types and their vtable methods.
+        // Sets __tid_<name> globals so constructors can stamp type_id.
+        {
+            let types = self.chunks[script_idx].types.clone();
+            if !types.is_empty() {
+                // Adjust chunk indices in methods (same offset as ref_func)
+                let adjusted_types: Vec<_> = types.iter().map(|t| {
+                    let mut entry = t.clone();
+                    entry.methods = t.methods.iter().map(|(name, idx)| {
+                        (name.clone(), idx + script_idx)
+                    }).collect();
+                    entry
+                }).collect();
+                self.type_registry.load_type_table(&adjusted_types);
+                // Set __tid_<name> globals for each registered type
+                for entry in &adjusted_types {
+                    if let Some(tid) = self.type_registry.get_id(&entry.name) {
+                        let key = format!("__tid_{}", entry.name.to_lowercase());
+                        self.globals.insert(key, Value::I32(tid as i32));
+                    }
+                }
+            }
+        }
+
         self.frames.push(CallFrame {
             chunk_index: script_idx,
             ip: 0,
@@ -476,29 +501,52 @@ impl VM {
     }
 
     /// Test if a value matches a type name (used by ref_test, ref_cast, br_on_cast).
+    /// Supports: WASM GC type_id lookup, __type string matching, __types array
+    /// (JS class inheritance chain), and __control_type for GUI controls.
     fn test_type(&self, val: &Value, target_name: &str) -> bool {
         match val {
             Value::Object(o) => {
                 let ob = o.borrow();
+                // Fast path: type_id is set (properly typed object)
                 if ob.type_id > 0 {
                     if let Some(target_id) = self.type_registry.get_id(target_name) {
-                        self.type_registry.is_subtype(ob.type_id, target_id)
-                    } else { false }
-                } else {
-                    let obj_type = ob.properties.get("__type")
-                        .map(|v| format!("{}", v).to_lowercase())
-                        .or_else(|| ob.properties.get("__control_type")
-                            .map(|v| format!("{}", v).to_lowercase()))
-                        .unwrap_or_default();
-                    if obj_type == target_name { true }
-                    else if let Some(tid) = self.type_registry.get_id(&obj_type) {
-                        if let Some(target_id) = self.type_registry.get_id(target_name) {
-                            self.type_registry.is_subtype(tid, target_id)
-                        } else { false }
-                    } else {
-                        target_name == "object"
+                        return self.type_registry.is_subtype(ob.type_id, target_id);
+                    }
+                    return false;
+                }
+
+                // Slow path: type_id == 0 — check __type / __control_type strings
+                let obj_type = ob.properties.get("__type")
+                    .map(|v| format!("{}", v).to_lowercase())
+                    .or_else(|| ob.properties.get("__control_type")
+                        .map(|v| format!("{}", v).to_lowercase()))
+                    .unwrap_or_default();
+
+                // Direct name match
+                if obj_type == target_name { return true; }
+
+                // Check via type registry (subtype relationship)
+                if let Some(tid) = self.type_registry.get_id(&obj_type) {
+                    if let Some(target_id) = self.type_registry.get_id(target_name) {
+                        if self.type_registry.is_subtype(tid, target_id) {
+                            return true;
+                        }
                     }
                 }
+
+                // Check __types array (JS class inheritance chain)
+                if let Some(Value::Object(types)) = ob.properties.get("__types") {
+                    let t = types.borrow();
+                    if let crate::value::ObjectKind::Array(ref elems) = t.kind {
+                        let target_lower = target_name.to_lowercase();
+                        if elems.iter().any(|e| format!("{}", e).to_lowercase() == target_lower) {
+                            return true;
+                        }
+                    }
+                }
+
+                // Universal: everything is an "object"
+                target_name == "object"
             }
             Value::String(_) => target_name == "string" || target_name == "object",
             Value::F64(_) | Value::I32(_) | Value::I64(_) => {
@@ -656,7 +704,14 @@ impl VM {
                             self.pop(); // discard setter return
                             self.push(val)?;
                         } else {
-                            o.borrow_mut().set(name, val.clone());
+                            o.borrow_mut().set(name.clone(), val.clone());
+                            // Sync __control_name when "name" is set on a control object
+                            if name == "name" {
+                                let has_ctrl = o.borrow().properties.contains_key("__control_name");
+                                if has_ctrl {
+                                    o.borrow_mut().properties.insert("__control_name".into(), val.clone());
+                                }
+                            }
                             self.push(val)?;
                         }
                     } else {
@@ -959,7 +1014,7 @@ impl VM {
                     }
 
                     let func = Function { name, arity, chunk_index: func_idx, upvalues };
-                    let mut obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0 };
+                    let mut obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0, fields: Vec::new() };
                     // Add to function table for call_indirect
                     let table_idx = self.func_table.len();
                     obj.properties.insert("__table_idx".into(), Value::F64(table_idx as f64));
@@ -1043,46 +1098,14 @@ impl VM {
                 Op::f64_const_0 => self.push(Value::F64(0.0))?,
 
                 // -- Type checks --
-                // ref_test: TypeOf...Is using TypeRegistry hierarchy
+                // ref_test: TypeOf...Is using TypeRegistry hierarchy.
+                // Delegates to test_type() which handles: type_id lookup,
+                // __type string, __types array (JS inheritance), __control_type.
                 Op::ref_test => {
                     let type_name_idx = self.read_u16();
                     let target_name = self.constant_str(type_name_idx);
                     let val = self.pop();
-                    let result = match &val {
-                        Value::Object(o) => {
-                            let ob = o.borrow();
-                            // Check type_id via TypeRegistry
-                            if ob.type_id > 0 {
-                                if let Some(target_id) = self.type_registry.get_id(&target_name) {
-                                    self.type_registry.is_subtype(ob.type_id, target_id)
-                                } else {
-                                    false
-                                }
-                            } else {
-                                // Fallback: check __type property name match
-                                let obj_type = ob.properties.get("__type")
-                                    .map(|v| format!("{}", v).to_lowercase())
-                                    .or_else(|| ob.properties.get("__control_type")
-                                        .map(|v| format!("{}", v).to_lowercase()))
-                                    .unwrap_or_default();
-                                if obj_type == target_name { true }
-                                else if let Some(tid) = self.type_registry.get_id(&obj_type) {
-                                    if let Some(target_id) = self.type_registry.get_id(&target_name) {
-                                        self.type_registry.is_subtype(tid, target_id)
-                                    } else { false }
-                                } else {
-                                    target_name == "object" // everything is Object
-                                }
-                            }
-                        }
-                        Value::String(_) => target_name == "string" || target_name == "object",
-                        Value::F64(_) | Value::I32(_) | Value::I64(_) => {
-                            target_name == "integer" || target_name == "double" || target_name == "object"
-                        }
-                        Value::Bool(_) => target_name == "boolean" || target_name == "object",
-                        Value::V128(_) => target_name == "v128",
-                        Value::Null | Value::Undefined => false,
-                    };
+                    let result = self.test_type(&val, &target_name);
                     self.push(Value::Bool(result))?;
                 }
                 Op::ref_cast => {
@@ -2516,6 +2539,16 @@ impl VM {
                     }
                 }
 
+                // -- WASM GC Type System --
+                Op::set_type_id => {
+                    // Stack: [obj, type_id_i32] → [obj]
+                    let type_id = self.pop().as_i32() as usize;
+                    let obj = self.peek(0);
+                    if let Value::Object(o) = obj {
+                        o.borrow_mut().type_id = type_id;
+                    }
+                }
+
                 // -- Stubs --
                 Op::iter_get | Op::iter_next | Op::spread => {
                     return Err(VMError::new("Iteration not yet implemented"));
@@ -2549,7 +2582,14 @@ impl VM {
                         let result = (self.host_fns[idx])(&args);
                         self.push(result)?;
                     }
-                    _ => return Err(VMError::new("Not a function")),
+                    other => {
+                        let chunk_name = if !self.frames.is_empty() {
+                            self.chunks[self.frame().chunk_index].name.clone()
+                        } else { "?".into() };
+                        return Err(VMError::new(format!("Not a function in chunk '{}' (kind: {:?}, props: {:?})",
+                            chunk_name, std::mem::discriminant(other),
+                            o.properties.keys().take(5).collect::<Vec<_>>())));
+                    }
                 }
             }
             _ => return Err(VMError::new(format!("{} is not callable (type: {})", callee.type_tag(), callee))),
@@ -2714,7 +2754,7 @@ impl VM {
                     chunk_index: *idx,
                     upvalues: Vec::new(),
                 };
-                let obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0 };
+                let obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0, fields: Vec::new() };
                 Value::Object(Rc::new(RefCell::new(obj)))
             }
         }

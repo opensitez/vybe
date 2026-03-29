@@ -30,9 +30,15 @@ impl Compiler {
                     if var.array_bounds.is_some() {
                         self.known_arrays.insert(name.clone());
                     }
-                    let slot = self.define_local(&name);
-                    self.emit_u16(Op::local_set, slot);
-                    self.emit(Op::drop);
+                    // Top-level scope: store as global (matches Declaration::Variable behavior)
+                    if self.scopes.len() == 1 && self.current_scope().depth == 0 {
+                        self.emit_global_set(&name);
+                        self.emit(Op::drop);
+                    } else {
+                        let slot = self.define_local(&name);
+                        self.emit_u16(Op::local_set, slot);
+                        self.emit(Op::drop);
+                    }
                 }
             }
             Statement::Assignment { target, value } => {
@@ -40,25 +46,32 @@ impl Compiler {
                 self.compile_store_ident(target)?;
             }
             Statement::MemberAssignment { object, member, value } => {
-                self.compile_expression(object)?;
-                self.compile_expression(value)?;
+                // Check if we need a side effect BEFORE compiling (to save value)
                 let member_lower = member.as_str().to_lowercase();
-                let idx = self.add_string_constant(&member_lower);
-                self.emit_u16(Op::struct_set, idx);
-                self.emit(Op::drop);
-                // Emit controlSetProperty side effect for Me.property or classField.property
-                // inside a class. (controlSetProperty is always available as no-op in non-GUI)
                 let emit_side_effect = if matches!(*object, Expression::Me) {
                     self.current_scope().resolve_local("me").is_some()
                 } else if let Expression::Variable(ref name) = *object {
-                    // If the variable is a class field, emit side effect
                     self.class_fields.contains(&name.as_str().to_lowercase())
                         && self.current_scope().resolve_local("me").is_some()
                 } else {
                     false
                 };
+
+                self.compile_expression(object)?;
+                self.compile_expression(value)?;
+
                 if emit_side_effect {
-                    // Push the object again for the host call
+                    // Save value to temp BEFORE struct_set consumes it
+                    let tmp = self.define_local("__csp_val");
+                    self.emit(Op::dup);
+                    self.emit_u16(Op::local_set, tmp);
+                    self.emit(Op::drop);
+
+                    let idx = self.add_string_constant(&member_lower);
+                    self.emit_u16(Op::struct_set, idx);
+                    self.emit(Op::drop);
+
+                    // Emit controlSetProperty with saved value (no re-evaluation)
                     self.compile_expression(object)?;
                     let cap = {
                         let mut c = member_lower.chars();
@@ -68,9 +81,13 @@ impl Compiler {
                         }
                     };
                     self.emit_constant(Value::String(Rc::from(cap.as_str())));
-                    self.compile_expression(value)?;
+                    self.emit_u16(Op::local_get, tmp);
                     let set_idx = self.import("vybe:gui", "controlSetProperty");
                     self.emit_host_call(set_idx, 3);
+                    self.emit(Op::drop);
+                } else {
+                    let idx = self.add_string_constant(&member_lower);
+                    self.emit_u16(Op::struct_set, idx);
                     self.emit(Op::drop);
                 }
             }
@@ -390,6 +407,9 @@ impl Compiler {
                 self.compile_expression(&Expression::Variable(array.clone()))?;
                 if let Some(dim) = bounds.first() {
                     self.compile_expression(dim)?;
+                    // VB ReDim arr(N) means indices 0..N inclusive, size = N+1
+                    self.emit_constant(Value::F64(1.0));
+                    self.emit(Op::dyn_add);
                 } else {
                     self.emit(Op::i32_const_0);
                 }

@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use vybe_bytecode::{Chunk, Value, Op};
+use vybe_bytecode::chunk::TypeEntry;
 use vybe_parser_js::ast::*;
 
 use crate::scope::Scope;
@@ -23,11 +24,18 @@ pub struct Compiler {
     defined_globals: std::collections::HashSet<String>,
     /// Track names that are class constructors (for static method dispatch).
     defined_classes: std::collections::HashSet<String>,
+    /// Track variable names known to hold class instances (from `let x = new ClassName()`).
+    /// Used to avoid short-circuiting method calls like push/pop to array intrinsics.
+    class_instances: std::collections::HashSet<String>,
     /// ESM Integration: .wasm files referenced by import statements.
     /// The CLI/runtime should load these modules before execution.
     pub wasm_imports: Vec<String>,
     /// Label for the next loop (set by Labeled statement)
     pending_label: Option<String>,
+    /// WASM GC type table entries — one per class declaration.
+    type_entries: Vec<TypeEntry>,
+    /// Class name → index into type_entries (for set_type_id at construction sites).
+    class_type_ids: std::collections::HashMap<String, usize>,
 }
 
 impl Compiler {
@@ -42,7 +50,10 @@ impl Compiler {
             in_method: false,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
+            class_instances: std::collections::HashSet::new(),
             wasm_imports: Vec::new(),
+            type_entries: Vec::new(),
+            class_type_ids: std::collections::HashMap::new(),
         }
     }
 
@@ -54,6 +65,7 @@ impl Compiler {
         self.emit(Op::halt);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
+        self.chunks[0].types = self.type_entries;
         Ok(self.chunks)
     }
 
@@ -66,6 +78,7 @@ impl Compiler {
         self.emit(Op::halt);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
+        self.chunks[0].types = self.type_entries;
         Ok((self.chunks, self.wasm_imports))
     }
 
@@ -303,12 +316,23 @@ impl Compiler {
             }
             Statement::VariableDeclaration { kind, declarations } => {
                 for decl in declarations {
+                    // Track if this variable is a class instance (for method dispatch)
+                    let is_class_new = if let Some(init) = &decl.init {
+                        matches!(init, Expression::New { callee, .. }
+                            if matches!(callee.as_ref(), Expression::Identifier(name) if self.defined_classes.contains(name)))
+                    } else { false };
+
                     if let Some(init) = &decl.init {
                         self.compile_expression(init)?;
                     } else {
                         self.emit(Op::null);
                     }
                     // Value is on stack — bind it to the pattern
+                    if is_class_new {
+                        if let BindingPattern::Identifier(name) = &decl.pattern {
+                            self.class_instances.insert(name.clone());
+                        }
+                    }
                     self.compile_binding(&decl.pattern, *kind)?;
                 }
             }
@@ -810,8 +834,13 @@ impl Compiler {
             Expression::Null => self.emit(Op::null),
             Expression::Undefined => self.emit(Op::undefined),
             Expression::This => {
-                if self.in_method { self.emit_u16(Op::local_get, 1); }
-                else { self.emit(Op::null); }
+                // Resolve "this" as a variable — in a method it's local slot 1,
+                // in an arrow function inside a method it becomes an upvalue.
+                match self.resolve_variable("this") {
+                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Upvalue(idx) => self.emit_u8(Op::upvalue_get, idx),
+                    VarResolution::Global => self.emit(Op::null),
+                }
             }
             Expression::Super => {
                 // super is used in two contexts:
@@ -875,9 +904,23 @@ impl Compiler {
                     BinaryOp::Le => self.emit(Op::dyn_le),
                     BinaryOp::Ge => self.emit(Op::dyn_ge),
                     BinaryOp::InstanceOf => {
-                        // a instanceof B → host call that checks __type chain
-                        let idx = self.import("vybe:object", "instanceOf");
-                        self.emit_host_call(idx, 2);
+                        // a instanceof B → use ref_test opcode when B is a known identifier.
+                        // ref_test uses the TypeRegistry for proper subtype checking
+                        // (including WASM GC-style inheritance chains).
+                        // For dynamic expressions, fall back to host call.
+                        //
+                        // At this point both left and right are on the stack.
+                        // ref_test only needs the left value + a static type name.
+                        // So: drop the right, emit ref_test with the type name.
+                        if let Expression::Identifier(class_name) = right.as_ref() {
+                            self.emit(Op::drop); // drop the constructor object
+                            let type_idx = self.add_string_constant(&class_name.to_lowercase());
+                            self.emit_u16(Op::ref_test, type_idx);
+                        } else {
+                            // Dynamic right-hand side — fall back to host call
+                            let idx = self.import("vybe:object", "instanceOf");
+                            self.emit_host_call(idx, 2);
+                        }
                     }
                     BinaryOp::In => {
                         // "key" in obj → host call hasProperty(key, obj)
@@ -1302,37 +1345,44 @@ impl Compiler {
                 return Ok(());
             }
 
-            // Fallback to host call for value methods
-            if let Some(idx) = self.resolve_value_method(property) {
-                self.compile_expression(object)?;
-                for arg in arguments { self.compile_expression(arg)?; }
-                self.emit_host_call(idx, (arguments.len() + 1) as u8);
-                return Ok(());
+            // Fallback to host call for value methods — but skip array-specific
+            // methods on known class instances (class methods would be shadowed)
+            let is_class_instance = matches!(object.as_ref(), Expression::Identifier(name)
+                if self.class_instances.contains(name));
+            let is_array_only = matches!(property.as_str(),
+                "push" | "pop" | "shift" | "join" | "reverse" | "concat" | "fill" | "flat");
+            if !(is_class_instance && is_array_only) {
+                if let Some(idx) = self.resolve_value_method(property) {
+                    self.compile_expression(object)?;
+                    for arg in arguments { self.compile_expression(arg)?; }
+                    self.emit_host_call(idx, (arguments.len() + 1) as u8);
+                    return Ok(());
+                }
             }
 
             // Method call on object. Could be a user class method or a builtin
-            // collection method. Try runtime dispatch first — it returns Null for
+            // collection method. Try runtime dispatch first — it returns Undefined for
             // non-builtins, in which case we fall through to struct_get + call.
             //
-            // For builtins (Map, Set): callMethod handles it directly.
-            // For user objects: regular struct_get + call with this binding.
-            //
-            // We use callMethod(obj, "methodName", ...args) for all method calls.
-            // The runtime checks __type and dispatches accordingly.
-            // If it returns Null and the method isn't a builtin, we do regular call.
+            // Save object to a temp local to avoid re-evaluating chained expressions.
             self.compile_expression(object)?;
+            let obj_tmp = self.define_local("__obj_tmp");
+            self.emit(Op::dup);
+            self.emit_u16(Op::local_set, obj_tmp);
+            self.emit(Op::drop);
+            // callMethod(obj, "methodName", ...args)
             self.emit_constant(Value::String(Rc::from(property.as_str())));
             for arg in arguments { self.compile_expression(arg)?; }
             let cm_idx = self.import("vybe:runtime", "callMethod");
             self.emit_host_call(cm_idx, (arguments.len() + 2) as u8);
 
-            // Check if callMethod returned Null (not a builtin) — then do regular call
+            // Check if callMethod returned Undefined (not a builtin) — then do regular call
             self.emit(Op::dup);
             self.emit(Op::ref_is_null);
-            let done = self.emit_jump(Op::br_if_false); // not null = result, skip
-            self.emit(Op::drop); // drop the null
-            // Regular method call: obj.method(args)
-            self.compile_expression(object)?;
+            let done = self.emit_jump(Op::br_if_false); // not null/undefined = result, skip
+            self.emit(Op::drop); // drop the undefined
+            // Regular method call: obj.method(args) using saved temp
+            self.emit_u16(Op::local_get, obj_tmp);
             let prop_idx = self.add_string_constant(property);
             self.emit_u16(Op::struct_get, prop_idx);
             // If calling on a class name (static call), don't pass this
@@ -1343,7 +1393,7 @@ impl Compiler {
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, arguments.len() as u8);
             } else {
-                self.compile_expression(object)?; // this
+                self.emit_u16(Op::local_get, obj_tmp); // this
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, (arguments.len() + 1) as u8);
             }
@@ -2317,6 +2367,12 @@ impl Compiler {
             self.emit_host_call(idx, 2);
             self.emit(Op::drop);
         }
+        // Register class name as a known global *before* compiling static methods,
+        // so that references like `Counter.count` inside static methods resolve as
+        // global_get + struct_get instead of being treated as module imports.
+        if let Some(ref class_name) = class.name {
+            self.defined_globals.insert(class_name.clone());
+        }
         // Attach own static methods and properties (overwrite inherited if same name)
         for (method_name, method_fn) in &static_methods {
             self.emit(Op::dup);
@@ -2436,9 +2492,11 @@ impl Compiler {
         }
 
         // Attach child methods (overwrite parent's)
+        let mut method_entries: Vec<(String, usize)> = Vec::new();
         for (method_name, method_fn) in methods {
             self.emit_u16(Op::local_get, 1); // this
             self.compile_method(method_fn)?;
+            method_entries.push((method_name.clone(), self.chunks.len() - 1));
             let prop_idx = self.add_string_constant(method_name);
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
@@ -2448,6 +2506,7 @@ impl Compiler {
         for (getter_name, getter_fn) in getters {
             self.emit_u16(Op::local_get, 1);
             self.compile_method(getter_fn)?;
+            method_entries.push((format!("__get_{}", getter_name), self.chunks.len() - 1));
             let prop_name = format!("__get_{}", getter_name);
             let prop_idx = self.add_string_constant(&prop_name);
             self.emit_u16(Op::struct_set, prop_idx);
@@ -2458,6 +2517,7 @@ impl Compiler {
         for (setter_name, setter_fn) in setters {
             self.emit_u16(Op::local_get, 1);
             self.compile_method(setter_fn)?;
+            method_entries.push((format!("__set_{}", setter_name), self.chunks.len() - 1));
             let prop_name = format!("__set_{}", setter_name);
             let prop_idx = self.add_string_constant(&prop_name);
             self.emit_u16(Op::struct_set, prop_idx);
@@ -2507,6 +2567,16 @@ impl Compiler {
             self.emit(Op::drop);
         }
 
+        // Stamp type_id on this (WASM GC).
+        // The type_id is resolved at VM load time from the type table.
+        {
+            let tid_name = format!("__tid_{}", name.to_lowercase());
+            let tid_idx = self.add_string_constant(&tid_name);
+            self.emit_u16(Op::local_get, 1); // this
+            self.emit_u16(Op::global_get, tid_idx);
+            self.emit(Op::set_type_id);
+        }
+
         self.emit_u16(Op::local_get, 1); // return this
         self.emit(Op::r#return);
 
@@ -2515,6 +2585,25 @@ impl Compiler {
         let upvalues = self.current_scope().upvalues.clone();
         self.scopes.pop();
         self.current_chunk_idx = saved;
+
+        // --- WASM GC: Register type entry in compile-time type table ---
+        let parent_name = if super_class.is_some() {
+            match super_class.as_ref().unwrap().as_ref() {
+                Expression::Identifier(n) => n.to_lowercase(),
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+        let field_names: Vec<String> = Vec::new(); // JS classes don't declare fields statically
+        let type_entry_idx = self.type_entries.len();
+        self.type_entries.push(TypeEntry {
+            name: name.to_lowercase(),
+            parent: parent_name,
+            fields: field_names,
+            methods: method_entries,
+        });
+        self.class_type_ids.insert(name.to_lowercase(), type_entry_idx);
 
         let line = self.line;
         self.chunks[self.current_chunk_idx].emit_op_u16(Op::ref_func, idx as u16, line);
@@ -2627,10 +2716,15 @@ impl Compiler {
     /// Emit direct WASM string/array opcodes for value method calls.
     /// obj.method(args) where obj is a variable.
     fn try_value_method_intrinsic(&mut self, object: &Expression, method: &str, args: &[Expression]) -> Result<Option<()>, String> {
+        // Skip array-specific intrinsics when the object is a known class instance —
+        // class methods named "push", "pop", etc. would be shadowed by array intrinsics.
+        let is_class_instance = matches!(object, Expression::Identifier(name)
+            if self.class_instances.contains(name));
+
         // Zero-arg methods
         if args.is_empty() {
             let op = match method {
-                // String methods
+                // String methods — always safe (never clash with class method names)
                 "toUpperCase" => Some(Op::str_to_upper),
                 "toLowerCase" => Some(Op::str_to_lower),
                 "trim" => Some(Op::str_trim),
@@ -2642,17 +2736,17 @@ impl Compiler {
                     self.emit_host_call(idx, 1);
                     return Ok(Some(()));
                 }
-                "join" => {
+                "join" if !is_class_instance => {
                     // join() with no args → join with ","
                     self.compile_expression(object)?;
                     self.emit_constant(Value::String(Rc::from(",")));
                     self.emit(Op::array_join);
                     return Ok(Some(()));
                 }
-                // Array methods — VM handles non-array gracefully
-                "pop" => Some(Op::array_pop),
-                "shift" => Some(Op::array_shift),
-                "reverse" => Some(Op::array_reverse),
+                // Array methods — only safe on non-identifier objects (member accesses, etc.)
+                "pop" if !is_class_instance => Some(Op::array_pop),
+                "shift" if !is_class_instance => Some(Op::array_shift),
+                "reverse" if !is_class_instance => Some(Op::array_reverse),
                 _ => None,
             };
             if let Some(op) = op {
@@ -2672,12 +2766,12 @@ impl Compiler {
                 "endsWith" => Some(Op::str_ends_with),
                 "split" => Some(Op::str_split),
                 "repeat" => Some(Op::str_repeat),
-                // Array methods
-                "push" => Some(Op::array_push),
-                "join" => Some(Op::array_join),
-                "concat" => Some(Op::array_concat),
-                "indexOf" => Some(Op::str_index_of),
-                "fill" => Some(Op::array_fill),
+                // Array methods — only safe on non-identifier objects
+                "push" if !is_class_instance => Some(Op::array_push),
+                "join" if !is_class_instance => Some(Op::array_join),
+                "concat" if !is_class_instance => Some(Op::array_concat),
+                "indexOf" => Some(Op::str_index_of), // works on both strings and arrays
+                "fill" if !is_class_instance => Some(Op::array_fill),
                 _ => None,
             };
             if let Some(op) = op {

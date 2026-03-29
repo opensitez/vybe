@@ -83,7 +83,8 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
                 }
                 _ => str_arg(args, 0, "Form1"),
             };
-            q.borrow_mut().push(SideEffect::RunApplication { form_name });
+            let form_obj = args.first().cloned();
+            q.borrow_mut().push(SideEffect::RunApplication { form_name, form_object: form_obj });
             Value::Null
         })
     });
@@ -148,7 +149,13 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
                 let value = vm_to_prop(args.get(2).cloned().unwrap_or(Value::Null));
                 // Also store on the object itself for later reads
                 drop(o);
-                obj.borrow_mut().properties.insert(property.to_lowercase(), args.get(2).cloned().unwrap_or(Value::Null));
+                let prop_lower = property.to_lowercase();
+                let val = args.get(2).cloned().unwrap_or(Value::Null);
+                obj.borrow_mut().properties.insert(prop_lower.clone(), val.clone());
+                // When Name is set, also update __control_name (used for event dispatch)
+                if prop_lower == "name" {
+                    obj.borrow_mut().properties.insert("__control_name".into(), val);
+                }
                 q.borrow_mut().push(SideEffect::PropertyChange {
                     object: control_name, property, value,
                 });
@@ -252,6 +259,8 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
         "ProgressBar", "TrackBar", "NumericUpDown", "DateTimePicker", "RichTextBox",
         "PictureBox", "MenuStrip", "ToolStrip", "StatusStrip", "SplitContainer",
         "FlowLayoutPanel", "TableLayoutPanel", "LinkLabel", "MaskedTextBox",
+        "HScrollBar", "VScrollBar", "MonthCalendar", "BindingNavigator",
+        "BindingSource", "DataSet", "DataTable", "DataAdapter",
         "ListView", "WebBrowser", "MonthCalendar", "ContextMenuStrip",
         "Timer", "BindingSource", "DataSet", "ImageList", "ToolTip",
         "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",

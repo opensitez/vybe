@@ -96,7 +96,7 @@ fn run_js_file(path: &Path) {
 
     for effect in &effects {
         match effect {
-            vybe_host::SideEffect::RunApplication { form_name: name } => {
+            vybe_host::SideEffect::RunApplication { form_name: name, .. } => {
                 form_name = Some(name.clone());
             }
             vybe_host::SideEffect::AddControl {
@@ -200,7 +200,7 @@ fn wire_handles_from_chunks(
                     let obj = vybe_bytecode::value::Object {
                         properties: std::collections::HashMap::new(),
                         kind: vybe_bytecode::value::ObjectKind::Function(func),
-                        type_id: 0,
+                        type_id: 0, fields: Vec::new(),
                     };
                     let func_val = vybe_bytecode::Value::Object(Rc::new(RefCell::new(obj)));
 
@@ -314,45 +314,18 @@ pub fn launch_project_form(
 /// Called by both `run_js_file` and `vybec` after compiling and running bytecode.
 /// If no RunApplication side effect was emitted, just prints console output.
 pub fn launch_vm_form(
-    vm: vybe_bytecode::VM,
+    mut vm: vybe_bytecode::VM,
     queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+    initial_form: Option<vybe_forms::Form>,
 ) {
     let effects = queue.borrow_mut().drain();
-    let mut run_form_name = None;
-    let mut form_title = String::new();
-    let mut form = vybe_forms::Form::new("VMForm");
-    form.width = 800;
-    form.height = 600;
 
+    // Process side effects for form object reference and console output
     for effect in &effects {
         match effect {
-            vybe_host::SideEffect::RunApplication { form_name: name } => {
-                run_form_name = Some(name.clone());
-            }
-            vybe_host::SideEffect::AddControl {
-                control_name, control_type, left, top, width, height, ..
-            } => {
-                let ct = vybe_forms::control::ControlType::from_name(control_type)
-                    .unwrap_or(vybe_forms::control::ControlType::Label);
-                let mut ctrl = vybe_forms::Control::new(ct, control_name.clone(), *left, *top);
-                ctrl.bounds = vybe_forms::Bounds::new(*left, *top, *width, *height);
-                form.controls.push(ctrl);
-            }
-            vybe_host::SideEffect::PropertyChange { object, property, value } => {
-                let val_str = value.as_string();
-                if Some(object.clone()) == run_form_name || object == "VMForm"
-                    || run_form_name.as_ref().is_some_and(|n| n == object)
-                {
-                    match property.as_str() {
-                        "Text" => { form.text = val_str.clone(); form_title = val_str; }
-                        "Width" => { form.width = val_str.parse().unwrap_or(800); }
-                        "Height" => { form.height = val_str.parse().unwrap_or(600); }
-                        _ => {}
-                    }
-                } else {
-                    if let Some(ctrl) = form.controls.iter_mut().find(|c| c.name == *object) {
-                        ctrl.properties.set(property.clone(), val_str);
-                    }
+            vybe_host::SideEffect::RunApplication { form_object, .. } => {
+                if let Some(obj) = form_object {
+                    vm.globals.insert("__f".into(), obj.clone());
                 }
             }
             vybe_host::SideEffect::ConsoleOutput(msg) => print!("{msg}"),
@@ -361,26 +334,73 @@ pub fn launch_vm_form(
         }
     }
 
-    if let Some(name) = run_form_name {
-        if form_title.is_empty() { form_title = name.clone(); }
-        form.name = name;
+    // Build the form — use the parsed model if available, otherwise from side effects
+    let (form, form_title) = if let Some(mut f) = initial_form {
+        // Designer form — apply any runtime property changes from side effects
+        let fname = f.name.to_lowercase();
+        for effect in &effects {
+            if let vybe_host::SideEffect::PropertyChange { object, property, value } = effect {
+                let val_str = value.as_string();
+                if object.to_lowercase() == fname {
+                    match property.as_str() {
+                        "Text" | "Caption" => { f.text = val_str; }
+                        _ => {}
+                    }
+                } else if let Some(ctrl) = f.controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(object)) {
+                    ctrl.properties.set(property.clone(), val_str);
+                }
+            }
+        }
+        let title = if f.text.is_empty() { f.name.clone() } else { f.text.clone() };
+        (f, title)
+    } else {
+        // Programmatic form — build entirely from side effects
+        let mut form = vybe_forms::Form::new("VMForm");
+        form.width = 800;
+        form.height = 600;
+        let mut run_form_name = None;
+        let mut form_title = String::new();
+        for effect in &effects {
+            match effect {
+                vybe_host::SideEffect::RunApplication { form_name: name, .. } => {
+                    run_form_name = Some(name.clone());
+                }
+                vybe_host::SideEffect::AddControl {
+                    control_name, control_type, left, top, width, height, ..
+                } => {
+                    let ct = vybe_forms::control::ControlType::from_name(control_type)
+                        .unwrap_or(vybe_forms::control::ControlType::Label);
+                    let mut ctrl = vybe_forms::Control::new(ct, control_name.clone(), *left, *top);
+                    ctrl.bounds = vybe_forms::Bounds::new(*left, *top, *width, *height);
+                    form.controls.push(ctrl);
+                }
+                vybe_host::SideEffect::PropertyChange { object, property, value } => {
+                    let val_str = value.as_string();
+                    if Some(object.clone()) == run_form_name || object == "VMForm" {
+                        match property.as_str() {
+                            "Text" | "Caption" => { form.text = val_str.clone(); form_title = val_str; }
+                            "Width" => { form.width = val_str.parse().unwrap_or(800); }
+                            "Height" => { form.height = val_str.parse().unwrap_or(600); }
+                            _ => {}
+                        }
+                    } else if let Some(ctrl) = form.controls.iter_mut().find(|c| c.name == *object) {
+                        ctrl.properties.set(property.clone(), val_str);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(name) = run_form_name {
+            if form_title.is_empty() { form_title = name.clone(); }
+            form.name = name;
+        }
+        (form, form_title)
+    };
 
-        JS_LAUNCH_FORM.with(|cell| *cell.borrow_mut() = Some(form));
-        JS_LAUNCH_TITLE.with(|cell| *cell.borrow_mut() = form_title.clone());
-        JS_LAUNCH_VM.with(|cell| *cell.borrow_mut() = Some(vm));
-        JS_LAUNCH_QUEUE.with(|cell| *cell.borrow_mut() = Some(queue));
-
-        let config = Config::new()
-            .with_resource_directory(PathBuf::from("."))
-            .with_window(
-                WindowBuilder::new()
-                    .with_title(&form_title)
-                    .with_resizable(true),
-            );
-
-        LaunchBuilder::desktop()
-            .with_cfg(config)
-            .launch(JsFormApp);
+    eprintln!("[LAUNCH] title={:?} controls={} width={} height={}", form_title, form.controls.len(), form.width, form.height);
+    if !form_title.is_empty() || !form.controls.is_empty() {
+        // Use tiny-skia renderer — no webview
+        crate::skia_form::launch_skia_form(vm, queue, &form, &form_title);
     }
 }
 
@@ -422,10 +442,12 @@ fn JsFormApp() -> Element {
         let queue_cell = queue_cell.clone();
         let mut runtime_form = runtime_form.clone();
         move |control_name: String, event_name: String| {
+            eprintln!("[CLICK] {}.{}", control_name, event_name);
             let callback = {
                 let q = queue_cell.borrow();
                 q.get_event_handler(&control_name, &event_name).cloned()
             };
+            eprintln!("[CLICK] handler: {}", if callback.is_some() { "FOUND" } else { "NOT FOUND" });
             if let Some(cb) = callback {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut vm = vm_cell.borrow_mut();
@@ -443,11 +465,15 @@ fn JsFormApp() -> Element {
                         }
                         _ => 0,
                     };
-                    if arity > 0 {
-                        vm.invoke(&cb, &[me])
-                    } else {
-                        vm.invoke(&cb, &[])
-                    }
+                    // Pass: this (me), sender (control name), e (null)
+                    let sender = vybe_bytecode::Value::String(std::rc::Rc::from(control_name.as_str()));
+                    let result = match arity {
+                        0 => vm.invoke(&cb, &[]),
+                        1 => vm.invoke(&cb, &[me]),
+                        2 => vm.invoke(&cb, &[me, sender]),
+                        _ => vm.invoke(&cb, &[me, sender, vybe_bytecode::Value::Null]),
+                    };
+                    result
                 }));
                 match result {
                     Ok(Ok(_)) => {}
@@ -467,17 +493,45 @@ fn JsFormApp() -> Element {
                 // Process any new side effects from the callback
                 let new_effects = queue_cell.borrow_mut().drain();
                 let mut form = runtime_form.write();
+
+                // Sync VM object state → form model for ALL controls.
+                // This catches property changes made via struct_set (without controlSetProperty).
+                {
+                    let vm = vm_cell.borrow();
+                    if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
+                        let fo = form_obj.borrow();
+                        for ctrl in form.controls.iter_mut() {
+                            let ctrl_lower = ctrl.name.to_lowercase();
+                            // Look up the control as a field on the form object
+                            if let Some(vybe_bytecode::Value::Object(ctrl_obj)) = fo.properties.get(&ctrl_lower) {
+                                let co = ctrl_obj.borrow();
+                                if let Some(vybe_bytecode::Value::String(s)) = co.properties.get("text") {
+                                    ctrl.properties.set(String::from("Text"), s.to_string());
+                                }
+                                if let Some(v) = co.properties.get("enabled") {
+                                    ctrl.properties.set(String::from("Enabled"), format!("{}", v));
+                                }
+                                if let Some(v) = co.properties.get("visible") {
+                                    ctrl.properties.set(String::from("Visible"), format!("{}", v));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 for effect in new_effects {
                     match effect {
                         vybe_host::SideEffect::PropertyChange { object, property, value } => {
                             let val_str = value.as_string();
                             if object == form.name {
                                 match property.as_str() {
-                                    "Text" => form.text = val_str,
+                                    "Text" | "Caption" => form.text = val_str,
                                     _ => {}
                                 }
                             } else if let Some(ctrl) = form.controls.iter_mut().find(|c| c.name == object) {
-                                ctrl.properties.set(property, val_str);
+                                // VB6 compat: Caption → Text
+                                let prop = if property == "Caption" { "Text".into() } else { property };
+                                ctrl.properties.set(prop, val_str);
                             }
                         }
                         vybe_host::SideEffect::ConsoleOutput(msg) => {
@@ -517,9 +571,11 @@ fn JsFormApp() -> Element {
         }).collect()
     };
 
+    eprintln!("[EVENT-DEBUG] Events: {:?}", queue_cell.borrow().event_handler_keys());
+    eprintln!("[EVENT-DEBUG] Controls({}): {:?}", controls.len(), controls.iter().map(|(n, t, x, y, w, h, text, _)| format!("{}({})@{},{} {}x{} '{}'", n, t, x, y, w, h, text)).collect::<Vec<_>>());
     rsx! {
         div {
-            style: "width: {form_width}px; height: {form_height}px; position: relative; background: #f0f0f0; font-family: 'Segoe UI', sans-serif; font-size: 13px;",
+            style: "width: {form_width}px; min-height: {form_height}px; position: relative; background: #f0f0f0; font-family: 'Segoe UI', sans-serif; font-size: 13px; overflow: auto;",
             {controls.iter().map(|(ctrl_name, type_name, x, y, w, h, text, ctrl_css)| {
                 let click_name = ctrl_name.clone();
                 let mut handle = handle_event.clone();
@@ -529,6 +585,11 @@ fn JsFormApp() -> Element {
                     "position: absolute; left: {}px; top: {}px; width: {}px; height: {}px; {}",
                     x, y, w, h, ctrl_css
                 );
+
+                // Skip iframe (WebBrowser) — breaks Dioxus webview rendering
+                if def.tag == "iframe" {
+                    return rsx! { div { key: "{ctrl_name}", style: "{pos_style}", "[{ctrl_name}]" } };
+                }
 
                 // Generic rendering based on control definition tag
                 match def.tag {
@@ -647,7 +708,7 @@ fn run_cs_file(path: &Path) {
         }
     }
 
-    launch_vm_form(vm, queue);
+    launch_vm_form(vm, queue, None);
 }
 
 /// Run a standalone .vb file via the bytecode VM.
@@ -689,7 +750,19 @@ fn run_vb_file(path: &Path, _extra_args: &[String]) {
         }
     }
 
-    launch_vm_form(vm, queue);
+    launch_vm_form(vm, queue, None);
+}
+
+/// Map internal ControlType debug names to host-recognized constructor names.
+fn control_type_name(ctrl: &vybe_forms::Control) -> String {
+    match format!("{:?}", ctrl.control_type).as_str() {
+        "Frame" => "GroupBox".into(),
+        "BindingSourceComponent" => "BindingSource".into(),
+        "DataSetComponent" => "DataSet".into(),
+        "DataTableComponent" => "DataTable".into(),
+        "DataAdapterComponent" => "DataAdapter".into(),
+        other => other.into(),
+    }
 }
 
 /// Run a .vbp / .vbproj project.
@@ -702,17 +775,67 @@ fn run_project(path: &Path, _extra_args: &[String]) {
         }
     };
 
-    // Compile ALL code — modules, classes, forms — into one program
+    // Compile ALL code — modules, classes, forms — into one program.
+    // For forms, generate simplified InitializeComponent from the parsed form model
+    // instead of re-including the raw designer code (which uses fully-qualified names
+    // like System.Windows.Forms.FormStartPosition.CenterScreen that our compiler can't handle).
     let mut all_code = String::new();
     for cf in &project.code_files {
         all_code.push_str(&cf.code);
         all_code.push('\n');
     }
     for fm in &project.forms {
-        if fm.is_vbnet() {
-            all_code.push_str(&fm.get_designer_code());
-            all_code.push('\n');
+        // Generate simple designer code from the parsed form model
+        let form = &fm.form;
+        let mut designer = format!("Partial Class {}\n", form.name);
+        designer.push_str("    Inherits System.Windows.Forms.Form\n\n");
+        // Field declarations
+        for ctrl in &form.controls {
+            designer.push_str(&format!("    Friend WithEvents {} As {}\n", ctrl.name, control_type_name(ctrl)));
         }
+        // Auto-inject constructor that calls InitializeComponent if user code doesn't have one
+        let user_code = fm.get_user_code();
+        let has_ctor = user_code.to_uppercase().contains("SUB NEW");
+        if !has_ctor {
+            designer.push_str("\n    Public Sub New()\n");
+            designer.push_str("        InitializeComponent()\n");
+            designer.push_str("    End Sub\n");
+        }
+        designer.push_str("\n    Private Sub InitializeComponent()\n");
+        // Create controls using bare names (not fully-qualified)
+        for ctrl in &form.controls {
+            designer.push_str(&format!("        Me.{} = New {}()\n", ctrl.name, control_type_name(ctrl)));
+        }
+        // Set properties on all controls, but only Controls.Add for visual ones
+        for ctrl in &form.controls {
+            let is_non_visual = ctrl.control_type.is_non_visual();
+            designer.push_str(&format!("        Me.{}.Name = \"{}\"\n", ctrl.name, ctrl.name));
+            if let Some(text) = ctrl.properties.get_string("Text") {
+                designer.push_str(&format!("        Me.{}.Text = \"{}\"\n", ctrl.name, text));
+            }
+            if !is_non_visual {
+                designer.push_str(&format!(
+                    "        Me.{}.Location = New Point({}, {})\n",
+                    ctrl.name, ctrl.bounds.x, ctrl.bounds.y
+                ));
+                designer.push_str(&format!(
+                    "        Me.{}.Size = New Size({}, {})\n",
+                    ctrl.name, ctrl.bounds.width, ctrl.bounds.height
+                ));
+                designer.push_str(&format!("        Me.Controls.Add(Me.{})\n", ctrl.name));
+            }
+        }
+        // Form properties
+        designer.push_str(&format!("        Me.Name = \"{}\"\n", form.name));
+        if !form.text.is_empty() {
+            designer.push_str(&format!("        Me.Text = \"{}\"\n", form.text));
+        }
+        designer.push_str("    End Sub\n");
+        designer.push_str("End Class\n");
+        eprintln!("[GENERATED-DESIGNER]\n{}", designer);
+        all_code.push_str(&designer);
+        all_code.push('\n');
+        // User code (event handlers etc.)
         all_code.push_str(&fm.get_user_code());
         all_code.push('\n');
     }
@@ -782,8 +905,12 @@ fn run_project(path: &Path, _extra_args: &[String]) {
         }
     }
 
-    // Launch from side effects — works for both designer and programmatic forms
-    launch_vm_form(vm, queue);
+    // Pass the parsed form model directly — no side effects needed for layout.
+    // The form model IS the source of truth for rendering.
+    // Side effects are only used for runtime property changes during events.
+    if let Some(form) = startup_form {
+        launch_vm_form(vm, queue, Some(form));
+    } else {
+        launch_vm_form(vm, queue, None);
+    }
 }
-
-
