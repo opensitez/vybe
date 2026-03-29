@@ -7,7 +7,7 @@ use vybe_forms::{Control, ControlType, Form};
 use vybe_project::{FormModule, Project, StartupObject};
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum View { FormDesigner, CodeEditor }
+pub enum View { FormDesigner, CodeEditor, ResourceEditor }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunStatus { Idle, Running, Done(String) }

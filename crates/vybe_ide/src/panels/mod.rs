@@ -1,5 +1,7 @@
 pub mod project_explorer;
 pub mod toolbox;
+pub mod project_properties;
+pub mod resource_editor;
 pub mod properties;
 pub mod form_designer;
 pub mod code_editor;

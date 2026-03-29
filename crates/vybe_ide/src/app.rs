@@ -49,7 +49,33 @@ impl eframe::App for VybeApp {
                     if ui.button("Undo  Ctrl+Z").clicked() { self.state.undo(); ui.close_menu(); }
                     if ui.button("Redo  Ctrl+Y").clicked() { self.state.redo(); ui.close_menu(); }
                     ui.separator();
+                    if ui.button("Cut  Ctrl+X").clicked() { self.state.cut_selected(); ui.close_menu(); }
+                    if ui.button("Copy  Ctrl+C").clicked() { self.state.copy_selected(); ui.close_menu(); }
+                    if ui.button("Paste  Ctrl+V").clicked() { self.state.paste(); ui.close_menu(); }
+                    ui.separator();
                     if ui.button("Delete  Del").clicked() { self.state.delete_selected(); ui.close_menu(); }
+                });
+                ui.menu_button("Project", |ui| {
+                    if ui.button("Add Form").clicked() { self.state.add_new_form(); ui.close_menu(); }
+                    if ui.button("Add Code File").clicked() { self.state.add_code_file(); ui.close_menu(); }
+                    ui.separator();
+                    if ui.button("Add Existing Form…").clicked() { self.state.add_existing_form(); ui.close_menu(); }
+                    if ui.button("Add Existing Code…").clicked() { self.state.add_existing_code_file(); ui.close_menu(); }
+                    ui.separator();
+                    if ui.button("Resources…").clicked() {
+                        if let Some(proj) = self.state.project.as_mut() {
+                            if proj.resource_files.is_empty() {
+                                proj.resource_files.push(vybe_project::ResourceManager::new());
+                            }
+                        }
+                        self.state.view = crate::state::View::ResourceEditor;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Project Properties…").clicked() {
+                        self.state.show_project_properties = true;
+                        ui.close_menu();
+                    }
                 });
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.state.show_project_explorer, "Project Explorer");
@@ -102,6 +128,16 @@ impl eframe::App for VybeApp {
 
                 // Save shortcut
                 if ui.button("💾 Save").clicked() { self.state.save_project(); }
+
+                if self.state.current_form.is_some() || self.state.current_code_file.is_some() {
+                    let btn = egui::Button::new(egui::RichText::new("🗑 Remove Item").color(egui::Color32::from_rgb(200, 0, 0)));
+                    if ui.add(btn).clicked() {
+                        let to_remove = self.state.current_form.clone().or_else(|| self.state.current_code_file.clone());
+                        if let Some(name) = to_remove {
+                            self.state.remove_project_item(&name);
+                        }
+                    }
+                }
 
                 // Project name
                 if let Some(proj) = &self.state.project {
@@ -175,8 +211,12 @@ impl eframe::App for VybeApp {
             match self.state.view {
                 View::FormDesigner => panels::form_designer::show(ui, &mut self.state),
                 View::CodeEditor => panels::code_editor::show(ui, &mut self.state),
+                View::ResourceEditor => panels::resource_editor::show(ui, &mut self.state),
             }
         });
+
+        // ── Modals / Dialogs ──────────────────────────────────────────
+        panels::project_properties::show_dialog(ctx, &mut self.state);
 
         // Global keyboard shortcuts
         ctx.input(|i| {

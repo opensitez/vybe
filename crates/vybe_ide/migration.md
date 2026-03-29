@@ -1,6 +1,6 @@
-# vybe_editor → vybe_editor2 Migration Plan
+# legacy_editor → vybe_ide Migration Plan
 
-Porting the missing features from the original Dioxus-based `vybe_editor` into the egui-based `vybe_editor2`.
+Porting the missing features from the original Dioxus-based `legacy_ide` into the egui-based `vybe_ide`.
 
 ## Features
 
@@ -17,8 +17,8 @@ Porting the missing features from the original Dioxus-based `vybe_editor` into t
 
 ## Files Changed
 
-- `crates/vybe_editor2/src/panels/toolbox.rs` — rewritten with Controls + Data sections
-- `crates/vybe_editor2/src/panels/form_designer.rs` — rewritten with all 5 canvas features
+- `crates/vybe_ide/src/panels/toolbox.rs` — rewritten with Controls + Data sections
+- `crates/vybe_ide/src/panels/form_designer.rs` — rewritten with all 5 canvas features
 
 ## Notes
 

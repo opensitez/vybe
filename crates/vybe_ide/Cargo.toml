@@ -1,12 +1,12 @@
 [package]
-name = "vybe_editor2"
+name = "vybe_ide"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "vybe_editor2"
+name = "vybe_ide"
 path = "src/main.rs"
 
 [dependencies]

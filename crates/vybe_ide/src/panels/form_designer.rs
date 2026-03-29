@@ -230,7 +230,7 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) {
         if selected_ids.len() == 1 {
             let sel_id = selected_ids[0];
             // Find the selected visual control's rect
-            if let Some((_, _, ct, cx, cy, cw, ch, _)) = controls.iter().find(|(id, _, ct, ..)| *id == sel_id && !ct.is_non_visual()) {
+            if let Some((_, _, _ct, cx, cy, cw, ch, _)) = controls.iter().find(|(id, _, ct, ..)| *id == sel_id && !ct.is_non_visual()) {
                 let rect = Rect::from_min_size(
                     origin + Vec2::new(*cx, *cy),
                     Vec2::new(*cw, *ch),
