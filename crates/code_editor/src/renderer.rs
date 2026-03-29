@@ -22,6 +22,7 @@ const SCALE: f32 = 2.0;
 const SIDEBAR_WIDTH: f32 = 70.0;
 const MINIMAP_WIDTH: f32 = 80.0;
 const UI_BAR_HEIGHT: f32 = 40.0;
+const FOOTER_HEIGHT: f32 = 25.0;
 
 #[derive(Clone, Copy)]
 pub struct Theme {
@@ -105,7 +106,7 @@ pub struct CodeEditorWidget {
     lang_def: LanguageDef,
     theme: Theme,
     metrics: Metrics,
-    glyph_cache: HashMap<(cosmic_text::CacheKey, Color), CachedGlyph>,
+    glyph_cache: HashMap<(cosmic_text::CacheKey, Color, bool), CachedGlyph>,
     digit_cache: Vec<CachedGlyph>,
     needs_reshape: bool,
     pub scroll_y: f32,
@@ -114,11 +115,14 @@ pub struct CodeEditorWidget {
     is_search_open: bool,
     is_replace_open: bool,
     context_menu: Option<((f32, f32), Vec<String>)>,
+    font_size: f32,
+    pub show_whitespace: bool,
 }
 
 impl CodeEditorWidget {
     pub fn new(my_editor: MyEditor, font_system: &mut FontSystem) -> Self {
-        let metrics = Metrics::new(14.0, 20.0).scale(SCALE);
+        let font_size = 14.0;
+        let metrics = Metrics::new(font_size, 20.0).scale(SCALE);
         let lang_def = load_language("rust").unwrap_or_else(|| LanguageDef {
             keywords: HashSet::new(), type_keywords: HashSet::new(), constants: HashSet::new(), operators: HashSet::new(), comments: None, brackets: Vec::new(),
         });
@@ -128,11 +132,17 @@ impl CodeEditorWidget {
         let mut buffer = Buffer::new(font_system, metrics);
         buffer.set_text(font_system, &editor_internal.rope.to_string(), &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
         
+        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor: editor_internal, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, context_menu: None, font_size, show_whitespace: false };
+        widget.update_digit_cache(font_system);
+        widget
+    }
+
+    fn update_digit_cache(&mut self, font_system: &mut FontSystem) {
+        self.digit_cache.clear();
         let mut swash_cache = SwashCache::new();
-        let mut digit_cache = Vec::new();
         let digit_color = Color::rgb(0x85, 0x85, 0x85);
         for i in 0..10 {
-            let mut lab = Buffer::new(font_system, metrics);
+            let mut lab = Buffer::new(font_system, self.metrics);
             lab.set_text(font_system, &format!("{}", i), &Attrs::new().family(Family::Monospace).color(digit_color), Shaping::Advanced, None);
             lab.shape_until_scroll(font_system, false);
             if let Some(r) = lab.layout_runs().next() {
@@ -141,15 +151,20 @@ impl CodeEditorWidget {
                     if let Some(img) = swash_cache.get_image(font_system, pg.cache_key) {
                         let mut p = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)).unwrap();
                         let (r, g, b, a) = (digit_color.r(), digit_color.g(), digit_color.b(), digit_color.a());
-                        for (idx, &al) in img.data.iter().enumerate() { let af = (al as f32 / 255.0) * (a as f32 / 255.0); p.pixels_mut()[idx] = ColorU8::from_rgba((r as f32 * af) as u8, (g as f32 * af) as u8, (b as f32 * af) as u8, (255.0 * af) as u8).premultiply(); }
-                        digit_cache.push(CachedGlyph { pixmap: p, left: img.placement.left, top: img.placement.top }); break;
+                        for (idx, &alpha) in img.data.iter().enumerate() { let af = (alpha as f32 / 255.0) * (a as f32 / 255.0); p.pixels_mut()[idx] = ColorU8::from_rgba((r as f32 * af) as u8, (g as f32 * af) as u8, (b as f32 * af) as u8, (255.0 * af) as u8).premultiply(); }
+                        self.digit_cache.push(CachedGlyph { pixmap: p, left: img.placement.left, top: img.placement.top }); break;
                     }
                 }
             }
-            if digit_cache.len() <= i { digit_cache.push(CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 }); }
+            if self.digit_cache.len() <= i { self.digit_cache.push(CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 }); }
         }
+    }
 
-        Self { editor: cosmic_text::Editor::new(buffer), my_editor: editor_internal, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache, needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, context_menu: None }
+    pub fn set_zoom(&mut self, fs: &mut FontSystem, delta: f32) {
+        self.font_size = (self.font_size + delta).clamp(6.0, 72.0);
+        self.metrics = Metrics::new(self.font_size, self.font_size * 1.5).scale(SCALE);
+        self.editor.with_buffer_mut(|b| b.set_metrics(fs, self.metrics));
+        self.glyph_cache.clear(); self.update_digit_cache(fs); self.needs_reshape = true; self.sync();
     }
 
     pub fn set_language(&mut self, lang_name: &str) {
@@ -183,18 +198,21 @@ impl CodeEditorWidget {
         }
     }
 
-    pub fn replace_next(&mut self, fs: &mut FontSystem) {
-        if self.search_query.is_empty() { return; }
-        if let Some(sel) = self.editor.copy_selection() { if sel == self.search_query { for ch in self.replace_query.clone().chars() { self.editor.action(fs, Action::Insert(ch)); } self.find_next(fs); return; } }
-        self.find_next(fs);
-    }
-
-    pub fn replace_all(&mut self, fs: &mut FontSystem) {
-        if self.search_query.is_empty() { return; }
-        let mut text = self.my_editor.rope.to_string();
-        text = text.replace(&self.search_query, &self.replace_query);
+    pub fn toggle_comment(&mut self, fs: &mut FontSystem) {
+        let prefix = match &self.lang_def.comments {
+            Some(c) => c.line_comment.as_deref().unwrap_or("//"),
+            None => "//",
+        };
+        let (start, end) = self.editor.selection_bounds().map(|(s, e)| (s.line, e.line)).unwrap_or((self.editor.cursor().line, self.editor.cursor().line));
+        let mut lines: Vec<String> = self.editor.with_buffer(|b| b.lines.iter().map(|l| l.text().to_string()).collect());
+        let all_commented = (start..=end).all(|li| lines[li].trim().starts_with(prefix));
+        for li in start..=end {
+            if all_commented { if let Some(idx) = lines[li].find(prefix) { lines[li].replace_range(idx..idx+prefix.len(), ""); } }
+            else { let first_char = lines[li].chars().take_while(|c| c.is_whitespace()).count(); lines[li].insert_str(first_char, prefix); }
+        }
+        let text = lines.join("\n");
         self.editor.with_buffer_mut(|b| b.set_text(fs, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-        self.my_editor.rope = ropey::Rope::from_str(&text); self.my_editor.retokenize_all(&self.lang_def); self.needs_reshape = true;
+        self.needs_reshape = true; self.sync();
     }
 
     pub fn render(&mut self, pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, rect: Rect) {
@@ -203,44 +221,36 @@ impl CodeEditorWidget {
         let mut sp = Paint::default(); sp.set_color_rgba8(self.theme.sidebar_bg.r(), self.theme.sidebar_bg.g(), self.theme.sidebar_bg.b(), self.theme.sidebar_bg.a());
         pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.top(), SIDEBAR_WIDTH * SCALE, rect.height()).unwrap(), &sp, Transform::identity(), None);
         let cursor_state = self.editor.cursor(); let selection = self.editor.selection_bounds();
+        let selected_text = self.editor.copy_selection();
         let partner = self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def).or_else(|| if cursor_state.index > 0 { self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index - 1, &self.lang_def) } else { None });
         let mut total_h = 0.0; self.editor.with_buffer(|b| { for r in b.layout_runs() { if !self.is_line_hidden(r.line_i) { total_h += r.line_height; } } });
-        self.scroll_y = self.scroll_y.clamp(0.0, (total_h - rect.height() + 100.0).max(0.0));
-        if let Some((_, cy)) = self.editor.cursor_position() {
-             let mut cli = 0; self.editor.with_buffer(|b| { for r in b.layout_runs() { if cy >= r.line_top as i32 && cy < (r.line_top + r.line_height) as i32 { cli = r.line_i; break; } } });
-             let cys = cy as f32 - self.get_visual_y_shift(cli); let rcy = cys - self.scroll_y;
-             if rcy < 0.0 { self.scroll_y = cys; } else if rcy > (rect.height() - self.metrics.line_height) { self.scroll_y = cys - (rect.height() - self.metrics.line_height); }
-        }
+        self.scroll_y = self.scroll_y.clamp(0.0, (total_h - (rect.height() - FOOTER_HEIGHT * SCALE) + 100.0).max(0.0));
         let mut runs = Vec::new();
-        self.editor.with_buffer(|buffer| {
-            for run in buffer.layout_runs() {
-                if !self.is_line_hidden(run.line_i) {
-                    let y_s = self.get_visual_y_shift(run.line_i); let v_t = run.line_top - y_s - self.scroll_y;
-                    if v_t <= rect.height() && (v_t + run.line_height) >= 0.0 { runs.push((run.line_i, run.line_y, run.line_top, run.line_height, y_s, run.glyphs.to_vec(), run.text.to_string())); }
-                }
-            }
-        });
+        self.editor.with_buffer(|buffer| { for run in buffer.layout_runs() { if !self.is_line_hidden(run.line_i) { let y_s = self.get_visual_y_shift(run.line_i); let v_t = run.line_top - y_s - self.scroll_y; if v_t <= rect.height() && (v_t + run.line_height) >= 0.0 { runs.push((run.line_i, run.line_y, run.line_top, run.line_height, y_s, run.glyphs.to_vec(), run.text.to_string())); } } } });
         let mut cp = Paint::default(); cp.set_color_rgba8(self.theme.current_line.r(), self.theme.current_line.g(), self.theme.current_line.b(), self.theme.current_line.a());
+        let mut mp = Paint::default(); mp.set_color_rgba8(self.theme.match_highlight.r(), self.theme.match_highlight.g(), self.theme.match_highlight.b(), 100);
         let mut last_para = None;
         for (i, ly, lt, lh, ys, glyphs, text) in runs {
             let cyo = y_off - ys - self.scroll_y;
             if i == cursor_state.line { pixmap.fill_rect(Rect::from_xywh(rect.left() + SIDEBAR_WIDTH * SCALE, cyo + lt, rect.width() - (SIDEBAR_WIDTH + MINIMAP_WIDTH) * SCALE, lh).unwrap(), &cp, Transform::identity(), None); }
+            if let Some(st) = &selected_text { if st.len() > 1 && !st.contains('\n') { let mut start = 0; while let Some(pos) = text[start..].find(st) { let real_pos = start + pos; let mut g_x = 0.0; let mut g_w = 0.0; for g in &glyphs { if g.start >= real_pos && g.start < real_pos + st.len() { if g_w == 0.0 { g_x = g.x; } g_w += g.w; } } if g_w > 0.0 { pixmap.fill_rect(Rect::from_xywh(x_off + g_x, cyo + lt, g_w, lh).unwrap(), &mp, Transform::identity(), None); } start = real_pos + 1; } } }
             let mut gp = Paint::default(); gp.set_color_rgba8(self.theme.guide.r(), self.theme.guide.g(), self.theme.guide.b(), self.theme.guide.a());
-            let tw = 4.0 * 8.4 * SCALE; let ls = text.chars().take_while(|c| c.is_whitespace()).count();
+            let tw = 4.0 * 8.4 * (self.metrics.font_size / 14.0) * SCALE; let ls = text.chars().take_while(|c| c.is_whitespace()).count();
             for j in 1..=(ls/4) { pixmap.fill_rect(Rect::from_xywh(x_off + (j as f32 * tw), cyo + lt, 1.0, lh).unwrap(), &gp, Transform::identity(), None); }
             if last_para != Some(i) {
                 let s = format!("{}", i + 1); let mut dx = (rect.left() + SIDEBAR_WIDTH * SCALE) as i32 - 15;
-                for ch in s.chars().rev() { if let Some(d) = ch.to_digit(10) { let cg = &self.digit_cache[d as usize]; pixmap.draw_pixmap(dx - cg.pixmap.width() as i32 + cg.left, (cyo + ly) as i32 - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None); dx -= 10 * SCALE as i32; } }
-                if self.my_editor.folds.iter().any(|(s, _)| *s == i) { let col = self.my_editor.collapsed_starts.contains(&i); App::draw_ui_text(pixmap, fs, sc, if col { "+" } else { "-" }, rect.left() + 5.0 * SCALE, cyo + ly - 14.0 * SCALE, if col { self.theme.kw } else { Color::rgb(0x85, 0x85, 0x85) }); }
+                for ch in s.chars().rev() { if let Some(d) = ch.to_digit(10) { if (d as usize) < self.digit_cache.len() { let cg = &self.digit_cache[d as usize]; pixmap.draw_pixmap(dx - cg.pixmap.width() as i32 + cg.left, (cyo + ly) as i32 - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None); dx -= 10 * SCALE as i32; } } }
+                if self.my_editor.folds.iter().any(|(s, _)| *s == i) { let col = self.my_editor.collapsed_starts.contains(&i); App::draw_ui_text(pixmap, fs, sc, if col { "+" } else { "-" }, rect.left() + 5.0 * SCALE, cyo + ly - (7.0 * (self.metrics.font_size/14.0) * SCALE) - 7.0*SCALE, if col { self.theme.kw } else { Color::rgb(0x85, 0x85, 0x85) }); }
                 last_para = Some(i);
             }
             if let Some((ss, se)) = selection { self.editor.with_buffer(|b| { if let Some(r) = b.layout_runs().nth(i) { if let Some((hx, hw)) = r.highlight(ss, se) { let mut sp = Paint::default(); sp.set_color_rgba8(self.theme.selection.r(), self.theme.selection.g(), self.theme.selection.b(), self.theme.selection.a()); pixmap.fill_rect(Rect::from_xywh(x_off + hx, cyo + lt, hw, lh).unwrap(), &sp, Transform::identity(), None); } } }); }
             for g in &glyphs {
                 let ip = partner.map(|(pl, pi)| i == pl && g.start == pi).unwrap_or(false);
                 let pg = g.physical((x_off, cyo + ly), 1.0); let gc = g.color_opt.unwrap_or(self.theme.text);
-                let cg = self.glyph_cache.entry((pg.cache_key, gc)).or_insert_with(|| {
+                if self.show_whitespace { if text[g.start..g.end].starts_with(' ') { let mut wp = Paint::default(); wp.set_color_rgba8(80, 80, 80, 255); pixmap.fill_rect(Rect::from_xywh(x_off + g.x + g.w/2.0 - 1.0, cyo + ly - (lh*0.25), 2.0, 2.0).unwrap(), &wp, Transform::identity(), None); } else if text[g.start..g.end].starts_with('\t') { let mut wp = Paint::default(); wp.set_color_rgba8(80, 80, 80, 255); pixmap.fill_rect(Rect::from_xywh(x_off + g.x + 2.0, cyo + ly - (lh*0.25), g.w - 4.0, 1.0).unwrap(), &wp, Transform::identity(), None); } }
+                let cg = self.glyph_cache.entry((pg.cache_key, gc, ip)).or_insert_with(|| {
                     if let Some(im) = sc.get_image(fs, pg.cache_key) {
-                        let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap(); let (r, g, b, a) = (gc.r(), gc.g(), gc.b(), gc.a());
+                        let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap(); let (r, g, b, a) = if ip { (self.theme.bracket.r(), self.theme.bracket.g(), self.theme.bracket.b(), self.theme.bracket.a()) } else { (gc.r(), gc.g(), gc.b(), gc.a()) };
                         for (idx, &al) in im.data.iter().enumerate() { let af = (al as f32 / 255.0) * (a as f32 / 255.0); p.pixels_mut()[idx] = ColorU8::from_rgba((r as f32 * af) as u8, (g as f32 * af) as u8, (b as f32 * af) as u8, (255.0 * af) as u8).premultiply(); }
                         CachedGlyph { pixmap: p, left: im.placement.left, top: im.placement.top }
                     } else { CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 } }
@@ -249,17 +259,17 @@ impl CodeEditorWidget {
                 if ip { let mut bp = Paint::default(); bp.set_color_rgba8(self.theme.bracket.r(), self.theme.bracket.g(), self.theme.bracket.b(), self.theme.bracket.a()); pixmap.fill_rect(Rect::from_xywh(x_off + g.x, cyo + lt + lh - 2.0, g.w, 2.0).unwrap(), &bp, Transform::identity(), None); }
             }
         }
-        let mx = rect.right() - MINIMAP_WIDTH * SCALE; let mut mp = Paint::default(); mp.set_color_rgba8(16, 16, 16, 255); pixmap.fill_rect(Rect::from_xywh(mx, rect.top(), MINIMAP_WIDTH * SCALE, rect.height()).unwrap(), &mp, Transform::identity(), None);
+        let mx = rect.right() - MINIMAP_WIDTH * SCALE; let mut mpx = Paint::default(); mpx.set_color_rgba8(16, 16, 16, 255); pixmap.fill_rect(Rect::from_xywh(mx, rect.top(), MINIMAP_WIDTH * SCALE, rect.height() - FOOTER_HEIGHT * SCALE).unwrap(), &mpx, Transform::identity(), None);
         let m_step = (rect.height() / self.my_editor.line_tokens.len().max(1) as f32).min(2.5); let mut m_y = rect.top();
         for li in 0..self.my_editor.line_tokens.len() {
             if self.is_line_hidden(li) { continue; }
             if let Some(tks) = self.my_editor.line_tokens.get(li) {
                 let mut xp = mx + 2.0; for t in tks { let tc = match t.kind { TokenKind::Identifier => self.theme.kw, TokenKind::String => self.theme.string, TokenKind::LineComment | TokenKind::BlockComment => self.theme.comment, TokenKind::Number => self.theme.number, _ => self.theme.guide }; let mut tp = Paint::default(); tp.set_color_rgba8(tc.r(), tc.g(), tc.b(), 0xaa); let w = ((t.end - t.start) as f32 * 0.8).min(mx + MINIMAP_WIDTH * SCALE - xp); pixmap.fill_rect(Rect::from_xywh(xp, m_y, w, (m_step * 0.7).max(1.0)).unwrap(), &tp, Transform::identity(), None); xp += w + 1.0; if xp >= rect.right() { break; } }
             }
-            m_y += m_step; if m_y > rect.bottom() { break; }
+            m_y += m_step; if m_y > (rect.bottom() - FOOTER_HEIGHT * SCALE) { break; }
         }
-        let v_h = (rect.height() / total_h.max(1.0)) * rect.height(); let v_y = (self.scroll_y / total_h.max(1.0)) * rect.height();
-        let mut vp = Paint::default(); vp.set_color_rgba8(255, 255, 255, 17); pixmap.fill_rect(Rect::from_xywh(mx, rect.top() + v_y.min(rect.height() - v_h), MINIMAP_WIDTH * SCALE, v_h).unwrap(), &vp, Transform::identity(), None);
+        let v_h = ((rect.height() - FOOTER_HEIGHT * SCALE) / total_h.max(1.0)) * (rect.height() - FOOTER_HEIGHT * SCALE); let v_y = (self.scroll_y / total_h.max(1.0)) * (rect.height() - FOOTER_HEIGHT * SCALE);
+        let mut vp = Paint::default(); vp.set_color_rgba8(255, 255, 255, 17); pixmap.fill_rect(Rect::from_xywh(mx, rect.top() + v_y.min(rect.height() - FOOTER_HEIGHT * SCALE - v_h), MINIMAP_WIDTH * SCALE, v_h).unwrap(), &vp, Transform::identity(), None);
         if self.is_search_open {
              let mut sep = Paint::default(); sep.set_color_rgba8(51, 51, 51, 250);
              let eh = if self.is_replace_open { 60.0 } else { 30.0 } * SCALE;
@@ -272,6 +282,8 @@ impl CodeEditorWidget {
             pixmap.fill_rect(Rect::from_xywh(pos.0, pos.1, 100.0 * SCALE, (items.len() as f32 * 25.0) * SCALE).unwrap(), &mep, Transform::identity(), None);
             for (i, item) in items.iter().enumerate() { App::draw_ui_text(pixmap, fs, sc, item, pos.0 + 10.0 * SCALE, pos.1 + (i as f32 * 25.0 + 5.0) * SCALE, self.theme.text); }
         }
+        let mut fbp = Paint::default(); fbp.set_color_rgba8(37, 37, 38, 255); pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.bottom() - FOOTER_HEIGHT * SCALE, rect.width(), FOOTER_HEIGHT * SCALE).unwrap(), &fbp, Transform::identity(), None);
+        App::draw_ui_text(pixmap, fs, sc, &format!("Ln {}, Col {} | Total {} chars", cursor_state.line + 1, cursor_state.index + 1, self.my_editor.rope.len_chars()), rect.left() + 10.0 * SCALE, rect.bottom() - FOOTER_HEIGHT * SCALE + 5.0 * SCALE, self.theme.text);
         if let Some((cx, cy)) = self.editor.cursor_position() {
              let mut ci = None; self.editor.with_buffer(|b| { for r in b.layout_runs() { if cy >= r.line_top as i32 && cy < (r.line_top + r.line_height) as i32 && !self.is_line_hidden(r.line_i) { ci = Some(self.get_visual_y_shift(r.line_i)); } } });
              if let Some(ys) = ci { let mut cp = Paint::default(); cp.set_color_rgba8(255, 255, 255, 255); pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, y_off - self.scroll_y - ys + cy as f32, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None); }
@@ -296,7 +308,7 @@ impl CodeEditorWidget {
             } self.context_menu = None;
         }
         if x > rect.right() - MINIMAP_WIDTH * SCALE {
-             let mry = (y - rect.top()) / rect.height(); let mut th = 0.0;
+             let mry = (y - rect.top()) / (rect.height() - FOOTER_HEIGHT * SCALE); let mut th = 0.0;
              self.editor.with_buffer(|b| { for r in b.layout_runs() { if !self.is_line_hidden(r.line_i) { th += r.line_height; } } });
              self.scroll_y = (mry * th).max(0.0); return;
         }
@@ -371,6 +383,22 @@ impl ApplicationHandler for App {
                     let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
                     let alt = self.modifiers.state().alt_key(); let shift = self.modifiers.state().shift_key();
                     match event.key_without_modifiers() {
+                        Key::Named(NamedKey::Tab) => if shift { w.editor.action(&mut self.font_system, Action::Unindent); } else { w.editor.action(&mut self.font_system, Action::Indent); }
+                        Key::Character(c) if cmd && c == "/" => { w.toggle_comment(&mut self.font_system); }
+                        Key::Character(c) if cmd && (c == "=" || c == "+") => { w.set_zoom(&mut self.font_system, 1.0); }
+                        Key::Character(c) if cmd && c == "-" => { w.set_zoom(&mut self.font_system, -1.0); }
+                        Key::Character(c) if cmd && c == "0" => { w.font_size = 14.0; w.set_zoom(&mut self.font_system, 0.0); }
+                        Key::Character(c) if cmd && (c == "w" || c == "W") => { w.show_whitespace = !w.show_whitespace; }
+                        Key::Character(c) if cmd && (c == "m" || c == "M") => { if let Some(p) = w.my_editor.find_matching_bracket(w.editor.cursor().line, w.editor.cursor().index, &w.lang_def) { w.editor.set_cursor(Cursor::new(p.0, p.1)); } }
+                        Key::Named(NamedKey::Home) => {
+                             let cli = w.editor.cursor().line; let cur = w.editor.cursor().index;
+                             let text = w.editor.with_buffer(|b| b.lines[cli].text().to_string());
+                             let first = text.chars().take_while(|c| c.is_whitespace()).count();
+                             if cur == first { w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); }
+                             else { w.editor.set_cursor(Cursor::new(cli, first)); }
+                        }
+                        Key::Named(NamedKey::End) => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
+                        Key::Character(c) if cmd && shift && (c == "k" || c == "K") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::End)); w.editor.action(&mut self.font_system, Action::Backspace); w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); let len = w.editor.with_buffer(|b| b.lines[w.editor.cursor().line].text().len()); for _ in 0..len { w.editor.action(&mut self.font_system, Action::Delete); } w.editor.action(&mut self.font_system, Action::Delete); }
                         Key::Named(NamedKey::Backspace) => if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.editor.action(&mut self.font_system, Action::Backspace); }
                         Key::Named(NamedKey::Enter) => if w.is_search_open { w.find_next(&mut self.font_system); } else { w.editor.action(&mut self.font_system, Action::Enter); }
                         Key::Named(NamedKey::Escape) => { w.is_search_open = false; w.context_menu = None; }
@@ -383,7 +411,10 @@ impl ApplicationHandler for App {
                         Key::Named(NamedKey::ArrowDown) if alt => { let li = w.editor.cursor().line; if shift { w.my_editor.duplicate_line(li); } else { w.my_editor.move_line_down(li); } w.needs_reshape = true; }
                         Key::Named(NamedKey::ArrowLeft) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)), Key::Named(NamedKey::ArrowRight) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)), Key::Named(NamedKey::ArrowUp) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Up)), Key::Named(NamedKey::ArrowDown) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Down)),
                         Key::Character(c) if cmd && (c == "a" || c == "A") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::BufferStart)); let mut ly = 0.0; w.editor.with_buffer(|b| if let Some(r) = b.layout_runs().last() { ly = r.line_top + r.line_height; }); w.editor.action(&mut self.font_system, Action::Drag { x: 999999, y: ly as i32 }); }
-                        _ => { if let Some(t) = event.text { if !cmd { for ch in t.chars() { if !ch.is_control() || ch == '\t' || ch == '\n' { if w.is_search_open { if w.is_replace_open && alt { w.replace_query.push(ch); } else { w.search_query.push(ch); } } else { w.editor.action(&mut self.font_system, Action::Insert(ch)); if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.editor.action(&mut self.font_system, Action::Insert(cl)); w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)); } } } } } else { acted = false; } } else { acted = false; } }
+                        _ => { if let Some(t) = event.text { if !cmd { for ch in t.chars() { if !ch.is_control() || ch == '\t' || ch == '\n' { if w.is_search_open { if w.is_replace_open && alt { w.replace_query.push(ch); } else { w.search_query.push(ch); } } else { 
+                            let mut skip = false; if let Some(cl) = match ch { ')'=>Some(')'),'}'=>Some('}'),']'=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { let cli = w.editor.cursor().line; let cur = w.editor.cursor().index; let next_ch = w.editor.with_buffer(|b| b.lines[cli].text().chars().nth(cur)); if next_ch == Some(cl) { w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)); skip = true; } }
+                            if !skip { w.editor.action(&mut self.font_system, Action::Insert(ch)); if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.editor.action(&mut self.font_system, Action::Insert(cl)); w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)); } }
+                        } } } } else { acted = false; } } else { acted = false; } }
                     }
                     if acted { w.needs_reshape = true; w.sync(); self.window.as_ref().unwrap().request_redraw(); }
                 }
