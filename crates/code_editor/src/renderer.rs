@@ -18,12 +18,23 @@ use arboard::Clipboard;
 use crate::editor::{Editor as MyEditor, TokenKind};
 use crate::language::{load_language, LanguageDef};
 use crate::lsp_client::{LspClient, LspRequest, LspEvent};
+use osz_widgets::{TreeView, TreeEvent};
+use std::path::Path;
 
 const SCALE: f32 = 2.0;
-const SIDEBAR_WIDTH: f32 = 70.0;
+const EXPLORER_WIDTH: f32 = 220.0; 
+const TAB_BAR_HEIGHT: f32 = 35.0;
 const MINIMAP_WIDTH: f32 = 80.0;
 const UI_BAR_HEIGHT: f32 = 40.0;
 const FOOTER_HEIGHT: f32 = 25.0;
+const GUTTER_WIDTH: f32 = 60.0; // Fixed gutter width for line numbers
+
+pub struct Tab {
+    pub name: String,
+    pub path: Option<String>,
+    pub widget: CodeEditorWidget,
+    pub is_sticky: bool,
+}
 
 #[derive(Clone, Copy)]
 pub struct Theme {
@@ -186,7 +197,7 @@ impl CodeEditorWidget {
         }
     }
 
-    fn get_offsets(&self, rect: Rect) -> (f32, f32) { (rect.left() + SIDEBAR_WIDTH * SCALE, rect.top()) }
+    fn get_offsets(&self, rect: Rect) -> (f32, f32) { (rect.left() + GUTTER_WIDTH * SCALE, rect.top()) }
 
     fn is_line_hidden(&self, li: usize) -> bool {
         for (s, e) in &self.my_editor.folds { if self.my_editor.collapsed_starts.contains(s) && li > *s && li <= *e { return true; } } false
@@ -205,7 +216,7 @@ impl CodeEditorWidget {
         self.editor.with_buffer(|b| { for l in b.lines.iter().take(cursor.line) { start += l.text().len() + 1; } start += cursor.index; });
         let match_idx = total[start.min(total.len())..].find(&self.search_query).map(|i| i + start).or_else(|| total.find(&self.search_query));
         if let Some(idx) = match_idx {
-            let mut cb = 0; let mut tl = 0; let mut tc = 0;
+            let mut cb: usize = 0; let mut tl = 0; let mut tc = 0;
             for (li, text) in total.split('\n').enumerate() { if idx >= cb && idx <= cb + text.len() { tl = li; tc = idx - cb; break; } cb += text.len() + 1; }
             self.editor.set_cursor(Cursor::new(tl, tc)); self.editor.set_selection(Selection::Normal(Cursor::new(tl, tc + self.search_query.len()))); self.needs_reshape = true;
         }
@@ -242,7 +253,7 @@ impl CodeEditorWidget {
         if let Some(path) = pb.finish() {
             let mut paint = Paint::default();
             paint.set_color_rgba8(color.r(), color.g(), color.b(), 200);
-            pixmap.stroke_path(&path, &paint, &Stroke::new(1.0 * SCALE), Transform::identity(), None);
+            pixmap.stroke_path(&path, &paint, &Stroke { width: 1.0 * SCALE, ..Default::default() }, Transform::identity(), None);
         }
     }
 
@@ -250,7 +261,11 @@ impl CodeEditorWidget {
         if self.needs_reshape { apply_highlighting(&mut self.editor, &self.my_editor, &Attrs::new().family(Family::Monospace), &self.lang_def, &self.theme); self.editor.shape_as_needed(fs, false); self.needs_reshape = false; }
         let (x_off, y_off) = self.get_offsets(rect);
         let mut sp = Paint::default(); sp.set_color_rgba8(self.theme.sidebar_bg.r(), self.theme.sidebar_bg.g(), self.theme.sidebar_bg.b(), self.theme.sidebar_bg.a());
-        pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.top(), SIDEBAR_WIDTH * SCALE, rect.height()).unwrap(), &sp, Transform::identity(), None);
+        pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.top(), GUTTER_WIDTH * SCALE, rect.height()).unwrap(), &sp, Transform::identity(), None);
+        // Draw vertical separator for Gutter
+        let mut gp = Paint::default(); gp.set_color_rgba8(60,60,60,255);
+        pixmap.fill_rect(Rect::from_xywh(rect.left() + (GUTTER_WIDTH - 2.0) * SCALE, rect.top(), 1.0 * SCALE, rect.height()).unwrap(), &gp, Transform::identity(), None);
+
         let cursor_state = self.editor.cursor(); let selection = self.editor.selection_bounds();
         let selected_text = self.editor.copy_selection();
         let partner = self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def).or_else(|| if cursor_state.index > 0 { self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index - 1, &self.lang_def) } else { None });
@@ -263,7 +278,7 @@ impl CodeEditorWidget {
         let mut last_para = None;
         for (i, ly, lt, lh, ys, glyphs, text) in runs {
             let cyo = y_off - ys - self.scroll_y;
-            if i == cursor_state.line { pixmap.fill_rect(Rect::from_xywh(rect.left() + SIDEBAR_WIDTH * SCALE, cyo + lt, rect.width() - (SIDEBAR_WIDTH + MINIMAP_WIDTH) * SCALE, lh).unwrap(), &cp, Transform::identity(), None); }
+            if i == cursor_state.line { pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE, cyo + lt, rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE, lh).unwrap(), &cp, Transform::identity(), None); }
             if let Some(st) = &selected_text { if st.len() > 1 && !st.contains('\n') { let mut start = 0; while let Some(pos) = text[start..].find(st) { let real_pos = start + pos; let mut g_x = 0.0; let mut g_w = 0.0; for g in &glyphs { if g.start >= real_pos && g.start < real_pos + st.len() { if g_w == 0.0 { g_x = g.x; } g_w += g.w; } } if g_w > 0.0 { pixmap.fill_rect(Rect::from_xywh(x_off + g_x, cyo + lt, g_w, lh).unwrap(), &mp, Transform::identity(), None); } start = real_pos + 1; } } }
             
             // Render Diagnostics (Squiggles)
@@ -279,7 +294,7 @@ impl CodeEditorWidget {
             let tw = 4.0 * 8.4 * (self.metrics.font_size / 14.0) * SCALE; let ls = text.chars().take_while(|c| c.is_whitespace()).count();
             for j in 1..=(ls/4) { pixmap.fill_rect(Rect::from_xywh(x_off + (j as f32 * tw), cyo + lt, 1.0, lh).unwrap(), &gp, Transform::identity(), None); }
             if last_para != Some(i) {
-                let s = format!("{}", i + 1); let mut dx = (rect.left() + SIDEBAR_WIDTH * SCALE) as i32 - 15;
+                let s = format!("{}", i + 1); let mut dx = (rect.left() + GUTTER_WIDTH * SCALE) as i32 - 15;
                 for ch in s.chars().rev() { if let Some(d) = ch.to_digit(10) { if (d as usize) < self.digit_cache.len() { let cg = &self.digit_cache[d as usize]; pixmap.draw_pixmap(dx - cg.pixmap.width() as i32 + cg.left, (cyo + ly) as i32 - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None); dx -= 10 * SCALE as i32; } } }
                 if self.my_editor.folds.iter().any(|(s, _)| *s == i) { let col = self.my_editor.collapsed_starts.contains(&i); App::draw_ui_text(pixmap, fs, sc, if col { "+" } else { "-" }, rect.left() + 5.0 * SCALE, cyo + ly - (7.0 * (self.metrics.font_size/14.0) * SCALE) - 7.0*SCALE, if col { self.theme.kw } else { Color::rgb(0x85, 0x85, 0x85) }); }
                 last_para = Some(i);
@@ -381,19 +396,76 @@ impl CodeEditorWidget {
 }
 
 struct App {
-    window: Option<Arc<Window>>, context: Option<Context<Arc<Window>>>, surface: Option<Surface<Arc<Window>, Arc<Window>>>, font_system: FontSystem, swash_cache: SwashCache, pixmap: Option<Pixmap>, editor_widget: Option<CodeEditorWidget>, all_languages: Vec<String>, current_lang: String, is_picker_open: bool, clipboard: Option<Clipboard>, modifiers: winit::event::Modifiers, last_click_time: Instant, click_count: u32, mouse_pos: (f32, f32), is_dragging: bool, needs_redraw: bool,
+    window: Option<Arc<Window>>,
+    context: Option<Context<Arc<Window>>>,
+    surface: Option<Surface<Arc<Window>, Arc<Window>>>,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    pixmap: Option<Pixmap>,
+    tabs: Vec<Tab>,
+    active_tab: usize,
+    tree_view: TreeView,
+    all_languages: Vec<String>,
+    current_lang: String,
+    is_picker_open: bool,
+    clipboard: Option<Clipboard>,
+    modifiers: winit::event::Modifiers,
+    last_click_time: Instant,
+    click_count: u32,
+    mouse_pos: (f32, f32),
+    is_dragging: bool,
+    needs_redraw: bool,
 }
 
 impl App {
-    fn new(my_editor: MyEditor) -> Self {
-        let mut langs = Vec::new(); if let Ok(es) = fs::read_dir("basic-languages") { for e in es.flatten() { if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { if let Some(n) = e.file_name().to_str() { langs.push(n.to_string()); } } } } langs.sort();
-        Self { window: None, context: None, surface: None, font_system: FontSystem::new(), swash_cache: SwashCache::new(), pixmap: None, editor_widget: None, all_languages: langs, current_lang: "rust".to_string(), is_picker_open: false, clipboard: Clipboard::new().ok(), modifiers: winit::event::Modifiers::default(), last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), is_dragging: false, needs_redraw: true }
+    fn new(_my_editor: MyEditor) -> Self {
+        let mut langs = Vec::new(); 
+        if let Ok(es) = fs::read_dir("crates/code_editor/basic-languages") { 
+            for e in es.flatten() { 
+                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { 
+                    if let Some(n) = e.file_name().to_str() { langs.push(n.to_string()); } 
+                } 
+            } 
+        } 
+        langs.sort();
+        Self { window: None, context: None, surface: None, font_system: FontSystem::new(), swash_cache: SwashCache::new(), pixmap: None, tabs: Vec::new(), active_tab: 0, tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), is_picker_open: false, clipboard: Clipboard::new().ok(), modifiers: winit::event::Modifiers::default(), last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), is_dragging: false, needs_redraw: true }
     }
     fn render(&mut self) {
-        let (surf, pix) = match (&mut self.surface, &mut self.pixmap) { (Some(s), Some(p)) => (s, p), _ => return }; pix.fill(SkiaColor::from_rgba8(30,30,30,255));
-        let rect = Rect::from_xywh(0.0, UI_BAR_HEIGHT * SCALE, pix.width() as f32, pix.height() as f32 - UI_BAR_HEIGHT * SCALE).unwrap();
-        if let Some(w) = &mut self.editor_widget {
-             // Polling LSP
+        let (surf, pix) = match (&mut self.surface, &mut self.pixmap) { (Some(s), Some(p)) => (s, p), _ => return };
+        pix.fill(SkiaColor::from_rgba8(30,30,30,255));
+
+        // 1. Sidebar (Project Explorer)
+        let mut sp = Paint::default(); sp.set_color_rgba8(25,25,26,255);
+        pix.fill_rect(Rect::from_xywh(0.0, 0.0, EXPLORER_WIDTH * SCALE, pix.height() as f32).unwrap(), &sp, Transform::identity(), None);
+        // Vertical separator for Sidebar
+        let mut sbp = Paint::default(); sbp.set_color_rgba8(51,51,51,255);
+        pix.fill_rect(Rect::from_xywh((EXPLORER_WIDTH - 1.0) * SCALE, 0.0, 1.0 * SCALE, pix.height() as f32).unwrap(), &sbp, Transform::identity(), None);
+        App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "PROJECT EXPLORER", 10.0 * SCALE, 10.0 * SCALE, Color::rgb(150,150,150));
+        self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, 0.0, 40.0 * SCALE);
+
+        // 2. Tab Bar
+        let mut tp = Paint::default(); tp.set_color_rgba8(37,37,38,255);
+        pix.fill_rect(Rect::from_xywh(EXPLORER_WIDTH * SCALE, 0.0, pix.width() as f32 - EXPLORER_WIDTH * SCALE, TAB_BAR_HEIGHT * SCALE).unwrap(), &tp, Transform::identity(), None);
+        let mut tx_off = EXPLORER_WIDTH * SCALE;
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let active = i == self.active_tab;
+            let tw = 150.0 * SCALE;
+            if active {
+                let mut ap = Paint::default(); ap.set_color_rgba8(30,30,30,255);
+                pix.fill_rect(Rect::from_xywh(tx_off, 0.0, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ap, Transform::identity(), None);
+                // Active tab underline
+                let mut up = Paint::default(); up.set_color_rgba8(0,122,204,255);
+                pix.fill_rect(Rect::from_xywh(tx_off, (TAB_BAR_HEIGHT - 2.0) * SCALE, tw, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
+            }
+            let name = if tab.is_sticky { tab.name.clone() } else { format!("{} [P]", tab.name) };
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &name, tx_off + 10.0 * SCALE, 10.0 * SCALE, if active { Color::rgb(255,255,255) } else { Color::rgb(150,150,150) });
+            tx_off += tw;
+        }
+
+        // 3. Active Editor
+        if self.active_tab < self.tabs.len() {
+             let rect = Rect::from_xywh(EXPLORER_WIDTH * SCALE, TAB_BAR_HEIGHT * SCALE, pix.width() as f32 - EXPLORER_WIDTH * SCALE, pix.height() as f32 - (TAB_BAR_HEIGHT + FOOTER_HEIGHT) * SCALE).unwrap();
+             let w = &mut self.tabs[self.active_tab].widget;
              while let Ok(evt) = w.lsp.rx.try_recv() {
                 match evt {
                     LspEvent::Diagnostics(diags) => { w.my_editor.diagnostics = diags; self.needs_redraw = true; }
@@ -402,10 +474,17 @@ impl App {
              }
              w.render(pix, &mut self.font_system, &mut self.swash_cache, rect);
         }
-        let mut bp = Paint::default(); bp.set_color_rgba8(45,45,45,255); pix.fill_rect(Rect::from_xywh(0.0, 0.0, pix.width() as f32, UI_BAR_HEIGHT * SCALE).unwrap(), &bp, Transform::identity(), None);
-        App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("Language: {}", self.current_lang), 15.0*SCALE, (UI_BAR_HEIGHT*0.25)*SCALE, Color::rgb(238,238,238));
-        if self.is_picker_open { let cols = 4; let pw = cols as f32 * 150.0 * SCALE; let ph = ((self.all_languages.len() as f32 / cols as f32).ceil()) as f32 * 30.0 * SCALE; let mut bpg = Paint::default(); bpg.set_color_rgba8(51,51,51,248); pix.fill_rect(Rect::from_xywh(10.0, (UI_BAR_HEIGHT+5.0)*SCALE, pw, ph).unwrap(), &bpg, Transform::identity(), None); for (i, l) in self.all_languages.iter().enumerate() { let lx = 10.0 + (i%cols) as f32 * 150.0 * SCALE + 10.0; let ly = (UI_BAR_HEIGHT+5.0 + (i/cols) as f32 * 30.0) * SCALE + 5.0; let h = self.mouse_pos.0 >= lx && self.mouse_pos.0 <= lx + 150.0*SCALE && self.mouse_pos.1 >= ly && self.mouse_pos.1 <= ly + 30.0*SCALE; App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, l, lx, ly, if h { Color::rgb(86,156,214) } else { Color::rgb(187,187,187) }); } }
-        let mut buffer = surf.buffer_mut().unwrap(); for (i, p) in pix.pixels().iter().enumerate() { buffer[i] = (p.red() as u32) << 16 | (p.green() as u32) << 8 | (p.blue() as u32); } buffer.present().unwrap(); self.needs_redraw = false;
+
+        // 4. Footer
+        let mut fp = Paint::default(); fp.set_color_rgba8(0,122,204,255);
+        pix.fill_rect(Rect::from_xywh(0.0, pix.height() as f32 - FOOTER_HEIGHT * SCALE, pix.width() as f32, FOOTER_HEIGHT * SCALE).unwrap(), &fp, Transform::identity(), None);
+        
+        let mut buffer = surf.buffer_mut().unwrap();
+        for (i, p) in pix.pixels().iter().enumerate() {
+            buffer[i] = (p.red() as u32) << 16 | (p.green() as u32) << 8 | (p.blue() as u32);
+        }
+        buffer.present().unwrap();
+        self.needs_redraw = false;
     }
     fn draw_ui_text(pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, text: &str, x: f32, y: f32, col: Color) {
         let mut lab = Buffer::new(fs, Metrics::new(14.0,20.0).scale(SCALE)); lab.set_text(fs, text, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None); lab.shape_until_scroll(fs, false);
@@ -415,11 +494,12 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window = Arc::new(event_loop.create_window(WindowAttributes::default().with_title("Vybe IDE").with_inner_size(winit::dpi::LogicalSize::new(1100.0, 800.0))).unwrap());
+        let window = Arc::new(event_loop.create_window(WindowAttributes::default().with_title("Vybe IDE").with_inner_size(winit::dpi::LogicalSize::new(1200.0, 900.0))).unwrap());
         let ctx = Context::new(window.clone()).unwrap(); let surf = Surface::new(&ctx, window.clone()).unwrap(); let sz = window.inner_size();
         let lang = load_language("rust").expect("load rust");
-        let my_editor = MyEditor::from_text("// Welcome to Vybe Professionals\nfn main() {\n    println!(\"Hello IDE!\");\n}", &lang);
-        self.editor_widget = Some(CodeEditorWidget::new(my_editor, &mut self.font_system));
+        let my_editor = MyEditor::from_text("// Welcome to Vybe IDE\nfn main() {\n    println!(\"Multi-file support active!\");\n}", &lang);
+        let widget = CodeEditorWidget::new(my_editor, &mut self.font_system);
+        self.tabs.push(Tab { name: "welcome.rs".to_string(), path: None, widget, is_sticky: true });
         self.window = Some(window); self.context = Some(ctx); self.surface = Some(surf);
         self.pixmap = Some(Pixmap::new(sz.width, sz.height).unwrap()); self.surface.as_mut().unwrap().resize(NonZeroU32::new(sz.width).unwrap(), NonZeroU32::new(sz.height).unwrap()).unwrap();
     }
@@ -427,10 +507,23 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(), WindowEvent::ModifiersChanged(m) => self.modifiers = m,
             WindowEvent::Resized(sz) => { if let (Some(s), Some(w)) = (&mut self.surface, &self.window) { if sz.width > 0 && sz.height > 0 { s.resize(NonZeroU32::new(sz.width).unwrap(), NonZeroU32::new(sz.height).unwrap()).expect("resize surface"); self.pixmap = Some(Pixmap::new(sz.width, sz.height).unwrap()); w.request_redraw(); } } }
-            WindowEvent::MouseWheel { delta, .. } => { let a = match delta { MouseScrollDelta::LineDelta(_, y) => y * 60.0, MouseScrollDelta::PixelDelta(pos) => pos.y as f32 }; if let Some(w) = &mut self.editor_widget { w.scroll_y -= a; self.window.as_ref().unwrap().request_redraw(); } }
+            WindowEvent::MouseWheel { delta, .. } => { 
+                let a = match delta { 
+                    MouseScrollDelta::LineDelta(_, y) => y * 120.0, 
+                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 2.0 
+                }; 
+                if self.active_tab < self.tabs.len() {
+                    self.tabs[self.active_tab].widget.scroll_y -= a;
+                    self.window.as_ref().unwrap().request_redraw(); 
+                } 
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
-                    let mut acted = true; let w = self.editor_widget.as_mut().expect("has widget");
+                    if self.tabs.is_empty() { return; }
+                    let mut acted = true; 
+                    let _theme = self.tabs[self.active_tab].widget.theme;
+                    let tab = &mut self.tabs[self.active_tab];
+                    let w = &mut tab.widget;
                     let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
                     let alt = self.modifiers.state().alt_key(); let shift = self.modifiers.state().shift_key();
                     match event.key_without_modifiers() {
@@ -467,19 +560,71 @@ impl ApplicationHandler for App {
                             if !skip { w.editor.action(&mut self.font_system, Action::Insert(ch)); if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.editor.action(&mut self.font_system, Action::Insert(cl)); w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)); } }
                         } } } } else { acted = false; } } else { acted = false; } }
                     }
-                    if acted { w.needs_reshape = true; w.sync(); self.window.as_ref().unwrap().request_redraw(); }
+                    if acted { let w = &mut self.tabs[self.active_tab].widget; w.needs_reshape = true; w.sync(); self.window.as_ref().unwrap().request_redraw(); }
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => { self.mouse_pos = (position.x as f32, position.y as f32); if self.is_dragging { let r = Rect::from_xywh(0.0, UI_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32, self.pixmap.as_ref().unwrap().height() as f32).unwrap(); self.editor_widget.as_mut().unwrap().handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); self.window.as_ref().unwrap().request_redraw(); } }
+            WindowEvent::CursorMoved { position, .. } => { self.mouse_pos = (position.x as f32, position.y as f32); if self.is_dragging { if self.mouse_pos.0 > EXPLORER_WIDTH * SCALE && self.mouse_pos.1 > TAB_BAR_HEIGHT * SCALE { let r = Rect::from_xywh(EXPLORER_WIDTH * SCALE, TAB_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32 - EXPLORER_WIDTH * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - TAB_BAR_HEIGHT * SCALE).unwrap(); self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); self.window.as_ref().unwrap().request_redraw(); } } }
             WindowEvent::MouseInput { state, button, .. } => {
-                if state == ElementState::Pressed {
-                    if self.mouse_pos.1 < UI_BAR_HEIGHT * SCALE { if button == MouseButton::Left { self.is_picker_open = !self.is_picker_open; self.window.as_ref().unwrap().request_redraw(); return; } }
-                    if self.is_picker_open && button == MouseButton::Left { for (i, l) in self.all_languages.iter().enumerate() { let lx = 10.0 + (i % 4) as f32 * 150.0 * SCALE + 10.0; let ly = (UI_BAR_HEIGHT + 5.0 + (i / 4) as f32 * 30.0) * SCALE + 5.0; if self.mouse_pos.0 >= lx && self.mouse_pos.0 <= lx + 150.0 * SCALE && self.mouse_pos.1 >= ly && self.mouse_pos.1 <= ly + 30.0 * SCALE { self.current_lang = l.clone(); self.editor_widget.as_mut().unwrap().set_language(l); self.is_picker_open = false; self.window.as_ref().unwrap().request_redraw(); return; } } self.is_picker_open = false; self.window.as_ref().unwrap().request_redraw(); return; }
-                    let r = Rect::from_xywh(0.0, UI_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32, self.pixmap.as_ref().unwrap().height() as f32).unwrap();
-                    if button == MouseButton::Left { self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now(); }
-                    self.editor_widget.as_mut().unwrap().handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
-                    if button == MouseButton::Left { self.is_dragging = true; } self.window.as_ref().unwrap().request_redraw();
-                } else { self.is_dragging = false; }
+                if state == ElementState::Pressed && button == MouseButton::Left {
+                    // Click in Sidebar (Project Explorer)
+                    if self.mouse_pos.0 < EXPLORER_WIDTH * SCALE {
+                        let now = Instant::now();
+                        let is_double = (now - self.last_click_time) < Duration::from_millis(300);
+                        self.last_click_time = now;
+
+                        match self.tree_view.handle_mouse(self.mouse_pos.0, self.mouse_pos.1, 0.0, 40.0 * SCALE) {
+                            TreeEvent::Open(path) => {
+                                // 1. Check if already open
+                                if let Some(idx) = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path)) {
+                                    self.active_tab = idx;
+                                    if is_double { self.tabs[idx].is_sticky = true; }
+                                    self.window.as_ref().unwrap().request_redraw();
+                                    return;
+                                }
+
+                                // 2. Check if we should replace existing "Preview" tab
+                                let mut replace_idx = None;
+                                for (i, t) in self.tabs.iter().enumerate() { if !t.is_sticky { replace_idx = Some(i); break; } }
+
+                                if let Ok(content) = fs::read_to_string(&path) {
+                                    let ext = path.split('.').last().unwrap_or("txt");
+                                    let lang_name = match ext { "rs" => "rust", "js" => "javascript", "bas" | "vb" => "vb", "cs" => "csharp", _ => "text" };
+                                    let lang = load_language(lang_name).or_else(|| load_language("rust")).expect("rust language not found");
+                                    let my_editor = MyEditor::from_text(&content, &lang);
+                                    let mut widget = CodeEditorWidget::new(my_editor, &mut self.font_system);
+                                    widget.set_language(lang_name);
+                                    let name = Path::new(&path).file_name().unwrap_or_default().to_string_lossy().to_string();
+                                    let new_tab = Tab { name, path: Some(path), widget, is_sticky: is_double };
+                                    
+                                    if let Some(idx) = replace_idx {
+                                        self.tabs[idx] = new_tab;
+                                        self.active_tab = idx;
+                                    } else {
+                                        self.tabs.push(new_tab);
+                                        self.active_tab = self.tabs.len() - 1;
+                                    }
+                                    self.window.as_ref().unwrap().request_redraw();
+                                }
+                            }
+                            TreeEvent::None => { self.window.as_ref().unwrap().request_redraw(); }
+                        }
+                        return;
+                    }
+                    // Click in Tab Bar
+                    if self.mouse_pos.1 < TAB_BAR_HEIGHT * SCALE && self.mouse_pos.0 > EXPLORER_WIDTH * SCALE {
+                        let tab_idx = ((self.mouse_pos.0 - EXPLORER_WIDTH * SCALE) / (150.0 * SCALE)) as usize;
+                        if tab_idx < self.tabs.len() {
+                            self.active_tab = tab_idx;
+                            self.window.as_ref().unwrap().request_redraw();
+                        }
+                        return;
+                    }
+                    // Click in Editor
+                    let r = Rect::from_xywh(EXPLORER_WIDTH * SCALE, TAB_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32 - EXPLORER_WIDTH * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - TAB_BAR_HEIGHT * SCALE).unwrap();
+                    self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now();
+                    self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
+                    self.is_dragging = true; self.window.as_ref().unwrap().request_redraw();
+                } else if state == ElementState::Released { self.is_dragging = false; }
             }
             WindowEvent::RedrawRequested => self.render(),
             _ => {}

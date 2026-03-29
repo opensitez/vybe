@@ -1,15 +1,15 @@
-use std::process::{Command, Stdio, Child};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::sync::Arc;
 use crossbeam_channel::{Sender, Receiver};
-use lsp_server::{Connection, Message, Request, RequestId, Response, Notification};
+use lsp_server::{Connection, Message, Notification};
 use lsp_types::{
     InitializeParams, InitializedParams, ClientCapabilities, TraceValue, 
     TextDocumentItem, DidOpenTextDocumentParams, TextDocumentContentChangeEvent, 
-    DidChangeTextDocumentParams, VersionedTextDocumentIdentifier, Url,
+    DidChangeTextDocumentParams, VersionedTextDocumentIdentifier,
     Diagnostic, PublishDiagnosticsParams, Position, Range, DiagnosticSeverity
 };
-use serde_json::to_value;
+// no direct Url/Uri import; use JSON strings for URIs to avoid type mismatches
 
 pub enum LspEvent {
     Diagnostics(Vec<Diagnostic>),
@@ -39,7 +39,7 @@ impl LspClient {
             let mut current_lang = "rust".to_string();
             let mut external_conn: Option<Connection> = None;
             let mut version = 0;
-            let dummy_url = Url::parse("file:///Users/youness/www/html/vybe/test.rs").unwrap();
+            let dummy_uri = "file:///Users/youness/www/html/vybe/test.rs".to_string();
 
             loop {
                 // 1. Handle Requests from Editor
@@ -54,61 +54,77 @@ impl LspClient {
                                 if let Ok(mut child) = cmd.spawn() {
                                     let stdin = child.stdin.take().unwrap();
                                     let stdout = child.stdout.take().unwrap();
-                                    let (conn, _) = Connection::new(stdin, stdout);
-                                    let params = InitializeParams {
-                                        process_id: Some(std::process::id()),
-                                        client_info: None,
-                                        root_uri: Some(Url::parse("file:///").unwrap()),
-                                        initialization_options: None,
-                                        capabilities: ClientCapabilities::default(),
-                                        trace: Some(TraceValue::Messages),
-                                        workspace_folders: None,
-                                        locale: None,
-                                        root_path: None,
-                                    };
-                                    let id = conn.send_request::<lsp_types::request::Initialize>(params);
+                                    let conn = Connection::stdio(); // Correct standard method for lsp-server
+                                    // Actually, Connection::stdio() takes stdin/stdout, but the crate version we have might be different.
+                                    // Based on lsp-server common patterns:
+                                    let (conn, _io_threads) = Connection::stdio();
+                                    
+                                    let params_val = serde_json::json!({
+                                        "processId": std::process::id(),
+                                        "clientInfo": serde_json::Value::Null,
+                                        "rootUri": "file:///",
+                                        "initializationOptions": serde_json::Value::Null,
+                                        "capabilities": serde_json::to_value(ClientCapabilities::default()).unwrap(),
+                                        "trace": "messages",
+                                        "workspaceFolders": serde_json::Value::Null,
+                                        "locale": serde_json::Value::Null,
+                                        "rootPath": serde_json::Value::Null,
+                                        "workDoneProgressParams": serde_json::Value::Object(serde_json::Map::new()),
+                                    });
+                                    let id = conn.sender.send(Message::Request(lsp_server::Request {
+                                        id: 1.into(),
+                                        method: "initialize".to_string(),
+                                        params: params_val,
+                                    })).ok();
+                                    
                                     if let Ok(Message::Response(res)) = conn.receiver.recv() {
-                                        if res.id == id {
-                                            conn.send_notification::<lsp_types::notification::Initialized>(InitializedParams {});
+                                        if res.id == 1.into() {
+                                            conn.sender.send(Message::Notification(Notification {
+                                                method: "initialized".to_string(),
+                                                params: serde_json::to_value(InitializedParams {}).unwrap(),
+                                            })).ok();
                                             version = 1;
-                                            conn.send_notification::<lsp_types::notification::DidOpenTextDocument>(DidOpenTextDocumentParams {
-                                                text_document: TextDocumentItem {
-                                                    uri: dummy_url.clone(),
-                                                    language_id: "rust".to_string(),
-                                                    version: version,
-                                                    text: content.clone(),
-                                                }
-                                            });
+                                            conn.sender.send(Message::Notification(Notification {
+                                                method: "textDocument/didOpen".to_string(),
+                                                params: serde_json::json!({
+                                                    "textDocument": {
+                                                        "uri": dummy_uri.clone(),
+                                                        "languageId": "rust",
+                                                        "version": version,
+                                                        "text": content.clone()
+                                                    }
+                                                }),
+                                            })).ok();
                                             external_conn = Some(conn);
                                         }
                                     }
                                 }
                             } else {
-                                // Internal Initialization (e.g. for VB, JS, C#)
-                                // We just run the analysis immediately
                                 run_internal_analysis(&current_lang, &content, &evt_tx);
                             }
                         }
                         LspRequest::Change(content) => {
                             if let Some(conn) = &external_conn {
                                 version += 1;
-                                conn.send_notification::<lsp_types::notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
-                                    text_document: VersionedTextDocumentIdentifier { uri: dummy_url.clone(), version },
-                                    content_changes: vec![TextDocumentContentChangeEvent { range: None, range_length: None, text: content }],
-                                });
+                                conn.sender.send(Message::Notification(Notification {
+                                    method: "textDocument/didChange".to_string(),
+                                    params: serde_json::json!({
+                                        "textDocument": { "uri": dummy_uri.clone(), "version": version },
+                                        "contentChanges": [{ "text": content }]
+                                    }),
+                                })).ok();
                             } else {
                                 run_internal_analysis(&current_lang, &content, &evt_tx);
                             }
                         }
                         LspRequest::SetLanguage(lang) => {
                             current_lang = lang;
-                            external_conn = None; // Kill rust-analyzer if switching
+                            external_conn = None;
                         }
                         _ => {}
                     }
                 }
 
-                // 2. Poll External LSP for Notifications
                 if let Some(conn) = &external_conn {
                     while let Ok(msg) = conn.receiver.try_recv() {
                         match msg {
@@ -137,11 +153,17 @@ fn run_internal_analysis(lang: &str, content: &str, tx: &Sender<LspEvent>) {
     match lang {
         "vb" | "basic" => {
             if let Err(e) = vybe_parser_basic::parse_program(content) {
-                match e {
+                    match e {
                     vybe_parser_basic::ParseError::PestError(pe) => {
-                        let (start, _) = pe.line_col();
+                        // pest::error::LineColLocation can be Pos((line,col)) or Span((sline,scol),(eline,ecol))
+                        let (start_line, start_col) = match pe.line_col {
+                            pest::error::LineColLocation::Pos((l, c)) => (l, c),
+                            pest::error::LineColLocation::Span((l, c), _end) => (l, c),
+                        };
+                        let sl = start_line.saturating_sub(1) as u32;
+                        let sc = start_col.saturating_sub(1) as u32;
                         diagnostics.push(Diagnostic {
-                            range: Range::new(Position::new(start.0 as u32 - 1, start.1 as u32 - 1), Position::new(start.0 as u32 - 1, (start.1 as u32 + 5))),
+                            range: Range::new(Position::new(sl, sc), Position::new(sl, sc + 5)),
                             severity: Some(DiagnosticSeverity::ERROR),
                             code: None,
                             code_description: None,
@@ -158,7 +180,6 @@ fn run_internal_analysis(lang: &str, content: &str, tx: &Sender<LspEvent>) {
         }
         "javascript" | "js" => {
             if let Err(msg) = vybe_parser_js::parse(content) {
-                // Parse error message like "Parse error at line 5: ..."
                 let line = msg.split("line ").nth(1).and_then(|s| s.split(':').next()).and_then(|s| s.parse::<u32>().ok()).unwrap_or(1).saturating_sub(1);
                 diagnostics.push(Diagnostic {
                     range: Range::new(Position::new(line, 0), Position::new(line, 80)),

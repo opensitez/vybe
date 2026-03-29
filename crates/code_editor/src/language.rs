@@ -40,8 +40,10 @@ struct ConfJson {
 }
 
 pub fn load_language(name: &str) -> Option<LanguageDef> {
-    // Current directory is vybe/crates/code_editor
-    let path = Path::new("basic-languages").join(name).join(format!("{}.json", name));
+    // Handle running from both workspace root and crate root
+    let p1 = Path::new("crates/code_editor/basic-languages").join(name).join(format!("{}.json", name));
+    let p2 = Path::new("basic-languages").join(name).join(format!("{}.json", name));
+    let path = if p1.exists() { p1 } else { p2 };
     if let Ok(content) = fs::read_to_string(path) {
         if let Ok(mut json) = serde_json::from_str::<LanguageJson>(&content) {
             if let Some(conf) = json.conf {
