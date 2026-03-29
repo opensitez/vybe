@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use softbuffer::{Context, Surface};
 use arboard::Clipboard;
 
 use crate::editor::{Editor as MyEditor, TokenKind};
+use crate::language::{load_language, LanguageDef};
 
 const SIDEBAR_WIDTH: f32 = 70.0;
 const SCALE: f32 = 2.0;
@@ -26,8 +27,9 @@ struct CachedGlyph {
     top: i32,
 }
 
-pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: &MyEditor, attrs: &Attrs) {
+pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: &MyEditor, attrs: &Attrs, lang: &LanguageDef) {
     let kw_color = Color::rgb(0x56, 0x9c, 0xd6);
+    let type_kw_color = Color::rgb(0x4e, 0xc9, 0xb0);
     let str_color = Color::rgb(0xce, 0x91, 0x78);
     let comment_color = Color::rgb(0x6a, 0x99, 0x55);
     let num_color = Color::rgb(0xb5, 0xce, 0xa8);
@@ -46,8 +48,12 @@ pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: 
                         TokenKind::Punct => Color::rgb(0xd4, 0xd4, 0xd4),
                         TokenKind::Identifier => {
                             let text = my_editor.slice(token.start, token.end);
-                            if matches!(text.as_str(), "fn" | "let" | "mut" | "if" | "else" | "match" | "use" | "pub" | "struct" | "enum" | "trait" | "impl" | "return") {
+                            if lang.keywords.contains(&text) {
                                 kw_color
+                            } else if lang.type_keywords.contains(&text) {
+                                type_kw_color
+                            } else if lang.constants.contains(&text) {
+                                num_color
                             } else {
                                 ident_color
                             }
@@ -81,6 +87,7 @@ struct App {
     pixmap: Option<Pixmap>,
     glyph_cache: HashMap<(cosmic_text::CacheKey, Color), CachedGlyph>,
     digit_cache: Vec<CachedGlyph>,
+    lang_def: LanguageDef,
     
     clipboard: Option<Clipboard>,
     modifiers: winit::event::Modifiers,
@@ -135,6 +142,12 @@ impl App {
             pixmap: None,
             glyph_cache: HashMap::new(),
             digit_cache,
+            lang_def: load_language("rust").unwrap_or(LanguageDef {
+                keywords: HashSet::new(),
+                type_keywords: HashSet::new(),
+                constants: HashSet::new(),
+                operators: HashSet::new(),
+            }),
             clipboard: Clipboard::new().ok(),
             modifiers: winit::event::Modifiers::default(),
             last_click_time: Instant::now(),
@@ -153,7 +166,7 @@ impl App {
         };
 
         if self.needs_reshape {
-            apply_highlighting(editor, &self.my_editor, &Attrs::new().family(Family::Monospace));
+            apply_highlighting(editor, &self.my_editor, &Attrs::new().family(Family::Monospace), &self.lang_def);
             editor.shape_as_needed(&mut self.font_system, false);
             self.needs_reshape = false;
         }

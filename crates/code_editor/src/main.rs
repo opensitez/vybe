@@ -1,7 +1,8 @@
 mod editor;
+mod renderer;
+pub mod language;
 
 use editor::Editor;
-mod renderer;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
