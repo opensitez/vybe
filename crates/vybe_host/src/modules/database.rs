@@ -103,37 +103,58 @@ pub fn register(vm: &mut VM) {
         };
 
         let sql_with_params = substitute_params(&sql, &params);
-        match block_on(sqlx::query(&sql_with_params).fetch_all(&conn.pool)) {
-            Ok(rows) => {
-                let result: Vec<Value> = rows.iter().map(|row| {
-                    let mut obj = Object::new();
-                    for col in row.columns() {
-                        let name = col.name().to_string();
-                        let val: String = row.try_get::<String, _>(col.ordinal())
-                            .or_else(|_| row.try_get::<i64, _>(col.ordinal()).map(|n| n.to_string()))
-                            .or_else(|_| row.try_get::<f64, _>(col.ordinal()).map(|n| n.to_string()))
-                            .or_else(|_| row.try_get::<bool, _>(col.ordinal()).map(|b| b.to_string()))
-                            .unwrap_or_else(|_| "null".to_string());
-                        let value = if let Ok(n) = val.parse::<f64>() {
-                            Value::F64(n)
-                        } else if val == "true" || val == "false" {
-                            Value::Bool(val == "true")
-                        } else if val == "null" {
-                            Value::Null
-                        } else {
-                            Value::String(Rc::from(val.as_str()))
-                        };
-                        obj.properties.insert(name, value);
-                    }
-                    Value::Object(Rc::new(RefCell::new(obj)))
-                }).collect();
-                Value::Object(Rc::new(RefCell::new(Object::new_array(result))))
-            }
+        // Try query; if it fails on MySQL unsupported types, rewrite with CASTs
+        let fetch_result = block_on(sqlx::query(&sql_with_params).fetch_all(&conn.pool));
+        let rows = match fetch_result {
+            Ok(r) => r,
             Err(e) => {
-                eprintln!("db.query error: {}", e);
-                Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+                let err_str = e.to_string();
+                if err_str.contains("does not support MySql type") && conn.conn_str.starts_with("mysql") {
+                    match rewrite_mysql_query(&conn.pool, &sql_with_params) {
+                        Ok(rewritten) => {
+                            eprintln!("[DB] Rewritten query: {}", rewritten);
+                            match block_on(sqlx::query(&rewritten).fetch_all(&conn.pool)) {
+                                Ok(r) => r,
+                                Err(e2) => {
+                                    eprintln!("db.query error (rewritten): {}", e2);
+                                    return Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))));
+                                }
+                            }
+                        }
+                        Err(re) => {
+                            eprintln!("db.query rewrite error: {}", re);
+                            return Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))));
+                        }
+                    }
+                } else {
+                    eprintln!("db.query error: {}", e);
+                    return Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))));
+                }
             }
-        }
+        };
+        let result: Vec<Value> = rows.iter().map(|row| {
+            let mut obj = Object::new();
+            for col in row.columns() {
+                let name = col.name().to_string();
+                let val: String = row.try_get::<String, _>(col.ordinal())
+                    .or_else(|_| row.try_get::<i64, _>(col.ordinal()).map(|n| n.to_string()))
+                    .or_else(|_| row.try_get::<f64, _>(col.ordinal()).map(|n| n.to_string()))
+                    .or_else(|_| row.try_get::<bool, _>(col.ordinal()).map(|b| b.to_string()))
+                    .unwrap_or_else(|_| "null".to_string());
+                let value = if let Ok(n) = val.parse::<f64>() {
+                    Value::F64(n)
+                } else if val == "true" || val == "false" {
+                    Value::Bool(val == "true")
+                } else if val == "null" {
+                    Value::Null
+                } else {
+                    Value::String(Rc::from(val.as_str()))
+                };
+                obj.properties.insert(name, value);
+            }
+            Value::Object(Rc::new(RefCell::new(obj)))
+        }).collect();
+        Value::Object(Rc::new(RefCell::new(Object::new_array(result))))
     }));
 
     // db.execute(conn, sql, params?) or cmd.ExecuteNonQuery() → rows affected
@@ -478,17 +499,173 @@ pub fn fetch_columns_for_query(conn_str: &str, select_cmd: &str) -> Result<Vec<S
 }
 
 fn normalize_conn_str(raw: &str) -> String {
+    normalize_conn_str_full(raw)
+}
+
+/// Normalize any ADO.NET / VB-style connection string to a sqlx URL.
+/// Handles SQLite (Data Source=), MySQL/PostgreSQL (Server=;Port=;Database=;Uid=;Pwd=).
+pub fn normalize_conn_str_full(raw: &str) -> String {
     let lower = raw.to_lowercase();
+
+    // Already a sqlx URL
+    if raw.starts_with("sqlite:") || raw.starts_with("postgres:") || raw.starts_with("mysql:") || raw.contains("://") {
+        return raw.to_string();
+    }
+
+    // SQLite: Data Source=path
     if lower.starts_with("data source=") || lower.starts_with("datasource=") {
-        let path = raw.split('=').nth(1).unwrap_or("").trim().trim_matches('"');
-        if path == ":memory:" {
+        let path = raw.split('=').nth(1).unwrap_or("").split(';').next().unwrap_or("").trim().trim_matches('"');
+        return if path == ":memory:" {
             "sqlite::memory:".to_string()
         } else {
             format!("sqlite:{}?mode=rwc", path)
-        }
-    } else if raw.starts_with("sqlite:") || raw.starts_with("postgres:") || raw.starts_with("mysql:") {
-        raw.to_string()
-    } else {
-        format!("sqlite:{}?mode=rwc", raw)
+        };
     }
+
+    // ADO.NET key-value: Server=..;Port=..;Database=..;Uid=..;Pwd=..
+    if lower.contains("server=") || lower.contains("host=") {
+        let pairs: std::collections::HashMap<String, String> = raw.split(';')
+            .filter_map(|p| {
+                let mut parts = p.splitn(2, '=');
+                Some((parts.next()?.trim().to_lowercase(), parts.next()?.trim().to_string()))
+            })
+            .collect();
+
+        let host = pairs.get("server").or(pairs.get("host")).map(|s| s.as_str()).unwrap_or("localhost");
+        let port = pairs.get("port").map(|s| s.as_str()).unwrap_or("3306");
+        let db = pairs.get("database").or(pairs.get("db")).or(pairs.get("initial catalog")).map(|s| s.as_str()).unwrap_or("");
+        let user = pairs.get("uid").or(pairs.get("user")).or(pairs.get("user id")).map(|s| s.as_str()).unwrap_or("root");
+        let pass = pairs.get("pwd").or(pairs.get("password")).map(|s| s.as_str()).unwrap_or("");
+
+        // Detect driver: if port is 5432 → postgres, else mysql
+        let driver = if port == "5432" { "postgres" } else { "mysql" };
+        return format!("{}://{}:{}@{}:{}/{}", driver, user, pass, host, port, db);
+    }
+
+    // Bare filename → SQLite
+    format!("sqlite:{}?mode=rwc", raw)
+}
+
+/// Query rows from a database given a connection string and SQL.
+/// Returns (column_names, rows) where each row is a Vec of (column_name, value_string) pairs.
+/// Used by the data binding system to fill DataTables/BindingSources.
+pub fn query_rows(conn_str: &str, sql: &str) -> Result<(Vec<String>, Vec<std::collections::HashMap<String, String>>), String> {
+    sqlx::any::install_default_drivers();
+    let url = normalize_conn_str_full(conn_str);
+    let pool = block_on(sqlx::any::AnyPoolOptions::new().max_connections(1).min_connections(1).connect(&url))
+        .map_err(|e| format!("Connection failed: {}", e))?;
+
+    // Try the query; if it fails on MySQL TINYINT, rewrite with CASTs
+    let rows = match block_on(sqlx::query(sql).fetch_all(&pool)) {
+        Ok(r) => r,
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("does not support MySql type") && url.starts_with("mysql") {
+                let rewritten = rewrite_mysql_query(&pool, sql)?;
+                eprintln!("[DB] Rewritten query: {}", rewritten);
+                block_on(sqlx::query(&rewritten).fetch_all(&pool))
+                    .map_err(|e2| format!("Query failed (rewritten): {}", e2))?
+            } else {
+                return Err(format!("Query failed: {}", e));
+            }
+        }
+    };
+
+    let columns: Vec<String> = if let Some(first) = rows.first() {
+        first.columns().iter().map(|c| c.name().to_string()).collect()
+    } else {
+        // Try to get column names from an empty result set
+        match block_on(sqlx::query(&format!("{} LIMIT 0", sql.trim().trim_end_matches(';'))).fetch_optional(&pool)) {
+            Ok(Some(r)) => r.columns().iter().map(|c| c.name().to_string()).collect(),
+            _ => Vec::new(),
+        }
+    };
+
+    let result: Vec<std::collections::HashMap<String, String>> = rows.iter().map(|row| {
+        let mut map = std::collections::HashMap::new();
+        for col in row.columns() {
+            let name = col.name().to_string();
+            let val: String = row.try_get::<String, _>(col.ordinal())
+                .or_else(|_| row.try_get::<i64, _>(col.ordinal()).map(|n| n.to_string()))
+                .or_else(|_| row.try_get::<f64, _>(col.ordinal()).map(|n| n.to_string()))
+                .or_else(|_| row.try_get::<bool, _>(col.ordinal()).map(|b| b.to_string()))
+                .unwrap_or_else(|_| "".to_string());
+            map.insert(name, val);
+        }
+        map
+    }).collect();
+
+    block_on(pool.close());
+    Ok((columns, result))
+}
+
+/// MySQL's TINYINT/BIT/YEAR types are not supported by sqlx's Any driver.
+/// Rewrite `SELECT * FROM table` to explicitly CAST those columns to SIGNED.
+fn rewrite_mysql_query(pool: &sqlx::AnyPool, sql: &str) -> Result<String, String> {
+    // Extract table name from "SELECT * FROM tablename [WHERE ...]"
+    let upper = sql.to_uppercase();
+    let from_pos = upper.find("FROM").ok_or("Cannot rewrite: no FROM clause")?;
+    let after_from = sql[from_pos + 4..].trim();
+    let table = after_from.split_whitespace().next().unwrap_or("").trim_matches('`').trim_matches('"');
+    let rest = after_from[table.len()..].trim(); // WHERE clause etc.
+
+    if table.is_empty() {
+        return Err("Cannot rewrite: empty table name".into());
+    }
+
+    // Extract database name from the pool's connect options URL
+    // e.g. mysql://user:pass@host:port/dbname
+    let db_name = {
+        // Use CONCAT to return just the column name and type as a simple 2-col result
+        // This avoids issues with INFORMATION_SCHEMA returning many columns
+        let db_query = "SELECT DATABASE()";
+        match block_on(sqlx::query(db_query).fetch_optional(pool)) {
+            Ok(Some(r)) => r.try_get::<String, _>(0).unwrap_or_default(),
+            _ => String::new(),
+        }
+    };
+
+    // Query column names and types using CONCAT to produce simple string results
+    // that the Any driver can handle reliably
+    let schema_sql = if db_name.is_empty() {
+        format!(
+            "SELECT CONCAT(COLUMN_NAME, '|', DATA_TYPE) AS col_info FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{}' ORDER BY ORDINAL_POSITION",
+            table.replace('\'', "''")
+        )
+    } else {
+        format!(
+            "SELECT CONCAT(COLUMN_NAME, '|', DATA_TYPE) AS col_info FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}' ORDER BY ORDINAL_POSITION",
+            db_name.replace('\'', "''"), table.replace('\'', "''")
+        )
+    };
+    let schema_rows = block_on(sqlx::query(&schema_sql).fetch_all(pool))
+        .map_err(|e| format!("Schema query failed: {}", e))?;
+
+    // Types that the Any driver can't handle → CAST to SIGNED
+    let bad_types = ["tinyint", "bit", "year", "mediumint"];
+
+    let mut select_cols = Vec::new();
+    for row in &schema_rows {
+        let col_info: String = row.try_get::<String, _>(0).unwrap_or_default();
+        let parts: Vec<&str> = col_info.splitn(2, '|').collect();
+        if parts.len() != 2 { continue; }
+        let col_name = parts[0];
+        let data_type = parts[1].to_lowercase();
+        if bad_types.iter().any(|t| data_type.contains(t)) {
+            select_cols.push(format!("CAST(`{}` AS SIGNED) AS `{}`", col_name, col_name));
+        } else {
+            select_cols.push(format!("`{}`", col_name));
+        }
+    }
+
+    if select_cols.is_empty() {
+        return Err(format!("No columns found for table '{}'", table));
+    }
+
+    let rewritten = if rest.is_empty() {
+        format!("SELECT {} FROM `{}`", select_cols.join(", "), table)
+    } else {
+        format!("SELECT {} FROM `{}` {}", select_cols.join(", "), table, rest)
+    };
+    Ok(rewritten)
 }

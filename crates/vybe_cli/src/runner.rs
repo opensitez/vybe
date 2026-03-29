@@ -813,6 +813,47 @@ fn run_project(path: &Path, _extra_args: &[String]) {
             if let Some(text) = ctrl.properties.get_string("Text") {
                 designer.push_str(&format!("        Me.{}.Text = \"{}\"\n", ctrl.name, text));
             }
+            // Emit all string properties from the parsed form model
+            // (ConnectionString, DataSource, DataMember, DbType, etc.)
+            for (key, val) in ctrl.properties.iter() {
+                if let Some(s) = val.as_string() {
+                    let k = key.as_str();
+                    // Skip already emitted or layout properties
+                    if matches!(k, "Name" | "Text" | "Location" | "Size" | "TabIndex"
+                        | "Enabled" | "Visible" | "BackColor" | "ForeColor" | "Font") {
+                        continue;
+                    }
+                    // Skip DataBindings.* properties — handled by skia_form data binding system
+                    if k.starts_with("DataBindings.") {
+                        continue;
+                    }
+                    if !s.is_empty() {
+                        if k == "DataSource" {
+                            // DataSource is a reference to another control: Me.bs1.DataSource = Me.da1
+                            designer.push_str(&format!("        Me.{}.DataSource = Me.{}\n", ctrl.name, s));
+                        } else if k == "BindingSource" {
+                            designer.push_str(&format!("        Me.{}.BindingSource = Me.{}\n", ctrl.name, s));
+                        } else if k.starts_with("DataBinding:") {
+                            // DataBindings.Add("Text", bs1, "ColumnName")
+                            let parts: Vec<&str> = k.splitn(2, ':').collect();
+                            if parts.len() == 2 {
+                                let prop = parts[1];
+                                // s = "bs1|ColumnName" or "bs1.ColumnName"
+                                let binding_parts: Vec<&str> = s.splitn(2, |c| c == '|' || c == '.').collect();
+                                if binding_parts.len() == 2 {
+                                    designer.push_str(&format!(
+                                        "        Me.{}.DataBindings.Add(\"{}\", Me.{}, \"{}\")\n",
+                                        ctrl.name, prop, binding_parts[0], binding_parts[1]
+                                    ));
+                                }
+                            }
+                        } else {
+                            // Generic property: Me.ctrl.Prop = "value"
+                            designer.push_str(&format!("        Me.{}.{} = \"{}\"\n", ctrl.name, k, s));
+                        }
+                    }
+                }
+            }
             if !is_non_visual {
                 designer.push_str(&format!(
                     "        Me.{}.Location = New Point({}, {})\n",
