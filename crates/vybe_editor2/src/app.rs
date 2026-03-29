@@ -1,10 +1,12 @@
 use eframe::egui;
 use crate::state::{EditorState, RunStatus, View};
 use crate::panels;
+use crate::panels::properties::PropertiesTab;
 
 pub struct VybeApp {
     pub state: EditorState,
     pub show_output: bool,
+    pub properties_tab: PropertiesTab,
 }
 
 impl VybeApp {
@@ -12,6 +14,7 @@ impl VybeApp {
         Self {
             state: EditorState::new(cli_path),
             show_output: false,
+            properties_tab: PropertiesTab::Properties,
         }
     }
 }
@@ -144,8 +147,9 @@ impl eframe::App for VybeApp {
         let in_designer = self.state.view == View::FormDesigner && self.state.current_form.is_some();
         if in_designer && self.state.show_toolbox {
             egui::SidePanel::left("toolbox")
-                .resizable(false)
-                .exact_width(110.0)
+                .resizable(true)
+                .min_width(130.0)
+                .default_width(155.0)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         panels::toolbox::show(ui, &mut self.state);
@@ -161,7 +165,7 @@ impl eframe::App for VybeApp {
                 .default_width(220.0)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        panels::properties::show(ui, &mut self.state);
+                        panels::properties::show(ui, &mut self.state, &mut self.properties_tab);
                     });
                 });
         }
