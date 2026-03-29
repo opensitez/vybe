@@ -304,4 +304,26 @@ impl Editor {
     }
 
     pub fn folds(&self) -> &Vec<(usize, usize)> { &self.folds }
+
+    pub fn move_line_up(&mut self, line_idx: usize) {
+        if line_idx == 0 || line_idx >= self.rope.len_lines() { return; }
+        let current = self.rope.line(line_idx).to_string();
+        let prev = self.rope.line(line_idx - 1).to_string();
+        self.rope.remove(self.rope.line_to_char(line_idx - 1)..self.rope.line_to_char(line_idx + 1));
+        self.rope.insert(self.rope.line_to_char(line_idx - 1), &format!("{}{}", current, prev));
+    }
+
+    pub fn move_line_down(&mut self, line_idx: usize) {
+        if line_idx >= self.rope.len_lines() - 1 { return; }
+        let current = self.rope.line(line_idx).to_string();
+        let next = self.rope.line(line_idx + 1).to_string();
+        self.rope.remove(self.rope.line_to_char(line_idx)..self.rope.line_to_char(line_idx + 2));
+        self.rope.insert(self.rope.line_to_char(line_idx), &format!("{}{}", next, current));
+    }
+
+    pub fn duplicate_line(&mut self, line_idx: usize) {
+        if line_idx >= self.rope.len_lines() { return; }
+        let current = self.rope.line(line_idx).to_string();
+        self.rope.insert(self.rope.line_to_char(line_idx + 1), &current);
+    }
 }
