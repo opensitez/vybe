@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::fs;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Motion, Shaping, SwashCache, Action, Edit, AttrsList, Cursor, Selection};
-use tiny_skia::{Color as SkiaColor, Paint, Pixmap, PixmapPaint, Rect, Transform, ColorU8};
+use tiny_skia::{Color as SkiaColor, Paint, Pixmap, PixmapPaint, Rect, Transform, ColorU8, Stroke, PathBuilder};
 use winit::application::ApplicationHandler;
 use winit::event::{WindowEvent, ElementState, MouseButton, MouseScrollDelta};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -17,6 +17,7 @@ use arboard::Clipboard;
 
 use crate::editor::{Editor as MyEditor, TokenKind};
 use crate::language::{load_language, LanguageDef};
+use crate::lsp_client::{LspClient, LspRequest, LspEvent};
 
 const SCALE: f32 = 2.0;
 const SIDEBAR_WIDTH: f32 = 70.0;
@@ -39,6 +40,7 @@ pub struct Theme {
     pub number: Color,
     pub guide: Color,
     pub bracket: Color,
+    pub diagnostic_error: Color,
 }
 
 impl Theme {
@@ -57,6 +59,7 @@ impl Theme {
             number: Color::rgb(0xb5, 0xce, 0xa8),
             guide: Color::rgb(0x40, 0x40, 0x40),
             bracket: Color::rgb(0x56, 0x9c, 0xd6),
+            diagnostic_error: Color::rgb(0xf4, 0x47, 0x47),
         }
     }
 }
@@ -117,22 +120,26 @@ pub struct CodeEditorWidget {
     context_menu: Option<((f32, f32), Vec<String>)>,
     font_size: f32,
     pub show_whitespace: bool,
+    pub lsp: Arc<LspClient>,
 }
 
 impl CodeEditorWidget {
-    pub fn new(my_editor: MyEditor, font_system: &mut FontSystem) -> Self {
+    pub fn new(mut my_editor: MyEditor, font_system: &mut FontSystem) -> Self {
         let font_size = 14.0;
         let metrics = Metrics::new(font_size, 20.0).scale(SCALE);
         let lang_def = load_language("rust").unwrap_or_else(|| LanguageDef {
             keywords: HashSet::new(), type_keywords: HashSet::new(), constants: HashSet::new(), operators: HashSet::new(), comments: None, brackets: Vec::new(),
         });
         let theme = Theme::dark();
-        let mut editor_internal = my_editor;
-        editor_internal.retokenize_all(&lang_def);
+        my_editor.retokenize_all(&lang_def);
         let mut buffer = Buffer::new(font_system, metrics);
-        buffer.set_text(font_system, &editor_internal.rope.to_string(), &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
+        let text = my_editor.rope.to_string();
+        buffer.set_text(font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
         
-        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor: editor_internal, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, context_menu: None, font_size, show_whitespace: false };
+        let lsp = Arc::new(LspClient::new());
+        lsp.send(LspRequest::Init(text, "rust".to_string()));
+
+        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, context_menu: None, font_size, show_whitespace: false, lsp };
         widget.update_digit_cache(font_system);
         widget
     }
@@ -169,7 +176,13 @@ impl CodeEditorWidget {
 
     pub fn set_language(&mut self, lang_name: &str) {
         if let Some(lang) = load_language(lang_name) {
-            self.lang_def = lang; self.my_editor.retokenize_all(&self.lang_def); self.needs_reshape = true;
+            self.lang_def = lang; 
+            self.my_editor.retokenize_all(&self.lang_def); 
+            self.my_editor.diagnostics.clear();
+            self.lsp.send(LspRequest::SetLanguage(lang_name.to_string()));
+            let text = self.my_editor.rope.to_string();
+            self.lsp.send(LspRequest::Init(text, lang_name.to_string()));
+            self.needs_reshape = true;
         }
     }
 
@@ -215,6 +228,24 @@ impl CodeEditorWidget {
         self.needs_reshape = true; self.sync();
     }
 
+    fn draw_squiggle(&self, pixmap: &mut Pixmap, x: f32, y: f32, w: f32, color: Color) {
+        let mut pb = PathBuilder::new();
+        let mut cx = x;
+        let step = 3.0 * SCALE;
+        let amp = 1.5 * SCALE;
+        pb.move_to(cx, y);
+        while cx < x + w {
+            pb.quad_to(cx + step/2.0, y + amp, cx + step, y);
+            pb.quad_to(cx + step * 1.5, y - amp, cx + step * 2.0, y);
+            cx += step * 2.0;
+        }
+        if let Some(path) = pb.finish() {
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(color.r(), color.g(), color.b(), 200);
+            pixmap.stroke_path(&path, &paint, &Stroke::new(1.0 * SCALE), Transform::identity(), None);
+        }
+    }
+
     pub fn render(&mut self, pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, rect: Rect) {
         if self.needs_reshape { apply_highlighting(&mut self.editor, &self.my_editor, &Attrs::new().family(Family::Monospace), &self.lang_def, &self.theme); self.editor.shape_as_needed(fs, false); self.needs_reshape = false; }
         let (x_off, y_off) = self.get_offsets(rect);
@@ -234,6 +265,16 @@ impl CodeEditorWidget {
             let cyo = y_off - ys - self.scroll_y;
             if i == cursor_state.line { pixmap.fill_rect(Rect::from_xywh(rect.left() + SIDEBAR_WIDTH * SCALE, cyo + lt, rect.width() - (SIDEBAR_WIDTH + MINIMAP_WIDTH) * SCALE, lh).unwrap(), &cp, Transform::identity(), None); }
             if let Some(st) = &selected_text { if st.len() > 1 && !st.contains('\n') { let mut start = 0; while let Some(pos) = text[start..].find(st) { let real_pos = start + pos; let mut g_x = 0.0; let mut g_w = 0.0; for g in &glyphs { if g.start >= real_pos && g.start < real_pos + st.len() { if g_w == 0.0 { g_x = g.x; } g_w += g.w; } } if g_w > 0.0 { pixmap.fill_rect(Rect::from_xywh(x_off + g_x, cyo + lt, g_w, lh).unwrap(), &mp, Transform::identity(), None); } start = real_pos + 1; } } }
+            
+            // Render Diagnostics (Squiggles)
+            for diag in &self.my_editor.diagnostics {
+                if diag.range.start.line as usize == i {
+                     let mut g_x = 0.0; let mut g_w = 0.0;
+                     for g in &glyphs { if g.start >= diag.range.start.character as usize && (diag.range.start.line != diag.range.end.line || g.start < diag.range.end.character as usize) { if g_w == 0.0 { g_x = g.x; } g_w += g.w; } }
+                     if g_w > 0.0 { self.draw_squiggle(pixmap, x_off + g_x, cyo + lt + lh - 2.0 * SCALE, g_w, self.theme.diagnostic_error); }
+                }
+            }
+
             let mut gp = Paint::default(); gp.set_color_rgba8(self.theme.guide.r(), self.theme.guide.g(), self.theme.guide.b(), self.theme.guide.a());
             let tw = 4.0 * 8.4 * (self.metrics.font_size / 14.0) * SCALE; let ls = text.chars().take_while(|c| c.is_whitespace()).count();
             for j in 1..=(ls/4) { pixmap.fill_rect(Rect::from_xywh(x_off + (j as f32 * tw), cyo + lt, 1.0, lh).unwrap(), &gp, Transform::identity(), None); }
@@ -332,6 +373,7 @@ impl CodeEditorWidget {
                     t.push_str(line.text());
                 }
             });
+            self.lsp.send(LspRequest::Change(t.clone()));
             self.my_editor.rope = ropey::Rope::from_str(&t); 
             self.my_editor.retokenize_all(&self.lang_def); 
         } 
@@ -350,7 +392,16 @@ impl App {
     fn render(&mut self) {
         let (surf, pix) = match (&mut self.surface, &mut self.pixmap) { (Some(s), Some(p)) => (s, p), _ => return }; pix.fill(SkiaColor::from_rgba8(30,30,30,255));
         let rect = Rect::from_xywh(0.0, UI_BAR_HEIGHT * SCALE, pix.width() as f32, pix.height() as f32 - UI_BAR_HEIGHT * SCALE).unwrap();
-        if let Some(w) = &mut self.editor_widget { w.render(pix, &mut self.font_system, &mut self.swash_cache, rect); }
+        if let Some(w) = &mut self.editor_widget {
+             // Polling LSP
+             while let Ok(evt) = w.lsp.rx.try_recv() {
+                match evt {
+                    LspEvent::Diagnostics(diags) => { w.my_editor.diagnostics = diags; self.needs_redraw = true; }
+                    _ => {}
+                }
+             }
+             w.render(pix, &mut self.font_system, &mut self.swash_cache, rect);
+        }
         let mut bp = Paint::default(); bp.set_color_rgba8(45,45,45,255); pix.fill_rect(Rect::from_xywh(0.0, 0.0, pix.width() as f32, UI_BAR_HEIGHT * SCALE).unwrap(), &bp, Transform::identity(), None);
         App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("Language: {}", self.current_lang), 15.0*SCALE, (UI_BAR_HEIGHT*0.25)*SCALE, Color::rgb(238,238,238));
         if self.is_picker_open { let cols = 4; let pw = cols as f32 * 150.0 * SCALE; let ph = ((self.all_languages.len() as f32 / cols as f32).ceil()) as f32 * 30.0 * SCALE; let mut bpg = Paint::default(); bpg.set_color_rgba8(51,51,51,248); pix.fill_rect(Rect::from_xywh(10.0, (UI_BAR_HEIGHT+5.0)*SCALE, pw, ph).unwrap(), &bpg, Transform::identity(), None); for (i, l) in self.all_languages.iter().enumerate() { let lx = 10.0 + (i%cols) as f32 * 150.0 * SCALE + 10.0; let ly = (UI_BAR_HEIGHT+5.0 + (i/cols) as f32 * 30.0) * SCALE + 5.0; let h = self.mouse_pos.0 >= lx && self.mouse_pos.0 <= lx + 150.0*SCALE && self.mouse_pos.1 >= ly && self.mouse_pos.1 <= ly + 30.0*SCALE; App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, l, lx, ly, if h { Color::rgb(86,156,214) } else { Color::rgb(187,187,187) }); } }

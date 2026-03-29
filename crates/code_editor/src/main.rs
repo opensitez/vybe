@@ -1,6 +1,7 @@
 mod editor;
 mod renderer;
 pub mod language;
+mod lsp_client;
 
 use editor::Editor;
 

@@ -1,5 +1,7 @@
 use ropey::Rope;
 use crate::language::LanguageDef;
+use lsp_types::Diagnostic;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LexerState {
@@ -32,7 +34,8 @@ pub struct Editor {
     pub line_tokens: Vec<Vec<TokenSpan>>,
     pub line_states: Vec<LexerState>,
     pub folds: Vec<(usize, usize)>, // foldable ranges: (start_li, end_li)
-    pub collapsed_starts: std::collections::HashSet<usize>, // line indices that are COLLAPSED
+    pub collapsed_starts: HashSet<usize>, // line indices that are COLLAPSED
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 // Tokenize a single line, returning tokens and the final state for the next line
@@ -134,7 +137,7 @@ fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef, mut state: 
 impl Editor {
     pub fn from_text(text: &str, lang: &LanguageDef) -> Self {
         let rope = Rope::from_str(text);
-        let mut ed = Self { rope, line_tokens: Vec::new(), line_states: Vec::new(), folds: Vec::new(), collapsed_starts: std::collections::HashSet::new() };
+        let mut ed = Self { rope, line_tokens: Vec::new(), line_states: Vec::new(), folds: Vec::new(), collapsed_starts: HashSet::new(), diagnostics: Vec::new() };
         ed.retokenize_all(lang);
         ed
     }
