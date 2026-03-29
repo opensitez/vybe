@@ -2,16 +2,17 @@
 resolver = "2"
 members = [
     "crates/vybe_parser_basic",
-    "crates/vybe_runtime",
     "crates/vybe_forms",
     "crates/vybe_editor",
     "crates/vybe_project",
     "crates/vybe_cli",
-    "crates/vybe_ui",
     "crates/vybe_bytecode",
     "crates/vybe_parser_js",
     "crates/vybe_compiler_js",
     "crates/vybe_host",
+    "crates/vybe_compiler_vb",
+    "crates/vybe_parser_csharp",
+    "crates/vybe_compiler_csharp",
 ]
 
 [workspace.package]
@@ -33,7 +34,7 @@ serde_json = "1.0"
 uuid = { version = "1.10", features = ["serde", "v4"] }
 thiserror = "1.0"
 regex = "1"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "mysql", "any"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "postgres", "mysql", "any"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 
 # Dialog libraries
@@ -41,11 +42,12 @@ rfd = "0.14"
 
 # Internal crates
 vybe_parser_basic = { path = "crates/vybe_parser_basic" }
-vybe_runtime = { path = "crates/vybe_runtime" }
 vybe_forms = { path = "crates/vybe_forms" }
 vybe_project = { path = "crates/vybe_project" }
-vybe_ui = { path = "crates/vybe_ui" }
 vybe_bytecode = { path = "crates/vybe_bytecode" }
 vybe_parser_js = { path = "crates/vybe_parser_js" }
 vybe_compiler_js = { path = "crates/vybe_compiler_js" }
+vybe_compiler_vb = { path = "crates/vybe_compiler_vb" }
+vybe_parser_csharp = { path = "crates/vybe_parser_csharp" }
+vybe_compiler_csharp = { path = "crates/vybe_compiler_csharp" }
 vybe_host = { path = "crates/vybe_host" }
