@@ -22,12 +22,13 @@ use osz_widgets::{TreeView, TreeEvent};
 use std::path::Path;
 
 const SCALE: f32 = 2.0;
-const EXPLORER_WIDTH: f32 = 220.0; 
-const TAB_BAR_HEIGHT: f32 = 35.0;
+const EXPLORER_WIDTH: f32 = 250.0; 
+const TAB_BAR_HEIGHT: f32 = 36.0;
 const MINIMAP_WIDTH: f32 = 80.0;
 const UI_BAR_HEIGHT: f32 = 40.0;
-const FOOTER_HEIGHT: f32 = 25.0;
-const GUTTER_WIDTH: f32 = 60.0; // Fixed gutter width for line numbers
+const FOOTER_HEIGHT: f32 = 24.0;
+const GUTTER_WIDTH: f32 = 64.0;
+const SPLITTER_WIDTH: f32 = 4.0;
 
 pub struct Tab {
     pub name: String,
@@ -413,6 +414,10 @@ struct App {
     last_click_time: Instant,
     click_count: u32,
     mouse_pos: (f32, f32),
+    explorer_width: f32,
+    is_dragging_splitter: bool,
+    hovering_splitter: bool,
+    hovering_tab_close: Option<usize>,
     is_dragging: bool,
     needs_redraw: bool,
 }
@@ -428,7 +433,13 @@ impl App {
             } 
         } 
         langs.sort();
-        Self { window: None, context: None, surface: None, font_system: FontSystem::new(), swash_cache: SwashCache::new(), pixmap: None, tabs: Vec::new(), active_tab: 0, tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), is_picker_open: false, clipboard: Clipboard::new().ok(), modifiers: winit::event::Modifiers::default(), last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), is_dragging: false, needs_redraw: true }
+        Self { 
+            window: None, context: None, surface: None, font_system: FontSystem::new(), swash_cache: SwashCache::new(), pixmap: None, tabs: Vec::new(), active_tab: 0, 
+            tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), is_picker_open: false, clipboard: Clipboard::new().ok(), 
+            modifiers: winit::event::Modifiers::default(), last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), 
+            explorer_width: EXPLORER_WIDTH, is_dragging_splitter: false, hovering_splitter: false, hovering_tab_close: None,
+            is_dragging: false, needs_redraw: true 
+        }
     }
     fn render(&mut self) {
         let (surf, pix) = match (&mut self.surface, &mut self.pixmap) { (Some(s), Some(p)) => (s, p), _ => return };
@@ -436,20 +447,32 @@ impl App {
 
         // 1. Sidebar (Project Explorer)
         let mut sp = Paint::default(); sp.set_color_rgba8(25,25,26,255);
-        pix.fill_rect(Rect::from_xywh(0.0, 0.0, EXPLORER_WIDTH * SCALE, pix.height() as f32).unwrap(), &sp, Transform::identity(), None);
-        // Vertical separator for Sidebar
-        let mut sbp = Paint::default(); sbp.set_color_rgba8(51,51,51,255);
-        pix.fill_rect(Rect::from_xywh((EXPLORER_WIDTH - 1.0) * SCALE, 0.0, 1.0 * SCALE, pix.height() as f32).unwrap(), &sbp, Transform::identity(), None);
-        App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "PROJECT EXPLORER", 10.0 * SCALE, 10.0 * SCALE, Color::rgb(150,150,150));
+        pix.fill_rect(Rect::from_xywh(0.0, 0.0, self.explorer_width * SCALE, pix.height() as f32).unwrap(), &sp, Transform::identity(), None);
+        
+        // Vertical marker for Sidebar header
+        App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "PROJECT EXPLORER", 10.0 * SCALE, 10.0 * SCALE, Color::rgb(140,140,140));
         self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, 0.0, 40.0 * SCALE);
 
+        // 1b. Splitter
+        let mut slp = Paint::default();
+        if self.is_dragging_splitter { slp.set_color_rgba8(0,122,204,255); }
+        else if self.hovering_splitter { slp.set_color_rgba8(60,60,60,255); }
+        else { slp.set_color_rgba8(35,35,35,255); }
+        pix.fill_rect(Rect::from_xywh(self.explorer_width * SCALE, 0.0, SPLITTER_WIDTH * SCALE, pix.height() as f32).unwrap(), &slp, Transform::identity(), None);
+        
+        // Splitter separation line (Aura styling)
+        let mut lp = Paint::default(); lp.set_color_rgba8(45,45,45,255);
+        pix.fill_rect(Rect::from_xywh((self.explorer_width + SPLITTER_WIDTH) * SCALE, 0.0, 1.0 * SCALE, pix.height() as f32).unwrap(), &lp, Transform::identity(), None);
+
         // 2. Tab Bar
+        let ed_start_x = (self.explorer_width + SPLITTER_WIDTH + 1.0) * SCALE;
         let mut tp = Paint::default(); tp.set_color_rgba8(37,37,38,255);
-        pix.fill_rect(Rect::from_xywh(EXPLORER_WIDTH * SCALE, 0.0, pix.width() as f32 - EXPLORER_WIDTH * SCALE, TAB_BAR_HEIGHT * SCALE).unwrap(), &tp, Transform::identity(), None);
-        let mut tx_off = EXPLORER_WIDTH * SCALE;
+        pix.fill_rect(Rect::from_xywh(ed_start_x, 0.0, pix.width() as f32 - ed_start_x, TAB_BAR_HEIGHT * SCALE).unwrap(), &tp, Transform::identity(), None);
+        
+        let mut tx_off = ed_start_x;
         for (i, tab) in self.tabs.iter().enumerate() {
             let active = i == self.active_tab;
-            let tw = 150.0 * SCALE;
+            let tw = 160.0 * SCALE;
             if active {
                 let mut ap = Paint::default(); ap.set_color_rgba8(30,30,30,255);
                 pix.fill_rect(Rect::from_xywh(tx_off, 0.0, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ap, Transform::identity(), None);
@@ -458,13 +481,18 @@ impl App {
                 pix.fill_rect(Rect::from_xywh(tx_off, (TAB_BAR_HEIGHT - 2.0) * SCALE, tw, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
             }
             let name = if tab.is_sticky { tab.name.clone() } else { format!("{} [P]", tab.name) };
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &name, tx_off + 10.0 * SCALE, 10.0 * SCALE, if active { Color::rgb(255,255,255) } else { Color::rgb(150,150,150) });
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &name, tx_off + 10.0 * SCALE, 10.0 * SCALE, if active { Color::rgb(255,255,255) } else { Color::rgb(160,160,160) });
+            
+            // Tab close button [X]
+            let is_close_hover = self.hovering_tab_close == Some(i);
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "×", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, if is_close_hover { Color::rgb(255, 100, 100) } else { Color::rgb(120,120,120) });
+
             tx_off += tw;
         }
 
         // 3. Active Editor
         if self.active_tab < self.tabs.len() {
-             let rect = Rect::from_xywh(EXPLORER_WIDTH * SCALE, TAB_BAR_HEIGHT * SCALE, pix.width() as f32 - EXPLORER_WIDTH * SCALE, pix.height() as f32 - (TAB_BAR_HEIGHT + FOOTER_HEIGHT) * SCALE).unwrap();
+             let rect = Rect::from_xywh(ed_start_x, TAB_BAR_HEIGHT * SCALE, pix.width() as f32 - ed_start_x, pix.height() as f32 - (TAB_BAR_HEIGHT + FOOTER_HEIGHT) * SCALE).unwrap();
              let w = &mut self.tabs[self.active_tab].widget;
              while let Ok(evt) = w.lsp.rx.try_recv() {
                 match evt {
@@ -563,26 +591,83 @@ impl ApplicationHandler for App {
                     if acted { let w = &mut self.tabs[self.active_tab].widget; w.needs_reshape = true; w.sync(); self.window.as_ref().unwrap().request_redraw(); }
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => { self.mouse_pos = (position.x as f32, position.y as f32); if self.is_dragging { if self.mouse_pos.0 > EXPLORER_WIDTH * SCALE && self.mouse_pos.1 > TAB_BAR_HEIGHT * SCALE { let r = Rect::from_xywh(EXPLORER_WIDTH * SCALE, TAB_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32 - EXPLORER_WIDTH * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - TAB_BAR_HEIGHT * SCALE).unwrap(); self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); self.window.as_ref().unwrap().request_redraw(); } } }
+            WindowEvent::CursorMoved { position, .. } => { 
+                self.mouse_pos = (position.x as f32, position.y as f32); 
+                let mx = self.mouse_pos.0 / SCALE;
+                let my = self.mouse_pos.1 / SCALE;
+
+                // 1. Splitter Hover/Drag
+                let split_start = self.explorer_width;
+                let split_end = self.explorer_width + SPLITTER_WIDTH;
+                self.hovering_splitter = mx >= split_start && mx <= split_end;
+
+                if self.is_dragging_splitter {
+                    self.explorer_width = (mx - SPLITTER_WIDTH / 2.0).max(50.0).min(600.0);
+                }
+
+                if self.hovering_splitter || self.is_dragging_splitter {
+                    self.window.as_ref().unwrap().set_cursor(winit::window::CursorIcon::ColResize);
+                } else {
+                    self.window.as_ref().unwrap().set_cursor(winit::window::CursorIcon::Default);
+                }
+
+                // 2. Tab Close Hover
+                self.hovering_tab_close = None;
+                let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
+                if my < TAB_BAR_HEIGHT && mx > ed_start_x {
+                    let mut tx = ed_start_x;
+                    for i in 0..self.tabs.len() {
+                        let tw = 160.0;
+                        if mx >= tx + tw - 30.0 && mx <= tx + tw - 5.0 {
+                            self.hovering_tab_close = Some(i);
+                            break;
+                        }
+                        tx += tw;
+                    }
+                }
+
+                // 3. Editor Drag
+                if self.is_dragging && !self.is_dragging_splitter && self.active_tab < self.tabs.len() { 
+                    let r = Rect::from_xywh(ed_start_x * SCALE, TAB_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - TAB_BAR_HEIGHT * SCALE).unwrap(); 
+                    self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); 
+                } 
+                self.window.as_ref().unwrap().request_redraw();
+            }
             WindowEvent::MouseInput { state, button, .. } => {
+                let mx = self.mouse_pos.0 / SCALE;
+                let my = self.mouse_pos.1 / SCALE;
+
                 if state == ElementState::Pressed && button == MouseButton::Left {
-                    // Click in Sidebar (Project Explorer)
-                    if self.mouse_pos.0 < EXPLORER_WIDTH * SCALE {
+                    // 1. Tab Close Click
+                    if let Some(idx) = self.hovering_tab_close {
+                        self.tabs.remove(idx);
+                        if self.tabs.is_empty() { self.active_tab = 0; }
+                        else if self.active_tab >= self.tabs.len() { self.active_tab = self.tabs.len() - 1; }
+                        self.window.as_ref().unwrap().request_redraw();
+                        return;
+                    }
+
+                    // 2. Splitter Begin Drag
+                    if self.hovering_splitter {
+                        self.is_dragging_splitter = true;
+                        self.window.as_ref().unwrap().request_redraw();
+                        return;
+                    }
+
+                    // 3. Sidebar Click
+                    if mx < self.explorer_width {
                         let now = Instant::now();
                         let is_double = (now - self.last_click_time) < Duration::from_millis(300);
                         self.last_click_time = now;
 
                         match self.tree_view.handle_mouse(self.mouse_pos.0, self.mouse_pos.1, 0.0, 40.0 * SCALE) {
                             TreeEvent::Open(path) => {
-                                // 1. Check if already open
                                 if let Some(idx) = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path)) {
                                     self.active_tab = idx;
                                     if is_double { self.tabs[idx].is_sticky = true; }
                                     self.window.as_ref().unwrap().request_redraw();
                                     return;
                                 }
-
-                                // 2. Check if we should replace existing "Preview" tab
                                 let mut replace_idx = None;
                                 for (i, t) in self.tabs.iter().enumerate() { if !t.is_sticky { replace_idx = Some(i); break; } }
 
@@ -603,28 +688,35 @@ impl ApplicationHandler for App {
                                         self.tabs.push(new_tab);
                                         self.active_tab = self.tabs.len() - 1;
                                     }
-                                    self.window.as_ref().unwrap().request_redraw();
                                 }
                             }
-                            TreeEvent::None => { self.window.as_ref().unwrap().request_redraw(); }
+                            _ => { self.window.as_ref().unwrap().request_redraw(); }
                         }
+                        self.window.as_ref().unwrap().request_redraw();
                         return;
                     }
-                    // Click in Tab Bar
-                    if self.mouse_pos.1 < TAB_BAR_HEIGHT * SCALE && self.mouse_pos.0 > EXPLORER_WIDTH * SCALE {
-                        let tab_idx = ((self.mouse_pos.0 - EXPLORER_WIDTH * SCALE) / (150.0 * SCALE)) as usize;
+
+                    // 4. Tab Bar Click
+                    let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
+                    if my < TAB_BAR_HEIGHT && mx > ed_start_x {
+                        let tab_idx = ((mx - ed_start_x) / 160.0) as usize;
                         if tab_idx < self.tabs.len() {
                             self.active_tab = tab_idx;
                             self.window.as_ref().unwrap().request_redraw();
                         }
                         return;
                     }
-                    // Click in Editor
-                    let r = Rect::from_xywh(EXPLORER_WIDTH * SCALE, TAB_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32 - EXPLORER_WIDTH * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - TAB_BAR_HEIGHT * SCALE).unwrap();
-                    self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now();
-                    self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
-                    self.is_dragging = true; self.window.as_ref().unwrap().request_redraw();
-                } else if state == ElementState::Released { self.is_dragging = false; }
+
+                    // 5. Editor Click
+                    if !self.tabs.is_empty() {
+                        let rect = Rect::from_xywh(ed_start_x * SCALE, TAB_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - TAB_BAR_HEIGHT * SCALE).unwrap();
+                        self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now();
+                        self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
+                        self.is_dragging = true; self.window.as_ref().unwrap().request_redraw();
+                    }
+                } else if state == ElementState::Released {
+                    self.is_dragging = false; self.is_dragging_splitter = false;
+                }
             }
             WindowEvent::RedrawRequested => self.render(),
             _ => {}
