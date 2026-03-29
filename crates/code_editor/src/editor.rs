@@ -1,4 +1,5 @@
 use ropey::Rope;
+use crate::language::LanguageDef;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
@@ -20,11 +21,15 @@ pub struct TokenSpan {
 }
 
 // Tokenize a single line, returning tokens with absolute byte offsets (document-relative)
-fn tokenize_line(line: &str, base_offset: usize) -> Vec<TokenSpan> {
+fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef) -> Vec<TokenSpan> {
     let bytes = line.as_bytes();
     let mut i = 0usize;
     let n = bytes.len();
     let mut out = Vec::new();
+
+    // Basic comment marker check (we'll improve this to be 100% dynamic later)
+    let is_hash_comment = lang.keywords.contains("None") || lang.keywords.contains("elif"); // heuristic for python/shell
+    
     while i < n {
         let b = bytes[i];
         if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
@@ -34,10 +39,16 @@ fn tokenize_line(line: &str, base_offset: usize) -> Vec<TokenSpan> {
             out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::Whitespace });
             continue;
         }
+        // Handle Line Comments (Dynamic-ish)
         if b == b'/' && i + 1 < n && bytes[i+1] == b'/' {
             let start = i;
-            i += 2;
-            while i < n && bytes[i] != b'\n' { i += 1; }
+            i = n;
+            out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::LineComment });
+            continue;
+        }
+        if b == b'#' && is_hash_comment {
+            let start = i;
+            i = n;
             out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::LineComment });
             continue;
         }
@@ -45,7 +56,7 @@ fn tokenize_line(line: &str, base_offset: usize) -> Vec<TokenSpan> {
             let start = i;
             i += 2;
             while i + 1 < n && !(bytes[i] == b'*' && bytes[i+1] == b'/') { i += 1; }
-            if i + 1 < n { i += 2; }
+            if i + 1 < n { i += 2; } else { i = n; }
             out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::BlockComment });
             continue;
         }
@@ -84,17 +95,15 @@ fn tokenize_line(line: &str, base_offset: usize) -> Vec<TokenSpan> {
 
 pub struct Editor {
     pub rope: Rope,
-    // cached tokens per line (byte offsets relative to document start)
     pub line_tokens: Vec<Vec<TokenSpan>>,
-    // simple fold ranges as (start_line, end_line)
     pub folds: Vec<(usize, usize)>,
 }
 
 impl Editor {
-    pub fn from_text(text: &str) -> Self {
+    pub fn from_text(text: &str, lang: &LanguageDef) -> Self {
         let rope = Rope::from_str(text);
         let mut ed = Self { rope, line_tokens: Vec::new(), folds: Vec::new() };
-        ed.retokenize_all();
+        ed.retokenize_all(lang);
         ed
     }
 
@@ -102,7 +111,7 @@ impl Editor {
     pub fn rope(&self) -> &Rope { &self.rope }
 
     /// Remove a single char at the given byte position (if valid).
-    pub fn remove_char_at_byte(&mut self, byte_pos: usize) {
+    pub fn remove_char_at_byte(&mut self, byte_pos: usize, lang: &LanguageDef) {
         if byte_pos == 0 { return; }
         let char_pos = self.rope.byte_to_char(byte_pos);
         if char_pos == 0 { return; }
@@ -112,7 +121,7 @@ impl Editor {
         // retokenize affected lines
         let line = self.rope.char_to_line(remove_from);
         let end_line = std::cmp::min(self.rope.len_lines() - 1, line + 3);
-        self.retokenize_range(line, end_line);
+        self.retokenize_range(line, end_line, lang);
     }
 
     pub fn slice(&self, start: usize, end: usize) -> String {
@@ -121,23 +130,21 @@ impl Editor {
         self.rope.slice(start_char..end_char).to_string()
     }
 
-    pub fn insert_str(&mut self, byte_pos: usize, s: &str) {
+    pub fn insert_str(&mut self, byte_pos: usize, s: &str, lang: &LanguageDef) {
         let char_pos = self.rope.byte_to_char(byte_pos);
         self.rope.insert(char_pos, s);
-        // Retokenize affected lines: find line index for insertion
         let line = self.rope.char_to_line(char_pos);
-        // retokenize this line and the next few lines to be safe
         let end_line = std::cmp::min(self.rope.len_lines() - 1, line + 5);
-        self.retokenize_range(line, end_line);
+        self.retokenize_range(line, end_line, lang);
     }
 
     /// Retokenize the entire buffer and update line_tokens and folds.
-    pub fn retokenize_all(&mut self) {
+    pub fn retokenize_all(&mut self, lang: &LanguageDef) {
         self.line_tokens.clear();
         let mut byte_offset = 0usize;
         for line_idx in 0..self.rope.len_lines() {
             let line = self.rope.line(line_idx).to_string();
-            let tokens = tokenize_line(&line, byte_offset);
+            let tokens = tokenize_line(&line, byte_offset, lang);
             self.line_tokens.push(tokens);
             byte_offset += line.len();
         }
@@ -145,15 +152,14 @@ impl Editor {
     }
 
     /// Retokenize a range of lines (inclusive start..=end)
-    pub fn retokenize_range(&mut self, start_line: usize, end_line: usize) {
+    pub fn retokenize_range(&mut self, start_line: usize, end_line: usize, lang: &LanguageDef) {
         if start_line >= self.rope.len_lines() { return; }
         let end_line = std::cmp::min(end_line, self.rope.len_lines() - 1);
-        // Compute byte_offset for start_line
         let mut byte_offset = 0usize;
         for i in 0..start_line { byte_offset += self.rope.line(i).len_bytes(); }
         for li in start_line..=end_line {
             let line = self.rope.line(li).to_string();
-            let tokens = tokenize_line(&line, byte_offset);
+            let tokens = tokenize_line(&line, byte_offset, lang);
             if li < self.line_tokens.len() {
                 self.line_tokens[li] = tokens;
             } else {

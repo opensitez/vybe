@@ -13,7 +13,8 @@ fn main() {
 }
 "#;
 
-    let mut ed = Editor::from_text(sample);
+    let lang = crate::language::load_language("rust").unwrap();
+    let mut ed = Editor::from_text(sample, &lang);
 
     // Default to GUI. Pass `cli` as the first argument to force CLI output.
     if args.len() == 1 || (args.len() > 1 && args[1] == "gui") {
@@ -31,6 +32,6 @@ fn main() {
     }
     println!("\nFolds: {:?}", ed.folds());
     // Demo edit then retokenize
-    ed.insert_str(10, "    // inserted comment\n");
+    ed.insert_str(10, "    // inserted comment\n", &lang);
     println!("After edit: tokens={}, folds={}", ed.tokenize_all().len(), ed.folds().len());
 }

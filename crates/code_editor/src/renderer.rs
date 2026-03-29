@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::fs;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Motion, Shaping, SwashCache, Action, Edit, AttrsList};
 use tiny_skia::{Color as SkiaColor, Paint, Pixmap, PixmapPaint, Rect, Transform, ColorU8};
 use winit::application::ApplicationHandler;
@@ -17,9 +18,10 @@ use arboard::Clipboard;
 use crate::editor::{Editor as MyEditor, TokenKind};
 use crate::language::{load_language, LanguageDef};
 
-const SIDEBAR_WIDTH: f32 = 70.0;
 const SCALE: f32 = 2.0;
+const SIDEBAR_WIDTH: f32 = 70.0;
 const TEXT_PADDING: f32 = 15.0;
+const UI_BAR_HEIGHT: f32 = 40.0;
 
 struct CachedGlyph {
     pixmap: Pixmap,
@@ -48,15 +50,10 @@ pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: 
                         TokenKind::Punct => Color::rgb(0xd4, 0xd4, 0xd4),
                         TokenKind::Identifier => {
                             let text = my_editor.slice(token.start, token.end);
-                            if lang.keywords.contains(&text) {
-                                kw_color
-                            } else if lang.type_keywords.contains(&text) {
-                                type_kw_color
-                            } else if lang.constants.contains(&text) {
-                                num_color
-                            } else {
-                                ident_color
-                            }
+                            if lang.keywords.contains(&text) { kw_color }
+                            else if lang.type_keywords.contains(&text) { type_kw_color }
+                            else if lang.constants.contains(&text) { num_color }
+                            else { ident_color }
                         }
                         _ => ident_color,
                     };
@@ -66,56 +63,46 @@ pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: 
                 }
             }
             line.set_attrs_list(list);
-            if li < my_editor.rope.len_lines() {
-                byte_offset += my_editor.rope.line(li).len_bytes();
-            } else {
-                byte_offset += line.text().len() + 1;
-            }
+            if li < my_editor.rope.len_lines() { byte_offset += my_editor.rope.line(li).len_bytes(); }
+            else { byte_offset += line.text().len() + 1; }
         }
     });
 }
 
-struct App {
-    window: Option<Arc<Window>>,
-    context: Option<Context<Arc<Window>>>,
-    surface: Option<Surface<Arc<Window>, Arc<Window>>>,
-    editor: Option<cosmic_text::Editor<'static>>,
-    font_system: FontSystem,
-    swash_cache: SwashCache,
+/// A Professional CodeEditor Widget with pixel-perfect caret and baseline physics.
+pub struct CodeEditorWidget {
+    editor: cosmic_text::Editor<'static>,
     my_editor: MyEditor,
+    lang_def: LanguageDef,
     metrics: Metrics,
-    pixmap: Option<Pixmap>,
     glyph_cache: HashMap<(cosmic_text::CacheKey, Color), CachedGlyph>,
     digit_cache: Vec<CachedGlyph>,
-    lang_def: LanguageDef,
-    
-    clipboard: Option<Clipboard>,
-    modifiers: winit::event::Modifiers,
-    last_click_time: Instant,
-    click_count: u32,
-    mouse_pos: (f32, f32),
-    is_dragging: bool,
     needs_reshape: bool,
-    needs_redraw: bool,
 }
 
-impl App {
-    fn new(my_editor: MyEditor) -> Self {
-        let mut font_system = FontSystem::new();
+impl CodeEditorWidget {
+    pub fn new(my_editor: MyEditor, font_system: &mut FontSystem) -> Self {
         let metrics = Metrics::new(14.0, 20.0).scale(SCALE);
+        let lang_def = load_language("rust").unwrap_or_else(|| LanguageDef {
+            keywords: HashSet::new(), type_keywords: HashSet::new(), constants: HashSet::new(), operators: HashSet::new()
+        });
+        
+        let mut my_editor = my_editor;
+        my_editor.retokenize_all(&lang_def);
+        let mut buffer = Buffer::new(font_system, metrics);
+        buffer.set_text(font_system, &my_editor.rope.to_string(), &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
         
         let digit_color = Color::rgb(0x85, 0x85, 0x85);
-        let mut digit_cache = Vec::new();
         let mut swash_cache = SwashCache::new();
-
+        let mut digit_cache = Vec::new();
         for i in 0..10 {
-            let mut lab = Buffer::new(&mut font_system, metrics);
-            lab.set_text(&mut font_system, &format!("{}", i), &Attrs::new().family(Family::Monospace).color(digit_color), Shaping::Advanced, None);
-            lab.shape_until_scroll(&mut font_system, false);
+            let mut lab = Buffer::new(font_system, metrics);
+            lab.set_text(font_system, &format!("{}", i), &Attrs::new().family(Family::Monospace).color(digit_color), Shaping::Advanced, None);
+            lab.shape_until_scroll(font_system, false);
             if let Some(r) = lab.layout_runs().next() {
                 if let Some(g) = r.glyphs.first() {
                     let pg = g.physical((0.0, 0.0), 1.0);
-                    if let Some(img) = swash_cache.get_image(&mut font_system, pg.cache_key) {
+                    if let Some(img) = swash_cache.get_image(font_system, pg.cache_key) {
                         let mut p = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)).unwrap();
                         let (r, g, b, a) = (digit_color.r(), digit_color.g(), digit_color.b(), digit_color.a());
                         for (idx, &alpha) in img.data.iter().enumerate() {
@@ -130,65 +117,48 @@ impl App {
             digit_cache.push(CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 });
         }
 
-        Self {
-            window: None,
-            context: None,
-            surface: None,
-            editor: None,
-            font_system,
-            swash_cache,
-            my_editor,
-            metrics,
-            pixmap: None,
-            glyph_cache: HashMap::new(),
-            digit_cache,
-            lang_def: load_language("rust").unwrap_or(LanguageDef {
-                keywords: HashSet::new(),
-                type_keywords: HashSet::new(),
-                constants: HashSet::new(),
-                operators: HashSet::new(),
-            }),
-            clipboard: Clipboard::new().ok(),
-            modifiers: winit::event::Modifiers::default(),
-            last_click_time: Instant::now(),
-            click_count: 0,
-            mouse_pos: (0.0, 0.0),
-            is_dragging: false,
-            needs_reshape: true,
-            needs_redraw: true,
+        Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, metrics, glyph_cache: HashMap::new(), digit_cache, needs_reshape: true }
+    }
+
+    pub fn set_language(&mut self, lang_name: &str) {
+        if let Some(lang) = load_language(lang_name) {
+            self.lang_def = lang;
+            self.my_editor.retokenize_all(&self.lang_def);
+            self.needs_reshape = true;
         }
     }
 
-    fn render(&mut self) {
-        let (_window, surface, editor, pixmap) = match (&self.window, &mut self.surface, &mut self.editor, &mut self.pixmap) {
-            (Some(w), Some(s), Some(e), Some(p)) => (w, s, e, p),
-            _ => return,
-        };
+    fn get_offsets(&self, rect: Rect) -> (f32, f32) {
+        (rect.left() + SIDEBAR_WIDTH * SCALE, rect.top())
+    }
 
+    pub fn render(&mut self, pixmap: &mut Pixmap, font_system: &mut FontSystem, swash_cache: &mut SwashCache, rect: Rect) {
         if self.needs_reshape {
-            apply_highlighting(editor, &self.my_editor, &Attrs::new().family(Family::Monospace), &self.lang_def);
-            editor.shape_as_needed(&mut self.font_system, false);
+            apply_highlighting(&mut self.editor, &self.my_editor, &Attrs::new().family(Family::Monospace), &self.lang_def);
+            self.editor.shape_as_needed(font_system, false);
             self.needs_reshape = false;
         }
 
-        pixmap.fill(SkiaColor::from_rgba8(0x1e, 0x1e, 0x1e, 0xff));
-        let mut paint = Paint::default();
-        paint.set_color_rgba8(0x2d, 0x2d, 0x2d, 0xff);
-        pixmap.fill_rect(Rect::from_xywh(0.0, 0.0, SIDEBAR_WIDTH * SCALE, pixmap.height() as f32).unwrap(), &paint, Transform::identity(), None);
+        let (x_off, y_off) = self.get_offsets(rect);
+        
+        // Sidebar BG
+        let mut side_paint = Paint::default(); side_paint.set_color_rgba8(0x2d, 0x2d, 0x2d, 0xff);
+        pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.top(), SIDEBAR_WIDTH * SCALE, rect.height()).unwrap(), &side_paint, Transform::identity(), None);
 
-        let selection = editor.selection_bounds();
-        let x_off = (SIDEBAR_WIDTH + TEXT_PADDING) * SCALE;
+        let selection = self.editor.selection_bounds();
 
-        editor.with_buffer(|buffer| {
+        self.editor.with_buffer(|buffer| {
             let mut last_para = None;
             for run in buffer.layout_runs() {
+                // Line Number Logic - Aligned with actual run vertical position
                 if last_para != Some(run.line_i) {
                     let s = format!("{}", run.line_i + 1);
-                    let mut digit_x = (SIDEBAR_WIDTH * SCALE) as i32 - 15;
+                    let mut digit_x = (rect.left() + SIDEBAR_WIDTH * SCALE) as i32 - 15;
                     for ch in s.chars().rev() {
                         if let Some(digit) = ch.to_digit(10) {
                             let cg = &self.digit_cache[digit as usize];
-                            let y = run.line_top as i32 + (4.0 * SCALE) as i32;
+                            // Y is baseline (y_off + run.line_y) minus cg top
+                            let y = (y_off + run.line_y) as i32 - cg.top;
                             pixmap.draw_pixmap(digit_x - cg.pixmap.width() as i32 + cg.left, y, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
                             digit_x -= 10 * SCALE as i32;
                         }
@@ -196,20 +166,20 @@ impl App {
                     last_para = Some(run.line_i);
                 }
 
+                // Highlight Logic - Aligned with run.line_top
                 if let Some((s_start, s_end)) = selection {
                     if let Some((hx, hw)) = run.highlight(s_start, s_end) {
                         let mut sp = Paint::default(); sp.set_color_rgba8(0x26, 0x4f, 0x78, 0xff);
-                        pixmap.fill_rect(Rect::from_xywh(x_off + hx, run.line_top, hw, run.line_height).unwrap(), &sp, Transform::identity(), None);
+                        pixmap.fill_rect(Rect::from_xywh(x_off + hx, y_off + run.line_top, hw, run.line_height).unwrap(), &sp, Transform::identity(), None);
                     }
                 }
 
+                // Glyph Render - Aligned with run.line_y (baseline)
                 for glyph in run.glyphs {
-                    let pg = glyph.physical((x_off, 0.0), 1.0);
+                    let pg = glyph.physical((x_off, y_off + run.line_y), 1.0);
                     let gc = glyph.color_opt.unwrap_or(Color::rgb(0xee, 0xee, 0xee));
-                    let swash = &mut self.swash_cache;
-                    let fs = &mut self.font_system;
                     let cg = self.glyph_cache.entry((pg.cache_key, gc)).or_insert_with(|| {
-                        if let Some(img) = swash.get_image(fs, pg.cache_key) {
+                        if let Some(img) = swash_cache.get_image(font_system, pg.cache_key) {
                             let mut p = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)).unwrap();
                             let (r, g, b, a) = (gc.r(), gc.g(), gc.b(), gc.a());
                             for (idx, &alpha) in img.data.iter().enumerate() {
@@ -219,14 +189,105 @@ impl App {
                             CachedGlyph { pixmap: p, left: img.placement.left, top: img.placement.top }
                         } else { CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 } }
                     });
-                    pixmap.draw_pixmap(pg.x + cg.left, run.line_y as i32 + pg.y - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                    // draw_pixmap at (pg.x + left, pg.y - top). pg.y is baseline.
+                    pixmap.draw_pixmap(pg.x + cg.left, pg.y - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
                 }
             }
         });
 
-        if let Some((cx, cy)) = editor.cursor_position() {
+        if let Some((cx, cy)) = self.editor.cursor_position() {
             let mut cp = Paint::default(); cp.set_color_rgba8(0xff, 0xff, 0xff, 0xff);
-            pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, cy as f32, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None);
+            // cx/cy are already in buffer physical space. Add widget top-left.
+            pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, y_off + cy as f32, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None);
+        }
+    }
+
+    pub fn handle_mouse(&mut self, font_system: &mut FontSystem, x: f32, y: f32, rect: Rect, click: Option<u32>) {
+        let (x_off, y_off) = self.get_offsets(rect);
+        // Translate physical window mouse into buffer-space physics units.
+        let ex = (x - x_off) as i32;
+        let ey = (y - y_off) as i32;
+        if let Some(count) = click {
+            match count {
+                1 => self.editor.action(font_system, Action::Click { x: ex, y: ey }),
+                2 => self.editor.action(font_system, Action::DoubleClick { x: ex, y: ey }),
+                3 => self.editor.action(font_system, Action::TripleClick { x: ex, y: ey }),
+                _ => {}
+            }
+        } else {
+            self.editor.action(font_system, Action::Drag { x: ex, y: ey });
+        }
+    }
+
+    pub fn sync(&mut self) {
+        if self.needs_reshape {
+            let text: String = self.editor.with_buffer(|b| b.lines.iter().map(|l| format!("{}\n", l.text())).collect());
+            self.my_editor.rope = ropey::Rope::from_str(&text);
+            self.my_editor.retokenize_all(&self.lang_def);
+        }
+    }
+}
+
+struct App {
+    window: Option<Arc<Window>>,
+    context: Option<Context<Arc<Window>>>,
+    surface: Option<Surface<Arc<Window>, Arc<Window>>>,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    pixmap: Option<Pixmap>,
+    editor_widget: Option<CodeEditorWidget>,
+    all_languages: Vec<String>,
+    current_lang: String,
+    is_picker_open: bool,
+    clipboard: Option<Clipboard>,
+    modifiers: winit::event::Modifiers,
+    last_click_time: Instant,
+    click_count: u32,
+    mouse_pos: (f32, f32),
+    is_dragging: bool,
+    needs_redraw: bool,
+}
+
+impl App {
+    fn new(my_editor: MyEditor) -> Self {
+        let mut all_languages = Vec::new();
+        if let Ok(entries) = fs::read_dir("basic-languages") {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    if let Some(name) = entry.file_name().to_str() { all_languages.push(name.to_string()); }
+                }
+            }
+        }
+        all_languages.sort();
+        Self {
+            window: None, context: None, surface: None,
+            font_system: FontSystem::new(), swash_cache: SwashCache::new(), pixmap: None,
+            editor_widget: None, all_languages, current_lang: "rust".to_string(), is_picker_open: false,
+            clipboard: Clipboard::new().ok(), modifiers: winit::event::Modifiers::default(),
+            last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0),
+            is_dragging: false, needs_redraw: true,
+        }
+    }
+
+    fn render(&mut self) {
+        let (surface, pixmap) = match (&mut self.surface, &mut self.pixmap) {
+            (Some(s), Some(p)) => (s, p),
+            _ => return,
+        };
+        pixmap.fill(SkiaColor::from_rgba8(0x1e, 0x1e, 0x1e, 0xff));
+        
+        let editor_rect = Rect::from_xywh(0.0, UI_BAR_HEIGHT * SCALE, pixmap.width() as f32, pixmap.height() as f32 - UI_BAR_HEIGHT * SCALE).unwrap();
+        if let Some(editor) = &mut self.editor_widget {
+           editor.render(pixmap, &mut self.font_system, &mut self.swash_cache, editor_rect);
+        }
+
+        let mut bar_paint = Paint::default(); bar_paint.set_color_rgba8(0x2d, 0x2d, 0x2d, 0xff);
+        pixmap.fill_rect(Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, UI_BAR_HEIGHT * SCALE).unwrap(), &bar_paint, Transform::identity(), None);
+        let label = format!("Language: {}", self.current_lang);
+        App::draw_ui_text(pixmap, &mut self.font_system, &mut self.swash_cache, &label, 15.0 * SCALE, (UI_BAR_HEIGHT * 0.25) * SCALE, Color::rgb(0xee, 0xee, 0xee));
+
+        if self.is_picker_open {
+            App::render_picker_internal(pixmap, &mut self.font_system, &mut self.swash_cache, &self.all_languages, self.mouse_pos);
         }
 
         let mut buffer = surface.buffer_mut().unwrap();
@@ -238,27 +299,56 @@ impl App {
         buffer.present().unwrap();
         self.needs_redraw = false;
     }
+
+    fn render_picker_internal(pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, all_languages: &[String], mouse_pos: (f32, f32)) {
+        let cols = 4;
+        let p_w = cols as f32 * 150.0 * SCALE;
+        let p_h = ((all_languages.len() as f32 / cols as f32).ceil() as usize) as f32 * 30.0 * SCALE;
+        let mut bg = Paint::default(); bg.set_color_rgba8(0x33, 0x33, 0x33, 0xf8);
+        pixmap.fill_rect(Rect::from_xywh(10.0, (UI_BAR_HEIGHT + 5.0) * SCALE, p_w, p_h).unwrap(), &bg, Transform::identity(), None);
+
+        for (i, lang) in all_languages.iter().enumerate() {
+            let lx = 10.0 + (i % cols) as f32 * 150.0 * SCALE + 10.0;
+            let ly = (UI_BAR_HEIGHT + 5.0 + (i / cols) as f32 * 30.0) * SCALE + 5.0;
+            let is_hover = mouse_pos.0 >= lx && mouse_pos.0 <= lx + 150.0 * SCALE && mouse_pos.1 >= ly && mouse_pos.1 <= ly + 30.0 * SCALE;
+            let color = if is_hover { Color::rgb(0x56, 0x9c, 0xd6) } else { Color::rgb(0xbb, 0xbb, 0xbb) };
+            App::draw_ui_text(pixmap, fs, sc, lang, lx, ly, color);
+        }
+    }
+
+    fn draw_ui_text(pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, text: &str, x: f32, y: f32, color: Color) {
+        let mut lab = Buffer::new(fs, Metrics::new(14.0, 20.0).scale(SCALE));
+        lab.set_text(fs, text, &Attrs::new().family(Family::Monospace).color(color), Shaping::Advanced, None);
+        lab.shape_until_scroll(fs, false);
+        for run in lab.layout_runs() {
+            for glyph in run.glyphs {
+                let pg = glyph.physical((x, y + run.line_y), 1.0);
+                if let Some(img) = sc.get_image(fs, pg.cache_key) {
+                    let mut p = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)).unwrap();
+                    let (r, g, b, a) = (color.r(), color.g(), color.b(), color.a());
+                    for (idx, &alpha) in img.data.iter().enumerate() {
+                        let af = (alpha as f32 / 255.0) * (a as f32 / 255.0);
+                        p.pixels_mut()[idx] = ColorU8::from_rgba((r as f32 * af) as u8, (g as f32 * af) as u8, (b as f32 * af) as u8, (255.0 * af) as u8).premultiply();
+                    }
+                    pixmap.draw_pixmap(pg.x + img.placement.left, pg.y - img.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                }
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let window = Arc::new(event_loop.create_window(WindowAttributes::default()
-            .with_title("Vybe Editor (Professional Clipboard Edition)")
-            .with_inner_size(winit::dpi::LogicalSize::new(900.0, 700.0))).unwrap());
-        
+            .with_title("Vybe Editor")
+            .with_inner_size(winit::dpi::LogicalSize::new(1000.0, 800.0))).unwrap());
         let context = Context::new(window.clone()).unwrap();
         let surface = Surface::new(&context, window.clone()).unwrap();
-        
-        let mut buffer = Buffer::new(&mut self.font_system, self.metrics);
-        buffer.set_size(&mut self.font_system, Some(900.0 * SCALE), Some(700.0 * SCALE));
-        buffer.set_text(&mut self.font_system, &self.my_editor.rope.to_string(), &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
-        
-        self.editor = Some(cosmic_text::Editor::new(buffer));
-        self.window = Some(window);
-        self.context = Some(context);
-        self.surface = Some(surface);
-        
-        let size = self.window.as_ref().unwrap().inner_size();
+        let size = window.inner_size();
+        let lang = load_language("rust").unwrap();
+        let my_editor = MyEditor::from_text("// Vybe Editor\nfn main() {\n    println!(\"Hello Vybe!\");\n}", &lang);
+        self.editor_widget = Some(CodeEditorWidget::new(my_editor, &mut self.font_system));
+        self.window = Some(window); self.context = Some(context); self.surface = Some(surface);
         self.pixmap = Some(Pixmap::new(size.width, size.height).unwrap());
         self.surface.as_mut().unwrap().resize(NonZeroU32::new(size.width).unwrap(), NonZeroU32::new(size.height).unwrap()).unwrap();
     }
@@ -272,10 +362,6 @@ impl ApplicationHandler for App {
                     if size.width > 0 && size.height > 0 {
                         surface.resize(NonZeroU32::new(size.width).unwrap(), NonZeroU32::new(size.height).unwrap()).unwrap();
                         self.pixmap = Some(Pixmap::new(size.width, size.height).unwrap());
-                        if let Some(editor) = &mut self.editor {
-                            editor.with_buffer_mut(|b| b.set_size(&mut self.font_system, Some(size.width as f32), Some(size.height as f32)));
-                        }
-                        self.needs_redraw = true;
                         window.request_redraw();
                     }
                 }
@@ -283,103 +369,73 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
                     let mut acted = true;
-                    let editor = self.editor.as_mut().unwrap();
-                    let is_cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
-                    
+                    let widget = self.editor_widget.as_mut().unwrap();
+                    let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
                     match event.key_without_modifiers() {
-                        Key::Named(NamedKey::Backspace) => { editor.action(&mut self.font_system, Action::Backspace); self.needs_reshape = true; }
-                        Key::Named(NamedKey::Delete) => { editor.action(&mut self.font_system, Action::Delete); self.needs_reshape = true; }
-                        Key::Named(NamedKey::Enter) => { editor.action(&mut self.font_system, Action::Enter); self.needs_reshape = true; }
-                        Key::Named(NamedKey::Tab) => { editor.action(&mut self.font_system, Action::Indent); self.needs_reshape = true; }
-                        Key::Named(NamedKey::ArrowLeft) => { editor.action(&mut self.font_system, Action::Motion(Motion::Left)); }
-                        Key::Named(NamedKey::ArrowRight) => { editor.action(&mut self.font_system, Action::Motion(Motion::Right)); }
-                        Key::Named(NamedKey::ArrowUp) => { editor.action(&mut self.font_system, Action::Motion(Motion::Up)); }
-                        Key::Named(NamedKey::ArrowDown) => { editor.action(&mut self.font_system, Action::Motion(Motion::Down)); }
-                        Key::Character(c) if is_cmd && (c == "c" || c == "C") => {
-                            if let Some(text) = editor.copy_selection() {
-                                if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(text); }
+                        Key::Named(NamedKey::Backspace) => widget.editor.action(&mut self.font_system, Action::Backspace),
+                        Key::Named(NamedKey::Delete) => widget.editor.action(&mut self.font_system, Action::Delete),
+                        Key::Named(NamedKey::Enter) => widget.editor.action(&mut self.font_system, Action::Enter),
+                        Key::Named(NamedKey::Tab) => widget.editor.action(&mut self.font_system, Action::Indent),
+                        Key::Named(NamedKey::ArrowLeft) => widget.editor.action(&mut self.font_system, Action::Motion(Motion::Left)),
+                        Key::Named(NamedKey::ArrowRight) => widget.editor.action(&mut self.font_system, Action::Motion(Motion::Right)),
+                        Key::Named(NamedKey::ArrowUp) => widget.editor.action(&mut self.font_system, Action::Motion(Motion::Up)),
+                        Key::Named(NamedKey::ArrowDown) => widget.editor.action(&mut self.font_system, Action::Motion(Motion::Down)),
+                        Key::Character(c) if cmd && (c == "c" || c == "C") => { 
+                            if let Some(t) = widget.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } }
+                        }
+                        Key::Character(c) if cmd && (c == "v" || c == "V") => { 
+                            if let Some(cb) = &mut self.clipboard { if let Ok(t) = cb.get_text() { for ch in t.chars() { widget.editor.action(&mut self.font_system, Action::Insert(ch)); } } }
+                        }
+                        Key::Character(c) if cmd && (c == "x" || c == "X") => {
+                            if let Some(t) = widget.editor.copy_selection() {
+                                if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); }
+                                widget.editor.action(&mut self.font_system, Action::Delete);
                             }
                         }
-                        Key::Character(c) if is_cmd && (c == "v" || c == "V") => {
-                            if let Some(cb) = &mut self.clipboard {
-                                if let Ok(text) = cb.get_text() {
-                                    for ch in text.chars() { editor.action(&mut self.font_system, Action::Insert(ch)); }
-                                    self.needs_reshape = true;
-                                }
-                            }
-                        }
-                        Key::Character(c) if is_cmd && (c == "x" || c == "X") => {
-                            if let Some(text) = editor.copy_selection() {
-                                if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(text); }
-                                editor.action(&mut self.font_system, Action::Delete);
-                                self.needs_reshape = true;
-                            }
-                        }
-                        Key::Character(c) if is_cmd && (c == "a" || c == "A") => {
-                            editor.action(&mut self.font_system, Action::Motion(Motion::BufferStart));
-                            editor.action(&mut self.font_system, Action::Drag { x: 999999, y: 999999 }); // approximation for end
+                        Key::Character(c) if cmd && (c == "a" || c == "A") => {
+                            widget.editor.action(&mut self.font_system, Action::Motion(Motion::BufferStart));
+                            widget.editor.action(&mut self.font_system, Action::Drag { x: 999999, y: 999999 });
                         }
                         _ => {
-                            if let Some(text) = event.text {
-                                if !is_cmd {
-                                    for c in text.chars() {
-                                        if !c.is_control() {
-                                            editor.action(&mut self.font_system, Action::Insert(c));
-                                            self.needs_reshape = true;
-                                        }
-                                    }
-                                } else { acted = false; }
+                            if let Some(t) = event.text {
+                                if !cmd { for ch in t.chars() { if !ch.is_control() { widget.editor.action(&mut self.font_system, Action::Insert(ch)); } } }
+                                else { acted = false; }
                             } else { acted = false; }
                         }
                     }
-                    if acted { 
-                        if self.needs_reshape {
-                            let text: String = editor.with_buffer(|b| b.lines.iter().map(|l| format!("{}\n", l.text())).collect());
-                            self.my_editor.rope = ropey::Rope::from_str(&text);
-                            self.my_editor.retokenize_all();
-                        }
-                        self.needs_redraw = true; 
-                        self.window.as_ref().unwrap().request_redraw();
-                    }
+                    if acted { widget.needs_reshape = true; widget.sync(); self.needs_redraw = true; self.window.as_ref().unwrap().request_redraw(); }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x as f32, position.y as f32);
                 if self.is_dragging {
-                    let x_off = (SIDEBAR_WIDTH + TEXT_PADDING) * SCALE;
-                    let (ex, ey) = ((self.mouse_pos.0 as f32 - x_off) as i32, self.mouse_pos.1 as i32);
-                    self.editor.as_mut().unwrap().action(&mut self.font_system, Action::Drag { x: ex, y: ey });
-                    self.needs_redraw = true;
-                    self.window.as_ref().unwrap().request_redraw();
-                }
+                    let rect = Rect::from_xywh(0.0, UI_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32, self.pixmap.as_ref().unwrap().height() as f32).unwrap();
+                    self.editor_widget.as_mut().unwrap().handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, None);
+                    self.needs_redraw = true; self.window.as_ref().unwrap().request_redraw();
+                } else if self.is_picker_open { self.needs_redraw = true; self.window.as_ref().unwrap().request_redraw(); }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left {
-                    let x_off = (SIDEBAR_WIDTH + TEXT_PADDING) * SCALE;
-                    let (ex, ey) = ((self.mouse_pos.0 as f32 - x_off) as i32, self.mouse_pos.1 as i32);
-                    let editor = self.editor.as_mut().unwrap();
-                    
-                    if state == ElementState::Pressed {
-                        let now = Instant::now();
-                        self.click_count = if now.duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 };
-                        self.last_click_time = now;
-                        match self.click_count {
-                            1 => editor.action(&mut self.font_system, Action::Click { x: ex, y: ey }),
-                            2 => editor.action(&mut self.font_system, Action::DoubleClick { x: ex, y: ey }),
-                            3 => editor.action(&mut self.font_system, Action::TripleClick { x: ex, y: ey }),
-                            _ => {}
+                if button == MouseButton::Left && state == ElementState::Pressed {
+                    if self.mouse_pos.1 < UI_BAR_HEIGHT * SCALE { self.is_picker_open = !self.is_picker_open; self.needs_redraw = true; self.window.as_ref().unwrap().request_redraw(); return; }
+                    if self.is_picker_open {
+                        for (i, lang) in self.all_languages.iter().enumerate() {
+                            let lx = 10.0 + (i % 4) as f32 * 150.0 * SCALE + 10.0;
+                            let ly = (UI_BAR_HEIGHT + 5.0 + (i / 4) as f32 * 30.0) * SCALE + 5.0;
+                            if self.mouse_pos.0 >= lx && self.mouse_pos.0 <= lx + 150.0 * SCALE && self.mouse_pos.1 >= ly && self.mouse_pos.1 <= ly + 30.0 * SCALE {
+                                self.current_lang = lang.clone(); self.editor_widget.as_mut().unwrap().set_language(lang);
+                                self.is_picker_open = false; self.needs_redraw = true; self.window.as_ref().unwrap().request_redraw(); return;
+                            }
                         }
-                        self.is_dragging = true;
-                    } else {
-                        self.is_dragging = false;
+                        self.is_picker_open = false; self.needs_redraw = true; self.window.as_ref().unwrap().request_redraw(); return;
                     }
-                    self.needs_redraw = true;
-                    self.window.as_ref().unwrap().request_redraw();
-                }
+                    let r = Rect::from_xywh(0.0, UI_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32, self.pixmap.as_ref().unwrap().height() as f32).unwrap();
+                    self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 };
+                    self.last_click_time = Instant::now();
+                    self.editor_widget.as_mut().unwrap().handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, Some(self.click_count));
+                    self.is_dragging = true; self.needs_redraw = true; self.window.as_ref().unwrap().request_redraw();
+                } else if button == MouseButton::Left && state == ElementState::Released { self.is_dragging = false; }
             }
-            WindowEvent::RedrawRequested => {
-                self.render();
-            }
+            WindowEvent::RedrawRequested => self.render(),
             _ => {}
         }
     }
