@@ -261,6 +261,8 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
         "FlowLayoutPanel", "TableLayoutPanel", "LinkLabel", "MaskedTextBox",
         "HScrollBar", "VScrollBar", "MonthCalendar", "BindingNavigator",
         "BindingSource", "DataSet", "DataTable", "DataAdapter",
+        "OpenFileDialog", "SaveFileDialog", "FontDialog", "ColorDialog",
+        "FolderBrowserDialog", "PrintDialog", "PrintPreviewDialog",
         "ListView", "WebBrowser", "MonthCalendar", "ContextMenuStrip",
         "Timer", "BindingSource", "DataSet", "ImageList", "ToolTip",
         "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",
@@ -289,6 +291,8 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     }));
     vm.register_host_fn("vybe:gui", "__ctrl_focus", Box::new(|_| Value::Null));
     vm.register_host_fn("vybe:gui", "__ctrl_hide", Box::new(|_| Value::Null));
+    // ShowDialog stub — returns DialogResult.OK (1). Overridden by skia_form with rfd.
+    vm.register_host_fn("vybe:gui", "__dlg_showdialog", Box::new(|_| Value::I32(1)));
 
     // Get method refs for attaching to control objects
     let show_ref = {
@@ -316,11 +320,19 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
         Value::Object(Rc::new(RefCell::new(o)))
     };
 
+    let dlg_ref = {
+        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__dlg_showdialog".into())).unwrap();
+        let mut o = vybe_bytecode::value::Object::new();
+        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
+        Value::Object(Rc::new(RefCell::new(o)))
+    };
+
     for ct in control_types {
         let type_name = ct.to_string();
         let show = show_ref.clone();
         let close = close_ref.clone();
         let focus = focus_ref.clone();
+        let dlg_ref = dlg_ref.clone();
         let hide = hide_ref.clone();
         vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_args: &[Value]| {
             use std::sync::atomic::{AtomicU32, Ordering};
@@ -341,6 +353,13 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
             obj.properties.insert("close".into(), close.clone());
             obj.properties.insert("focus".into(), focus.clone());
             obj.properties.insert("hide".into(), hide.clone());
+            // Dialog objects get showdialog method
+            if matches!(type_name.as_str(),
+                "OpenFileDialog" | "SaveFileDialog" | "FontDialog" | "ColorDialog"
+                | "FolderBrowserDialog" | "PrintDialog" | "PrintPreviewDialog"
+            ) {
+                obj.properties.insert("showdialog".into(), dlg_ref.clone());
+            }
             Value::Object(Rc::new(RefCell::new(obj)))
         }));
     }

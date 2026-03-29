@@ -213,16 +213,35 @@ fn render_control_impl(pixmap: &mut Pixmap, font: &FontRenderer, ctrl: &Rendered
             stroke_rect(pixmap, x + w / 2 - 4, mid_y - 8, 8, 16, btn_border());
         }
         "datagridview" | "listview" => {
+            let header_h = (font_size * 1.8) as i32;
+            let row_h = (font_size * 1.6) as i32;
             fill_rect(pixmap, x, y, w, h, input_bg());
             stroke_rect(pixmap, x, y, w, h, input_border());
-            // Header
-            fill_rect(pixmap, x + 1, y + 1, w - 2, 22, grid_header());
-            // Grid lines
-            for i in 0..4 {
-                let ly = y + 23 + i * 25;
-                if ly < y + h {
-                    fill_rect(pixmap, x + 1, ly, w - 2, 1, grid_line());
+            // Header bar
+            fill_rect(pixmap, x + 1, y + 1, w - 2, header_h, grid_header());
+            stroke_rect(pixmap, x + 1, y + 1, w - 2, header_h, grid_line());
+            // Column headers placeholder
+            let col_w = w / 3;
+            for col in 0..3 {
+                let cx = x + 1 + col * col_w;
+                font.draw_text(pixmap, &format!("Column {}", col + 1), cx as f32 + 4.0, y as f32 + 4.0, small_size, text_color());
+                // Vertical separator
+                if col > 0 {
+                    fill_rect(pixmap, cx, y + 1, 1, h - 2, grid_line());
                 }
+            }
+            // Row lines
+            let mut row_y = y + 1 + header_h;
+            let mut row_num = 0;
+            while row_y < y + h - 1 {
+                fill_rect(pixmap, x + 1, row_y, w - 2, 1, grid_line());
+                // Alternating row background
+                if row_num % 2 == 1 && row_y + row_h < y + h {
+                    fill_rect(pixmap, x + 1, row_y + 1, w - 2, row_h - 1,
+                        Color::from_rgba8(245, 245, 250, 255));
+                }
+                row_y += row_h;
+                row_num += 1;
             }
         }
         "numericupdown" | "datetimepicker" => {
@@ -233,7 +252,32 @@ fn render_control_impl(pixmap: &mut Pixmap, font: &FontRenderer, ctrl: &Rendered
             fill_rect(pixmap, x + w - 18, y, 18, h, btn_color());
             stroke_rect(pixmap, x + w - 18, y, 18, h, btn_border());
         }
-        "menustrip" | "toolstrip" | "statusstrip" | "bindingnavigator" | "contextmenustrip" => {
+        "bindingnavigator" => {
+            let btn_w = (font_size * 2.0) as i32;
+            let gap = 2;
+            fill_rect(pixmap, x, y, w, h, btn_color());
+            stroke_rect(pixmap, x, y, w, h, panel_border());
+            // Navigation buttons: |< < record counter > >| + -
+            let buttons = ["|<", "<", "", ">", ">|", "+", "-"];
+            let mut bx = x + 2;
+            for (i, label) in buttons.iter().enumerate() {
+                if i == 2 {
+                    // Record counter textbox
+                    let counter_w = btn_w * 2;
+                    fill_rect(pixmap, bx, y + 2, counter_w, h - 4, input_bg());
+                    stroke_rect(pixmap, bx, y + 2, counter_w, h - 4, input_border());
+                    font.draw_text(pixmap, "0 of 0", bx as f32 + 4.0, y as f32 + 3.0, small_size, text_color());
+                    bx += counter_w + gap;
+                } else {
+                    fill_rect(pixmap, bx, y + 2, btn_w, h - 4, Color::from_rgba8(235, 235, 235, 255));
+                    stroke_rect(pixmap, bx, y + 2, btn_w, h - 4, panel_border());
+                    let tw = font.text_width(label, small_size);
+                    font.draw_text(pixmap, label, bx as f32 + (btn_w as f32 - tw) / 2.0, y as f32 + 3.0, small_size, text_color());
+                    bx += btn_w + gap;
+                }
+            }
+        }
+        "menustrip" | "toolstrip" | "statusstrip" | "contextmenustrip" => {
             fill_rect(pixmap, x, y, w, h, btn_color());
             stroke_rect(pixmap, x, y, w, h, panel_border());
             font.draw_text(pixmap, &ctrl.text, x as f32 + 4.0, y as f32 + 2.0, small_size, text_color());
@@ -294,10 +338,54 @@ impl FormApp {
         })
     }
 
+    /// Fire the Form_Load event — called when the form is first shown.
+    fn fire_load_event(&mut self) {
+        // Look for a Load handler on the form name
+        let form_name = self.form_obj_key.replace("__", "");
+        let callback = {
+            let q = self.queue.borrow();
+            // Try common Load event registrations
+            q.get_event_handler(&"form1", "Load").cloned()
+                .or_else(|| q.get_event_handler(&"me", "Load").cloned())
+        };
+        if let Some(cb) = callback {
+            eprintln!("[LOAD] Firing Form_Load event");
+            let mut vm = self.vm.borrow_mut();
+            let me = vm.globals.get("__f").cloned()
+                .unwrap_or(vybe_bytecode::Value::Null);
+            let arity = match &cb {
+                vybe_bytecode::Value::Object(obj) => {
+                    match &obj.borrow().kind {
+                        vybe_bytecode::value::ObjectKind::Function(f) => f.arity as usize,
+                        _ => 0,
+                    }
+                }
+                _ => 0,
+            };
+            let result = match arity {
+                0 => vm.invoke(&cb, &[]),
+                1 => vm.invoke(&cb, &[me]),
+                _ => vm.invoke(&cb, &[me, vybe_bytecode::Value::Null, vybe_bytecode::Value::Null]),
+            };
+            if let Err(e) = result {
+                eprintln!("[LOAD] Error: {e}");
+            }
+            // Drain console output
+            let effects = self.queue.borrow_mut().drain();
+            for effect in effects {
+                if let vybe_host::SideEffect::ConsoleOutput(msg) = effect {
+                    print!("{msg}");
+                }
+            }
+            drop(vm);
+            self.read_controls_from_vm();
+            self.needs_redraw = true;
+        }
+    }
+
     fn handle_click(&mut self, control_name: &str) {
         let callback = {
             let q = self.queue.borrow();
-            let key_click = format!("{}.Click", control_name);
             q.get_event_handler(&control_name.to_lowercase(), "Click").cloned()
         };
         if let Some(cb) = callback {
@@ -323,43 +411,50 @@ impl FormApp {
             if let Err(e) = result {
                 eprintln!("Event handler error: {e}");
             }
+
+            // Drain side effects (console output etc.) but don't use for rendering
+            let effects = self.queue.borrow_mut().drain();
+            for effect in effects {
+                if let vybe_host::SideEffect::ConsoleOutput(msg) = effect {
+                    print!("{msg}");
+                }
+            }
+
             drop(vm);
 
-            // Sync VM state back to rendered controls
-            self.sync_from_vm();
+            // Read control state directly from VM objects — single source of truth
+            self.read_controls_from_vm();
             self.needs_redraw = true;
         }
     }
 
-    fn sync_from_vm(&mut self) {
+    /// Read all control text/properties directly from VM objects.
+    /// No side effects, no form model copy — the VM IS the model.
+    fn read_controls_from_vm(&mut self) {
         let vm = self.vm.borrow();
+        let has_f = vm.globals.contains_key("__f");
+        if !has_f {
+            eprintln!("[READ] __f not found!");
+            return;
+        }
         if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
             let fo = form_obj.borrow();
+            let prop_keys: Vec<_> = fo.properties.keys().take(15).cloned().collect();
+            eprintln!("[READ] __f has {} props: {:?}", fo.properties.len(), prop_keys);
             for ctrl in &mut self.controls {
                 let ctrl_lower = ctrl.name.to_lowercase();
                 if let Some(vybe_bytecode::Value::Object(co)) = fo.properties.get(&ctrl_lower) {
                     let c = co.borrow();
-                    if let Some(vybe_bytecode::Value::String(s)) = c.properties.get("text") {
+                    let text_val = c.properties.get("text").cloned();
+                    eprintln!("[READ] {}: text={:?}", ctrl.name, text_val);
+                    if let Some(vybe_bytecode::Value::String(s)) = text_val {
                         ctrl.text = s.to_string();
+                    } else if let Some(v) = c.properties.get("text") {
+                        ctrl.text = format!("{}", v);
                     }
+                } else {
+                    eprintln!("[READ] {} not found on __f", ctrl.name);
                 }
-            }
-        }
-
-        // Process side effects
-        let effects = self.queue.borrow_mut().drain();
-        for effect in effects {
-            match effect {
-                vybe_host::SideEffect::ConsoleOutput(msg) => print!("{msg}"),
-                vybe_host::SideEffect::PropertyChange { object, property, value } => {
-                    let val_str = value.as_string();
-                    if let Some(ctrl) = self.controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(&object)) {
-                        if property == "Text" || property == "Caption" {
-                            ctrl.text = val_str;
-                        }
-                    }
-                }
-                _ => {}
             }
         }
     }
@@ -387,6 +482,9 @@ impl ApplicationHandler for FormApp {
             self.window = Some(window);
             self.surface = Some(surface);
             self.needs_redraw = true;
+
+            // Fire Form_Load event — .NET fires Load when the form is first shown
+            self.fire_load_event();
         }
     }
 
@@ -434,19 +532,30 @@ impl ApplicationHandler for FormApp {
                 }
                 self.needs_redraw = false;
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                let (mx, my) = self.last_cursor;
+            WindowEvent::MouseInput { state, button, .. } => {
+                let scale = self.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0);
+                let (lx, ly) = (self.last_cursor.0 / scale, self.last_cursor.1 / scale);
+                eprintln!("[MOUSE] {:?} {:?} at logical ({:.0}, {:.0}) physical ({:.0}, {:.0}) scale={}", state, button, lx, ly, self.last_cursor.0, self.last_cursor.1, scale);
+                if state != ElementState::Pressed || button != MouseButton::Left {
+                    // Only handle left press
+                } else {
+                let (mx, my) = (lx, ly);
                 // Hit test against controls (using logical coords)
-                if let Some(ctrl) = self.controls.iter().find(|c| {
+                let clicked = self.controls.iter().find(|c| {
                     mx >= c.x as f64 && mx <= (c.x + c.w) as f64 &&
                     my >= c.y as f64 && my <= (c.y + c.h) as f64
-                }) {
-                    let name = ctrl.name.clone();
+                }).map(|c| c.name.clone());
+                if let Some(name) = clicked {
+                    eprintln!("[SKIA-CLICK] {}", name);
                     self.handle_click(&name);
+                    // Request redraw to show updated state
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
                 }
+                } // end left press
             }
             WindowEvent::CursorMoved { position, .. } => {
-                // Store logical position (winit already gives logical on macOS)
                 self.last_cursor = (position.x, position.y);
             }
             _ => {}
@@ -461,12 +570,110 @@ impl ApplicationHandler for FormApp {
 }
 
 /// Launch a form using tiny-skia rendering.
+/// Register native dialog host functions using rfd.
+fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
+    use vybe_bytecode::Value;
+    use vybe_bytecode::value::{Object, ObjectKind};
+
+    // ShowDialog on dialog objects — returns DialogResult.OK (1) or Cancel (0)
+    vm.register_host_fn("vybe:gui", "__dlg_show", Box::new(|args: &[Value]| {
+        let dialog_type = if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            o.properties.get("__control_type").map(|v| format!("{}", v)).unwrap_or_default()
+        } else { String::new() };
+
+        match dialog_type.as_str() {
+            "OpenFileDialog" => {
+                let result = rfd::FileDialog::new()
+                    .set_title("Open File")
+                    .pick_file();
+                if let Some(path) = result {
+                    // Store filename on the dialog object
+                    if let Some(Value::Object(obj)) = args.first() {
+                        obj.borrow_mut().properties.insert("filename".into(),
+                            Value::String(Rc::from(path.to_string_lossy().as_ref())));
+                    }
+                    Value::I32(1) // DialogResult.OK
+                } else {
+                    Value::I32(0) // DialogResult.Cancel
+                }
+            }
+            "SaveFileDialog" => {
+                let result = rfd::FileDialog::new()
+                    .set_title("Save File")
+                    .save_file();
+                if let Some(path) = result {
+                    if let Some(Value::Object(obj)) = args.first() {
+                        obj.borrow_mut().properties.insert("filename".into(),
+                            Value::String(Rc::from(path.to_string_lossy().as_ref())));
+                    }
+                    Value::I32(1)
+                } else {
+                    Value::I32(0)
+                }
+            }
+            "FolderBrowserDialog" => {
+                let result = rfd::FileDialog::new()
+                    .set_title("Select Folder")
+                    .pick_folder();
+                if let Some(path) = result {
+                    if let Some(Value::Object(obj)) = args.first() {
+                        obj.borrow_mut().properties.insert("selectedpath".into(),
+                            Value::String(Rc::from(path.to_string_lossy().as_ref())));
+                    }
+                    Value::I32(1)
+                } else {
+                    Value::I32(0)
+                }
+            }
+            "ColorDialog" | "FontDialog" => {
+                // Stub — return OK for now
+                Value::I32(1)
+            }
+            _ => Value::I32(0),
+        }
+    }));
+
+    // MessageBox.Show — native dialog
+    vm.register_host_fn("vybe:gui", "msgBox", Box::new(|args: &[Value]| {
+        let text = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        let title = args.get(1).map(|v| format!("{}", v)).unwrap_or_else(|| "Message".into());
+        rfd::MessageDialog::new()
+            .set_title(&title)
+            .set_description(&text)
+            .set_level(rfd::MessageLevel::Info)
+            .show();
+        Value::Null
+    }));
+
+    // InputBox — native text input (rfd doesn't have this, use a simple stub)
+    vm.register_host_fn("vybe:gui", "inputBox", Box::new(|args: &[Value]| {
+        let _prompt = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        let _title = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+        let default = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
+        // rfd doesn't support text input — return default for now
+        Value::String(Rc::from(default.as_str()))
+    }));
+
+    // Make ShowDialog available on dialog objects
+    let dlg_show_idx = *vm.host_registry.get(&("vybe:gui".into(), "__dlg_show".into())).unwrap();
+    let dlg_show_ref = {
+        let mut o = Object::new();
+        o.kind = ObjectKind::HostFunction(dlg_show_idx);
+        Value::Object(Rc::new(RefCell::new(o)))
+    };
+    // Store for later attachment to dialog objects
+    vm.globals.insert("__dlg_show_ref".into(), dlg_show_ref);
+}
+
 pub fn launch_skia_form(
-    vm: vybe_bytecode::VM,
+    mut vm: vybe_bytecode::VM,
     queue: Rc<RefCell<vybe_host::SideEffectQueue>>,
     form: &vybe_forms::Form,
     title: &str,
 ) {
+    // Register native dialog functions (rfd)
+    register_dialog_fns(&mut vm);
     let controls: Vec<RenderedControl> = form.controls.iter()
         .filter(|c| !c.control_type.is_non_visual())
         .map(|ctrl| {
