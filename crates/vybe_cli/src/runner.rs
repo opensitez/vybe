@@ -1,10 +1,7 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::cell::RefCell;
-
-use dioxus::prelude::*;
-use dioxus::desktop::{Config, WindowBuilder};
 
 use vybe_parser_basic::parse_program;
 use vybe_project::Project;
@@ -13,10 +10,7 @@ use vybe_project::Project;
 // Thread-local used to pass the Project into the named Dioxus App component.
 // (Dioxus `launch()` requires a plain fn-pointer, so we can't use a closure.)
 // ---------------------------------------------------------------------------
-thread_local! {
-    pub static LAUNCH_PROJECT: std::cell::RefCell<Option<Project>> = std::cell::RefCell::new(None);
-    pub static LAUNCH_TITLE: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
-}
+// Dioxus removed from this crate; use tiny-skia renderer instead.
 
 // ---------------------------------------------------------------------------
 // Public entry point – the ONLY function the shell binary calls.
@@ -144,23 +138,8 @@ fn run_js_file(path: &Path) {
         }
         form.name = name;
 
-        // Pass data to the Dioxus component via thread-locals
-        JS_LAUNCH_FORM.with(|cell| *cell.borrow_mut() = Some(form));
-        JS_LAUNCH_TITLE.with(|cell| *cell.borrow_mut() = form_title.clone());
-        JS_LAUNCH_VM.with(|cell| *cell.borrow_mut() = Some(vm));
-        JS_LAUNCH_QUEUE.with(|cell| *cell.borrow_mut() = Some(queue));
-
-        let config = Config::new()
-            .with_resource_directory(PathBuf::from("."))
-            .with_window(
-                WindowBuilder::new()
-                    .with_title(&form_title)
-                    .with_resizable(true),
-            );
-
-        LaunchBuilder::desktop()
-            .with_cfg(config)
-            .launch(JsFormApp);
+        // Launch using egui renderer (replaces Dioxus UI in this crate).
+        crate::egui_form::launch_egui_form(vm, queue, &form, &form_title);
     }
 }
 
@@ -281,29 +260,15 @@ fn wire_handles_from_ast(
     }
 }
 
+
 pub fn launch_project_form(
     form: vybe_forms::Form,
     vm: vybe_bytecode::VM,
     queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
 ) {
+    // Launch using egui renderer (replaces Dioxus UI in this crate).
     let title = if form.text.is_empty() { form.name.clone() } else { form.text.clone() };
-
-    JS_LAUNCH_FORM.with(|cell| *cell.borrow_mut() = Some(form));
-    JS_LAUNCH_TITLE.with(|cell| *cell.borrow_mut() = title.clone());
-    JS_LAUNCH_VM.with(|cell| *cell.borrow_mut() = Some(vm));
-    JS_LAUNCH_QUEUE.with(|cell| *cell.borrow_mut() = Some(queue));
-
-    let config = Config::new()
-        .with_resource_directory(PathBuf::from("."))
-        .with_window(
-            WindowBuilder::new()
-                .with_title(&title)
-                .with_resizable(true),
-        );
-
-    LaunchBuilder::desktop()
-        .with_cfg(config)
-        .launch(JsFormApp);
+    crate::egui_form::launch_egui_form(vm, queue, &form, &title);
 }
 
 // ---------------------------------------------------------------------------
@@ -404,270 +369,7 @@ pub fn launch_vm_form(
     }
 }
 
-// ---------------------------------------------------------------------------
-// JS Form runner — Dioxus component with event dispatch to bytecode VM
-// ---------------------------------------------------------------------------
-
-thread_local! {
-    static JS_LAUNCH_FORM: std::cell::RefCell<Option<vybe_forms::Form>> = std::cell::RefCell::new(None);
-    static JS_LAUNCH_TITLE: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
-    static JS_LAUNCH_VM: std::cell::RefCell<Option<vybe_bytecode::VM>> = std::cell::RefCell::new(None);
-    static JS_LAUNCH_QUEUE: std::cell::RefCell<Option<std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>>> = std::cell::RefCell::new(None);
-}
-
-#[component]
-fn JsFormApp() -> Element {
-    // use_hook runs only on first render — safe to take() from thread-locals
-    let (initial_form, vm_cell, queue_cell) = use_hook(|| {
-        let form = JS_LAUNCH_FORM.with(|c| c.borrow_mut().take()).expect("JS_LAUNCH_FORM not set");
-        let vm = JS_LAUNCH_VM.with(|c| c.borrow_mut().take()).expect("JS_LAUNCH_VM not set");
-        let queue = JS_LAUNCH_QUEUE.with(|c| c.borrow_mut().take()).expect("JS_LAUNCH_QUEUE not set");
-        (
-            form,
-            std::rc::Rc::new(std::cell::RefCell::new(vm)),
-            queue,
-        )
-    });
-
-    let form_width = initial_form.width;
-    let form_height = initial_form.height;
-
-    let runtime_form = use_signal(|| initial_form.clone());
-    let vm_cell = vm_cell.clone();
-    let queue_cell = queue_cell.clone();
-
-    // Event handler: fires when a control is clicked
-    let handle_event = {
-        let vm_cell = vm_cell.clone();
-        let queue_cell = queue_cell.clone();
-        let mut runtime_form = runtime_form.clone();
-        move |control_name: String, event_name: String| {
-            eprintln!("[CLICK] {}.{}", control_name, event_name);
-            let callback = {
-                let q = queue_cell.borrow();
-                q.get_event_handler(&control_name, &event_name).cloned()
-            };
-            eprintln!("[CLICK] handler: {}", if callback.is_some() { "FOUND" } else { "NOT FOUND" });
-            if let Some(cb) = callback {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut vm = vm_cell.borrow_mut();
-                    // Class methods expect Me as first arg — pass the form instance
-                    let me = vm.globals.get("__f").cloned()
-                        .or_else(|| vm.globals.get("me").cloned())
-                        .unwrap_or(vybe_bytecode::Value::Null);
-                    // Check arity to handle both class methods (need Me) and module subs (don't)
-                    let arity = match &cb {
-                        vybe_bytecode::Value::Object(obj) => {
-                            match &obj.borrow().kind {
-                                vybe_bytecode::value::ObjectKind::Function(f) => f.arity as usize,
-                                _ => 0,
-                            }
-                        }
-                        _ => 0,
-                    };
-                    // Pass: this (me), sender (control name), e (null)
-                    let sender = vybe_bytecode::Value::String(std::rc::Rc::from(control_name.as_str()));
-                    let result = match arity {
-                        0 => vm.invoke(&cb, &[]),
-                        1 => vm.invoke(&cb, &[me]),
-                        2 => vm.invoke(&cb, &[me, sender]),
-                        _ => vm.invoke(&cb, &[me, sender, vybe_bytecode::Value::Null]),
-                    };
-                    result
-                }));
-                match result {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => eprintln!("Event handler error: {e}"),
-                    Err(panic) => {
-                        let msg = if let Some(s) = panic.downcast_ref::<&str>() {
-                            s.to_string()
-                        } else if let Some(s) = panic.downcast_ref::<String>() {
-                            s.clone()
-                        } else {
-                            "unknown panic".to_string()
-                        };
-                        eprintln!("Event handler panic: {msg}");
-                    }
-                }
-
-                // Process any new side effects from the callback
-                let new_effects = queue_cell.borrow_mut().drain();
-                let mut form = runtime_form.write();
-
-                // Sync VM object state → form model for ALL controls.
-                // This catches property changes made via struct_set (without controlSetProperty).
-                {
-                    let vm = vm_cell.borrow();
-                    if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
-                        let fo = form_obj.borrow();
-                        for ctrl in form.controls.iter_mut() {
-                            let ctrl_lower = ctrl.name.to_lowercase();
-                            // Look up the control as a field on the form object
-                            if let Some(vybe_bytecode::Value::Object(ctrl_obj)) = fo.properties.get(&ctrl_lower) {
-                                let co = ctrl_obj.borrow();
-                                if let Some(vybe_bytecode::Value::String(s)) = co.properties.get("text") {
-                                    ctrl.properties.set(String::from("Text"), s.to_string());
-                                }
-                                if let Some(v) = co.properties.get("enabled") {
-                                    ctrl.properties.set(String::from("Enabled"), format!("{}", v));
-                                }
-                                if let Some(v) = co.properties.get("visible") {
-                                    ctrl.properties.set(String::from("Visible"), format!("{}", v));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                for effect in new_effects {
-                    match effect {
-                        vybe_host::SideEffect::PropertyChange { object, property, value } => {
-                            let val_str = value.as_string();
-                            if object == form.name {
-                                match property.as_str() {
-                                    "Text" | "Caption" => form.text = val_str,
-                                    _ => {}
-                                }
-                            } else if let Some(ctrl) = form.controls.iter_mut().find(|c| c.name == object) {
-                                // VB6 compat: Caption → Text
-                                let prop = if property == "Caption" { "Text".into() } else { property };
-                                ctrl.properties.set(prop, val_str);
-                            }
-                        }
-                        vybe_host::SideEffect::ConsoleOutput(msg) => {
-                            print!("{msg}");
-                        }
-                        vybe_host::SideEffect::MsgBox { text, title } => {
-                            println!("[MsgBox] {}: {}", title, text);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    };
-
-    // Collect control data — use shared control definitions from vybe_host
-    let controls: Vec<(String, String, i32, i32, i32, i32, String, String)> = {
-        let f = runtime_form.read();
-        f.controls.iter().map(|ctrl| {
-            let type_name = format!("{:?}", ctrl.control_type);
-            let def = vybe_host::get_def(&type_name);
-            // Collect properties for CSS generation
-            let mut props = std::collections::HashMap::new();
-            for (k, v) in ctrl.properties.iter() {
-                if let Some(s) = v.as_string() {
-                    props.insert(k.clone(), s.to_string());
-                }
-            }
-            let css = (def.css_fn)(&props);
-            (
-                ctrl.name.clone(),
-                type_name,
-                ctrl.bounds.x, ctrl.bounds.y, ctrl.bounds.width, ctrl.bounds.height,
-                ctrl.properties.get_string("Text").unwrap_or_default().to_string(),
-                css,
-            )
-        }).collect()
-    };
-
-    eprintln!("[EVENT-DEBUG] Events: {:?}", queue_cell.borrow().event_handler_keys());
-    eprintln!("[EVENT-DEBUG] Controls({}): {:?}", controls.len(), controls.iter().map(|(n, t, x, y, w, h, text, _)| format!("{}({})@{},{} {}x{} '{}'", n, t, x, y, w, h, text)).collect::<Vec<_>>());
-    rsx! {
-        div {
-            style: "width: {form_width}px; min-height: {form_height}px; position: relative; background: #f0f0f0; font-family: 'Segoe UI', sans-serif; font-size: 13px; overflow: auto;",
-            {controls.iter().map(|(ctrl_name, type_name, x, y, w, h, text, ctrl_css)| {
-                let click_name = ctrl_name.clone();
-                let mut handle = handle_event.clone();
-                let def = vybe_host::get_def(type_name);
-
-                let pos_style = format!(
-                    "position: absolute; left: {}px; top: {}px; width: {}px; height: {}px; {}",
-                    x, y, w, h, ctrl_css
-                );
-
-                // Skip iframe (WebBrowser) — breaks Dioxus webview rendering
-                if def.tag == "iframe" {
-                    return rsx! { div { key: "{ctrl_name}", style: "{pos_style}", "[{ctrl_name}]" } };
-                }
-
-                // Generic rendering based on control definition tag
-                match def.tag {
-                    "button" => rsx! {
-                        button {
-                            key: "{ctrl_name}",
-                            style: "{pos_style}",
-                            onclick: move |_| handle(click_name.clone(), "Click".into()),
-                            "{text}"
-                        }
-                    },
-                    "input" => {
-                        let input_type = def.input_type.unwrap_or("text");
-                        if def.inner_tag == Some("input") {
-                            // Checkbox/Radio: label wrapping input
-                            rsx! {
-                                label {
-                                    key: "{ctrl_name}",
-                                    style: "{pos_style}",
-                                    onclick: move |_| handle(click_name.clone(), "Click".into()),
-                                    input { r#type: "{input_type}" }
-                                    "{text}"
-                                }
-                            }
-                        } else {
-                            rsx! {
-                                input {
-                                    key: "{ctrl_name}",
-                                    style: "{pos_style}",
-                                    r#type: "{input_type}",
-                                    value: "{text}",
-                                }
-                            }
-                        }
-                    },
-                    "select" => rsx! {
-                        select {
-                            key: "{ctrl_name}",
-                            style: "{pos_style}",
-                            onchange: move |_| handle(click_name.clone(), "SelectedIndexChanged".into()),
-                        }
-                    },
-                    "progress" => rsx! {
-                        progress {
-                            key: "{ctrl_name}",
-                            style: "{pos_style}",
-                            value: "{text}",
-                            max: "100",
-                        }
-                    },
-                    "table" => rsx! {
-                        div {
-                            key: "{ctrl_name}",
-                            style: "{pos_style}",
-                            "[DataGrid]"
-                        }
-                    },
-                    "nav" | "iframe" | "img" => rsx! {
-                        div {
-                            key: "{ctrl_name}",
-                            style: "{pos_style}",
-                            "{text}"
-                        }
-                    },
-                    // div, a, label — all rendered as div with appropriate styles
-                    _ => rsx! {
-                        div {
-                            key: "{ctrl_name}",
-                            style: "{pos_style}",
-                            onclick: move |_| handle(click_name.clone(), "Click".into()),
-                            "{text}"
-                        }
-                    },
-                }
-            })}
-        }
-    }
-}
+// Dioxus UI removed from this crate; JS form rendering uses the tiny-skia renderer.
 
 /// Run a standalone .cs file via the bytecode VM.
 fn run_cs_file(path: &Path) {
@@ -763,6 +465,146 @@ fn control_type_name(ctrl: &vybe_forms::Control) -> String {
         "DataAdapterComponent" => "DataAdapter".into(),
         other => other.into(),
     }
+}
+
+/// Build the combined VB source code for a project (designer + user code + entry point).
+/// Returns (all_code, startup_form) — startup_form is Some if this is a forms project.
+pub fn build_project_code(project: &vybe_project::Project) -> (String, Option<vybe_forms::Form>) {
+    let mut all_code = String::new();
+    for cf in &project.code_files {
+        all_code.push_str(&cf.code);
+        all_code.push('\n');
+    }
+    for fm in &project.forms {
+        let form = &fm.form;
+        let mut designer = format!("Partial Class {}\n", form.name);
+        designer.push_str("    Inherits System.Windows.Forms.Form\n\n");
+        for ctrl in &form.controls {
+            designer.push_str(&format!("    Friend WithEvents {} As {}\n", ctrl.name, control_type_name(ctrl)));
+        }
+        let user_code = fm.get_user_code();
+        let has_ctor = user_code.to_uppercase().contains("SUB NEW");
+        if !has_ctor {
+            designer.push_str("\n    Public Sub New()\n");
+            designer.push_str("        InitializeComponent()\n");
+            designer.push_str("    End Sub\n");
+        }
+        designer.push_str("\n    Private Sub InitializeComponent()\n");
+        for ctrl in &form.controls {
+            designer.push_str(&format!("        Me.{} = New {}()\n", ctrl.name, control_type_name(ctrl)));
+        }
+        for ctrl in &form.controls {
+            let is_non_visual = ctrl.control_type.is_non_visual();
+            designer.push_str(&format!("        Me.{}.Name = \"{}\"\n", ctrl.name, ctrl.name));
+            if let Some(text) = ctrl.properties.get_string("Text") {
+                designer.push_str(&format!("        Me.{}.Text = \"{}\"\n", ctrl.name, text));
+            }
+            for (key, val) in ctrl.properties.iter() {
+                if let Some(s) = val.as_string() {
+                    let k = key.as_str();
+                    if matches!(k, "Name" | "Text" | "Location" | "Size" | "TabIndex"
+                        | "Enabled" | "Visible" | "BackColor" | "ForeColor" | "Font") {
+                        continue;
+                    }
+                    if k.starts_with("DataBindings.") { continue; }
+                    if !s.is_empty() {
+                        if k == "DataSource" {
+                            designer.push_str(&format!("        Me.{}.DataSource = Me.{}\n", ctrl.name, s));
+                        } else if k == "BindingSource" {
+                            designer.push_str(&format!("        Me.{}.BindingSource = Me.{}\n", ctrl.name, s));
+                        } else if k.starts_with("DataBinding:") {
+                            let parts: Vec<&str> = k.splitn(2, ':').collect();
+                            if parts.len() == 2 {
+                                let prop = parts[1];
+                                let binding_parts: Vec<&str> = s.splitn(2, |c| c == '|' || c == '.').collect();
+                                if binding_parts.len() == 2 {
+                                    designer.push_str(&format!(
+                                        "        Me.{}.DataBindings.Add(\"{}\", Me.{}, \"{}\")\n",
+                                        ctrl.name, prop, binding_parts[0], binding_parts[1]
+                                    ));
+                                }
+                            }
+                        } else {
+                            designer.push_str(&format!("        Me.{}.{} = \"{}\"\n", ctrl.name, k, s));
+                        }
+                    }
+                }
+            }
+            if !is_non_visual {
+                designer.push_str(&format!("        Me.{}.Location = New Point({}, {})\n", ctrl.name, ctrl.bounds.x, ctrl.bounds.y));
+                designer.push_str(&format!("        Me.{}.Size = New Size({}, {})\n", ctrl.name, ctrl.bounds.width, ctrl.bounds.height));
+                designer.push_str(&format!("        Me.Controls.Add(Me.{})\n", ctrl.name));
+            }
+        }
+        designer.push_str(&format!("        Me.Name = \"{}\"\n", form.name));
+        if !form.text.is_empty() {
+            designer.push_str(&format!("        Me.Text = \"{}\"\n", form.text));
+        }
+        designer.push_str("    End Sub\n");
+        designer.push_str("End Class\n");
+        all_code.push_str(&designer);
+        all_code.push('\n');
+        all_code.push_str(&fm.get_user_code());
+        all_code.push('\n');
+    }
+
+    let startup_form_name = match &project.startup_object {
+        vybe_project::StartupObject::Form(name) => Some(name.clone()),
+        vybe_project::StartupObject::None if !project.forms.is_empty() => {
+            Some(project.forms.first().unwrap().form.name.clone())
+        }
+        _ => None,
+    };
+
+    let startup_form = startup_form_name.as_ref().and_then(|_| {
+        project.get_startup_form().map(|fm| fm.form.clone())
+            .or_else(|| project.forms.first().map(|fm| fm.form.clone()))
+    });
+
+    let is_sub_main = project.starts_with_main() || all_code.to_uppercase().contains("SUB MAIN");
+
+    if let Some(ref form) = startup_form {
+        if !is_sub_main {
+            all_code.push_str(&format!("\nDim __f As New {}()\nApplication.Run(__f)\n", form.name));
+        }
+    }
+
+    (all_code, startup_form)
+}
+
+/// Run an already-loaded project (used by vybe_editor).
+/// Must be called on the main thread — opens a native window for form projects.
+pub fn run_project_in_memory(project: &vybe_project::Project) {
+    let (all_code, startup_form) = build_project_code(project);
+
+    if all_code.trim().is_empty() {
+        eprintln!("Error: no code to run");
+        return;
+    }
+
+    let mut vm = vybe_bytecode::VM::new();
+    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
+    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    vybe_host::setup_namespaces(&mut vm);
+
+    match parse_program(&all_code) {
+        Ok(program) => {
+            match vybe_compiler_vb::Compiler::new().compile(&program) {
+                Ok(chunks) => {
+                    if let Err(e) = vm.run(chunks) {
+                        let msg = format!("{}", e);
+                        if !msg.starts_with("__") {
+                            eprintln!("Runtime error: {e}");
+                        }
+                    }
+                }
+                Err(e) => { eprintln!("Compile error: {e}"); return; }
+            }
+        }
+        Err(e) => { eprintln!("Parse error: {:?}", e); return; }
+    }
+
+    launch_vm_form(vm, queue, startup_form);
 }
 
 /// Run a .vbp / .vbproj project.

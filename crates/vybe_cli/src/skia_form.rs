@@ -6,7 +6,9 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use winit::application::ApplicationHandler;
 use winit::event::{WindowEvent, MouseButton, ElementState};
-use winit::event_loop::{EventLoop, ActiveEventLoop, ControlFlow};
+use winit::event_loop::{EventLoop, EventLoopBuilder, ActiveEventLoop, ControlFlow};
+#[cfg(target_os = "macos")]
+use winit::platform::macos::EventLoopBuilderExtMacOS;
 use winit::window::{Window, WindowId, WindowAttributes};
 
 use tiny_skia::*;
@@ -403,6 +405,7 @@ struct DataStore {
 }
 
 impl FormApp {
+    #[allow(dead_code)]
     fn hit_test(&self, mx: f32, my: f32) -> Option<&RenderedControl> {
         self.controls.iter().find(|c| {
             mx >= c.x as f32 && mx <= (c.x + c.w) as f32 &&
@@ -817,6 +820,7 @@ impl FormApp {
         false
     }
 
+    #[allow(dead_code)]
     fn render(&self, pixmap: &mut Pixmap) {
         // Clear background
         pixmap.fill(bg_color());
