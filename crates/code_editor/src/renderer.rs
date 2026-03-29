@@ -6,7 +6,7 @@ use std::fs;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Motion, Shaping, SwashCache, Action, Edit, AttrsList};
 use tiny_skia::{Color as SkiaColor, Paint, Pixmap, PixmapPaint, Rect, Transform, ColorU8};
 use winit::application::ApplicationHandler;
-use winit::event::{WindowEvent, ElementState, MouseButton};
+use winit::event::{WindowEvent, ElementState, MouseButton, MouseScrollDelta};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes};
 use winit::keyboard::{Key, NamedKey};
@@ -77,6 +77,7 @@ pub struct CodeEditorWidget {
     glyph_cache: HashMap<(cosmic_text::CacheKey, Color), CachedGlyph>,
     digit_cache: Vec<CachedGlyph>,
     needs_reshape: bool,
+    pub scroll_y: f32, // Professional scrolling state
 }
 
 impl CodeEditorWidget {
@@ -116,7 +117,7 @@ impl CodeEditorWidget {
             if digit_cache.len() <= i { digit_cache.push(CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 }); }
         }
 
-        Self { editor: cosmic_text::Editor::new(buffer), my_editor: editor_internal, lang_def, metrics, glyph_cache: HashMap::new(), digit_cache, needs_reshape: true }
+        Self { editor: cosmic_text::Editor::new(buffer), my_editor: editor_internal, lang_def, metrics, glyph_cache: HashMap::new(), digit_cache, needs_reshape: true, scroll_y: 0.0 }
     }
 
     pub fn set_language(&mut self, lang_name: &str) {
@@ -164,20 +165,36 @@ impl CodeEditorWidget {
 
         let selection = self.editor.selection_bounds();
 
-        // Solve borrow conflict: first extract all necessary layout info
+        // 1. Check Auto-Scroll to Cursor
+        if let Some((_, cy)) = self.editor.cursor_position() {
+             // Find line for cy
+             let mut cursor_line_i = 0;
+             self.editor.with_buffer(|b| {
+                 for r in b.layout_runs() { if cy >= r.line_top as i32 && cy < (r.line_top + r.line_height) as i32 { cursor_line_i = r.line_i; break; } }
+             });
+             let cy_shifted = cy as f32 - self.get_visual_y_shift(cursor_line_i);
+             let relative_cy = cy_shifted - self.scroll_y;
+             if relative_cy < 0.0 { self.scroll_y = cy_shifted; }
+             else if relative_cy > (rect.height() - self.metrics.line_height) { self.scroll_y = cy_shifted - (rect.height() - self.metrics.line_height); }
+        }
+
         let mut runs_to_draw = Vec::new();
         self.editor.with_buffer(|buffer| {
             for run in buffer.layout_runs() {
                 if !self.is_line_hidden(run.line_i) {
                     let y_shift = self.get_visual_y_shift(run.line_i);
-                    runs_to_draw.push((run.line_i, run.line_y, run.line_top, run.line_height, y_shift, run.glyphs.to_vec(), run.highlight(selection.and_then(|(s, e)| Some((s, e))).unwrap_or((cosmic_text::Cursor::new(0,0), cosmic_text::Cursor::new(0,0))).0, selection.and_then(|(s, e)| Some((s, e))).unwrap_or((cosmic_text::Cursor::new(0,0), cosmic_text::Cursor::new(0,0))).1)));
+                    // Check visibility against viewport
+                    let v_top = run.line_top - y_shift - self.scroll_y;
+                    if v_top > rect.height() || (v_top + run.line_height) < 0.0 { continue; }
+                    
+                    runs_to_draw.push((run.line_i, run.line_y, run.line_top, run.line_height, y_shift, run.glyphs.to_vec()));
                 }
             }
         });
 
         let mut last_para = None;
-        for (line_i, line_y, line_top, line_height, y_shift, glyphs, highlight) in runs_to_draw {
-            let current_y_off = y_off - y_shift;
+        for (line_i, line_y, line_top, line_height, y_shift, glyphs) in runs_to_draw {
+            let current_y_off = y_off - y_shift - self.scroll_y;
             
             if last_para != Some(line_i) {
                 let s = format!("{}", line_i + 1);
@@ -200,11 +217,16 @@ impl CodeEditorWidget {
             }
 
             if let Some((s_start, s_end)) = selection {
-                // We re-calculate highlight to avoid lifetime issues or pass it in
-                if let Some((hx, hw)) = highlight {
-                    let mut sp = Paint::default(); sp.set_color_rgba8(0x26, 0x4f, 0x78, 0xff);
-                    pixmap.fill_rect(Rect::from_xywh(x_off + hx, current_y_off + line_top, hw, line_height).unwrap(), &sp, Transform::identity(), None);
-                }
+                self.editor.with_buffer(|buffer| {
+                    if let Some(run) = buffer.layout_runs().nth(line_i) { // This is a bit slow but safe
+                        if let Some((hx, hw)) = run.highlight(s_start, s_end) {
+                            let mut sp = Paint::default(); sp.set_color_rgba8(0x26, 0x4f, 0x78, 0xff);
+                            pixmap.fill_rect(Rect::from_xywh(x_off + hx, current_y_off + line_top, hw, line_height).unwrap(), &sp, Transform::identity(), None);
+                        }
+                    } else {
+                         // Alternate: re-compute highlight from absolute indices if we had them.
+                    }
+                });
             }
 
             for glyph in glyphs {
@@ -240,7 +262,7 @@ impl CodeEditorWidget {
             });
             if let Some(y_shift) = cursor_render_info {
                 let mut cp = Paint::default(); cp.set_color_rgba8(0xff, 0xff, 0xff, 0xff);
-                pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, y_off - y_shift + cy as f32, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None);
+                pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, y_off - self.scroll_y - y_shift + cy as f32, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None);
             }
         }
     }
@@ -255,7 +277,7 @@ impl CodeEditorWidget {
                     for run in buffer.layout_runs() {
                         if self.is_line_hidden(run.line_i) { continue; }
                         let y_shift = self.get_visual_y_shift(run.line_i);
-                        let vy = y_off - y_shift + run.line_top;
+                        let vy = y_off - self.scroll_y - y_shift + run.line_top;
                         if y >= vy && y < vy + run.line_height {
                             toggle_li = Some(run.line_i);
                             break;
@@ -266,7 +288,7 @@ impl CodeEditorWidget {
         }
         if let Some(li) = toggle_li { self.my_editor.toggle_fold(li); return; }
 
-        let visual_y = y - y_off;
+        let visual_y = y - y_off + self.scroll_y;
         let mut total_shift = 0.0;
         self.editor.with_buffer(|buffer| {
             for run in buffer.layout_runs() {
@@ -281,7 +303,7 @@ impl CodeEditorWidget {
         });
 
         let ex = (x - x_off) as i32;
-        let ey = (y - y_off + total_shift) as i32;
+        let ey = (y - y_off + total_shift + self.scroll_y) as i32;
         
         if let Some(count) = click {
             match count {
@@ -442,6 +464,16 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y * 40.0,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32,
+                };
+                if let Some(widget) = &mut self.editor_widget {
+                    widget.scroll_y = (widget.scroll_y - amount).max(0.0);
+                    self.needs_redraw = true; self.window.as_ref().unwrap().request_redraw();
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
                     let mut acted = true;
@@ -470,7 +502,11 @@ impl ApplicationHandler for App {
                         }
                         Key::Character(c) if cmd && (c == "a" || c == "A") => {
                             widget.editor.action(&mut self.font_system, Action::Motion(Motion::BufferStart));
-                            widget.editor.action(&mut self.font_system, Action::Drag { x: 999999, y: 999999 });
+                            let mut last_y = 0.0;
+                            widget.editor.with_buffer(|b| { 
+                                if let Some(r) = b.layout_runs().last() { last_y = r.line_top + r.line_height; }
+                            });
+                            widget.editor.action(&mut self.font_system, Action::Drag { x: 999999, y: last_y as i32 });
                         }
                         _ => {
                             if let Some(t) = event.text {
