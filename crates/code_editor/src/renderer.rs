@@ -77,7 +77,7 @@ pub struct CodeEditorWidget {
     glyph_cache: HashMap<(cosmic_text::CacheKey, Color), CachedGlyph>,
     digit_cache: Vec<CachedGlyph>,
     needs_reshape: bool,
-    pub scroll_y: f32, // Professional scrolling state
+    pub scroll_y: f32,
 }
 
 impl CodeEditorWidget {
@@ -163,11 +163,17 @@ impl CodeEditorWidget {
         let mut side_paint = Paint::default(); side_paint.set_color_rgba8(0x2d, 0x2d, 0x2d, 0xff);
         pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.top(), SIDEBAR_WIDTH * SCALE, rect.height()).unwrap(), &side_paint, Transform::identity(), None);
 
+        let cursor_state = self.editor.cursor();
         let selection = self.editor.selection_bounds();
+        let mut selected_text = None;
+        if let Some(t) = self.editor.copy_selection() { if t.len() > 1 && t.len() < 50 && !t.contains('\n') { selected_text = Some(t); } }
 
-        // 1. Check Auto-Scroll to Cursor
+        // Find Partner Bracket
+        let partner_bracket = self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def)
+            .or_else(|| if cursor_state.index > 0 { self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index - 1, &self.lang_def) } else { None });
+
+        // Auto-Scroll Logic
         if let Some((_, cy)) = self.editor.cursor_position() {
-             // Find line for cy
              let mut cursor_line_i = 0;
              self.editor.with_buffer(|b| {
                  for r in b.layout_runs() { if cy >= r.line_top as i32 && cy < (r.line_top + r.line_height) as i32 { cursor_line_i = r.line_i; break; } }
@@ -183,19 +189,38 @@ impl CodeEditorWidget {
             for run in buffer.layout_runs() {
                 if !self.is_line_hidden(run.line_i) {
                     let y_shift = self.get_visual_y_shift(run.line_i);
-                    // Check visibility against viewport
                     let v_top = run.line_top - y_shift - self.scroll_y;
                     if v_top > rect.height() || (v_top + run.line_height) < 0.0 { continue; }
-                    
-                    runs_to_draw.push((run.line_i, run.line_y, run.line_top, run.line_height, y_shift, run.glyphs.to_vec()));
+                    runs_to_draw.push((run.line_i, run.line_y, run.line_top, run.line_height, y_shift, run.glyphs.to_vec(), run.text.to_string()));
                 }
             }
         });
 
+        // 2. Highlighting Features
+        // --- Current Line
+        let mut cur_paint = Paint::default(); cur_paint.set_color_rgba8(0x32, 0x32, 0x32, 0xff);
+        let cy_raw = self.editor.cursor_position().map(|(_, y)| y as f32).unwrap_or(-1000.0);
+        let mut cursor_line_idx = 0;
+        self.editor.with_buffer(|b| { for r in b.layout_runs() { if cy_raw >= (r.line_top as i32) as f32 && cy_raw < (r.line_top + r.line_height) as i32 as f32 { cursor_line_idx = r.line_i; } } });
+
         let mut last_para = None;
-        for (line_i, line_y, line_top, line_height, y_shift, glyphs) in runs_to_draw {
+        for (line_i, line_y, line_top, line_height, y_shift, glyphs, line_text) in runs_to_draw {
             let current_y_off = y_off - y_shift - self.scroll_y;
             
+            // --- Current Line Highlight
+            if line_i == cursor_line_idx {
+                pixmap.fill_rect(Rect::from_xywh(rect.left() + SIDEBAR_WIDTH * SCALE, current_y_off + line_top, rect.width() - SIDEBAR_WIDTH * SCALE, line_height).unwrap(), &cur_paint, Transform::identity(), None);
+            }
+
+            // --- Indentation Guides
+            let mut guide_paint = Paint::default(); guide_paint.set_color_rgba8(0x40, 0x40, 0x40, 0xff);
+            let tab_w = 4.0 * 8.4 * SCALE; // approximate monospace width
+            let leading_spaces = line_text.chars().take_while(|c: &char| c.is_whitespace()).count();
+            for i in 1..=(leading_spaces / 4) {
+                let gx = x_off + (i as f32 * tab_w);
+                pixmap.fill_rect(Rect::from_xywh(gx, current_y_off + line_top, 1.0, line_height).unwrap(), &guide_paint, Transform::identity(), None);
+            }
+
             if last_para != Some(line_i) {
                 let s = format!("{}", line_i + 1);
                 let mut digit_x = (rect.left() + SIDEBAR_WIDTH * SCALE) as i32 - 15;
@@ -216,20 +241,43 @@ impl CodeEditorWidget {
                 last_para = Some(line_i);
             }
 
+            // --- Selection Occurrences Highlight
+            if let Some(target) = &selected_text {
+                let mut start = 0;
+                while let Some(idx) = line_text[start..].find(target) {
+                    let absolute_idx = start + idx;
+                    let mut head_x = None; let mut tail_x = 0.0;
+                    for g in &glyphs {
+                        if g.start >= absolute_idx && g.end <= absolute_idx + target.len() {
+                            if head_x.is_none() { head_x = Some(g.x); }
+                            tail_x = g.x + g.w;
+                        }
+                    }
+                    if let Some(hx) = head_x {
+                        let mut match_paint = Paint::default(); match_paint.set_color_rgba8(0x3e, 0x44, 0x51, 0xff);
+                        pixmap.fill_rect(Rect::from_xywh(x_off + hx, current_y_off + line_top, tail_x - hx, line_height).unwrap(), &match_paint, Transform::identity(), None);
+                    }
+                    start += idx + target.len();
+                }
+            }
+
             if let Some((s_start, s_end)) = selection {
                 self.editor.with_buffer(|buffer| {
-                    if let Some(run) = buffer.layout_runs().nth(line_i) { // This is a bit slow but safe
+                    if let Some(run) = buffer.layout_runs().nth(line_i) {
                         if let Some((hx, hw)) = run.highlight(s_start, s_end) {
                             let mut sp = Paint::default(); sp.set_color_rgba8(0x26, 0x4f, 0x78, 0xff);
                             pixmap.fill_rect(Rect::from_xywh(x_off + hx, current_y_off + line_top, hw, line_height).unwrap(), &sp, Transform::identity(), None);
                         }
-                    } else {
-                         // Alternate: re-compute highlight from absolute indices if we had them.
                     }
                 });
             }
 
-            for glyph in glyphs {
+            for glyph in &glyphs {
+                let mut is_partner = false;
+                if let Some((pl, pi)) = partner_bracket {
+                    if line_i == pl && glyph.start == pi { is_partner = true; }
+                }
+
                 let pg = glyph.physical((x_off, current_y_off + line_y), 1.0);
                 let gc = glyph.color_opt.unwrap_or(Color::rgb(0xee, 0xee, 0xee));
                 let cg = self.glyph_cache.entry((pg.cache_key, gc)).or_insert_with(|| {
@@ -244,6 +292,11 @@ impl CodeEditorWidget {
                     } else { CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 } }
                 });
                 pixmap.draw_pixmap(pg.x + cg.left, pg.y - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                
+                if is_partner {
+                    let mut bp = Paint::default(); bp.set_color_rgba8(0x56, 0x9c, 0xd6, 0xff);
+                    pixmap.fill_rect(Rect::from_xywh(x_off + glyph.x, current_y_off + line_top + line_height - 2.0, glyph.w, 2.0).unwrap(), &bp, Transform::identity(), None);
+                }
             }
         }
 
@@ -503,14 +556,26 @@ impl ApplicationHandler for App {
                         Key::Character(c) if cmd && (c == "a" || c == "A") => {
                             widget.editor.action(&mut self.font_system, Action::Motion(Motion::BufferStart));
                             let mut last_y = 0.0;
-                            widget.editor.with_buffer(|b| { 
-                                if let Some(r) = b.layout_runs().last() { last_y = r.line_top + r.line_height; }
-                            });
+                            widget.editor.with_buffer(|b| { if let Some(r) = b.layout_runs().last() { last_y = r.line_top + r.line_height; } });
                             widget.editor.action(&mut self.font_system, Action::Drag { x: 999999, y: last_y as i32 });
                         }
                         _ => {
                             if let Some(t) = event.text {
-                                if !cmd { for ch in t.chars() { if !ch.is_control() { widget.editor.action(&mut self.font_system, Action::Insert(ch)); } } }
+                                if !cmd { 
+                                    for ch in t.chars() { 
+                                        if !ch.is_control() { 
+                                            widget.editor.action(&mut self.font_system, Action::Insert(ch)); 
+                                            let closer = match ch {
+                                                '(' => Some(')'), '{' => Some('}'), '[' => Some(']'), '"' => Some('"'), '\'' => Some('\''),
+                                                _ => None
+                                            };
+                                            if let Some(c) = closer {
+                                                widget.editor.action(&mut self.font_system, Action::Insert(c));
+                                                widget.editor.action(&mut self.font_system, Action::Motion(Motion::Left));
+                                            }
+                                        } 
+                                    } 
+                                }
                                 else { acted = false; }
                             } else { acted = false; }
                         }

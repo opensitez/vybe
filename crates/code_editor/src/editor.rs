@@ -260,5 +260,48 @@ impl Editor {
         self.folds.sort_by_key(|(s, _)| *s);
     }
 
+    pub fn find_matching_bracket(&self, line_idx: usize, col: usize, lang: &LanguageDef) -> Option<(usize, usize)> {
+        let line = self.rope.line(line_idx).to_string();
+        if col >= line.len() { return None; }
+        let ch = line.chars().nth(col)?;
+
+        for (open, close) in &lang.brackets {
+            let o_ch = open.chars().next()?;
+            let c_ch = close.chars().next()?;
+            if ch == o_ch {
+                // Find closing
+                let mut depth = 1;
+                for li in line_idx..self.rope.len_lines() {
+                    let text = self.rope.line(li).to_string();
+                    let start_col = if li == line_idx { col + 1 } else { 0 };
+                    for (ci, c) in text.chars().enumerate().skip(start_col) {
+                        if c == o_ch { depth += 1; }
+                        else if c == c_ch {
+                            depth -= 1;
+                            if depth == 0 { return Some((li, ci)); }
+                        }
+                    }
+                }
+            } else if ch == c_ch {
+                // Find opening (backwards)
+                let mut depth = 1;
+                for li in (0..=line_idx).rev() {
+                    let text = self.rope.line(li).to_string();
+                    let chars: Vec<char> = text.chars().collect();
+                    let end_col = if li == line_idx { col } else { chars.len() };
+                    for ci in (0..end_col).rev() {
+                        let c = chars[ci];
+                        if c == c_ch { depth += 1; }
+                        else if c == o_ch {
+                            depth -= 1;
+                            if depth == 0 { return Some((li, ci)); }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn folds(&self) -> &Vec<(usize, usize)> { &self.folds }
 }
