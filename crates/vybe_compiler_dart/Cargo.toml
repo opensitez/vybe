@@ -1,0 +1,11 @@
+[package]
+name = "vybe_compiler_dart"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_bytecode = { workspace = true }
+vybe_parser_dart = { workspace = true }
+vybe_host = { workspace = true }
