@@ -189,17 +189,16 @@ impl Editor {
     // Expose rope for simple manipulations from renderer for now
     pub fn rope(&self) -> &Rope { &self.rope }
 
-    /// Remove a single char at the given byte position (if valid).
-    pub fn remove_char_at_byte(&mut self, byte_pos: usize, lang: &LanguageDef) {
-        if byte_pos == 0 { return; }
-        let char_pos = self.rope.byte_to_char(byte_pos);
-        if char_pos == 0 { return; }
-        // remove previous char
-        let remove_from = char_pos - 1;
-        self.rope.remove(remove_from..remove_from+1);
-        // retokenize affected lines
-        let line = self.rope.char_to_line(remove_from);
-        let end_line = std::cmp::min(self.rope.len_lines() - 1, line + 3);
+    /// Remove a range of text by byte positions.
+    pub fn delete_range(&mut self, start_byte: usize, end_byte: usize, lang: &LanguageDef) {
+        if start_byte >= end_byte { return; }
+        let start_char = self.rope.byte_to_char(start_byte);
+        let end_char = self.rope.byte_to_char(end_byte);
+        self.rope.remove(start_char..end_char);
+        
+        // Retokenize affected area
+        let line = self.rope.char_to_line(start_char);
+        let end_line = std::cmp::min(self.rope.len_lines() - 1, line + 5);
         self.retokenize_range(line, end_line, lang);
     }
 
@@ -403,5 +402,19 @@ impl Editor {
         if line_idx >= self.rope.len_lines() { return; }
         let current = self.rope.line(line_idx).to_string();
         self.rope.insert(self.rope.line_to_char(line_idx + 1), &current);
+    }
+
+    pub fn insert_string(&mut self, byte_pos: usize, text: &str, lang: &LanguageDef) -> (usize, usize) {
+        let char_pos = self.rope.byte_to_char(byte_pos);
+        self.rope.insert(char_pos, text);
+        
+        // Handle line re-tokenization (roughly, for simplicity we re-tokenize the whole file for now 
+        // to avoid sync issues, but normally we'd isolate it)
+        self.retokenize_all(lang);
+        
+        let new_char_idx = char_pos + text.chars().count();
+        let new_line = self.rope.char_to_line(new_char_idx);
+        let new_col = new_char_idx - self.rope.line_to_char(new_line);
+        (new_line, new_col)
     }
 }

@@ -937,20 +937,45 @@ impl CodeEditorWidget {
                 if !selected_text.is_some() {
                     let cli = cursor_state.line; let cur = cursor_state.index;
                     let line_text = buffer.lines[cli].text();
-                    let mut start = cur; while start > 0 && line_text.chars().nth(start-1).map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) { start -= 1; }
-                    let mut end = cur; while end < line_text.len() && line_text.chars().nth(end).map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) { end += 1; }
+                    
+                    // Safely find word boundaries using byte offsets
+                    let mut start = cur;
+                    while start > 0 {
+                        if let Some(c) = line_text[..start].chars().next_back() {
+                            if c.is_alphanumeric() || c == '_' {
+                                start -= c.len_utf8();
+                                continue;
+                            }
+                        }
+                        break;
+                    }
+                    let mut end = cur;
+                    while end < line_text.len() {
+                        if let Some(c) = line_text[end..].chars().next() {
+                            if c.is_alphanumeric() || c == '_' {
+                                end += c.len_utf8();
+                                continue;
+                            }
+                        }
+                        break;
+                    }
+
                     if end > start {
                         let word = &line_text[start..end];
                         if word.len() > 1 && !self.lang_def.keywords.contains(word) {
                             let mut s = 0;
-                            while let Some(pos) = text[s..].find(word) {
-                                let rp = s + pos; let mut gx = 0.0; let mut gw = 0.0;
-                                for g in glyphs { if g.start >= rp && g.start < rp + word.len() { if gw == 0.0 { gx = g.x; } gw += g.w; } }
-                                if gw > 0.0 { 
-                                    let mut mp = Paint::default(); mp.set_color_rgba8(theme.match_highlight.r(), theme.match_highlight.g(), theme.match_highlight.b(), 80);
-                                    pixmap.fill_rect(Rect::from_xywh(x_off + gx, cyo + adj_lt, gw, lh).unwrap(), &mp, Transform::identity(), None); 
+                            while s < line_text.len() {
+                                if let Some(pos) = line_text[s..].find(word) {
+                                    let rp = s + pos; let mut gx = 0.0; let mut gw = 0.0;
+                                    for g in glyphs { if g.start >= rp && g.start < rp + word.len() { if gw == 0.0 { gx = g.x; } gw += g.w; } }
+                                    if gw > 0.0 { 
+                                        let mut mp = Paint::default(); mp.set_color_rgba8(theme.match_highlight.r(), theme.match_highlight.g(), theme.match_highlight.b(), 80);
+                                        pixmap.fill_rect(Rect::from_xywh(x_off + gx, cyo + adj_lt, gw, lh).unwrap(), &mp, Transform::identity(), None); 
+                                    }
+                                    s = rp + word.len();
+                                } else {
+                                    break;
                                 }
-                                s = rp + 1;
                             }
                         }
                     }
@@ -1643,13 +1668,13 @@ impl ApplicationHandler for App {
                         Key::Character(c) if alt && (c == "z" || c == "Z") => { w.wrap_lines = !w.wrap_lines; w.needs_reshape = true; }
                         Key::Character(c) if cmd && (c == "m" || c == "M") => { if let Some(p) = w.my_editor.find_matching_bracket(w.editor.cursor().line, w.editor.cursor().index, &w.lang_def) { w.editor.set_cursor(Cursor::new(p.0, p.1)); } }
                         Key::Character(c) if cmd && (c == "p" || c == "P") => { self.is_quick_open = !self.is_quick_open; self.quick_open_query.clear(); }
-                        Key::Named(NamedKey::Home) => {
-                             let cli = w.editor.cursor().line; let cur = w.editor.cursor().index;
-                             let text = w.editor.with_buffer(|b| b.lines[cli].text().to_string());
-                             let first = text.chars().take_while(|c| c.is_whitespace()).count();
-                             if cur == first { w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); }
-                             else { w.editor.set_cursor(Cursor::new(cli, first)); }
-                        }
+                         Key::Named(NamedKey::Home) => {
+                              let cli = w.editor.cursor().line; let cur = w.editor.cursor().index;
+                              let line_text = w.editor.with_buffer(|b| b.lines[cli].text().to_string());
+                              let first_byte_idx = line_text.char_indices().find(|&(_, c)| !c.is_whitespace()).map(|(i, _)| i).unwrap_or(line_text.len());
+                              if cur == first_byte_idx { w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); }
+                              else { w.editor.set_cursor(Cursor::new(cli, first_byte_idx)); }
+                         }
                         Key::Named(NamedKey::End) => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
                         Key::Character(c) if cmd && shift && (c == "k" || c == "K") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::End)); w.editor.action(&mut self.font_system, Action::Backspace); w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); let len = w.editor.with_buffer(|b| b.lines[w.editor.cursor().line].text().len()); for _ in 0..len { w.editor.action(&mut self.font_system, Action::Delete); } w.editor.action(&mut self.font_system, Action::Delete); }
                         Key::Named(NamedKey::Backspace) => if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); w.editor.action(&mut self.font_system, Action::Backspace); tab.is_modified = true; }
@@ -1678,7 +1703,35 @@ impl ApplicationHandler for App {
                              if let Some(cb) = &mut self.clipboard { 
                                  if let Ok(t) = cb.get_text() { 
                                      w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
-                                     for ch in t.chars() { w.editor.action(&mut self.font_system, Action::Insert(ch)); } 
+                                     
+                                     // Handle selection replacement
+                                     if let Some((start, end)) = w.editor.selection_bounds() {
+                                         let b = |c: Cursor, ed: &CodeEditorWidget| ed.editor.with_buffer(|buf| {
+                                             let mut total = 0;
+                                             // cosmic-text 0.18 cursor indices are reliable. 
+                                             for i in 0..c.line { total += buf.lines[i].text().len() + 1; }
+                                             total + c.index
+                                         });
+                                         let s_off = b(start, w);
+                                         let e_off = b(end, w);
+                                         w.my_editor.delete_range(s_off.min(e_off), s_off.max(e_off), &w.lang_def);
+                                         w.editor.action(&mut self.font_system, Action::Delete);
+                                     }
+
+                                     let byte_off = w.editor.with_buffer(|b| {
+                                         let cli = w.editor.cursor().line;
+                                         let mut total = 0;
+                                         for i in 0..cli { total += b.lines[i].text().len() + 1; }
+                                         total + w.editor.cursor().index
+                                     });
+                                     
+                                     let (new_line, new_col) = w.my_editor.insert_string(byte_off, &t, &w.lang_def);
+                                     
+                                     // Sync cosmic-text
+                                     w.editor.with_buffer_mut(|b| {
+                                         b.set_text(&mut self.font_system, &w.my_editor.rope().to_string(), &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
+                                     });
+                                     w.editor.set_cursor(Cursor::new(new_line, new_col));
                                      tab.is_modified = true; 
                                  } 
                              } 
@@ -1720,12 +1773,16 @@ impl ApplicationHandler for App {
                             if shift {
                                 if let Some((text, line, col)) = w.my_editor.redo(w.editor.cursor().line, w.editor.cursor().index) {
                                     w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-                                    w.editor.set_cursor(Cursor::new(line, col));
+                                    let safe_line = line.min(w.editor.with_buffer(|b| b.lines.len().saturating_sub(1)));
+                                    let safe_col = w.editor.with_buffer(|b| if safe_line < b.lines.len() { col.min(b.lines[safe_line].text().len()) } else { 0 });
+                                    w.editor.set_cursor(Cursor::new(safe_line, safe_col));
                                 }
                             } else {
                                 if let Some((text, line, col)) = w.my_editor.undo(w.editor.cursor().line, w.editor.cursor().index) {
                                     w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-                                    w.editor.set_cursor(Cursor::new(line, col));
+                                    let safe_line = line.min(w.editor.with_buffer(|b| b.lines.len().saturating_sub(1)));
+                                    let safe_col = w.editor.with_buffer(|b| if safe_line < b.lines.len() { col.min(b.lines[safe_line].text().len()) } else { 0 });
+                                    w.editor.set_cursor(Cursor::new(safe_line, safe_col));
                                 }
                             }
                         }
@@ -1737,8 +1794,27 @@ impl ApplicationHandler for App {
                         }
                         _ => { if let Some(t) = event.text { if !cmd {
                             w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
+                            
+                            // Handling selection replacement on type
+                            if let Some((start, end)) = w.editor.selection_bounds() {
+                                 let b = |c: Cursor, ed: &CodeEditorWidget| ed.editor.with_buffer(|buf| {
+                                    let mut total = 0;
+                                    for i in 0..c.line { total += buf.lines[i].text().len() + 1; }
+                                    total + c.index
+                                });
+                                let s_off = b(start, w);
+                                let e_off = b(end, w);
+                                w.my_editor.delete_range(s_off.min(e_off), s_off.max(e_off), &w.lang_def);
+                                // cosmic-text Action::Insert handles UI deletion
+                            }
+
                             for ch in t.chars() { if !ch.is_control() || ch == '\t' || ch == '\n' { if w.is_search_open { if w.is_replace_open && alt { w.replace_query.push(ch); } else { w.search_query.pop(); w.search_query.push(ch); } } else { 
-                            let mut skip = false; if let Some(cl) = match ch { ')'=>Some(')'),'}'=>Some('}'),']'=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { let cli = w.editor.cursor().line; let cur = w.editor.cursor().index; let next_ch = w.editor.with_buffer(|b| b.lines[cli].text().chars().nth(cur)); if next_ch == Some(cl) { w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)); skip = true; } }
+                             let mut skip = false; if let Some(cl) = match ch { ')'=>Some(')'),'}'=>Some('}'),']'=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { 
+                                 let cli = w.editor.cursor().line; let cur = w.editor.cursor().index; 
+                                 let line_text = w.editor.with_buffer(|b| b.lines[cli].text().to_string());
+                                 let next_ch = line_text[cur..].chars().next();
+                                 if next_ch == Some(cl) { w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)); skip = true; } 
+                             }
                             if !skip { w.editor.action(&mut self.font_system, Action::Insert(ch)); tab.is_modified = true; if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.editor.action(&mut self.font_system, Action::Insert(cl)); w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)); } }
                         } } } } else { acted = false; } } else { acted = false; } }
                     }
