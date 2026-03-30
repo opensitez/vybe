@@ -100,7 +100,13 @@ pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: 
                             if lang.keywords.contains(&text) { theme.kw }
                             else if lang.type_keywords.contains(&text) { theme.type_kw }
                             else if lang.constants.contains(&text) { theme.number }
-                            else { theme.text }
+                            else {
+                                // Heuristic: if identifier is followed by '(', highlight as function
+                                let next_char = my_editor.rope.chars().nth(my_editor.rope.byte_to_char(token.end));
+                                if next_char == Some('(') { theme.kw }
+                                else if text.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) { theme.type_kw }
+                                else { theme.text }
+                            }
                         }
                         _ => theme.text,
                     };
@@ -130,6 +136,7 @@ pub struct CodeEditorWidget {
     replace_query: String,
     is_search_open: bool,
     is_replace_open: bool,
+    pub case_sensitive: bool,
     context_menu: Option<((f32, f32), Vec<String>)>,
     font_size: f32,
     pub show_whitespace: bool,
@@ -154,7 +161,7 @@ impl CodeEditorWidget {
         
         lsp.send(LspRequest::Init(text, "rust".to_string(), uri));
 
-        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, context_menu: None, font_size, show_whitespace: false, lsp, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false };
+        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, lsp, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false };
         widget.update_digit_cache(font_system);
         widget
     }
@@ -255,14 +262,16 @@ impl CodeEditorWidget {
         if self.search_query.is_empty() { return; }
         let cursor = self.editor.cursor();
         let total = self.my_editor.rope.to_string();
+        let (query, content) = if self.case_sensitive { (self.search_query.clone(), total) } else { (self.search_query.to_lowercase(), total.to_lowercase()) };
+        
         let mut start = 0;
         self.editor.with_buffer(|b| { for l in b.lines.iter().take(cursor.line) { start += l.text().len() + 1; } start += cursor.index; });
-        let match_idx = total[start.min(total.len())..].find(&self.search_query).map(|i| i + start).or_else(|| total.find(&self.search_query));
+        let match_idx = content[start.min(content.len())..].find(&query).map(|i| i + start).or_else(|| content.find(&query));
         if let Some(idx) = match_idx {
             let mut cb: usize = 0; 
             let mut tl: usize = 0; 
             let mut tc: usize = 0;
-            for (li, text) in total.split('\n').enumerate() { 
+            for (li, text) in content.split('\n').enumerate() { 
                 let l_len = text.len();
                 if idx >= cb && idx <= cb + l_len { tl = li; tc = idx - cb; break; } 
                 cb += l_len + 1; 
@@ -313,9 +322,21 @@ impl CodeEditorWidget {
         let (x_off, y_off) = self.get_offsets(rect);
         let mut sp = Paint::default(); sp.set_color_rgba8(self.theme.sidebar_bg.r(), self.theme.sidebar_bg.g(), self.theme.sidebar_bg.b(), self.theme.sidebar_bg.a());
         pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.top(), GUTTER_WIDTH * SCALE, rect.height()).unwrap(), &sp, Transform::identity(), None);
-        // Draw vertical separator for Gutter
-        let mut gp = Paint::default(); gp.set_color_rgba8(60,60,60,255);
-        pixmap.fill_rect(Rect::from_xywh(rect.left() + (GUTTER_WIDTH - 2.0) * SCALE, rect.top(), 1.0 * SCALE, rect.height()).unwrap(), &gp, Transform::identity(), None);
+        
+        // Git Gutter Indicator: Emerald bar for modified lines (simulated for now)
+        let mut gp = Paint::default(); gp.set_color_rgba8(34, 197, 94, 200); // emerald-500
+        pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE - 3.0 * SCALE, rect.top(), 2.0 * SCALE, rect.height()).unwrap(), &gp, Transform::identity(), None);
+
+        let mut sep_p = Paint::default(); sep_p.set_color_rgba8(60,60,60,255);
+        pixmap.fill_rect(Rect::from_xywh(rect.left() + (GUTTER_WIDTH - 2.0) * SCALE, rect.top(), 1.0 * SCALE, rect.height()).unwrap(), &sep_p, Transform::identity(), None);
+
+        // 80-Character Ruler: A subtle vertical guide
+        let char_w = 8.4 * (self.metrics.font_size / 14.0) * SCALE;
+        let ruler_x = x_off + (80.0 * char_w);
+        if ruler_x < rect.right() - MINIMAP_WIDTH * SCALE {
+            let mut rp = Paint::default(); rp.set_color_rgba8(255, 255, 255, 20);
+            pixmap.fill_rect(Rect::from_xywh(ruler_x, rect.top(), 1.0, rect.height()).unwrap(), &rp, Transform::identity(), None);
+        }
 
         let cursor_state = self.editor.cursor(); let selection = self.editor.selection_bounds();
         let selected_text = self.editor.copy_selection();
@@ -354,6 +375,7 @@ impl CodeEditorWidget {
                 // Vertically center baseline in line height
                 let centering_v = (lh - metrics.font_size) / 2.0;
                 let adj_ly = adj_lt + metrics.font_size - centering_v + 4.0 * SCALE;
+                
                 let cyo = y_off - scroll_y;
                 let v_t = adj_lt + cyo;
                 
@@ -363,7 +385,15 @@ impl CodeEditorWidget {
                 let glyphs = run.glyphs;
                 let text = run.text;
                 
-                if i == cursor_state.line { pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE, cyo + adj_lt, rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE, lh).unwrap(), &cp, Transform::identity(), None); }
+                // Aura Glow: Current line highlight with subtle gradient/border
+                if i == cursor_state.line { 
+                    let mut cp = Paint::default(); 
+                    cp.set_color_rgba8(theme.current_line.r(), theme.current_line.g(), theme.current_line.b(), 100);
+                    pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE, cyo + adj_lt, rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE, lh).unwrap(), &cp, Transform::identity(), None); 
+                    // Subtle bottom border for the glow effect
+                    let mut gp = Paint::default(); gp.set_color_rgba8(theme.kw.r(), theme.kw.g(), theme.kw.b(), 40);
+                    pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE, cyo + adj_lt + lh - 1.0, rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE, 1.0).unwrap(), &gp, Transform::identity(), None);
+                }
                 if let Some(st) = &selected_text { 
                     if st.len() > 1 && !st.contains('\n') { 
                         let mut start = 0; 
@@ -423,6 +453,29 @@ impl CodeEditorWidget {
                     });
                     pixmap.draw_pixmap(pg.x + cg.left, pg.y - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
                     if ip { let mut bp = Paint::default(); bp.set_color_rgba8(theme.bracket.r(), theme.bracket.g(), theme.bracket.b(), theme.bracket.a()); pixmap.fill_rect(Rect::from_xywh(x_off + g.x, cyo + adj_lt + lh - 2.0, g.w, 2.0).unwrap(), &bp, Transform::identity(), None); }
+                }
+
+                // Match Highlighting: highlight occurrences of word under cursor
+                if !selected_text.is_some() {
+                    let cli = cursor_state.line; let cur = cursor_state.index;
+                    let line_text = buffer.lines[cli].text();
+                    let mut start = cur; while start > 0 && line_text.chars().nth(start-1).map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) { start -= 1; }
+                    let mut end = cur; while end < line_text.len() && line_text.chars().nth(end).map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) { end += 1; }
+                    if end > start {
+                        let word = &line_text[start..end];
+                        if word.len() > 1 && !self.lang_def.keywords.contains(word) {
+                            let mut s = 0;
+                            while let Some(pos) = text[s..].find(word) {
+                                let rp = s + pos; let mut gx = 0.0; let mut gw = 0.0;
+                                for g in glyphs { if g.start >= rp && g.start < rp + word.len() { if gw == 0.0 { gx = g.x; } gw += g.w; } }
+                                if gw > 0.0 { 
+                                    let mut mp = Paint::default(); mp.set_color_rgba8(theme.match_highlight.r(), theme.match_highlight.g(), theme.match_highlight.b(), 80);
+                                    pixmap.fill_rect(Rect::from_xywh(x_off + gx, cyo + adj_lt, gw, lh).unwrap(), &mp, Transform::identity(), None); 
+                                }
+                                s = rp + 1;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -510,6 +563,16 @@ impl CodeEditorWidget {
                  let mut cp = Paint::default(); cp.set_color_rgba8(255, 255, 255, 255);
                  pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, final_y, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None);
              }
+        }
+        
+        // 6. Context Menu Overlay
+        if let Some(((mx, my), items)) = &self.context_menu {
+            let mut bg = Paint::default(); bg.set_color_rgba8(40, 40, 45, 255);
+            let mw = 120.0 * SCALE; let mh = items.len() as f32 * 25.0 * SCALE;
+            pixmap.fill_rect(Rect::from_xywh(*mx * SCALE, *my * SCALE, mw, mh).unwrap(), &bg, Transform::identity(), None);
+            for (i, item) in items.iter().enumerate() {
+                App::draw_ui_text(pixmap, fs, sc, item, *mx * SCALE + 10.0 * SCALE, *my * SCALE + (i as f32 * 25.0 + 5.0) * SCALE, Color::rgb(220, 220, 220));
+            }
         }
     }
 
@@ -619,6 +682,10 @@ struct App {
     last_lsp_update: Instant,
     pending_lsp_update: bool,
     lsp: Arc<LspClient>,
+    is_quick_open: bool,
+    quick_open_query: String,
+    tab_scroll_x: f32,
+    current_theme_idx: usize,
 }
 
 impl App {
@@ -653,6 +720,10 @@ impl App {
             is_dragging: false, needs_redraw: true,
             last_lsp_update: Instant::now(), pending_lsp_update: false,
             lsp: Arc::new(LspClient::new()),
+            is_quick_open: false,
+            quick_open_query: String::new(),
+            tab_scroll_x: 0.0,
+            current_theme_idx: 0,
         }
     }
     fn render(&mut self) {
@@ -700,62 +771,65 @@ impl App {
         let mut tp = Paint::default(); tp.set_color_rgba8(37,37,38,255);
         pix.fill_rect(Rect::from_xywh(ed_start_x, 0.0, pix.width() as f32 - ed_start_x, TAB_BAR_HEIGHT * SCALE).unwrap(), &tp, Transform::identity(), None);
 
-        let mut tx_off = ed_start_x;
-        for i in 0..self.tabs.len() {
-            let active = i == self.active_tab;
-            let tw = 160.0 * SCALE;
-            
-            // Render Background & Underline
-            if active {
-                let mut ap = Paint::default(); ap.set_color_rgba8(30,30,30,255);
-                pix.fill_rect(Rect::from_xywh(tx_off, 0.0, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ap, Transform::identity(), None);
-                let mut up = Paint::default(); up.set_color_rgba8(0,122,204,255);
-                pix.fill_rect(Rect::from_xywh(tx_off, (TAB_BAR_HEIGHT - 2.0) * SCALE, tw, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
-            }
+            let mut tx_off = ed_start_x + self.tab_scroll_x;
+            for i in 0..self.tabs.len() {
+                if tx_off + 160.0 * SCALE < ed_start_x { tx_off += 160.0 * SCALE; continue; }
+                if tx_off > pix.width() as f32 { break; }
+                
+                let active = i == self.active_tab;
+                let tw = 160.0 * SCALE;
+                
+                // Render Background & Underline
+                if active {
+                    let mut ap = Paint::default(); ap.set_color_rgba8(30,30,30,255);
+                    pix.fill_rect(Rect::from_xywh(tx_off, 0.0, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ap, Transform::identity(), None);
+                    let mut up = Paint::default(); up.set_color_rgba8(0,122,204,255);
+                    pix.fill_rect(Rect::from_xywh(tx_off, (TAB_BAR_HEIGHT - 2.0) * SCALE, tw, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
+                }
 
-            // Get tab properties for name calculation
-            let (is_sticky, name, is_modified) = {
-                let t = &self.tabs[i];
-                (t.is_sticky, t.name.clone(), t.is_modified)
-            };
-            let name_str = if is_sticky { name } else { format!("{} [P]", name) };
-            let col = if active { Color::rgb(255,255,255) } else { Color::rgb(160,160,160) };
+                // Get tab properties for name calculation
+                let (is_sticky, name, is_modified) = {
+                    let t = &self.tabs[i];
+                    (t.is_sticky, t.name.clone(), t.is_modified)
+                };
+                let name_str = if is_sticky { name } else { format!("{} [P]", name) };
+                let col = if active { Color::rgb(255,255,255) } else { Color::rgb(160,160,160) };
 
-            // Tab Text Caching & Rendering
-            let tab_mut = &mut self.tabs[i];
-            if tab_mut.buffer.is_none() {
-                let mut lab = Buffer::new(&mut self.font_system, Metrics::new(14.0,20.0).scale(SCALE));
-                lab.set_text(&mut self.font_system, &name_str, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None);
-                lab.shape_until_scroll(&mut self.font_system, false);
-                tab_mut.buffer = Some(lab);
-            }
-            if let Some(lab) = &tab_mut.buffer {
-                for r in lab.layout_runs() {
-                    for g in r.glyphs {
-                        let pg = g.physical((tx_off + 10.0 * SCALE, 10.0 * SCALE + r.line_y), 1.0);
-                        if let Some(im) = self.swash_cache.get_image(&mut self.font_system, pg.cache_key) {
-                            let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap();
-                            let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
-                            for (idx, &al) in im.data.iter().enumerate() {
-                                let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
-                                p.pixels_mut()[idx] = ColorU8::from_rgba((cr as f32 * af) as u8, (cg as f32 * af) as u8, (cb as f32 * af) as u8, (255.0 * af) as u8).premultiply();
+                // Tab Text Caching & Rendering
+                let tab_mut = &mut self.tabs[i];
+                if tab_mut.buffer.is_none() {
+                    let mut lab = Buffer::new(&mut self.font_system, Metrics::new(14.0,20.0).scale(SCALE));
+                    lab.set_text(&mut self.font_system, &name_str, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None);
+                    lab.shape_until_scroll(&mut self.font_system, false);
+                    tab_mut.buffer = Some(lab);
+                }
+                if let Some(lab) = &tab_mut.buffer {
+                    for r in lab.layout_runs() {
+                        for g in r.glyphs {
+                            let pg = g.physical((tx_off + 10.0 * SCALE, 10.0 * SCALE + r.line_y), 1.0);
+                            if let Some(im) = self.swash_cache.get_image(&mut self.font_system, pg.cache_key) {
+                                let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap();
+                                let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
+                                for (idx, &al) in im.data.iter().enumerate() {
+                                    let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
+                                    p.pixels_mut()[idx] = ColorU8::from_rgba((cr as f32 * af) as u8, (cg as f32 * af) as u8, (cb as f32 * af) as u8, (255.0 * af) as u8).premultiply();
+                                }
+                                pix.draw_pixmap(pg.x + im.placement.left, pg.y - im.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
                             }
-                            pix.draw_pixmap(pg.x + im.placement.left, pg.y - im.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
                         }
                     }
                 }
-            }
-            
-            // Tab close button [X] or Modified dot [•]
-            if is_modified {
-                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "•", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, Color::rgb(180, 180, 180));
-            } else {
-                let is_close_hover = self.hovering_tab_close == Some(i);
-                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "×", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, if is_close_hover { Color::rgb(255, 100, 100) } else { Color::rgb(120,120,120) });
-            }
+                
+                // Tab close button [X] or Modified dot [•]
+                if is_modified {
+                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "•", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, Color::rgb(180, 180, 180));
+                } else {
+                    let is_close_hover = self.hovering_tab_close == Some(i);
+                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "×", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, if is_close_hover { Color::rgb(255, 100, 100) } else { Color::rgb(120,120,120) });
+                }
 
-            tx_off += tw;
-        }
+                tx_off += tw;
+            }
 
         // 2b. Breadcrumbs Removed (Unified in Status Bar)
 
@@ -807,12 +881,12 @@ impl App {
             let text = tab.widget.my_editor.rope.to_string();
             let line_endings = if text.contains("\r\n") { "CRLF" } else { "LF" };
             
-            // Re-use segments for breadcrumbs in status bar
+            // segments for breadcrumbs and zoom indicator
             let path_str = tab.path.clone().unwrap_or_else(|| tab.name.clone());
             let segments: Vec<&str> = path_str.split(|c| c == '/' || c == '\\').filter(|s| !s.is_empty()).collect();
             let path_display = segments.join(" > ");
-
-            let footer_text = format!("Ln {}, Col {} | {} | UTF-8 | {}", cursor.line + 1, cursor.index + 1, line_endings, path_display);
+            let zoom_pct = (tab.widget.font_size / 14.0 * 100.0) as i32;
+            let footer_text = format!("Ln {}, Col {} | {}% | {} | UTF-8 | {}", cursor.line + 1, cursor.index + 1, zoom_pct, line_endings, path_display);
             App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &footer_text, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, Color::rgb(255, 255, 255));
 
             let lang_label = format!("Language: {}", self.current_lang);
@@ -824,6 +898,36 @@ impl App {
                 let menu_x = (pix.width() as f32 / SCALE - w - 20.0).max(10.0);
                 let menu_y = (pix.height() as f32 / SCALE - FOOTER_HEIGHT - h - 10.0).max(10.0);
                 dropdown.render(pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y);
+            }
+        }
+
+        // 5. Diagnostic Tooltip on Hover
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            let _w = &tab.widget;
+            let _mx = self.mouse_pos.0; let _my = self.mouse_pos.1;
+            // Diagnostic tooltips logic...
+        }
+
+        // Quick Open Overlay
+        if self.is_quick_open {
+            let mut o_p = Paint::default(); o_p.set_color_rgba8(30, 30, 35, 240);
+            let o_w = 400.0 * SCALE;
+            let o_h = 300.0 * SCALE;
+            let o_x = (pix.width() as f32 - o_w) / 2.0;
+            let o_y = 100.0 * SCALE;
+            pix.fill_rect(Rect::from_xywh(o_x, o_y, o_w, o_h).unwrap(), &o_p, Transform::identity(), None);
+            
+            let mut b_p = Paint::default(); b_p.set_color_rgba8(80, 80, 90, 255);
+            let mut pb = PathBuilder::new(); pb.push_rect(Rect::from_xywh(o_x, o_y, o_w, o_h).unwrap());
+            if let Some(path) = pb.finish() { pix.stroke_path(&path, &b_p, &Stroke { width: 1.0 * SCALE, ..Default::default() }, Transform::identity(), None); }
+            
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("Go to file: {}|", self.quick_open_query), o_x + 10.0 * SCALE, o_y + 10.0 * SCALE, Color::rgb(200, 200, 200));
+            
+            let mut i_y = o_y + 50.0 * SCALE;
+            for (idx, tab) in self.tabs.iter().enumerate() {
+                let col = if idx == 0 { Color::rgb(0, 122, 204) } else { Color::rgb(200, 200, 200) };
+                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &tab.name, o_x + 20.0 * SCALE, i_y, col);
+                i_y += 25.0 * SCALE;
             }
         }
 
@@ -861,10 +965,12 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y * 120.0, 
                     MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 2.0 
                 }; 
-                if self.active_tab < self.tabs.len() {
+                if self.mouse_pos.1 / SCALE < TAB_BAR_HEIGHT {
+                    self.tab_scroll_x -= a;
+                } else if self.active_tab < self.tabs.len() {
                     self.tabs[self.active_tab].widget.scroll_y -= a;
-                    self.window.as_ref().unwrap().request_redraw(); 
-                } 
+                }
+                self.window.as_ref().unwrap().request_redraw(); 
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
@@ -884,6 +990,7 @@ impl ApplicationHandler for App {
                         Key::Character(c) if cmd && (c == "w" || c == "W") => { w.show_whitespace = !w.show_whitespace; }
                         Key::Character(c) if alt && (c == "z" || c == "Z") => { w.wrap_lines = !w.wrap_lines; w.needs_reshape = true; }
                         Key::Character(c) if cmd && (c == "m" || c == "M") => { if let Some(p) = w.my_editor.find_matching_bracket(w.editor.cursor().line, w.editor.cursor().index, &w.lang_def) { w.editor.set_cursor(Cursor::new(p.0, p.1)); } }
+                        Key::Character(c) if cmd && (c == "p" || c == "P") => { self.is_quick_open = !self.is_quick_open; self.quick_open_query.clear(); }
                         Key::Named(NamedKey::Home) => {
                              let cli = w.editor.cursor().line; let cur = w.editor.cursor().index;
                              let text = w.editor.with_buffer(|b| b.lines[cli].text().to_string());
@@ -894,13 +1001,58 @@ impl ApplicationHandler for App {
                         Key::Named(NamedKey::End) => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
                         Key::Character(c) if cmd && shift && (c == "k" || c == "K") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::End)); w.editor.action(&mut self.font_system, Action::Backspace); w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); let len = w.editor.with_buffer(|b| b.lines[w.editor.cursor().line].text().len()); for _ in 0..len { w.editor.action(&mut self.font_system, Action::Delete); } w.editor.action(&mut self.font_system, Action::Delete); }
                         Key::Named(NamedKey::Backspace) => if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.editor.action(&mut self.font_system, Action::Backspace); tab.is_modified = true; }
-                        Key::Named(NamedKey::Enter) => if w.is_search_open { w.find_next(&mut self.font_system); } else { w.editor.action(&mut self.font_system, Action::Enter); tab.is_modified = true; }
-                        Key::Named(NamedKey::Escape) => { w.is_search_open = false; w.context_menu = None; }
-                        Key::Character(c) if cmd && (c == "f" || c == "F") => { w.is_search_open = true; w.search_query.clear(); }
+                        Key::Named(NamedKey::Enter) => {
+                            if self.is_quick_open {
+                                self.is_quick_open = false;
+                                // In a real IDE, we'd fuzzy search and pick. For win, just close.
+                            } else if w.is_search_open { w.find_next(&mut self.font_system); } 
+                            else { 
+                                let line_idx = w.editor.cursor().line;
+                                let byte_off = w.editor.with_buffer(|b| {
+                                    let mut total = 0;
+                                    for i in 0..line_idx { total += b.lines[i].text().len() + 1; }
+                                    total + w.editor.cursor().index
+                                });
+                                w.my_editor.insert_newline(byte_off, &w.lang_def);
+                                w.editor.action(&mut self.font_system, Action::Enter); // ensure cosmic-text syncs too
+                                w.needs_reshape = true; w.sync(); tab.is_modified = true;
+                            }
+                        }
+                        Key::Named(NamedKey::Escape) => { self.is_quick_open = false; w.is_search_open = false; w.context_menu = None; }
+                        Key::Character(c) if cmd && (c == "f" || c == "F") => { 
+                            w.is_search_open = true; 
+                            if let Some(t) = w.editor.copy_selection() { if !t.is_empty() { w.search_query = t; } }
+                            else { w.search_query.clear(); }
+                        }
                         Key::Character(c) if cmd && (c == "h" || c == "H") => { w.is_search_open = true; w.is_replace_open = !w.is_replace_open; }
+                        Key::Character(c) if alt && (c == "s" || c == "S") => { w.case_sensitive = !w.case_sensitive; }
+                        Key::Character(c) if alt && (c == "a" || c == "A") => { 
+                            if w.is_search_open && w.is_replace_open {
+                                w.my_editor.replace_all(&w.search_query, &w.replace_query, &w.lang_def);
+                                w.needs_reshape = true; tab.is_modified = true;
+                            }
+                        }
+                        Key::Character(c) if alt && (c == "t" || c == "T") => {
+                            self.current_theme_idx = (self.current_theme_idx + 1) % 3;
+                            let new_theme = match self.current_theme_idx {
+                                1 => { let mut t = Theme::dark(); t.bg = Color::rgb(10, 10, 20); t.sidebar_bg = Color::rgb(5, 5, 15); t },
+                                2 => { let mut t = Theme::dark(); t.bg = Color::rgb(34, 34, 34); t.sidebar_bg = Color::rgb(45, 45, 45); t.kw = Color::rgb(255, 120, 120); t },
+                                _ => Theme::dark(),
+                            };
+                            for tab in &mut self.tabs { tab.widget.theme = new_theme; tab.widget.needs_reshape = true; }
+                        }
                         Key::Character(c) if cmd && (c == "c" || c == "C") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } } }
                         Key::Character(c) if cmd && (c == "v" || c == "V") => { if let Some(cb) = &mut self.clipboard { if let Ok(t) = cb.get_text() { for ch in t.chars() { w.editor.action(&mut self.font_system, Action::Insert(ch)); } tab.is_modified = true; } } }
                         Key::Character(c) if cmd && (c == "x" || c == "X") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } w.editor.action(&mut self.font_system, Action::Delete); tab.is_modified = true; } }
+                        Key::Character(c) if cmd && (c == "d" || c == "D") => {
+                             if w.editor.selection_bounds().is_none() {
+                                 let li = w.editor.cursor().line;
+                                 w.my_editor.duplicate_line(li);
+                             } else if let Some(t) = w.editor.copy_selection() {
+                                 w.find_next(&mut self.font_system); // Simplified "Next occurrence" logic
+                             }
+                             w.needs_reshape = true; tab.is_modified = true;
+                        }
                         Key::Named(NamedKey::ArrowUp) if alt => { let li = w.editor.cursor().line; w.my_editor.move_line_up(li); w.needs_reshape = true; tab.is_modified = true; }
                         Key::Named(NamedKey::ArrowDown) if alt => { let li = w.editor.cursor().line; if shift { w.my_editor.duplicate_line(li); } else { w.my_editor.move_line_down(li); } w.needs_reshape = true; tab.is_modified = true; }
                         Key::Named(NamedKey::ArrowLeft) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)), Key::Named(NamedKey::ArrowRight) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)), Key::Named(NamedKey::ArrowUp) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Up)), Key::Named(NamedKey::ArrowDown) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Down)),
@@ -989,14 +1141,34 @@ impl ApplicationHandler for App {
                 self.is_dragging = false;
                 self.is_dragging_splitter = false;
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let mx = self.mouse_pos.0 / SCALE;
-                let my = self.mouse_pos.1 / SCALE;
-                let height = self.pixmap.as_ref().unwrap().height() as f32 / SCALE;
+                WindowEvent::MouseInput { state, button, .. } => {
+                    let mx = self.mouse_pos.0 / SCALE;
+                    let my = self.mouse_pos.1 / SCALE;
+                    let pw = self.pixmap.as_ref().unwrap().width() as f32;
+                    let ph = self.pixmap.as_ref().unwrap().height() as f32 / SCALE;
+                    let height = ph; // restore height alias
 
-                if state == ElementState::Pressed && button == MouseButton::Left {
-                    // 0. Language Picker Menu Intercept
-                    if let Some(mut dropdown) = self.lang_dropdown.take() {
+                    if state == ElementState::Pressed && button == MouseButton::Right {
+                        self.tabs[self.active_tab].widget.context_menu = Some(((mx, my), vec!["Cut".into(), "Copy".into(), "Paste".into(), "Go to Def".into()]));
+                        self.window.as_ref().unwrap().request_redraw();
+                        return;
+                    }
+
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        // 1. Minimap Hit-testing
+                        if mx > pw / SCALE - MINIMAP_WIDTH {
+                            if self.active_tab < self.tabs.len() {
+                                let tab = &mut self.tabs[self.active_tab];
+                                let mut th = 0.0; tab.widget.editor.with_buffer(|b| { for r in b.layout_runs() { if !tab.widget.is_line_hidden(r.line_i) { th += r.line_height; } } });
+                                let mry = (my - TAB_BAR_HEIGHT) / (ph - TAB_BAR_HEIGHT - FOOTER_HEIGHT);
+                                tab.widget.scroll_y = (mry * th).max(0.0);
+                                self.window.as_ref().unwrap().request_redraw();
+                                return;
+                            }
+                        }
+
+                        // 0. Language Picker Menu Intercept
+                        if let Some(mut dropdown) = self.lang_dropdown.take() {
                         let (w, h) = dropdown.get_size();
                         let menu_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE - w - 20.0).max(10.0);
                         let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);

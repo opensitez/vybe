@@ -173,6 +173,37 @@ impl Editor {
         self.retokenize_range(line, end_line, lang);
     }
 
+    pub fn insert_newline(&mut self, byte_pos: usize, lang: &LanguageDef) {
+        let char_pos = self.rope.byte_to_char(byte_pos);
+        let line_idx = self.rope.char_to_line(char_pos);
+        let line = self.rope.line(line_idx).to_string();
+        let indent = line.chars().take_while(|c| c.is_whitespace()).collect::<String>();
+        
+        // Smart Indent: maintain previous indentation
+        let mut to_insert = String::from("\n");
+        to_insert.push_str(&indent);
+        
+        // Block Indent: if previous line ended with an open bracket, add one more level
+        let trimmed = line.trim_end();
+        if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') || trimmed.ends_with(':') {
+            to_insert.push_str("    ");
+        }
+
+        self.rope.insert(char_pos, &to_insert);
+        let new_line = self.rope.char_to_line(char_pos + to_insert.len());
+        self.retokenize_range(line_idx, new_line + 2, lang);
+    }
+
+    pub fn replace_all(&mut self, from: &str, to: &str, lang: &LanguageDef) {
+        if from.is_empty() { return; }
+        let content = self.rope.to_string();
+        let new_content = content.replace(from, to);
+        if content != new_content {
+            self.rope = Rope::from_str(&new_content);
+            self.retokenize_all(lang);
+        }
+    }
+
     /// Retokenize the entire buffer and update line_tokens and folds.
     pub fn retokenize_all(&mut self, lang: &LanguageDef) {
         self.line_tokens.clear();
