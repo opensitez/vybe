@@ -42,6 +42,7 @@ pub struct Tab {
 pub struct Theme {
     pub bg: Color,
     pub sidebar_bg: Color,
+    pub sidebar_text: Color,
     pub current_line: Color,
     pub selection: Color,
     pub match_highlight: Color,
@@ -53,27 +54,488 @@ pub struct Theme {
     pub number: Color,
     pub guide: Color,
     pub bracket: Color,
+    pub punctuation: Color,
     pub diagnostic_error: Color,
+    pub tab_bar_bg: Color,
+    pub active_tab_bg: Color,
+    pub inactive_tab_bg: Color,
+    pub footer_bg: Color,
+    pub footer_text: Color,
+    pub splitter_bg: Color,
+    pub minimap_bg: Color,
+    pub gutter_divider: Color,
+    pub active_tab_text: Color,
+    pub inactive_tab_text: Color,
 }
 
 impl Theme {
-    pub fn dark() -> Self {
+    pub fn silicon_green() -> Self {
         Self {
-            bg: Color::rgb(0x1e, 0x1e, 0x1e),
-            sidebar_bg: Color::rgb(0x2d, 0x2d, 0x2d),
-            current_line: Color::rgb(0x32, 0x32, 0x32),
-            selection: Color::rgb(0x26, 0x4f, 0x78),
-            match_highlight: Color::rgb(0x3e, 0x44, 0x51),
-            text: Color::rgb(0xee, 0xee, 0xee),
-            kw: Color::rgb(0x56, 0x9c, 0xd6),
-            type_kw: Color::rgb(0x4e, 0xc9, 0xb0),
-            comment: Color::rgb(0x6a, 0x99, 0x55),
-            string: Color::rgb(0xce, 0x91, 0x78),
-            number: Color::rgb(0xb5, 0xce, 0xa8),
-            guide: Color::rgb(0x40, 0x40, 0x40),
-            bracket: Color::rgb(0x56, 0x9c, 0xd6),
-            diagnostic_error: Color::rgb(0xf4, 0x47, 0x47),
+            bg: Color::rgb(0x0d, 0x20, 0x16),
+            sidebar_bg: Color::rgb(0x08, 0x14, 0x0e),
+            sidebar_text: Color::rgb(0x00, 0xff, 0x9f),
+            current_line: Color::rgb(0x13, 0x2d, 0x20),
+            selection: Color::rgb(0x1a, 0x4d, 0x36),
+            match_highlight: Color::rgb(0x00, 0xff, 0x9f),
+            text: Color::rgb(0xee, 0xff, 0xf2),
+            kw: Color::rgb(0x00, 0xff, 0x9f),
+            type_kw: Color::rgb(0x00, 0xe5, 0xff),
+            comment: Color::rgb(0x4a, 0x6e, 0x5a),
+            string: Color::rgb(0x7f, 0xff, 0x00),
+            number: Color::rgb(0x5f, 0xff, 0xd7),
+            guide: Color::rgb(0x1a, 0x4d, 0x36),
+            bracket: Color::rgb(0xee, 0xff, 0xf2),
+            punctuation: Color::rgb(0x00, 0xff, 0x9f),
+            diagnostic_error: Color::rgb(0xff, 0x2d, 0x55),
+            tab_bar_bg: Color::rgb(0x08, 0x14, 0x0e),
+            active_tab_bg: Color::rgb(0x0d, 0x20, 0x16),
+            inactive_tab_bg: Color::rgb(0x08, 0x14, 0x0e),
+            footer_bg: Color::rgb(0x00, 0xff, 0x9f),
+            footer_text: Color::rgb(0x0d, 0x20, 0x16),
+            splitter_bg: Color::rgb(0x0d, 0x20, 0x16),
+            minimap_bg: Color::rgb(0x0d, 0x20, 0x16),
+            gutter_divider: Color::rgb(0x00, 0xff, 0x9f),
+            active_tab_text: Color::rgb(0x00, 0xff, 0x9f),
+            inactive_tab_text: Color::rgb(0x00, 0x8f, 0x5f),
         }
+    }
+
+    pub fn cloud_blue() -> Self {
+        Self {
+            bg: Color::rgb(0xe0, 0xf2, 0xfe),
+            sidebar_bg: Color::rgb(0xba, 0xe6, 0xfd),
+            sidebar_text: Color::rgb(0x03, 0x69, 0xa1),
+            current_line: Color::rgb(0xf0, 0xf9, 0xff),
+            selection: Color::rgb(0x7d, 0xd3, 0xfc),
+            match_highlight: Color::rgb(0x02, 0x84, 0xc7),
+            text: Color::rgb(0x0c, 0x4a, 0x6e),
+            kw: Color::rgb(0x02, 0x84, 0xc7),
+            type_kw: Color::rgb(0x03, 0x69, 0xa1),
+            comment: Color::rgb(0x64, 0x74, 0x8b),
+            string: Color::rgb(0x05, 0x96, 0x69),
+            number: Color::rgb(0xdb, 0x27, 0x77),
+            guide: Color::rgb(0xba, 0xe6, 0xfd),
+            bracket: Color::rgb(0x0c, 0x4a, 0x6e),
+            punctuation: Color::rgb(0x0c, 0x4a, 0x6e),
+            diagnostic_error: Color::rgb(0xdc, 0x26, 0x26),
+            tab_bar_bg: Color::rgb(0xba, 0xe6, 0xfd),
+            active_tab_bg: Color::rgb(0xe0, 0xf2, 0xfe),
+            inactive_tab_bg: Color::rgb(0xba, 0xe6, 0xfd),
+            footer_bg: Color::rgb(0x02, 0x84, 0xc7),
+            footer_text: Color::rgb(0xff, 0xff, 0xff),
+            splitter_bg: Color::rgb(0xba, 0xe6, 0xfd),
+            minimap_bg: Color::rgb(0xe0, 0xf2, 0xfe),
+            gutter_divider: Color::rgb(0x03, 0x69, 0xa1),
+            active_tab_text: Color::rgb(0x03, 0x69, 0xa1),
+            inactive_tab_text: Color::rgb(0x0c, 0x4a, 0x6e),
+        }
+    }
+
+    pub fn coffee_cream() -> Self {
+        Self {
+            bg: Color::rgb(0xf5, 0xf5, 0xf4),
+            sidebar_bg: Color::rgb(0xe7, 0xe5, 0xe4),
+            sidebar_text: Color::rgb(0x78, 0x35, 0x0f),
+            current_line: Color::rgb(0xfa, 0xfa, 0xf9),
+            selection: Color::rgb(0xd6, 0xd3, 0xd1),
+            match_highlight: Color::rgb(0x92, 0x40, 0x0e),
+            text: Color::rgb(0x44, 0x40, 0x3c),
+            kw: Color::rgb(0x92, 0x40, 0x0e),
+            type_kw: Color::rgb(0x78, 0x35, 0x0f),
+            comment: Color::rgb(0x78, 0x71, 0x6c),
+            string: Color::rgb(0x16, 0x65, 0x34),
+            number: Color::rgb(0x9f, 0x12, 0x39),
+            guide: Color::rgb(0xd6, 0xd3, 0xd1),
+            bracket: Color::rgb(0x44, 0x40, 0x3c),
+            punctuation: Color::rgb(0x44, 0x40, 0x3c),
+            diagnostic_error: Color::rgb(0xb9, 0x1c, 0x1c),
+            tab_bar_bg: Color::rgb(0xe7, 0xe5, 0xe4),
+            active_tab_bg: Color::rgb(0xf5, 0xf5, 0xf4),
+            inactive_tab_bg: Color::rgb(0xe7, 0xe5, 0xe4),
+            footer_bg: Color::rgb(0x78, 0x35, 0x0f),
+            footer_text: Color::rgb(0xff, 0xff, 0xff),
+            splitter_bg: Color::rgb(0xe7, 0xe5, 0xe4),
+            minimap_bg: Color::rgb(0xf5, 0xf5, 0xf4),
+            gutter_divider: Color::rgb(0x78, 0x35, 0x0f),
+            active_tab_text: Color::rgb(0x78, 0x35, 0x0f),
+            inactive_tab_text: Color::rgb(0x44, 0x40, 0x3c),
+        }
+    }
+
+    pub fn sakura_pink() -> Self {
+        Self {
+            bg: Color::rgb(0xff, 0xf1, 0xf2),
+            sidebar_bg: Color::rgb(0xff, 0xe4, 0xe6),
+            sidebar_text: Color::rgb(0x9d, 0x17, 0x4d),
+            current_line: Color::rgb(0xff, 0xfb, 0xfc),
+            selection: Color::rgb(0xfe, 0xcd, 0xd3),
+            match_highlight: Color::rgb(0xdb, 0x27, 0x77),
+            text: Color::rgb(0x88, 0x13, 0x37),
+            kw: Color::rgb(0xe1, 0x1d, 0x48),
+            type_kw: Color::rgb(0xbe, 0x18, 0x5d),
+            comment: Color::rgb(0x9d, 0x17, 0x4d),
+            string: Color::rgb(0x0d, 0x94, 0x88),
+            number: Color::rgb(0xf4, 0x3f, 0x5e),
+            guide: Color::rgb(0xfe, 0xcd, 0xd3),
+            bracket: Color::rgb(0x88, 0x13, 0x37),
+            punctuation: Color::rgb(0xdb, 0x27, 0x77),
+            diagnostic_error: Color::rgb(0xbe, 0x12, 0x3c),
+            tab_bar_bg: Color::rgb(0xff, 0xe4, 0xe6),
+            active_tab_bg: Color::rgb(0xff, 0xf1, 0xf2),
+            inactive_tab_bg: Color::rgb(0xff, 0xe4, 0xe6),
+            footer_bg: Color::rgb(0xbe, 0x12, 0x3c),
+            footer_text: Color::rgb(0xff, 0xff, 0xff),
+            splitter_bg: Color::rgb(0xff, 0xe4, 0xe6),
+            minimap_bg: Color::rgb(0xff, 0xf1, 0xf2),
+            gutter_divider: Color::rgb(0xbe, 0x12, 0x3c),
+            active_tab_text: Color::rgb(0x9d, 0x17, 0x4d),
+            inactive_tab_text: Color::rgb(0x88, 0x13, 0x37),
+        }
+    }
+
+    pub fn one_dark() -> Self {
+        Self {
+            bg: Color::rgb(0x28, 0x2c, 0x34),
+            sidebar_bg: Color::rgb(0x21, 0x25, 0x2b),
+            sidebar_text: Color::rgb(0xab, 0xb2, 0xbf),
+            current_line: Color::rgb(0x2c, 0x31, 0x3c),
+            selection: Color::rgb(0x3e, 0x44, 0x51),
+            match_highlight: Color::rgb(0x48, 0x4e, 0x5b),
+            text: Color::rgb(0xab, 0xb2, 0xbf),
+            kw: Color::rgb(0xc6, 0x78, 0xdd),
+            type_kw: Color::rgb(0x61, 0xaf, 0xef),
+            comment: Color::rgb(0x5c, 0x63, 0x70),
+            string: Color::rgb(0x98, 0xc3, 0x79),
+            number: Color::rgb(0xd1, 0x9a, 0x66),
+            guide: Color::rgb(0x4b, 0x52, 0x63),
+            bracket: Color::rgb(0xab, 0xb2, 0xbf),
+            punctuation: Color::rgb(0xab, 0xb2, 0xbf),
+            diagnostic_error: Color::rgb(0xe0, 0x6c, 0x75),
+            tab_bar_bg: Color::rgb(0x21, 0x25, 0x2b),
+            active_tab_bg: Color::rgb(0x28, 0x2c, 0x34),
+            inactive_tab_bg: Color::rgb(0x21, 0x25, 0x2b),
+            footer_bg: Color::rgb(0x21, 0x25, 0x2b),
+            footer_text: Color::rgb(0xab, 0xb2, 0xbf),
+            splitter_bg: Color::rgb(0x18, 0x1a, 0x1f),
+            minimap_bg: Color::rgb(0x1a, 0x1a, 0x20),
+            gutter_divider: Color::rgb(0x3b, 0x40, 0x48),
+            active_tab_text: Color::rgb(0xff, 0xff, 0xff),
+            inactive_tab_text: Color::rgb(0xab, 0xb2, 0xbf),
+        }
+    }
+
+    pub fn monokai() -> Self {
+        Self {
+            bg: Color::rgb(0x27, 0x28, 0x22),
+            sidebar_bg: Color::rgb(0x1e, 0x1f, 0x1c),
+            sidebar_text: Color::rgb(0xf8, 0xf8, 0xf2),
+            current_line: Color::rgb(0x3e, 0x3d, 0x32),
+            selection: Color::rgb(0x49, 0x48, 0x3e),
+            match_highlight: Color::rgb(0xa6, 0xe2, 0x2e),
+            text: Color::rgb(0xf8, 0xf8, 0xf2),
+            kw: Color::rgb(0xf9, 0x26, 0x72),
+            type_kw: Color::rgb(0x66, 0xd9, 0xef),
+            comment: Color::rgb(0x75, 0x71, 0x5e),
+            string: Color::rgb(0xe6, 0xdb, 0x74),
+            number: Color::rgb(0xae, 0x81, 0xff),
+            guide: Color::rgb(0x49, 0x48, 0x3e),
+            bracket: Color::rgb(0xf8, 0xf8, 0xf2),
+            punctuation: Color::rgb(0xf8, 0xf8, 0xf2),
+            diagnostic_error: Color::rgb(0xf9, 0x26, 0x72),
+            tab_bar_bg: Color::rgb(0x1e, 0x1f, 0x1c),
+            active_tab_bg: Color::rgb(0x27, 0x28, 0x22),
+            inactive_tab_bg: Color::rgb(0x1e, 0x1f, 0x1c),
+            footer_bg: Color::rgb(0x1e, 0x1f, 0x1c),
+            footer_text: Color::rgb(0xf8, 0xf8, 0xf2),
+            splitter_bg: Color::rgb(0x1e, 0x1f, 0x1c),
+            minimap_bg: Color::rgb(0x16, 0x16, 0x16),
+            gutter_divider: Color::rgb(0x49, 0x48, 0x3e),
+            active_tab_text: Color::rgb(0xff, 0xff, 0xff),
+            inactive_tab_text: Color::rgb(0xf8, 0xf8, 0xf2),
+        }
+    }
+
+    pub fn frost_light() -> Self {
+        Self {
+            bg: Color::rgb(0xf2, 0xf7, 0xff),
+            sidebar_bg: Color::rgb(0xe8, 0xf0, 0xfa),
+            sidebar_text: Color::rgb(0x47, 0x55, 0x69),
+            current_line: Color::rgb(0xff, 0xff, 0xff),
+            selection: Color::rgb(0xbf, 0xdb, 0xfe),
+            match_highlight: Color::rgb(0x3b, 0x82, 0xf6),
+            text: Color::rgb(0x1e, 0x29, 0x3b),
+            kw: Color::rgb(0x25, 0x63, 0xeb),
+            type_kw: Color::rgb(0x08, 0x91, 0xb2),
+            comment: Color::rgb(0x94, 0xa3, 0xb8),
+            string: Color::rgb(0x05, 0x96, 0x69),
+            number: Color::rgb(0x7c, 0x3a, 0xed),
+            guide: Color::rgb(0xe2, 0xe8, 0xf0),
+            bracket: Color::rgb(0x1e, 0x29, 0x3b),
+            punctuation: Color::rgb(0x64, 0x74, 0x8b),
+            diagnostic_error: Color::rgb(0xe1, 0x1d, 0x48),
+            tab_bar_bg: Color::rgb(0xe8, 0xf0, 0xfa),
+            active_tab_bg: Color::rgb(0xf2, 0xf7, 0xff),
+            inactive_tab_bg: Color::rgb(0xe8, 0xf0, 0xfa),
+            footer_bg: Color::rgb(0x3b, 0x82, 0xf6),
+            footer_text: Color::rgb(0xff, 0xff, 0xff),
+            splitter_bg: Color::rgb(0xe2, 0xe8, 0xf0),
+            minimap_bg: Color::rgb(0xf8, 0xfa, 0xfc),
+            gutter_divider: Color::rgb(0x3b, 0x82, 0xf6),
+            active_tab_text: Color::rgb(0x1e, 0x29, 0x3b),
+            inactive_tab_text: Color::rgb(0x64, 0x74, 0x8b),
+        }
+    }
+
+    pub fn solarized_light() -> Self {
+        Self {
+            bg: Color::rgb(0xfd, 0xf6, 0xe3),
+            sidebar_bg: Color::rgb(0xee, 0xe8, 0xd5),
+            sidebar_text: Color::rgb(0x58, 0x6e, 0x75),
+            current_line: Color::rgb(0xee, 0xe8, 0xd5),
+            selection: Color::rgb(0x26, 0x8b, 0xd2),
+            match_highlight: Color::rgb(0x85, 0x99, 0x00),
+            text: Color::rgb(0x65, 0x7b, 0x83),
+            kw: Color::rgb(0x85, 0x99, 0x00),
+            type_kw: Color::rgb(0xb5, 0x89, 0x00),
+            comment: Color::rgb(0x93, 0xa1, 0xa1),
+            string: Color::rgb(0x2a, 0xa1, 0x98),
+            number: Color::rgb(0xd3, 0x36, 0x82),
+            guide: Color::rgb(0x93, 0xa1, 0xa1),
+            bracket: Color::rgb(0x65, 0x7b, 0x83),
+            punctuation: Color::rgb(0x65, 0x7b, 0x83),
+            diagnostic_error: Color::rgb(0xdc, 0x32, 0x2f),
+            tab_bar_bg: Color::rgb(0xee, 0xe8, 0xd5),
+            active_tab_bg: Color::rgb(0xfd, 0xf6, 0xe3),
+            inactive_tab_bg: Color::rgb(0xee, 0xe8, 0xd5),
+            footer_bg: Color::rgb(0x07, 0x36, 0x42),
+            footer_text: Color::rgb(0xee, 0xe8, 0xd5),
+            splitter_bg: Color::rgb(0xee, 0xe8, 0xd5),
+            minimap_bg: Color::rgb(0xee, 0xe8, 0xd5),
+            gutter_divider: Color::rgb(0x93, 0xa1, 0xa1),
+            active_tab_text: Color::rgb(0x58, 0x6e, 0x75),
+            inactive_tab_text: Color::rgb(0x93, 0xa1, 0xa1),
+        }
+    }
+
+    pub fn midnight() -> Self {
+        Self {
+            bg: Color::rgb(0x05, 0x05, 0x05),
+            sidebar_bg: Color::rgb(0x00, 0x00, 0x00),
+            sidebar_text: Color::rgb(0xff, 0xff, 0xff),
+            current_line: Color::rgb(0x1a, 0x1a, 0x1a),
+            selection: Color::rgb(0x33, 0x33, 0x33),
+            match_highlight: Color::rgb(0xff, 0xff, 0xff),
+            text: Color::rgb(0xff, 0xff, 0xff),
+            kw: Color::rgb(0x00, 0xf6, 0xff),
+            type_kw: Color::rgb(0xbd, 0x93, 0xf9),
+            comment: Color::rgb(0x62, 0x72, 0xa4),
+            string: Color::rgb(0x50, 0xfa, 0x7b),
+            number: Color::rgb(0xff, 0xb8, 0x6c),
+            guide: Color::rgb(0x33, 0x33, 0x33),
+            bracket: Color::rgb(0xff, 0xff, 0xff),
+            punctuation: Color::rgb(0xff, 0xff, 0xff),
+            diagnostic_error: Color::rgb(0xff, 0x55, 0x55),
+            tab_bar_bg: Color::rgb(0x00, 0x00, 0x00),
+            active_tab_bg: Color::rgb(0x05, 0x05, 0x05),
+            inactive_tab_bg: Color::rgb(0x00, 0x00, 0x00),
+            footer_bg: Color::rgb(0x00, 0x00, 0x00),
+            footer_text: Color::rgb(0xff, 0xff, 0xff),
+            splitter_bg: Color::rgb(0x05, 0x05, 0x05),
+            minimap_bg: Color::rgb(0x00, 0x00, 0x00),
+            gutter_divider: Color::rgb(0x33, 0x33, 0x33),
+            active_tab_text: Color::rgb(0xff, 0xff, 0xff),
+            inactive_tab_text: Color::rgb(0x88, 0x88, 0x88),
+        }
+    }
+
+    pub fn aura() -> Self {
+        Self {
+            bg: Color::rgb(0x15, 0x14, 0x1b),
+            sidebar_bg: Color::rgb(0x1a, 0x19, 0x22),
+            sidebar_text: Color::rgb(0xde, 0xde, 0xde),
+            current_line: Color::rgb(0x1c, 0x1b, 0x24),
+            selection: Color::rgb(0x3d, 0x37, 0x5e),
+            match_highlight: Color::rgb(0xa2, 0x77, 0xff),
+            text: Color::rgb(0xed, 0xe0, 0xeb),
+            kw: Color::rgb(0xa2, 0x77, 0xff),
+            type_kw: Color::rgb(0xff, 0xca, 0x85),
+            comment: Color::rgb(0x61, 0x61, 0x61),
+            string: Color::rgb(0x61, 0xff, 0xca),
+            number: Color::rgb(0xff, 0x67, 0x67),
+            guide: Color::rgb(0x3b, 0x33, 0x4b),
+            bracket: Color::rgb(0xed, 0xe0, 0xeb),
+            punctuation: Color::rgb(0xed, 0xe0, 0xeb),
+            diagnostic_error: Color::rgb(0xff, 0x67, 0x67),
+            tab_bar_bg: Color::rgb(0x15, 0x14, 0x1b),
+            active_tab_bg: Color::rgb(0x15, 0x14, 0x1b),
+            inactive_tab_bg: Color::rgb(0x1a, 0x19, 0x22),
+            footer_bg: Color::rgb(0x1b, 0x1a, 0x23),
+            footer_text: Color::rgb(0xed, 0xe0, 0xeb),
+            splitter_bg: Color::rgb(0x1c, 0x1b, 0x24),
+            minimap_bg: Color::rgb(0x10, 0x10, 0x10),
+            gutter_divider: Color::rgb(0x3d, 0x37, 0x5e),
+            active_tab_text: Color::rgb(0xed, 0xe0, 0xeb),
+            inactive_tab_text: Color::rgb(0xde, 0xde, 0xde),
+        }
+    }
+
+    pub fn veridian() -> Self {
+        Self {
+            bg: Color::rgb(0x0c, 0x20, 0x1d),
+            sidebar_bg: Color::rgb(0x08, 0x16, 0x14),
+            sidebar_text: Color::rgb(0x40, 0xc0, 0xab),
+            current_line: Color::rgb(0x12, 0x2d, 0x2a),
+            selection: Color::rgb(0x1a, 0x4d, 0x44),
+            match_highlight: Color::rgb(0x00, 0xf5, 0xb1),
+            text: Color::rgb(0xe0, 0xf0, 0xee),
+            kw: Color::rgb(0x00, 0xf5, 0xb1),
+            type_kw: Color::rgb(0x75, 0xff, 0xda),
+            comment: Color::rgb(0x4a, 0x6e, 0x66),
+            string: Color::rgb(0x95, 0xff, 0x8a),
+            number: Color::rgb(0x5f, 0xff, 0xd7),
+            guide: Color::rgb(0x1a, 0x4d, 0x44),
+            bracket: Color::rgb(0xe0, 0xf0, 0xee),
+            punctuation: Color::rgb(0x40, 0xc0, 0xab),
+            diagnostic_error: Color::rgb(0xff, 0x2d, 0x55),
+            tab_bar_bg: Color::rgb(0x08, 0x16, 0x14),
+            active_tab_bg: Color::rgb(0x0c, 0x20, 0x1d),
+            inactive_tab_bg: Color::rgb(0x08, 0x16, 0x14),
+            footer_bg: Color::rgb(0x00, 0xf5, 0xb1),
+            footer_text: Color::rgb(0x0c, 0x20, 0x1d),
+            splitter_bg: Color::rgb(0x12, 0x2d, 0x2a),
+            minimap_bg: Color::rgb(0x08, 0x16, 0x14),
+            gutter_divider: Color::rgb(0x00, 0xf5, 0xb1),
+            active_tab_text: Color::rgb(0x00, 0xf5, 0xb1),
+            inactive_tab_text: Color::rgb(0x20, 0x60, 0x55),
+        }
+    }
+
+    pub fn rose() -> Self {
+        Self {
+            bg: Color::rgb(0x1a, 0x10, 0x12),
+            sidebar_bg: Color::rgb(0x14, 0x0c, 0x0d),
+            sidebar_text: Color::rgb(0xe0, 0x60, 0x70),
+            current_line: Color::rgb(0x28, 0x18, 0x1b),
+            selection: Color::rgb(0x4d, 0x20, 0x26),
+            match_highlight: Color::rgb(0xe0, 0x60, 0x70),
+            text: Color::rgb(0xf8, 0xe8, 0xea),
+            kw: Color::rgb(0xe0, 0x60, 0x70),
+            type_kw: Color::rgb(0xf0, 0xa0, 0xb0),
+            comment: Color::rgb(0x6e, 0x4a, 0x4e),
+            string: Color::rgb(0xf0, 0xd0, 0xa0),
+            number: Color::rgb(0xf0, 0x80, 0x90),
+            guide: Color::rgb(0x4d, 0x1a, 0x21),
+            bracket: Color::rgb(0xf8, 0xe8, 0xea),
+            punctuation: Color::rgb(0xe0, 0x60, 0x70),
+            diagnostic_error: Color::rgb(0xff, 0x20, 0x40),
+            tab_bar_bg: Color::rgb(0x14, 0x0c, 0x0d),
+            active_tab_bg: Color::rgb(0x1a, 0x10, 0x12),
+            inactive_tab_bg: Color::rgb(0x14, 0x0c, 0x0d),
+            footer_bg: Color::rgb(0xe0, 0x60, 0x70),
+            footer_text: Color::rgb(0x1a, 0x10, 0x12),
+            splitter_bg: Color::rgb(0x1a, 0x10, 0x12),
+            minimap_bg: Color::rgb(0x14, 0x0c, 0x0d),
+            gutter_divider: Color::rgb(0xe0, 0x60, 0x70),
+            active_tab_text: Color::rgb(0xe0, 0x60, 0x70),
+            inactive_tab_text: Color::rgb(0x70, 0x30, 0x38),
+        }
+    }
+
+    pub fn cyber() -> Self {
+        Self {
+            bg: Color::rgb(0x05, 0x05, 0x05),
+            sidebar_bg: Color::rgb(0x00, 0x00, 0x00),
+            sidebar_text: Color::rgb(0x00, 0xff, 0xff),
+            current_line: Color::rgb(0x10, 0x10, 0x10),
+            selection: Color::rgb(0x00, 0x40, 0x40),
+            match_highlight: Color::rgb(0xff, 0x00, 0xff),
+            text: Color::rgb(0xe0, 0xe0, 0xe0),
+            kw: Color::rgb(0x00, 0xff, 0xff),
+            type_kw: Color::rgb(0xff, 0x00, 0xff),
+            comment: Color::rgb(0x40, 0x40, 0x40),
+            string: Color::rgb(0xff, 0xff, 0x00),
+            number: Color::rgb(0x00, 0xff, 0x00),
+            guide: Color::rgb(0x20, 0x20, 0x20),
+            bracket: Color::rgb(0x00, 0xff, 0xff),
+            punctuation: Color::rgb(0xff, 0x00, 0xff),
+            diagnostic_error: Color::rgb(0xff, 0x00, 0x00),
+            tab_bar_bg: Color::rgb(0x00, 0x00, 0x00),
+            active_tab_bg: Color::rgb(0x05, 0x05, 0x05),
+            inactive_tab_bg: Color::rgb(0x00, 0x00, 0x00),
+            footer_bg: Color::rgb(0x00, 0xff, 0xff),
+            footer_text: Color::rgb(0x00, 0x00, 0x00),
+            splitter_bg: Color::rgb(0x05, 0x05, 0x05),
+            minimap_bg: Color::rgb(0x00, 0x00, 0x00),
+            gutter_divider: Color::rgb(0x00, 0xff, 0xff),
+            active_tab_text: Color::rgb(0x00, 0xff, 0xff),
+            inactive_tab_text: Color::rgb(0x00, 0x80, 0x80),
+        }
+    }
+
+    pub fn titanium() -> Self {
+        Self {
+            bg: Color::rgb(0x1e, 0x1e, 0x22),
+            sidebar_bg: Color::rgb(0x16, 0x16, 0x1a),
+            sidebar_text: Color::rgb(0xd0, 0xd0, 0xe0),
+            current_line: Color::rgb(0x25, 0x25, 0x2d),
+            selection: Color::rgb(0x35, 0x35, 0x45),
+            match_highlight: Color::rgb(0xa0, 0xa0, 0xf0),
+            text: Color::rgb(0xe0, 0xe0, 0xf0),
+            kw: Color::rgb(0xa0, 0xa0, 0xf0),
+            type_kw: Color::rgb(0xc0, 0xc0, 0xff),
+            comment: Color::rgb(0x60, 0x60, 0x75),
+            string: Color::rgb(0xa0, 0xd0, 0xa0),
+            number: Color::rgb(0xf0, 0x90, 0x90),
+            guide: Color::rgb(0x30, 0x30, 0x40),
+            bracket: Color::rgb(0xd0, 0xd0, 0xe0),
+            punctuation: Color::rgb(0xd0, 0xd0, 0xe0),
+            diagnostic_error: Color::rgb(0xff, 0x40, 0x40),
+            tab_bar_bg: Color::rgb(0x16, 0x16, 0x1a),
+            active_tab_bg: Color::rgb(0x1e, 0x1e, 0x22),
+            inactive_tab_bg: Color::rgb(0x16, 0x16, 0x1a),
+            footer_bg: Color::rgb(0xd0, 0xd0, 0xe0),
+            footer_text: Color::rgb(0x16, 0x16, 0x1a),
+            splitter_bg: Color::rgb(0x1e, 0x1e, 0x22),
+            minimap_bg: Color::rgb(0x16, 0x16, 0x1a),
+            gutter_divider: Color::rgb(0xd0, 0xd0, 0xe0),
+            active_tab_text: Color::rgb(0xd0, 0xd0, 0xe0),
+            inactive_tab_text: Color::rgb(0x60, 0x60, 0x70),
+        }
+    }
+
+    pub fn indigo_night() -> Self {
+        Self {
+            bg: Color::rgb(0x0d, 0x11, 0x17),
+            sidebar_bg: Color::rgb(0x01, 0x04, 0x09),
+            sidebar_text: Color::rgb(0x58, 0xa6, 0xff),
+            current_line: Color::rgb(0x16, 0x1b, 0x22),
+            selection: Color::rgb(0x26, 0x4f, 0x78),
+            match_highlight: Color::rgb(0x58, 0xa6, 0xff),
+            text: Color::rgb(0xc9, 0xd1, 0xd9),
+            kw: Color::rgb(0xff, 0x7b, 0x72),
+            type_kw: Color::rgb(0x79, 0xc0, 0xff),
+            comment: Color::rgb(0x8b, 0x94, 0x9e),
+            string: Color::rgb(0xa5, 0xd6, 0xff),
+            number: Color::rgb(0x79, 0xc0, 0xff),
+            guide: Color::rgb(0x30, 0x36, 0x3d),
+            bracket: Color::rgb(0xc9, 0xd1, 0xd9),
+            punctuation: Color::rgb(0xc9, 0xd1, 0xd9),
+            diagnostic_error: Color::rgb(0xf8, 0x51, 0x49),
+            tab_bar_bg: Color::rgb(0x01, 0x04, 0x09),
+            active_tab_bg: Color::rgb(0x0d, 0x11, 0x17),
+            inactive_tab_bg: Color::rgb(0x01, 0x04, 0x09),
+            footer_bg: Color::rgb(0x58, 0xa6, 0xff),
+            footer_text: Color::rgb(0x01, 0x04, 0x09),
+            splitter_bg: Color::rgb(0x0d, 0x11, 0x17),
+            minimap_bg: Color::rgb(0x0d, 0x11, 0x17),
+            gutter_divider: Color::rgb(0x58, 0xa6, 0xff),
+            active_tab_text: Color::rgb(0x58, 0xa6, 0xff),
+            inactive_tab_text: Color::rgb(0x1f, 0x40, 0x60),
+        }
+    }
+
+    pub fn dark() -> Self {
+        Self::one_dark()
     }
 }
 
@@ -94,7 +556,7 @@ pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: 
                         TokenKind::LineComment | TokenKind::BlockComment => theme.comment,
                         TokenKind::String => theme.string,
                         TokenKind::Number => theme.number,
-                        TokenKind::Punct => Color::rgb(0xd4, 0xd4, 0xd4),
+                        TokenKind::Punct => theme.punctuation,
                         TokenKind::Identifier => {
                             let text = my_editor.slice(token.start, token.end);
                             if lang.keywords.contains(&text) { theme.kw }
@@ -327,7 +789,7 @@ impl CodeEditorWidget {
         let mut gp = Paint::default(); gp.set_color_rgba8(34, 197, 94, 200); // emerald-500
         pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE - 3.0 * SCALE, rect.top(), 2.0 * SCALE, rect.height()).unwrap(), &gp, Transform::identity(), None);
 
-        let mut sep_p = Paint::default(); sep_p.set_color_rgba8(60,60,60,255);
+        let mut sep_p = Paint::default(); sep_p.set_color_rgba8(self.theme.gutter_divider.r(), self.theme.gutter_divider.g(), self.theme.gutter_divider.b(), 255);
         pixmap.fill_rect(Rect::from_xywh(rect.left() + (GUTTER_WIDTH - 2.0) * SCALE, rect.top(), 1.0 * SCALE, rect.height()).unwrap(), &sep_p, Transform::identity(), None);
 
         // 80-Character Ruler: A subtle vertical guide
@@ -488,7 +950,8 @@ impl CodeEditorWidget {
 
         if self.minimap_needs_redraw || self.minimap_pixmap.as_ref().map(|p| p.width() != m_w || p.height() != m_h).unwrap_or(true) {
             let mut mp = Pixmap::new(m_w.max(1), m_h.max(1)).unwrap();
-            mp.fill(SkiaColor::from_rgba8(16, 16, 16, 255));
+            let to_skia = |c: Color| SkiaColor::from_rgba8(c.r(), c.g(), c.b(), c.a());
+            mp.fill(to_skia(theme.minimap_bg));
             
             let m_step = (minimap_rect.height() / self.my_editor.line_tokens.len().max(1) as f32).min(2.5 * SCALE); 
             let mut m_y = 0.0;
@@ -668,6 +1131,7 @@ struct App {
     all_languages: Vec<String>,
     current_lang: String,
     lang_dropdown: Option<Dropdown>,
+    theme_dropdown: Option<Dropdown>,
     clipboard: Option<Clipboard>,
     modifiers: winit::event::Modifiers,
     last_click_time: Instant,
@@ -714,7 +1178,7 @@ impl App {
         let _root_uri = format!("file://{}", root_dir.to_string_lossy());
         Self { 
             window: None, context: None, surface: None, font_system: FontSystem::new(), swash_cache: SwashCache::new(), pixmap: None, tabs: Vec::new(), active_tab: 0, 
-            tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), lang_dropdown: None, clipboard: Clipboard::new().ok(), 
+            tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), lang_dropdown: None, theme_dropdown: None, clipboard: Clipboard::new().ok(), 
             modifiers: winit::event::Modifiers::default(), last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), 
             explorer_width: EXPLORER_WIDTH, is_dragging_splitter: false, hovering_splitter: false, hovering_tab_close: None,
             is_dragging: false, needs_redraw: true,
@@ -726,6 +1190,36 @@ impl App {
             current_theme_idx: 0,
         }
     }
+    pub fn active_theme(&self) -> Theme {
+        match self.current_theme_idx {
+            0 => Theme::silicon_green(),
+            1 => Theme::cloud_blue(),
+            2 => Theme::coffee_cream(),
+            3 => Theme::sakura_pink(),
+            4 => Theme::one_dark(),
+            5 => Theme::monokai(),
+            6 => Theme::frost_light(),
+            7 => Theme::solarized_light(),
+            8 => Theme::midnight(),
+            9 => Theme::aura(),
+            10 => Theme::veridian(),
+            11 => Theme::rose(),
+            12 => Theme::cyber(),
+            13 => Theme::titanium(),
+            14 => Theme::indigo_night(),
+            _ => Theme::one_dark(),
+        }
+    }
+
+    pub fn get_theme_name(&self) -> &str {
+        match self.current_theme_idx { 
+            0 => "Silicon Green", 1 => "Cloud Blue", 2 => "Coffee Cream", 3 => "Sakura Pink", 
+            4 => "One Dark", 5 => "Monokai", 6 => "Frost Light", 7 => "Solarized Light", 
+            8 => "Midnight", 9 => "Aura", 10 => "Veridian", 11 => "Rose",
+            12 => "Cyber", 13 => "Titanium", 14 => "Indigo Night", _ => "One Dark" 
+        }
+    }
+
     fn render(&mut self) {
         // Debounce LSP Update
         if self.pending_lsp_update && self.last_lsp_update.elapsed().as_millis() > 300 {
@@ -737,38 +1231,42 @@ impl App {
             self.pending_lsp_update = false;
         }
 
+        let theme = self.active_theme();
+        let theme_name = self.get_theme_name().to_string();
         let (surf, pix) = match (&mut self.surface, &mut self.pixmap) { (Some(s), Some(p)) => (s, p), _ => return };
-        pix.fill(SkiaColor::from_rgba8(30,30,30,255));
+        
+        let to_skia = |c: Color| SkiaColor::from_rgba8(c.r(), c.g(), c.b(), c.a());
+        pix.fill(to_skia(theme.bg));
 
         // 1. Sidebar (Project Explorer)
-        let mut sp = Paint::default(); sp.set_color_rgba8(25,25,26,255);
+        let mut sp = Paint::default(); sp.set_color_rgba8(theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), theme.sidebar_bg.a());
         pix.fill_rect(Rect::from_xywh(0.0, 0.0, self.explorer_width * SCALE, pix.height() as f32).unwrap(), &sp, Transform::identity(), None);
         
         // Vertical marker for Sidebar header
-        App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "PROJECT EXPLORER", 10.0 * SCALE, 10.0 * SCALE, Color::rgb(140,140,140));
+        App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "PROJECT EXPLORER", 10.0 * SCALE, 10.0 * SCALE, theme.sidebar_text);
         
         // Sync Sidebar Selection
         if let Some(tab) = self.tabs.get(self.active_tab) {
              if let Some(path) = &tab.path {
-                 self.tree_view.reveal_path(path);
+                  self.tree_view.reveal_path(path);
              }
         }
-        self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, 0.0, TAB_BAR_HEIGHT * SCALE, self.explorer_width * SCALE);
+        self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, 0.0, TAB_BAR_HEIGHT * SCALE, self.explorer_width * SCALE, theme.sidebar_text, (theme.selection.r(), theme.selection.g(), theme.selection.b(), theme.selection.a()));
 
         // 1b. Splitter
         let mut slp = Paint::default();
         if self.is_dragging_splitter { slp.set_color_rgba8(0,122,204,255); }
-        else if self.hovering_splitter { slp.set_color_rgba8(60,60,60,255); }
-        else { slp.set_color_rgba8(35,35,35,255); }
+        else if self.hovering_splitter { slp.set_color_rgba8(theme.splitter_bg.r(), theme.splitter_bg.g(), theme.splitter_bg.b(), 255); }
+        else { slp.set_color_rgba8(theme.splitter_bg.r(), theme.splitter_bg.g(), theme.splitter_bg.b(), 255); }
         pix.fill_rect(Rect::from_xywh(self.explorer_width * SCALE, 0.0, SPLITTER_WIDTH * SCALE, pix.height() as f32).unwrap(), &slp, Transform::identity(), None);
         
-        // Splitter separation line (Aura styling)
-        let mut lp = Paint::default(); lp.set_color_rgba8(45,45,45,255);
+        // Splitter separation line
+        let mut lp = Paint::default(); lp.set_color_rgba8(theme.splitter_bg.r().saturating_add(20), theme.splitter_bg.g().saturating_add(20), theme.splitter_bg.b().saturating_add(20), 255);
         pix.fill_rect(Rect::from_xywh((self.explorer_width + SPLITTER_WIDTH) * SCALE, 0.0, 1.0 * SCALE, pix.height() as f32).unwrap(), &lp, Transform::identity(), None);
 
         // 2. Tab Bar
         let ed_start_x = (self.explorer_width + SPLITTER_WIDTH + 1.0) * SCALE;
-        let mut tp = Paint::default(); tp.set_color_rgba8(37,37,38,255);
+        let mut tp = Paint::default(); tp.set_color_rgba8(theme.tab_bar_bg.r(), theme.tab_bar_bg.g(), theme.tab_bar_bg.b(), theme.tab_bar_bg.a());
         pix.fill_rect(Rect::from_xywh(ed_start_x, 0.0, pix.width() as f32 - ed_start_x, TAB_BAR_HEIGHT * SCALE).unwrap(), &tp, Transform::identity(), None);
 
             let mut tx_off = ed_start_x + self.tab_scroll_x;
@@ -781,10 +1279,14 @@ impl App {
                 
                 // Render Background & Underline
                 if active {
-                    let mut ap = Paint::default(); ap.set_color_rgba8(30,30,30,255);
+                    let mut ap = Paint::default(); ap.set_color_rgba8(theme.active_tab_bg.r(), theme.active_tab_bg.g(), theme.active_tab_bg.b(), theme.active_tab_bg.a());
                     pix.fill_rect(Rect::from_xywh(tx_off, 0.0, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ap, Transform::identity(), None);
-                    let mut up = Paint::default(); up.set_color_rgba8(0,122,204,255);
+                    
+                    let mut up = Paint::default(); up.set_color_rgba8(theme.kw.r(), theme.kw.g(), theme.kw.b(), 255);
                     pix.fill_rect(Rect::from_xywh(tx_off, (TAB_BAR_HEIGHT - 2.0) * SCALE, tw, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
+                } else {
+                    let mut ip = Paint::default(); ip.set_color_rgba8(theme.inactive_tab_bg.r(), theme.inactive_tab_bg.g(), theme.inactive_tab_bg.b(), theme.inactive_tab_bg.a());
+                    pix.fill_rect(Rect::from_xywh(tx_off, 0.0, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ip, Transform::identity(), None);
                 }
 
                 // Get tab properties for name calculation
@@ -793,7 +1295,7 @@ impl App {
                     (t.is_sticky, t.name.clone(), t.is_modified)
                 };
                 let name_str = if is_sticky { name } else { format!("{} [P]", name) };
-                let col = if active { Color::rgb(255,255,255) } else { Color::rgb(160,160,160) };
+                let col = if active { theme.active_tab_text } else { theme.inactive_tab_text };
 
                 // Tab Text Caching & Rendering
                 let tab_mut = &mut self.tabs[i];
@@ -873,7 +1375,7 @@ impl App {
         }
 
         // 4. Footer (Enhanced)
-        let mut fp = Paint::default(); fp.set_color_rgba8(0,122,204,255);
+        let mut fp = Paint::default(); fp.set_color_rgba8(theme.footer_bg.r(), theme.footer_bg.g(), theme.footer_bg.b(), theme.footer_bg.a());
         pix.fill_rect(Rect::from_xywh(0.0, pix.height() as f32 - FOOTER_HEIGHT * SCALE, pix.width() as f32, FOOTER_HEIGHT * SCALE).unwrap(), &fp, Transform::identity(), None);
         
         if let Some(tab) = self.tabs.get(self.active_tab) {
@@ -887,17 +1389,46 @@ impl App {
             let path_display = segments.join(" > ");
             let zoom_pct = (tab.widget.font_size / 14.0 * 100.0) as i32;
             let footer_text = format!("Ln {}, Col {} | {}% | {} | UTF-8 | {}", cursor.line + 1, cursor.index + 1, zoom_pct, line_endings, path_display);
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &footer_text, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, Color::rgb(255, 255, 255));
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &footer_text, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
 
             let lang_label = format!("Language: {}", self.current_lang);
+            let theme_label = format!("Theme: {}", theme_name);
+            
             let label_x = pix.width() as f32 - (lang_label.len() as f32 * 9.0 + 20.0) * SCALE;
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &lang_label, label_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, Color::rgb(255, 255, 255));
+            let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0) * SCALE;
+
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &lang_label, label_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &theme_label, theme_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
 
             if let Some(dropdown) = &self.lang_dropdown {
                 let (w, h) = dropdown.get_size();
                 let menu_x = (pix.width() as f32 / SCALE - w - 20.0).max(10.0);
                 let menu_y = (pix.height() as f32 / SCALE - FOOTER_HEIGHT - h - 10.0).max(10.0);
-                dropdown.render(pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y);
+                dropdown.render(
+                    pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y,
+                    (theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), 255),
+                    (theme.gutter_divider.r(), theme.gutter_divider.g(), theme.gutter_divider.b(), 255),
+                    (theme.selection.r(), theme.selection.g(), theme.selection.b(), 100),
+                    (theme.current_line.r(), theme.current_line.g(), theme.current_line.b(), 255),
+                    theme.active_tab_text,
+                    theme.inactive_tab_text
+                );
+            }
+            if let Some(dropdown) = &self.theme_dropdown {
+                let (w, h) = dropdown.get_size();
+                let menu_x = (theme_x / SCALE - 10.0).max(10.0);
+                // Edge Clamping
+                let menu_x = menu_x.min(pix.width() as f32 / SCALE - w - 10.0).max(10.0);
+                let menu_y = (pix.height() as f32 / SCALE - FOOTER_HEIGHT - h - 10.0).max(10.0);
+                dropdown.render(
+                    pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y,
+                    (theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), 255),
+                    (theme.gutter_divider.r(), theme.gutter_divider.g(), theme.gutter_divider.b(), 255),
+                    (theme.selection.r(), theme.selection.g(), theme.selection.b(), 100),
+                    (theme.current_line.r(), theme.current_line.g(), theme.current_line.b(), 255),
+                    theme.active_tab_text,
+                    theme.inactive_tab_text
+                );
             }
         }
 
@@ -1033,12 +1564,8 @@ impl ApplicationHandler for App {
                             }
                         }
                         Key::Character(c) if alt && (c == "t" || c == "T") => {
-                            self.current_theme_idx = (self.current_theme_idx + 1) % 3;
-                            let new_theme = match self.current_theme_idx {
-                                1 => { let mut t = Theme::dark(); t.bg = Color::rgb(10, 10, 20); t.sidebar_bg = Color::rgb(5, 5, 15); t },
-                                2 => { let mut t = Theme::dark(); t.bg = Color::rgb(34, 34, 34); t.sidebar_bg = Color::rgb(45, 45, 45); t.kw = Color::rgb(255, 120, 120); t },
-                                _ => Theme::dark(),
-                            };
+                            self.current_theme_idx = (self.current_theme_idx + 1) % 11;
+                            let new_theme = self.active_theme();
                             for tab in &mut self.tabs { tab.widget.theme = new_theme; tab.widget.needs_reshape = true; }
                         }
                         Key::Character(c) if cmd && (c == "c" || c == "C") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } } }
@@ -1155,56 +1682,91 @@ impl ApplicationHandler for App {
                     }
 
                     if state == ElementState::Pressed && button == MouseButton::Left {
+                        // 0a. Language Picker Menu Intercept
+                        if let Some(mut dropdown) = self.lang_dropdown.take() {
+                            let (w, h) = dropdown.get_size();
+                            let label_x = (pw / SCALE) - (format!("Language: {}", self.current_lang).len() as f32 * 9.0 + 20.0);
+                            let menu_x = label_x.min(pw / SCALE - w - 10.0).max(10.0);
+                            let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
+                            
+                            match dropdown.handle_mouse(mx, my, menu_x, menu_y, true) {
+                                DropdownEvent::Selected(idx) => {
+                                    if let Some(new_lang) = self.all_languages.get(idx).cloned() {
+                                        self.current_lang = new_lang.clone();
+                                        let tab = &mut self.tabs[self.active_tab];
+                                        let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
+                                        tab.widget.set_language(&new_lang, uri);
+                                    }
+                                    self.lang_dropdown = None;
+                                }
+                                DropdownEvent::Closed => { self.lang_dropdown = None; }
+                                DropdownEvent::None => self.lang_dropdown = Some(dropdown),
+                                _ => {}
+                            }
+                            self.window.as_ref().unwrap().request_redraw(); return;
+                        }
+
+                        // 0b. Theme Picker Menu Intercept
+                        if let Some(mut dropdown) = self.theme_dropdown.take() {
+                            let (w, h) = dropdown.get_size();
+                            let theme_label = format!("Theme: {}", self.get_theme_name());
+                            let lang_label = format!("Language: {}", self.current_lang);
+                            let label_x = (pw / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
+                            let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0);
+                            let menu_x = theme_x.min(pw / SCALE - w - 10.0).max(10.0);
+                            let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
+                            
+                            match dropdown.handle_mouse(mx, my, menu_x, menu_y, true) {
+                                DropdownEvent::Selected(idx) => {
+                                    self.current_theme_idx = idx;
+                                    let new_theme = self.active_theme();
+                                    for tab in &mut self.tabs { tab.widget.theme = new_theme; tab.widget.needs_reshape = true; }
+                                    self.window.as_ref().unwrap().request_redraw();
+                                    return;
+                                }
+                                DropdownEvent::None => self.theme_dropdown = Some(dropdown),
+                                _ => {}
+                            }
+                            self.window.as_ref().unwrap().request_redraw(); return;
+                        }
+
                         // 1. Minimap Hit-testing
                         if mx > pw / SCALE - MINIMAP_WIDTH {
                             if self.active_tab < self.tabs.len() {
                                 let tab = &mut self.tabs[self.active_tab];
                                 let mut th = 0.0; tab.widget.editor.with_buffer(|b| { for r in b.layout_runs() { if !tab.widget.is_line_hidden(r.line_i) { th += r.line_height; } } });
-                                let mry = (my - TAB_BAR_HEIGHT) / (ph - TAB_BAR_HEIGHT - FOOTER_HEIGHT);
+                                let mry = (my - TAB_BAR_HEIGHT) / (height - TAB_BAR_HEIGHT - FOOTER_HEIGHT);
                                 tab.widget.scroll_y = (mry * th).max(0.0);
                                 self.window.as_ref().unwrap().request_redraw();
                                 return;
                             }
                         }
 
-                        // 0. Language Picker Menu Intercept
-                        if let Some(mut dropdown) = self.lang_dropdown.take() {
-                        let (w, h) = dropdown.get_size();
-                        let menu_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE - w - 20.0).max(10.0);
-                        let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
-                        
-                        match dropdown.handle_mouse(mx, my, menu_x, menu_y, true) {
-                            DropdownEvent::Selected(idx) => {
-                                if let Some(new_lang) = self.all_languages.get(idx).cloned() {
-                                    self.current_lang = new_lang.clone();
-                                    let tab = &mut self.tabs[self.active_tab];
-                                    let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
-                                    tab.widget.set_language(&new_lang, uri);
-                                }
-                                self.lang_dropdown = None;
-                            }
-                            DropdownEvent::Closed => {
-                                self.lang_dropdown = None;
-                            }
-                            DropdownEvent::None => {
-                                self.lang_dropdown = Some(dropdown);
-                            }
-                        }
-                        self.window.as_ref().unwrap().request_redraw(); return;
-                    }
+                        // 3. Status Bar Click
+                        if my >= height - FOOTER_HEIGHT {
+                            let lang_label = format!("Language: {}", self.current_lang);
+                            let theme_label = format!("Theme: {}", self.get_theme_name());
+                            let label_x = (pw / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
+                            let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0);
 
-                    // 1. Status Bar Click
-                    if my >= height - FOOTER_HEIGHT {
-                        let lang_label = format!("Language: {}", self.current_lang);
-                        let label_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
-                        if mx >= label_x {
-                            let active_idx = self.all_languages.iter().position(|l| l == &self.current_lang).unwrap_or(0);
-                            self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, SCALE));
+                            if mx >= label_x {
+                                let active_idx = self.all_languages.iter().position(|l| l == &self.current_lang).unwrap_or(0);
+                                self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, SCALE));
+                            } else if mx >= theme_x && mx < label_x {
+                                let theme_names = vec![
+                                    "Silicon Green".into(), "Cloud Blue".into(), "Coffee Cream".into(), "Sakura Pink".into(), 
+                                    "One Dark".into(), "Monokai".into(), "GitHub Light".into(), "Solarized Light".into(), 
+                                    "Midnight".into(), "Aura".into(), "Veridian".into(), "Rose".into(),
+                                    "Cyber".into(), "Titanium".into(), "Indigo Night".into()
+                                ];
+                                let mut d = Dropdown::new(theme_names, self.current_theme_idx, SCALE);
+                                d.num_cols = 2; d.col_w = 160.0; // Balanced 2-column grid for 10 vivid presets
+                                self.theme_dropdown = Some(d);
+                            }
+                            self.window.as_ref().unwrap().request_redraw(); return;
                         }
-                        self.window.as_ref().unwrap().request_redraw(); return;
-                    }
 
-                    // 2. Tab Bar Click
+                        // 4. Tab Bar Click
                     let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
                     if my < TAB_BAR_HEIGHT && mx > ed_start_x {
                         if let Some(idx) = self.hovering_tab_close {
