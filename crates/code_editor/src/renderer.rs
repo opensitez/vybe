@@ -35,6 +35,7 @@ pub struct Tab {
     pub widget: CodeEditorWidget,
     pub is_sticky: bool,
     pub buffer: Option<Buffer>,
+    pub is_modified: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -135,6 +136,7 @@ pub struct CodeEditorWidget {
     pub lsp: Arc<LspClient>,
     minimap_pixmap: Option<Pixmap>,
     minimap_needs_redraw: bool,
+    pub wrap_lines: bool,
 }
 
 impl CodeEditorWidget {
@@ -152,7 +154,7 @@ impl CodeEditorWidget {
         
         lsp.send(LspRequest::Init(text, "rust".to_string(), uri));
 
-        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, context_menu: None, font_size, show_whitespace: false, lsp, minimap_pixmap: None, minimap_needs_redraw: true };
+        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, context_menu: None, font_size, show_whitespace: false, lsp, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false };
         widget.update_digit_cache(font_system);
         widget
     }
@@ -553,6 +555,7 @@ struct App {
     last_lsp_update: Instant,
     pending_lsp_update: bool,
     lsp: Arc<LspClient>,
+    is_lang_picker_open: bool,
 }
 
 impl App {
@@ -574,6 +577,7 @@ impl App {
             is_dragging: false, needs_redraw: true,
             last_lsp_update: Instant::now(), pending_lsp_update: false,
             lsp: Arc::new(LspClient::new()),
+            is_lang_picker_open: false,
         }
     }
     fn render(&mut self) {
@@ -596,7 +600,14 @@ impl App {
         
         // Vertical marker for Sidebar header
         App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "PROJECT EXPLORER", 10.0 * SCALE, 10.0 * SCALE, Color::rgb(140,140,140));
-        self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, 0.0, 40.0 * SCALE);
+        
+        // Sync Sidebar Selection
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+             if let Some(path) = &tab.path {
+                 self.tree_view.reveal_path(path);
+             }
+        }
+        self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, 0.0, 40.0 * SCALE, self.explorer_width * SCALE);
 
         // 1b. Splitter
         let mut slp = Paint::default();
@@ -628,9 +639,9 @@ impl App {
             }
 
             // Get tab properties for name calculation
-            let (is_sticky, name) = {
+            let (is_sticky, name, is_modified) = {
                 let t = &self.tabs[i];
-                (t.is_sticky, t.name.clone())
+                (t.is_sticky, t.name.clone(), t.is_modified)
             };
             let name_str = if is_sticky { name } else { format!("{} [P]", name) };
             let col = if active { Color::rgb(255,255,255) } else { Color::rgb(160,160,160) };
@@ -660,16 +671,41 @@ impl App {
                 }
             }
             
-            // Tab close button [X]
-            let is_close_hover = self.hovering_tab_close == Some(i);
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "×", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, if is_close_hover { Color::rgb(255, 100, 100) } else { Color::rgb(120,120,120) });
+            // Tab close button [X] or Modified dot [•]
+            if is_modified {
+                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "•", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, Color::rgb(180, 180, 180));
+            } else {
+                let is_close_hover = self.hovering_tab_close == Some(i);
+                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "×", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, if is_close_hover { Color::rgb(255, 100, 100) } else { Color::rgb(120,120,120) });
+            }
 
             tx_off += tw;
         }
 
+        // 2b. Breadcrumbs
+        let bc_y = TAB_BAR_HEIGHT * SCALE;
+        let mut bcp = Paint::default(); bcp.set_color_rgba8(30, 30, 30, 255);
+        pix.fill_rect(Rect::from_xywh(ed_start_x, bc_y, pix.width() as f32 - ed_start_x, UI_BAR_HEIGHT * SCALE).unwrap(), &bcp, Transform::identity(), None);
+        
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            let path_str = tab.path.clone().unwrap_or_else(|| tab.name.clone());
+            let segments: Vec<&str> = path_str.split(|c| c == '/' || c == '\\').filter(|s| !s.is_empty()).collect();
+            let mut bc_x = ed_start_x + 10.0 * SCALE;
+            for (idx, seg) in segments.iter().enumerate() {
+                let col = if idx == segments.len() - 1 { Color::rgb(180, 180, 180) } else { Color::rgb(110, 110, 110) };
+                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, seg, bc_x, bc_y + 10.0 * SCALE, col);
+                bc_x += (seg.len() as f32 * 8.5 + 10.0) * SCALE;
+                if idx < segments.len() - 1 {
+                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "/", bc_x, bc_y + 10.0 * SCALE, Color::rgb(80, 80, 80));
+                    bc_x += 15.0 * SCALE;
+                }
+            }
+        }
+
         // 3. Active Editor
         if self.active_tab < self.tabs.len() {
-             let rect = Rect::from_xywh(ed_start_x, TAB_BAR_HEIGHT * SCALE, pix.width() as f32 - ed_start_x, pix.height() as f32 - (TAB_BAR_HEIGHT + FOOTER_HEIGHT) * SCALE).unwrap();
+             let ed_top = (TAB_BAR_HEIGHT + UI_BAR_HEIGHT) * SCALE;
+             let rect = Rect::from_xywh(ed_start_x, ed_top, pix.width() as f32 - ed_start_x, pix.height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
              
              while let Ok(evt) = self.lsp.rx.try_recv() {
                 match evt {
@@ -687,13 +723,51 @@ impl App {
                 }
              }
              let w = &mut self.tabs[self.active_tab].widget;
+             
+             // Update Editor Wrapping if changed
+             w.editor.with_buffer_mut(|b| {
+                 let wrap = if w.wrap_lines { cosmic_text::Wrap::Word } else { cosmic_text::Wrap::None };
+                 if b.wrap() != wrap {
+                     b.set_wrap(&mut self.font_system, wrap);
+                     w.needs_reshape = true;
+                 }
+                 if w.wrap_lines {
+                     b.set_size(&mut self.font_system, Some(rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE), Some(rect.height()));
+                 } else {
+                     b.set_size(&mut self.font_system, Some(999999.0), Some(999999.0));
+                 }
+             });
+
              w.render(pix, &mut self.font_system, &mut self.swash_cache, rect);
         }
 
-        // 4. Footer
+        // 4. Footer (Enhanced)
         let mut fp = Paint::default(); fp.set_color_rgba8(0,122,204,255);
         pix.fill_rect(Rect::from_xywh(0.0, pix.height() as f32 - FOOTER_HEIGHT * SCALE, pix.width() as f32, FOOTER_HEIGHT * SCALE).unwrap(), &fp, Transform::identity(), None);
         
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            let cursor = tab.widget.editor.cursor();
+            let text = tab.widget.my_editor.rope.to_string();
+            let line_endings = if text.contains("\r\n") { "CRLF" } else { "LF" };
+            let footer_text = format!("Ln {}, Col {} | {} | UTF-8", cursor.line + 1, cursor.index + 1, line_endings);
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &footer_text, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, Color::rgb(255, 255, 255));
+            
+            let lang_label = format!("Language: {}", self.current_lang);
+            let label_x = pix.width() as f32 - (lang_label.len() as f32 * 9.0 + 20.0) * SCALE;
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &lang_label, label_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, Color::rgb(255, 255, 255));
+
+            if self.is_lang_picker_open {
+                let menu_w = 150.0 * SCALE;
+                let menu_h = (self.all_languages.len() as f32 * 25.0 + 10.0) * SCALE;
+                let mut mp = Paint::default(); mp.set_color_rgba8(45, 45, 48, 255);
+                pix.fill_rect(Rect::from_xywh(pix.width() as f32 - menu_w - 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE - menu_h, menu_w, menu_h).unwrap(), &mp, Transform::identity(), None);
+                for (i, lang) in self.all_languages.iter().enumerate() {
+                    let col = if lang == &self.current_lang { Color::rgb(0, 122, 204) } else { Color::rgb(200, 200, 200) };
+                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, lang, pix.width() as f32 - menu_w, pix.height() as f32 - FOOTER_HEIGHT * SCALE - menu_h + (i as f32 * 25.0 + 5.0) * SCALE, col);
+                }
+            }
+        }
+
         let mut buffer = surf.buffer_mut().unwrap();
         for (i, p) in pix.pixels().iter().enumerate() {
             buffer[i] = (p.red() as u32) << 16 | (p.green() as u32) << 8 | (p.blue() as u32);
@@ -715,7 +789,7 @@ impl ApplicationHandler for App {
         let my_editor = MyEditor::from_text("// Welcome to Vybe IDE\nfn main() {\n    println!(\"Multi-file support active!\");\n}", &lang);
         let uri = "file:///Users/youness/www/html/vybe/welcome.rs".to_string();
         let widget = CodeEditorWidget::new(my_editor, &mut self.font_system, self.lsp.clone(), uri);
-        self.tabs.push(Tab { name: "welcome.rs".to_string(), path: None, widget, is_sticky: true, buffer: None });
+        self.tabs.push(Tab { name: "welcome.rs".to_string(), path: None, widget, is_sticky: true, buffer: None, is_modified: false });
         self.window = Some(window); self.context = Some(ctx); self.surface = Some(surf);
         self.pixmap = Some(Pixmap::new(sz.width, sz.height).unwrap()); self.surface.as_mut().unwrap().resize(NonZeroU32::new(sz.width).unwrap(), NonZeroU32::new(sz.height).unwrap()).unwrap();
     }
@@ -749,6 +823,7 @@ impl ApplicationHandler for App {
                         Key::Character(c) if cmd && c == "-" => { w.set_zoom(&mut self.font_system, -1.0); }
                         Key::Character(c) if cmd && c == "0" => { w.font_size = 14.0; w.set_zoom(&mut self.font_system, 0.0); }
                         Key::Character(c) if cmd && (c == "w" || c == "W") => { w.show_whitespace = !w.show_whitespace; }
+                        Key::Character(c) if alt && (c == "z" || c == "Z") => { w.wrap_lines = !w.wrap_lines; w.needs_reshape = true; }
                         Key::Character(c) if cmd && (c == "m" || c == "M") => { if let Some(p) = w.my_editor.find_matching_bracket(w.editor.cursor().line, w.editor.cursor().index, &w.lang_def) { w.editor.set_cursor(Cursor::new(p.0, p.1)); } }
                         Key::Named(NamedKey::Home) => {
                              let cli = w.editor.cursor().line; let cur = w.editor.cursor().index;
@@ -759,21 +834,21 @@ impl ApplicationHandler for App {
                         }
                         Key::Named(NamedKey::End) => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
                         Key::Character(c) if cmd && shift && (c == "k" || c == "K") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::End)); w.editor.action(&mut self.font_system, Action::Backspace); w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); let len = w.editor.with_buffer(|b| b.lines[w.editor.cursor().line].text().len()); for _ in 0..len { w.editor.action(&mut self.font_system, Action::Delete); } w.editor.action(&mut self.font_system, Action::Delete); }
-                        Key::Named(NamedKey::Backspace) => if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.editor.action(&mut self.font_system, Action::Backspace); }
-                        Key::Named(NamedKey::Enter) => if w.is_search_open { w.find_next(&mut self.font_system); } else { w.editor.action(&mut self.font_system, Action::Enter); }
+                        Key::Named(NamedKey::Backspace) => if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.editor.action(&mut self.font_system, Action::Backspace); tab.is_modified = true; }
+                        Key::Named(NamedKey::Enter) => if w.is_search_open { w.find_next(&mut self.font_system); } else { w.editor.action(&mut self.font_system, Action::Enter); tab.is_modified = true; }
                         Key::Named(NamedKey::Escape) => { w.is_search_open = false; w.context_menu = None; }
                         Key::Character(c) if cmd && (c == "f" || c == "F") => { w.is_search_open = true; w.search_query.clear(); }
                         Key::Character(c) if cmd && (c == "h" || c == "H") => { w.is_search_open = true; w.is_replace_open = !w.is_replace_open; }
                         Key::Character(c) if cmd && (c == "c" || c == "C") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } } }
-                        Key::Character(c) if cmd && (c == "v" || c == "V") => { if let Some(cb) = &mut self.clipboard { if let Ok(t) = cb.get_text() { for ch in t.chars() { w.editor.action(&mut self.font_system, Action::Insert(ch)); } } } }
-                        Key::Character(c) if cmd && (c == "x" || c == "X") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } w.editor.action(&mut self.font_system, Action::Delete); } }
-                        Key::Named(NamedKey::ArrowUp) if alt => { let li = w.editor.cursor().line; w.my_editor.move_line_up(li); w.needs_reshape = true; }
-                        Key::Named(NamedKey::ArrowDown) if alt => { let li = w.editor.cursor().line; if shift { w.my_editor.duplicate_line(li); } else { w.my_editor.move_line_down(li); } w.needs_reshape = true; }
+                        Key::Character(c) if cmd && (c == "v" || c == "V") => { if let Some(cb) = &mut self.clipboard { if let Ok(t) = cb.get_text() { for ch in t.chars() { w.editor.action(&mut self.font_system, Action::Insert(ch)); } tab.is_modified = true; } } }
+                        Key::Character(c) if cmd && (c == "x" || c == "X") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } w.editor.action(&mut self.font_system, Action::Delete); tab.is_modified = true; } }
+                        Key::Named(NamedKey::ArrowUp) if alt => { let li = w.editor.cursor().line; w.my_editor.move_line_up(li); w.needs_reshape = true; tab.is_modified = true; }
+                        Key::Named(NamedKey::ArrowDown) if alt => { let li = w.editor.cursor().line; if shift { w.my_editor.duplicate_line(li); } else { w.my_editor.move_line_down(li); } w.needs_reshape = true; tab.is_modified = true; }
                         Key::Named(NamedKey::ArrowLeft) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)), Key::Named(NamedKey::ArrowRight) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)), Key::Named(NamedKey::ArrowUp) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Up)), Key::Named(NamedKey::ArrowDown) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Down)),
                         Key::Character(c) if cmd && (c == "a" || c == "A") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::BufferStart)); let mut ly = 0.0; w.editor.with_buffer(|b| if let Some(r) = b.layout_runs().last() { ly = r.line_top + r.line_height; }); w.editor.action(&mut self.font_system, Action::Drag { x: 999999, y: ly as i32 }); }
                         _ => { if let Some(t) = event.text { if !cmd { for ch in t.chars() { if !ch.is_control() || ch == '\t' || ch == '\n' { if w.is_search_open { if w.is_replace_open && alt { w.replace_query.push(ch); } else { w.search_query.push(ch); } } else { 
                             let mut skip = false; if let Some(cl) = match ch { ')'=>Some(')'),'}'=>Some('}'),']'=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { let cli = w.editor.cursor().line; let cur = w.editor.cursor().index; let next_ch = w.editor.with_buffer(|b| b.lines[cli].text().chars().nth(cur)); if next_ch == Some(cl) { w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)); skip = true; } }
-                            if !skip { w.editor.action(&mut self.font_system, Action::Insert(ch)); if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.editor.action(&mut self.font_system, Action::Insert(cl)); w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)); } }
+                            if !skip { w.editor.action(&mut self.font_system, Action::Insert(ch)); tab.is_modified = true; if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.editor.action(&mut self.font_system, Action::Insert(cl)); w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)); } }
                         } } } } else { acted = false; } } else { acted = false; } }
                     }
                     if acted { 
@@ -826,7 +901,8 @@ impl ApplicationHandler for App {
                 // 3. Editor Drag
                 let mut needs_editor_redraw = false;
                 if self.is_dragging && !self.is_dragging_splitter && self.active_tab < self.tabs.len() { 
-                    let r = Rect::from_xywh(ed_start_x * SCALE, TAB_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - TAB_BAR_HEIGHT * SCALE).unwrap(); 
+                    let ed_top = (TAB_BAR_HEIGHT + UI_BAR_HEIGHT) * SCALE;
+                    let r = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap(); 
                     self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); 
                     needs_editor_redraw = true;
                 } 
@@ -835,6 +911,7 @@ impl ApplicationHandler for App {
                 if was_hovering_splitter != self.hovering_splitter || 
                    last_tab_hover != self.hovering_tab_close || 
                    self.is_dragging_splitter || 
+                   self.is_lang_picker_open ||
                    needs_editor_redraw {
                     self.window.as_ref().unwrap().request_redraw();
                 }
@@ -886,7 +963,7 @@ impl ApplicationHandler for App {
                                     let mut widget = CodeEditorWidget::new(my_editor, &mut self.font_system, self.lsp.clone(), uri.clone());
                                     widget.set_language(lang_name, uri);
                                     let name = Path::new(&path).file_name().unwrap_or_default().to_string_lossy().to_string();
-                                    let new_tab = Tab { name, path: Some(path), widget, is_sticky: is_double, buffer: None };
+                                    let new_tab = Tab { name, path: Some(path.clone()), widget, is_sticky: is_double, buffer: None, is_modified: false };
                                     
                                     if let Some(idx) = replace_idx {
                                         self.tabs[idx] = new_tab;
@@ -895,6 +972,7 @@ impl ApplicationHandler for App {
                                         self.tabs.push(new_tab);
                                         self.active_tab = self.tabs.len() - 1;
                                     }
+                                    self.tree_view.reveal_path(&path);
                                 }
                             }
                             _ => { self.window.as_ref().unwrap().request_redraw(); }
@@ -916,10 +994,41 @@ impl ApplicationHandler for App {
 
                     // 5. Editor Click
                     if !self.tabs.is_empty() {
-                        let rect = Rect::from_xywh(ed_start_x * SCALE, TAB_BAR_HEIGHT * SCALE, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - TAB_BAR_HEIGHT * SCALE).unwrap();
+                        let ed_top = (TAB_BAR_HEIGHT + UI_BAR_HEIGHT) * SCALE;
+                        let rect = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
                         self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now();
                         self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
                         self.is_dragging = true; self.window.as_ref().unwrap().request_redraw();
+                        self.is_lang_picker_open = false;
+                    }
+
+                    // 6. Language Picker Click
+                    if my > (self.pixmap.as_ref().unwrap().height() as f32 / SCALE) - FOOTER_HEIGHT {
+                        let lang_label = format!("Language: {}", self.current_lang);
+                        let label_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
+                        if mx > label_x {
+                            self.is_lang_picker_open = !self.is_lang_picker_open;
+                            self.window.as_ref().unwrap().request_redraw();
+                            return;
+                        }
+                    }
+                    if self.is_lang_picker_open {
+                        let menu_w = 150.0;
+                        let menu_h = self.all_languages.len() as f32 * 25.0 + 10.0;
+                        let menu_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE) - menu_w - 10.0;
+                        let menu_y = (self.pixmap.as_ref().unwrap().height() as f32 / SCALE) - FOOTER_HEIGHT - menu_h;
+                        if mx >= menu_x && mx <= menu_x + menu_w && my >= menu_y && my <= menu_y + menu_h {
+                            let idx = ((my - menu_y - 5.0) / 25.0) as usize;
+                            if let Some(new_lang) = self.all_languages.get(idx).cloned() {
+                                self.current_lang = new_lang.clone();
+                                let tab = &mut self.tabs[self.active_tab];
+                                let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
+                                tab.widget.set_language(&new_lang, uri);
+                            }
+                            self.is_lang_picker_open = false;
+                            self.window.as_ref().unwrap().request_redraw();
+                            return;
+                        }
                     }
                 } else if state == ElementState::Released {
                     self.is_dragging = false; self.is_dragging_splitter = false;
