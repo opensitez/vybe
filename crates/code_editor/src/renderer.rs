@@ -4,6 +4,9 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::fs;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Motion, Shaping, SwashCache, Action, Edit, AttrsList, Cursor, Selection};
+use lsp_types::Diagnostic;
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use tiny_skia::{Color as SkiaColor, Paint, Pixmap, PixmapPaint, Rect, Transform, ColorU8, Stroke, PathBuilder};
 use winit::application::ApplicationHandler;
 use winit::event::{WindowEvent, ElementState, MouseButton, MouseScrollDelta};
@@ -606,6 +609,8 @@ pub struct CodeEditorWidget {
     minimap_pixmap: Option<Pixmap>,
     minimap_needs_redraw: bool,
     pub wrap_lines: bool,
+    pub diagnostics: Vec<Diagnostic>,
+    pub matching_bracket: Option<usize>,
 }
 
 impl CodeEditorWidget {
@@ -623,7 +628,7 @@ impl CodeEditorWidget {
         
         lsp.send(LspRequest::Init(text, "rust".to_string(), uri));
 
-        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, lsp, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false };
+        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, lsp, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false, diagnostics: Vec::new(), matching_bracket: None };
         widget.update_digit_cache(font_system);
         widget
     }
@@ -1150,6 +1155,7 @@ struct App {
     quick_open_query: String,
     tab_scroll_x: f32,
     current_theme_idx: usize,
+    breadcrumb_rects: Vec<(Rect, String)>,
 }
 
 impl App {
@@ -1188,6 +1194,7 @@ impl App {
             quick_open_query: String::new(),
             tab_scroll_x: 0.0,
             current_theme_idx: 0,
+            breadcrumb_rects: Vec::new(),
         }
     }
     pub fn active_theme(&self) -> Theme {
@@ -1386,10 +1393,26 @@ impl App {
             // segments for breadcrumbs and zoom indicator
             let path_str = tab.path.clone().unwrap_or_else(|| tab.name.clone());
             let segments: Vec<&str> = path_str.split(|c| c == '/' || c == '\\').filter(|s| !s.is_empty()).collect();
-            let path_display = segments.join(" > ");
+            
             let zoom_pct = (tab.widget.font_size / 14.0 * 100.0) as i32;
-            let footer_text = format!("Ln {}, Col {} | {}% | {} | UTF-8 | {}", cursor.line + 1, cursor.index + 1, zoom_pct, line_endings, path_display);
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &footer_text, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
+            let status_prefix = format!("Ln {}, Col {} | {}% | {} | UTF-8 | ", cursor.line + 1, cursor.index + 1, zoom_pct, line_endings);
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &status_prefix, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
+            
+            // Draw interactive breadcrumbs
+            let mut current_x = 10.0 * SCALE + (status_prefix.len() as f32 * 8.4 * SCALE); // hardcoded approx char width
+            self.breadcrumb_rects.clear();
+            for (i, seg) in segments.iter().enumerate() {
+                let seg_text = if i == segments.len() - 1 { seg.to_string() } else { format!("{} > ", seg) };
+                let seg_width = seg_text.len() as f32 * 8.4 * SCALE;
+                let rect = Rect::from_xywh(current_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE, seg_width, FOOTER_HEIGHT * SCALE).unwrap();
+                
+                // Construct full path up to this segment
+                let partial_path = segments[0..=i].join("/");
+                self.breadcrumb_rects.push((rect, partial_path));
+                
+                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &seg_text, current_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
+                current_x += seg_width;
+            }
 
             let lang_label = format!("Language: {}", self.current_lang);
             let theme_label = format!("Theme: {}", theme_name);
@@ -1454,10 +1477,23 @@ impl App {
             
             App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("Go to file: {}|", self.quick_open_query), o_x + 10.0 * SCALE, o_y + 10.0 * SCALE, Color::rgb(200, 200, 200));
             
+            let matcher = SkimMatcherV2::default();
+            let mut matches: Vec<(i64, usize, &String)> = self.tabs.iter().enumerate()
+                .filter_map(|(idx, tab)| {
+                    if self.quick_open_query.is_empty() {
+                        Some((0, idx, &tab.name))
+                    } else {
+                        matcher.fuzzy_match(&tab.name, &self.quick_open_query).map(|score| (score, idx, &tab.name))
+                    }
+                })
+                .collect();
+            matches.sort_by_key(|m| -m.0); // Highest score first
+
             let mut i_y = o_y + 50.0 * SCALE;
-            for (idx, tab) in self.tabs.iter().enumerate() {
+            for (idx, (score, tab_idx, name)) in matches.iter().take(10).enumerate() {
                 let col = if idx == 0 { Color::rgb(0, 122, 204) } else { Color::rgb(200, 200, 200) };
-                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &tab.name, o_x + 20.0 * SCALE, i_y, col);
+                let display_text = if *score > 0 { format!("{} (score: {})", name, score) } else { name.to_string() };
+                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &display_text, o_x + 20.0 * SCALE, i_y, col);
                 i_y += 25.0 * SCALE;
             }
         }
@@ -1757,8 +1793,17 @@ impl ApplicationHandler for App {
                             }
                         }
 
+
                         // 3. Status Bar Click
                         if my >= height - FOOTER_HEIGHT {
+                            // Breadcrumb segments hit-testing
+                            for (rect, path) in &self.breadcrumb_rects {
+                                if mx * SCALE >= rect.left() && mx * SCALE <= rect.right() && my * SCALE >= rect.top() && my * SCALE <= rect.bottom() {
+                                    println!("Revealing in explorer: {}", path);
+                                    continue;
+                                }
+                            }
+
                             let lang_label = format!("Language: {}", self.current_lang);
                             let theme_label = format!("Theme: {}", self.get_theme_name());
                             let label_x = (pw / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
