@@ -12,17 +12,17 @@ use lsp_types::{
 // no direct Url/Uri import; use JSON strings for URIs to avoid type mismatches
 
 pub enum LspEvent {
-    Diagnostics(Vec<Diagnostic>),
-    Hover(String),
-    Definition(Position),
+    Diagnostics(String, Vec<Diagnostic>), // URI, Diagnostics
+    Hover(String, String),               // URI, Hover text
+    Definition(String, Position),        // URI, Position
 }
 
 pub enum LspRequest {
-    Init(String, String), // content, language_id
-    Change(String),        // content
-    SetLanguage(String),   // language_id
-    Hover(u32, u32),       // line, col
-    Definition(u32, u32),  // line, col
+    Init(String, String, String), // content, language_id, uri
+    Change(String, String),        // content, uri
+    Close(String),                 // uri
+    Hover(String, u32, u32),       // uri, line, col
+    Definition(String, u32, u32),  // uri, line, col
 }
 
 pub struct LspClient {
@@ -36,109 +36,96 @@ impl LspClient {
         let (evt_tx, evt_rx) = crossbeam_channel::unbounded();
 
         thread::spawn(move || {
-            let mut current_lang = "rust".to_string();
-            let mut external_conn: Option<Connection> = None;
-            let mut version = 0;
-            let dummy_uri = "file:///Users/youness/www/html/vybe/test.rs".to_string();
+            let mut child: Option<std::process::Child> = None;
+            let mut child_in: Option<std::io::BufWriter<std::process::ChildStdin>> = None;
+            let mut versions: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
 
             loop {
-                // 1. Handle Requests from Editor
-                while let Ok(req) = req_rx.try_recv() {
-                    match req {
-                        LspRequest::Init(content, lang) => {
-                            current_lang = lang;
-                            if current_lang == "rust" {
-                                let mut cmd = Command::new("rustup");
-                                cmd.args(&["run", "stable", "rust-analyzer"]);
-                                cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
-                                if let Ok(mut child) = cmd.spawn() {
-                                    let stdin = child.stdin.take().unwrap();
-                                    let stdout = child.stdout.take().unwrap();
-                                    let conn = Connection::stdio(); // Correct standard method for lsp-server
-                                    // Actually, Connection::stdio() takes stdin/stdout, but the crate version we have might be different.
-                                    // Based on lsp-server common patterns:
-                                    let (conn, _io_threads) = Connection::stdio();
-                                    
-                                    let params_val = serde_json::json!({
-                                        "processId": std::process::id(),
-                                        "clientInfo": serde_json::Value::Null,
-                                        "rootUri": "file:///",
-                                        "initializationOptions": serde_json::Value::Null,
-                                        "capabilities": serde_json::to_value(ClientCapabilities::default()).unwrap(),
-                                        "trace": "messages",
-                                        "workspaceFolders": serde_json::Value::Null,
-                                        "locale": serde_json::Value::Null,
-                                        "rootPath": serde_json::Value::Null,
-                                        "workDoneProgressParams": serde_json::Value::Object(serde_json::Map::new()),
-                                    });
-                                    let id = conn.sender.send(Message::Request(lsp_server::Request {
-                                        id: 1.into(),
-                                        method: "initialize".to_string(),
-                                        params: params_val,
-                                    })).ok();
-                                    
-                                    if let Ok(Message::Response(res)) = conn.receiver.recv() {
-                                        if res.id == 1.into() {
-                                            conn.sender.send(Message::Notification(Notification {
-                                                method: "initialized".to_string(),
-                                                params: serde_json::to_value(InitializedParams {}).unwrap(),
-                                            })).ok();
-                                            version = 1;
-                                            conn.sender.send(Message::Notification(Notification {
-                                                method: "textDocument/didOpen".to_string(),
-                                                params: serde_json::json!({
-                                                    "textDocument": {
-                                                        "uri": dummy_uri.clone(),
-                                                        "languageId": "rust",
-                                                        "version": version,
-                                                        "text": content.clone()
+                crossbeam_channel::select! {
+                    recv(req_rx) -> req => {
+                        if let Ok(req) = req {
+                            match req {
+                                LspRequest::Init(content, lang, uri) => {
+                                    if lang == "rust" && child.is_none() {
+                                        if let Ok(mut c) = Command::new("rust-analyzer")
+                                            .stdin(Stdio::piped())
+                                            .stdout(Stdio::piped())
+                                            .stderr(Stdio::inherit())
+                                            .spawn() 
+                                        {
+                                            let stdin = std::io::BufWriter::new(c.stdin.take().unwrap());
+                                            let mut stdout = std::io::BufReader::new(c.stdout.take().unwrap());
+                                            child_in = Some(stdin);
+                                            child = Some(c);
+
+                                            // Initialization sequence
+                                            if let Some(mut stdin) = child_in.as_mut() {
+                                                let params_val = serde_json::json!({
+                                                    "processId": std::process::id(),
+                                                    "capabilities": serde_json::to_value(ClientCapabilities::default()).unwrap(),
+                                                    "rootUri": "file:///",
+                                                });
+                                                let init_req = lsp_server::Request { id: 1.into(), method: "initialize".to_string(), params: params_val };
+                                                Message::Request(init_req).write(&mut stdin).ok();
+                                                
+                                                // Reader thread for this child
+                                                let etx = evt_tx.clone();
+                                                thread::spawn(move || {
+                                                    while let Ok(Some(msg)) = Message::read(&mut stdout) {
+                                                        match msg {
+                                                            Message::Notification(not) if not.method == "textDocument/publishDiagnostics" => {
+                                                                if let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(not.params) {
+                                                                    etx.send(LspEvent::Diagnostics(params.uri.to_string(), params.diagnostics)).ok();
+                                                                }
+                                                            }
+                                                            Message::Response(res) if res.id == 1.into() => {
+                                                                // Initialized will be sent next
+                                                            }
+                                                            _ => {}
+                                                        }
                                                     }
-                                                }),
-                                            })).ok();
-                                            external_conn = Some(conn);
+                                                });
+
+                                                // Send initialized
+                                                Message::Notification(Notification { 
+                                                    method: "initialized".to_string(), 
+                                                    params: serde_json::to_value(InitializedParams {}).unwrap() 
+                                                }).write(&mut stdin).ok();
+                                            }
                                         }
                                     }
+                                    
+                                    if let Some(mut stdin) = child_in.as_mut() {
+                                        let v = versions.entry(uri.clone()).or_insert(0);
+                                        *v += 1;
+                                        Message::Notification(Notification { 
+                                            method: "textDocument/didOpen".to_string(), 
+                                            params: serde_json::json!({ 
+                                                "textDocument": { "uri": uri, "languageId": lang, "version": *v, "text": content } 
+                                            }) 
+                                        }).write(&mut stdin).ok();
+                                    } else {
+                                        run_internal_analysis(&lang, &content, &uri, &evt_tx);
+                                    }
                                 }
-                            } else {
-                                run_internal_analysis(&current_lang, &content, &evt_tx);
-                            }
-                        }
-                        LspRequest::Change(content) => {
-                            if let Some(conn) = &external_conn {
-                                version += 1;
-                                conn.sender.send(Message::Notification(Notification {
-                                    method: "textDocument/didChange".to_string(),
-                                    params: serde_json::json!({
-                                        "textDocument": { "uri": dummy_uri.clone(), "version": version },
-                                        "contentChanges": [{ "text": content }]
-                                    }),
-                                })).ok();
-                            } else {
-                                run_internal_analysis(&current_lang, &content, &evt_tx);
-                            }
-                        }
-                        LspRequest::SetLanguage(lang) => {
-                            current_lang = lang;
-                            external_conn = None;
-                        }
-                        _ => {}
-                    }
-                }
-
-                if let Some(conn) = &external_conn {
-                    while let Ok(msg) = conn.receiver.try_recv() {
-                        match msg {
-                            Message::Notification(not) if not.method == "textDocument/publishDiagnostics" => {
-                                if let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(not.params) {
-                                    evt_tx.send(LspEvent::Diagnostics(params.diagnostics)).ok();
+                                LspRequest::Change(content, uri) => {
+                                    if let Some(mut stdin) = child_in.as_mut() {
+                                        let v = versions.entry(uri.clone()).or_insert(0);
+                                        *v += 1;
+                                        Message::Notification(Notification { 
+                                            method: "textDocument/didChange".to_string(), 
+                                            params: serde_json::json!({ 
+                                                "textDocument": { "uri": uri, "version": *v }, 
+                                                "contentChanges": [{ "text": content }] 
+                                            }) 
+                                        }).write(&mut stdin).ok();
+                                    }
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                 }
-
-                thread::sleep(std::time::Duration::from_millis(100));
             }
         });
 
@@ -148,14 +135,13 @@ impl LspClient {
     pub fn send(&self, req: LspRequest) { self.tx.send(req).ok(); }
 }
 
-fn run_internal_analysis(lang: &str, content: &str, tx: &Sender<LspEvent>) {
+fn run_internal_analysis(lang: &str, content: &str, uri: &str, tx: &Sender<LspEvent>) {
     let mut diagnostics = Vec::new();
     match lang {
         "vb" | "basic" => {
             if let Err(e) = vybe_parser_basic::parse_program(content) {
                     match e {
                     vybe_parser_basic::ParseError::PestError(pe) => {
-                        // pest::error::LineColLocation can be Pos((line,col)) or Span((sline,scol),(eline,ecol))
                         let (start_line, start_col) = match pe.line_col {
                             pest::error::LineColLocation::Pos((l, c)) => (l, c),
                             pest::error::LineColLocation::Span((l, c), _end) => (l, c),
@@ -211,5 +197,5 @@ fn run_internal_analysis(lang: &str, content: &str, tx: &Sender<LspEvent>) {
         }
         _ => {}
     }
-    tx.send(LspEvent::Diagnostics(diagnostics)).ok();
+    tx.send(LspEvent::Diagnostics(uri.to_string(), diagnostics)).ok();
 }
