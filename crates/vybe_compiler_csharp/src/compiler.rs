@@ -446,6 +446,8 @@ impl Compiler {
                     is_partial: false,
                     is_static: false,
                     is_abstract: false,
+                    is_sealed: false,
+                    access: s.access.clone(),
                     base_type: None,
                     interfaces: vec![],
                     members: s.members.clone(),
