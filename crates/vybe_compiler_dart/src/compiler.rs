@@ -21,6 +21,7 @@ pub struct Compiler {
     line: u32,
     defined_globals: std::collections::HashSet<String>,
     defined_classes: std::collections::HashSet<String>,
+    classes: std::collections::HashMap<String, ClassDecl>,
     extensions: Vec<ExtensionDecl>,
 }
 
@@ -34,15 +35,18 @@ impl Compiler {
             line: 1,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
+            classes: std::collections::HashMap::new(),
             extensions: Vec::new(),
         }
     }
 
     pub fn compile(mut self, program: &Program) -> Result<Vec<Chunk>, String> {
-        // Pre-collect extensions
+        // Pre-collect definitions
         for top in &program.body {
-            if let TopLevel::Extension(ext) = top {
-                self.extensions.push(ext.clone());
+            match top {
+                TopLevel::Extension(ext) => self.extensions.push(ext.clone()),
+                TopLevel::Class(class) => { self.classes.insert(class.name.clone(), class.clone()); }
+                _ => {}
             }
         }
 
@@ -674,6 +678,10 @@ impl Compiler {
     fn compile_class(&mut self, class: &ClassDecl) -> Result<(), String> {
         // Class → constructor function that creates objects with methods bound
         let class_name = &class.name;
+        
+        // Collect all members (inheritance + mixins)
+        let members = self.collect_all_members(class);
+        
         // Compile constructor function
         let mut chunk = Chunk::new(class_name);
         // Find constructor to get arity
@@ -727,7 +735,7 @@ impl Compiler {
         }
 
         // Initialize fields
-        for member in &class.members {
+        for member in &members {
             if let ClassMember::Field { name, initializer, .. } = member {
                 self.emit_u16(Op::local_get, this_slot);
                 if let Some(init) = initializer {
@@ -749,7 +757,7 @@ impl Compiler {
         }
 
         // Bind methods to the instance
-        for member in &class.members {
+        for member in &members {
             if let ClassMember::Method { decl, is_static, .. } = member {
                 if *is_static { continue; }
                 // Compile the method as a nested function
