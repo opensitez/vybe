@@ -67,6 +67,7 @@ impl Parser {
             Token::Import => { self.advance(); Ok(TopLevel::Import(self.parse_import()?)) }
             Token::Class | Token::Abstract => Ok(TopLevel::Class(self.parse_class()?)),
             Token::Extension => Ok(TopLevel::Extension(self.parse_extension()?)),
+            Token::Enum => { self.advance(); Ok(TopLevel::Enum(self.parse_enum()?)) }
             _ => {
                 // Try function or variable
                 let stmt = self.parse_statement()?;
@@ -106,6 +107,18 @@ impl Parser {
     }
 
     // ── Class ─────────────────────────────────────────────────────────────────
+
+    fn parse_enum(&mut self) -> Result<EnumDecl, String> {
+        let name = self.expect_ident()?;
+        self.expect(Token::LBrace)?;
+        let mut values = Vec::new();
+        while self.peek() != &Token::RBrace && self.peek() != &Token::EOF {
+            values.push(self.expect_ident()?);
+            if !self.eat(&Token::Comma) { break; }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(EnumDecl { name, values })
+    }
 
     fn parse_class(&mut self) -> Result<ClassDecl, String> {
         let is_abstract = self.eat(&Token::Abstract);
@@ -590,6 +603,7 @@ impl Parser {
             self.expect(Token::RBrace)?;
         } else {
             loop {
+                if self.peek() == &Token::RParen { break; }
                 if self.peek() == &Token::LBracket {
                     self.advance();
                     while self.peek() != &Token::RBracket && self.peek() != &Token::EOF {
@@ -610,7 +624,6 @@ impl Parser {
                 }
                 positional.push(self.parse_param(false)?);
                 if !self.eat(&Token::Comma) { break; }
-                if matches!(self.peek(), Token::RParen | Token::LBracket | Token::LBrace) { break; }
             }
         }
         self.expect(Token::RParen)?;
@@ -932,16 +945,39 @@ impl Parser {
             }
             Token::LBrace => {
                 self.advance();
-                let mut entries = Vec::new();
-                while self.peek() != &Token::RBrace && self.peek() != &Token::EOF {
-                    let key = self.parse_expr()?;
-                    self.expect(Token::Colon)?;
-                    let val = self.parse_expr()?;
-                    entries.push((key, val));
-                    if !self.eat(&Token::Comma) { break; }
+                if self.eat(&Token::RBrace) {
+                    return Ok(Expression::Map { type_args: None, entries: Vec::new() });
                 }
-                self.expect(Token::RBrace)?;
-                Ok(Expression::Map { type_args: None, entries })
+                
+                // Distinguish between Set and Map
+                let first = self.parse_expr()?;
+                if self.peek() == &Token::Colon {
+                    self.advance(); // :
+                    let val = self.parse_expr()?;
+                    let mut entries = vec![(first, val)];
+                    if self.eat(&Token::Comma) {
+                        while self.peek() != &Token::RBrace && self.peek() != &Token::EOF {
+                            let k = self.parse_expr()?;
+                            self.expect(Token::Colon)?;
+                            let v = self.parse_expr()?;
+                            entries.push((k, v));
+                            if !self.eat(&Token::Comma) { break; }
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    Ok(Expression::Map { type_args: None, entries })
+                } else {
+                    // Set
+                    let mut elements = vec![first];
+                    if self.eat(&Token::Comma) {
+                        while self.peek() != &Token::RBrace && self.peek() != &Token::EOF {
+                            elements.push(self.parse_expr()?);
+                            if !self.eat(&Token::Comma) { break; }
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    Ok(Expression::Set { type_arg: None, elements })
+                }
             }
             Token::New => {
                 self.advance();
@@ -996,9 +1032,38 @@ impl Parser {
                 }
                 self.pos = saved;
                 self.advance();
-                let e = self.parse_expr()?;
+                
+                // Peek ahead for record: (1,) or (a: 1) or (1, 2)
+                // If it's just (expr), it's a parenthesized expression.
+                let mut elements = Vec::new();
+                let mut is_record = false;
+                
+                while self.peek() != &Token::RParen && self.peek() != &Token::EOF {
+                    let label = if let (Token::Identifier(id), Token::Colon) = (self.peek().clone(), self.peek2().clone()) {
+                        self.advance(); // id
+                        self.advance(); // :
+                        is_record = true;
+                        Some(id)
+                    } else {
+                        None
+                    };
+                    let value = self.parse_expr()?;
+                    elements.push(Argument { label, value });
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        is_record = true; // (x,) is a record
+                    } else {
+                        break;
+                    }
+                }
+                
                 self.expect(Token::RParen)?;
-                Ok(e)
+                if is_record || elements.is_empty() {
+                    Ok(Expression::Record { elements })
+                } else {
+                    // Just a parenthesized expression
+                    Ok(elements[0].value.clone())
+                }
             }
             t => Err(format!("Unexpected token in expression: {:?}", t)),
         }
@@ -1133,19 +1198,109 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, String> {
-        match self.peek() {
+        let mut left = self.parse_primary_pattern()?;
+        
+        // Handle logical patterns: &&, ||
+        loop {
+            if self.peek() == &Token::BarBar {
+                self.advance();
+                let right = self.parse_primary_pattern()?;
+                left = Pattern::Logical(Box::new(left), Box::new(right), true);
+            } else if self.peek() == &Token::AmpAmp {
+                self.advance();
+                let right = self.parse_primary_pattern()?;
+                left = Pattern::Logical(Box::new(left), Box::new(right), false);
+            } else {
+                break;
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_primary_pattern(&mut self) -> Result<Pattern, String> {
+        match self.peek().clone() {
             Token::Identifier(id) if id == "_" => {
                 self.advance();
                 Ok(Pattern::Wildcard)
             }
+            // Relational patterns: > 5, <= 10
+            Token::Greater | Token::Less | Token::GreaterEq | Token::LessEq | Token::EqEq | Token::BangEq => {
+                let op = match self.advance() {
+                    Token::Greater => ">",
+                    Token::Less => "<",
+                    Token::GreaterEq => ">=",
+                    Token::LessEq => "<=",
+                    Token::EqEq => "==",
+                    Token::BangEq => "!=",
+                    _ => unreachable!(),
+                };
+                let val = self.parse_expr()?;
+                Ok(Pattern::Relational { op: op.to_string(), val })
+            }
+            // List pattern: [1, 2, _]
+            Token::LBracket => {
+                self.advance();
+                let mut patterns = Vec::new();
+                while self.peek() != &Token::RBracket && self.peek() != &Token::EOF {
+                    patterns.push(self.parse_pattern()?);
+                    if !self.eat(&Token::Comma) { break; }
+                }
+                self.expect(Token::RBracket)?;
+                Ok(Pattern::List(patterns))
+            }
+            // Map pattern: {'a': 1, 'b': _}
+            Token::LBrace => {
+                self.advance();
+                let mut entries = Vec::new();
+                while self.peek() != &Token::RBrace && self.peek() != &Token::EOF {
+                    let key = self.parse_expr()?;
+                    self.expect(Token::Colon)?;
+                    let pat = self.parse_pattern()?;
+                    entries.push((key, pat));
+                    if !self.eat(&Token::Comma) { break; }
+                }
+                self.expect(Token::RBrace)?;
+                Ok(Pattern::Map(entries))
+            }
+            // Record or parenthesized pattern: (1, 2) or (a: 1)
+            Token::LParen => {
+                self.advance();
+                let mut elements = Vec::new();
+                while self.peek() != &Token::RParen && self.peek() != &Token::EOF {
+                    let label = if let (Token::Identifier(id), Token::Colon) = (self.peek().clone(), self.peek2().clone()) {
+                        self.advance(); self.advance();
+                        Some(id)
+                    } else { None };
+                    let pattern = self.parse_pattern()?;
+                    elements.push(ArgumentPattern { label, pattern });
+                    if !self.eat(&Token::Comma) { break; }
+                }
+                self.expect(Token::RParen)?;
+                Ok(Pattern::Record(elements))
+            }
             Token::Identifier(id) => {
                 let id = id.clone();
                 self.advance();
-                if let Token::Identifier(var_name) = self.peek() {
+                // Object pattern: ClassName(field: pattern)
+                if self.peek() == &Token::LParen {
+                    self.advance();
+                    let mut fields = Vec::new();
+                    while self.peek() != &Token::RParen && self.peek() != &Token::EOF {
+                        let field_name = self.expect_ident()?;
+                        self.expect(Token::Colon)?;
+                        let pat = self.parse_pattern()?;
+                        fields.push((field_name, pat));
+                        if !self.eat(&Token::Comma) { break; }
+                    }
+                    self.expect(Token::RParen)?;
+                    Ok(Pattern::Object { class_name: id, fields })
+                } else if let Token::Identifier(var_name) = self.peek() {
+                    // Type varName pattern: int x
                     let var_name = var_name.clone();
                     self.advance();
                     Ok(Pattern::Variable(var_name))
                 } else {
+                    // Constant: id
                     Ok(Pattern::Constant(Expression::Identifier(id)))
                 }
             }

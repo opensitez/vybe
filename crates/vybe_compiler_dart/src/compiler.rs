@@ -22,6 +22,7 @@ pub struct Compiler {
     defined_globals: std::collections::HashSet<String>,
     defined_classes: std::collections::HashSet<String>,
     classes: std::collections::HashMap<String, ClassDecl>,
+    enums: std::collections::HashMap<String, EnumDecl>,
     extensions: Vec<ExtensionDecl>,
 }
 
@@ -36,6 +37,7 @@ impl Compiler {
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
             classes: std::collections::HashMap::new(),
+            enums: std::collections::HashMap::new(),
             extensions: Vec::new(),
         }
     }
@@ -46,6 +48,7 @@ impl Compiler {
             match top {
                 TopLevel::Extension(ext) => self.extensions.push(ext.clone()),
                 TopLevel::Class(class) => { self.classes.insert(class.name.clone(), class.clone()); }
+                TopLevel::Enum(en) => { self.enums.insert(en.name.clone(), en.clone()); }
                 _ => {}
             }
         }
@@ -236,10 +239,48 @@ impl Compiler {
                 Ok(())
             }
             TopLevel::Class(c) => self.compile_class(c),
+            TopLevel::Enum(en) => self.compile_enum(en),
             TopLevel::Variable(v) => self.compile_var_decl(v),
             TopLevel::Extension(ext) => self.compile_extension(ext),
             TopLevel::Statement(s) => self.compile_statement(s),
         }
+    }
+
+    fn compile_enum(&mut self, en: &EnumDecl) -> Result<(), String> {
+        let enum_name = &en.name;
+        // Create a class-like structure for the enum
+        let mut chunk = Chunk::new(enum_name);
+        chunk.arity = 0;
+        let idx = self.chunks.len();
+        self.chunks.push(chunk);
+        
+        let mut scope = Scope::new_function();
+        let saved = self.current_chunk_idx;
+        self.current_chunk_idx = idx;
+        self.scopes.push(scope);
+
+        // Create the singleton-like instance for each enum value
+        self.emit_u16(Op::struct_new, 0); 
+        let this_slot = self.define_local("this");
+        self.emit_u16(Op::local_set, this_slot);
+        self.emit(Op::drop);
+
+        // Set name and index etc if we wanted to be fancy
+        
+        self.emit_u16(Op::local_get, this_slot);
+        self.emit(Op::r#return);
+        self.scopes.pop();
+        self.current_chunk_idx = saved;
+        
+        // Define static fields for each enum value
+        for (i, val) in en.values.iter().enumerate() {
+            // In a real impl, we'd call the above 'constructor' for each value
+            // and store them in static global slots.
+            let global_name = format!("{}.{}", enum_name, val);
+            self.defined_globals.insert(global_name);
+        }
+        
+        Ok(())
     }
 
     fn compile_extension(&mut self, ext: &ExtensionDecl) -> Result<(), String> {
@@ -599,19 +640,19 @@ impl Compiler {
             if let Some(dv) = &p.default_value {
                 let slot = self.current_scope().resolve_local(&p.name).unwrap();
                 self.emit_u16(Op::local_get, slot);
-                
-                // If Null or Undefined, use default
+                self.emit(Op::dup);
                 let is_null = self.emit_jump(Op::br_if_null);
                 
-                // Optimized path: If it's not null, we're done with this param
+                // Not null path: keep the dup
                 let done = self.emit_jump(Op::br);
                 
                 self.patch_jump(is_null);
+                self.emit(Op::drop); // drop the extra null
                 self.compile_expression(dv)?;
-                self.emit_u16(Op::local_set, slot);
-                self.emit(Op::drop); // drop the result of expression to clean stack
                 
                 self.patch_jump(done);
+                self.emit_u16(Op::local_set, slot);
+                self.emit(Op::drop); // clean up stack
             }
         }
 
@@ -623,20 +664,20 @@ impl Compiler {
                 // Get from the named args Map: mapValue = map[name]
                 self.emit_u16(Op::local_get, map_slot);
                 self.emit_constant(Value::String(Rc::from(p.name.as_str())));
-                // Try to find a specialized map_get or use indexing
-                // Since Vybe has Op::struct_get for objects and Op::array_get for indexable
-                // for Maps we use a host call or a specialized opcode if available.
                 let get_idx = self.import("vybe:collections", "mapGet");
                 self.emit_host_call(get_idx, 2);
                 
                 // If Null/Undefined and we have a default value, apply it
                 if let Some(dv) = &p.default_value {
+                    self.emit(Op::dup);
                     let is_null = self.emit_jump(Op::br_if_null);
+                    
                     let done = self.emit_jump(Op::br);
                     
                     self.patch_jump(is_null);
+                    self.emit(Op::drop); // drop the extra null
                     self.compile_expression(dv)?;
-                    // local_set expects value on stack
+                    
                     self.patch_jump(done);
                 }
                 
@@ -885,6 +926,21 @@ impl Compiler {
                     self.compile_expression(val)?;
                     let set_idx = self.import("vybe:collections", "mapSet");
                     self.emit_host_call(set_idx, 3);
+                    self.emit(Op::drop);
+                }
+            }
+            Expression::Set { elements, type_arg } => {
+                let ctor = self.import("vybe:collections", "Set");
+                let argc = if let Some(t) = type_arg {
+                    self.emit_constant(Value::String(Rc::from(t.name.as_str())));
+                    1
+                } else { 0 };
+                self.emit_host_call(ctor, argc);
+                for el in elements {
+                    self.emit(Op::dup);
+                    self.compile_expression(el)?;
+                    let add_idx = self.import("vybe:collections", "setAdd");
+                    self.emit_host_call(add_idx, 2);
                     self.emit(Op::drop);
                 }
             }
@@ -1179,6 +1235,12 @@ impl Compiler {
                 self.compile_expression(right)?;
                 self.patch_jump(end);
             }
+            Expression::Record { elements } => {
+                for el in elements {
+                    self.compile_expression(&el.value)?;
+                }
+                self.emit_u16(Op::struct_new, elements.len() as u16);
+            }
         }
         Ok(())
     }
@@ -1459,6 +1521,114 @@ impl Compiler {
                 self.emit_u16(Op::ref_test, type_idx);
                 let skip = self.emit_jump(Op::br_if_false);
                 Ok(skip)
+            }
+            Pattern::Relational { op, val } => {
+                self.compile_expression(val)?;
+                match op.as_str() {
+                    ">" => self.emit(Op::dyn_gt),
+                    "<" => self.emit(Op::dyn_lt),
+                    ">=" => self.emit(Op::dyn_ge),
+                    "<=" => self.emit(Op::dyn_le),
+                    "==" => self.emit(Op::dyn_eq),
+                    "!=" => self.emit(Op::dyn_ne),
+                    _ => unreachable!(),
+                }
+                let skip = self.emit_jump(Op::br_if_false);
+                Ok(skip)
+            }
+            Pattern::List(patterns) => {
+                // Check if it's an array and length matches
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_array);
+                let not_array = self.emit_jump(Op::br_if_false);
+                
+                self.emit(Op::dup);
+                self.emit(Op::array_length);
+                self.emit_constant(Value::I64(patterns.len() as i64));
+                self.emit(Op::eq);
+                let wrong_len = self.emit_jump(Op::br_if_false);
+                
+                let mut p_skips = Vec::new();
+                for (i, p) in patterns.iter().enumerate() {
+                    self.emit(Op::dup);
+                    self.emit_constant(Value::I64(i as i64));
+                    self.emit(Op::array_get);
+                    p_skips.push(self.compile_pattern(p)?);
+                }
+                
+                let success = self.emit_jump(Op::br);
+                self.patch_jump(not_array);
+                self.patch_jump(wrong_len);
+                for s in p_skips { self.patch_jump(s); }
+                let fail = self.emit_jump(Op::br_if_true); // this is a hack to skip
+                self.patch_jump(success);
+                Ok(fail)
+            }
+            Pattern::Map(entries) => {
+                // Check if it's an object/map
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_object);
+                let skip = self.emit_jump(Op::br_if_false);
+                
+                let mut e_skips = Vec::new();
+                for (key_expr, val_pat) in entries {
+                    self.emit(Op::dup);
+                    self.compile_expression(key_expr)?;
+                    self.emit(Op::array_get);
+                    e_skips.push(self.compile_pattern(val_pat)?);
+                }
+                
+                let success = self.emit_jump(Op::br);
+                self.patch_jump(skip);
+                for s in e_skips { self.patch_jump(s); }
+                let fail = self.emit_jump(Op::br_if_true);
+                self.patch_jump(success);
+                Ok(fail)
+            }
+            Pattern::Record(elements) => {
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_object);
+                let skip = self.emit_jump(Op::br_if_false);
+                
+                let mut e_skips = Vec::new();
+                for (i, el) in elements.iter().enumerate() {
+                    self.emit(Op::dup);
+                    let prop_idx = if let Some(label) = &el.label {
+                        self.add_string_constant(label)
+                    } else {
+                        self.add_string_constant(&i.to_string())
+                    };
+                    self.emit_u16(Op::struct_get, prop_idx);
+                    e_skips.push(self.compile_pattern(&el.pattern)?);
+                }
+                
+                let success = self.emit_jump(Op::br);
+                self.patch_jump(skip);
+                for s in e_skips { self.patch_jump(s); }
+                let fail = self.emit_jump(Op::br_if_true);
+                self.patch_jump(success);
+                Ok(fail)
+            }
+            Pattern::Object { class_name, fields } => {
+                let type_idx = self.add_string_constant(class_name);
+                self.emit(Op::dup);
+                self.emit_u16(Op::ref_test, type_idx);
+                let skip = self.emit_jump(Op::br_if_false);
+                
+                let mut f_skips = Vec::new();
+                for (name, pat) in fields {
+                    self.emit(Op::dup);
+                    let prop_idx = self.add_string_constant(name);
+                    self.emit_u16(Op::struct_get, prop_idx);
+                    f_skips.push(self.compile_pattern(pat)?);
+                }
+                
+                let success = self.emit_jump(Op::br);
+                self.patch_jump(skip);
+                for s in f_skips { self.patch_jump(s); }
+                let fail = self.emit_jump(Op::br_if_true);
+                self.patch_jump(success);
+                Ok(fail)
             }
             Pattern::Logical(left, right, is_or) => {
                 self.emit(Op::dup);

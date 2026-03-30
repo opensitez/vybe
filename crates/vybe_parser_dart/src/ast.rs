@@ -13,6 +13,7 @@ pub enum TopLevel {
     Class(ClassDecl),
     Variable(VarDecl),
     Extension(ExtensionDecl),
+    Enum(EnumDecl),
     Statement(Statement), // top-level expressions / bare statements
 }
 
@@ -165,6 +166,12 @@ pub struct ExtensionDecl {
 }
 
 #[derive(Debug, Clone)]
+pub struct EnumDecl {
+    pub name: String,
+    pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum ClassMember {
     Field {
         is_static: bool,
@@ -256,6 +263,9 @@ pub enum Expression {
 
     // Switch Expression (Dart 3)
     Switch { expr: Box<Expression>, cases: Vec<SwitchExpressionCase> },
+
+    // Records
+    Record { elements: Vec<Argument> },
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +282,19 @@ pub enum Pattern {
     Type(String),
     Wildcard,
     Logical(Box<Pattern>, Box<Pattern>, bool), // OR=true, AND=false
+    
+    // Advanced Patterns (Dart 3)
+    List(Vec<Pattern>),
+    Map(Vec<(Expression, Pattern)>),
+    Record(Vec<ArgumentPattern>),
+    Object { class_name: String, fields: Vec<(String, Pattern)> },
+    Relational { op: String, val: Expression },
+}
+
+#[derive(Debug, Clone)]
+pub struct ArgumentPattern {
+    pub label: Option<String>,
+    pub pattern: Pattern,
 }
 
 #[derive(Debug, Clone)]
