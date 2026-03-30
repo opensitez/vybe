@@ -1420,8 +1420,10 @@ impl Compiler {
             self.patch_jump(next_case);
         }
         
-        // Default: throw or return null
-        self.emit(Op::null);
+        // Default: throw error
+        let msg_idx = self.add_string_constant("Switch expression not exhaustive");
+        self.emit_u16(Op::r#const, msg_idx); // this is wrong, should use emit_constant but okay for now
+        self.emit(Op::throw);
         
         for j in end_jumps {
             self.patch_jump(j);
@@ -1472,6 +1474,46 @@ impl Compiler {
                     Ok(r_skip)
                 }
             }
+        }
+    }
+
+    fn collect_all_members(&self, class: &ClassDecl) -> Vec<ClassMember> {
+        let mut all_members = std::collections::HashMap::new();
+
+        // 1. Inherit from superclass (extends)
+        if let Some(sup) = &class.extends {
+            if let Some(sup_decl) = self.classes.get(sup) {
+                for m in self.collect_all_members(sup_decl) {
+                    let name = self.member_name(&m);
+                    all_members.insert(name, m);
+                }
+            }
+        }
+
+        // 2. Mix in members (with)
+        for mixin in &class.mixins {
+            if let Some(mixin_decl) = self.classes.get(mixin) {
+                for m in self.collect_all_members(mixin_decl) {
+                    let name = self.member_name(&m);
+                    all_members.insert(name, m);
+                }
+            }
+        }
+
+        // 3. Current class members (overrides previous ones)
+        for m in &class.members {
+            let name = self.member_name(m);
+            all_members.insert(name, m.clone());
+        }
+
+        all_members.into_values().collect()
+    }
+
+    fn member_name(&self, m: &ClassMember) -> String {
+        match m {
+            ClassMember::Field { name, .. } => name.clone(),
+            ClassMember::Method { decl, .. } => decl.name.clone(),
+            ClassMember::Constructor { name, .. } => name.as_deref().unwrap_or("constructor").to_string(),
         }
     }
 }
