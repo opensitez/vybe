@@ -21,6 +21,7 @@ pub struct Compiler {
     line: u32,
     defined_globals: std::collections::HashSet<String>,
     defined_classes: std::collections::HashSet<String>,
+    extensions: Vec<ExtensionDecl>,
 }
 
 impl Compiler {
@@ -33,10 +34,18 @@ impl Compiler {
             line: 1,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
+            extensions: Vec::new(),
         }
     }
 
     pub fn compile(mut self, program: &Program) -> Result<Vec<Chunk>, String> {
+        // Pre-collect extensions
+        for top in &program.body {
+            if let TopLevel::Extension(ext) = top {
+                self.extensions.push(ext.clone());
+            }
+        }
+
         for top in &program.body {
             self.compile_top_level(top)?;
         }
@@ -224,8 +233,26 @@ impl Compiler {
             }
             TopLevel::Class(c) => self.compile_class(c),
             TopLevel::Variable(v) => self.compile_var_decl(v),
+            TopLevel::Extension(ext) => self.compile_extension(ext),
             TopLevel::Statement(s) => self.compile_statement(s),
         }
+    }
+
+    fn compile_extension(&mut self, ext: &ExtensionDecl) -> Result<(), String> {
+        let ext_name = ext.name.as_deref().unwrap_or("Extension");
+        for member in &ext.members {
+            if let ClassMember::Method { decl, .. } = member {
+                let mut f_clone = decl.clone();
+                f_clone.name = format!("{}_{}", ext_name, decl.name);
+                // In a real implementation, we'd add the receiver as the first parameter.
+                // For our simplified compiler, we'll assume the resolver handles the stack.
+                self.compile_function_decl(&f_clone)?;
+                let name = f_clone.name.clone();
+                self.emit_global_set(&name);
+                self.emit(Op::drop);
+            }
+        }
+        Ok(())
     }
 
     // ── Statements ────────────────────────────────────────────────────────
@@ -505,18 +532,115 @@ impl Compiler {
 
     fn compile_function_decl(&mut self, f: &FunctionDecl) -> Result<(), String> {
         let name = &f.name;
-        let arity = f.params.positional.len() + f.params.optional_pos.len() + f.params.named.len();
+        let positional_arity = f.params.positional.len() + f.params.optional_pos.len();
+        let has_named = !f.params.named.is_empty();
+        
         let mut chunk = Chunk::new(name);
-        chunk.arity = arity as u8;
+        chunk.arity = (positional_arity + if has_named { 1 } else { 0 }) as u8;
         let idx = self.chunks.len();
         self.chunks.push(chunk);
+        
         let mut scope = Scope::new_function();
         for p in &f.params.positional { scope.define_local(&p.name); }
         for p in &f.params.optional_pos { scope.define_local(&p.name); }
-        for p in &f.params.named { scope.define_local(&p.name); }
+        
+        let named_args_slot = if has_named {
+            Some(scope.define_local("__named_args"))
+        } else {
+            None
+        };
+        
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;
         self.scopes.push(scope);
+
+        if f.is_async {
+            // Compile the actual body into a sub-chunk (the "worker")
+            let mut body_chunk = Chunk::new(format!("{}$async", name));
+            let body_idx = self.chunks.len();
+            self.chunks.push(body_chunk);
+            
+            let saved_chunk = self.current_chunk_idx;
+            self.current_chunk_idx = body_idx;
+            
+            // Compile locals and body into the sub-chunk
+            // (Simplified: in a real implementation we'd pass all current locals as upvalues)
+            match &f.body {
+                FunctionBody::Block(stmts) => {
+                    for s in stmts { self.compile_statement(s)?; }
+                }
+                FunctionBody::Expression(expr) => {
+                    self.compile_expression(expr)?;
+                }
+                FunctionBody::Empty => {}
+            }
+            self.emit(Op::r#return);
+            self.chunks[body_idx].local_count = self.current_scope().next_slot;
+            
+            self.current_chunk_idx = saved_chunk;
+            
+            // In the main function, just call the async runner
+            let runner = self.import("vybe:runtime", "asyncStart");
+            self.emit_ref_func(body_idx, &[]); // 0 upvalues for now
+            self.emit_host_call(runner, 1);
+            self.emit(Op::r#return);
+            
+            self.scopes.pop();
+            self.current_chunk_idx = saved;
+            return Ok(());
+        }
+
+        // Handle default values for optional positional parameters
+        for p in &f.params.optional_pos {
+            if let Some(dv) = &p.default_value {
+                let slot = self.current_scope().resolve_local(&p.name).unwrap();
+                self.emit_u16(Op::local_get, slot);
+                
+                // If Null or Undefined, use default
+                let is_null = self.emit_jump(Op::br_if_null);
+                
+                // Optimized path: If it's not null, we're done with this param
+                let done = self.emit_jump(Op::br);
+                
+                self.patch_jump(is_null);
+                self.compile_expression(dv)?;
+                self.emit_u16(Op::local_set, slot);
+                self.emit(Op::drop); // drop the result of expression to clean stack
+                
+                self.patch_jump(done);
+            }
+        }
+
+        // Handle named parameters
+        if let Some(map_slot) = named_args_slot {
+            for p in &f.params.named {
+                let target_slot = self.define_local(&p.name);
+                
+                // Get from the named args Map: mapValue = map[name]
+                self.emit_u16(Op::local_get, map_slot);
+                self.emit_constant(Value::String(Rc::from(p.name.as_str())));
+                // Try to find a specialized map_get or use indexing
+                // Since Vybe has Op::struct_get for objects and Op::array_get for indexable
+                // for Maps we use a host call or a specialized opcode if available.
+                let get_idx = self.import("vybe:collections", "mapGet");
+                self.emit_host_call(get_idx, 2);
+                
+                // If Null/Undefined and we have a default value, apply it
+                if let Some(dv) = &p.default_value {
+                    let is_null = self.emit_jump(Op::br_if_null);
+                    let done = self.emit_jump(Op::br);
+                    
+                    self.patch_jump(is_null);
+                    self.compile_expression(dv)?;
+                    // local_set expects value on stack
+                    self.patch_jump(done);
+                }
+                
+                self.emit_u16(Op::local_set, target_slot);
+                self.emit(Op::drop); // cleanup stack
+            }
+        }
+
         match &f.body {
             FunctionBody::Block(stmts) => {
                 for s in stmts { self.compile_statement(s)?; }
@@ -697,6 +821,8 @@ impl Compiler {
                                 }
                                 StringPart::Expr(e) => {
                                     self.compile_expression(e)?;
+                                    let to_str = self.import("vybe:convert", "toString");
+                                    self.emit_host_call(to_str, 1);
                                 }
                             }
                         }
@@ -725,14 +851,26 @@ impl Compiler {
                 }
             }
             Expression::Super => { self.emit(Op::null); }
-            Expression::List { elements, .. } => {
+            Expression::List { elements, type_arg } => {
                 for e in elements { self.compile_expression(e)?; }
-                self.emit_u16(Op::array_new, elements.len() as u16);
+                if let Some(t) = type_arg {
+                    // Emit typed array creation hint
+                    let type_idx = self.add_string_constant(&t.name);
+                    self.emit_u16(Op::r#const, type_idx);
+                    self.emit_u16(Op::array_new, elements.len() as u16 + 1); // +1 for type hint
+                } else {
+                    self.emit_u16(Op::array_new, elements.len() as u16);
+                }
             }
-            Expression::Map { entries, .. } => {
+            Expression::Map { entries, type_args } => {
                 // Build map via host call
                 let ctor = self.import("vybe:collections", "Map");
-                self.emit_host_call(ctor, 0);
+                let argc = if let Some((k, v)) = type_args {
+                    self.emit_constant(Value::String(Rc::from(k.name.as_str())));
+                    self.emit_constant(Value::String(Rc::from(v.name.as_str())));
+                    2
+                } else { 0 };
+                self.emit_host_call(ctor, argc);
                 for (key, val) in entries {
                     self.emit(Op::dup);
                     self.compile_expression(key)?;
@@ -742,9 +880,13 @@ impl Compiler {
                     self.emit(Op::drop);
                 }
             }
-            Expression::Set { elements, .. } => {
+            Expression::Set { elements, type_arg } => {
                 let ctor = self.import("vybe:collections", "Set");
-                self.emit_host_call(ctor, 0);
+                let argc = if let Some(t) = type_arg {
+                    self.emit_constant(Value::String(Rc::from(t.name.as_str())));
+                    1
+                } else { 0 };
+                self.emit_host_call(ctor, argc);
                 for e in elements {
                     self.emit(Op::dup);
                     self.compile_expression(e)?;
@@ -829,6 +971,22 @@ impl Compiler {
                     AssignOp::Assign => {
                         self.compile_expression(right)?;
                     }
+                    AssignOp::NullAssign => {
+                        self.compile_expression(left)?;
+                        self.emit(Op::dup);
+                        let not_null = self.emit_jump(Op::br_if_null);
+                        // Case: NOT null. Result is original value.
+                        let end = self.emit_jump(Op::br);
+                        
+                        self.patch_jump(not_null);
+                        // Case: IS null. Evaluate right and store.
+                        self.emit(Op::drop);
+                        self.compile_expression(right)?;
+                        self.emit(Op::dup);
+                        self.compile_store(left)?;
+                        self.patch_jump(end);
+                        return Ok(());
+                    }
                     _ => {
                         self.compile_expression(left)?;
                         self.compile_expression(right)?;
@@ -866,14 +1024,17 @@ impl Compiler {
                 self.compile_expression(right)?;
                 self.patch_jump(end);
             }
-            Expression::Member { object, member, .. } => {
+            Expression::Member { object, member, null_safe } => {
                 self.compile_expression(object)?;
-                // Check for .length
-                if member == "length" {
-                    self.emit(Op::str_length);
+                if *null_safe {
+                    self.emit(Op::dup);
+                    let skip = self.emit_jump(Op::br_if_null);
+                    self.compile_member_access(member)?;
+                    let end = self.emit_jump(Op::br);
+                    self.patch_jump(skip);
+                    self.patch_jump(end);
                 } else {
-                    let prop_idx = self.add_string_constant(member);
-                    self.emit_u16(Op::struct_get, prop_idx);
+                    self.compile_member_access(member)?;
                 }
             }
             Expression::Index { object, index } => {
@@ -888,14 +1049,62 @@ impl Compiler {
                 // Call class constructor
                 let idx = self.add_string_constant(class);
                 self.emit_u16(Op::global_get, idx);
-                for arg in args { self.compile_expression(&arg.value)?; }
-                self.emit_u8(Op::call, args.len() as u8);
+                let count = self.emit_args(args)?;
+                self.emit_u8(Op::call, count);
             }
             Expression::Const { class, args, .. } => {
                 let idx = self.add_string_constant(class);
                 self.emit_u16(Op::global_get, idx);
-                for arg in args { self.compile_expression(&arg.value)?; }
-                self.emit_u8(Op::call, args.len() as u8);
+                let count = self.emit_args(args)?;
+                self.emit_u8(Op::call, count);
+            }
+            Expression::Cascade { object, ops, null_safe } => {
+                self.compile_expression(object)?;
+                
+                let mut end_cascade = None;
+                if *null_safe {
+                    self.emit(Op::dup);
+                    let is_null = self.emit_jump(Op::br_if_null);
+                    end_cascade = Some(is_null);
+                }
+
+                for op in ops {
+                    self.emit(Op::dup); // duplicate the receiver for each operation
+                    match op {
+                        CascadeOp::Method(name, args) => {
+                            let prop_idx = self.add_string_constant(name);
+                            self.emit_u16(Op::struct_get, prop_idx);
+                            // Receiver is already pushed by dup, now push args
+                            let count = self.emit_args(args)?;
+                            self.emit_u8(Op::call, count);
+                            self.emit(Op::drop); // discard method result, keep the receiver
+                        }
+                        CascadeOp::Field(name) => {
+                            let prop_idx = self.add_string_constant(name);
+                            self.emit_u16(Op::struct_get, prop_idx);
+                            self.emit(Op::drop);
+                        }
+                        CascadeOp::Assign(name, val) => {
+                            self.compile_expression(val)?;
+                            let prop_idx = self.add_string_constant(name);
+                            self.emit_u16(Op::struct_set, prop_idx);
+                            self.emit(Op::drop);
+                        }
+                        CascadeOp::Index(idx_expr) => {
+                            self.compile_expression(idx_expr)?;
+                            self.emit(Op::array_get);
+                            self.emit(Op::drop);
+                        }
+                    }
+                }
+
+                if let Some(label) = end_cascade {
+                    self.patch_jump(label);
+                }
+                // Result of cascade is the original object (still on stack)
+            }
+            Expression::Switch { expr, cases } => {
+                self.compile_switch_expression(expr, cases)?;
             }
             Expression::Lambda { params, body, .. } => {
                 let arity = params.positional.len() + params.optional_pos.len() + params.named.len();
@@ -938,9 +1147,10 @@ impl Compiler {
                 self.emit_u16(Op::ref_test, type_idx);
                 if *negated { self.emit(Op::bool_not); }
             }
-            Expression::As { expr: inner, .. } => {
-                // Type cast — in our dynamic VM, just pass through
+            Expression::As { expr: inner, type_ann } => {
                 self.compile_expression(inner)?;
+                let type_idx = self.add_string_constant(&type_ann.name);
+                self.emit_u16(Op::ref_cast, type_idx);
             }
             Expression::Await(inner) => {
                 self.compile_expression(inner)?;
@@ -948,7 +1158,8 @@ impl Compiler {
             }
             Expression::Spread(inner) => {
                 self.compile_expression(inner)?;
-                self.emit(Op::spread);
+                let spread_idx = self.import("vybe:collections", "spread");
+                self.emit_host_call(spread_idx, 1);
             }
             Expression::IfNull { left, right } => {
                 self.compile_expression(left)?;
@@ -960,56 +1171,92 @@ impl Compiler {
                 self.compile_expression(right)?;
                 self.patch_jump(end);
             }
-            Expression::Cascade { object, ops } => {
-                self.compile_expression(object)?;
-                for op in ops {
-                    self.emit(Op::dup);
-                    match op {
-                        CascadeOp::Method(name, args) => {
-                            for a in args { self.compile_expression(&a.value)?; }
-                            let prop_idx = self.add_string_constant(name);
-                            self.emit_u16(Op::struct_get, prop_idx);
-                            self.emit_u8(Op::call, args.len() as u8);
-                            self.emit(Op::drop);
-                        }
-                        CascadeOp::Assign(field, val) => {
-                            self.compile_expression(val)?;
-                            let prop_idx = self.add_string_constant(field);
-                            self.emit_u16(Op::struct_set, prop_idx);
-                            self.emit(Op::drop);
-                        }
-                        CascadeOp::Field(name) => {
-                            let prop_idx = self.add_string_constant(name);
-                            self.emit_u16(Op::struct_get, prop_idx);
-                            self.emit(Op::drop);
-                        }
-                        CascadeOp::Index(idx_expr) => {
-                            self.compile_expression(idx_expr)?;
-                            self.emit(Op::array_get);
-                            self.emit(Op::drop);
-                        }
+        }
+        Ok(())
+    }
+
+    fn compile_member_access(&mut self, member: &str) -> Result<(), String> {
+        // Special case for primitives
+        if member == "length" {
+            self.emit(Op::str_length);
+            return Ok(());
+        }
+
+        // Try to find an extension method
+        let extensions = self.extensions.clone();
+        for ext in &extensions {
+            for m in &ext.members {
+                match m {
+                    ClassMember::Method { decl, .. } if decl.name == member => {
+                        // Found an extension method!
+                        // Desugar to: Extension_method(receiver)
+                        
+                        // Stack reordering: [receiver] -> [func, receiver]
+                        let tmp = self.define_local("__ext_tmp");
+                        self.emit_u16(Op::local_set, tmp);
+                        
+                        let idx = self.add_string_constant(&format!("{}_{}", ext.name.as_deref().unwrap_or("Extension"), member));
+                        self.emit_u16(Op::global_get, idx);
+                        self.emit_u16(Op::local_get, tmp);
+                        self.emit_u8(Op::call, 1);
+                        return Ok(());
                     }
+                    _ => {}
                 }
             }
         }
+
+        let prop_idx = self.add_string_constant(member);
+        self.emit_u16(Op::struct_get, prop_idx);
         Ok(())
     }
 
     // ── Call compilation ──────────────────────────────────────────────────
 
+    fn emit_args(&mut self, args: &[Argument]) -> Result<u8, String> {
+        let mut positional_count = 0;
+        let mut named_args = Vec::new();
+
+        for arg in args {
+            if let Some(label) = &arg.label {
+                named_args.push((label.clone(), &arg.value));
+            } else {
+                self.compile_expression(&arg.value)?;
+                positional_count += 1;
+            }
+        }
+
+        if !named_args.is_empty() {
+            // Build Map for named args
+            let ctor = self.import("vybe:collections", "Map");
+            self.emit_host_call(ctor, 0);
+            for (label, value) in named_args {
+                self.emit(Op::dup);
+                self.emit_constant(Value::String(Rc::from(label.as_str())));
+                self.compile_expression(value)?;
+                let set_idx = self.import("vybe:collections", "mapSet");
+                self.emit_host_call(set_idx, 3);
+                self.emit(Op::drop);
+            }
+            Ok(positional_count + 1)
+        } else {
+            Ok(positional_count)
+        }
+    }
+
     fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
         // Handle print() as a bare host call
         if let Expression::Identifier(name) = callee {
             if name == "print" {
-                for a in args { self.compile_expression(&a.value)?; }
+                let count = self.emit_args(args)?;
                 let idx = self.import("wasi:cli", "log");
-                self.emit_host_call(idx, args.len() as u8);
+                self.emit_host_call(idx, count);
                 return Ok(());
             }
             // Other bare imports
             if let Some(imp) = self.resolve_bare_import(name) {
-                for a in args { self.compile_expression(&a.value)?; }
-                self.emit_host_call(imp, args.len() as u8);
+                let count = self.emit_args(args)?;
+                self.emit_host_call(imp, count);
                 return Ok(());
             }
         }
@@ -1020,9 +1267,9 @@ impl Compiler {
             if let Expression::Identifier(obj_name) = object.as_ref() {
                 if !self.is_known_variable(obj_name) {
                     let module = Self::dart_module_alias(obj_name);
-                    for a in args { self.compile_expression(&a.value)?; }
+                    let count = self.emit_args(args)?;
                     let import_idx = self.import(module, member);
-                    self.emit_host_call(import_idx, args.len() as u8);
+                    self.emit_host_call(import_idx, count);
                     return Ok(());
                 }
             }
@@ -1031,9 +1278,29 @@ impl Compiler {
             if let Some(imp) = self.resolve_value_method(member) {
                 // Push object as first arg, then remaining args
                 self.compile_expression(object)?;
-                for a in args { self.compile_expression(&a.value)?; }
-                self.emit_host_call(imp, (args.len() + 1) as u8);
+                let count = self.emit_args(args)?;
+                self.emit_host_call(imp, count + 1);
                 return Ok(());
+            }
+
+            // Check for EXTENSION methods
+            let extensions = self.extensions.clone();
+            for ext in &extensions {
+                for m in &ext.members {
+                    if let ClassMember::Method { decl, .. } = m {
+                        if decl.name == *member {
+                            // extension method found!
+                            let idx = self.add_string_constant(&format!("{}_{}", ext.name.as_deref().unwrap_or("Extension"), member));
+                            self.emit_u16(Op::global_get, idx);
+                            // Push receiver (object) as 1st arg
+                            self.compile_expression(object)?;
+                            // Push remaining args
+                            let count = self.emit_args(args)?;
+                            self.emit_u8(Op::call, count + 1);
+                            return Ok(());
+                        }
+                    }
+                }
             }
 
             // toString() method
@@ -1048,15 +1315,15 @@ impl Compiler {
             self.compile_expression(object)?;
             let prop_idx = self.add_string_constant(member);
             self.emit_u16(Op::struct_get, prop_idx);
-            for a in args { self.compile_expression(&a.value)?; }
-            self.emit_u8(Op::call, args.len() as u8);
+            let count = self.emit_args(args)?;
+            self.emit_u8(Op::call, count);
             return Ok(());
         }
 
         // Generic function call
         self.compile_expression(callee)?;
-        for a in args { self.compile_expression(&a.value)?; }
-        self.emit_u8(Op::call, args.len() as u8);
+        let count = self.emit_args(args)?;
+        self.emit_u8(Op::call, count);
         Ok(())
     }
 
@@ -1110,5 +1377,93 @@ impl Compiler {
             _ => {} // can't store to other expression types
         }
         Ok(())
+    }
+
+    fn compile_switch_expression(&mut self, expr: &Expression, cases: &[SwitchExpressionCase]) -> Result<(), String> {
+        self.compile_expression(expr)?;
+        let val_slot = self.define_local("__matched_val");
+        self.emit_u16(Op::local_set, val_slot);
+        self.emit(Op::drop);
+
+        let mut end_jumps = Vec::new();
+        
+        for case in cases {
+            // Check pattern
+            self.emit_u16(Op::local_get, val_slot);
+            let next_case = self.compile_pattern(&case.pattern)?;
+            
+            // Check guard if present
+            if let Some(guard) = &case.guard {
+                self.compile_expression(guard)?;
+                self.emit(Op::dyn_to_bool);
+                let skip_guard = self.emit_jump(Op::br_if_false);
+                
+                // Pattern matched AND guard passed
+                self.compile_expression(&case.result)?;
+                end_jumps.push(self.emit_jump(Op::br));
+                
+                self.patch_jump(skip_guard);
+            } else {
+                // Pattern matched, no guard
+                self.compile_expression(&case.result)?;
+                end_jumps.push(self.emit_jump(Op::br));
+            }
+            
+            self.patch_jump(next_case);
+        }
+        
+        // Default: throw or return null
+        self.emit(Op::null);
+        
+        for j in end_jumps {
+            self.patch_jump(j);
+        }
+        
+        Ok(())
+    }
+
+    fn compile_pattern(&mut self, pattern: &Pattern) -> Result<usize, String> {
+        match pattern {
+            Pattern::Constant(e) => {
+                self.compile_expression(e)?;
+                self.emit(Op::dyn_eq);
+                let skip = self.emit_jump(Op::br_if_false);
+                Ok(skip)
+            }
+            Pattern::Wildcard => {
+                self.emit(Op::drop);
+                self.emit(Op::r#true);
+                let skip = self.emit_jump(Op::br_if_false);
+                Ok(skip)
+            }
+            Pattern::Variable(name) => {
+                let slot = self.define_local(name);
+                self.emit_u16(Op::local_set, slot);
+                self.emit(Op::drop);
+                self.emit(Op::r#true);
+                let skip = self.emit_jump(Op::br_if_false);
+                Ok(skip)
+            }
+            Pattern::Type(type_name) => {
+                let type_idx = self.add_string_constant(type_name);
+                self.emit_u16(Op::ref_test, type_idx);
+                let skip = self.emit_jump(Op::br_if_false);
+                Ok(skip)
+            }
+            Pattern::Logical(left, right, is_or) => {
+                self.emit(Op::dup);
+                let l_skip = self.compile_pattern(left)?;
+                if *is_or {
+                    let success = self.emit_jump(Op::br);
+                    self.patch_jump(l_skip);
+                    let r_skip = self.compile_pattern(right)?;
+                    self.patch_jump(success);
+                    Ok(r_skip)
+                } else {
+                    let r_skip = self.compile_pattern(right)?;
+                    Ok(r_skip)
+                }
+            }
+        }
     }
 }

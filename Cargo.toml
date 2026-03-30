@@ -3,7 +3,8 @@ resolver = "2"
 members = [
     "crates/vybe_parser_basic",
     "crates/vybe_forms",
-    "crates/vybe_editor",
+    "crates/code_editor",
+    "crates/vybe_ide",
     "crates/vybe_project",
     "crates/vybe_cli",
     "crates/vybe_bytecode",
@@ -13,13 +14,16 @@ members = [
     "crates/vybe_compiler_vb",
     "crates/vybe_parser_csharp",
     "crates/vybe_compiler_csharp",
+    "crates/osz-widgets",
+    "crates/vybe_parser_dart",
+    "crates/vybe_compiler_dart",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 authors = ["vybe Rust Team"]
-license = "MIT"
+license = "GPLv3"
 
 [workspace.dependencies]
 # Parser dependencies
@@ -40,6 +44,8 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 # Dialog libraries
 rfd = "0.14"
 
+
+
 # Internal crates
 vybe_parser_basic = { path = "crates/vybe_parser_basic" }
 vybe_forms = { path = "crates/vybe_forms" }
@@ -51,3 +57,8 @@ vybe_compiler_vb = { path = "crates/vybe_compiler_vb" }
 vybe_parser_csharp = { path = "crates/vybe_parser_csharp" }
 vybe_compiler_csharp = { path = "crates/vybe_compiler_csharp" }
 vybe_host = { path = "crates/vybe_host" }
+vybe_cli = { path = "crates/vybe_cli" }
+vybe_parser_dart = { path = "crates/vybe_parser_dart" }
+vybe_compiler_dart = { path = "crates/vybe_compiler_dart" }
+
+ 

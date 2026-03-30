@@ -80,8 +80,7 @@ impl Lexer {
             '.' => {
                 if self.peek() == Some('.') {
                     self.advance();
-                    if self.eat('?') { Token::DotDotQuestion }
-                    else if self.eat('.') { Token::DotDotDot }
+                    if self.eat('.') { Token::DotDotDot }
                     else { Token::DotDot }
                 } else { Token::Dot }
             }
@@ -136,8 +135,10 @@ impl Lexer {
                 if self.peek() == Some('?') {
                     self.advance();
                     if self.eat('=') { Token::QuestionQuestionEq } else { Token::QuestionQuestion }
-                } else if self.eat('.') { Token::QuestionDot }
-                else { Token::Question }
+                } else if self.eat('.') { 
+                    if self.eat('.') { Token::QuestionDotDot }
+                    else { Token::QuestionDot }
+                } else { Token::Question }
             }
             '\'' | '"' => self.read_string(ch, false),
             'r' if matches!(self.peek(), Some('\'') | Some('"')) => {

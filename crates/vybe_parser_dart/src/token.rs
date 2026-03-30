@@ -40,7 +40,7 @@ pub enum Token {
     At,      // @
 
     // Punctuation
-    Dot, DotDot, DotDotQuestion, DotDotDot,
+    Dot, DotDot, QuestionDotDot, DotDotDot,
     Comma, Semicolon, Colon,
     LParen, RParen,
     LBracket, RBracket,

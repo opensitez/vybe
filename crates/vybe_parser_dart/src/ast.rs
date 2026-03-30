@@ -12,6 +12,7 @@ pub enum TopLevel {
     Function(FunctionDecl),
     Class(ClassDecl),
     Variable(VarDecl),
+    Extension(ExtensionDecl),
     Statement(Statement), // top-level expressions / bare statements
 }
 
@@ -157,6 +158,13 @@ pub struct ClassDecl {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExtensionDecl {
+    pub name: Option<String>,
+    pub on_type: TypeAnnotation,
+    pub members: Vec<ClassMember>,
+}
+
+#[derive(Debug, Clone)]
 pub enum ClassMember {
     Field {
         is_static: bool,
@@ -223,7 +231,7 @@ pub enum Expression {
     // Access
     Member { object: Box<Expression>, member: String, null_safe: bool },
     Index { object: Box<Expression>, index: Box<Expression> },
-    Cascade { object: Box<Expression>, ops: Vec<CascadeOp> },
+    Cascade { object: Box<Expression>, ops: Vec<CascadeOp>, null_safe: bool },
 
     // Calls
     Call { callee: Box<Expression>, type_args: Vec<TypeAnnotation>, args: Vec<Argument>, null_safe: bool },
@@ -245,6 +253,25 @@ pub enum Expression {
 
     // If-null assignment shorthand
     IfNull { left: Box<Expression>, right: Box<Expression> },
+
+    // Switch Expression (Dart 3)
+    Switch { expr: Box<Expression>, cases: Vec<SwitchExpressionCase> },
+}
+
+#[derive(Debug, Clone)]
+pub struct SwitchExpressionCase {
+    pub pattern: Pattern,
+    pub guard: Option<Expression>,
+    pub result: Expression,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Constant(Expression),
+    Variable(String),
+    Type(String),
+    Wildcard,
+    Logical(Box<Pattern>, Box<Pattern>, bool), // OR=true, AND=false
 }
 
 #[derive(Debug, Clone)]

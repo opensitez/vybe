@@ -66,6 +66,7 @@ impl Parser {
         match self.peek() {
             Token::Import => { self.advance(); Ok(TopLevel::Import(self.parse_import()?)) }
             Token::Class | Token::Abstract => Ok(TopLevel::Class(self.parse_class()?)),
+            Token::Extension => Ok(TopLevel::Extension(self.parse_extension()?)),
             _ => {
                 // Try function or variable
                 let stmt = self.parse_statement()?;
@@ -135,6 +136,25 @@ impl Parser {
         self.expect(Token::RBrace)?;
         Ok(ClassDecl { name, type_params, extends, implements, mixins, is_abstract, members })
     }
+
+    fn parse_extension(&mut self) -> Result<ExtensionDecl, String> {
+        self.expect(Token::Extension)?;
+        let name = if let Token::Identifier(_) = self.peek() {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+        self.expect(Token::On)?;
+        let on_type = self.parse_type_annotation()?;
+        self.expect(Token::LBrace)?;
+        let mut members = Vec::new();
+        while self.peek() != &Token::RBrace && self.peek() != &Token::EOF {
+            members.push(self.parse_class_member(name.as_deref().unwrap_or("Extension"))?);
+        }
+        self.expect(Token::RBrace)?;
+        Ok(ExtensionDecl { name, on_type, members })
+    }
+
 
     fn parse_class_member(&mut self, class_name: &str) -> Result<ClassMember, String> {
         let is_static = self.eat(&Token::Static);
@@ -407,7 +427,9 @@ impl Parser {
         self.expect(Token::LBrace)?;
         let mut cases = Vec::new();
         while self.peek() != &Token::RBrace && self.peek() != &Token::EOF {
+            // Support modern patterns or legacy case/default
             let label = if self.eat(&Token::Case) {
+                // Here we should ideally handle patterns in Switch statements too
                 Some(self.parse_expr()?)
             } else if self.eat(&Token::Default) {
                 None
@@ -844,10 +866,12 @@ impl Parser {
                     let args = self.parse_args()?;
                     expr = Expression::Call { callee: Box::new(expr), type_args: vec![], args, null_safe: false };
                 }
-                Token::DotDot => {
+                Token::DotDot | Token::QuestionDotDot => {
                     // Cascade
+                    let is_null_safe = self.peek() == &Token::QuestionDotDot;
+                    self.advance();
                     let mut ops = Vec::new();
-                    while self.eat(&Token::DotDot) {
+                    loop {
                         let member = self.expect_ident()?;
                         if self.peek() == &Token::LParen {
                             let args = self.parse_args()?;
@@ -858,8 +882,15 @@ impl Parser {
                         } else {
                             ops.push(CascadeOp::Field(member));
                         }
+                        
+                        // Check for another cascade op
+                        if self.peek() == &Token::DotDot {
+                            self.advance();
+                        } else {
+                            break;
+                        }
                     }
-                    expr = Expression::Cascade { object: Box::new(expr), ops };
+                    expr = Expression::Cascade { object: Box::new(expr), ops, null_safe: is_null_safe };
                 }
                 _ => break,
             }
@@ -927,6 +958,9 @@ impl Parser {
                 self.skip_type_args();
                 let args = self.parse_args()?;
                 Ok(Expression::Const { class, constructor, args })
+            }
+            Token::Switch => {
+                self.parse_switch_expression()
             }
             Token::Identifier(name) => {
                 self.advance();
@@ -1066,6 +1100,63 @@ impl Parser {
             else if t == Token::Greater || t == Token::RParen || t == Token::RBrace || t == Token::RBracket { depth -= 1; }
         }
         Ok(())
+    }
+
+    fn parse_switch_expression(&mut self) -> Result<Expression, String> {
+        self.advance(); // switch
+        self.expect(Token::LParen)?;
+        let expr = self.parse_expr()?;
+        self.expect(Token::RParen)?;
+        self.expect(Token::LBrace)?;
+        
+        let mut cases = Vec::new();
+        while self.peek() != &Token::RBrace && self.peek() != &Token::EOF {
+            let pattern = self.parse_pattern()?;
+            
+            let mut guard = None;
+            if let Token::Identifier(id) = self.peek() {
+                if id == "when" {
+                    self.advance();
+                    guard = Some(self.parse_expr()?);
+                }
+            }
+            
+            self.expect(Token::Arrow)?;
+            let result = self.parse_expr()?;
+            
+            cases.push(SwitchExpressionCase { pattern, guard, result });
+            if !self.eat(&Token::Comma) { break; }
+        }
+        
+        self.expect(Token::RBrace)?;
+        Ok(Expression::Switch { expr: Box::new(expr), cases })
+    }
+
+    fn parse_pattern(&mut self) -> Result<Pattern, String> {
+        match self.peek() {
+            Token::Identifier(id) if id == "_" => {
+                self.advance();
+                Ok(Pattern::Wildcard)
+            }
+            Token::Identifier(id) => {
+                let id = id.clone();
+                self.advance();
+                if let Token::Identifier(var_name) = self.peek() {
+                    let var_name = var_name.clone();
+                    self.advance();
+                    Ok(Pattern::Variable(var_name))
+                } else {
+                    Ok(Pattern::Constant(Expression::Identifier(id)))
+                }
+            }
+            Token::Null => { self.advance(); Ok(Pattern::Constant(Expression::Null)) }
+            Token::True => { self.advance(); Ok(Pattern::Constant(Expression::Bool(true))) }
+            Token::False => { self.advance(); Ok(Pattern::Constant(Expression::Bool(false))) }
+            _ => {
+                let e = self.parse_primary()?;
+                Ok(Pattern::Constant(e))
+            }
+        }
     }
 }
 
