@@ -1,7 +1,7 @@
 use ropey::Rope;
 use crate::language::LanguageDef;
 use lsp_types::Diagnostic;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LexerState {
@@ -36,6 +36,8 @@ pub struct Editor {
     pub folds: Vec<(usize, usize)>, // foldable ranges: (start_li, end_li)
     pub collapsed_starts: HashSet<usize>, // line indices that are COLLAPSED
     pub diagnostics: Vec<Diagnostic>,
+    pub history: VecDeque<(String, usize, usize)>,
+    pub redo_history: VecDeque<(String, usize, usize)>,
 }
 
 // Tokenize a single line, returning tokens and the final state for the next line
@@ -137,9 +139,51 @@ fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef, mut state: 
 impl Editor {
     pub fn from_text(text: &str, lang: &LanguageDef) -> Self {
         let rope = Rope::from_str(text);
-        let mut ed = Self { rope, line_tokens: Vec::new(), line_states: Vec::new(), folds: Vec::new(), collapsed_starts: HashSet::new(), diagnostics: Vec::new() };
+        let mut ed = Self { 
+            rope, 
+            line_tokens: Vec::new(), 
+            line_states: Vec::new(), 
+            folds: Vec::new(), 
+            collapsed_starts: HashSet::new(), 
+            diagnostics: Vec::new(),
+            history: VecDeque::new(),
+            redo_history: VecDeque::new(),
+        };
         ed.retokenize_all(lang);
         ed
+    }
+
+    pub fn save_snapshot(&mut self, line: usize, col: usize) {
+        let current = self.rope.to_string();
+        // Avoid duplicate identical snapshots
+        if let Some((last_text, _, _)) = self.history.back() {
+            if last_text == &current { return; }
+        }
+        self.history.push_back((current, line, col));
+        if self.history.len() > 100 { self.history.pop_front(); }
+        self.redo_history.clear();
+    }
+
+    pub fn undo(&mut self, cur_line: usize, cur_col: usize) -> Option<(String, usize, usize)> {
+        let current_text = self.rope.to_string();
+        let (prev_text, prev_line, prev_col) = self.history.pop_back()?;
+        
+        self.redo_history.push_back((current_text, cur_line, cur_col));
+        if self.redo_history.len() > 100 { self.redo_history.pop_front(); }
+        
+        self.rope = Rope::from_str(&prev_text);
+        Some((prev_text, prev_line, prev_col))
+    }
+
+    pub fn redo(&mut self, cur_line: usize, cur_col: usize) -> Option<(String, usize, usize)> {
+        let current_text = self.rope.to_string();
+        let (next_text, next_line, next_col) = self.redo_history.pop_back()?;
+        
+        self.history.push_back((current_text, cur_line, cur_col));
+        if self.history.len() > 100 { self.history.pop_front(); }
+        
+        self.rope = Rope::from_str(&next_text);
+        Some((next_text, next_line, next_col))
     }
 
     // Expose rope for simple manipulations from renderer for now

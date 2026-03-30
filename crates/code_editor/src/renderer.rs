@@ -18,11 +18,22 @@ use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use softbuffer::{Context, Surface};
 use arboard::Clipboard;
 
+use std::path::Path;
+use serde::{Deserialize, Serialize};
+
 use crate::editor::{Editor as MyEditor, TokenKind};
 use crate::language::{load_language, LanguageDef};
 use crate::lsp_client::{LspClient, LspRequest, LspEvent};
 use osz_widgets::{TreeView, TreeEvent, Dropdown, DropdownEvent};
-use std::path::Path;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Keybinding {
+    pub key: String,
+    #[serde(default)] pub cmd: bool,
+    #[serde(default)] pub shift: bool,
+    #[serde(default)] pub alt: bool,
+    pub action: String,
+}
 
 const SCALE: f32 = 2.0;
 const EXPLORER_WIDTH: f32 = 250.0; 
@@ -1156,6 +1167,7 @@ struct App {
     tab_scroll_x: f32,
     current_theme_idx: usize,
     breadcrumb_rects: Vec<(Rect, String)>,
+    keybindings: Vec<Keybinding>,
 }
 
 impl App {
@@ -1195,6 +1207,38 @@ impl App {
             tab_scroll_x: 0.0,
             current_theme_idx: 0,
             breadcrumb_rects: Vec::new(),
+            keybindings: {
+                let paths = ["keybindings.json", "crates/code_editor/keybindings.json"];
+                let mut kb = Vec::new();
+                for p in paths {
+                    if let Ok(s) = fs::read_to_string(p) {
+                        if let Ok(parsed) = serde_json::from_str::<Vec<Keybinding>>(&s) {
+                            kb = parsed;
+                            break;
+                        }
+                    }
+                }
+                if kb.is_empty() {
+                    kb = vec![
+                        Keybinding { key: "z".into(), cmd: true, shift: false, alt: false, action: "Undo".into() },
+                        Keybinding { key: "z".into(), cmd: true, shift: true, alt: false, action: "Redo".into() },
+                        Keybinding { key: "a".into(), cmd: true, shift: false, alt: false, action: "SelectAll".into() },
+                        Keybinding { key: "s".into(), cmd: true, shift: false, alt: false, action: "Save".into() },
+                        Keybinding { key: "f".into(), cmd: true, shift: false, alt: false, action: "Find".into() },
+                        Keybinding { key: "h".into(), cmd: true, shift: false, alt: false, action: "Replace".into() },
+                        Keybinding { key: "/".into(), cmd: true, shift: false, alt: false, action: "ToggleComment".into() },
+                        Keybinding { key: "Tab".into(), cmd: false, shift: false, alt: false, action: "Indent".into() },
+                        Keybinding { key: "Tab".into(), cmd: false, shift: true, alt: false, action: "Unindent".into() },
+                        Keybinding { key: "ArrowUp".into(), cmd: true, shift: false, alt: false, action: "MoveBufferStart".into() },
+                        Keybinding { key: "ArrowDown".into(), cmd: true, shift: false, alt: false, action: "MoveBufferEnd".into() },
+                        Keybinding { key: "ArrowLeft".into(), cmd: true, shift: false, alt: false, action: "MoveLineStart".into() },
+                        Keybinding { key: "ArrowRight".into(), cmd: true, shift: false, alt: false, action: "MoveLineEnd".into() },
+                        Keybinding { key: "ArrowLeft".into(), cmd: false, shift: false, alt: true, action: "MoveWordLeft".into() },
+                        Keybinding { key: "ArrowRight".into(), cmd: false, shift: false, alt: true, action: "MoveWordRight".into() },
+                    ];
+                }
+                kb
+            },
         }
     }
     pub fn active_theme(&self) -> Theme {
@@ -1490,7 +1534,7 @@ impl App {
             matches.sort_by_key(|m| -m.0); // Highest score first
 
             let mut i_y = o_y + 50.0 * SCALE;
-            for (idx, (score, tab_idx, name)) in matches.iter().take(10).enumerate() {
+            for (idx, (score, _tab_idx, name)) in matches.iter().take(10).enumerate() {
                 let col = if idx == 0 { Color::rgb(0, 122, 204) } else { Color::rgb(200, 200, 200) };
                 let display_text = if *score > 0 { format!("{} (score: {})", name, score) } else { name.to_string() };
                 App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &display_text, o_x + 20.0 * SCALE, i_y, col);
@@ -1548,9 +1592,50 @@ impl ApplicationHandler for App {
                     let w = &mut tab.widget;
                     let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
                     let alt = self.modifiers.state().alt_key(); let shift = self.modifiers.state().shift_key();
+
+                    let key_str = match event.key_without_modifiers() {
+                        Key::Character(c) => c.to_lowercase(),
+                        Key::Named(nk) => format!("{:?}", nk),
+                        _ => String::new(),
+                    };
+
+                    for kb in &self.keybindings {
+                        if kb.key == key_str && kb.cmd == cmd && kb.shift == shift && kb.alt == alt {
+                            match kb.action.as_str() {
+                                "Undo" => {
+                                    if let Some((text, line, col)) = w.my_editor.undo(w.editor.cursor().line, w.editor.cursor().index) {
+                                        w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
+                                        w.editor.set_cursor(Cursor::new(line, col));
+                                    }
+                                }
+                                "Redo" => {
+                                    if let Some((text, line, col)) = w.my_editor.redo(w.editor.cursor().line, w.editor.cursor().index) {
+                                        w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
+                                        w.editor.set_cursor(Cursor::new(line, col));
+                                    }
+                                }
+                                "SelectAll" => {
+                                    w.editor.set_cursor(Cursor::new(0, 0));
+                                    let last_line = w.editor.with_buffer(|b| b.lines.len() - 1);
+                                    let last_col = w.editor.with_buffer(|b| b.lines[last_line].text().len());
+                                    w.editor.set_selection(Selection::Normal(Cursor::new(last_line, last_col)));
+                                }
+                                "MoveBufferStart" => w.editor.action(&mut self.font_system, Action::Motion(Motion::BufferStart)),
+                                "MoveBufferEnd" => w.editor.action(&mut self.font_system, Action::Motion(Motion::BufferEnd)),
+                                "MoveLineStart" => w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)),
+                                "MoveLineEnd" => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
+                                "MoveWordLeft" => w.editor.action(&mut self.font_system, Action::Motion(Motion::LeftWord)),
+                                "MoveWordRight" => w.editor.action(&mut self.font_system, Action::Motion(Motion::RightWord)),
+                                "Save" => { println!("Saving document: {}", tab.name); tab.is_modified = false; }
+                                "Find" => { w.is_search_open = true; if let Some(t) = w.editor.copy_selection() { if !t.is_empty() { w.search_query = t; } } else { w.search_query.clear(); } }
+                                "Replace" => { w.is_search_open = true; w.is_replace_open = !w.is_replace_open; }
+                                _ => { acted = false; }
+                            }
+                            if acted { w.needs_reshape = true; w.sync(); self.window.as_ref().unwrap().request_redraw(); return; }
+                        }
+                    }
+
                     match event.key_without_modifiers() {
-                        Key::Named(NamedKey::Tab) => if shift { w.editor.action(&mut self.font_system, Action::Unindent); } else { w.editor.action(&mut self.font_system, Action::Indent); }
-                        Key::Character(c) if cmd && c == "/" => { w.toggle_comment(&mut self.font_system); }
                         Key::Character(c) if cmd && (c == "=" || c == "+") => { w.set_zoom(&mut self.font_system, 1.0); }
                         Key::Character(c) if cmd && c == "-" => { w.set_zoom(&mut self.font_system, -1.0); }
                         Key::Character(c) if cmd && c == "0" => { w.font_size = 14.0; w.set_zoom(&mut self.font_system, 0.0); }
@@ -1567,13 +1652,15 @@ impl ApplicationHandler for App {
                         }
                         Key::Named(NamedKey::End) => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
                         Key::Character(c) if cmd && shift && (c == "k" || c == "K") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::End)); w.editor.action(&mut self.font_system, Action::Backspace); w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); let len = w.editor.with_buffer(|b| b.lines[w.editor.cursor().line].text().len()); for _ in 0..len { w.editor.action(&mut self.font_system, Action::Delete); } w.editor.action(&mut self.font_system, Action::Delete); }
-                        Key::Named(NamedKey::Backspace) => if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.editor.action(&mut self.font_system, Action::Backspace); tab.is_modified = true; }
+                        Key::Named(NamedKey::Backspace) => if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); w.editor.action(&mut self.font_system, Action::Backspace); tab.is_modified = true; }
+                        Key::Named(NamedKey::Delete) => { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); w.editor.action(&mut self.font_system, Action::Delete); tab.is_modified = true; }
                         Key::Named(NamedKey::Enter) => {
                             if self.is_quick_open {
                                 self.is_quick_open = false;
                                 // In a real IDE, we'd fuzzy search and pick. For win, just close.
                             } else if w.is_search_open { w.find_next(&mut self.font_system); } 
                             else { 
+                                w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
                                 let line_idx = w.editor.cursor().line;
                                 let byte_off = w.editor.with_buffer(|b| {
                                     let mut total = 0;
@@ -1586,28 +1673,19 @@ impl ApplicationHandler for App {
                             }
                         }
                         Key::Named(NamedKey::Escape) => { self.is_quick_open = false; w.is_search_open = false; w.context_menu = None; }
-                        Key::Character(c) if cmd && (c == "f" || c == "F") => { 
-                            w.is_search_open = true; 
-                            if let Some(t) = w.editor.copy_selection() { if !t.is_empty() { w.search_query = t; } }
-                            else { w.search_query.clear(); }
-                        }
-                        Key::Character(c) if cmd && (c == "h" || c == "H") => { w.is_search_open = true; w.is_replace_open = !w.is_replace_open; }
-                        Key::Character(c) if alt && (c == "s" || c == "S") => { w.case_sensitive = !w.case_sensitive; }
-                        Key::Character(c) if alt && (c == "a" || c == "A") => { 
-                            if w.is_search_open && w.is_replace_open {
-                                w.my_editor.replace_all(&w.search_query, &w.replace_query, &w.lang_def);
-                                w.needs_reshape = true; tab.is_modified = true;
-                            }
-                        }
-                        Key::Character(c) if alt && (c == "t" || c == "T") => {
-                            self.current_theme_idx = (self.current_theme_idx + 1) % 11;
-                            let new_theme = self.active_theme();
-                            for tab in &mut self.tabs { tab.widget.theme = new_theme; tab.widget.needs_reshape = true; }
-                        }
                         Key::Character(c) if cmd && (c == "c" || c == "C") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } } }
-                        Key::Character(c) if cmd && (c == "v" || c == "V") => { if let Some(cb) = &mut self.clipboard { if let Ok(t) = cb.get_text() { for ch in t.chars() { w.editor.action(&mut self.font_system, Action::Insert(ch)); } tab.is_modified = true; } } }
-                        Key::Character(c) if cmd && (c == "x" || c == "X") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } w.editor.action(&mut self.font_system, Action::Delete); tab.is_modified = true; } }
+                        Key::Character(c) if cmd && (c == "v" || c == "V") => { 
+                             if let Some(cb) = &mut self.clipboard { 
+                                 if let Ok(t) = cb.get_text() { 
+                                     w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
+                                     for ch in t.chars() { w.editor.action(&mut self.font_system, Action::Insert(ch)); } 
+                                     tab.is_modified = true; 
+                                 } 
+                             } 
+                        }
+                        Key::Character(c) if cmd && (c == "x" || c == "X") => { if let Some(t) = w.editor.copy_selection() { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } w.editor.action(&mut self.font_system, Action::Delete); tab.is_modified = true; } }
                         Key::Character(c) if cmd && (c == "d" || c == "D") => {
+                             w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
                              if w.editor.selection_bounds().is_none() {
                                  let li = w.editor.cursor().line;
                                  w.my_editor.duplicate_line(li);
@@ -1616,11 +1694,50 @@ impl ApplicationHandler for App {
                              }
                              w.needs_reshape = true; tab.is_modified = true;
                         }
-                        Key::Named(NamedKey::ArrowUp) if alt => { let li = w.editor.cursor().line; w.my_editor.move_line_up(li); w.needs_reshape = true; tab.is_modified = true; }
-                        Key::Named(NamedKey::ArrowDown) if alt => { let li = w.editor.cursor().line; if shift { w.my_editor.duplicate_line(li); } else { w.my_editor.move_line_down(li); } w.needs_reshape = true; tab.is_modified = true; }
-                        Key::Named(NamedKey::ArrowLeft) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)), Key::Named(NamedKey::ArrowRight) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)), Key::Named(NamedKey::ArrowUp) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Up)), Key::Named(NamedKey::ArrowDown) => w.editor.action(&mut self.font_system, Action::Motion(Motion::Down)),
-                        Key::Character(c) if cmd && (c == "a" || c == "A") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::BufferStart)); let mut ly = 0.0; w.editor.with_buffer(|b| if let Some(r) = b.layout_runs().last() { ly = r.line_top + r.line_height; }); w.editor.action(&mut self.font_system, Action::Drag { x: 999999, y: ly as i32 }); }
-                        _ => { if let Some(t) = event.text { if !cmd { for ch in t.chars() { if !ch.is_control() || ch == '\t' || ch == '\n' { if w.is_search_open { if w.is_replace_open && alt { w.replace_query.push(ch); } else { w.search_query.push(ch); } } else { 
+                        Key::Named(NamedKey::ArrowUp) if alt => { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); let li = w.editor.cursor().line; w.my_editor.move_line_up(li); w.needs_reshape = true; tab.is_modified = true; }
+                        Key::Named(NamedKey::ArrowDown) if alt => { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); let li = w.editor.cursor().line; if shift { w.my_editor.duplicate_line(li); } else { w.my_editor.move_line_down(li); } w.needs_reshape = true; tab.is_modified = true; }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            if shift && w.editor.selection_bounds().is_none() { w.editor.set_selection(Selection::Normal(w.editor.cursor())); }
+                            w.editor.action(&mut self.font_system, Action::Motion(Motion::Left));
+                            if !shift { w.editor.set_selection(Selection::None); }
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            if shift && w.editor.selection_bounds().is_none() { w.editor.set_selection(Selection::Normal(w.editor.cursor())); }
+                            w.editor.action(&mut self.font_system, Action::Motion(Motion::Right));
+                            if !shift { w.editor.set_selection(Selection::None); }
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            if shift && w.editor.selection_bounds().is_none() { w.editor.set_selection(Selection::Normal(w.editor.cursor())); }
+                            w.editor.action(&mut self.font_system, Action::Motion(Motion::Up));
+                            if !shift { w.editor.set_selection(Selection::None); }
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            if shift && w.editor.selection_bounds().is_none() { w.editor.set_selection(Selection::Normal(w.editor.cursor())); }
+                            w.editor.action(&mut self.font_system, Action::Motion(Motion::Down));
+                            if !shift { w.editor.set_selection(Selection::None); }
+                        }
+                        Key::Character(c) if cmd && c == "z" => { 
+                            if shift {
+                                if let Some((text, line, col)) = w.my_editor.redo(w.editor.cursor().line, w.editor.cursor().index) {
+                                    w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
+                                    w.editor.set_cursor(Cursor::new(line, col));
+                                }
+                            } else {
+                                if let Some((text, line, col)) = w.my_editor.undo(w.editor.cursor().line, w.editor.cursor().index) {
+                                    w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
+                                    w.editor.set_cursor(Cursor::new(line, col));
+                                }
+                            }
+                        }
+                        Key::Character(c) if cmd && c == "a" => {
+                            w.editor.set_cursor(Cursor::new(0, 0));
+                            let last_line = w.editor.with_buffer(|b| b.lines.len() - 1);
+                            let last_col = w.editor.with_buffer(|b| b.lines[last_line].text().len());
+                            w.editor.set_selection(Selection::Normal(Cursor::new(last_line, last_col)));
+                        }
+                        _ => { if let Some(t) = event.text { if !cmd {
+                            w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
+                            for ch in t.chars() { if !ch.is_control() || ch == '\t' || ch == '\n' { if w.is_search_open { if w.is_replace_open && alt { w.replace_query.push(ch); } else { w.search_query.pop(); w.search_query.push(ch); } } else { 
                             let mut skip = false; if let Some(cl) = match ch { ')'=>Some(')'),'}'=>Some('}'),']'=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { let cli = w.editor.cursor().line; let cur = w.editor.cursor().index; let next_ch = w.editor.with_buffer(|b| b.lines[cli].text().chars().nth(cur)); if next_ch == Some(cl) { w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)); skip = true; } }
                             if !skip { w.editor.action(&mut self.font_system, Action::Insert(ch)); tab.is_modified = true; if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.editor.action(&mut self.font_system, Action::Insert(cl)); w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)); } }
                         } } } } else { acted = false; } } else { acted = false; } }
@@ -1811,7 +1928,7 @@ impl ApplicationHandler for App {
 
                             if mx >= label_x {
                                 let active_idx = self.all_languages.iter().position(|l| l == &self.current_lang).unwrap_or(0);
-                                self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, SCALE));
+                                self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, SCALE, None));
                             } else if mx >= theme_x && mx < label_x {
                                 let theme_names = vec![
                                     "Silicon Green".into(), "Cloud Blue".into(), "Coffee Cream".into(), "Sakura Pink".into(), 
@@ -1819,7 +1936,7 @@ impl ApplicationHandler for App {
                                     "Midnight".into(), "Aura".into(), "Veridian".into(), "Rose".into(),
                                     "Cyber".into(), "Titanium".into(), "Indigo Night".into()
                                 ];
-                                let mut d = Dropdown::new(theme_names, self.current_theme_idx, SCALE);
+                                let mut d = Dropdown::new(theme_names, self.current_theme_idx, SCALE, None);
                                 d.num_cols = 2; d.col_w = 160.0; // Balanced 2-column grid for 10 vivid presets
                                 self.theme_dropdown = Some(d);
                             }
