@@ -1627,6 +1627,21 @@ impl ApplicationHandler for App {
                     let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
                     dropdown.handle_mouse(mx, my, menu_x, menu_y, false);
                     self.lang_dropdown = Some(dropdown);
+                }
+                
+                if let Some(mut dropdown) = self.theme_dropdown.take() {
+                    let (w, h) = dropdown.get_size();
+                    let theme_label = format!("Theme: {}", self.get_theme_name());
+                    let lang_label = format!("Language: {}", self.current_lang);
+                    let label_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
+                    let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0);
+                    let menu_x = theme_x.min(self.pixmap.as_ref().unwrap().width() as f32 / SCALE - w - 10.0).max(10.0);
+                    let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
+                    dropdown.handle_mouse(mx, my, menu_x, menu_y, false);
+                    self.theme_dropdown = Some(dropdown);
+                }
+
+                if self.lang_dropdown.is_some() || self.theme_dropdown.is_some() {
                     self.window.as_ref().unwrap().request_redraw();
                 }
 
