@@ -165,6 +165,8 @@ impl Compiler {
             "File" | "Directory" => "wasi:filesystem",
             "Map" => "vybe:collections",
             "Set" => "vybe:collections",
+            "gui" => "vybe:gui",
+            "db" => "vybe:database",
             _ => name,
         }
     }

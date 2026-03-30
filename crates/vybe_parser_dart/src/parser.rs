@@ -39,10 +39,11 @@ impl Parser {
     }
 
     fn expect_ident(&mut self) -> Result<String, String> {
-        match self.advance() {
-            Token::Identifier(s) => Ok(s),
-            t => Err(format!("Expected identifier, got {:?}", t)),
+        let t = self.advance();
+        if let Some(s) = t.to_ident_str() {
+            return Ok(s);
         }
+        Err(format!("Expected identifier, got {:?}", t))
     }
 
     // ── Top level ─────────────────────────────────────────────────────────────
@@ -952,6 +953,11 @@ impl Parser {
                     if self.eat(&Token::Arrow) {
                         let body_expr = self.parse_expr()?;
                         return Ok(Expression::Lambda { params, body: Box::new(FunctionBody::Expression(body_expr)), is_async: false });
+                    } else if self.peek() == &Token::LBrace {
+                        self.advance();
+                        let body_block = self.parse_block_body()?;
+                        self.expect(Token::RBrace)?;
+                        return Ok(Expression::Lambda { params, body: Box::new(FunctionBody::Block(body_block)), is_async: false });
                     }
                 }
                 self.pos = saved;

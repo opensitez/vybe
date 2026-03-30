@@ -60,4 +60,43 @@ impl Token {
             Token::QuestionQuestionEq
         )
     }
+
+    pub fn to_ident_str(&self) -> Option<String> {
+        match self {
+            Token::Identifier(s) => Some(s.clone()),
+            Token::Abstract => Some("abstract".into()),
+            Token::As => Some("as".into()),
+            Token::Async => Some("async".into()),
+            Token::Await => Some("await".into()),
+            Token::Covariant => Some("covariant".into()),
+            Token::Deferred => Some("deferred".into()),
+            Token::Dynamic => Some("dynamic".into()),
+            Token::Export => Some("export".into()),
+            Token::Extension => Some("extension".into()),
+            Token::External => Some("external".into()),
+            Token::Factory => Some("factory".into()),
+            Token::Function => Some("Function".into()),
+            Token::Get => Some("get".into()),
+            Token::Hide => Some("hide".into()),
+            Token::Implements => Some("implements".into()),
+            Token::Import => Some("import".into()),
+            Token::Interface => Some("interface".into()),
+            Token::Late => Some("late".into()),
+            Token::Library => Some("library".into()),
+            Token::Mixin => Some("mixin".into()),
+            Token::Native => Some("native".into()),
+            Token::On => Some("on".into()),
+            Token::Operator => Some("operator".into()),
+            Token::Part => Some("part".into()),
+            Token::Required => Some("required".into()),
+            Token::Set => Some("set".into()),
+            Token::Show => Some("show".into()),
+            Token::Static => Some("static".into()),
+            Token::Sync => Some("sync".into()),
+            Token::Typedef => Some("typedef".into()),
+            Token::Yield => Some("yield".into()),
+            Token::Override => Some("override".into()),
+            _ => None,
+        }
+    }
 }
