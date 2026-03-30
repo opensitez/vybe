@@ -68,6 +68,7 @@ impl Parser {
             Token::Class | Token::Abstract => Ok(TopLevel::Class(self.parse_class()?)),
             Token::Extension => Ok(TopLevel::Extension(self.parse_extension()?)),
             Token::Enum => { self.advance(); Ok(TopLevel::Enum(self.parse_enum()?)) }
+            Token::Typedef => { self.advance(); Ok(TopLevel::Typedef(self.parse_typedef()?)) }
             _ => {
                 // Try function or variable
                 let stmt = self.parse_statement()?;
@@ -98,6 +99,14 @@ impl Parser {
             }
         }
         Ok(ImportDecl { uri, prefix, show, hide })
+    }
+
+    fn parse_typedef(&mut self) -> Result<TypedefDecl, String> {
+        let name = self.expect_ident()?;
+        self.expect(Token::Eq)?;
+        let type_ann = self.parse_type_annotation()?;
+        self.eat(&Token::Semicolon);
+        Ok(TypedefDecl { name, type_ann })
     }
 
     fn parse_ident_list(&mut self) -> Result<Vec<String>, String> {
@@ -144,7 +153,7 @@ impl Parser {
                 if self.peek() == &Token::LParen { self.skip_balanced(Token::LParen, Token::RParen)?; }
             }
             if self.peek() == &Token::RBrace { break; }
-            members.push(self.parse_class_member(&name)?);
+            members.extend(self.parse_class_member(&name)?);
         }
         self.expect(Token::RBrace)?;
         Ok(ClassDecl { name, type_params, extends, implements, mixins, is_abstract, members })
@@ -162,14 +171,14 @@ impl Parser {
         self.expect(Token::LBrace)?;
         let mut members = Vec::new();
         while self.peek() != &Token::RBrace && self.peek() != &Token::EOF {
-            members.push(self.parse_class_member(name.as_deref().unwrap_or("Extension"))?);
+            members.extend(self.parse_class_member(name.as_deref().unwrap_or("Extension"))?);
         }
         self.expect(Token::RBrace)?;
         Ok(ExtensionDecl { name, on_type, members })
     }
 
 
-    fn parse_class_member(&mut self, class_name: &str) -> Result<ClassMember, String> {
+    fn parse_class_member(&mut self, class_name: &str) -> Result<Vec<ClassMember>, String> {
         let is_static = self.eat(&Token::Static);
         let is_abstract = self.eat(&Token::Abstract);
         let is_override = self.eat(&Token::Override);
@@ -192,7 +201,7 @@ impl Parser {
         };
 
         if is_ctor || is_factory {
-            return self.parse_constructor(class_name, is_const, is_factory);
+            return Ok(vec![self.parse_constructor(class_name, is_const, is_factory)?]);
         }
 
         // Return type or field/method type
@@ -206,12 +215,21 @@ impl Parser {
             let is_async = self.eat(&Token::Async);
             let body = self.parse_function_body()?;
             let decl = FunctionDecl { name, type_params, params, return_type: type_ann, body, is_async, is_generator: false };
-            Ok(ClassMember::Method { is_static, is_abstract, is_override, kind, decl })
+            Ok(vec![ClassMember::Method { is_static, is_abstract, is_override, kind, decl }])
         } else {
-            // Field
+            // Field(s)
+            let mut fields = Vec::new();
             let initializer = if self.eat(&Token::Eq) { Some(self.parse_expr()?) } else { None };
+            fields.push(ClassMember::Field { is_static, is_final, is_late, type_ann: type_ann.clone(), name, initializer });
+            
+            while self.eat(&Token::Comma) {
+                let name = self.expect_ident()?;
+                let initializer = if self.eat(&Token::Eq) { Some(self.parse_expr()?) } else { None };
+                fields.push(ClassMember::Field { is_static, is_final, is_late, type_ann: type_ann.clone(), name, initializer });
+            }
+            
             self.eat(&Token::Semicolon);
-            Ok(ClassMember::Field { is_static, is_final, is_late, type_ann, name, initializer })
+            Ok(fields)
         }
     }
 
@@ -225,9 +243,14 @@ impl Parser {
             loop {
                 if self.peek() == &Token::Super {
                     self.advance();
-                    if self.eat(&Token::Dot) { self.expect_ident()?; } // super.named
+                    let name = if self.eat(&Token::Dot) { Some(self.expect_ident()?) } else { None };
                     let args = self.parse_args()?;
-                    initializers.push(CtorInitializer::SuperCall(args.into_iter().map(|a| a.value).collect()));
+                    initializers.push(CtorInitializer::SuperCall(args));
+                } else if self.peek() == &Token::This {
+                    self.advance();
+                    let name = if self.eat(&Token::Dot) { Some(self.expect_ident()?) } else { None };
+                    let args = self.parse_args()?;
+                    initializers.push(CtorInitializer::RedirectingCall(name, args));
                 } else if let Token::Identifier(_) = self.peek() {
                     let field = self.expect_ident()?;
                     self.expect(Token::Eq)?;
@@ -490,8 +513,39 @@ impl Parser {
     }
 
     fn parse_var_decl_stmt(&mut self) -> Result<Statement, String> {
-        let v = self.parse_var_decl()?;
-        Ok(Statement::VarDecl(v))
+        let is_late = self.eat(&Token::Late);
+        let is_final = self.eat(&Token::Final);
+        let is_const = self.eat(&Token::Const);
+        if !is_final && !is_const { self.eat(&Token::Late); } // late after var
+        let is_var = self.eat(&Token::Var);
+        
+        let type_name = if !is_var {
+            match self.peek().clone() {
+                Token::Identifier(t) if matches!(self.peek2(), Token::Identifier(_)) => {
+                    self.advance(); Some(t)
+                }
+                Token::Void | Token::Dynamic => {
+                    let t = format!("{:?}", self.advance()).to_lowercase();
+                    Some(t)
+                }
+                _ => None,
+            }
+        } else { None };
+
+        let mut decls = Vec::new();
+        loop {
+            let name = self.expect_ident()?;
+            let initializer = if self.eat(&Token::Eq) { Some(self.parse_expr()?) } else { None };
+            decls.push(Statement::VarDecl(VarDecl { is_final, is_const, is_late, type_name: type_name.clone(), name, initializer }));
+            if !self.eat(&Token::Comma) { break; }
+        }
+        self.eat(&Token::Semicolon);
+
+        if decls.len() == 1 {
+            Ok(decls.pop().unwrap())
+        } else {
+            Ok(Statement::Block(decls))
+        }
     }
 
     fn parse_var_decl(&mut self) -> Result<VarDecl, String> {

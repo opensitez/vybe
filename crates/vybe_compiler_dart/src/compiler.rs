@@ -24,6 +24,7 @@ pub struct Compiler {
     classes: std::collections::HashMap<String, ClassDecl>,
     enums: std::collections::HashMap<String, EnumDecl>,
     extensions: Vec<ExtensionDecl>,
+    current_class: Option<String>,
 }
 
 impl Compiler {
@@ -39,6 +40,7 @@ impl Compiler {
             classes: std::collections::HashMap::new(),
             enums: std::collections::HashMap::new(),
             extensions: Vec::new(),
+            current_class: None,
         }
     }
 
@@ -67,6 +69,9 @@ impl Compiler {
         self.emit(Op::halt);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
+        // DEBUG: dump chunk 0 for inspection
+        eprintln!("[dart-compiler] chunk0 code: {:?}", self.chunks[0].code);
+        eprintln!("[dart-compiler] chunk0 constants: {:?}", self.chunks[0].constants);
         Ok(self.chunks)
     }
 
@@ -135,7 +140,7 @@ impl Compiler {
 
     fn current_scope(&self) -> &Scope { self.scopes.last().unwrap() }
     fn current_scope_mut(&mut self) -> &mut Scope { self.scopes.last_mut().unwrap() }
-    fn define_local(&mut self, name: &str) -> u16 { self.current_scope_mut().define_local(name) }
+    fn define_local(&mut self, name: &str, is_final: bool, is_const: bool) -> u16 { self.current_scope_mut().define_local(name, is_final, is_const) }
 
     fn resolve_variable(&mut self, name: &str) -> VarResolution {
         if let Some(slot) = self.current_scope().resolve_local(name) {
@@ -232,14 +237,23 @@ impl Compiler {
                     self.emit_global_set(name);
                     self.emit(Op::drop);
                 } else {
-                    let slot = self.define_local(name);
+                    let slot = self.define_local(name, false, false);
                     self.emit_u16(Op::local_set, slot);
                     self.emit(Op::drop);
                 }
                 Ok(())
             }
-            TopLevel::Class(c) => self.compile_class(c),
+            TopLevel::Class(c) => {
+                self.compile_class(c)?;
+                Ok(())
+            }
             TopLevel::Enum(en) => self.compile_enum(en),
+            TopLevel::Typedef(t) => {
+                // Typedefs are currently used for clarity and metadata
+                // We'll just register the name for potential resolution
+                self.defined_classes.insert(t.name.clone());
+                Ok(())
+            }
             TopLevel::Variable(v) => self.compile_var_decl(v),
             TopLevel::Extension(ext) => self.compile_extension(ext),
             TopLevel::Statement(s) => self.compile_statement(s),
@@ -248,38 +262,42 @@ impl Compiler {
 
     fn compile_enum(&mut self, en: &EnumDecl) -> Result<(), String> {
         let enum_name = &en.name;
-        // Create a class-like structure for the enum
-        let mut chunk = Chunk::new(enum_name);
-        chunk.arity = 0;
-        let idx = self.chunks.len();
-        self.chunks.push(chunk);
+        self.defined_classes.insert(enum_name.clone());
         
-        let mut scope = Scope::new_function();
-        let saved = self.current_chunk_idx;
-        self.current_chunk_idx = idx;
-        self.scopes.push(scope);
-
-        // Create the singleton-like instance for each enum value
-        self.emit_u16(Op::struct_new, 0); 
-        let this_slot = self.define_local("this");
-        self.emit_u16(Op::local_set, this_slot);
-        self.emit(Op::drop);
-
-        // Set name and index etc if we wanted to be fancy
-        
-        self.emit_u16(Op::local_get, this_slot);
-        self.emit(Op::r#return);
-        self.scopes.pop();
-        self.current_chunk_idx = saved;
-        
-        // Define static fields for each enum value
         for (i, val) in en.values.iter().enumerate() {
-            // In a real impl, we'd call the above 'constructor' for each value
-            // and store them in static global slots.
-            let global_name = format!("{}.{}", enum_name, val);
-            self.defined_globals.insert(global_name);
+            // Create a singleton instance
+            self.emit_u16(Op::struct_new, 0); 
+            let slot = self.define_local("__enum_tmp", true, true);
+            self.emit_u16(Op::local_set, slot);
+            self.emit(Op::drop);
+
+            // Set __type
+            self.emit_u16(Op::local_get, slot);
+            self.emit_constant(Value::String(Rc::from(enum_name.as_str())));
+            let type_idx = self.add_string_constant("__type");
+            self.emit_u16(Op::struct_set, type_idx);
+            self.emit(Op::drop);
+
+            // Set index
+            self.emit_u16(Op::local_get, slot);
+            self.emit_constant(Value::I64(i as i64));
+            let index_idx = self.add_string_constant("index");
+            self.emit_u16(Op::struct_set, index_idx);
+            self.emit(Op::drop);
+
+            // Set name
+            self.emit_u16(Op::local_get, slot);
+            self.emit_constant(Value::String(Rc::from(val.as_str())));
+            let name_idx = self.add_string_constant("name");
+            self.emit_u16(Op::struct_set, name_idx);
+            self.emit(Op::drop);
+
+            // Export as EnumName.Value
+            let full_name = format!("{}.{}", enum_name, val);
+            self.emit_u16(Op::local_get, slot);
+            self.emit_global_set(&full_name);
+            self.emit(Op::drop);
         }
-        
         Ok(())
     }
 
@@ -321,7 +339,7 @@ impl Compiler {
                     self.emit_global_set(name);
                     self.emit(Op::drop);
                 } else {
-                    let slot = self.define_local(name);
+                    let slot = self.define_local(name, false, false);
                     self.emit_u16(Op::local_set, slot);
                     self.emit(Op::drop);
                 }
@@ -397,12 +415,12 @@ impl Compiler {
                 self.current_scope_mut().begin_scope();
                 // __arr = iterable
                 self.compile_expression(iterable)?;
-                let arr_slot = self.define_local("__for_in_arr");
+                let arr_slot = self.define_local("__for_in_arr", true, false);
                 self.emit_u16(Op::local_set, arr_slot);
                 self.emit(Op::drop);
                 // __i = 0
                 self.emit_constant(Value::F64(0.0));
-                let i_slot = self.define_local("__for_in_i");
+                let i_slot = self.define_local("__for_in_i", false, false);
                 self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
                 let loop_start = self.current_offset();
@@ -418,7 +436,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit(Op::array_get);
-                let var_slot = self.define_local(var_name);
+                let var_slot = self.define_local(var_name, false, false);
                 self.emit_u16(Op::local_set, var_slot);
                 self.emit(Op::drop);
                 self.compile_statement(body)?;
@@ -503,35 +521,128 @@ impl Compiler {
             }
             Statement::Try { body, catches, finally } => {
                 let try_start_pos = self.current_offset();
+                let try_chunk = self.current_chunk_idx;
                 let line = self.line;
                 let c = &mut self.chunks[self.current_chunk_idx];
                 c.emit_op(Op::try_start, line);
                 c.emit(0, line); c.emit(0, line);
                 c.emit(0, line); c.emit(0, line);
+                
                 for s in body { self.compile_statement(s)?; }
                 self.emit(Op::try_end);
-                let skip_catch = self.emit_jump(Op::br);
-                let catch_pos = self.current_offset();
-                let ip_after = try_start_pos + 5;
-                let catch_offset = catch_pos as i16 - ip_after as i16;
-                let c = &mut self.chunks[self.current_chunk_idx];
+                
+                // Emit a jump that will skip all catches; record the chunk it was emitted into
+                let skip_chunk = self.current_chunk_idx;
+                let skip_offset = self.emit_jump(Op::br);
+
+                // Ensure subsequent catch emission happens in the same chunk as the try
+                let saved_chunk = self.current_chunk_idx;
+                self.current_chunk_idx = try_chunk;
+                let catch_entry_pos = self.current_offset();
+
+                // Patch try_start with catch_entry_pos (uses the original try's chunk)
+                let ip_after = try_start_pos + 5; // try_start(1) + offset(2) + finally(2)
+                let catch_offset = catch_entry_pos as i16 - ip_after as i16;
+                let c = &mut self.chunks[try_chunk];
                 c.code[try_start_pos + 1] = (catch_offset >> 8) as u8;
                 c.code[try_start_pos + 2] = (catch_offset & 0xff) as u8;
-                if let Some(catch) = catches.first() {
-                    self.current_scope_mut().begin_scope();
-                    if let Some(ref var) = catch.var_name {
-                        let slot = self.define_local(var);
-                        self.emit_u16(Op::local_set, slot);
-                        self.emit(Op::drop);
-                    } else {
-                        self.emit(Op::drop);
+
+                // Optional debug dump: if `VYBE_DART_DEBUG_CATCH` is set in the
+                // environment, print a short slice of the compiled code and
+                // constants around this try/catch for offline inspection.
+                if std::env::var("VYBE_DART_DEBUG_CATCH").is_ok() {
+                    let c = &self.chunks[self.current_chunk_idx];
+                    let start = try_start_pos;
+                    let end = std::cmp::min(catch_entry_pos + 16, c.code.len());
+                    eprintln!("--- DART CATCH BYTECODE DUMP (chunk {}) ---", self.current_chunk_idx);
+                    eprintln!("code[{}..{}]: {:?}", start, end, &c.code[start..end]);
+                    eprintln!("constants (len={}):", c.constants.len());
+                    for (i, cons) in c.constants.iter().enumerate() {
+                        eprintln!("  [{}] {:?}", i, cons);
+                        if i > 50 { break; }
                     }
-                    for s in &catch.body { self.compile_statement(s)?; }
-                    self.current_scope_mut().end_scope();
-                } else {
+                    // Full dump if requested
+                    if std::env::var("VYBE_DART_DEBUG_CATCH_FULL").is_ok() {
+                        eprintln!("--- FULL CHUNK DUMP ---");
+                        eprintln!("code (len={}): {:?}", c.code.len(), c.code);
+                        eprintln!("constants (len={}): {:?}", c.constants.len(), c.constants);
+                        eprintln!("--- END FULL DUMP ---");
+                    }
+                }
+
+                // Handle catches
+                let mut end_jumps: Vec<(usize, usize)> = Vec::new();
+                for (i, catch) in catches.iter().enumerate() {
+                    let is_last = i == catches.len() - 1;
+                    
+                    if let Some(ref type_name) = catch.on_type {
+                        self.emit(Op::dup);
+                        let type_name_norm = self.runtime_type_name(type_name);
+                        // Use ref_test with normalized runtime type name for consistent behavior.
+                        let type_idx = self.add_string_constant(&type_name_norm);
+                        self.emit_u16(Op::ref_test, type_idx);
+                        let next_catch = self.emit_jump(Op::br_if_false);
+
+                        // Optional runtime trace (stack-safe): log a label and the exception
+                        // value, then drop the host-call result so the exception value remains
+                        // on the stack for the upcoming local_set.
+                        if std::env::var("VYBE_DART_DEBUG_CATCH_TRACE").is_ok() {
+                            let log_imp = self.import("wasi:cli", "log");
+                            self.emit_constant(Value::String(Rc::from("[dart-catch] exception:")));
+                            self.emit_host_call(log_imp, 1);
+                            self.emit(Op::drop);
+                            self.emit(Op::dup);
+                            self.emit_host_call(log_imp, 1);
+                            self.emit(Op::drop);
+                        }
+
+                        // This block matched
+                        self.current_scope_mut().begin_scope();
+                        if let Some(ref var) = catch.var_name {
+                            let slot = self.define_local(var, false, false);
+                            self.emit_u16(Op::local_set, slot);
+                            self.emit(Op::drop);
+                        } else {
+                            self.emit(Op::drop);
+                        }
+                        for s in &catch.body { self.compile_statement(s)?; }
+                        self.current_scope_mut().end_scope();
+                        
+                        if !is_last {
+                            // record the chunk and offset for later patching, because
+                            // compiling the catch body may temporarily switch current_chunk_idx
+                            end_jumps.push((self.current_chunk_idx, self.emit_jump(Op::br)));
+                        }
+                        self.patch_jump(next_catch);
+                    } else {
+                        // Bare catch - always matches
+                        self.current_scope_mut().begin_scope();
+                        if let Some(ref var) = catch.var_name {
+                            let slot = self.define_local(var, false, false);
+                            self.emit_u16(Op::local_set, slot);
+                            self.emit(Op::drop);
+                        } else {
+                            self.emit(Op::drop);
+                        }
+                        for s in &catch.body { self.compile_statement(s)?; }
+                        self.current_scope_mut().end_scope();
+                        break; // further catches are unreachable
+                    }
+                }
+                
+                // If we fell through (no match), and it's not a rethrow, we should probably rethrow or drop
+                if !catches.is_empty() && catches.last().unwrap().on_type.is_some() {
+                    self.emit(Op::throw); 
+                } else if catches.is_empty() {
                     self.emit(Op::drop);
                 }
-                self.patch_jump(skip_catch);
+
+                for (ch, off) in end_jumps { self.chunks[ch].patch_jump(off); }
+                self.chunks[skip_chunk].patch_jump(skip_offset);
+
+                // restore previously selected chunk
+                self.current_chunk_idx = saved_chunk;
+
                 if let Some(fin) = finally {
                     for s in fin { self.compile_statement(s)?; }
                 }
@@ -566,7 +677,7 @@ impl Compiler {
             self.emit_global_set(name);
             self.emit(Op::drop);
         } else {
-            let slot = self.define_local(name);
+            let slot = self.define_local(name, v.is_final, v.is_const);
             self.emit_u16(Op::local_set, slot);
             self.emit(Op::drop);
         }
@@ -586,11 +697,15 @@ impl Compiler {
         self.chunks.push(chunk);
         
         let mut scope = Scope::new_function();
-        for p in &f.params.positional { scope.define_local(&p.name); }
-        for p in &f.params.optional_pos { scope.define_local(&p.name); }
+        // If we're compiling a method inside a class, provide a `this` local
+        if self.current_class.is_some() {
+            scope.define_local("this", true, false);
+        }
+        for p in &f.params.positional { scope.define_local(&p.name, false, false); }
+        for p in &f.params.optional_pos { scope.define_local(&p.name, false, false); }
         
         let named_args_slot = if has_named {
-            Some(scope.define_local("__named_args"))
+            Some(scope.define_local("__named_args", true, false))
         } else {
             None
         };
@@ -601,7 +716,7 @@ impl Compiler {
 
         if f.is_async {
             // Compile the actual body into a sub-chunk (the "worker")
-            let mut body_chunk = Chunk::new(format!("{}$async", name));
+            let body_chunk = Chunk::new(format!("{}$async", name));
             let body_idx = self.chunks.len();
             self.chunks.push(body_chunk);
             
@@ -659,7 +774,7 @@ impl Compiler {
         // Handle named parameters
         if let Some(map_slot) = named_args_slot {
             for p in &f.params.named {
-                let target_slot = self.define_local(&p.name);
+                let target_slot = self.define_local(&p.name, false, false);
                 
                 // Get from the named args Map: mapValue = map[name]
                 self.emit_u16(Op::local_get, map_slot);
@@ -717,127 +832,168 @@ impl Compiler {
     // ── Class compilation ─────────────────────────────────────────────────
 
     fn compile_class(&mut self, class: &ClassDecl) -> Result<(), String> {
+        let saved_class = self.current_class.clone();
+        self.current_class = Some(class.name.clone());
+        
         // Class → constructor function that creates objects with methods bound
         let class_name = &class.name;
         
         // Collect all members (inheritance + mixins)
         let members = self.collect_all_members(class);
         
-        // Compile constructor function
-        let mut chunk = Chunk::new(class_name);
-        // Find constructor to get arity
-        let ctor = class.members.iter().find(|m| matches!(m, ClassMember::Constructor { .. }));
-        let ctor_arity = match ctor {
-            Some(ClassMember::Constructor { params, .. }) => {
-                params.positional.len() + params.optional_pos.len() + params.named.len()
+        let mut ctors = Vec::new();
+        for member in &class.members {
+            if let ClassMember::Constructor { name, .. } = member {
+                ctors.push((name.clone(), member.clone()));
             }
-            _ => 0,
-        };
-        chunk.arity = ctor_arity as u8;
-        let idx = self.chunks.len();
-        self.chunks.push(chunk);
-        let mut scope = Scope::new_function();
-        // Define constructor params
-        if let Some(ClassMember::Constructor { params, .. }) = ctor {
-            for p in &params.positional { scope.define_local(&p.name); }
-            for p in &params.optional_pos { scope.define_local(&p.name); }
-            for p in &params.named { scope.define_local(&p.name); }
         }
-        let saved = self.current_chunk_idx;
-        self.current_chunk_idx = idx;
-        self.scopes.push(scope);
+        
+        // If NO constructors defined, provide a default one
+        if ctors.is_empty() {
+             ctors.push((None, ClassMember::Constructor {
+                 name: None,
+                 params: Params { positional: vec![], optional_pos: vec![], named: vec![] },
+                 initializers: vec![],
+                 body: None,
+                 is_const: false,
+                 is_factory: false,
+             }));
+        }
 
-        // Create `this` object
-        self.emit_u16(Op::struct_new, 0);
-        let this_slot = self.define_local("this");
-        self.emit_u16(Op::local_set, this_slot);
-        self.emit(Op::drop);
+        for (ctor_name, ctor_member) in ctors {
+            let full_name = if let Some(n) = &ctor_name { format!("{}.{}", class_name, n) } else { class_name.clone() };
+            let mut chunk = Chunk::new(&full_name);
+            
+            if let ClassMember::Constructor { ref params, .. } = ctor_member {
+                let positional_count = params.positional.len() + params.optional_pos.len();
+                chunk.arity = positional_count as u8; // Simplification for VM arity check
+                
+                let idx = self.chunks.len();
+                self.chunks.push(chunk);
+                let mut scope = Scope::new_function();
+                for p in &params.positional { scope.define_local(&p.name, false, false); }
+                for p in &params.optional_pos { scope.define_local(&p.name, false, false); }
+                for p in &params.named { scope.define_local(&p.name, false, false); }
+                
+                let saved = self.current_chunk_idx;
+                self.current_chunk_idx = idx;
+                self.scopes.push(scope);
 
-        // Set __type on the instance
-        self.emit_u16(Op::local_get, this_slot);
-        self.emit_constant(Value::String(Rc::from(class_name.as_str())));
-        let type_idx = self.add_string_constant("__type");
-        self.emit_u16(Op::struct_set, type_idx);
-        self.emit(Op::drop);
+                // Create `this` object
+                self.emit_u16(Op::struct_new, 0);
+                let this_slot = self.define_local("this", true, false);
+                self.emit_u16(Op::local_set, this_slot);
+                self.emit(Op::drop);
 
-        // Handle this.field params
-        if let Some(ClassMember::Constructor { params, .. }) = ctor {
-            for p in &params.positional {
-                if p.is_this {
-                    if let Some(slot) = self.current_scope().resolve_local(&p.name) {
+                // Set __type
+                self.emit_u16(Op::local_get, this_slot);
+                self.emit_constant(Value::String(Rc::from(class_name.as_str())));
+                let type_idx = self.add_string_constant("__type");
+                self.emit_u16(Op::struct_set, type_idx);
+                self.emit(Op::drop);
+
+                // 1. Initialize default fields FIRST
+                for member in &members {
+                    if let ClassMember::Field { name, initializer, .. } = member {
                         self.emit_u16(Op::local_get, this_slot);
-                        self.emit_u16(Op::local_get, slot);
-                        let prop_idx = self.add_string_constant(&p.name);
+                        if let Some(init) = initializer {
+                            self.compile_expression(init)?;
+                        } else {
+                            self.emit(Op::null);
+                        }
+                        let prop_idx = self.add_string_constant(name);
                         self.emit_u16(Op::struct_set, prop_idx);
                         self.emit(Op::drop);
                     }
                 }
-            }
-        }
 
-        // Initialize fields
-        for member in &members {
-            if let ClassMember::Field { name, initializer, .. } = member {
-                self.emit_u16(Op::local_get, this_slot);
-                if let Some(init) = initializer {
-                    self.compile_expression(init)?;
-                } else {
-                    self.emit(Op::null);
+                // 2. Initializing formals (this.field) overwrites defaults
+                for p in params.positional.iter().chain(&params.optional_pos).chain(&params.named) {
+                    if p.is_this {
+                        if let Some(slot) = self.current_scope().resolve_local(&p.name) {
+                            self.emit_u16(Op::local_get, this_slot);
+                            self.emit_u16(Op::local_get, slot);
+                            let prop_idx = self.add_string_constant(&p.name);
+                            self.emit_u16(Op::struct_set, prop_idx);
+                            self.emit(Op::drop);
+                        }
+                    }
                 }
-                let prop_idx = self.add_string_constant(name);
-                self.emit_u16(Op::struct_set, prop_idx);
-                self.emit(Op::drop);
-            }
-        }
 
-        // Constructor body
-        if let Some(ClassMember::Constructor { body, .. }) = ctor {
-            if let Some(stmts) = body {
-                for s in stmts { self.compile_statement(s)?; }
-            }
-        }
+                // 3. Constructor initializations ( : x = 1, y = 2 )
+                if let ClassMember::Constructor { ref initializers, ref body, .. } = ctor_member {
+                    for init in initializers {
+                        match init {
+                            CtorInitializer::FieldInit(name, expr) => {
+                                self.emit_u16(Op::local_get, this_slot);
+                                self.compile_expression(&expr)?;
+                                let prop_idx = self.add_string_constant(&name);
+                                self.emit_u16(Op::struct_set, prop_idx);
+                                self.emit(Op::drop);
+                            }
+                            CtorInitializer::SuperCall(args) => {
+                                for arg in args { self.compile_expression(&arg.value)?; self.emit(Op::drop); }
+                            }
+                            CtorInitializer::RedirectingCall(r_name, args) => {
+                                // Call the target constructor and replace `this` with its return value.
+                                let target_name = if let Some(n) = r_name { format!("{}.{}", class_name, n) } else { class_name.clone() };
+                                let t_idx = self.add_string_constant(&target_name);
+                                self.emit_u16(Op::global_get, t_idx); // push constructor function
+                                let count = self.emit_args(&args)?;
+                                self.emit_u8(Op::call, count); // call -> returns constructed object
 
-        // Bind methods to the instance
-        for member in &members {
-            if let ClassMember::Method { decl, is_static, .. } = member {
-                if *is_static { continue; }
-                // Compile the method as a nested function
-                self.compile_function_decl(decl)?;
-                // Set it on `this`
+                                // overwrite this_slot with returned object
+                                self.emit_u16(Op::local_set, this_slot);
+                                // don't drop — local_set consumed the value
+                            }
+                            CtorInitializer::AssertInit(expr) => {
+                                self.compile_expression(&expr)?;
+                                let is_true = self.emit_jump(Op::br_if_true);
+                                self.emit_constant(Value::String(Rc::from("Assertion failed")));
+                                self.emit(Op::throw);
+                                self.patch_jump(is_true);
+                            }
+                        }
+                    }
+                    if let Some(stmts) = body {
+                        for s in stmts { self.compile_statement(&s)?; }
+                    }
+                }
+
+                // 4. Bind methods
+                for member in &members {
+                    if let ClassMember::Method { decl, is_static, .. } = member {
+                        if *is_static { continue; }
+                        // compile_function_decl leaves the function value on the stack
+                        self.compile_function_decl(decl)?;
+                        // store the function into a temp local
+                        let fn_tmp = self.define_local(&format!("__m_{}", decl.name), true, false);
+                        self.emit_u16(Op::local_set, fn_tmp);
+
+                        // set the method on `this`: this.<name> = fn_tmp
+                        self.emit_u16(Op::local_get, this_slot);
+                        self.emit_u16(Op::local_get, fn_tmp);
+                        let m_idx = self.add_string_constant(&decl.name);
+                        self.emit_u16(Op::struct_set, m_idx);
+                        self.emit(Op::drop);
+                    }
+                }
+
+                // Return this
                 self.emit_u16(Op::local_get, this_slot);
-                // Stack: [closure, this] — need [this, closure] for struct_set
-                // Swap using temp
-                let tmp = self.define_local(&format!("__m_{}", decl.name));
-                // closure is below this. Actually ref_func pushed closure, then local_get pushed this.
-                // Stack: [..., closure, this]
-                self.emit_u16(Op::local_set, tmp); // save this
-                self.emit(Op::drop);
-                // Stack: [..., closure]
-                let tmp2 = self.define_local(&format!("__mc_{}", decl.name));
-                self.emit_u16(Op::local_set, tmp2); // save closure
-                self.emit(Op::drop);
-                // Now push: this, closure
-                self.emit_u16(Op::local_get, tmp); // this
-                self.emit_u16(Op::local_get, tmp2); // closure
-                let method_idx = self.add_string_constant(&decl.name);
-                self.emit_u16(Op::struct_set, method_idx);
+                self.emit(Op::r#return);
+                let lc = self.current_scope().next_slot;
+                self.chunks[idx].local_count = lc;
+                let upvalues = self.current_scope().upvalues.clone();
+                self.scopes.pop();
+                self.current_chunk_idx = saved;
+                self.emit_ref_func(idx, &upvalues);
+                self.emit_global_set(&full_name);
                 self.emit(Op::drop);
             }
         }
-
-        // Return this
-        self.emit_u16(Op::local_get, this_slot);
-        self.emit(Op::r#return);
-        let lc = self.current_scope().next_slot;
-        self.chunks[idx].local_count = lc;
-        let upvalues = self.current_scope().upvalues.clone();
-        self.scopes.pop();
-        self.current_chunk_idx = saved;
-        self.emit_ref_func(idx, &upvalues);
-        // Set as global
+        self.current_class = saved_class;
         self.defined_classes.insert(class_name.clone());
-        self.emit_global_set(class_name);
-        self.emit(Op::drop);
         Ok(())
     }
 
@@ -944,21 +1100,6 @@ impl Compiler {
                     self.emit(Op::drop);
                 }
             }
-            Expression::Set { elements, type_arg } => {
-                let ctor = self.import("vybe:collections", "Set");
-                let argc = if let Some(t) = type_arg {
-                    self.emit_constant(Value::String(Rc::from(t.name.as_str())));
-                    1
-                } else { 0 };
-                self.emit_host_call(ctor, argc);
-                for e in elements {
-                    self.emit(Op::dup);
-                    self.compile_expression(e)?;
-                    let add_idx = self.import("vybe:collections", "setAdd");
-                    self.emit_host_call(add_idx, 2);
-                    self.emit(Op::drop);
-                }
-            }
             Expression::Binary { op, left, right } => {
                 self.compile_expression(left)?;
                 self.compile_expression(right)?;
@@ -1031,6 +1172,15 @@ impl Compiler {
                 // Original value is still on stack from dup
             }
             Expression::Assign { op, left, right } => {
+                // Enforcement: check if left is final/const
+                if let Expression::Identifier(name) = left.as_ref() {
+                    if let Some(local) = self.current_scope().resolve_local_full(name) {
+                        if local.is_final || local.is_const {
+                            return Err(format!("Cannot assign to final/const variable '{}'", name));
+                        }
+                    }
+                }
+                
                 match op {
                     AssignOp::Assign => {
                         self.compile_expression(right)?;
@@ -1124,37 +1274,43 @@ impl Compiler {
             }
             Expression::Cascade { object, ops, null_safe } => {
                 self.compile_expression(object)?;
+                let slot = self.define_local("__cascade_obj", true, false);
+                self.emit_u16(Op::local_set, slot);
+                self.emit(Op::drop);
                 
                 let mut end_cascade = None;
                 if *null_safe {
-                    self.emit(Op::dup);
+                    self.emit_u16(Op::local_get, slot);
                     let is_null = self.emit_jump(Op::br_if_null);
                     end_cascade = Some(is_null);
                 }
 
                 for op in ops {
-                    self.emit(Op::dup); // duplicate the receiver for each operation
                     match op {
                         CascadeOp::Method(name, args) => {
                             let prop_idx = self.add_string_constant(name);
-                            self.emit_u16(Op::struct_get, prop_idx);
-                            // Receiver is already pushed by dup, now push args
+                            self.emit_u16(Op::local_get, slot);
+                            self.emit_u16(Op::struct_get, prop_idx); // push callee
+                            self.emit_u16(Op::local_get, slot);       // push receiver as first arg
                             let count = self.emit_args(args)?;
-                            self.emit_u8(Op::call, count);
-                            self.emit(Op::drop); // discard method result, keep the receiver
+                            self.emit_u8(Op::call, count + 1);
+                            self.emit(Op::drop);
                         }
                         CascadeOp::Field(name) => {
                             let prop_idx = self.add_string_constant(name);
+                            self.emit_u16(Op::local_get, slot);
                             self.emit_u16(Op::struct_get, prop_idx);
                             self.emit(Op::drop);
                         }
                         CascadeOp::Assign(name, val) => {
+                            self.emit_u16(Op::local_get, slot);
                             self.compile_expression(val)?;
                             let prop_idx = self.add_string_constant(name);
                             self.emit_u16(Op::struct_set, prop_idx);
                             self.emit(Op::drop);
                         }
                         CascadeOp::Index(idx_expr) => {
+                            self.emit_u16(Op::local_get, slot);
                             self.compile_expression(idx_expr)?;
                             self.emit(Op::array_get);
                             self.emit(Op::drop);
@@ -1165,7 +1321,7 @@ impl Compiler {
                 if let Some(label) = end_cascade {
                     self.patch_jump(label);
                 }
-                // Result of cascade is the original object (still on stack)
+                self.emit_u16(Op::local_get, slot);
             }
             Expression::Switch { expr, cases } => {
                 self.compile_switch_expression(expr, cases)?;
@@ -1177,9 +1333,9 @@ impl Compiler {
                 let idx = self.chunks.len();
                 self.chunks.push(chunk);
                 let mut scope = Scope::new_function();
-                for p in &params.positional { scope.define_local(&p.name); }
-                for p in &params.optional_pos { scope.define_local(&p.name); }
-                for p in &params.named { scope.define_local(&p.name); }
+                for p in &params.positional { scope.define_local(&p.name, false, false); }
+                for p in &params.optional_pos { scope.define_local(&p.name, false, false); }
+                for p in &params.named { scope.define_local(&p.name, false, false); }
                 let saved = self.current_chunk_idx;
                 self.current_chunk_idx = idx;
                 self.scopes.push(scope);
@@ -1207,13 +1363,13 @@ impl Compiler {
             }
             Expression::Is { expr: inner, type_ann, negated } => {
                 self.compile_expression(inner)?;
-                let type_idx = self.add_string_constant(&type_ann.name);
+                let type_idx = self.add_string_constant(&self.runtime_type_name(&type_ann.name));
                 self.emit_u16(Op::ref_test, type_idx);
                 if *negated { self.emit(Op::bool_not); }
             }
             Expression::As { expr: inner, type_ann } => {
                 self.compile_expression(inner)?;
-                let type_idx = self.add_string_constant(&type_ann.name);
+                let type_idx = self.add_string_constant(&self.runtime_type_name(&type_ann.name));
                 self.emit_u16(Op::ref_cast, type_idx);
             }
             Expression::Await(inner) => {
@@ -1262,7 +1418,7 @@ impl Compiler {
                         // Desugar to: Extension_method(receiver)
                         
                         // Stack reordering: [receiver] -> [func, receiver]
-                        let tmp = self.define_local("__ext_tmp");
+                        let tmp = self.define_local("__ext_tmp", true, false);
                         self.emit_u16(Op::local_set, tmp);
                         
                         let idx = self.add_string_constant(&format!("{}_{}", ext.name.as_deref().unwrap_or("Extension"), member));
@@ -1333,6 +1489,18 @@ impl Compiler {
 
         // Handle method calls: obj.method(args) 
         if let Expression::Member { object, member, .. } = callee {
+            // Check if it's a Class named constructor call: Class.named()
+            if let Expression::Identifier(obj_name) = object.as_ref() {
+                if self.classes.contains_key(obj_name) {
+                    let full_name = format!("{}.{}", obj_name, member);
+                    let idx = self.add_string_constant(&full_name);
+                    self.emit_u16(Op::global_get, idx);
+                    let count = self.emit_args(args)?;
+                    self.emit_u8(Op::call, count);
+                    return Ok(());
+                }
+            }
+
             // Check if it's a namespace call (e.g. math.sqrt)
             if let Expression::Identifier(obj_name) = object.as_ref() {
                 if !self.is_known_variable(obj_name) {
@@ -1381,12 +1549,19 @@ impl Compiler {
                 return Ok(());
             }
 
-            // Generic method call: obj.method(...) → struct_get + call
-            self.compile_expression(object)?;
+            // Generic method call: obj.method(...) → preserve receiver and call with receiver as first arg
+            self.compile_expression(object)?; // pushes receiver
+            let obj_tmp = self.define_local("__call_obj", true, false);
+            self.emit_u16(Op::local_set, obj_tmp); // pop receiver -> stored
+            self.emit(Op::drop);
+
+            self.emit_u16(Op::local_get, obj_tmp); // push receiver for struct_get
             let prop_idx = self.add_string_constant(member);
-            self.emit_u16(Op::struct_get, prop_idx);
+            self.emit_u16(Op::struct_get, prop_idx); // pushes function
+
+            self.emit_u16(Op::local_get, obj_tmp); // push receiver as first arg
             let count = self.emit_args(args)?;
-            self.emit_u8(Op::call, count);
+            self.emit_u8(Op::call, count + 1);
             return Ok(());
         }
 
@@ -1404,6 +1579,11 @@ impl Compiler {
             Expression::Identifier(name) => {
                 match self.resolve_variable(name) {
                     VarResolution::Local(slot) => {
+                        if let Some(local) = self.current_scope().resolve_local_full(name) {
+                            if local.is_final || local.is_const {
+                                return Err(format!("Cannot assign to final/const variable '{}'", name));
+                            }
+                        }
                         self.emit_u16(Op::local_set, slot);
                         self.emit(Op::drop);
                     }
@@ -1412,8 +1592,41 @@ impl Compiler {
                         self.emit(Op::drop);
                     }
                     VarResolution::Global => {
-                        self.emit_global_set(name);
-                        self.emit(Op::drop);
+                        // If the name is a known variable (global or previously defined), set it.
+                        if self.is_known_variable(name) {
+                            self.emit_global_set(name);
+                            self.emit(Op::drop);
+                        } else if let Some(class_name) = &self.current_class {
+                            // Fallback: maybe this identifier is a field on the current class
+                            if let Some(cls) = self.classes.get(class_name).cloned() {
+                                let is_field = self.collect_all_members(&cls).iter().any(|m| match m {
+                                    ClassMember::Field { name: n, .. } => n == name,
+                                    _ => false,
+                                });
+                                if is_field {
+                                    if let Some(this_slot) = self.current_scope().resolve_local("this") {
+                                        // [value] -> [this, value]
+                                        let tmp = self.define_local("__tmp_as", true, false);
+                                        self.emit_u16(Op::local_set, tmp);
+                                        self.emit(Op::drop);
+
+                                        self.emit_u16(Op::local_get, this_slot);
+                                        self.emit_u16(Op::local_get, tmp);
+                                        let prop_idx = self.add_string_constant(name);
+                                        self.emit_u16(Op::struct_set, prop_idx);
+                                        self.emit(Op::drop);
+                                    } else {
+                                        return Err(format!("Identifier '{}' matches field but 'this' not found", name));
+                                    }
+                                } else {
+                                    return Err(format!("Undefined identifier: {}", name));
+                                }
+                            } else {
+                                return Err(format!("Undefined identifier: {}", name));
+                            }
+                        } else {
+                            return Err(format!("Undefined identifier: {}", name));
+                        }
                     }
                 }
             }
@@ -1422,10 +1635,10 @@ impl Compiler {
                 // Stack: [value, obj] — struct_set expects [obj, val]
                 // Value was pushed before this call. We need to swap.
                 // Use temp local
-                let tmp = self.define_local("__store_tmp");
+                let tmp = self.define_local("__store_tmp", true, false);
                 self.emit_u16(Op::local_set, tmp); // save obj
                 self.emit(Op::drop);
-                let tmp2 = self.define_local("__store_val");
+                let tmp2 = self.define_local("__store_val", true, false);
                 self.emit_u16(Op::local_set, tmp2); // save val
                 self.emit(Op::drop);
                 self.emit_u16(Op::local_get, tmp); // push obj
@@ -1435,7 +1648,7 @@ impl Compiler {
                 self.emit(Op::drop);
             }
             Expression::Index { object, index } => {
-                let tmp = self.define_local("__idx_val");
+                let tmp = self.define_local("__idx_val", true, false);
                 self.emit_u16(Op::local_set, tmp);
                 self.emit(Op::drop);
                 self.compile_expression(object)?;
@@ -1451,7 +1664,7 @@ impl Compiler {
 
     fn compile_switch_expression(&mut self, expr: &Expression, cases: &[SwitchExpressionCase]) -> Result<(), String> {
         self.compile_expression(expr)?;
-        let val_slot = self.define_local("__matched_val");
+        let val_slot = self.define_local("__matched_val", true, false);
         self.emit_u16(Op::local_set, val_slot);
         self.emit(Op::drop);
 
@@ -1509,7 +1722,7 @@ impl Compiler {
                 Ok(skip)
             }
             Pattern::Variable(name) => {
-                let slot = self.define_local(name);
+                let slot = self.define_local(name, false, false);
                 self.emit_u16(Op::local_set, slot);
                 self.emit(Op::drop);
                 self.emit(Op::r#true);
@@ -1517,7 +1730,8 @@ impl Compiler {
                 Ok(skip)
             }
             Pattern::Type(type_name) => {
-                let type_idx = self.add_string_constant(type_name);
+                let type_name_norm = self.runtime_type_name(type_name);
+                let type_idx = self.add_string_constant(&type_name_norm);
                 self.emit_u16(Op::ref_test, type_idx);
                 let skip = self.emit_jump(Op::br_if_false);
                 Ok(skip)
@@ -1684,6 +1898,19 @@ impl Compiler {
             ClassMember::Field { name, .. } => name.clone(),
             ClassMember::Method { decl, .. } => decl.name.clone(),
             ClassMember::Constructor { name, .. } => name.as_deref().unwrap_or("constructor").to_string(),
+        }
+    }
+
+    // Normalize Dart type names to the runtime's expected type strings for
+    // `ref_test` / `ref_cast`. E.g. `String` -> `string`, `int` -> `integer`.
+    fn runtime_type_name(&self, name: &str) -> String {
+        match name.to_lowercase().as_str() {
+            "string" => "string".to_string(),
+            "int" | "integer" | "i32" => "integer".to_string(),
+            "double" | "f64" | "float" => "double".to_string(),
+            "num" | "number" => "number".to_string(),
+            "bool" | "boolean" => "boolean".to_string(),
+            other => other.to_string(),
         }
     }
 }

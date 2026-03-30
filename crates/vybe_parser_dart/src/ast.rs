@@ -14,7 +14,14 @@ pub enum TopLevel {
     Variable(VarDecl),
     Extension(ExtensionDecl),
     Enum(EnumDecl),
+    Typedef(TypedefDecl),
     Statement(Statement), // top-level expressions / bare statements
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedefDecl {
+    pub name: String,
+    pub type_ann: TypeAnnotation,
 }
 
 #[derive(Debug, Clone)]
@@ -203,9 +210,10 @@ pub enum MethodKind { Method, Getter, Setter }
 
 #[derive(Debug, Clone)]
 pub enum CtorInitializer {
-    SuperCall(Vec<Expression>),
+    SuperCall(Vec<Argument>),
     FieldInit(String, Expression),
     AssertInit(Expression),
+    RedirectingCall(Option<String>, Vec<Argument>), // this() or this.named()
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────

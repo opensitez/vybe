@@ -6,6 +6,8 @@ pub struct Local {
     pub depth: u32,
     pub is_captured: bool,
     pub slot: u16,
+    pub is_final: bool,
+    pub is_const: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -40,21 +42,34 @@ impl Scope {
             depth: 0,
             is_captured: false,
             slot: 0,
+            is_final: false,
+            is_const: false,
         });
         scope.next_slot = 1;
         scope
     }
 
-    pub fn define_local(&mut self, name: &str) -> u16 {
+    pub fn define_local(&mut self, name: &str, is_final: bool, is_const: bool) -> u16 {
         let slot = self.next_slot;
         self.locals.push(Local {
             name: name.to_string(),
             depth: self.depth,
             is_captured: false,
             slot,
+            is_final,
+            is_const,
         });
         self.next_slot += 1;
         slot
+    }
+
+    pub fn resolve_local_full(&self, name: &str) -> Option<&Local> {
+        for local in self.locals.iter().rev() {
+            if local.name == name {
+                return Some(local);
+            }
+        }
+        None
     }
 
     pub fn resolve_local(&self, name: &str) -> Option<u16> {
