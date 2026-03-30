@@ -1,12 +1,9 @@
 use std::process::{Command, Stdio};
 use std::thread;
-use std::sync::Arc;
 use crossbeam_channel::{Sender, Receiver};
-use lsp_server::{Connection, Message, Notification};
+use lsp_server::{Message, Notification};
 use lsp_types::{
-    InitializeParams, InitializedParams, ClientCapabilities, TraceValue, 
-    TextDocumentItem, DidOpenTextDocumentParams, TextDocumentContentChangeEvent, 
-    DidChangeTextDocumentParams, VersionedTextDocumentIdentifier,
+    InitializedParams, ClientCapabilities, 
     Diagnostic, PublishDiagnosticsParams, Position, Range, DiagnosticSeverity
 };
 // no direct Url/Uri import; use JSON strings for URIs to avoid type mismatches
@@ -63,7 +60,7 @@ impl LspClient {
                                                 let params_val = serde_json::json!({
                                                     "processId": std::process::id(),
                                                     "capabilities": serde_json::to_value(ClientCapabilities::default()).unwrap(),
-                                                    "rootUri": "file:///",
+                                                    "rootUri": format!("file://{}", std::env::current_dir().unwrap_or_default().to_string_lossy()),
                                                 });
                                                 let init_req = lsp_server::Request { id: 1.into(), method: "initialize".to_string(), params: params_val };
                                                 Message::Request(init_req).write(&mut stdin).ok();

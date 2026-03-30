@@ -18,14 +18,14 @@ use arboard::Clipboard;
 use crate::editor::{Editor as MyEditor, TokenKind};
 use crate::language::{load_language, LanguageDef};
 use crate::lsp_client::{LspClient, LspRequest, LspEvent};
-use osz_widgets::{TreeView, TreeEvent};
+use osz_widgets::{TreeView, TreeEvent, Dropdown, DropdownEvent};
 use std::path::Path;
 
 const SCALE: f32 = 2.0;
 const EXPLORER_WIDTH: f32 = 250.0; 
 const TAB_BAR_HEIGHT: f32 = 36.0;
 const MINIMAP_WIDTH: f32 = 80.0;
-const UI_BAR_HEIGHT: f32 = 40.0;
+const UI_BAR_HEIGHT: f32 = 0.0;
 const FOOTER_HEIGHT: f32 = 24.0;
 const GUTTER_WIDTH: f32 = 64.0;
 const SPLITTER_WIDTH: f32 = 4.0;
@@ -144,7 +144,7 @@ impl CodeEditorWidget {
         let font_size = 14.0;
         let metrics = Metrics::new(font_size, 20.0).scale(SCALE);
         let lang_def = load_language("rust").unwrap_or_else(|| LanguageDef {
-            keywords: HashSet::new(), type_keywords: HashSet::new(), constants: HashSet::new(), operators: HashSet::new(), comments: None, brackets: Vec::new(),
+            keywords: HashSet::new(), type_keywords: HashSet::new(), constants: HashSet::new(), operators: HashSet::new(), ignore_case: false, comments: None, brackets: Vec::new(),
         });
         let theme = Theme::dark();
         my_editor.retokenize_all(&lang_def);
@@ -196,9 +196,52 @@ impl CodeEditorWidget {
             self.my_editor.diagnostics.clear();
             let text = self.my_editor.rope.to_string();
             self.lsp.send(LspRequest::Init(text, lang_name.to_string(), uri));
+            self.reapply_highlighting();
             self.needs_reshape = true;
             self.minimap_needs_redraw = true;
         }
+    }
+
+    fn reapply_highlighting(&mut self) {
+        let theme = self.theme.clone();
+        let lang_def = &self.lang_def;
+        self.editor.with_buffer_mut(|buffer| {
+            for (li, tokens) in self.my_editor.line_tokens.iter().enumerate() {
+                if let Some(line) = buffer.lines.get_mut(li) {
+                    let line_text = line.text();
+                    let mut attrs_list = AttrsList::new(&Attrs::new().family(Family::Monospace).color(theme.text));
+                    for token in tokens {
+                        let mut col = theme.text;
+                        match token.kind {
+                            TokenKind::Identifier => {
+                                let start = token.start.min(line_text.len());
+                                let end = token.end.min(line_text.len());
+                                let word = &line_text[start..end];
+                                let mut is_kw = lang_def.keywords.contains(word) || lang_def.type_keywords.contains(word);
+                                let mut is_const = lang_def.constants.contains(word);
+                                
+                                if !is_kw && !is_const && lang_def.ignore_case {
+                                    let upper = word.to_uppercase();
+                                    is_kw = lang_def.keywords.contains(&upper) || lang_def.type_keywords.contains(&upper);
+                                    is_const = lang_def.constants.contains(&upper);
+                                }
+
+                                if is_kw { col = theme.kw; }
+                                else if is_const { col = theme.string; }
+                            }
+                            TokenKind::String => col = theme.string,
+                            TokenKind::Number => col = theme.number,
+                            TokenKind::LineComment | TokenKind::BlockComment => col = theme.comment,
+                            _ => {}
+                        }
+                        let start = token.start.min(line_text.len());
+                        let end = token.end.min(line_text.len());
+                        attrs_list.add_span(start..end, &Attrs::new().family(Family::Monospace).color(col));
+                    }
+                    line.set_attrs_list(attrs_list);
+                }
+            }
+        });
     }
 
     fn get_offsets(&self, rect: Rect) -> (f32, f32) { (rect.left() + GUTTER_WIDTH * SCALE, rect.top()) }
@@ -207,10 +250,6 @@ impl CodeEditorWidget {
         for (s, e) in &self.my_editor.folds { if self.my_editor.collapsed_starts.contains(s) && li > *s && li <= *e { return true; } } false
     }
 
-    fn get_visual_y_shift(&self, li: usize) -> f32 {
-        let mut h = 0; for (s, e) in &self.my_editor.folds { if self.my_editor.collapsed_starts.contains(s) && li > *e { h += e - s; } }
-        h as f32 * self.metrics.line_height
-    }
 
     fn find_next(&mut self, _fs: &mut FontSystem) {
         if self.search_query.is_empty() { return; }
@@ -220,9 +259,17 @@ impl CodeEditorWidget {
         self.editor.with_buffer(|b| { for l in b.lines.iter().take(cursor.line) { start += l.text().len() + 1; } start += cursor.index; });
         let match_idx = total[start.min(total.len())..].find(&self.search_query).map(|i| i + start).or_else(|| total.find(&self.search_query));
         if let Some(idx) = match_idx {
-            let mut cb: usize = 0; let mut tl = 0; let mut tc = 0;
-            for (li, text) in total.split('\n').enumerate() { if idx >= cb && idx <= cb + text.len() { tl = li; tc = idx - cb; break; } cb += text.len() + 1; }
-            self.editor.set_cursor(Cursor::new(tl, tc)); self.editor.set_selection(Selection::Normal(Cursor::new(tl, tc + self.search_query.len()))); self.needs_reshape = true;
+            let mut cb: usize = 0; 
+            let mut tl: usize = 0; 
+            let mut tc: usize = 0;
+            for (li, text) in total.split('\n').enumerate() { 
+                let l_len = text.len();
+                if idx >= cb && idx <= cb + l_len { tl = li; tc = idx - cb; break; } 
+                cb += l_len + 1; 
+            }
+            self.editor.set_cursor(Cursor::new(tl, tc)); 
+            self.editor.set_selection(Selection::Normal(Cursor::new(tl, tc + self.search_query.len()))); 
+            self.needs_reshape = true;
         }
     }
 
@@ -282,47 +329,48 @@ impl CodeEditorWidget {
         let mut last_para = None;
 
         let my_editor = &self.my_editor;
-        let folds = &my_editor.folds;
+        let _folds = &my_editor.folds;
         let collapsed = &my_editor.collapsed_starts;
-        let metrics = &self.metrics;
         let digit_cache = &self.digit_cache;
         let show_whitespace = self.show_whitespace;
         let scroll_y = self.scroll_y;
         let mut glyph_cache = std::mem::take(&mut self.glyph_cache);
 
+        let mut v_shift = 0.0;
+        let mut initial_top = None;
         self.editor.with_buffer(|buffer| {
             for run in buffer.layout_runs() {
-                let i = run.line_i;
-                let mut hidden = false;
-                let mut ys_val = 0;
-                for (s, e) in folds { 
-                    if collapsed.contains(s) {
-                        if i > *s && i <= *e { hidden = true; break; }
-                        if i > *e { ys_val += e - s; }
-                    }
-                }
-                if hidden { continue; }
-                let ys = ys_val as f32 * metrics.line_height;
-                let lt = run.line_top - ys;
-                let lh = run.line_height;
-                let cyo = y_off - scroll_y;
-                let v_t = lt + cyo;
+                if initial_top.is_none() { initial_top = Some(run.line_top); }
+                let itop = initial_top.unwrap_or(0.0);
                 
-                if v_t + lh < 0.0 { continue; }
+                let i = run.line_i;
+                if self.is_line_hidden(i) {
+                    v_shift += run.line_height;
+                    continue;
+                }
+                let metrics = &self.metrics;
+                let lh = run.line_height;
+                let adj_lt = run.line_top - itop - v_shift;
+                // Vertically center baseline in line height
+                let centering_v = (lh - metrics.font_size) / 2.0;
+                let adj_ly = adj_lt + metrics.font_size - centering_v + 4.0 * SCALE;
+                let cyo = y_off - scroll_y;
+                let v_t = adj_lt + cyo;
+                
+                if v_t + lh < rect.top() { continue; }
                 if v_t > rect.bottom() { break; }
 
-                let ly = run.line_y;
                 let glyphs = run.glyphs;
                 let text = run.text;
                 
-                if i == cursor_state.line { pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE, cyo + lt, rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE, lh).unwrap(), &cp, Transform::identity(), None); }
+                if i == cursor_state.line { pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE, cyo + adj_lt, rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE, lh).unwrap(), &cp, Transform::identity(), None); }
                 if let Some(st) = &selected_text { 
                     if st.len() > 1 && !st.contains('\n') { 
                         let mut start = 0; 
                         while let Some(pos) = text[start..].find(st) { 
                             let real_pos = start + pos; let mut g_x = 0.0; let mut g_w = 0.0; 
                             for g in glyphs { if g.start >= real_pos && g.start < real_pos + st.len() { if g_w == 0.0 { g_x = g.x; } g_w += g.w; } } 
-                            if g_w > 0.0 { pixmap.fill_rect(Rect::from_xywh(x_off + g_x, cyo + lt, g_w, lh).unwrap(), &mp, Transform::identity(), None); } start = real_pos + 1; 
+                            if g_w > 0.0 { pixmap.fill_rect(Rect::from_xywh(x_off + g_x, cyo + adj_lt, g_w, lh).unwrap(), &mp, Transform::identity(), None); } start = real_pos + 1; 
                         } 
                     } 
                 }
@@ -333,7 +381,7 @@ impl CodeEditorWidget {
                         for g in glyphs { if g.start >= diag.range.start.character as usize && (diag.range.start.line != diag.range.end.line || g.start < diag.range.end.character as usize) { if g_w == 0.0 { g_x = g.x; } g_w += g.w; } }
                         if g_w > 0.0 { 
                             let mut pb = PathBuilder::new();
-                            let mut cx = x_off + g_x; let step = 3.0 * SCALE; let amp = 1.5 * SCALE; let sy = cyo + lt + lh - 2.0 * SCALE;
+                            let mut cx = x_off + g_x; let step = 3.0 * SCALE; let amp = 1.5 * SCALE; let sy = cyo + adj_lt + lh - 2.0 * SCALE;
                             pb.move_to(cx, sy);
                             while cx < x_off + g_x + g_w { pb.quad_to(cx + step/2.0, sy + amp, cx + step, sy); pb.quad_to(cx + step * 1.5, sy - amp, cx + step * 2.0, sy); cx += step * 2.0; }
                             if let Some(path) = pb.finish() {
@@ -346,26 +394,26 @@ impl CodeEditorWidget {
 
                 let mut gp_paint = Paint::default(); gp_paint.set_color_rgba8(theme.guide.r(), theme.guide.g(), theme.guide.b(), theme.guide.a());
                 let tw = 4.0 * 8.4 * (metrics.font_size / 14.0) * SCALE; let ls = text.chars().take_while(|c| c.is_whitespace()).count();
-                for j in 1..=(ls/4) { pixmap.fill_rect(Rect::from_xywh(x_off + (j as f32 * tw), cyo + lt, 1.0, lh).unwrap(), &gp_paint, Transform::identity(), None); }
+                for j in 1..=(ls/4) { pixmap.fill_rect(Rect::from_xywh(x_off + (j as f32 * tw), cyo + adj_lt, 1.0, lh).unwrap(), &gp_paint, Transform::identity(), None); }
                 if last_para != Some(i) {
                     let s = format!("{}", i + 1); let mut dx = (rect.left() + GUTTER_WIDTH * SCALE) as i32 - 15;
-                    for ch in s.chars().rev() { if let Some(d) = ch.to_digit(10) { if (d as usize) < digit_cache.len() { let cg = &digit_cache[d as usize]; pixmap.draw_pixmap(dx - cg.pixmap.width() as i32 + cg.left, (cyo + ly) as i32 - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None); dx -= 10 * SCALE as i32; } } }
+                    for ch in s.chars().rev() { if let Some(d) = ch.to_digit(10) { if (d as usize) < digit_cache.len() { let cg = &digit_cache[d as usize]; pixmap.draw_pixmap(dx - cg.pixmap.width() as i32 + cg.left, (cyo + adj_ly) as i32 - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None); dx -= 10 * SCALE as i32; } } }
                     if my_editor.folds.iter().any(|(s, _)| *s == i) { 
                         let col_folded = collapsed.contains(&i); 
-                        App::draw_ui_text(pixmap, fs, sc, if col_folded { "+" } else { "-" }, rect.left() + 5.0 * SCALE, cyo + ly - (7.0 * (metrics.font_size/14.0) * SCALE) - 7.0*SCALE, if col_folded { theme.kw } else { Color::rgb(0x85, 0x85, 0x85) }); 
+                        App::draw_ui_text(pixmap, fs, sc, if col_folded { "+" } else { "-" }, rect.left() + 5.0 * SCALE, cyo + adj_ly - (12.0 * SCALE), if col_folded { theme.kw } else { Color::rgb(0x85, 0x85, 0x85) }); 
                     }
                     last_para = Some(i);
                 }
                 if let Some((ss, se)) = selection { 
                     if let Some((hx, hw)) = run.highlight(ss, se) { 
                         let mut sp_paint = Paint::default(); sp_paint.set_color_rgba8(theme.selection.r(), theme.selection.g(), theme.selection.b(), theme.selection.a()); 
-                        pixmap.fill_rect(Rect::from_xywh(x_off + hx, cyo + lt, hw, lh).unwrap(), &sp_paint, Transform::identity(), None); 
+                        pixmap.fill_rect(Rect::from_xywh(x_off + hx, cyo + adj_lt, hw, lh).unwrap(), &sp_paint, Transform::identity(), None); 
                     } 
                 }
                 for g in glyphs {
                     let ip = partner.map(|(pl, pi)| i == pl && g.start == pi).unwrap_or(false);
-                    let pg = g.physical((x_off, cyo + ly), 1.0); let gc = g.color_opt.unwrap_or(theme.text);
-                    if show_whitespace { if text[g.start..g.end].starts_with(' ') { let mut wp = Paint::default(); wp.set_color_rgba8(80, 80, 80, 255); pixmap.fill_rect(Rect::from_xywh(x_off + g.x + g.w/2.0 - 1.0, cyo + ly - (lh*0.25), 2.0, 2.0).unwrap(), &wp, Transform::identity(), None); } else if text[g.start..g.end].starts_with('\t') { let mut wp = Paint::default(); wp.set_color_rgba8(80, 80, 80, 255); pixmap.fill_rect(Rect::from_xywh(x_off + g.x + 2.0, cyo + ly - (lh*0.25), g.w - 4.0, 1.0).unwrap(), &wp, Transform::identity(), None); } }
+                    let pg = g.physical((x_off, cyo + adj_ly), 1.0); let gc = g.color_opt.unwrap_or(theme.text);
+                    if show_whitespace { if text[g.start..g.end].starts_with(' ') { let mut wp = Paint::default(); wp.set_color_rgba8(80, 80, 80, 255); pixmap.fill_rect(Rect::from_xywh(x_off + g.x + g.w/2.0 - 1.0, cyo + adj_ly - (lh*0.25), 2.0, 2.0).unwrap(), &wp, Transform::identity(), None); } else if text[g.start..g.end].starts_with('\t') { let mut wp = Paint::default(); wp.set_color_rgba8(80, 80, 80, 255); pixmap.fill_rect(Rect::from_xywh(x_off + g.x + 2.0, cyo + adj_ly - (lh*0.25), g.w - 4.0, 1.0).unwrap(), &wp, Transform::identity(), None); } }
                     let cg = glyph_cache.entry((pg.cache_key, gc, ip)).or_insert_with(|| {
                         if let Some(im) = sc.get_image(fs, pg.cache_key) {
                             let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap(); let (r, g, b, a) = if ip { (theme.bracket.r(), theme.bracket.g(), theme.bracket.b(), theme.bracket.a()) } else { (gc.r(), gc.g(), gc.b(), gc.a()) };
@@ -374,7 +422,7 @@ impl CodeEditorWidget {
                         } else { CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 } }
                     });
                     pixmap.draw_pixmap(pg.x + cg.left, pg.y - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
-                    if ip { let mut bp = Paint::default(); bp.set_color_rgba8(theme.bracket.r(), theme.bracket.g(), theme.bracket.b(), theme.bracket.a()); pixmap.fill_rect(Rect::from_xywh(x_off + g.x, cyo + lt + lh - 2.0, g.w, 2.0).unwrap(), &bp, Transform::identity(), None); }
+                    if ip { let mut bp = Paint::default(); bp.set_color_rgba8(theme.bracket.r(), theme.bracket.g(), theme.bracket.b(), theme.bracket.a()); pixmap.fill_rect(Rect::from_xywh(x_off + g.x, cyo + adj_lt + lh - 2.0, g.w, 2.0).unwrap(), &bp, Transform::identity(), None); }
                 }
             }
         });
@@ -440,15 +488,33 @@ impl CodeEditorWidget {
             pixmap.fill_rect(Rect::from_xywh(pos.0, pos.1, 100.0 * SCALE, (items.len() as f32 * 25.0) * SCALE).unwrap(), &mep, Transform::identity(), None);
             for (i, item) in items.iter().enumerate() { App::draw_ui_text(pixmap, fs, sc, item, pos.0 + 10.0 * SCALE, pos.1 + (i as f32 * 25.0 + 5.0) * SCALE, self.theme.text); }
         }
-        let mut fbp = Paint::default(); fbp.set_color_rgba8(37, 37, 38, 255); pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.bottom() - FOOTER_HEIGHT * SCALE, rect.width(), FOOTER_HEIGHT * SCALE).unwrap(), &fbp, Transform::identity(), None);
-        App::draw_ui_text(pixmap, fs, sc, &format!("Ln {}, Col {} | Total {} chars", cursor_state.line + 1, cursor_state.index + 1, self.my_editor.rope.len_chars()), rect.left() + 10.0 * SCALE, rect.bottom() - FOOTER_HEIGHT * SCALE + 5.0 * SCALE, self.theme.text);
         if let Some((cx, cy)) = self.editor.cursor_position() {
-             let mut ci = None; self.editor.with_buffer(|b| { for r in b.layout_runs() { if cy >= r.line_top as i32 && cy < (r.line_top + r.line_height) as i32 && !self.is_line_hidden(r.line_i) { ci = Some(self.get_visual_y_shift(r.line_i)); } } });
-             if let Some(ys) = ci { let mut cp = Paint::default(); cp.set_color_rgba8(255, 255, 255, 255); pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, y_off - self.scroll_y - ys + cy as f32, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None); }
+             let mut cy_final = None;
+             self.editor.with_buffer(|b| {
+                 let mut v_sh = 0.0;
+                 let mut i_top = None;
+                 for r in b.layout_runs() {
+                     if i_top.is_none() { i_top = Some(r.line_top); }
+                     if self.is_line_hidden(r.line_i) { v_sh += r.line_height; continue; }
+                     if cy >= r.line_top as i32 && cy < (r.line_top + r.line_height) as i32 {
+                         let it = i_top.unwrap_or(0.0);
+                         let l_h = r.line_height;
+                         let c_v = (l_h - self.metrics.font_size) / 2.0;
+                         // Center characters in rectangle
+                         cy_final = Some(y_off - self.scroll_y + (r.line_top - it - v_sh) + c_v);
+                         break;
+                     }
+                 }
+             });
+             if let Some(final_y) = cy_final {
+                 let mut cp = Paint::default(); cp.set_color_rgba8(255, 255, 255, 255);
+                 pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, final_y, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None);
+             }
         }
     }
 
     pub fn handle_mouse(&mut self, fs: &mut FontSystem, x: f32, y: f32, rect: Rect, click: Option<(u32, MouseButton, winit::event::Modifiers)>, clipboard: &mut Option<Clipboard>) {
+        if x < rect.left() || x > rect.right() || y < rect.top() || y > rect.bottom() { return; }
         if let Some((_, MouseButton::Right, _)) = click { self.context_menu = Some(((x, y), vec!["Copy".to_string(), "Paste".to_string(), "Cut".to_string(), "Select All".to_string(), "Find".to_string(), "Replace".to_string()])); return; }
         if let Some((pos, _)) = self.context_menu {
             let menu_h = (6.0 * 25.0) * SCALE;
@@ -465,47 +531,44 @@ impl CodeEditorWidget {
                 } return;
             } self.context_menu = None;
         }
-        if x > rect.right() - MINIMAP_WIDTH * SCALE {
-             let mry = (y - rect.top()) / (rect.height() - FOOTER_HEIGHT * SCALE); let mut th = 0.0;
+        if y >= rect.top() && y < rect.bottom() && x > rect.right() - MINIMAP_WIDTH * SCALE {
+             let mry = (y - rect.top()) / rect.height(); let mut th = 0.0;
              self.editor.with_buffer(|b| { for r in b.layout_runs() { if !self.is_line_hidden(r.line_i) { th += r.line_height; } } });
              self.scroll_y = (mry * th).max(0.0); return;
         }
         let (x_off, y_off) = self.get_offsets(rect);
-        let folds = &self.my_editor.folds;
-        let collapsed = &self.my_editor.collapsed_starts;
-        let metrics = self.metrics;
 
         if let Some((1, MouseButton::Left, _)) = click { 
             if x < x_off && x > rect.left() { 
                 let mut fl = None; 
                 self.editor.with_buffer(|b| { 
+                    let mut i_top = None;
+                    let mut v_sh = 0.0;
                     for r in b.layout_runs() { 
-                        let mut hidden = false;
-                        for (s, e) in folds { if collapsed.contains(s) && r.line_i > *s && r.line_i <= *e { hidden = true; break; } }
-                        if !hidden { 
-                            let mut ys_val = 0; for (s, e) in folds { if collapsed.contains(s) && r.line_i > *e { ys_val += e - s; } }
-                            let ys = ys_val as f32 * metrics.line_height;
-                            let vy = y_off - self.scroll_y - ys + r.line_top; 
-                            if y >= vy && y < vy + r.line_height { fl = Some(r.line_i); break; } 
-                        } 
+                        if i_top.is_none() { i_top = Some(r.line_top); }
+                        if self.is_line_hidden(r.line_i) { v_sh += r.line_height; continue; }
+                        let vy = y_off - self.scroll_y + (r.line_top - i_top.unwrap_or(0.0) - v_sh); 
+                        if y >= vy && y < vy + r.line_height { fl = Some(r.line_i); break; } 
                     } 
                 }); 
                 if let Some(li) = fl { self.my_editor.toggle_fold(li); return; } 
             } 
         }
-        let vy = y - y_off + self.scroll_y; let mut ts = 0.0;
+        let mut final_ts = 0.0;
         self.editor.with_buffer(|b| { 
+            let mut i_top = None;
+            let mut v_sh = 0.0;
             for r in b.layout_runs() { 
-                let mut hidden = false;
-                for (s, e) in folds { if collapsed.contains(s) && r.line_i > *s && r.line_i <= *e { hidden = true; break; } }
-                if !hidden { 
-                    let mut ys_val = 0; for (s, e) in folds { if collapsed.contains(s) && r.line_i > *e { ys_val += e - s; } }
-                    let ys = ys_val as f32 * metrics.line_height;
-                    if vy >= r.line_top - ys && vy < r.line_top - ys + r.line_height { ts = ys; break; } 
+                if i_top.is_none() { i_top = Some(r.line_top); }
+                let it = i_top.unwrap_or(0.0);
+                if self.is_line_hidden(r.line_i) { v_sh += r.line_height; continue; } 
+                let vy = y_off - self.scroll_y + (r.line_top - it - v_sh);
+                if y >= vy && y < vy + r.line_height { 
+                    final_ts = it + v_sh; break; 
                 } 
             } 
         });
-        let ex = (x - x_off) as i32; let ey = (y - y_off + ts + self.scroll_y) as i32;
+        let ex = (x - x_off) as i32; let ey = (y - y_off + final_ts + self.scroll_y) as i32;
         if let Some((count, _, mods)) = click {
             if !mods.state().shift_key() && count == 1 { self.editor.action(fs, Action::Escape); }
             match count { 1 => self.editor.action(fs, Action::Click { x: ex, y: ey }), 2 => self.editor.action(fs, Action::DoubleClick { x: ex, y: ey }), 3 => self.editor.action(fs, Action::TripleClick { x: ex, y: ey }), _ => {} }
@@ -523,6 +586,7 @@ impl CodeEditorWidget {
             });
             self.my_editor.rope = ropey::Rope::from_str(&t); 
             self.my_editor.retokenize_all(&self.lang_def); 
+            self.reapply_highlighting();
             self.minimap_needs_redraw = true;
         } 
     }
@@ -540,7 +604,7 @@ struct App {
     tree_view: TreeView,
     all_languages: Vec<String>,
     current_lang: String,
-    is_picker_open: bool,
+    lang_dropdown: Option<Dropdown>,
     clipboard: Option<Clipboard>,
     modifiers: winit::event::Modifiers,
     last_click_time: Instant,
@@ -555,29 +619,40 @@ struct App {
     last_lsp_update: Instant,
     pending_lsp_update: bool,
     lsp: Arc<LspClient>,
-    is_lang_picker_open: bool,
 }
 
 impl App {
     fn new(_my_editor: MyEditor) -> Self {
         let mut langs = Vec::new(); 
-        if let Ok(es) = fs::read_dir("crates/code_editor/basic-languages") { 
-            for e in es.flatten() { 
-                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { 
-                    if let Some(n) = e.file_name().to_str() { langs.push(n.to_string()); } 
+        // Try multiple paths to find the basic-languages folder
+        let search_paths = ["crates/code_editor/basic-languages", "basic-languages", "../code_editor/basic-languages"];
+        for path in &search_paths {
+            if let Ok(es) = std::fs::read_dir(path) { 
+                for e in es.flatten() { 
+                    if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { 
+                        if let Some(n) = e.file_name().to_str() { langs.push(n.to_string()); } 
+                    } 
                 } 
-            } 
-        } 
+                if !langs.is_empty() { break; }
+            }
+        }
+        
+        // Final fallback if no languages found
+        if langs.is_empty() {
+            println!("WARNING: Could not find basic-languages folder, using hardcoded fallback.");
+            langs = vec!["rust".into(), "javascript".into(), "typescript".into(), "python".into(), "text".into()];
+        }
         langs.sort();
+        let root_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        let _root_uri = format!("file://{}", root_dir.to_string_lossy());
         Self { 
             window: None, context: None, surface: None, font_system: FontSystem::new(), swash_cache: SwashCache::new(), pixmap: None, tabs: Vec::new(), active_tab: 0, 
-            tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), is_picker_open: false, clipboard: Clipboard::new().ok(), 
+            tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), lang_dropdown: None, clipboard: Clipboard::new().ok(), 
             modifiers: winit::event::Modifiers::default(), last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), 
             explorer_width: EXPLORER_WIDTH, is_dragging_splitter: false, hovering_splitter: false, hovering_tab_close: None,
             is_dragging: false, needs_redraw: true,
             last_lsp_update: Instant::now(), pending_lsp_update: false,
             lsp: Arc::new(LspClient::new()),
-            is_lang_picker_open: false,
         }
     }
     fn render(&mut self) {
@@ -607,7 +682,7 @@ impl App {
                  self.tree_view.reveal_path(path);
              }
         }
-        self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, 0.0, 40.0 * SCALE, self.explorer_width * SCALE);
+        self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, 0.0, TAB_BAR_HEIGHT * SCALE, self.explorer_width * SCALE);
 
         // 1b. Splitter
         let mut slp = Paint::default();
@@ -682,25 +757,7 @@ impl App {
             tx_off += tw;
         }
 
-        // 2b. Breadcrumbs
-        let bc_y = TAB_BAR_HEIGHT * SCALE;
-        let mut bcp = Paint::default(); bcp.set_color_rgba8(30, 30, 30, 255);
-        pix.fill_rect(Rect::from_xywh(ed_start_x, bc_y, pix.width() as f32 - ed_start_x, UI_BAR_HEIGHT * SCALE).unwrap(), &bcp, Transform::identity(), None);
-        
-        if let Some(tab) = self.tabs.get(self.active_tab) {
-            let path_str = tab.path.clone().unwrap_or_else(|| tab.name.clone());
-            let segments: Vec<&str> = path_str.split(|c| c == '/' || c == '\\').filter(|s| !s.is_empty()).collect();
-            let mut bc_x = ed_start_x + 10.0 * SCALE;
-            for (idx, seg) in segments.iter().enumerate() {
-                let col = if idx == segments.len() - 1 { Color::rgb(180, 180, 180) } else { Color::rgb(110, 110, 110) };
-                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, seg, bc_x, bc_y + 10.0 * SCALE, col);
-                bc_x += (seg.len() as f32 * 8.5 + 10.0) * SCALE;
-                if idx < segments.len() - 1 {
-                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "/", bc_x, bc_y + 10.0 * SCALE, Color::rgb(80, 80, 80));
-                    bc_x += 15.0 * SCALE;
-                }
-            }
-        }
+        // 2b. Breadcrumbs Removed (Unified in Status Bar)
 
         // 3. Active Editor
         if self.active_tab < self.tabs.len() {
@@ -749,22 +806,24 @@ impl App {
             let cursor = tab.widget.editor.cursor();
             let text = tab.widget.my_editor.rope.to_string();
             let line_endings = if text.contains("\r\n") { "CRLF" } else { "LF" };
-            let footer_text = format!("Ln {}, Col {} | {} | UTF-8", cursor.line + 1, cursor.index + 1, line_endings);
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &footer_text, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, Color::rgb(255, 255, 255));
             
+            // Re-use segments for breadcrumbs in status bar
+            let path_str = tab.path.clone().unwrap_or_else(|| tab.name.clone());
+            let segments: Vec<&str> = path_str.split(|c| c == '/' || c == '\\').filter(|s| !s.is_empty()).collect();
+            let path_display = segments.join(" > ");
+
+            let footer_text = format!("Ln {}, Col {} | {} | UTF-8 | {}", cursor.line + 1, cursor.index + 1, line_endings, path_display);
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &footer_text, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, Color::rgb(255, 255, 255));
+
             let lang_label = format!("Language: {}", self.current_lang);
             let label_x = pix.width() as f32 - (lang_label.len() as f32 * 9.0 + 20.0) * SCALE;
             App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &lang_label, label_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, Color::rgb(255, 255, 255));
 
-            if self.is_lang_picker_open {
-                let menu_w = 150.0 * SCALE;
-                let menu_h = (self.all_languages.len() as f32 * 25.0 + 10.0) * SCALE;
-                let mut mp = Paint::default(); mp.set_color_rgba8(45, 45, 48, 255);
-                pix.fill_rect(Rect::from_xywh(pix.width() as f32 - menu_w - 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE - menu_h, menu_w, menu_h).unwrap(), &mp, Transform::identity(), None);
-                for (i, lang) in self.all_languages.iter().enumerate() {
-                    let col = if lang == &self.current_lang { Color::rgb(0, 122, 204) } else { Color::rgb(200, 200, 200) };
-                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, lang, pix.width() as f32 - menu_w, pix.height() as f32 - FOOTER_HEIGHT * SCALE - menu_h + (i as f32 * 25.0 + 5.0) * SCALE, col);
-                }
+            if let Some(dropdown) = &self.lang_dropdown {
+                let (w, h) = dropdown.get_size();
+                let menu_x = (pix.width() as f32 / SCALE - w - 20.0).max(10.0);
+                let menu_y = (pix.height() as f32 / SCALE - FOOTER_HEIGHT - h - 10.0).max(10.0);
+                dropdown.render(pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y);
             }
         }
 
@@ -865,6 +924,7 @@ impl ApplicationHandler for App {
                 self.mouse_pos = (position.x as f32, position.y as f32); 
                 let mx = self.mouse_pos.0 / SCALE;
                 let my = self.mouse_pos.1 / SCALE;
+                let height = self.pixmap.as_ref().unwrap().height() as f32 / SCALE;
 
                 // 1. Splitter Hover/Drag
                 let split_start = self.explorer_width;
@@ -880,6 +940,15 @@ impl ApplicationHandler for App {
                     self.window.as_ref().unwrap().set_cursor(winit::window::CursorIcon::ColResize);
                 } else {
                     self.window.as_ref().unwrap().set_cursor(winit::window::CursorIcon::Default);
+                }
+
+                if let Some(mut dropdown) = self.lang_dropdown.take() {
+                    let (w, h) = dropdown.get_size();
+                    let menu_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE - w - 20.0).max(10.0);
+                    let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
+                    dropdown.handle_mouse(mx, my, menu_x, menu_y, false);
+                    self.lang_dropdown = Some(dropdown);
+                    self.window.as_ref().unwrap().request_redraw();
                 }
 
                 // 2. Tab Close Hover
@@ -901,7 +970,7 @@ impl ApplicationHandler for App {
                 // 3. Editor Drag
                 let mut needs_editor_redraw = false;
                 if self.is_dragging && !self.is_dragging_splitter && self.active_tab < self.tabs.len() { 
-                    let ed_top = (TAB_BAR_HEIGHT + UI_BAR_HEIGHT) * SCALE;
+                    let ed_top = TAB_BAR_HEIGHT * SCALE;
                     let r = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap(); 
                     self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); 
                     needs_editor_redraw = true;
@@ -911,127 +980,131 @@ impl ApplicationHandler for App {
                 if was_hovering_splitter != self.hovering_splitter || 
                    last_tab_hover != self.hovering_tab_close || 
                    self.is_dragging_splitter || 
-                   self.is_lang_picker_open ||
+                   self.lang_dropdown.is_some() ||
                    needs_editor_redraw {
                     self.window.as_ref().unwrap().request_redraw();
                 }
             }
+            WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
+                self.is_dragging = false;
+                self.is_dragging_splitter = false;
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let mx = self.mouse_pos.0 / SCALE;
                 let my = self.mouse_pos.1 / SCALE;
+                let height = self.pixmap.as_ref().unwrap().height() as f32 / SCALE;
 
                 if state == ElementState::Pressed && button == MouseButton::Left {
-                    // 1. Tab Close Click
-                    if let Some(idx) = self.hovering_tab_close {
-                        self.tabs.remove(idx);
-                        if self.tabs.is_empty() { self.active_tab = 0; }
-                        else if self.active_tab >= self.tabs.len() { self.active_tab = self.tabs.len() - 1; }
-                        self.window.as_ref().unwrap().request_redraw();
-                        return;
+                    // 0. Language Picker Menu Intercept
+                    if let Some(mut dropdown) = self.lang_dropdown.take() {
+                        let (w, h) = dropdown.get_size();
+                        let menu_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE - w - 20.0).max(10.0);
+                        let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
+                        
+                        match dropdown.handle_mouse(mx, my, menu_x, menu_y, true) {
+                            DropdownEvent::Selected(idx) => {
+                                if let Some(new_lang) = self.all_languages.get(idx).cloned() {
+                                    self.current_lang = new_lang.clone();
+                                    let tab = &mut self.tabs[self.active_tab];
+                                    let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
+                                    tab.widget.set_language(&new_lang, uri);
+                                }
+                                self.lang_dropdown = None;
+                            }
+                            DropdownEvent::Closed => {
+                                self.lang_dropdown = None;
+                            }
+                            DropdownEvent::None => {
+                                self.lang_dropdown = Some(dropdown);
+                            }
+                        }
+                        self.window.as_ref().unwrap().request_redraw(); return;
                     }
 
-                    // 2. Splitter Begin Drag
-                    if self.hovering_splitter {
-                        self.is_dragging_splitter = true;
-                        self.window.as_ref().unwrap().request_redraw();
+                    // 1. Status Bar Click
+                    if my >= height - FOOTER_HEIGHT {
+                        let lang_label = format!("Language: {}", self.current_lang);
+                        let label_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
+                        if mx >= label_x {
+                            let active_idx = self.all_languages.iter().position(|l| l == &self.current_lang).unwrap_or(0);
+                            self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, SCALE));
+                        }
+                        self.window.as_ref().unwrap().request_redraw(); return;
+                    }
+
+                    // 2. Tab Bar Click
+                    let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
+                    if my < TAB_BAR_HEIGHT && mx > ed_start_x {
+                        if let Some(idx) = self.hovering_tab_close {
+                             println!("DEBUG: Tab Bar Click -> Close Tab {}", idx);
+                             self.tabs.remove(idx);
+                             if self.tabs.is_empty() { self.active_tab = 0; }
+                             else if self.active_tab >= self.tabs.len() { self.active_tab = self.tabs.len() - 1; }
+                             self.window.as_ref().unwrap().request_redraw(); return;
+                        }
+                        let tab_idx = ((mx - ed_start_x) / 160.0) as usize;
+                        if tab_idx < self.tabs.len() { 
+                            println!("DEBUG: Tab Bar Click -> Select Tab {}", tab_idx);
+                            self.active_tab = tab_idx; self.window.as_ref().unwrap().request_redraw(); 
+                        }
                         return;
                     }
 
                     // 3. Sidebar Click
                     if mx < self.explorer_width {
+                        println!("DEBUG: Sidebar Click at mx={}, my={}", mx, my);
                         let now = Instant::now();
                         let is_double = (now - self.last_click_time) < Duration::from_millis(300);
                         self.last_click_time = now;
-
-                        match self.tree_view.handle_mouse(self.mouse_pos.0, self.mouse_pos.1, 0.0, 40.0 * SCALE) {
-                            TreeEvent::Open(path) => {
-                                if let Some(idx) = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path)) {
-                                    self.active_tab = idx;
-                                    if is_double { self.tabs[idx].is_sticky = true; }
-                                    self.window.as_ref().unwrap().request_redraw();
-                                    return;
-                                }
-                                let mut replace_idx = None;
-                                for (i, t) in self.tabs.iter().enumerate() { if !t.is_sticky { replace_idx = Some(i); break; } }
-
-                                if let Ok(content) = fs::read_to_string(&path) {
-                                    let ext = path.split('.').last().unwrap_or("txt");
-                                    let lang_name = match ext { "rs" => "rust", "js" => "javascript", "bas" | "vb" => "vb", "cs" => "csharp", _ => "text" };
-                                    let lang = load_language(lang_name).or_else(|| load_language("rust")).expect("rust language not found");
-                                    let my_editor = MyEditor::from_text(&content, &lang);
-                                    let uri = format!("file://{}", path);
-                                    let mut widget = CodeEditorWidget::new(my_editor, &mut self.font_system, self.lsp.clone(), uri.clone());
-                                    widget.set_language(lang_name, uri);
-                                    let name = Path::new(&path).file_name().unwrap_or_default().to_string_lossy().to_string();
-                                    let new_tab = Tab { name, path: Some(path.clone()), widget, is_sticky: is_double, buffer: None, is_modified: false };
-                                    
-                                    if let Some(idx) = replace_idx {
-                                        self.tabs[idx] = new_tab;
-                                        self.active_tab = idx;
-                                    } else {
-                                        self.tabs.push(new_tab);
-                                        self.active_tab = self.tabs.len() - 1;
-                                    }
-                                    self.tree_view.reveal_path(&path);
-                                }
-                            }
-                            _ => { self.window.as_ref().unwrap().request_redraw(); }
+                        match self.tree_view.handle_mouse(self.mouse_pos.0, self.mouse_pos.1, 0.0, TAB_BAR_HEIGHT * SCALE) {
+                             TreeEvent::Open(path) => {
+                                 if let Some(idx) = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path)) {
+                                     println!("DEBUG: Sidebar -> Reveal existing tab: {}", path);
+                                     self.active_tab = idx; if is_double { self.tabs[idx].is_sticky = true; }
+                                     self.window.as_ref().unwrap().request_redraw(); return;
+                                 }
+                                 if let Ok(content) = fs::read_to_string(&path) {
+                                     println!("DEBUG: Sidebar -> Open new tab: {}", path);
+                                     let ext = path.split('.').last().unwrap_or("txt");
+                                     let lang_name = match ext { "rs" => "rust", "js" => "javascript", "bas" | "vb" => "vb", "cs" => "csharp", _ => "text" };
+                                     let lang = load_language(lang_name).or_else(|| load_language("rust")).expect("rust language not found");
+                                     let my_editor = MyEditor::from_text(&content, &lang);
+                                     let uri = format!("file://{}", path);
+                                     let mut widget = CodeEditorWidget::new(my_editor, &mut self.font_system, self.lsp.clone(), uri.clone());
+                                     widget.set_language(lang_name, uri);
+                                     let name = Path::new(&path).file_name().unwrap_or_default().to_string_lossy().to_string();
+                                     let new_tab = Tab { name, path: Some(path.clone()), widget, is_sticky: is_double, buffer: None, is_modified: false };
+                                     self.tabs.push(new_tab); self.active_tab = self.tabs.len() - 1; self.tree_view.reveal_path(&path);
+                                 }
+                             }
+                             _ => { self.window.as_ref().unwrap().request_redraw(); }
                         }
-                        self.window.as_ref().unwrap().request_redraw();
-                        return;
+                        self.window.as_ref().unwrap().request_redraw(); return;
                     }
 
-                    // 4. Tab Bar Click
-                    let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
-                    if my < TAB_BAR_HEIGHT && mx > ed_start_x {
-                        let tab_idx = ((mx - ed_start_x) / 160.0) as usize;
-                        if tab_idx < self.tabs.len() {
-                            self.active_tab = tab_idx;
-                            self.window.as_ref().unwrap().request_redraw();
-                        }
-                        return;
+                    // 4. Splitter Click
+                    if self.hovering_splitter {
+                        println!("DEBUG: Splitter Click -> Start Resizing");
+                        self.is_dragging_splitter = true; self.window.as_ref().unwrap().request_redraw(); return;
                     }
 
-                    // 5. Editor Click
+                    // 5. Editor Click (Deep Isolation)
                     if !self.tabs.is_empty() {
-                        let ed_top = (TAB_BAR_HEIGHT + UI_BAR_HEIGHT) * SCALE;
-                        let rect = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
-                        self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now();
-                        self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
-                        self.is_dragging = true; self.window.as_ref().unwrap().request_redraw();
-                        self.is_lang_picker_open = false;
-                    }
-
-                    // 6. Language Picker Click
-                    if my > (self.pixmap.as_ref().unwrap().height() as f32 / SCALE) - FOOTER_HEIGHT {
-                        let lang_label = format!("Language: {}", self.current_lang);
-                        let label_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
-                        if mx > label_x {
-                            self.is_lang_picker_open = !self.is_lang_picker_open;
-                            self.window.as_ref().unwrap().request_redraw();
-                            return;
-                        }
-                    }
-                    if self.is_lang_picker_open {
-                        let menu_w = 150.0;
-                        let menu_h = self.all_languages.len() as f32 * 25.0 + 10.0;
-                        let menu_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE) - menu_w - 10.0;
-                        let menu_y = (self.pixmap.as_ref().unwrap().height() as f32 / SCALE) - FOOTER_HEIGHT - menu_h;
-                        if mx >= menu_x && mx <= menu_x + menu_w && my >= menu_y && my <= menu_y + menu_h {
-                            let idx = ((my - menu_y - 5.0) / 25.0) as usize;
-                            if let Some(new_lang) = self.all_languages.get(idx).cloned() {
-                                self.current_lang = new_lang.clone();
-                                let tab = &mut self.tabs[self.active_tab];
-                                let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
-                                tab.widget.set_language(&new_lang, uri);
-                            }
-                            self.is_lang_picker_open = false;
-                            self.window.as_ref().unwrap().request_redraw();
-                            return;
+                        let ed_top = TAB_BAR_HEIGHT * SCALE;
+                        let ed_bottom = height * SCALE - FOOTER_HEIGHT * SCALE;
+                        if self.mouse_pos.1 >= ed_top && self.mouse_pos.1 < ed_bottom && mx >= self.explorer_width + SPLITTER_WIDTH {
+                            println!("DEBUG: Editor Click at mx={}, my={}", mx, my);
+                            let rect = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, ed_bottom - ed_top).unwrap();
+                            self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now();
+                            self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
+                            self.is_dragging = true; self.window.as_ref().unwrap().request_redraw();
                         }
                     }
                 } else if state == ElementState::Released {
-                    self.is_dragging = false; self.is_dragging_splitter = false;
+                    println!("DEBUG: Mouse Released");
+                    self.is_dragging = false; 
+                    self.is_dragging_splitter = false;
+                    self.window.as_ref().unwrap().request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => self.render(),
