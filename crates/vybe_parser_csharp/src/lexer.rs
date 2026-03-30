@@ -32,7 +32,6 @@ pub fn tokenize(source: &str) -> Vec<Token> {
         // Interpolated string $"..."
         if c == '$' && pos + 1 < chars.len() && chars[pos + 1] == '"' {
             pos += 2;
-            let mut parts: Vec<Token> = Vec::new();
             let mut text = String::new();
             let mut first = true;
             while pos < chars.len() && chars[pos] != '"' {

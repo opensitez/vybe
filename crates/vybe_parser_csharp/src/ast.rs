@@ -23,6 +23,8 @@ pub struct ClassDecl {
     pub is_partial: bool,
     pub is_static: bool,
     pub is_abstract: bool,
+    pub is_sealed: bool,
+    pub access: Access,
     pub base_type: Option<String>,
     pub interfaces: Vec<String>,
     pub members: Vec<MemberDecl>,
@@ -31,18 +33,21 @@ pub struct ClassDecl {
 #[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: String,
+    pub access: Access,
     pub members: Vec<MemberDecl>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
+    pub access: Access,
     pub members: Vec<(String, Option<Expression>)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct InterfaceDecl {
     pub name: String,
+    pub access: Access,
     pub members: Vec<MemberDecl>,
 }
 
@@ -53,6 +58,8 @@ pub enum MemberDecl {
         type_name: Option<String>,
         initializer: Option<Expression>,
         is_static: bool,
+        is_readonly: bool,
+        is_const: bool,
         access: Access,
     },
     Method(MethodDecl),

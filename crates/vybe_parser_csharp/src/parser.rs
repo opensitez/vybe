@@ -132,8 +132,8 @@ impl Parser {
                 let members = self.parse_class_body_named(&name)?;
                 self.expect(TokenKind::RBrace)?;
                 Ok(TypeDecl::Class(ClassDecl {
-                    name, is_partial, is_static, is_abstract,
-                    base_type, interfaces, members,
+                    name, is_partial, is_static, is_abstract, is_sealed,
+                    access, base_type, interfaces, members,
                 }))
             }
             TokenKind::Struct => {
@@ -142,7 +142,7 @@ impl Parser {
                 self.expect(TokenKind::LBrace)?;
                 let members = self.parse_class_body()?;
                 self.expect(TokenKind::RBrace)?;
-                Ok(TypeDecl::Struct(StructDecl { name, members }))
+                Ok(TypeDecl::Struct(StructDecl { name, access, members }))
             }
             TokenKind::Enum => {
                 self.advance();
@@ -158,7 +158,7 @@ impl Parser {
                     self.eat(TokenKind::Comma);
                 }
                 self.expect(TokenKind::RBrace)?;
-                Ok(TypeDecl::Enum(EnumDecl { name, members }))
+                Ok(TypeDecl::Enum(EnumDecl { name, access, members }))
             }
             TokenKind::Interface => {
                 self.advance();
@@ -166,7 +166,7 @@ impl Parser {
                 self.expect(TokenKind::LBrace)?;
                 let members = self.parse_class_body()?;
                 self.expect(TokenKind::RBrace)?;
-                Ok(TypeDecl::Interface(InterfaceDecl { name, members }))
+                Ok(TypeDecl::Interface(InterfaceDecl { name, access, members }))
             }
             TokenKind::Identifier(ref s) if s == "record" => {
                 self.advance();
@@ -182,6 +182,8 @@ impl Parser {
                             type_name: p.type_name.clone(),
                             initializer: None,
                             is_static: false,
+                            is_readonly: false,
+                            is_const: false,
                             access: Access::Public,
                         });
                     }
@@ -248,8 +250,8 @@ impl Parser {
                     self.eat(TokenKind::Semicolon);
                 }
                 Ok(TypeDecl::Class(ClassDecl {
-                    name, is_partial, is_static, is_abstract,
-                    base_type: None, interfaces: Vec::new(), members,
+                    name, is_partial, is_static, is_abstract, is_sealed,
+                    access, base_type: None, interfaces: Vec::new(), members,
                 }))
             }
             _ => Err(format!("Expected class/struct/enum/interface, got {:?} at line {}", self.current(), self.line())),
@@ -280,10 +282,6 @@ impl Parser {
             members.push(self.parse_member_decl_with_class(class_name.as_deref())?);
         }
         Ok(members)
-    }
-
-    fn parse_member_decl(&mut self) -> Result<MemberDecl, String> {
-        self.parse_member_decl_with_class(None)
     }
 
     fn parse_member_decl_with_class(&mut self, class_name: Option<&str>) -> Result<MemberDecl, String> {
@@ -425,7 +423,7 @@ impl Parser {
         self.expect(TokenKind::Semicolon)?;
         Ok(MemberDecl::Field {
             name, type_name: Some(return_type), initializer,
-            is_static, access,
+            is_static, is_readonly, is_const, access,
         })
     }
 
