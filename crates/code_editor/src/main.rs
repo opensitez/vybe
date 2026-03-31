@@ -14,7 +14,13 @@ fn main() {
 }
 "#;
 
-    let lang = crate::language::load_language("rust").unwrap();
+    let lang = match crate::language::load_language("rust") {
+        Some(l) => l,
+        None => {
+            eprintln!("code_editor: language 'rust' not found. Expected JSON in one of:\n  - crates/code_editor/basic-languages/<name>/<name>.json\n  - basic-languages/<name>/<name>.json\n  - ../code_editor/basic-languages/<name>/<name>.json\nPlease ensure the 'basic-languages' folder is present relative to the binary working directory.");
+            std::process::exit(1);
+        }
+    };
     let mut ed = Editor::from_text(sample, &lang);
 
     // Default to GUI. Pass `cli` as the first argument to force CLI output.

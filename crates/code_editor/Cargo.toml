@@ -25,4 +25,4 @@ vybe_parser_js = { path = "../vybe_parser_js" }
 vybe_parser_csharp = { path = "../vybe_parser_csharp" }
 pest = "2.8"
 fuzzy-matcher = "0.3.7"
-osz-widgets = { path = "../osz-widgets" }
+vybe_widgets = { path = "../vybe_widgets" }

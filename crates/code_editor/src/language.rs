@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::env;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentDef {
@@ -36,12 +37,31 @@ struct ConfJson {
 
 pub fn load_language(name: &str) -> Option<LanguageDef> {
     let name = name.to_lowercase();
-    // Try multiple paths to find the basic-languages folder, synchronized with App::new
-    let search_folders = ["crates/code_editor/basic-languages", "basic-languages", "../code_editor/basic-languages"];
-    
-    for folder in &search_folders {
-        let path = Path::new(folder).join(&name).join(format!("{}.json", &name));
-        if let Ok(content) = fs::read_to_string(path) {
+    // Try multiple relative paths to find the basic-languages folder. Also
+    // walk up from the executable location to locate the workspace root so
+    // the binary can be run from `target/debug` or other CWDs.
+    let mut candidates: Vec<PathBuf> = vec![
+        PathBuf::from("crates/code_editor/basic-languages"),
+        PathBuf::from("basic-languages"),
+        PathBuf::from("../code_editor/basic-languages"),
+    ];
+
+    // Walk upward from current executable to find a workspace copy of the folder.
+    if let Ok(exe) = env::current_exe() {
+        let mut dir_opt = exe.parent();
+        while let Some(dir) = dir_opt {
+            let cand = dir.join("crates").join("code_editor").join("basic-languages");
+            if cand.exists() {
+                candidates.insert(0, cand);
+                break;
+            }
+            dir_opt = dir.parent();
+        }
+    }
+
+    for folder in &candidates {
+        let path = folder.join(&name).join(format!("{}.json", &name));
+        if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<LanguageJson>(&content) {
                 let mut lang = LanguageDef { keywords: HashSet::new(), type_keywords: HashSet::new(), constants: HashSet::new(), operators: HashSet::new(), ignore_case: false, comments: None, brackets: Vec::new() };
                 

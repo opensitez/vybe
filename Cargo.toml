@@ -14,7 +14,7 @@ members = [
     "crates/vybe_compiler_vb",
     "crates/vybe_parser_csharp",
     "crates/vybe_compiler_csharp",
-    "crates/osz-widgets",
+    "crates/vybe_widgets",
     "crates/vybe_parser_dart",
     "crates/vybe_compiler_dart",
     "crates/vybe_parser_python",

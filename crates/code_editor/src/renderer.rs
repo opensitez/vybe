@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::editor::{Editor as MyEditor, TokenKind};
 use crate::language::{load_language, LanguageDef};
 use crate::lsp_client::{LspClient, LspRequest, LspEvent};
-use osz_widgets::{TreeView, TreeEvent, Dropdown, DropdownEvent};
+use vybe_widgets::{TreeView, TreeEvent, Dropdown, DropdownEvent};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Keybinding {
