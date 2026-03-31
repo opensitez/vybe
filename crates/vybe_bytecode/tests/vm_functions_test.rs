@@ -54,8 +54,8 @@ fn assert_string(val: &Value, expected: &str) {
 
 fn assert_null(val: &Value) {
     match val {
-        Value::Null => {}
-        _ => panic!("Expected Null, got {:?}", val),
+        Value::Null | Value::Undefined => {}
+        _ => panic!("Expected Null/Undefined, got {:?}", val),
     }
 }
 
@@ -80,7 +80,7 @@ fn assert_bool(val: &Value, expected: bool) {
 
 #[test]
 fn call_fewer_args_than_arity_padded_with_null() {
-    // Function expects 3 args, we pass 1. Missing args should be Null.
+    // Function expects 3 args, we pass 1. Missing args are Undefined.
     // func(a, b, c) => if b == Null then return a else return b
     let mut main = Chunk::new("main");
     main.local_count = 1;

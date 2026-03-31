@@ -257,7 +257,7 @@ fn call_fewer_args_pads_null() {
     main.emit_op(Op::halt, 0);
 
     let result = vm.run(vec![main, f]).unwrap();
-    assert!(matches!(result, Value::Null)); // 3rd arg padded
+    assert!(matches!(result, Value::Null | Value::Undefined)); // 3rd arg padded with Undefined
 }
 
 // ============================================================

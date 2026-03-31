@@ -3340,6 +3340,11 @@ impl VM {
         let arity = func.arity as usize;
         let base = self.stack.len() - argc - 1;
 
+        // Pad missing arguments with Null.
+        // Each language's compiler handles defaults:
+        //   JS: checks ref_is_null (covers both null and undefined)
+        //   Python: checks ref_is_null
+        //   VB: Nothing is Null
         for _ in argc..arity {
             self.push(Value::Null)?;
         }

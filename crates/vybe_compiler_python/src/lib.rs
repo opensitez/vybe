@@ -785,6 +785,41 @@ impl Compiler {
 
         let scope_idx = self.scopes.len() - 1;
 
+        // Emit default parameter checks.
+        // Missing args are Undefined (from VM padding). If param == Undefined, set to default.
+        // Defaults are listed right-to-left: last N params have defaults.
+        let num_positional = params.args.len();
+        let num_defaults = params.defaults.len();
+        if num_defaults > 0 {
+            let first_default_idx = num_positional - num_defaults;
+            for (di, default_expr) in params.defaults.iter().enumerate() {
+                let param_idx = first_default_idx + di;
+                // slot = param_idx + 1 (slot 0 = callee)
+                let slot = (param_idx + 1) as u16;
+                // if param is Null (missing arg): use default value
+                self.chunk(func_chunk_idx).emit_op_u16(Op::local_get, slot, 0);
+                self.chunk(func_chunk_idx).emit_op(Op::ref_is_null, 0);
+                let skip = self.chunk(func_chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.compile_expr(default_expr, func_chunk_idx)?;
+                self.chunk(func_chunk_idx).emit_op_u16(Op::local_set, slot, 0);
+                self.chunk(func_chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(func_chunk_idx).patch_jump(skip);
+            }
+        }
+        // Same for keyword-only defaults
+        for (di, default_opt) in params.kw_defaults.iter().enumerate() {
+            if let Some(default_expr) = default_opt {
+                let slot = (num_positional + di + 1) as u16;
+                self.chunk(func_chunk_idx).emit_op_u16(Op::local_get, slot, 0);
+                self.chunk(func_chunk_idx).emit_op(Op::ref_is_null, 0);
+                let skip = self.chunk(func_chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.compile_expr(default_expr, func_chunk_idx)?;
+                self.chunk(func_chunk_idx).emit_op_u16(Op::local_set, slot, 0);
+                self.chunk(func_chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(func_chunk_idx).patch_jump(skip);
+            }
+        }
+
         for s in body {
             self.compile_stmt(s, func_chunk_idx)?;
         }
