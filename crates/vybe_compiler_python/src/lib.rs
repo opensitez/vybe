@@ -258,35 +258,115 @@ impl Compiler {
 
             Statement::Pass => {}
 
-            Statement::Try { body, handlers, else_body: _, finally_body: _ } => {
-                // Basic try/except: try_start → body → br end → catch → handler → end
-                let _try_start = self.chunk(chunk_idx).code.len();
-                let catch_jump = self.chunk(chunk_idx).emit_jump(Op::try_start, 0);
-                self.chunk(chunk_idx).emit(0u8, 0); // reserved for finally
+            Statement::Try { body, handlers, else_body, finally_body } => {
+                if handlers.len() <= 1 && handlers.first().map(|h| h.exc_type.is_none()).unwrap_or(true) {
+                    // Simple untyped try/except — use try_start (faster path)
+                    let catch_jump = self.chunk(chunk_idx).emit_jump(Op::try_start, 0);
+                    self.chunk(chunk_idx).emit(0u8, 0); // reserved for finally
 
-                for s in body { self.compile_stmt(s, chunk_idx)?; }
+                    for s in body { self.compile_stmt(s, chunk_idx)?; }
 
-                // try_end + jump to after handlers
-                self.chunk(chunk_idx).emit_op(Op::try_end, 0);
-                let end_jump = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    self.chunk(chunk_idx).emit_op(Op::try_end, 0);
 
-                // Patch catch jump
-                self.chunk(chunk_idx).patch_jump(catch_jump);
-
-                for handler in handlers {
-                    // If handler has a name, store exception in local
-                    if let Some(name) = &handler.name {
-                        let idx = self.scope(chunk_idx).alloc(name);
-                        // Exception is on stack from try_start
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                    } else {
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop exception
+                    // else block runs if no exception
+                    if let Some(else_body) = else_body {
+                        for s in else_body { self.compile_stmt(s, chunk_idx)?; }
                     }
-                    for s in &handler.body { self.compile_stmt(s, chunk_idx)?; }
-                }
 
-                self.chunk(chunk_idx).patch_jump(end_jump);
+                    let end_jump = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    self.chunk(chunk_idx).patch_jump(catch_jump);
+
+                    if let Some(handler) = handlers.first() {
+                        if let Some(name) = &handler.name {
+                            let idx = self.scope(chunk_idx).alloc(name);
+                            self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
+                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        } else {
+                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        }
+                        for s in &handler.body { self.compile_stmt(s, chunk_idx)?; }
+                    } else {
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    }
+
+                    // finally block
+                    if let Some(finally_body) = finally_body {
+                        // Patch end_jump to before finally
+                        self.chunk(chunk_idx).patch_jump(end_jump);
+                        for s in finally_body { self.compile_stmt(s, chunk_idx)?; }
+                    } else {
+                        self.chunk(chunk_idx).patch_jump(end_jump);
+                    }
+                } else {
+                    // Multiple typed handlers — use try_table with exception tags
+                    // Emit try_table opcode: [try_table, handler_count, (tag, offset)...]
+                    self.chunk(chunk_idx).emit_op(Op::try_table, 0);
+                    self.chunk(chunk_idx).emit(handlers.len() as u8, 0);
+
+                    // Reserve space for handler entries (tag + u16 offset each)
+                    let table_start = self.chunk(chunk_idx).code.len();
+                    for handler in handlers {
+                        // Determine tag for this handler
+                        let tag = if let Some(exc_type) = &handler.exc_type {
+                            let type_name = self.expr_to_name(exc_type);
+                            self.chunk(chunk_idx).add_exception_tag(&type_name)
+                        } else {
+                            0 // catch-all
+                        };
+                        self.chunk(chunk_idx).emit(tag, 0);
+                        // Placeholder offset (will be patched)
+                        self.chunk(chunk_idx).emit(0, 0);
+                        self.chunk(chunk_idx).emit(0, 0);
+                    }
+
+                    // Compile try body
+                    for s in body { self.compile_stmt(s, chunk_idx)?; }
+
+                    // try_end — normal exit
+                    self.chunk(chunk_idx).emit_op(Op::try_end, 0);
+
+                    // else block
+                    if let Some(else_body) = else_body {
+                        for s in else_body { self.compile_stmt(s, chunk_idx)?; }
+                    }
+
+                    let end_jump = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+
+                    // Compile each handler and patch its offset in the try_table
+                    let mut handler_end_jumps = Vec::new();
+                    for (i, handler) in handlers.iter().enumerate() {
+                        let handler_ip = self.chunk(chunk_idx).code.len();
+                        // Patch the offset in the try_table entry
+                        // Each entry is 3 bytes: tag(1) + offset(2)
+                        let entry_offset = table_start + i * 3 + 1; // +1 to skip tag byte
+                        let relative = (handler_ip as i32 - table_start as i32) as u16;
+                        self.chunk(chunk_idx).code[entry_offset] = (relative >> 8) as u8;
+                        self.chunk(chunk_idx).code[entry_offset + 1] = (relative & 0xff) as u8;
+
+                        // Exception value is on stack
+                        if let Some(name) = &handler.name {
+                            let idx = self.scope(chunk_idx).alloc(name);
+                            self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
+                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        } else {
+                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        }
+                        for s in &handler.body { self.compile_stmt(s, chunk_idx)?; }
+                        let j = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                        handler_end_jumps.push(j);
+                    }
+
+                    // Patch all end jumps (including from try body and all handlers)
+                    self.chunk(chunk_idx).patch_jump(end_jump);
+                    for j in handler_end_jumps {
+                        self.chunk(chunk_idx).patch_jump(j);
+                    }
+
+                    // finally block
+                    if let Some(finally_body) = finally_body {
+                        for s in finally_body { self.compile_stmt(s, chunk_idx)?; }
+                    }
+                }
             }
 
             Statement::Raise { exc, cause: _ } => {
@@ -1039,6 +1119,17 @@ impl Compiler {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
+
+    /// Extract a type name from an expression (for exception type matching).
+    fn expr_to_name(&self, expr: &Expression) -> String {
+        match expr {
+            Expression::Name(n) => n.clone(),
+            Expression::Attribute { value, attr } => {
+                format!("{}.{}", self.expr_to_name(value), attr)
+            }
+            _ => format!("{:?}", expr),
+        }
+    }
 
     fn compile_host_call(&mut self, module: &str, name: &str, args: &[Expression], chunk_idx: usize) -> Result<(), String> {
         let import_idx = self.chunk(chunk_idx).add_import(module, name);

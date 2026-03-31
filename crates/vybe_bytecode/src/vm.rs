@@ -43,6 +43,9 @@ struct ExceptionHandler {
     stack_depth: usize,
     /// Call frame depth when try_start was executed.
     frame_depth: usize,
+    /// Exception tag index (0 = catch-all, N = typed catch for tag N).
+    /// References chunk.exception_tags[tag] for the type name.
+    tag: u8,
 }
 
 /// A language-agnostic bytecode virtual machine.
@@ -555,6 +558,46 @@ impl VM {
             Value::Bool(_) => target_name == "boolean" || target_name == "object",
             Value::V128(_) => target_name == "v128",
             Value::Null | Value::Undefined => false,
+        }
+    }
+
+    /// Check if an exception value matches a tag name.
+    /// Works for: string exceptions (by content), objects with __type or __exception_type,
+    /// and cross-language name matching (e.g., "ValueError", "TypeError").
+    fn exception_value_matches(&self, val: &Value, tag_name: &str) -> bool {
+        let tag_lower = tag_name.to_lowercase();
+        match val {
+            Value::String(s) => {
+                // String exceptions: match if the string contains the tag name
+                // e.g., throw "ValueError: invalid input" matches tag "ValueError"
+                let s_lower = s.to_lowercase();
+                s_lower.starts_with(&tag_lower) || s_lower.contains(&tag_lower)
+            }
+            Value::Object(o) => {
+                let ob = o.borrow();
+                // Check __exception_type property (set by language-specific throw)
+                if let Some(et) = ob.properties.get("__exception_type") {
+                    let et_str = format!("{}", et).to_lowercase();
+                    if et_str == tag_lower { return true; }
+                }
+                // Check __type property
+                if let Some(t) = ob.properties.get("__type") {
+                    let t_str = format!("{}", t).to_lowercase();
+                    if t_str == tag_lower { return true; }
+                }
+                // Check "name" property (JS Error convention)
+                if let Some(n) = ob.properties.get("name") {
+                    let n_str = format!("{}", n).to_lowercase();
+                    if n_str == tag_lower { return true; }
+                }
+                // Check "message" property as fallback
+                if let Some(m) = ob.properties.get("message") {
+                    let m_str = format!("{}", m).to_lowercase();
+                    if m_str.starts_with(&tag_lower) { return true; }
+                }
+                false
+            }
+            _ => false,
         }
     }
 
@@ -1352,37 +1395,49 @@ impl VM {
                         _chunk_index: f.chunk_index,
                         stack_depth: self.stack.len(),
                         frame_depth: self.frames.len(),
+                        tag: 0, // catch-all
                     });
                 }
                 Op::try_end => {
                     // Normal exit from try block — pop the handler
                     self.exception_handlers.pop();
                 }
-                Op::throw => {
+                Op::throw | Op::throw_ref => {
                     let val = self.pop();
-                    if let Some(handler) = self.exception_handlers.pop() {
-                        // Unwind: restore stack and frames to the state at try_start
-                        while self.frames.len() > handler.frame_depth {
-                            let base = self.frames.last().unwrap().base;
-                            self.close_upvalues(base);
-                            self.frames.pop();
+                    // Find a matching handler by walking the handler stack.
+                    // Tag 0 = catch-all (always matches).
+                    // Tag N = typed catch — match if exception type matches exception_tags[N].
+                    let mut matched_idx = None;
+                    for i in (0..self.exception_handlers.len()).rev() {
+                        let handler = &self.exception_handlers[i];
+                        if handler.tag == 0 {
+                            // Catch-all — always matches
+                            matched_idx = Some(i);
+                            break;
                         }
-                        self.stack.truncate(handler.stack_depth);
-                        // Push the exception value (for catch binding)
-                        self.push(val)?;
-                        // Jump to catch block
-                        let f = self.frame_mut();
-                        f.ip = handler.catch_ip;
-                    } else {
-                        // No handler — propagate as VM error
-                        return Err(VMError::new(format!("{}", val)));
+                        // Typed catch — check if thrown value's type matches the tag
+                        let tag_idx = handler.tag as usize;
+                        let tag_name = self.chunks.get(0)
+                            .and_then(|c| c.exception_tags.get(tag_idx))
+                            .cloned()
+                            .unwrap_or_default();
+                        if !tag_name.is_empty() {
+                            // Check: is val an instance of tag_name?
+                            let matches = self.test_type(&val, &tag_name.to_lowercase())
+                                || self.exception_value_matches(&val, &tag_name);
+                            if matches {
+                                matched_idx = Some(i);
+                                break;
+                            }
+                        }
+                        // This handler doesn't match — keep looking
                     }
-                }
 
-                Op::throw_ref => {
-                    // Same as throw — value is already a reference
-                    let val = self.pop();
-                    if let Some(handler) = self.exception_handlers.pop() {
+                    if let Some(idx) = matched_idx {
+                        // Remove this handler and all handlers above it
+                        let handler = self.exception_handlers[idx].clone();
+                        self.exception_handlers.truncate(idx);
+                        // Unwind: restore stack and frames
                         while self.frames.len() > handler.frame_depth {
                             let base = self.frames.last().unwrap().base;
                             self.close_upvalues(base);
@@ -1397,19 +1452,27 @@ impl VM {
                     }
                 }
                 Op::try_table => {
-                    // Modern block-based try: [try_table, u8 handler_count, ...]
+                    // WASM EH Phase 4: [try_table, u8 handler_count, then for each: u8 tag, u16 offset]
+                    // Tag 0 = catch-all. Tag N = typed catch for exception_tags[N].
+                    // Handlers are pushed in reverse order so the most specific (first) handler
+                    // is on top of the stack and checked first during throw.
                     let handler_count = self.read_byte() as usize;
+                    let mut handlers = Vec::new();
                     for _ in 0..handler_count {
-                        let _tag = self.read_byte();
+                        let tag = self.read_byte();
                         let offset = self.read_u16();
-                        // Register handler at offset
                         let ip = self.frame().ip + offset as usize;
-                        self.exception_handlers.push(ExceptionHandler {
+                        handlers.push(ExceptionHandler {
                             catch_ip: ip,
                             stack_depth: self.stack.len(),
                             frame_depth: self.frames.len(),
                             _chunk_index: self.frame().chunk_index,
+                            tag,
                         });
+                    }
+                    // Push in reverse so first handler is checked first (it's on top)
+                    for h in handlers.into_iter().rev() {
+                        self.exception_handlers.push(h);
                     }
                 }
 

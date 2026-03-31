@@ -17,6 +17,9 @@ members = [
     "crates/osz-widgets",
     "crates/vybe_parser_dart",
     "crates/vybe_compiler_dart",
+    "crates/vybe_parser_python",
+    "crates/vybe_compiler_python",
+    "crates/htmlbox",
 ]
 
 [workspace.package]
@@ -60,5 +63,8 @@ vybe_host = { path = "crates/vybe_host" }
 vybe_cli = { path = "crates/vybe_cli" }
 vybe_parser_dart = { path = "crates/vybe_parser_dart" }
 vybe_compiler_dart = { path = "crates/vybe_compiler_dart" }
+vybe_parser_python = { path = "crates/vybe_parser_python" }
+vybe_compiler_python = { path = "crates/vybe_compiler_python" }
+rhtmledit = { path = "crates/htmlbox" }
 
  

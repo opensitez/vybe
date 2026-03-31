@@ -40,6 +40,10 @@ pub struct Chunk {
     /// Each entry defines a class type with fields and vtable methods.
     /// Loaded into VM's TypeRegistry before execution.
     pub types: Vec<TypeEntry>,
+    /// Exception tag table — maps tag index to type name for typed exception handling.
+    /// Tag 0 = catch-all (matches any exception).
+    /// Tag N = matches exceptions whose type is `exception_tags[N]` or a subtype.
+    pub exception_tags: Vec<String>,
     /// Type imports — types from other components this chunk needs.
     /// Each entry is (interface_name, type_name).
     pub type_imports: Vec<(String, String)>,
@@ -59,6 +63,7 @@ impl Chunk {
             local_count: 0,
             imports: Vec::new(),
             types: Vec::new(),
+            exception_tags: Vec::new(),
             type_imports: Vec::new(),
             type_exports: Vec::new(),
         }
@@ -75,6 +80,18 @@ impl Chunk {
         }
         self.imports.push(import);
         (self.imports.len() - 1) as u16
+    }
+
+    /// Add an exception tag and return its index.
+    /// Tag 0 = catch-all. Tag N = typed catch for exceptions matching `type_name`.
+    pub fn add_exception_tag(&mut self, type_name: impl Into<String>) -> u8 {
+        let name = type_name.into();
+        // Deduplicate
+        for (i, existing) in self.exception_tags.iter().enumerate() {
+            if *existing == name { return i as u8; }
+        }
+        self.exception_tags.push(name);
+        (self.exception_tags.len() - 1) as u8
     }
 
     pub fn emit(&mut self, byte: u8, line: u32) {
