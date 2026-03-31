@@ -64,6 +64,16 @@ impl Compiler {
             self.compile_stmt(stmt, 0)?;
         }
 
+        // Register built-in exception type constructors.
+        // Each creates an object with __exception_type, name, message.
+        let exc_types = ["Exception", "ValueError", "TypeError", "KeyError",
+            "IndexError", "RuntimeError", "StopIteration", "AttributeError",
+            "ZeroDivisionError", "FileNotFoundError", "ImportError",
+            "NotImplementedError", "OverflowError", "IOError", "OSError"];
+        for exc_name in &exc_types {
+            self.compile_exception_constructor(exc_name, 0);
+        }
+
         // Finalize main chunk
         let scope = self.scopes.remove(0);
         self.chunks[0].local_count = (scope.max_local + 1) as u16;
@@ -204,41 +214,166 @@ impl Compiler {
             }
 
             Statement::ClassDef { name, bases, keywords: _, body, decorators: _ } => {
-                let idx = self.scope(chunk_idx).alloc(name);
-                // Create an object to hold methods (same Object as JS/VB)
-                common::dict::emit_new(self.chunk(chunk_idx), 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                // Compile class as a constructor function (same convention as JS/VB/C#).
+                // Calling Dog("Rex") creates a typed object with type_id, binds methods
+                // on the vtable, calls __init__, and returns the object.
 
-                let mut method_entries = Vec::new();
-                let mut init_chunk = None;
-
-                for s in body {
-                    if let Statement::FunctionDef { name: method_name, params, body: mbody, .. } = s {
-                        self.compile_function(method_name, params, mbody)?;
-                        let func_chunk_idx = self.chunks.len() - 1;
-                        method_entries.push((method_name.to_lowercase(), func_chunk_idx));
-                        if method_name == "__init__" {
-                            init_chunk = Some(func_chunk_idx);
-                        }
-                        // Store method on class object using struct_set (same as JS)
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx, 0);
-                        self.chunk(chunk_idx).emit_op_u16(Op::ref_func, func_chunk_idx as u16, 0);
-                        self.chunk(chunk_idx).emit(0, 0);
-                        let m_idx = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(method_name.as_str())));
-                        self.chunk(chunk_idx).emit_op_u16(Op::struct_set, m_idx, 0);
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                    } else if let Statement::Pass = s {
-                        // skip
-                    } else {
-                        // skip other class body statements for now
-                    }
-                }
-
-                // Register type entry for cross-language interop
                 let parent_name = bases.first().map(|b| {
                     if let Expression::Name(n) = b { n.to_lowercase() } else { String::new() }
                 }).unwrap_or_default();
+
+                // Compile all methods first (we need their chunk indices)
+                let mut method_entries = Vec::new();
+                let mut init_chunk = None;
+                let mut init_params = None;
+                let mut other_stmts = Vec::new();
+
+                for s in body {
+                    if let Statement::FunctionDef { name: method_name, params, body: mbody, decorators, .. } = s {
+                        // Check for @property decorator → compile as __get_<name>
+                        // Check for @<name>.setter decorator → compile as __set_<name>
+                        let is_property = decorators.iter().any(|d| {
+                            matches!(d, Expression::Name(n) if n == "property")
+                        });
+                        let is_setter = decorators.iter().any(|d| {
+                            if let Expression::Attribute { attr, .. } = d {
+                                attr == "setter"
+                            } else { false }
+                        });
+
+                        let effective_name = if is_property {
+                            format!("__get_{}", method_name)
+                        } else if is_setter {
+                            format!("__set_{}", method_name)
+                        } else {
+                            method_name.clone()
+                        };
+
+                        self.compile_function(&effective_name, params, mbody)?;
+                        let func_chunk_idx = self.chunks.len() - 1;
+                        method_entries.push((effective_name.to_lowercase(), func_chunk_idx));
+                        if method_name == "__init__" {
+                            init_chunk = Some(func_chunk_idx);
+                            init_params = Some(params.clone());
+                        }
+                    } else if let Statement::Pass = s {
+                        // skip
+                    } else {
+                        other_stmts.push(s.clone());
+                    }
+                }
+
+                // Build constructor chunk: creates object, stamps type_id, binds methods, calls __init__
+                let ctor_name = name.to_lowercase();
+                let mut ctor = Chunk::new(&ctor_name);
+                // Arity: __init__ params minus self (self is the new object, implicit)
+                let user_params = init_params.as_ref()
+                    .map(|p| if p.args.len() > 1 { p.args.len() - 1 } else { 0 })
+                    .unwrap_or(0);
+                ctor.arity = user_params as u8;
+                let ctor_idx = self.chunks.len();
+                self.chunks.push(ctor);
+
+                let mut ctor_scope = Scope::new();
+                // slot 0 = callee (implicit), slots 1..N = user params
+                for i in 0..user_params {
+                    ctor_scope.alloc(&format!("__arg{}", i));
+                }
+                let this_local = ctor_scope.alloc("__this");
+                self.scopes.push(ctor_scope);
+                let scope_idx = self.scopes.len() - 1;
+
+                // Create empty object
+                self.chunk(ctor_idx).emit_op_u16(Op::struct_new, 0, 0);
+                self.chunk(ctor_idx).emit_op_u16(Op::local_set, this_local, 0);
+                self.chunk(ctor_idx).emit_op(Op::drop, 0);
+
+                // Stamp __type (for untyped fallback)
+                self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                let type_str = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(name.as_str())));
+                let type_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from("__type")));
+                self.chunk(ctor_idx).emit_op_u16(Op::r#const, type_str, 0);
+                self.chunk(ctor_idx).emit_op_u16(Op::struct_set, type_key, 0);
+                self.chunk(ctor_idx).emit_op(Op::drop, 0);
+
+                // Stamp type_id via __tid_ global (set by TypeRegistry at load time)
+                let tid_name = self.chunk(ctor_idx).add_constant(
+                    Value::String(Rc::from(format!("__tid_{}", ctor_name).as_str()))
+                );
+                self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                self.chunk(ctor_idx).emit_op_u16(Op::global_get, tid_name, 0);
+                self.chunk(ctor_idx).emit_op(Op::set_type_id, 0);
+                self.chunk(ctor_idx).emit_op(Op::drop, 0);
+
+                // Bind instance methods on the object.
+                // Also create cross-language aliases for Python dunders:
+                //   __str__  → toString (JS), __get_tostring (VB/C#)
+                //   __len__  → length property
+                //   __bool__ → valueOf (JS truthiness)
+                //   __getitem__ → mapped at call site
+                //   __enter__/__exit__ → stored as-is (with statement)
+                for (method_name, method_ci) in &method_entries {
+                    if method_name == "__init__" { continue; }
+
+                    // Bind under original dunder name
+                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                    self.chunk(ctor_idx).emit_op_u16(Op::ref_func, *method_ci as u16, 0);
+                    self.chunk(ctor_idx).emit(0, 0);
+                    let m_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(method_name.as_str())));
+                    self.chunk(ctor_idx).emit_op_u16(Op::struct_set, m_key, 0);
+                    self.chunk(ctor_idx).emit_op(Op::drop, 0);
+
+                    // Cross-language aliases
+                    let aliases: &[&str] = match method_name.as_str() {
+                        "__str__" => &["toString", "__get_tostring"],
+                        "__repr__" => &["toDebugString"],
+                        "__len__" => &["__get_length", "__get_count"],
+                        "__bool__" => &["valueOf"],
+                        "__contains__" => &["contains", "includes"],
+                        "__enter__" => &[],
+                        "__exit__" => &[],
+                        _ => &[],
+                    };
+                    for alias in aliases {
+                        self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                        self.chunk(ctor_idx).emit_op_u16(Op::ref_func, *method_ci as u16, 0);
+                        self.chunk(ctor_idx).emit(0, 0);
+                        let a_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(*alias)));
+                        self.chunk(ctor_idx).emit_op_u16(Op::struct_set, a_key, 0);
+                        self.chunk(ctor_idx).emit_op(Op::drop, 0);
+                    }
+                }
+
+                // Call __init__(self, *args) if it exists
+                if let Some(init_ci) = init_chunk {
+                    self.chunk(ctor_idx).emit_op_u16(Op::ref_func, init_ci as u16, 0);
+                    self.chunk(ctor_idx).emit(0, 0);
+                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0); // self
+                    for i in 0..user_params {
+                        self.chunk(ctor_idx).emit_op_u16(Op::local_get, (i + 1) as u16, 0);
+                    }
+                    self.chunk(ctor_idx).emit_op_u8(Op::call_ref, (user_params + 1) as u8, 0);
+                    self.chunk(ctor_idx).emit_op(Op::drop, 0); // discard __init__ return
+                }
+
+                // Return this
+                self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                self.chunk(ctor_idx).emit_op(Op::r#return, 0);
+
+                let scope = self.scopes.remove(scope_idx);
+                self.chunks[ctor_idx].local_count = (scope.max_local + 1) as u16;
+
+                // Store constructor as a global (ClassName = constructor function)
+                let class_local = self.scope(chunk_idx).alloc(name);
+                self.chunk(chunk_idx).emit_op_u16(Op::ref_func, ctor_idx as u16, 0);
+                self.chunk(chunk_idx).emit(0, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_set, class_local, 0);
+                // Also store as global for cross-module access
+                let global_name = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(name.to_lowercase().as_str())));
+                self.chunk(chunk_idx).emit_op_u16(Op::global_set, global_name, 0);
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+
+                // Register type entry
                 use vybe_bytecode::chunk::TypeEntry;
                 self.chunks[0].types.push(TypeEntry {
                     name: name.to_lowercase(),
@@ -247,7 +382,7 @@ impl Compiler {
                     methods: method_entries,
                     is_interface: false,
                     implements: Vec::new(),
-                    constructor_chunk: init_chunk,
+                    constructor_chunk: Some(ctor_idx),
                 });
             }
 
@@ -453,16 +588,62 @@ impl Compiler {
             }
 
             Statement::With { items, body, .. } => {
-                // Simplified with: evaluate context, bind var, execute body
+                // with expr as var: → call __enter__, bind var, run body, call __exit__
+                let mut ctx_locals = Vec::new();
                 for item in items {
                     self.compile_expr(&item.context_expr, chunk_idx)?;
+                    let ctx_local = self.scope(chunk_idx).alloc("__with_ctx");
+                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, ctx_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    ctx_locals.push(ctx_local);
+
+                    // Call __enter__ if it exists, otherwise use value directly
+                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                    let enter_key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("__enter__")));
+                    self.chunk(chunk_idx).emit_op_u16(Op::struct_get, enter_key, 0);
+                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                    self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
+                    let no_enter = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+                    // Has __enter__: call it with ctx as self
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, ctx_local, 0);
+                    self.chunk(chunk_idx).emit_op_u8(Op::call_ref, 1, 0);
+                    let done_enter = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    self.chunk(chunk_idx).patch_jump(no_enter);
+                    // No __enter__: drop the null, keep original value
+                    self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop null
+                    self.chunk(chunk_idx).patch_jump(done_enter);
+
                     if let Some(var) = &item.optional_vars {
                         self.compile_assign_target(var, chunk_idx)?;
                     } else {
                         self.chunk(chunk_idx).emit_op(Op::drop, 0);
                     }
                 }
+
+                // Execute body
                 for s in body { self.compile_stmt(s, chunk_idx)?; }
+
+                // Call __exit__ on each context (reverse order)
+                for ctx_local in ctx_locals.iter().rev() {
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, *ctx_local, 0);
+                    let exit_key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("__exit__")));
+                    self.chunk(chunk_idx).emit_op_u16(Op::struct_get, exit_key, 0);
+                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                    self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
+                    let no_exit = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+                    // Call __exit__(self, None, None, None) — no exception info
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, *ctx_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::null, 0);
+                    self.chunk(chunk_idx).emit_op(Op::null, 0);
+                    self.chunk(chunk_idx).emit_op(Op::null, 0);
+                    self.chunk(chunk_idx).emit_op_u8(Op::call_ref, 4, 0);
+                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    let done_exit = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    self.chunk(chunk_idx).patch_jump(no_exit);
+                    self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop null
+                    self.chunk(chunk_idx).patch_jump(done_exit);
+                }
             }
 
             Statement::AnnAssign { target, value, .. } => {
@@ -488,8 +669,22 @@ impl Compiler {
         let iter_local = self.scope(chunk_idx).alloc("__for_iter");
         let idx_local = self.scope(chunk_idx).alloc("__for_idx");
 
-        // Evaluate iterable
+        // Evaluate iterable. If it's a dict/object (not array), convert to keys array.
+        // Python: `for x in dict` iterates keys. This matches JS Object.keys() behavior.
         self.compile_expr(iter, chunk_idx)?;
+        self.chunk(chunk_idx).emit_op(Op::dup, 0);
+        self.chunk(chunk_idx).emit_op(Op::ref_is_array, 0);
+        let is_array = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+        // Not array → get keys
+        common::dict::emit_keys(self.chunk(chunk_idx), 0);
+        let done = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+        self.chunk(chunk_idx).patch_jump(is_array);
+        // Is array → drop the dup (ref_is_array consumed one, dup left one extra)
+        // Actually ref_is_array pops and pushes bool, dup left original on stack.
+        // After br_if_true, stack has: [original_value].
+        // On the keys path: emit_keys consumed original, pushed keys array.
+        // On the array path: original is still there. Good.
+        self.chunk(chunk_idx).patch_jump(done);
         self.chunk(chunk_idx).emit_op_u16(Op::local_set, iter_local, 0);
 
         // Init index to 0
@@ -1152,6 +1347,84 @@ impl Compiler {
     // ── Helpers ──────────────────────────────────────────────────────
 
     /// Extract a type name from an expression (for exception type matching).
+    /// Compile a built-in exception type constructor (ValueError, TypeError, etc.).
+    /// Creates a chunk that produces an object with __exception_type, name, message properties.
+    /// Stores the constructor as a global so `raise ValueError("bad")` works.
+    fn compile_exception_constructor(&mut self, exc_name: &str, script_chunk_idx: usize) {
+        let lower = exc_name.to_lowercase();
+        let mut ctor = Chunk::new(&lower);
+        ctor.arity = 1; // message arg (optional — padded with null if missing)
+        ctor.local_count = 3; // callee(0) + message(1) + this(2)
+        let msg_slot = 1u16;
+        let this_slot = 2u16;
+
+        // Create object
+        ctor.emit_op_u16(Op::struct_new, 0, 0);
+        ctor.emit_op_u16(Op::local_set, this_slot, 0);
+        ctor.emit_op(Op::drop, 0);
+
+        // Set __exception_type = exc_name
+        ctor.emit_op_u16(Op::local_get, this_slot, 0);
+        let et_val = ctor.add_constant(Value::String(Rc::from(exc_name)));
+        ctor.emit_op_u16(Op::r#const, et_val, 0);
+        let et_key = ctor.add_constant(Value::String(Rc::from("__exception_type")));
+        ctor.emit_op_u16(Op::struct_set, et_key, 0);
+        ctor.emit_op(Op::drop, 0);
+
+        // Set name = exc_name (JS Error convention)
+        ctor.emit_op_u16(Op::local_get, this_slot, 0);
+        let n_val = ctor.add_constant(Value::String(Rc::from(exc_name)));
+        ctor.emit_op_u16(Op::r#const, n_val, 0);
+        let n_key = ctor.add_constant(Value::String(Rc::from("name")));
+        ctor.emit_op_u16(Op::struct_set, n_key, 0);
+        ctor.emit_op(Op::drop, 0);
+
+        // Set message = arg
+        ctor.emit_op_u16(Op::local_get, this_slot, 0);
+        ctor.emit_op_u16(Op::local_get, msg_slot, 0);
+        let m_key = ctor.add_constant(Value::String(Rc::from("message")));
+        ctor.emit_op_u16(Op::struct_set, m_key, 0);
+        ctor.emit_op(Op::drop, 0);
+
+        // Set __type for TypeOf checks
+        ctor.emit_op_u16(Op::local_get, this_slot, 0);
+        let t_val = ctor.add_constant(Value::String(Rc::from(exc_name)));
+        ctor.emit_op_u16(Op::r#const, t_val, 0);
+        let t_key = ctor.add_constant(Value::String(Rc::from("__type")));
+        ctor.emit_op_u16(Op::struct_set, t_key, 0);
+        ctor.emit_op(Op::drop, 0);
+
+        // Return this
+        ctor.emit_op_u16(Op::local_get, this_slot, 0);
+        ctor.emit_op(Op::r#return, 0);
+
+        let ctor_idx = self.chunks.len();
+        self.chunks.push(ctor);
+
+        // Store as global: ValueError = <constructor func ref>
+        let local = self.scope(script_chunk_idx).alloc(exc_name);
+        self.chunk(script_chunk_idx).emit_op_u16(Op::ref_func, ctor_idx as u16, 0);
+        self.chunk(script_chunk_idx).emit(0, 0);
+        self.chunk(script_chunk_idx).emit_op_u16(Op::local_set, local, 0);
+        let global_name = self.chunk(script_chunk_idx).add_constant(
+            Value::String(Rc::from(lower.as_str()))
+        );
+        self.chunk(script_chunk_idx).emit_op_u16(Op::global_set, global_name, 0);
+        self.chunk(script_chunk_idx).emit_op(Op::drop, 0);
+
+        // Register type entry for cross-language type matching
+        use vybe_bytecode::chunk::TypeEntry;
+        self.chunks[0].types.push(TypeEntry {
+            name: lower,
+            parent: "exception".to_string(),
+            fields: vec!["message".to_string(), "name".to_string()],
+            methods: Vec::new(),
+            is_interface: false,
+            implements: Vec::new(),
+            constructor_chunk: Some(ctor_idx),
+        });
+    }
+
     fn expr_to_name(&self, expr: &Expression) -> String {
         match expr {
             Expression::Name(n) => n.clone(),

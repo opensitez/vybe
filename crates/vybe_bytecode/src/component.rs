@@ -184,7 +184,69 @@ impl Linker {
         // Type imports that aren't resolved are warnings, not errors
         // (the type may exist in the host or be registered at runtime)
 
-        // 5. Build resolved import table for the merged chunks
+        // 5. CLS case resolution — rewrite lowercased property names in
+        // case-insensitive components (VB) to match the canonical casing
+        // from case-sensitive components (C#, JS, Python, Dart).
+        //
+        // Build canonical case map from all type fields and method names
+        // across case-sensitive components. Then rewrite constant pool
+        // entries in VB chunks where a lowercased string matches a
+        // canonical-cased identifier.
+        {
+            let mut case_map: HashMap<String, String> = HashMap::new(); // lowercase → original
+
+            // Collect canonical casing from case-sensitive components
+            for comp in &self.components {
+                if comp.language == Language::VB { continue; } // skip VB, it's the one we're fixing
+                for chunk in &comp.chunks {
+                    for entry in &chunk.types {
+                        // Type name
+                        case_map.entry(entry.name.to_lowercase()).or_insert_with(|| entry.name.clone());
+                        // Fields
+                        for field in &entry.fields {
+                            case_map.entry(field.to_lowercase()).or_insert_with(|| field.clone());
+                        }
+                        // Methods
+                        for (method, _) in &entry.methods {
+                            case_map.entry(method.to_lowercase()).or_insert_with(|| method.clone());
+                        }
+                    }
+                    // Also scan constant pools for string constants (property names used in code)
+                    for val in &chunk.constants {
+                        if let crate::Value::String(s) = val {
+                            let lower = s.to_lowercase();
+                            if lower != s.as_ref() { // only if it HAS uppercase
+                                case_map.entry(lower).or_insert_with(|| s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Rewrite constant pools in VB component chunks
+            for (i, comp) in self.components.iter().enumerate() {
+                if comp.language != Language::VB { continue; }
+                let offset = component_offsets[i];
+                for (ci, _chunk) in comp.chunks.iter().enumerate() {
+                    let merged_ci = offset + ci;
+                    let constants = &mut all_chunks[merged_ci].constants;
+                    for val in constants.iter_mut() {
+                        if let crate::Value::String(s) = val {
+                            let lower = s.to_lowercase();
+                            if lower == s.as_ref() { // already lowercase (VB convention)
+                                if let Some(canonical) = case_map.get(&lower) {
+                                    if canonical.as_str() != s.as_ref() {
+                                        *val = crate::Value::String(std::rc::Rc::from(canonical.as_str()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Build resolved import table for the merged chunks
         let resolved_imports: HashMap<(String, String), ExportImpl> = all_exports;
 
         Ok(LinkResult {

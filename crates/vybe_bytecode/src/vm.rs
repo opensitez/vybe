@@ -860,8 +860,7 @@ impl VM {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let obj = self.pop();
-                    // Check for getter first — needs auto-invoke (can't do in resolve_property
-                    // because it needs mutable self for call_value)
+                    // Check for getter first
                     if let Value::Object(ref o) = obj {
                         let getter_key = format!("__get_{}", name);
                         let getter = o.borrow().properties.get(&getter_key).cloned();
