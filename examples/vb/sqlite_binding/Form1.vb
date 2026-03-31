@@ -43,7 +43,7 @@ Public Class Form1
 
         ' Load data
         LoadData()
-        lblStatus.Caption = "Database loaded: contacts.db"
+        lblStatus.Text = "Database loaded: contacts.db"
     End Sub
 
     Private Sub LoadData()
@@ -54,7 +54,7 @@ Public Class Form1
 
         ' Bind to BindingSource, then to grid
         bs1.DataSource = dt
-        lblStatus.Caption = "Loaded " & bs1.Count & " contacts"
+        lblStatus.Text = "Loaded " & bs1.Count & " contacts"
     End Sub
 
     Private Sub btnAdd_Click() Handles btnAdd.Click
@@ -79,7 +79,7 @@ Public Class Form1
 
         ' Reload data
         LoadData()
-        lblStatus.Caption = "Added: " & name
+        lblStatus.Text = "Added: " & name
     End Sub
 
     Private Sub btnDelete_Click() Handles btnDelete.Click
@@ -106,7 +106,7 @@ Public Class Form1
 
         ' Reload
         LoadData()
-        lblStatus.Caption = "Deleted: " & name
+        lblStatus.Text = "Deleted: " & name
     End Sub
 
     Private Sub btnRefresh_Click() Handles btnRefresh.Click

@@ -1,0 +1,13 @@
+# Vybe multi-language project
+# Run: vybec examples/multiproject/project.vybe
+
+[project]
+name = "MultiLang Demo"
+entry = "main.vb"
+
+[sources]
+files = ["main.vb", "math_utils.js"]
+
+[host]
+gui = false
+filesystem = false

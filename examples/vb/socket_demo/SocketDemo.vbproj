@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>SocketDemo</RootNamespace>
+    <AssemblyName>SocketDemo</AssemblyName>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <StartupObject>SocketDemo.SocketForm</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="SocketForm.vb">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="SocketForm.Designer.vb">
+      <DependentUpon>SocketForm.vb</DependentUpon>
+    </Compile>
+    <Compile Include="Server.vb" />
+    <Compile Include="Client.vb" />
+  </ItemGroup>
+</Project>

@@ -18,7 +18,7 @@ Public Class Form1
 
         ' Add task using With block to update multiple controls
         With lblTitle
-            .Caption = "Todo List - Adding..."
+            .Text = "Todo List - Adding..."
         End With
 
         tasks(taskCount) = newTask
@@ -32,7 +32,7 @@ Public Class Form1
         UpdateStatus()
 
         With lblTitle
-            .Caption = "Todo List"
+            .Text = "Todo List"
         End With
     End Sub
 
@@ -65,7 +65,7 @@ Public Class Form1
         UpdateStatus()
 
         With lblTitle
-            .Caption = "Todo List - Cleared!"
+            .Text = "Todo List - Cleared!"
         End With
     End Sub
 
@@ -85,11 +85,11 @@ Public Class Form1
     Private Sub UpdateStatus()
         With lblCount
             If taskCount = 0 Then
-                .Caption = "No tasks"
+                .Text = "No tasks"
             ElseIf taskCount = 1 Then
-                .Caption = "1 task"
+                .Text = "1 task"
             Else
-                .Caption = taskCount & " tasks"
+                .Text = taskCount & " tasks"
             End If
         End With
     End Sub
