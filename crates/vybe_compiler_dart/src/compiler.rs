@@ -202,25 +202,110 @@ impl Compiler {
         }
     }
 
+    /// Compile string/array methods as direct WASM opcodes (same as Python/JS/VB/C#).
+    fn try_compile_opcode_method(&mut self, object: &Expression, method: &str, args: &[Argument]) -> Result<Option<()>, String> {
+        match method {
+            "toUpperCase" => { self.compile_expression(object)?; self.emit(Op::str_to_upper); Ok(Some(())) }
+            "toLowerCase" => { self.compile_expression(object)?; self.emit(Op::str_to_lower); Ok(Some(())) }
+            "trim" => { self.compile_expression(object)?; self.emit(Op::str_trim); Ok(Some(())) }
+            "trimLeft" => { self.compile_expression(object)?; self.emit(Op::str_trim_start); Ok(Some(())) }
+            "trimRight" => { self.compile_expression(object)?; self.emit(Op::str_trim_end); Ok(Some(())) }
+            "startsWith" => {
+                self.compile_expression(object)?;
+                if let Some(a) = args.first() { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_starts_with);
+                Ok(Some(()))
+            }
+            "endsWith" => {
+                self.compile_expression(object)?;
+                if let Some(a) = args.first() { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_ends_with);
+                Ok(Some(()))
+            }
+            "contains" => {
+                self.compile_expression(object)?;
+                if let Some(a) = args.first() { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_contains);
+                Ok(Some(()))
+            }
+            "indexOf" => {
+                self.compile_expression(object)?;
+                if let Some(a) = args.first() { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_index_of);
+                Ok(Some(()))
+            }
+            "lastIndexOf" => {
+                self.compile_expression(object)?;
+                if let Some(a) = args.first() { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_last_index_of);
+                Ok(Some(()))
+            }
+            "replaceAll" => {
+                self.compile_expression(object)?;
+                for a in args { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_replace);
+                Ok(Some(()))
+            }
+            "split" => {
+                self.compile_expression(object)?;
+                for a in args { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_split);
+                Ok(Some(()))
+            }
+            "substring" => {
+                self.compile_expression(object)?;
+                for a in args { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_substring);
+                Ok(Some(()))
+            }
+            "padLeft" => {
+                self.compile_expression(object)?;
+                for a in args { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_pad_start);
+                Ok(Some(()))
+            }
+            "padRight" => {
+                self.compile_expression(object)?;
+                for a in args { self.compile_expression(&a.value)?; }
+                self.emit(Op::str_pad_end);
+                Ok(Some(()))
+            }
+            // Array methods
+            "add" => {
+                self.compile_expression(object)?;
+                for a in args { self.compile_expression(&a.value)?; }
+                self.emit(Op::array_push);
+                Ok(Some(()))
+            }
+            "removeLast" => {
+                self.compile_expression(object)?;
+                self.emit(Op::array_pop);
+                Ok(Some(()))
+            }
+            "reversed" => {
+                self.compile_expression(object)?;
+                self.emit(Op::array_reverse);
+                Ok(Some(()))
+            }
+            "join" => {
+                self.compile_expression(object)?;
+                if let Some(a) = args.first() {
+                    self.compile_expression(&a.value)?;
+                } else {
+                    self.emit_constant(Value::String(Rc::from(",")));
+                }
+                self.emit(Op::array_join);
+                Ok(Some(()))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn resolve_value_method(&mut self, method: &str) -> Option<u16> {
+        // Most string/array methods are now opcodes (try_compile_opcode_method).
+        // Only methods without opcode equivalents remain here as host calls.
         let (module, name) = match method {
-            "toUpperCase" => ("vybe:string", "toUpperCase"),
-            "toLowerCase" => ("vybe:string", "toLowerCase"),
-            "trim" => ("vybe:string", "trim"),
-            "startsWith" => ("vybe:string", "startsWith"),
-            "endsWith" => ("vybe:string", "endsWith"),
-            "substring" => ("vybe:string", "substring"),
-            "split" => ("vybe:string", "split"),
-            "replaceAll" => ("vybe:string", "replaceAll"),
-            "contains" => ("vybe:string", "includes"),
-            "indexOf" => ("vybe:string", "indexOf"),
-            "padLeft" => ("vybe:string", "padStart"),
-            "padRight" => ("vybe:string", "padEnd"),
-            "add" => ("vybe:array", "push"),
-            "removeLast" => ("vybe:array", "pop"),
-            "insert" => ("vybe:array", "push"),
-            "join" => ("vybe:array", "join"),
-            "reversed" => ("vybe:array", "reverse"),
+            "insert" => ("vybe:array", "splice"),
             "sublist" => ("vybe:array", "slice"),
             _ => return None,
         };
@@ -1535,9 +1620,13 @@ impl Compiler {
                 }
             }
 
-            // Instance method: check for known value methods
+            // String/array methods as direct opcodes (normalized across all languages)
+            if let Some(()) = self.try_compile_opcode_method(object, member, args)? {
+                return Ok(());
+            }
+
+            // Instance method: check for remaining host-call-based methods
             if let Some(imp) = self.resolve_value_method(member) {
-                // Push object as first arg, then remaining args
                 self.compile_expression(object)?;
                 let count = self.emit_args(args)?;
                 self.emit_host_call(imp, count + 1);

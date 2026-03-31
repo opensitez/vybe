@@ -1412,12 +1412,14 @@ impl Compiler {
                 self.chunk(chunk_idx).emit_op(Op::null, 0);
             }
             _ => {
-                // Generic method call via attribute access + call_ref
+                // Generic method call: obj.method(args) → get method, pass obj as self
                 self.compile_expr(obj, chunk_idx)?;
                 let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(method)));
                 self.chunk(chunk_idx).emit_op_u16(Op::struct_get, c, 0);
+                // Pass obj as self (first arg) — same convention as JS/VB/C#
+                self.compile_expr(obj, chunk_idx)?;
                 for a in args { self.compile_expr(a, chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op_u8(Op::call_ref, args.len() as u8, 0);
+                self.chunk(chunk_idx).emit_op_u8(Op::call_ref, (args.len() + 1) as u8, 0);
             }
         }
         Ok(())
