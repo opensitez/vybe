@@ -979,6 +979,13 @@ impl Compiler {
                 self.emit_u16(Op::struct_set, type_idx);
                 self.emit(Op::drop);
 
+                // Stamp type_id via __tid_ global (same as Python/VB/C#/JS)
+                let tid_name = self.add_string_constant(&format!("__tid_{}", class_name.to_lowercase()));
+                self.emit_u16(Op::local_get, this_slot);
+                self.emit_u16(Op::global_get, tid_name);
+                self.emit(Op::set_type_id);
+                self.emit(Op::drop);
+
                 // 1. Initialize default fields FIRST
                 for member in &members {
                     if let ClassMember::Field { name, initializer, .. } = member {
