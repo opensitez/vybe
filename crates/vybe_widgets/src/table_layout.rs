@@ -1,3 +1,5 @@
+//! TableLayoutPanel widget — grid with dotted cell borders.
+
 use tiny_skia::*;
 use super::WidgetColors;
 
@@ -10,26 +12,93 @@ pub struct TableLayoutPanel {
 }
 
 impl TableLayoutPanel {
-    pub fn new(cols: usize, rows: usize) -> Self { Self { cols, rows, width: 300.0, height: 200.0, colors: WidgetColors::default() } }
-    pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
-        let ts = Transform::from_scale(scale, scale);
-        let mut paint = Paint::default(); paint.anti_alias = true;
-        paint.set_color_rgba8(255,255,255,255);
-        if let Some(r) = Rect::from_xywh(x,y,self.width,self.height) { pixmap.fill_rect(r, &paint, ts, None); }
-        paint.set_color_rgba8(220,220,220,255);
-        let mut stroke = Stroke::default(); stroke.width = 1.0;
-        let col_w = self.width / self.cols.max(1) as f32;
-        let row_h = self.height / self.rows.max(1) as f32;
-        for i in 0..=self.cols {
-            let cx = x + i as f32 * col_w;
-            let mut pb = PathBuilder::new(); pb.move_to(cx,y); pb.line_to(cx,y+self.height);
-            if let Some(path) = pb.finish() { pixmap.stroke_path(&path, &paint, &stroke, ts, None); }
-        }
-        for j in 0..=self.rows {
-            let ry = y + j as f32 * row_h;
-            let mut pb = PathBuilder::new(); pb.move_to(x,ry); pb.line_to(x+self.width,ry);
-            if let Some(path) = pb.finish() { pixmap.stroke_path(&path, &paint, &stroke, ts, None); }
+    pub fn new(cols: usize, rows: usize) -> Self {
+        Self {
+            cols,
+            rows,
+            width: 300.0,
+            height: 200.0,
+            colors: WidgetColors {
+                background: (255, 255, 255, 255),
+                border: (200, 200, 200, 255),
+                ..WidgetColors::default()
+            },
         }
     }
-    pub fn measure(&self)->(f32,f32){(self.width,self.height)}
+
+    /// Cell dimensions.
+    pub fn cell_size(&self) -> (f32, f32) {
+        let cw = self.width / self.cols.max(1) as f32;
+        let ch = self.height / self.rows.max(1) as f32;
+        (cw, ch)
+    }
+
+    /// Get rect for a specific cell (col, row).
+    pub fn cell_rect(&self, col: usize, row: usize) -> (f32, f32, f32, f32) {
+        let (cw, ch) = self.cell_size();
+        (col as f32 * cw, row as f32 * ch, cw, ch)
+    }
+
+    /// Paint — white background with dotted grid lines.
+    pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
+        let ts = Transform::from_scale(scale, scale);
+        let mut paint = Paint::default();
+        paint.anti_alias = true;
+
+        // White background
+        let (r, g, b, a) = self.colors.background;
+        paint.set_color_rgba8(r, g, b, a);
+        if let Some(rect) = Rect::from_xywh(x, y, self.width, self.height) {
+            pixmap.fill_rect(rect, &paint, ts, None);
+        }
+
+        // Dotted cell borders
+        let (r, g, b, a) = self.colors.border;
+        paint.set_color_rgba8(r, g, b, a);
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        stroke.dash = StrokeDash::new(vec![2.0, 2.0], 0.0);
+
+        let (cw, ch) = self.cell_size();
+
+        // Vertical lines
+        for i in 0..=self.cols {
+            let cx = x + i as f32 * cw;
+            let mut pb = PathBuilder::new();
+            pb.move_to(cx, y);
+            pb.line_to(cx, y + self.height);
+            if let Some(path) = pb.finish() {
+                pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+            }
+        }
+
+        // Horizontal lines
+        for j in 0..=self.rows {
+            let ry = y + j as f32 * ch;
+            let mut pb = PathBuilder::new();
+            pb.move_to(x, ry);
+            pb.line_to(x + self.width, ry);
+            if let Some(path) = pb.finish() {
+                pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+            }
+        }
+
+        // Solid outer border
+        let mut solid_stroke = Stroke::default();
+        solid_stroke.width = 1.0;
+        paint.set_color_rgba8(180, 180, 180, 255);
+        let mut pb = PathBuilder::new();
+        pb.move_to(x, y);
+        pb.line_to(x + self.width, y);
+        pb.line_to(x + self.width, y + self.height);
+        pb.line_to(x, y + self.height);
+        pb.close();
+        if let Some(path) = pb.finish() {
+            pixmap.stroke_path(&path, &paint, &solid_stroke, ts, None);
+        }
+    }
+
+    pub fn measure(&self) -> (f32, f32) {
+        (self.width, self.height)
+    }
 }

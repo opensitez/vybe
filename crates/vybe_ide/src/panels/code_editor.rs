@@ -1,206 +1,195 @@
-use egui::Ui;
-use crate::state::EditorState;
+//! Code editor panel — basic text editing in the center area.
 
-fn highlight_vb(theme: &egui::Style, text: &str) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    let font_id = egui::FontId::monospace(14.0);
+use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
+use tiny_skia::{Paint, Pixmap, Transform};
 
-    let is_dark = theme.visuals.dark_mode;
-    let kw_color = if is_dark { egui::Color32::from_rgb(86, 156, 214) } else { egui::Color32::from_rgb(0, 0, 255) };
-    let string_color = if is_dark { egui::Color32::from_rgb(206, 145, 120) } else { egui::Color32::from_rgb(163, 21, 21) };
-    let comment_color = if is_dark { egui::Color32::from_rgb(106, 153, 85) } else { egui::Color32::from_rgb(0, 128, 0) };
-    let default_color = theme.visuals.text_color();
+use crate::layout::Rect;
+use crate::text::draw_mono;
 
-    let keywords = [
-        "Public", "Private", "Dim", "As", "Integer", "String", "Boolean", "Object",
-        "If", "Then", "Else", "ElseIf", "End", "Function", "Sub", "Class", "Module",
-        "Me", "True", "False", "New", "Handles", "ByVal", "ByRef", "For", "To", "Next",
-        "While", "Return", "Property", "Get", "Set", "Select", "Case", "Try", "Catch"
-    ];
-
-    let mut in_comment = false;
-    let mut in_string = false;
-    let mut word = String::new();
-
-    let flush_word = |job: &mut egui::text::LayoutJob, word: &mut String, color: egui::Color32| {
-        if !word.is_empty() {
-            job.append(word, 0.0, egui::text::TextFormat { font_id: font_id.clone(), color, ..Default::default() });
-            word.clear();
-        }
-    };
-
-    let mut chars = text.char_indices().peekable();
-    while let Some((_, c)) = chars.next() {
-        if in_comment {
-            if c == '\n' || c == '\r' {
-                flush_word(&mut job, &mut word, comment_color);
-                in_comment = false;
-                word.push(c);
-                flush_word(&mut job, &mut word, default_color);
-            } else {
-                word.push(c);
-            }
-        } else if in_string {
-            if c == '"' {
-                word.push(c);
-                flush_word(&mut job, &mut word, string_color);
-                in_string = false;
-            } else {
-                word.push(c);
-            }
-        } else {
-            if c == '\'' {
-                if !word.is_empty() {
-                    let is_kw = keywords.iter().any(|k| word.eq_ignore_ascii_case(k));
-                    flush_word(&mut job, &mut word, if is_kw { kw_color } else { default_color });
-                }
-                in_comment = true;
-                word.push(c);
-            } else if c == '"' {
-                if !word.is_empty() {
-                    let is_kw = keywords.iter().any(|k| word.eq_ignore_ascii_case(k));
-                    flush_word(&mut job, &mut word, if is_kw { kw_color } else { default_color });
-                }
-                in_string = true;
-                word.push(c);
-            } else if c.is_ascii_alphanumeric() || c == '_' {
-                word.push(c);
-            } else {
-                if !word.is_empty() {
-                    let is_kw = keywords.iter().any(|k| word.eq_ignore_ascii_case(k));
-                    flush_word(&mut job, &mut word, if is_kw { kw_color } else { default_color });
-                }
-                word.push(c);
-                flush_word(&mut job, &mut word, default_color);
-            }
-        }
-    }
-
-    if in_comment { flush_word(&mut job, &mut word, comment_color); }
-    else if in_string { flush_word(&mut job, &mut word, string_color); }
-    else if !word.is_empty() {
-        let is_kw = keywords.iter().any(|k| word.eq_ignore_ascii_case(k));
-        flush_word(&mut job, &mut word, if is_kw { kw_color } else { default_color });
-    }
-
-    job
+pub struct CodeEditor {
+    pub lines: Vec<String>,
+    pub cursor_line: usize,
+    pub cursor_col: usize,
+    pub scroll_y: f32,
+    pub line_height: f32,
+    pub gutter_width: f32,
 }
 
-pub fn show(ui: &mut Ui, state: &mut EditorState) {
-    let name = state.current_code_file.clone()
-        .or_else(|| state.current_form.clone());
-
-    let Some(name) = name else {
-        ui.label("No file selected.");
-        return;
-    };
-
-    ui.horizontal(|ui| {
-        ui.heading(format!("Code — {}", name));
-    });
-    ui.separator();
-
-    let code = state.get_code_buffer(&name);
-    
-    // Tab to indent simple block
-    let id = ui.id().with("code_edit");
-    let mut consumed_tab = false;
-    if ui.input(|i| i.key_pressed(egui::Key::Tab) && i.modifiers.is_none()) {
-        if let Some(mut te_state) = egui::TextEdit::load_state(ui.ctx(), id) {
-            if let Some(range) = te_state.cursor.char_range() {
-                let primary = range.primary.index;
-                let secondary = range.secondary.index;
-                let min = primary.min(secondary);
-                let max = primary.max(secondary);
-                
-                let selected_text: String = code.chars().skip(min).take(max - min).collect();
-                if min != max && selected_text.contains('\n') {
-                    // Find start of the first line involved
-                    let mut start_of_line = min;
-                    let chars: Vec<char> = code.chars().collect();
-                    while start_of_line > 0 && chars[start_of_line - 1] != '\n' {
-                        start_of_line -= 1;
-                    }
-                    
-                    let target_block: String = chars[start_of_line..max].iter().collect();
-                    let lines: Vec<&str> = target_block.split('\n').collect();
-                    
-                    let mut new_text = String::new();
-                    let mut added_chars = 0;
-                    for (i, line) in lines.iter().enumerate() {
-                        if i > 0 { new_text.push('\n'); }
-                        new_text.push_str("    ");
-                        new_text.push_str(line);
-                        added_chars += 4;
-                    }
-                    
-                    code.replace_range(
-                        code.char_indices().nth(start_of_line).map(|(i, _)| i).unwrap_or(0)..
-                        code.char_indices().nth(max).map(|(i, _)| i).unwrap_or(code.len()),
-                        &new_text
-                    );
-                    
-                    let new_primary = primary + if primary == min { 4 } else { added_chars };
-                    let new_secondary = secondary + if secondary == min { 4 } else { added_chars };
-                    
-                    te_state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                        egui::text::CCursor::new(new_primary),
-                        egui::text::CCursor::new(new_secondary)
-                    )));
-                    te_state.store(ui.ctx(), id);
-                    consumed_tab = true;
-                }
-            }
+impl CodeEditor {
+    pub fn new() -> Self {
+        Self {
+            lines: vec![String::new()],
+            cursor_line: 0,
+            cursor_col: 0,
+            scroll_y: 0.0,
+            line_height: 22.0,
+            gutter_width: 55.0,
         }
     }
-    
-    if consumed_tab {
-        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+
+    pub fn set_code(&mut self, code: &str) {
+        self.lines = code.lines().map(|l| l.to_string()).collect();
+        if self.lines.is_empty() { self.lines.push(String::new()); }
+        self.cursor_line = 0;
+        self.cursor_col = 0;
+        self.scroll_y = 0.0;
     }
 
-    egui::ScrollArea::both()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            // Compute line numbers
-            let num_lines = code.lines().count().max(1);
-            let mut line_numbers = String::with_capacity(num_lines * 4);
-            for i in 1..=num_lines {
-                line_numbers.push_str(&format!("{:>3}\n", i));
+    pub fn get_code(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    pub fn render(
+        &self,
+        pix: &mut Pixmap,
+        fs: &mut FontSystem,
+        sc: &mut SwashCache,
+        rect: Rect,
+        scale: f32,
+    ) {
+        let s = scale;
+        let mut paint = Paint::default();
+
+        // Background
+        paint.set_color_rgba8(30, 30, 30, 255);
+        fill(pix, &paint, rect.x, rect.y, rect.w, rect.h, s);
+
+        let line_h = self.line_height;
+        let gutter_w = self.gutter_width;
+        let text_x = rect.x + gutter_w + 10.0;
+        let visible_start = (self.scroll_y / line_h) as usize;
+        let visible_count = (rect.h / line_h) as usize + 2;
+
+        let line_num_color = CosmicColor::rgba(100, 100, 100, 255);
+        let text_color = CosmicColor::rgba(212, 212, 212, 255);
+
+        // Gutter background
+        paint.set_color_rgba8(37, 37, 38, 255);
+        fill(pix, &paint, rect.x, rect.y, gutter_w, rect.h, s);
+
+        // Current line highlight
+        let cur_y = rect.y + (self.cursor_line as f32 - visible_start as f32) * line_h;
+        if cur_y >= rect.y && cur_y < rect.y + rect.h {
+            paint.set_color_rgba8(40, 40, 40, 255);
+            fill(pix, &paint, rect.x + gutter_w, cur_y, rect.w - gutter_w, line_h, s);
+        }
+
+        // Lines
+        for i in visible_start..(visible_start + visible_count).min(self.lines.len()) {
+            let y = rect.y + (i as f32 - visible_start as f32) * line_h;
+            if y + line_h < rect.y || y > rect.y + rect.h { continue; }
+
+            // Line number (right-aligned)
+            let num_str = format!("{}", i + 1);
+            let num_x = rect.x + gutter_w - 10.0 - num_str.len() as f32 * 8.0;
+            draw_mono(pix, fs, sc, &num_str, num_x, y + 3.0, 13.0, line_num_color, s);
+
+            // Code text
+            draw_mono(pix, fs, sc, &self.lines[i], text_x, y + 3.0, 13.0, text_color, s);
+        }
+
+        // Cursor caret
+        let char_w = 8.2; // monospace approximate
+        let caret_x = text_x + self.cursor_col as f32 * char_w;
+        let caret_y = rect.y + (self.cursor_line as f32 - visible_start as f32) * line_h;
+        if caret_y >= rect.y && caret_y < rect.y + rect.h {
+            paint.set_color_rgba8(220, 220, 220, 255);
+            fill(pix, &paint, caret_x, caret_y, 1.5, line_h, s);
+        }
+    }
+
+    pub fn handle_key(&mut self, key: &str) {
+        match key {
+            "Left" => {
+                if self.cursor_col > 0 { self.cursor_col -= 1; }
+                else if self.cursor_line > 0 {
+                    self.cursor_line -= 1;
+                    self.cursor_col = self.lines[self.cursor_line].len();
+                }
             }
+            "Right" => {
+                let line_len = self.lines[self.cursor_line].len();
+                if self.cursor_col < line_len { self.cursor_col += 1; }
+                else if self.cursor_line + 1 < self.lines.len() {
+                    self.cursor_line += 1;
+                    self.cursor_col = 0;
+                }
+            }
+            "Up" => {
+                if self.cursor_line > 0 {
+                    self.cursor_line -= 1;
+                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_line].len());
+                }
+            }
+            "Down" => {
+                if self.cursor_line + 1 < self.lines.len() {
+                    self.cursor_line += 1;
+                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_line].len());
+                }
+            }
+            "Home" => { self.cursor_col = 0; }
+            "End" => { self.cursor_col = self.lines[self.cursor_line].len(); }
+            "Enter" => {
+                let line = self.lines[self.cursor_line].clone();
+                let (before, after) = line.split_at(self.cursor_col.min(line.len()));
+                self.lines[self.cursor_line] = before.to_string();
+                self.lines.insert(self.cursor_line + 1, after.to_string());
+                self.cursor_line += 1;
+                self.cursor_col = 0;
+            }
+            "Backspace" => {
+                if self.cursor_col > 0 {
+                    let col = self.cursor_col - 1;
+                    self.lines[self.cursor_line].remove(col);
+                    self.cursor_col = col;
+                } else if self.cursor_line > 0 {
+                    let removed = self.lines.remove(self.cursor_line);
+                    self.cursor_line -= 1;
+                    self.cursor_col = self.lines[self.cursor_line].len();
+                    self.lines[self.cursor_line].push_str(&removed);
+                }
+            }
+            "Delete" => {
+                let line_len = self.lines[self.cursor_line].len();
+                if self.cursor_col < line_len {
+                    self.lines[self.cursor_line].remove(self.cursor_col);
+                } else if self.cursor_line + 1 < self.lines.len() {
+                    let next = self.lines.remove(self.cursor_line + 1);
+                    self.lines[self.cursor_line].push_str(&next);
+                }
+            }
+            _ => {}
+        }
+    }
 
-            ui.horizontal_top(|ui| {
-                // Line numbers gutter
-                let theme = ui.style().clone();
-                let gutter_color = if theme.visuals.dark_mode { egui::Color32::from_rgb(133, 133, 133) } else { egui::Color32::from_rgb(150, 150, 150) };
-                
-                ui.add(
-                    egui::TextEdit::multiline(&mut line_numbers.as_str())
-                        .font(egui::TextStyle::Monospace)
-                        .text_color(gutter_color)
-                        .interactive(false)
-                        .frame(false)
-                        .desired_width(32.0)
-                );
-                ui.add_space(4.0);
-                
-                // Code editor
-                let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
-                    let mut layout_job = highlight_vb(&theme, text);
-                    layout_job.wrap.max_width = wrap_width;
-                    ui.fonts(|f| f.layout_job(layout_job))
-                };
+    pub fn insert_char(&mut self, ch: char) {
+        let col = self.cursor_col.min(self.lines[self.cursor_line].len());
+        self.lines[self.cursor_line].insert(col, ch);
+        self.cursor_col = col + 1;
+    }
 
-                let _response = ui.add_sized(
-                    ui.available_size(),
-                    egui::TextEdit::multiline(code)
-                        .id_source("code_edit")
-                        .font(egui::TextStyle::Monospace)
-                        .code_editor()
-                        .lock_focus(true)
-                        .frame(false)
-                        .desired_width(f32::INFINITY)
-                        .layouter(&mut layouter),
-                );
-            });
-        });
+    pub fn handle_click(&mut self, mx: f32, my: f32, rect: Rect) {
+        if !rect.contains(mx, my) { return; }
+        let visible_start = (self.scroll_y / self.line_height) as usize;
+        let rel_y = my - rect.y;
+        let line = visible_start + (rel_y / self.line_height) as usize;
+        self.cursor_line = line.min(self.lines.len().saturating_sub(1));
+
+        let text_x = rect.x + self.gutter_width + 10.0;
+        let rel_x = mx - text_x;
+        self.cursor_col = (rel_x / 8.2).max(0.0) as usize;
+        self.cursor_col = self.cursor_col.min(self.lines[self.cursor_line].len());
+    }
+
+    pub fn scroll(&mut self, delta: f32, rect: Rect) {
+        self.scroll_y = (self.scroll_y - delta * self.line_height * 3.0)
+            .max(0.0)
+            .min((self.lines.len() as f32 * self.line_height - rect.h).max(0.0));
+    }
+}
+
+fn fill(pix: &mut Pixmap, paint: &Paint, x: f32, y: f32, w: f32, h: f32, s: f32) {
+    if let Some(r) = tiny_skia::Rect::from_xywh(x * s, y * s, w * s, h * s) {
+        pix.fill_rect(r, paint, Transform::identity(), None);
+    }
 }

@@ -10,16 +10,13 @@ name = "vybe_ide"
 path = "src/main.rs"
 
 [dependencies]
-vybe_parser_basic = { workspace = true }
 vybe_forms = { workspace = true }
 vybe_project = { workspace = true }
-vybe_host = { workspace = true }
-vybe_bytecode = { workspace = true }
-vybe_compiler_vb = { workspace = true }
-vybe_cli = { workspace = true }
+vybe_widgets = { path = "../vybe_widgets" }
 serde = { workspace = true }
 uuid = { workspace = true }
 rfd = "0.14"
-eframe = { version = "0.31", features = ["default"] }
-egui = "0.31"
-egui_extras = "0.31"
+tiny-skia = "0.12"
+softbuffer = "0.4"
+winit = "0.30"
+cosmic-text = "0.18"

@@ -45,6 +45,8 @@ pub mod split_container;
 pub mod flow_layout;
 pub mod table_layout;
 pub mod toolbox;
+pub mod color_picker;
+pub mod font_picker;
 
 pub use checkbox::Checkbox;
 pub use radio::Radio;
@@ -59,7 +61,7 @@ pub use progress::ProgressBar;
 pub use grid::DataGrid;
 pub use label::Label;
 pub use listbox::ListBox;
-pub use panel::Panel;
+pub use panel::{Panel, BorderStyle};
 pub use picturebox::PictureBox;
 pub use list_view::ListView;
 pub use numeric::NumericUpDown;
@@ -72,11 +74,13 @@ pub use month_calendar::MonthCalendar;
 pub use menu_strip::MenuStrip;
 pub use context_menu::ContextMenu;
 pub use status_strip::StatusStrip;
-pub use tool_strip::ToolStrip;
+pub use tool_strip::{ToolStrip, ToolStripItem};
 pub use split_container::SplitContainer;
 pub use flow_layout::FlowLayoutPanel;
 pub use table_layout::TableLayoutPanel;
 pub use toolbox::Toolbox;
+pub use color_picker::{ColorPicker, PickedColor, ColorPickerEvent};
+pub use font_picker::{FontPicker, FontPickerEvent};
 
 use tiny_skia::PathBuilder;
 

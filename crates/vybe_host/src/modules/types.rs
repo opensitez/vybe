@@ -438,6 +438,10 @@ fn register_dictionary(vm: &mut VM) {
             if let Some(Value::Object(data)) = o.properties.get("__data") {
                 return data.borrow().properties.get(&key).cloned().unwrap_or(Value::Null);
             }
+            // Direct property lookup (struct_new-based dicts)
+            if let Some(val) = o.properties.get(&key) {
+                return val.clone();
+            }
         }
         Value::Null
     }));
@@ -474,10 +478,19 @@ fn register_dictionary(vm: &mut VM) {
     vm.register_host_fn("vybe:types", "dictKeys", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
+            // Try __data first (old-style dicts), then enumerate properties directly
             if let Some(Value::Object(data)) = o.properties.get("__data") {
                 let keys: Vec<Value> = data.borrow().properties.keys()
                     .map(|k| Value::String(Rc::from(k.as_str())))
                     .collect();
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(keys))));
+            }
+            // Direct property enumeration (struct_new-based dicts)
+            let keys: Vec<Value> = o.properties.keys()
+                .filter(|k| !k.starts_with("__")) // skip internal properties
+                .map(|k| Value::String(Rc::from(k.as_str())))
+                .collect();
+            if !keys.is_empty() {
                 return Value::Object(Rc::new(RefCell::new(Object::new_array(keys))));
             }
         }
@@ -490,6 +503,13 @@ fn register_dictionary(vm: &mut VM) {
             let o = obj.borrow();
             if let Some(Value::Object(data)) = o.properties.get("__data") {
                 let vals: Vec<Value> = data.borrow().properties.values().cloned().collect();
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(vals))));
+            }
+            let vals: Vec<Value> = o.properties.iter()
+                .filter(|(k, _)| !k.starts_with("__"))
+                .map(|(_, v)| v.clone())
+                .collect();
+            if !vals.is_empty() {
                 return Value::Object(Rc::new(RefCell::new(Object::new_array(vals))));
             }
         }

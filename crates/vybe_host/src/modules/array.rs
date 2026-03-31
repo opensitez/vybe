@@ -348,11 +348,13 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:array", "dictItems", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
-            let pairs: Vec<Value> = o.properties.iter().map(|(k, v)| {
-                Value::Object(Rc::new(RefCell::new(Object::new_array(vec![
-                    Value::String(Rc::from(k.as_str())), v.clone()
-                ]))))
-            }).collect();
+            let pairs: Vec<Value> = o.properties.iter()
+                .filter(|(k, _)| !k.starts_with("__"))
+                .map(|(k, v)| {
+                    Value::Object(Rc::new(RefCell::new(Object::new_array(vec![
+                        Value::String(Rc::from(k.as_str())), v.clone()
+                    ]))))
+                }).collect();
             return Value::Object(Rc::new(RefCell::new(Object::new_array(pairs))));
         }
         Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))

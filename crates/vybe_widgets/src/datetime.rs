@@ -1,24 +1,93 @@
+//! DateTimePicker widget — text area with dropdown button.
+
 use tiny_skia::*;
-use super::WidgetColors;
+use super::{WidgetColors, rounded_rect_path};
 
 pub struct DateTimePicker {
-    pub text: String,
+    pub value: String,
+    pub focused: bool,
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
 }
 
 impl DateTimePicker {
-    pub fn new() -> Self { Self { text: String::new(), width: 140.0, height: 24.0, colors: WidgetColors::default() } }
+    pub fn new() -> Self {
+        Self {
+            value: String::new(),
+            focused: false,
+            width: 140.0,
+            height: 24.0,
+            colors: WidgetColors::default(),
+        }
+    }
+
+    /// Width of the dropdown button area.
+    fn button_width(&self) -> f32 {
+        20.0
+    }
+
+    /// Paint the date time picker — white text area + dropdown button.
+    /// Date text drawn by caller.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
         let ts = Transform::from_scale(scale, scale);
-        let mut paint = Paint::default(); paint.anti_alias = true;
-        paint.set_color_rgba8(255,255,255,255);
-        if let Some(r) = Rect::from_xywh(x,y,self.width,self.height) { pixmap.fill_rect(r, &paint, ts, None); }
-        paint.set_color_rgba8(200,200,200,255);
-        let mut stroke = Stroke::default(); stroke.width = 1.0;
-        let mut pb = PathBuilder::new(); pb.move_to(x,y); pb.line_to(x+self.width,y); pb.line_to(x+self.width,y+self.height); pb.line_to(x,y+self.height); pb.close();
-        if let Some(path) = pb.finish() { pixmap.stroke_path(&path, &paint, &stroke, ts, None); }
+        let mut paint = Paint::default();
+        paint.anti_alias = true;
+        let bw = self.button_width();
+
+        // White text area background
+        paint.set_color_rgba8(255, 255, 255, 255);
+        if let Some(path) = rounded_rect_path(x, y, self.width, self.height, 1.0) {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, ts, None);
+        }
+
+        // Dropdown button background
+        paint.set_color_rgba8(240, 240, 240, 255);
+        let btn_x = x + self.width - bw;
+        if let Some(rect) = Rect::from_xywh(btn_x, y + 1.0, bw - 1.0, self.height - 2.0) {
+            pixmap.fill_rect(rect, &paint, ts, None);
+        }
+
+        // Divider
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        paint.set_color_rgba8(160, 160, 160, 255);
+        let mut pb = PathBuilder::new();
+        pb.move_to(btn_x, y + 1.0);
+        pb.line_to(btn_x, y + self.height - 1.0);
+        if let Some(path) = pb.finish() {
+            pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+        }
+
+        // Dropdown arrow (downward pointing triangle)
+        let arrow_size = 4.0;
+        let center_x = btn_x + bw / 2.0;
+        let center_y = y + self.height / 2.0;
+        paint.set_color_rgba8(60, 60, 60, 255);
+        let mut pb = PathBuilder::new();
+        pb.move_to(center_x, center_y + arrow_size);
+        pb.line_to(center_x + arrow_size, center_y - arrow_size * 0.5);
+        pb.line_to(center_x - arrow_size, center_y - arrow_size * 0.5);
+        pb.close();
+        if let Some(path) = pb.finish() {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, ts, None);
+        }
+
+        // Outer border
+        let (r, g, b, a) = if self.focused { self.colors.focus_ring } else { self.colors.border };
+        paint.set_color_rgba8(r, g, b, a);
+        stroke.width = 1.0;
+        if let Some(path) = rounded_rect_path(x, y, self.width, self.height, 1.0) {
+            pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+        }
     }
-    pub fn measure(&self)->(f32,f32){(self.width,self.height)}
+
+    pub fn measure(&self) -> (f32, f32) {
+        (self.width, self.height)
+    }
+
+    /// Returns true if click is on the dropdown button.
+    pub fn click_dropdown(&self, click_x: f32, _click_y: f32) -> bool {
+        click_x >= self.width - self.button_width()
+    }
 }

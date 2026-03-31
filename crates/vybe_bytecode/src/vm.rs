@@ -933,7 +933,20 @@ impl VM {
                     let obj = self.pop();
                     match &obj {
                         Value::Object(o) => {
-                            let k = format!("{}", key);
+                            // Handle negative indices: x[-1] → x[len-1]
+                            let k = {
+                                let idx = key.as_f64() as i64;
+                                if idx < 0 {
+                                    let ob = o.borrow();
+                                    let len = match &ob.kind {
+                                        ObjectKind::Array(a) => a.len() as i64,
+                                        _ => 0,
+                                    };
+                                    format!("{}", (len + idx).max(0))
+                                } else {
+                                    format!("{}", key)
+                                }
+                            };
                             let val = o.borrow().get(&k);
                             // If not found and object has __getitem__, call it
                             if matches!(val, Value::Null) {
@@ -2584,13 +2597,26 @@ impl VM {
                     self.push(arr)?;
                 }
                 Op::array_contains => {
-                    let needle = self.pop(); let arr = self.pop();
-                    let found = if let Value::Object(obj) = &arr {
-                        let o = obj.borrow();
-                        if let ObjectKind::Array(a) = &o.kind {
-                            a.iter().any(|v| v.eq(&needle))
-                        } else { false }
-                    } else { false };
+                    // Compare compiles: left(needle) then right(haystack)
+                    // Stack: [needle, haystack]. Pop: haystack (TOS), needle.
+                    let haystack = self.pop();
+                    let needle = self.pop();
+                    let found = match (&haystack, &needle) {
+                        // String containment: "lo" in "hello"
+                        (Value::String(h), Value::String(n)) => h.contains(n.as_ref()),
+                        // Array containment: 2 in [1,2,3]
+                        (Value::Object(obj), _) => {
+                            let o = obj.borrow();
+                            if let ObjectKind::Array(a) = &o.kind {
+                                a.iter().any(|v| v.eq(&needle))
+                            } else {
+                                // Dict/object containment: check if key exists
+                                let key = format!("{}", needle);
+                                o.properties.contains_key(&key)
+                            }
+                        }
+                        _ => false,
+                    };
                     self.push(Value::Bool(found))?;
                 }
                 Op::array_index_of => {

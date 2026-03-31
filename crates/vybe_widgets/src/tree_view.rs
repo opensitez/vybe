@@ -42,9 +42,26 @@ fn scan_dir(path: &str) -> Vec<FileEntry> {
 
 impl TreeView {
     pub fn new(root_path: &str, scale: f32) -> Self {
-        let mut tree = Self { entries: Vec::new(), item_height: 25.0 * scale, indent: 20.0 * scale, scale, selected_path: None };
+        let mut tree = Self { entries: Vec::new(), item_height: 26.0 * scale, indent: 20.0 * scale, scale, selected_path: None };
         tree.entries = scan_dir(root_path);
         tree
+    }
+
+    /// Update scale factor (e.g. when moving to a different DPI monitor).
+    /// Invalidates cached text buffers.
+    pub fn set_scale(&mut self, scale: f32) {
+        if (self.scale - scale).abs() < 0.01 { return; }
+        self.scale = scale;
+        self.item_height = 26.0 * scale;
+        self.indent = 20.0 * scale;
+        Self::invalidate_buffers(&mut self.entries);
+    }
+
+    fn invalidate_buffers(entries: &mut [FileEntry]) {
+        for entry in entries {
+            entry.buffer = None;
+            Self::invalidate_buffers(&mut entry.children);
+        }
     }
 
     pub fn reveal_path(&mut self, target_path: &str) {
@@ -142,7 +159,7 @@ impl TreeView {
         let text_y = active_y + 2.0 * scale;
         let col = text_color;
         if entry.buffer.is_none() {
-            let mut lab = Buffer::new(fs, Metrics::new(13.0,18.0).scale(scale));
+            let mut lab = Buffer::new(fs, Metrics::new(14.0,20.0).scale(scale));
             lab.set_text(fs, &entry.name, &Attrs::new().family(Family::Monospace).color(col), cosmic_text::Shaping::Advanced, None);
             lab.shape_until_scroll(fs, false);
             entry.buffer = Some(lab);
@@ -154,9 +171,9 @@ impl TreeView {
                     if let Some(im) = sc.get_image(fs, pg.cache_key) {
                         let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap();
                         let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
-                        for (idx, &al) in im.data.iter().enumerate() {
+                        for (pix_slot, &al) in p.pixels_mut().iter_mut().zip(im.data.iter()) {
                             let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
-                            p.pixels_mut()[idx] = tiny_skia::ColorU8::from_rgba((cr as f32 * af) as u8, (cg as f32 * af) as u8, (cb as f32 * af) as u8, (255.0 * af) as u8).premultiply();
+                            *pix_slot = tiny_skia::ColorU8::from_rgba((cr as f32 * af) as u8, (cg as f32 * af) as u8, (cb as f32 * af) as u8, (255.0 * af) as u8).premultiply();
                         }
                         pix.draw_pixmap(pg.x + im.placement.left, pg.y - im.placement.top, p.as_ref(), &tiny_skia::PixmapPaint::default(), Transform::identity(), None);
                     }
@@ -214,7 +231,7 @@ impl TreeView {
     }
 
     pub fn draw_text_static_internal(pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, text: &str, x: f32, y: f32, col: CosmicColor, scale: f32) {
-        let mut lab = Buffer::new(fs, Metrics::new(13.0,18.0).scale(scale));
+        let mut lab = Buffer::new(fs, Metrics::new(14.0,20.0).scale(scale));
         lab.set_text(fs, text, &Attrs::new().family(Family::Monospace).color(col), cosmic_text::Shaping::Advanced, None);
         lab.shape_until_scroll(fs, false);
         for r in lab.layout_runs() {
@@ -223,9 +240,9 @@ impl TreeView {
                 if let Some(im) = sc.get_image(fs, pg.cache_key) {
                     let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap();
                     let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
-                    for (idx, &al) in im.data.iter().enumerate() {
+                    for (pix_slot, &al) in p.pixels_mut().iter_mut().zip(im.data.iter()) {
                         let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
-                        p.pixels_mut()[idx] = tiny_skia::ColorU8::from_rgba((cr as f32 * af) as u8, (cg as f32 * af) as u8, (cb as f32 * af) as u8, (255.0 * af) as u8).premultiply();
+                        *pix_slot = tiny_skia::ColorU8::from_rgba((cr as f32 * af) as u8, (cg as f32 * af) as u8, (cb as f32 * af) as u8, (255.0 * af) as u8).premultiply();
                     }
                     pix.draw_pixmap(pg.x + im.placement.left, pg.y - im.placement.top, p.as_ref(), &tiny_skia::PixmapPaint::default(), Transform::identity(), None);
                 }

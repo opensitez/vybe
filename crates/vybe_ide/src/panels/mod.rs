@@ -1,8 +1,9 @@
+pub mod menu_bar;
+pub mod toolbar;
 pub mod project_explorer;
-pub mod toolbox;
-pub mod project_properties;
-pub mod resource_editor;
-pub mod properties;
+pub mod toolbox_panel;
+pub mod properties_panel;
 pub mod form_designer;
 pub mod code_editor;
-pub mod output;
+pub mod status_bar;
+pub mod project_properties;

@@ -1,15 +1,82 @@
+//! MaskedTextBox widget — text field with input mask.
+
 use tiny_skia::*;
-use super::WidgetColors;
+use super::{WidgetColors, rounded_rect_path};
 
 pub struct MaskedTextBox {
-    pub text: String,
+    pub mask: String,
+    pub value: String,
+    pub cursor: usize,
+    pub focused: bool,
+    pub disabled: bool,
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
 }
 
 impl MaskedTextBox {
-    pub fn new() -> Self { Self { text: String::new(), width: 140.0, height: 24.0, colors: WidgetColors::default() } }
-    pub fn paint(&self, _pixmap: &mut Pixmap, _x: f32, _y: f32, _scale: f32) {}
-    pub fn measure(&self)->(f32,f32){(self.width,self.height)}
+    pub fn new() -> Self {
+        Self {
+            mask: String::new(),
+            value: String::new(),
+            cursor: 0,
+            focused: false,
+            disabled: false,
+            width: 140.0,
+            height: 24.0,
+            colors: WidgetColors::default(),
+        }
+    }
+
+    /// Paint — white background with inset border. Text drawn by caller.
+    pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
+        let ts = Transform::from_scale(scale, scale);
+        let mut paint = Paint::default();
+        paint.anti_alias = true;
+
+        // White background
+        let bg = if self.disabled { (240, 240, 240, 255) } else { (255, 255, 255, 255) };
+        paint.set_color_rgba8(bg.0, bg.1, bg.2, bg.3);
+        if let Some(path) = rounded_rect_path(x, y, self.width, self.height, 2.0) {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, ts, None);
+        }
+
+        // Inset border (sunken effect)
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+
+        // Dark top-left
+        paint.set_color_rgba8(130, 135, 144, 255);
+        let mut pb = PathBuilder::new();
+        pb.move_to(x, y + self.height);
+        pb.line_to(x, y);
+        pb.line_to(x + self.width, y);
+        if let Some(path) = pb.finish() {
+            pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+        }
+
+        // Light bottom-right
+        paint.set_color_rgba8(255, 255, 255, 255);
+        let mut pb = PathBuilder::new();
+        pb.move_to(x + self.width, y);
+        pb.line_to(x + self.width, y + self.height);
+        pb.line_to(x, y + self.height);
+        if let Some(path) = pb.finish() {
+            pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+        }
+
+        // Focus ring
+        if self.focused {
+            let (r, g, b, a) = self.colors.focus_ring;
+            paint.set_color_rgba8(r, g, b, a);
+            stroke.width = 2.0;
+            if let Some(path) = rounded_rect_path(x, y, self.width, self.height, 2.0) {
+                pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+            }
+        }
+    }
+
+    pub fn measure(&self) -> (f32, f32) {
+        (self.width, self.height)
+    }
 }

@@ -10,10 +10,24 @@ pub struct Compiler {
     scopes: Vec<Scope>,
     loop_stack: Vec<LoopCtx>,
     import_log: u16,
+    last_upvalues: Vec<UpvalueDesc>,
+}
+
+struct Local {
+    name: String,
+    slot: u16,
+    is_captured: bool,
+}
+
+#[derive(Debug, Clone)]
+struct UpvalueDesc {
+    index: u8,
+    is_local: bool,
 }
 
 struct Scope {
-    locals: HashMap<String, u16>,
+    locals: Vec<Local>,
+    upvalues: Vec<UpvalueDesc>,
     max_local: u16,
 }
 
@@ -25,23 +39,46 @@ struct LoopCtx {
 
 impl Scope {
     fn new() -> Self {
-        Self { locals: HashMap::new(), max_local: 0 }
+        Self { locals: Vec::new(), upvalues: Vec::new(), max_local: 0 }
     }
 
     fn alloc(&mut self, name: &str) -> u16 {
-        if let Some(&idx) = self.locals.get(name) {
-            idx
-        } else {
-            self.max_local += 1;
-            let idx = self.max_local;
-            self.locals.insert(name.to_string(), idx);
-            idx
+        for local in &self.locals {
+            if local.name == name { return local.slot; }
         }
+        self.max_local += 1;
+        let slot = self.max_local;
+        self.locals.push(Local { name: name.to_string(), slot, is_captured: false });
+        slot
     }
 
     fn get(&self, name: &str) -> Option<u16> {
-        self.locals.get(name).copied()
+        for local in self.locals.iter().rev() {
+            if local.name == name { return Some(local.slot); }
+        }
+        None
     }
+
+    fn mark_captured(&mut self, slot: u16) {
+        for local in &mut self.locals {
+            if local.slot == slot { local.is_captured = true; return; }
+        }
+    }
+
+    fn add_upvalue(&mut self, index: u8, is_local: bool) -> u8 {
+        for (i, uv) in self.upvalues.iter().enumerate() {
+            if uv.index == index && uv.is_local == is_local { return i as u8; }
+        }
+        let idx = self.upvalues.len() as u8;
+        self.upvalues.push(UpvalueDesc { index, is_local });
+        idx
+    }
+}
+
+enum VarResolution {
+    Local(u16),
+    Upvalue(u8),
+    Global,
 }
 
 impl Compiler {
@@ -51,7 +88,55 @@ impl Compiler {
             scopes: Vec::new(),
             loop_stack: Vec::new(),
             import_log: 0,
+            last_upvalues: Vec::new(),
         }
+    }
+
+    fn resolve_variable(&mut self, name: &str, _chunk_idx: usize) -> VarResolution {
+        // Check current scope (local)
+        let scope_idx = self.scopes.len() - 1;
+        if let Some(slot) = self.scopes[scope_idx].get(name) {
+            return VarResolution::Local(slot);
+        }
+        // Check parent scopes (upvalue)
+        if self.scopes.len() > 1 {
+            if let Some(uv) = self.resolve_upvalue(scope_idx, name) {
+                return VarResolution::Upvalue(uv);
+            }
+        }
+        VarResolution::Global
+    }
+
+    /// Emit ref_func with upvalue descriptors from last_upvalues.
+    fn emit_ref_func(&mut self, chunk_idx: usize, func_chunk_idx: usize) {
+        let upvalues = std::mem::take(&mut self.last_upvalues);
+        self.chunk(chunk_idx).emit_op_u16(Op::ref_func, func_chunk_idx as u16, 0);
+        self.chunk(chunk_idx).emit(upvalues.len() as u8, 0);
+        for uv in &upvalues {
+            self.chunk(chunk_idx).emit(if uv.is_local { 1 } else { 0 }, 0);
+            self.chunk(chunk_idx).emit(uv.index, 0);
+        }
+    }
+
+    /// Emit ref_func with 0 upvalues (for cases where we know there are none).
+    fn emit_ref_func_no_upvalues(&mut self, chunk_idx: usize, func_chunk_idx: usize) {
+        self.chunk(chunk_idx).emit_op_u16(Op::ref_func, func_chunk_idx as u16, 0);
+        self.chunk(chunk_idx).emit(0, 0);
+    }
+
+    fn resolve_upvalue(&mut self, scope_idx: usize, name: &str) -> Option<u8> {
+        if scope_idx == 0 { return None; }
+        let parent = scope_idx - 1;
+        // Check if the variable is a local in the parent scope
+        if let Some(slot) = self.scopes[parent].get(name) {
+            self.scopes[parent].mark_captured(slot);
+            return Some(self.scopes[scope_idx].add_upvalue(slot as u8, true));
+        }
+        // Recurse: check grandparent scopes
+        if let Some(uv) = self.resolve_upvalue(parent, name) {
+            return Some(self.scopes[scope_idx].add_upvalue(uv, false));
+        }
+        None
     }
 
     pub fn compile(&mut self, module: &Module) -> Result<Vec<Chunk>, String> {
@@ -91,10 +176,10 @@ impl Compiler {
         match stmt {
             Statement::Expression(expr) => {
                 // print() calls: intercept and compile as host log
-                if let Expression::Call { func, args, keywords: _ } = expr {
+                if let Expression::Call { func, args, keywords } = expr {
                     if let Expression::Name(name) = func.as_ref() {
                         if name == "print" {
-                            return self.compile_print(args, chunk_idx);
+                            return self.compile_print_with_kwargs(args, keywords, chunk_idx);
                         }
                     }
                 }
@@ -204,12 +289,9 @@ impl Compiler {
             }
 
             Statement::FunctionDef { name, params, body, is_async: _, decorators: _, returns: _ } => {
-                self.compile_function(name, params, body)?;
-                // Bind function to local in current scope
-                let func_idx = self.chunks.len() - 1;
+                let func_idx = self.compile_function(name, params, body)?;
                 let idx = self.scope(chunk_idx).alloc(name);
-                self.chunk(chunk_idx).emit_op_u16(Op::ref_func, func_idx as u16, 0);
-                self.chunk(chunk_idx).emit(0, 0);
+                self.emit_ref_func(chunk_idx, func_idx);
                 self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
             }
 
@@ -249,8 +331,7 @@ impl Compiler {
                             method_name.clone()
                         };
 
-                        self.compile_function(&effective_name, params, mbody)?;
-                        let func_chunk_idx = self.chunks.len() - 1;
+                        let func_chunk_idx = self.compile_function(&effective_name, params, mbody)?;
                         method_entries.push((effective_name.to_lowercase(), func_chunk_idx));
                         if method_name == "__init__" {
                             init_chunk = Some(func_chunk_idx);
@@ -761,7 +842,8 @@ impl Compiler {
 
     // ── Function compilation ─────────────────────────────────────────
 
-    fn compile_function(&mut self, name: &str, params: &Parameters, body: &[Statement]) -> Result<(), String> {
+    /// Compile a function. Returns the chunk index of the compiled function.
+    fn compile_function(&mut self, name: &str, params: &Parameters, body: &[Statement]) -> Result<usize, String> {
         let mut fchunk = Chunk::new(name);
         fchunk.add_import("wasi:cli", "log");
         let func_chunk_idx = self.chunks.len();
@@ -832,7 +914,9 @@ impl Compiler {
         self.chunks[func_chunk_idx].local_count = (scope.max_local + 1) as u16;
         self.chunks[func_chunk_idx].arity = params.args.len() as u8;
 
-        Ok(())
+        self.last_upvalues = scope.upvalues;
+
+        Ok(func_chunk_idx)
     }
 
     // ── Assignment targets ───────────────────────────────────────────
@@ -945,12 +1029,17 @@ impl Compiler {
                 self.chunk(chunk_idx).emit_op(Op::null, 0);
             }
             Expression::Name(name) => {
-                if let Some(idx) = self.scope(chunk_idx).get(name) {
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx, 0);
-                } else {
-                    // Try global
-                    let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(name.as_str())));
-                    self.chunk(chunk_idx).emit_op_u16(Op::global_get, c, 0);
+                match self.resolve_variable(name, chunk_idx) {
+                    VarResolution::Local(slot) => {
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, slot, 0);
+                    }
+                    VarResolution::Upvalue(idx) => {
+                        self.chunk(chunk_idx).emit_op_u8(Op::upvalue_get, idx, 0);
+                    }
+                    VarResolution::Global => {
+                        let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(name.as_str())));
+                        self.chunk(chunk_idx).emit_op_u16(Op::global_get, c, 0);
+                    }
                 }
             }
 
@@ -969,21 +1058,28 @@ impl Compiler {
             Expression::Dict { keys, values } => {
                 common::dict::emit_new(self.chunk(chunk_idx), 0);
                 for (k, v) in keys.iter().zip(values.iter()) {
-                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
                     if let Some(key) = k {
-                        // If key is a string literal, use struct_set directly
                         if let Expression::Str(s) = key {
-                            self.compile_expr(v, chunk_idx)?;
-                            common::dict::emit_set_const_key(self.chunk(chunk_idx), s, 0);
+                            // String key: dict is on stack, push value, struct_set
+                            self.chunk(chunk_idx).emit_op(Op::dup, 0); // keep dict
+                            self.compile_expr(v, chunk_idx)?; // push value
+                            let key_idx = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(s.as_str())));
+                            self.chunk(chunk_idx).emit_op_u16(Op::struct_set, key_idx, 0);
+                            self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop struct_set result
                         } else {
+                            // Dynamic key: use array_set (obj, key, val)
+                            self.chunk(chunk_idx).emit_op(Op::dup, 0);
                             self.compile_expr(key, chunk_idx)?;
                             self.compile_expr(v, chunk_idx)?;
-                            common::dict::emit_set(self.chunk(chunk_idx), 0);
+                            self.chunk(chunk_idx).emit_op(Op::array_set, 0);
+                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
                         }
                     } else {
+                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
                         self.chunk(chunk_idx).emit_op(Op::null, 0);
                         self.compile_expr(v, chunk_idx)?;
-                        common::dict::emit_set(self.chunk(chunk_idx), 0);
+                        self.chunk(chunk_idx).emit_op(Op::array_set, 0);
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
                     }
                 }
             }
@@ -1212,7 +1308,33 @@ impl Compiler {
                             return self.compile_host_call("vybe:array", "pytype", args, chunk_idx);
                         }
                         "isinstance" => {
-                            return self.compile_host_call("vybe:array", "isinstance", args, chunk_idx);
+                            if args.len() == 2 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                // Second arg is the type — convert built-in type names to strings
+                                if let Expression::Name(type_name) = &args[1] {
+                                    let type_str = match type_name.as_str() {
+                                        "int" => "int",
+                                        "float" => "float",
+                                        "str" => "str",
+                                        "bool" => "bool",
+                                        "list" => "list",
+                                        "dict" => "dict",
+                                        "tuple" => "list",
+                                        "type" => "object",
+                                        _ => type_name.as_str(),
+                                    };
+                                    let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(type_str)));
+                                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                                } else {
+                                    self.compile_expr(&args[1], chunk_idx)?;
+                                }
+                                // Use ref_typeof + comparison for built-in types,
+                                // or ref_test for user-defined types
+                                let isinstance_fn = self.chunk(chunk_idx).add_import("vybe:array", "isinstance");
+                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, isinstance_fn, 0);
+                                self.chunk(chunk_idx).emit(2, 0);
+                                return Ok(());
+                            }
                         }
                         "list" => {
                             return self.compile_host_call("vybe:array", "list", args, chunk_idx);
@@ -1306,8 +1428,24 @@ impl Compiler {
                 }
                 // General function call
                 self.compile_expr(func, chunk_idx)?;
-                for a in args { self.compile_expr(a, chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op_u8(Op::call_ref, args.len() as u8, 0);
+                let mut argc = 0u8;
+                for a in args {
+                    if let Expression::Starred(inner) = a {
+                        // *args: spread the iterable onto the stack
+                        self.compile_expr(inner, chunk_idx)?;
+                        self.chunk(chunk_idx).emit_op(Op::spread, 0);
+                        // We don't know the spread count at compile time.
+                        // The VM's spread pushes N elements. call_ref will use
+                        // whatever argc we give it — extra args are ignored,
+                        // missing args are padded with Null. This is imprecise
+                        // but handles the common case f(*[1,2,3]) where the
+                        // list length matches the function arity.
+                    } else {
+                        self.compile_expr(a, chunk_idx)?;
+                        argc += 1;
+                    }
+                }
+                self.chunk(chunk_idx).emit_op_u8(Op::call_ref, argc, 0);
             }
 
             Expression::Attribute { value, attr } => {
@@ -1343,14 +1481,23 @@ impl Compiler {
                     self.compile_expr(value, chunk_idx)?;
                     common::dict::emit_get_const_key(self.chunk(chunk_idx), s, 0);
                 }
-                // Normal index — try array_get first, works for arrays and
-                // objects with __getitem__ (via struct_get fallback in VM)
+                // Normal index
                 else {
                     self.compile_expr(value, chunk_idx)?;
-                    self.compile_expr(slice, chunk_idx)?;
-                    // array_get handles arrays. For objects with __getitem__,
-                    // check if the value is an array first — if not, use struct_get
-                    // which does property lookup (works for dicts with string keys).
+                    // Handle negative indices at compile time:
+                    // x[-1] → x[len(x) + (-1)]
+                    let is_negative_literal = matches!(slice.as_ref(),
+                        Expression::UnaryOp { op: UnaryOp::USub, operand }
+                        if matches!(operand.as_ref(), Expression::Int(_))
+                    );
+                    if is_negative_literal {
+                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                        self.chunk(chunk_idx).emit_op(Op::array_length, 0);
+                        self.compile_expr(slice, chunk_idx)?;
+                        self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                    } else {
+                        self.compile_expr(slice, chunk_idx)?;
+                    }
                     self.chunk(chunk_idx).emit_op(Op::array_get, 0);
                 }
             }
@@ -1376,12 +1523,9 @@ impl Compiler {
             }
 
             Expression::Lambda { params, body } => {
-                // Compile as anonymous function
                 let name = "__lambda";
-                self.compile_function(name, params, &[Statement::Return(Some(*body.clone()))])?;
-                let func_idx = self.chunks.len() - 1;
-                self.chunk(chunk_idx).emit_op_u16(Op::ref_func, func_idx as u16, 0);
-                self.chunk(chunk_idx).emit(0, 0);
+                let func_idx = self.compile_function(name, params, &[Statement::Return(Some(*body.clone()))])?;
+                self.emit_ref_func(chunk_idx, func_idx);
             }
 
             Expression::Starred(inner) => {
@@ -1547,7 +1691,48 @@ impl Compiler {
             self.compile_expr(a, chunk_idx)?;
         }
         common::io::emit_print(self.chunk(chunk_idx), args.len() as u8, 0);
-        self.chunk(chunk_idx).emit(args.len() as u8, 0);
+        Ok(())
+    }
+
+    fn compile_print_with_kwargs(&mut self, args: &[Expression], keywords: &[Keyword], chunk_idx: usize) -> Result<(), String> {
+        // Check for sep= and end= kwargs
+        let sep = keywords.iter().find(|k| k.name.as_deref() == Some("sep"));
+        let _end = keywords.iter().find(|k| k.name.as_deref() == Some("end"));
+
+        if let Some(sep_kw) = sep {
+            // print(a, b, sep=",") → join args with separator, then print
+            if args.is_empty() {
+                common::io::emit_print(self.chunk(chunk_idx), 0, 0);
+                return Ok(());
+            }
+            // Convert each arg to string and join with sep
+            for (i, a) in args.iter().enumerate() {
+                // "" + arg → string coercion
+                let empty = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("")));
+                self.chunk(chunk_idx).emit_op_u16(Op::r#const, empty, 0);
+                self.compile_expr(a, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                if i > 0 {
+                    // Concatenate: prev + sep + current
+                    // Stack has: [prev_result, current_str]
+                    // Need: prev_result + sep + current_str
+                    let sep_tmp = self.scope(chunk_idx).alloc("__print_sep_tmp");
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, sep_tmp, 0);
+                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    // Push sep
+                    self.compile_expr(&sep_kw.value, chunk_idx)?;
+                    self.chunk(chunk_idx).emit_op(Op::str_concat, 0);
+                    // Push current
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, sep_tmp, 0);
+                    self.chunk(chunk_idx).emit_op(Op::str_concat, 0);
+                }
+            }
+            // Print the joined string
+            common::io::emit_print(self.chunk(chunk_idx), 1, 0);
+        } else {
+            // No sep= → default print
+            self.compile_print(args, chunk_idx)?;
+        }
         Ok(())
     }
 
@@ -1685,8 +1870,45 @@ impl Compiler {
                 self.chunk(chunk_idx).emit_op(Op::r#true, 0);
             }
             "format" => {
-                // str.format(*args) — simplified: just return string
+                // "hello {} and {}".format(a, b)
+                // For each arg, find first "{}", replace with str(arg) using substring ops.
+                // s = s[:idx] + str(arg) + s[idx+2:]
                 self.compile_expr(obj, chunk_idx)?;
+                let placeholder = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("{}")));
+                let two = self.chunk(chunk_idx).add_constant(Value::I32(2));
+                let max = self.chunk(chunk_idx).add_constant(Value::I32(i32::MAX));
+                for a in args {
+                    // Stack: [current_string]
+                    let str_local = self.scope(chunk_idx).alloc("__fmt_str");
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, str_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    // Find position of first "{}"
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_local, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, placeholder, 0);
+                    self.chunk(chunk_idx).emit_op(Op::str_index_of, 0);
+                    let pos_local = self.scope(chunk_idx).alloc("__fmt_pos");
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, pos_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    // s[:pos]
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, pos_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::str_substring, 0);
+                    // + str(arg)
+                    let empty = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("")));
+                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, empty, 0);
+                    self.compile_expr(a, chunk_idx)?;
+                    self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                    self.chunk(chunk_idx).emit_op(Op::str_concat, 0);
+                    // + s[pos+2:]
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_local, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, pos_local, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, two, 0);
+                    self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, max, 0);
+                    self.chunk(chunk_idx).emit_op(Op::str_substring, 0);
+                    self.chunk(chunk_idx).emit_op(Op::str_concat, 0);
+                }
             }
             "encode" => {
                 // str.encode() → bytes (just return string)
@@ -1884,8 +2106,7 @@ impl Compiler {
             CmpOp::Is => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0), // simplified
             CmpOp::IsNot => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
             CmpOp::In => {
-                // "in" works for arrays, strings, and dicts — use str_contains opcode
-                // Stack has: needle, haystack. Use array_contains which handles all types.
+                // Stack: [needle, haystack]. array_contains pops haystack(TOS), needle.
                 self.chunk(chunk_idx).emit_op(Op::array_contains, 0);
             }
             CmpOp::NotIn => {
