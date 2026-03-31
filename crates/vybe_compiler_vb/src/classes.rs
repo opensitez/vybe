@@ -277,12 +277,19 @@ impl Compiler {
         let field_names: Vec<String> = class.fields.iter()
             .map(|f| f.name.as_str().to_lowercase())
             .collect();
+        let implements: Vec<String> = class.implements.iter().map(|t| match t {
+            VBType::Custom(n) => n.to_lowercase(),
+            _ => String::new(),
+        }).filter(|s| !s.is_empty()).collect();
         let type_entry_idx = self.type_entries.len();
         self.type_entries.push(TypeEntry {
             name: name.to_lowercase(),
             parent: parent_name,
             fields: field_names,
             methods: method_entries,
+            is_interface: false,
+            implements,
+            constructor_chunk: Some(idx),
         });
         self.class_type_ids.insert(name.to_lowercase(), type_entry_idx);
 

@@ -2602,6 +2602,9 @@ impl Compiler {
             parent: parent_name,
             fields: field_names,
             methods: method_entries,
+            is_interface: false,
+            implements: Vec::new(),
+            constructor_chunk: Some(idx),
         });
         self.class_type_ids.insert(name.to_lowercase(), type_entry_idx);
 

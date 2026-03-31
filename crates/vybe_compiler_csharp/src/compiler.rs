@@ -482,10 +482,27 @@ impl Compiler {
     }
 
     fn compile_interface(&mut self, iface: &InterfaceDecl) -> Result<(), String> {
-        // Compile interface as an empty marker object stored as a global.
-        // Duck typing means any class with the right methods "implements" it.
+        // Register interface in the type table for cross-language sharing.
+        let method_entries: Vec<(String, usize)> = iface.members.iter().filter_map(|m| {
+            match m {
+                MemberDecl::Method(md) => Some((md.name.to_lowercase(), 0usize)),
+                MemberDecl::Property(pd) => Some((pd.name.to_lowercase(), 0usize)),
+                _ => None,
+            }
+        }).collect();
+        self.type_entries.push(TypeEntry {
+            name: iface.name.to_lowercase(),
+            parent: String::new(),
+            fields: Vec::new(),
+            methods: method_entries,
+            is_interface: true,
+            implements: Vec::new(),
+            constructor_chunk: None,
+        });
+        self.defined_interfaces.insert(iface.name.to_lowercase());
+
+        // Also emit a marker global for runtime reference
         self.emit_u16(Op::struct_new, 0);
-        // Store the interface name so it can be referenced
         let name_idx = self.add_string_constant("__interface_name");
         self.emit(Op::dup);
         self.emit_constant(Value::String(Rc::from(iface.name.as_str())));
@@ -773,12 +790,18 @@ impl Compiler {
             .filter(|(_, _, _, is_static)| !is_static)
             .map(|(fname, _, _, _)| fname.to_lowercase())
             .collect();
+        let implements: Vec<String> = class.interfaces.iter()
+            .map(|i| i.to_lowercase())
+            .collect();
         let type_entry_idx = self.type_entries.len();
         self.type_entries.push(TypeEntry {
             name: name.to_lowercase(),
             parent: parent_name,
             fields: field_names,
             methods: method_entries,
+            is_interface: false,
+            implements,
+            constructor_chunk: Some(idx),
         });
         self.class_type_ids.insert(name.to_lowercase(), type_entry_idx);
 

@@ -199,9 +199,7 @@ impl Compiler {
                 self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
             }
 
-            Statement::ClassDef { name, bases: _, keywords: _, body, decorators: _ } => {
-                // Minimal class support: create an object with methods
-                // For now, compile as a namespace with functions
+            Statement::ClassDef { name, bases, keywords: _, body, decorators: _ } => {
                 let idx = self.scope(chunk_idx).alloc(name);
                 // Create an object to hold methods
                 let dict_new = self.chunk(chunk_idx).add_import("vybe:types", "dictNew");
@@ -209,10 +207,17 @@ impl Compiler {
                 self.chunk(chunk_idx).emit(0, 0);
                 self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
 
+                let mut method_entries = Vec::new();
+                let mut init_chunk = None;
+
                 for s in body {
                     if let Statement::FunctionDef { name: method_name, params, body: mbody, .. } = s {
                         self.compile_function(method_name, params, mbody)?;
                         let func_chunk_idx = self.chunks.len() - 1;
+                        method_entries.push((method_name.to_lowercase(), func_chunk_idx));
+                        if method_name == "__init__" {
+                            init_chunk = Some(func_chunk_idx);
+                        }
                         // Store method on class dict
                         self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx, 0);
                         let name_c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(method_name.as_str())));
@@ -229,6 +234,21 @@ impl Compiler {
                         // skip other class body statements for now
                     }
                 }
+
+                // Register type entry for cross-language interop
+                let parent_name = bases.first().map(|b| {
+                    if let Expression::Name(n) = b { n.to_lowercase() } else { String::new() }
+                }).unwrap_or_default();
+                use vybe_bytecode::chunk::TypeEntry;
+                self.chunks[0].types.push(TypeEntry {
+                    name: name.to_lowercase(),
+                    parent: parent_name,
+                    fields: Vec::new(),
+                    methods: method_entries,
+                    is_interface: false,
+                    implements: Vec::new(),
+                    constructor_chunk: init_chunk,
+                });
             }
 
             Statement::Return(expr) => {

@@ -25,6 +25,7 @@ pub struct Compiler {
     enums: std::collections::HashMap<String, EnumDecl>,
     extensions: Vec<ExtensionDecl>,
     current_class: Option<String>,
+    type_entries: Vec<vybe_bytecode::chunk::TypeEntry>,
 }
 
 impl Compiler {
@@ -41,6 +42,7 @@ impl Compiler {
             enums: std::collections::HashMap::new(),
             extensions: Vec::new(),
             current_class: None,
+            type_entries: Vec::new(),
         }
     }
 
@@ -69,9 +71,8 @@ impl Compiler {
         self.emit(Op::halt);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
-        // DEBUG: dump chunk 0 for inspection
-        eprintln!("[dart-compiler] chunk0 code: {:?}", self.chunks[0].code);
-        eprintln!("[dart-compiler] chunk0 constants: {:?}", self.chunks[0].constants);
+        // Attach type entries to script chunk
+        self.chunks[0].types = self.type_entries;
         Ok(self.chunks)
     }
 
@@ -994,6 +995,27 @@ impl Compiler {
         }
         self.current_class = saved_class;
         self.defined_classes.insert(class_name.clone());
+
+        // Register type entry for cross-language interop
+        let field_names: Vec<String> = class.members.iter().filter_map(|m| {
+            if let ClassMember::Field { name, .. } = m { Some(name.to_lowercase()) } else { None }
+        }).collect();
+        let method_names: Vec<(String, usize)> = class.members.iter().filter_map(|m| {
+            if let ClassMember::Method { decl, is_static, .. } = m {
+                if !is_static { Some((decl.name.to_lowercase(), 0usize)) } else { None }
+            } else { None }
+        }).collect();
+        let first_ctor_chunk = self.chunks.iter().position(|c| c.name == *class_name || c.name.starts_with(&format!("{}.", class_name)));
+        self.type_entries.push(vybe_bytecode::chunk::TypeEntry {
+            name: class_name.to_lowercase(),
+            parent: class.extends.as_ref().map(|s| s.to_lowercase()).unwrap_or_default(),
+            fields: field_names,
+            methods: method_names,
+            is_interface: class.is_abstract,
+            implements: class.implements.iter().map(|s| s.to_lowercase()).collect(),
+            constructor_chunk: first_ctor_chunk,
+        });
+
         Ok(())
     }
 

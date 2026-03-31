@@ -566,8 +566,29 @@ impl Compiler {
                     self.compile_declaration(decl)?;
                 }
             }
-            Declaration::Delegate(_) | Declaration::Interface(_) | Declaration::Event(_) => {
-                // Type declarations — no bytecode needed (duck typing in our VM)
+            Declaration::Interface(iface) => {
+                // Register interface as a type entry in the type table.
+                let method_entries: Vec<(String, usize)> = iface.methods.iter().map(|m| {
+                    let name = match m {
+                        vybe_parser_basic::ast::InterfaceMember::Sub { name, .. } => name.as_str().to_lowercase(),
+                        vybe_parser_basic::ast::InterfaceMember::Function { name, .. } => name.as_str().to_lowercase(),
+                        vybe_parser_basic::ast::InterfaceMember::Property { name, .. } => name.as_str().to_lowercase(),
+                        vybe_parser_basic::ast::InterfaceMember::Event { name, .. } => name.as_str().to_lowercase(),
+                    };
+                    (name, 0usize) // chunk index 0 = placeholder for interface methods
+                }).collect();
+                self.type_entries.push(TypeEntry {
+                    name: iface.name.as_str().to_lowercase(),
+                    parent: String::new(),
+                    fields: Vec::new(),
+                    methods: method_entries,
+                    is_interface: true,
+                    implements: Vec::new(),
+                    constructor_chunk: None,
+                });
+            }
+            Declaration::Delegate(_) | Declaration::Event(_) => {
+                // Type declarations — no bytecode needed
             }
         }
         Ok(())
