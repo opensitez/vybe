@@ -111,6 +111,13 @@ impl Value {
             }
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Object(a), Value::Object(b)) => Rc::ptr_eq(a, b),
+            // Cross-type numeric equality: I32(0) == F64(0.0), etc.
+            (Value::I32(a), Value::F64(b)) => (*a as f64) == *b,
+            (Value::F64(a), Value::I32(b)) => *a == (*b as f64),
+            (Value::I32(a), Value::I64(b)) => (*a as i64) == *b,
+            (Value::I64(a), Value::I32(b)) => *a == (*b as i64),
+            (Value::I64(a), Value::F64(b)) => (*a as f64) == *b,
+            (Value::F64(a), Value::I64(b)) => *a == (*b as f64),
             _ => false,
         }
     }

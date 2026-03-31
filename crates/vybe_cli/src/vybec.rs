@@ -21,6 +21,7 @@ fn main() {
     let mut dump = false;
     let mut emit_wasm = false;
     let mut sandbox = false;
+    let mut portable = false;
     let mut file_arg = None;
 
     for arg in &args[1..] {
@@ -28,6 +29,7 @@ fn main() {
             "--dump" | "-d" => dump = true,
             "--emit-wasm" | "-w" => emit_wasm = true,
             "--sandbox" | "-s" => sandbox = true,
+            "--portable" | "-p" => portable = true,
             _ if file_arg.is_none() => file_arg = Some(arg.clone()),
             _ => {}
         }
@@ -36,7 +38,7 @@ fn main() {
     let file_path = match file_arg {
         Some(f) => f,
         None => {
-            eprintln!("Usage: vybec [--dump] [--sandbox] <file.vb|file.js|file.dart|file.vbp|file.vbproj>");
+            eprintln!("Usage: vybec [--dump] [--sandbox] [--portable] <file.vb|file.js|file.dart|file.py>");
             std::process::exit(1);
         }
     };
@@ -53,10 +55,10 @@ fn main() {
         .to_lowercase();
 
     match ext.as_str() {
-        "vb" => run_vb(path, dump, emit_wasm, sandbox),
-        "js" => run_js(path, dump, emit_wasm, sandbox),
-        "dart" => run_dart(path, dump, emit_wasm, sandbox),
-        "py" | "py3" => run_python(path, dump, emit_wasm, sandbox),
+        "vb" => run_vb(path, dump, emit_wasm, sandbox, portable),
+        "js" => run_js(path, dump, emit_wasm, sandbox, portable),
+        "dart" => run_dart(path, dump, emit_wasm, sandbox, portable),
+        "py" | "py3" => run_python(path, dump, emit_wasm, sandbox, portable),
         "wasm" => run_wasm(path),
         "vybe" => run_project(path, dump),
         "vbp" | "vbproj" => vybe_cli::runner::run(path, &[]),
@@ -248,7 +250,7 @@ fn run_project(path: &Path, dump: bool) {
     vybe_cli::runner::launch_vm_form(vm, queue, None);
 }
 
-fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
+fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
     let source = read_file(path);
     let program = match vybe_parser_basic::parse_program(&source) {
         Ok(p) => p,
@@ -289,7 +291,7 @@ fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
     vybe_cli::runner::launch_vm_form(vm, queue, None);
 }
 
-fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
+fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
     let source = read_file(path);
     let program = match vybe_parser_js::parse(&source) {
         Ok(p) => p,
@@ -331,7 +333,7 @@ fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
     vybe_cli::runner::launch_vm_form(vm, queue, None);
 }
 
-fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
+fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
     let source = read_file(path);
     let program = match vybe_parser_dart::parse(&source) {
         Ok(p) => p,
@@ -372,25 +374,43 @@ fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
     vybe_cli::runner::launch_vm_form(vm, queue, None);
 }
 
-fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
+fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable: bool) {
     let source = read_file(path);
     let module = match vybe_parser_python::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
-    
 
     let mut vm = VM::new();
+    // Stdlib is bundled in the compiled chunks (via global_inits + RefFunc).
+    // On Vybe, register_all overwrites __vybe_* globals with fast host fns.
+    // On --portable, only minimal WASI imports are registered.
+
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if sandbox {
-        eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
-        vybe_host::register_with_capabilities_and_gui(
-            &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
-        );
+    if !portable {
+        if sandbox {
+            eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
+            vybe_host::register_with_capabilities_and_gui(
+                &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
+            );
+        } else {
+            vybe_host::register_all_with_gui(&mut vm, queue.clone());
+        }
+        vybe_host::setup_namespaces(&mut vm);
     } else {
-        vybe_host::register_all_with_gui(&mut vm, queue.clone());
+        eprintln!("[portable] Running with WASM stdlib only — no Vybe host optimizations");
+        // Register minimal WASI imports for I/O
+        vm.register_host_fn("wasi:cli", "log", Box::new(|args: &[vybe_bytecode::Value]| {
+            for a in args { print!("{}", a); }
+            println!();
+            vybe_bytecode::Value::Null
+        }));
+        vm.register_host_fn("wasi:cli", "readLine", Box::new(|_| {
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line).ok();
+            vybe_bytecode::Value::String(std::rc::Rc::from(line.trim()))
+        }));
     }
-    vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_python::Compiler::new().compile(&module) {
         Ok(c) => c,
