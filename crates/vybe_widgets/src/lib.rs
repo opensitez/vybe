@@ -22,6 +22,9 @@ pub mod dropdown;
 pub mod button;
 pub mod slider;
 pub mod tree_view;
+pub mod tabs;
+pub mod progress;
+pub mod grid;
 
 pub use checkbox::Checkbox;
 pub use radio::Radio;
@@ -31,6 +34,9 @@ pub use dropdown::{Dropdown, DropdownEvent};
 pub use button::Button;
 pub use slider::Slider;
 pub use tree_view::{TreeView, TreeEvent, FileEntry};
+pub use tabs::Tabs;
+pub use progress::ProgressBar;
+pub use grid::DataGrid;
 
 use tiny_skia::{Pixmap, Transform, FillRule, Paint, PathBuilder, Stroke};
 
