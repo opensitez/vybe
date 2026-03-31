@@ -38,7 +38,7 @@ impl Tabs {
         }
 
         // Tabs
-        for (i, label) in self.tabs.iter().enumerate() {
+        for (i, _label) in self.tabs.iter().enumerate() {
             let tx = x + i as f32 * tab_w;
             let tw = tab_w;
             let is_sel = i == self.selected;

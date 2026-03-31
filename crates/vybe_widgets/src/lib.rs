@@ -44,6 +44,7 @@ pub mod tool_strip;
 pub mod split_container;
 pub mod flow_layout;
 pub mod table_layout;
+pub mod toolbox;
 
 pub use checkbox::Checkbox;
 pub use radio::Radio;
@@ -75,8 +76,9 @@ pub use tool_strip::ToolStrip;
 pub use split_container::SplitContainer;
 pub use flow_layout::FlowLayoutPanel;
 pub use table_layout::TableLayoutPanel;
+pub use toolbox::Toolbox;
 
-use tiny_skia::{Pixmap, Transform, FillRule, Paint, PathBuilder, Stroke};
+use tiny_skia::PathBuilder;
 
 /// Colors used by widgets.
 #[derive(Clone, Copy, Debug)]
