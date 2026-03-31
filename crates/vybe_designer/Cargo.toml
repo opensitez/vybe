@@ -1,0 +1,14 @@
+[package]
+name = "vybe_designer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tiny-skia = "0.12"
+softbuffer = "0.4"
+winit = "0.30"
+vybe_widgets = { path = "../vybe_widgets" }
+vybe_forms = { path = "../vybe_forms" }
+cosmic-text = "0.18"
+uuid = { workspace = true }
+serde = { workspace = true }
