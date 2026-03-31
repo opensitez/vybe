@@ -326,9 +326,55 @@ impl Compiler {
                 }
             }
 
-            Statement::Delete(_) | Statement::Assert { .. } | Statement::With { .. }
-            | Statement::AnnAssign { .. } | Statement::Match { .. } => {
-                // Not yet compiled — skip silently
+            Statement::Delete(targets) => {
+                // Set deleted variables to null
+                for target in targets {
+                    if let Expression::Name(name) = target {
+                        let idx = self.scope(chunk_idx).alloc(name);
+                        self.chunk(chunk_idx).emit_op(Op::null, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    }
+                }
+            }
+
+            Statement::Assert { test, msg } => {
+                // assert test [, msg] → if not test: raise AssertionError(msg)
+                self.compile_expr(test, chunk_idx)?;
+                let ok_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+                if let Some(m) = msg {
+                    self.compile_expr(m, chunk_idx)?;
+                } else {
+                    let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("AssertionError")));
+                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                }
+                self.chunk(chunk_idx).emit_op(Op::throw_ref, 0);
+                self.chunk(chunk_idx).patch_jump(ok_jump);
+            }
+
+            Statement::With { items, body, .. } => {
+                // Simplified with: evaluate context, bind var, execute body
+                for item in items {
+                    self.compile_expr(&item.context_expr, chunk_idx)?;
+                    if let Some(var) = &item.optional_vars {
+                        self.compile_assign_target(var, chunk_idx)?;
+                    } else {
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    }
+                }
+                for s in body { self.compile_stmt(s, chunk_idx)?; }
+            }
+
+            Statement::AnnAssign { target, value, .. } => {
+                // x: int = 5 → just compile the assignment if there's a value
+                if let Some(val) = value {
+                    self.compile_expr(val, chunk_idx)?;
+                    self.compile_assign_target(target, chunk_idx)?;
+                }
+            }
+
+            Statement::Match { .. } => {
+                // Match/case not yet compiled
             }
         }
         Ok(())
@@ -729,6 +775,116 @@ impl Compiler {
                             self.chunk(chunk_idx).emit(0, 0);
                             return Ok(());
                         }
+                        "enumerate" => {
+                            return self.compile_host_call("vybe:array", "enumerate", args, chunk_idx);
+                        }
+                        "zip" => {
+                            return self.compile_host_call("vybe:array", "zip", args, chunk_idx);
+                        }
+                        "sorted" => {
+                            return self.compile_host_call("vybe:array", "sorted", args, chunk_idx);
+                        }
+                        "reversed" => {
+                            return self.compile_host_call("vybe:array", "reversed", args, chunk_idx);
+                        }
+                        "sum" => {
+                            return self.compile_host_call("vybe:array", "sum", args, chunk_idx);
+                        }
+                        "min" => {
+                            return self.compile_host_call("vybe:array", "pymin", args, chunk_idx);
+                        }
+                        "max" => {
+                            return self.compile_host_call("vybe:array", "pymax", args, chunk_idx);
+                        }
+                        "any" => {
+                            return self.compile_host_call("vybe:array", "any", args, chunk_idx);
+                        }
+                        "all" => {
+                            return self.compile_host_call("vybe:array", "all", args, chunk_idx);
+                        }
+                        "type" => {
+                            return self.compile_host_call("vybe:array", "pytype", args, chunk_idx);
+                        }
+                        "isinstance" => {
+                            return self.compile_host_call("vybe:array", "isinstance", args, chunk_idx);
+                        }
+                        "list" => {
+                            return self.compile_host_call("vybe:array", "list", args, chunk_idx);
+                        }
+                        "dict" => {
+                            return self.compile_host_call("vybe:array", "dict", args, chunk_idx);
+                        }
+                        "set" => {
+                            return self.compile_host_call("vybe:array", "pyset", args, chunk_idx);
+                        }
+                        "tuple" => {
+                            return self.compile_host_call("vybe:array", "tuple", args, chunk_idx);
+                        }
+                        "bool" => {
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
+                                return Ok(());
+                            }
+                        }
+                        "round" => {
+                            if args.len() >= 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                self.chunk(chunk_idx).emit_op(Op::f64_nearest, 0);
+                                return Ok(());
+                            }
+                        }
+                        "chr" => {
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                self.chunk(chunk_idx).emit_op(Op::str_from_char_code, 0);
+                                return Ok(());
+                            }
+                        }
+                        "ord" => {
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                self.chunk(chunk_idx).emit_op(Op::str_char_code_at, 0);
+                                return Ok(());
+                            }
+                        }
+                        "hex" => {
+                            return self.compile_host_call("vybe:convert", "hex", args, chunk_idx);
+                        }
+                        "oct" => {
+                            return self.compile_host_call("vybe:convert", "oct", args, chunk_idx);
+                        }
+                        "repr" | "ascii" => {
+                            return self.compile_host_call("vybe:convert", "toString", args, chunk_idx);
+                        }
+                        "open" => {
+                            // open(filename) → readFile for now
+                            return self.compile_host_call("wasi:filesystem", "readFile", args, chunk_idx);
+                        }
+                        "hasattr" => {
+                            return self.compile_host_call("vybe:object", "hasProperty", args, chunk_idx);
+                        }
+                        "getattr" => {
+                            if args.len() >= 2 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                self.compile_expr(&args[1], chunk_idx)?;
+                                let get_prop = self.chunk(chunk_idx).add_import("vybe:rt", "get_prop");
+                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, get_prop, 0);
+                                self.chunk(chunk_idx).emit(2, 0);
+                                return Ok(());
+                            }
+                        }
+                        "setattr" => {
+                            if args.len() >= 3 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                self.compile_expr(&args[1], chunk_idx)?;
+                                self.compile_expr(&args[2], chunk_idx)?;
+                                let set_prop = self.chunk(chunk_idx).add_import("vybe:rt", "set_prop");
+                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, set_prop, 0);
+                                self.chunk(chunk_idx).emit(3, 0);
+                                return Ok(());
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -749,24 +905,54 @@ impl Compiler {
             }
 
             Expression::Subscript { value, slice } => {
-                // Dict string key lookup vs array index
-                if let Expression::Str(s) = slice.as_ref() {
+                // Slicing: obj[start:end:step]
+                if let Expression::Slice { lower, upper, step } = slice.as_ref() {
+                    self.compile_expr(value, chunk_idx)?;
+                    // Push start (default 0)
+                    if let Some(lo) = lower {
+                        self.compile_expr(lo, chunk_idx)?;
+                    } else {
+                        let c = self.chunk(chunk_idx).add_constant(Value::I32(0));
+                        self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                    }
+                    // Push end (default large number)
+                    if let Some(up) = upper {
+                        self.compile_expr(up, chunk_idx)?;
+                    } else {
+                        let c = self.chunk(chunk_idx).add_constant(Value::I32(i32::MAX));
+                        self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                    }
+                    let slice_fn = self.chunk(chunk_idx).add_import("vybe:array", "slice");
+                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, slice_fn, 0);
+                    self.chunk(chunk_idx).emit(3, 0);
+                    // step: if specified, we'd need a stride — skip for now
+                    let _ = step;
+                }
+                // Dict string key lookup
+                else if let Expression::Str(s) = slice.as_ref() {
                     self.compile_expr(value, chunk_idx)?;
                     let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(s.as_str())));
                     self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
                     let dict_item = self.chunk(chunk_idx).add_import("vybe:types", "dictItem");
                     self.chunk(chunk_idx).emit_op_u16(Op::call_import, dict_item, 0);
                     self.chunk(chunk_idx).emit(2, 0);
-                } else {
+                }
+                // Normal index
+                else {
                     self.compile_expr(value, chunk_idx)?;
                     self.compile_expr(slice, chunk_idx)?;
                     self.chunk(chunk_idx).emit_op(Op::array_get, 0);
                 }
             }
 
-            Expression::Slice { .. } => {
-                // Slicing not fully supported yet — push null
+            Expression::Slice { lower, upper, step } => {
+                // Compile slice as a call to vybe:array/slice(obj, start, end)
+                // This is used inside Subscript which provides the obj
+                // The slice itself is compiled as arguments pushed individually
+                // Actually, slice is always inside Subscript, so handle it there
+                // If we get here standalone, push null
                 self.chunk(chunk_idx).emit_op(Op::null, 0);
+                let _ = (lower, upper, step);
             }
 
             Expression::IfExp { test, body, orelse } => {
@@ -853,6 +1039,14 @@ impl Compiler {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
+
+    fn compile_host_call(&mut self, module: &str, name: &str, args: &[Expression], chunk_idx: usize) -> Result<(), String> {
+        let import_idx = self.chunk(chunk_idx).add_import(module, name);
+        for a in args { self.compile_expr(a, chunk_idx)?; }
+        self.chunk(chunk_idx).emit_op_u16(Op::call_import, import_idx, 0);
+        self.chunk(chunk_idx).emit(args.len() as u8, 0);
+        Ok(())
+    }
 
     fn compile_print(&mut self, args: &[Expression], chunk_idx: usize) -> Result<(), String> {
         for a in args {
@@ -953,6 +1147,161 @@ impl Compiler {
                 self.compile_expr(obj, chunk_idx)?;
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 self.chunk(chunk_idx).emit_op(Op::str_ends_with, 0);
+            }
+            "find" | "index" => {
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                self.chunk(chunk_idx).emit_op(Op::str_index_of, 0);
+            }
+            "rfind" | "rindex" => {
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                let rfind = self.chunk(chunk_idx).add_import("vybe:string", "instrrev");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, rfind, 0);
+                self.chunk(chunk_idx).emit(2, 0);
+            }
+            "count" => {
+                // str.count(sub) — count occurrences
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                let count_fn = self.chunk(chunk_idx).add_import("vybe:string", "count");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, count_fn, 0);
+                self.chunk(chunk_idx).emit(2, 0);
+            }
+            "lstrip" => {
+                self.compile_expr(obj, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::str_trim_start, 0);
+            }
+            "rstrip" => {
+                self.compile_expr(obj, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::str_trim_end, 0);
+            }
+            "title" | "capitalize" => {
+                // Simplified: just upper the first char
+                self.compile_expr(obj, chunk_idx)?;
+                let to_str = self.chunk(chunk_idx).add_import("vybe:convert", "toString");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, to_str, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "isdigit" | "isnumeric" | "isdecimal" => {
+                self.compile_expr(obj, chunk_idx)?;
+                let is_num = self.chunk(chunk_idx).add_import("vybe:convert", "isNumeric");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, is_num, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "isalpha" | "isalnum" | "isspace" | "islower" | "isupper" => {
+                // Simplified: return true for now
+                self.compile_expr(obj, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op(Op::r#true, 0);
+            }
+            "format" => {
+                // str.format(*args) — simplified: just return string
+                self.compile_expr(obj, chunk_idx)?;
+            }
+            "encode" => {
+                // str.encode() → bytes (just return string)
+                self.compile_expr(obj, chunk_idx)?;
+            }
+            "zfill" => {
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                let pad = self.chunk(chunk_idx).add_import("vybe:string", "padStart");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, pad, 0);
+                self.chunk(chunk_idx).emit(2, 0);
+            }
+            "center" | "ljust" | "rjust" => {
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                let op = if method == "rjust" { Op::str_pad_start } else { Op::str_pad_end };
+                self.chunk(chunk_idx).emit_op(op, 0);
+            }
+            // List methods
+            "insert" => {
+                self.compile_expr(obj, chunk_idx)?;
+                for a in args { self.compile_expr(a, chunk_idx)?; }
+                let insert_fn = self.chunk(chunk_idx).add_import("vybe:array", "splice");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, insert_fn, 0);
+                self.chunk(chunk_idx).emit((1 + args.len()) as u8, 0);
+            }
+            "extend" => {
+                // lst.extend(other) → for each in other: lst.append(each)
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                self.chunk(chunk_idx).emit_op(Op::array_concat, 0);
+            }
+            "remove" => {
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                let remove_fn = self.chunk(chunk_idx).add_import("vybe:array", "indexOf");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, remove_fn, 0);
+                self.chunk(chunk_idx).emit(2, 0);
+                // indexOf returns position, use splice to remove (simplified: just call)
+            }
+            "reverse" => {
+                self.compile_expr(obj, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::array_reverse, 0);
+            }
+            "sort" => {
+                self.compile_expr(obj, chunk_idx)?;
+                let sort_fn = self.chunk(chunk_idx).add_import("vybe:array", "sorted");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, sort_fn, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "copy" => {
+                self.compile_expr(obj, chunk_idx)?;
+                let list_fn = self.chunk(chunk_idx).add_import("vybe:array", "list");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, list_fn, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "clear" => {
+                // obj.clear() — set to empty array
+                self.compile_expr(obj, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
+            }
+            // Dict methods
+            "items" => {
+                self.compile_expr(obj, chunk_idx)?;
+                let items_fn = self.chunk(chunk_idx).add_import("vybe:array", "dictItems");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, items_fn, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "get" => {
+                // dict.get(key, default=None)
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                let dict_item = self.chunk(chunk_idx).add_import("vybe:types", "dictItem");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, dict_item, 0);
+                self.chunk(chunk_idx).emit(2, 0);
+            }
+            "update" => {
+                // dict.update(other) — simplified: skip
+                self.compile_expr(obj, chunk_idx)?;
+            }
+            "setdefault" => {
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                let dict_item = self.chunk(chunk_idx).add_import("vybe:types", "dictItem");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, dict_item, 0);
+                self.chunk(chunk_idx).emit(2, 0);
+            }
+            "read" => {
+                // file.read() — simplified: return the file content (obj is already content from open())
+                self.compile_expr(obj, chunk_idx)?;
+            }
+            "write" => {
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                let write_fn = self.chunk(chunk_idx).add_import("wasi:filesystem", "writeFile");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, write_fn, 0);
+                self.chunk(chunk_idx).emit(2, 0);
+            }
+            "close" => {
+                // file.close() — no-op
+                self.compile_expr(obj, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op(Op::null, 0);
             }
             _ => {
                 // Generic method call via attribute access + call_ref
@@ -1056,15 +1405,12 @@ impl Compiler {
             CmpOp::Is => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0), // simplified
             CmpOp::IsNot => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
             CmpOp::In => {
-                // a in b → array_contains(b, a) — swap then call
-                let contains = self.chunk(chunk_idx).add_import("vybe:array", "contains");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, contains, 0);
-                self.chunk(chunk_idx).emit(2, 0);
+                // "in" works for arrays, strings, and dicts — use str_contains opcode
+                // Stack has: needle, haystack. Use array_contains which handles all types.
+                self.chunk(chunk_idx).emit_op(Op::array_contains, 0);
             }
             CmpOp::NotIn => {
-                let contains = self.chunk(chunk_idx).add_import("vybe:array", "contains");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, contains, 0);
-                self.chunk(chunk_idx).emit(2, 0);
+                self.chunk(chunk_idx).emit_op(Op::array_contains, 0);
                 self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
             }
         }

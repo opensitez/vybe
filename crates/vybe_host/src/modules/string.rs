@@ -207,6 +207,30 @@ pub fn register(vm: &mut VM) {
         }
         Value::Object(Rc::new(RefCell::new(Object::new_array(results))))
     }));
+
+    // count(str, sub) → number of non-overlapping occurrences
+    vm.register_host_fn("vybe:string", "count", Box::new(|args: &[Value]| {
+        let haystack = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        let needle = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+        if needle.is_empty() {
+            return Value::I32(0);
+        }
+        Value::I32(haystack.matches(&needle).count() as i32)
+    }));
+
+    // padStart(str, width) — zero-fill / right-justify
+    vm.register_host_fn("vybe:string", "padStart", Box::new(|args: &[Value]| {
+        let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        let width = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+        let fill = args.get(2).map(|v| format!("{}", v)).unwrap_or_else(|| " ".to_string());
+        let fill_char = fill.chars().next().unwrap_or(' ');
+        if s.len() >= width {
+            Value::String(Rc::from(s))
+        } else {
+            let padding: String = std::iter::repeat(fill_char).take(width - s.len()).collect();
+            Value::String(Rc::from(format!("{}{}", padding, s)))
+        }
+    }));
 }
 
 fn s(args: &[Value], idx: usize) -> String {

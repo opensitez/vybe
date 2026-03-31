@@ -202,9 +202,290 @@ pub fn register(vm: &mut VM) {
         }
         Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
     }));
+
+    // ── Python builtins ──────────────────────────────────────────
+
+    // range(stop) or range(start, stop) or range(start, stop, step)
+    vm.register_host_fn("vybe:array", "range", Box::new(|args: &[Value]| {
+        let (start, stop, step) = match args.len() {
+            1 => (0i64, args[0].as_f64() as i64, 1i64),
+            2 => (args[0].as_f64() as i64, args[1].as_f64() as i64, 1i64),
+            _ => (args[0].as_f64() as i64, args[1].as_f64() as i64, {
+                let s = args[2].as_f64() as i64;
+                if s == 0 { 1 } else { s }
+            }),
+        };
+        let mut result = Vec::new();
+        if step > 0 {
+            let mut i = start;
+            while i < stop { result.push(Value::I32(i as i32)); i += step; }
+        } else {
+            let mut i = start;
+            while i > stop { result.push(Value::I32(i as i32)); i += step; }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(result))))
+    }));
+
+    // enumerate(iterable) → array of [index, value] pairs
+    vm.register_host_fn("vybe:array", "enumerate", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(elems) = &o.kind {
+                let pairs: Vec<Value> = elems.iter().enumerate().map(|(i, v)| {
+                    Value::Object(Rc::new(RefCell::new(Object::new_array(vec![Value::I32(i as i32), v.clone()]))))
+                }).collect();
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(pairs))));
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
+
+    // zip(a, b) → array of [a[i], b[i]] pairs
+    vm.register_host_fn("vybe:array", "zip", Box::new(|args: &[Value]| {
+        let get_elems = |v: &Value| -> Vec<Value> {
+            if let Value::Object(obj) = v {
+                let o = obj.borrow();
+                if let ObjectKind::Array(e) = &o.kind { return e.clone(); }
+            }
+            vec![]
+        };
+        let a = args.first().map(get_elems).unwrap_or_default();
+        let b = args.get(1).map(get_elems).unwrap_or_default();
+        let len = a.len().min(b.len());
+        let pairs: Vec<Value> = (0..len).map(|i| {
+            Value::Object(Rc::new(RefCell::new(Object::new_array(vec![a[i].clone(), b[i].clone()]))))
+        }).collect();
+        Value::Object(Rc::new(RefCell::new(Object::new_array(pairs))))
+    }));
+
+    // sorted(iterable) → new sorted array
+    vm.register_host_fn("vybe:array", "sorted", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(elems) = &o.kind {
+                let mut sorted = elems.clone();
+                sorted.sort_by(|a, b| a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(sorted))));
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
+
+    // reversed(iterable) → new reversed array
+    vm.register_host_fn("vybe:array", "reversed", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(elems) = &o.kind {
+                let mut rev = elems.clone();
+                rev.reverse();
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(rev))));
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
+
+    // sum(iterable)
+    vm.register_host_fn("vybe:array", "sum", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(elems) = &o.kind {
+                let total: f64 = elems.iter().map(|v| v.as_f64()).sum();
+                return Value::F64(total);
+            }
+        }
+        Value::F64(0.0)
+    }));
+
+    // min(iterable) or min(a, b, ...)
+    vm.register_host_fn("vybe:array", "pymin", Box::new(|args: &[Value]| {
+        if args.len() == 1 {
+            if let Value::Object(obj) = &args[0] {
+                let o = obj.borrow();
+                if let ObjectKind::Array(elems) = &o.kind {
+                    return elems.iter().min_by(|a, b| a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(std::cmp::Ordering::Equal)).cloned().unwrap_or(Value::Null);
+                }
+            }
+        }
+        args.iter().min_by(|a, b| a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(std::cmp::Ordering::Equal)).cloned().unwrap_or(Value::Null)
+    }));
+
+    // max(iterable) or max(a, b, ...)
+    vm.register_host_fn("vybe:array", "pymax", Box::new(|args: &[Value]| {
+        if args.len() == 1 {
+            if let Value::Object(obj) = &args[0] {
+                let o = obj.borrow();
+                if let ObjectKind::Array(elems) = &o.kind {
+                    return elems.iter().max_by(|a, b| a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(std::cmp::Ordering::Equal)).cloned().unwrap_or(Value::Null);
+                }
+            }
+        }
+        args.iter().max_by(|a, b| a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(std::cmp::Ordering::Equal)).cloned().unwrap_or(Value::Null)
+    }));
+
+    // any(iterable) → bool
+    vm.register_host_fn("vybe:array", "any", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(elems) = &o.kind {
+                return Value::Bool(elems.iter().any(|v| is_truthy(v)));
+            }
+        }
+        Value::Bool(false)
+    }));
+
+    // all(iterable) → bool
+    vm.register_host_fn("vybe:array", "all", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(elems) = &o.kind {
+                return Value::Bool(elems.iter().all(|v| is_truthy(v)));
+            }
+        }
+        Value::Bool(true)
+    }));
+
+    // dict_items(dict) → array of [key, value] pairs
+    vm.register_host_fn("vybe:array", "dictItems", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            let pairs: Vec<Value> = o.properties.iter().map(|(k, v)| {
+                Value::Object(Rc::new(RefCell::new(Object::new_array(vec![
+                    Value::String(Rc::from(k.as_str())), v.clone()
+                ]))))
+            }).collect();
+            return Value::Object(Rc::new(RefCell::new(Object::new_array(pairs))));
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
+
+    // str_contains(haystack, needle) → bool (for "x in string")
+    vm.register_host_fn("vybe:array", "strContains", Box::new(|args: &[Value]| {
+        let haystack = args.first().map(|v| v.to_string()).unwrap_or_default();
+        let needle = args.get(1).map(|v| v.to_string()).unwrap_or_default();
+        Value::Bool(haystack.contains(&needle))
+    }));
+
+    // dict_contains(dict, key) → bool (for "key in dict")
+    vm.register_host_fn("vybe:array", "dictContains", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let key = args.get(1).map(|v| v.to_string()).unwrap_or_default();
+            let o = obj.borrow();
+            return Value::Bool(o.properties.contains_key(&key));
+        }
+        Value::Bool(false)
+    }));
+
+    // isinstance(obj, type_name_str) — simplified
+    vm.register_host_fn("vybe:array", "isinstance", Box::new(|args: &[Value]| {
+        let type_name = args.get(1).map(|v| v.to_string()).unwrap_or_default().to_lowercase();
+        let val = args.first().unwrap_or(&Value::Null);
+        let result = match (val, type_name.as_str()) {
+            (Value::I32(_) | Value::I64(_), "int") => true,
+            (Value::F64(_), "float") => true,
+            (Value::String(_), "str") => true,
+            (Value::Bool(_), "bool") => true,
+            (Value::Null, "nonetype") => true,
+            (Value::Object(o), "list") => matches!(o.borrow().kind, ObjectKind::Array(_)),
+            (Value::Object(o), "dict") => !matches!(o.borrow().kind, ObjectKind::Array(_)),
+            _ => false,
+        };
+        Value::Bool(result)
+    }));
+
+    // type(obj) → string name
+    vm.register_host_fn("vybe:array", "pytype", Box::new(|args: &[Value]| {
+        let val = args.first().unwrap_or(&Value::Null);
+        let name = match val {
+            Value::I32(_) | Value::I64(_) => "int",
+            Value::F64(_) => "float",
+            Value::String(_) => "str",
+            Value::Bool(_) => "bool",
+            Value::Null => "NoneType",
+            Value::Object(o) => {
+                let o = o.borrow();
+                match &o.kind {
+                    ObjectKind::Array(_) => "list",
+                    ObjectKind::Function(_) => "function",
+                    _ => "object",
+                }
+            }
+            _ => "object",
+        };
+        Value::String(Rc::from(name))
+    }));
+
+    // list(iterable) — convert to list (copy)
+    vm.register_host_fn("vybe:array", "list", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(elems) = &o.kind {
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(elems.clone()))));
+            }
+            // Dict → list of keys
+            let keys: Vec<Value> = o.properties.keys().map(|k| Value::String(Rc::from(k.as_str()))).collect();
+            return Value::Object(Rc::new(RefCell::new(Object::new_array(keys))));
+        }
+        if let Some(Value::String(s)) = args.first() {
+            let chars: Vec<Value> = s.chars().map(|c| Value::String(Rc::from(c.to_string().as_str()))).collect();
+            return Value::Object(Rc::new(RefCell::new(Object::new_array(chars))));
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
+
+    // dict() — create empty dict
+    vm.register_host_fn("vybe:array", "dict", Box::new(|_args: &[Value]| {
+        Value::Object(Rc::new(RefCell::new(Object::new())))
+    }));
+
+    // set() — create set as array (simplified)
+    vm.register_host_fn("vybe:array", "pyset", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(elems) = &o.kind {
+                let mut seen = std::collections::HashSet::new();
+                let mut result = Vec::new();
+                for e in elems {
+                    let s = e.to_string();
+                    if seen.insert(s) { result.push(e.clone()); }
+                }
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(result))));
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
+
+    // tuple() — same as list for our purposes
+    vm.register_host_fn("vybe:array", "tuple", Box::new(|args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.borrow();
+            if let ObjectKind::Array(elems) = &o.kind {
+                return Value::Object(Rc::new(RefCell::new(Object::new_array(elems.clone()))));
+            }
+        }
+        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+    }));
 }
 
 fn norm(args: &[Value], idx: usize, default: i64, len: i64) -> usize {
     let v = args.get(idx).map(|v| v.as_f64() as i64).unwrap_or(default);
     if v < 0 { (len + v).max(0) as usize } else { v.min(len) as usize }
+}
+
+fn is_truthy(v: &Value) -> bool {
+    match v {
+        Value::Null | Value::Undefined => false,
+        Value::Bool(b) => *b,
+        Value::I32(n) => *n != 0,
+        Value::I64(n) => *n != 0,
+        Value::F64(f) => *f != 0.0,
+        Value::String(s) => !s.is_empty(),
+        Value::Object(o) => {
+            let o = o.borrow();
+            match &o.kind {
+                ObjectKind::Array(a) => !a.is_empty(),
+                _ => true,
+            }
+        }
+        _ => true,
+    }
 }
