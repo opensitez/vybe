@@ -169,7 +169,7 @@ impl Compiler {
                 self.compile_expression(collection)?;
                 let arr_slot = self.define_local("__foreach_arr");
                 self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let i_slot = self.define_local("__foreach_i");
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 let loop_start = self.current_offset();
@@ -335,7 +335,7 @@ impl Compiler {
                     // Writeback: read from boxes back into caller's variables
                     for (box_local, var_local) in &byref_info {
                         self.emit_u16(Op::local_get, *box_local);
-                        self.emit_constant(Value::F64(0.0));
+                        self.emit(Op::i32_const_0);
                         self.emit(Op::array_get);
                         self.emit_u16(Op::local_set, *var_local);
                         self.emit(Op::drop);

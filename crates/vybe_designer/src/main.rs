@@ -42,6 +42,11 @@ fn main() {
     let mut selected_idx: Option<usize> = None;
     let mut dragging = false;
     let mut drag_offset = (0.0f32, 0.0f32);
+    // Resizing state: (control index, handle)
+    #[derive(Clone, Copy)]
+    enum ResizeHandle { TopLeft, TopRight, BottomLeft, BottomRight }
+    let mut resizing: Option<(usize, ResizeHandle)> = None;
+    let mut initial_bounds: Option<vybe_forms::control::Bounds> = None;
 
     let _ = event_loop.run(move |event, event_loop| {
         match event {
@@ -73,6 +78,59 @@ fn main() {
                                 let ny = (cursor_logical.1 - drag_offset.1).round() as i32;
                                 ctrl.bounds.x = nx;
                                 ctrl.bounds.y = ny;
+                                window.request_redraw();
+                            }
+                        }
+                    } else if let Some((idx, handle)) = resizing {
+                        // Resize the control based on handle and current logical cursor
+                        if let Some(ctrl) = form.controls.get_mut(idx) {
+                            if let Some(init) = initial_bounds {
+                                let mx = cursor_logical.0;
+                                let my = cursor_logical.1;
+                                let mut x = init.x as f32;
+                                let mut y = init.y as f32;
+                                let mut w = init.width as f32;
+                                let mut h = init.height as f32;
+                                let min_w = 12.0; let min_h = 12.0;
+                                match handle {
+                                    ResizeHandle::TopLeft => {
+                                        let right = x + w;
+                                        let bottom = y + h;
+                                        let nx = mx.min(right - min_w);
+                                        let ny = my.min(bottom - min_h);
+                                        let nw = right - nx;
+                                        let nh = bottom - ny;
+                                        ctrl.bounds.x = nx.round() as i32;
+                                        ctrl.bounds.y = ny.round() as i32;
+                                        ctrl.bounds.width = nw.round() as i32;
+                                        ctrl.bounds.height = nh.round() as i32;
+                                    }
+                                    ResizeHandle::TopRight => {
+                                        let left = x;
+                                        let bottom = y + h;
+                                        let nxw = (mx - left).max(min_w);
+                                        let ny = my.min(bottom - min_h);
+                                        let nh = bottom - ny;
+                                        ctrl.bounds.width = nxw.round() as i32;
+                                        ctrl.bounds.y = ny.round() as i32;
+                                        ctrl.bounds.height = nh.round() as i32;
+                                    }
+                                    ResizeHandle::BottomLeft => {
+                                        let right = x + w;
+                                        let nyh = (my - y).max(min_h);
+                                        let nx = mx.min(right - min_w);
+                                        let nw = right - nx;
+                                        ctrl.bounds.x = nx.round() as i32;
+                                        ctrl.bounds.width = nw.round() as i32;
+                                        ctrl.bounds.height = nyh.round() as i32;
+                                    }
+                                    ResizeHandle::BottomRight => {
+                                        let nxw = (mx - x).max(min_w);
+                                        let nyh = (my - y).max(min_h);
+                                        ctrl.bounds.width = nxw.round() as i32;
+                                        ctrl.bounds.height = nyh.round() as i32;
+                                    }
+                                }
                                 window.request_redraw();
                             }
                         }
@@ -108,11 +166,36 @@ fn main() {
                                 }
                             }
                             if let Some(idx) = found {
-                                selected_idx = Some(idx);
-                                dragging = true;
+                                // Check for handle hit first
                                 let b = form.controls[idx].bounds;
-                                drag_offset = (mx - b.x as f32, my - b.y as f32);
-                                window.request_redraw();
+                                let x = b.x as f32; let y = b.y as f32; let w = b.width as f32; let h = b.height as f32;
+                                let hs = 6.0; let half = hs / 2.0;
+                                let corners = [
+                                    (x - half, y - half, ResizeHandle::TopLeft),
+                                    (x + w - half, y - half, ResizeHandle::TopRight),
+                                    (x - half, y + h - half, ResizeHandle::BottomLeft),
+                                    (x + w - half, y + h - half, ResizeHandle::BottomRight),
+                                ];
+                                let mut handle_hit: Option<ResizeHandle> = None;
+                                for (hx, hy, hdl) in &corners {
+                                    if mx >= *hx && mx <= (*hx + hs) && my >= *hy && my <= (*hy + hs) {
+                                        handle_hit = Some(*hdl);
+                                        break;
+                                    }
+                                }
+                                if let Some(h) = handle_hit {
+                                    selected_idx = Some(idx);
+                                    resizing = Some((idx, h));
+                                    initial_bounds = Some(form.controls[idx].bounds.clone());
+                                    dragging = false;
+                                    window.request_redraw();
+                                } else {
+                                    selected_idx = Some(idx);
+                                    dragging = true;
+                                    let b = form.controls[idx].bounds;
+                                    drag_offset = (mx - b.x as f32, my - b.y as f32);
+                                    window.request_redraw();
+                                }
                             } else {
                                 selected_idx = None;
                                 dragging = false;
@@ -120,6 +203,8 @@ fn main() {
                         }
                     } else if state == ElementState::Released && button == MouseButton::Left {
                         dragging = false;
+                        resizing = None;
+                        initial_bounds = None;
                     }
                 }
                 WindowEvent::RedrawRequested => {

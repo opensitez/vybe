@@ -109,7 +109,7 @@ impl Compiler {
         // Writeback ByRef vars from boxes
         for (box_local, var_local) in &byref_info {
             self.emit_u16(Op::local_get, *box_local);
-            self.emit_constant(Value::F64(0.0));
+            self.emit(Op::i32_const_0);
             self.emit(Op::array_get);
             self.emit_u16(Op::local_set, *var_local);
             self.emit(Op::drop);

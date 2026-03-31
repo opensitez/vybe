@@ -8,8 +8,25 @@ use crate::scope::Scope;
 impl Compiler {
     pub(crate) fn compile_expression(&mut self, expr: &Expression) -> Result<(), String> {
         match expr {
-            Expression::IntegerLiteral(n) => self.emit_constant(Value::F64(*n as f64)),
-            Expression::DoubleLiteral(n) => self.emit_constant(Value::F64(*n)),
+            Expression::IntegerLiteral(n) => {
+                if *n == 0 {
+                    self.emit(Op::i32_const_0);
+                } else if *n == 1 {
+                    self.emit(Op::i32_const_1);
+                } else {
+                    self.emit_constant(Value::I32(*n));
+                }
+            }
+            Expression::DoubleLiteral(n) => {
+                let v = *n;
+                if v.fract() == 0.0 && v >= i32::MIN as f64 && v <= i32::MAX as f64 {
+                    if v == 0.0 { self.emit(Op::i32_const_0); }
+                    else if v == 1.0 { self.emit(Op::i32_const_1); }
+                    else { self.emit_constant(Value::I32(v as i32)); }
+                } else {
+                    self.emit_constant(Value::F64(v));
+                }
+            }
             Expression::StringLiteral(s) => self.emit_constant(Value::String(Rc::from(s.as_str()))),
             Expression::BooleanLiteral(b) => {
                 if *b { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
@@ -41,7 +58,7 @@ impl Compiler {
                         self.emit_u16(Op::local_get, slot);
                         // ByRef params are boxes — dereference with array_get 0
                         if self.current_scope().is_byref(&name) {
-                            self.emit_constant(Value::F64(0.0));
+                            self.emit(Op::i32_const_0);
                             self.emit(Op::array_get);
                         }
                     }

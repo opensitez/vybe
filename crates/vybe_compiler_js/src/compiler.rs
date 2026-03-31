@@ -597,7 +597,7 @@ impl Compiler {
                 self.emit(Op::drop);
 
                 // __i = 0
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let i_slot = self.define_local("__for_of_i");
                 self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
@@ -633,7 +633,7 @@ impl Compiler {
 
                 // __i++
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
@@ -657,7 +657,7 @@ impl Compiler {
                 self.emit(Op::drop);
 
                 // __i = 0
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let i_slot = self.define_local("__for_in_i");
                 self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
@@ -691,7 +691,7 @@ impl Compiler {
 
                 // __i++
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
@@ -827,7 +827,14 @@ impl Compiler {
 
     fn compile_expression(&mut self, expr: &Expression) -> Result<(), String> {
         match expr {
-            Expression::Number(n) => { self.emit_constant(Value::F64(*n)); }
+            Expression::Number(n) => {
+                let v = *n;
+                if v.fract() == 0.0 && v >= i32::MIN as f64 && v <= i32::MAX as f64 {
+                    self.emit_constant(Value::I32(v as i32));
+                } else {
+                    self.emit_constant(Value::F64(v));
+                }
+            }
             Expression::String(s) => { self.emit_constant(Value::String(Rc::from(s.as_str()))); }
             Expression::Boolean(true) => self.emit(Op::r#true),
             Expression::Boolean(false) => self.emit(Op::r#false),
@@ -961,14 +968,14 @@ impl Compiler {
             Expression::Update { op, prefix, argument } => {
                 if *prefix {
                     self.compile_expression(argument)?;
-                    self.emit_constant(Value::F64(1.0));
+                    self.emit(Op::i32_const_1);
                     match op { UpdateOp::Increment => self.emit_js_add(), UpdateOp::Decrement => self.emit(Op::f64_sub) }
                     self.emit(Op::dup);
                     self.compile_store(argument)?;
                 } else {
                     self.compile_expression(argument)?;
                     self.emit(Op::dup);
-                    self.emit_constant(Value::F64(1.0));
+                    self.emit(Op::i32_const_1);
                     match op { UpdateOp::Increment => self.emit_js_add(), UpdateOp::Decrement => self.emit(Op::f64_sub) }
                     self.compile_store(argument)?;
                 }
@@ -1440,7 +1447,7 @@ impl Compiler {
                 if arguments.len() >= 2 {
                     self.compile_expression(&arguments[1])?; // ms
                 } else {
-                    self.emit_constant(Value::F64(0.0));
+                    self.emit(Op::i32_const_0);
                 }
                 self.emit(Op::set_timer);
                 return Ok(());
@@ -1451,7 +1458,7 @@ impl Compiler {
                 if arguments.len() >= 2 {
                     self.compile_expression(&arguments[1])?;
                 } else {
-                    self.emit_constant(Value::F64(0.0));
+                    self.emit(Op::i32_const_0);
                 }
                 self.emit(Op::set_timer);
                 return Ok(());
@@ -1637,7 +1644,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, result_slot);
                 self.emit(Op::drop);
                 // __i = 0
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let i_slot = self.define_local("__cb_i");
                 self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
@@ -1667,7 +1674,7 @@ impl Compiler {
                 self.emit(Op::drop);                        // discard push return
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
@@ -1689,7 +1696,7 @@ impl Compiler {
                 self.emit_u16(Op::array_new, 0);
                 let result_slot = self.define_local("__cb_result");
                 self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let i_slot = self.define_local("__cb_i");
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 let loop_start = self.current_offset();
@@ -1719,7 +1726,7 @@ impl Compiler {
                 self.patch_jump(skip);
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit_loop(loop_start);
@@ -1736,7 +1743,7 @@ impl Compiler {
                 self.compile_expression(&arguments[0])?;
                 let fn_slot = self.define_local("__cb_fn");
                 self.emit_u16(Op::local_set, fn_slot); self.emit(Op::drop);
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let i_slot = self.define_local("__cb_i");
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 let loop_start = self.current_offset();
@@ -1755,7 +1762,7 @@ impl Compiler {
                 self.emit(Op::drop); // discard return
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit_loop(loop_start);
@@ -1772,7 +1779,7 @@ impl Compiler {
                 self.compile_expression(&arguments[0])?;
                 let fn_slot = self.define_local("__cb_fn");
                 self.emit_u16(Op::local_set, fn_slot); self.emit(Op::drop);
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let i_slot = self.define_local("__cb_i");
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit(Op::null);
@@ -1804,7 +1811,7 @@ impl Compiler {
                 self.patch_jump(skip);
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit_loop(loop_start);
@@ -1830,7 +1837,7 @@ impl Compiler {
                 }
                 let acc_slot = self.define_local("__cb_acc");
                 self.emit_u16(Op::local_set, acc_slot); self.emit(Op::drop);
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let i_slot = self.define_local("__cb_i");
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 let loop_start = self.current_offset();
@@ -1851,7 +1858,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, acc_slot); self.emit(Op::drop);
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit_loop(loop_start);
@@ -1880,7 +1887,7 @@ impl Compiler {
                 let len_slot = self.define_local("__cb_len");
                 self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
                 // outer loop: i
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let i_slot = self.define_local("__cb_i");
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 let outer_start = self.current_offset();
@@ -1889,7 +1896,7 @@ impl Compiler {
                 self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
                 let outer_exit = self.emit_jump(Op::br_if_false);
                 // inner loop: j
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 let j_slot = self.define_local("__cb_j");
                 self.emit_u16(Op::local_set, j_slot); self.emit(Op::drop);
                 let inner_start = self.current_offset();
@@ -1905,7 +1912,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, len_slot);
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit(Op::f64_sub);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::f64_sub);
                 self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
                 let inner_exit = self.emit_jump(Op::br_if_false);
@@ -1917,7 +1924,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, a_slot); self.emit(Op::drop);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, j_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit(Op::array_get); // arr[j+1]
                 let b_slot = self.define_local("__sort_b");
@@ -1929,7 +1936,7 @@ impl Compiler {
                     self.emit_u16(Op::local_get, b_slot);
                     self.emit_u8(Op::call, 2);
                     // comparator returns number: >0 means swap
-                    self.emit_constant(Value::F64(0.0));
+                    self.emit(Op::i32_const_0);
                     self.emit(Op::dyn_gt);
                 } else {
                     // default: a > b
@@ -1957,7 +1964,7 @@ impl Compiler {
                 self.emit(Op::drop);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, j_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_get, a_slot);
                 self.emit_host_call(set_idx, 3);
@@ -1965,14 +1972,14 @@ impl Compiler {
                 self.patch_jump(no_swap);
                 // j++
                 self.emit_u16(Op::local_get, j_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, j_slot); self.emit(Op::drop);
                 self.emit_loop(inner_start);
                 self.patch_jump(inner_exit);
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit_loop(outer_start);
@@ -1993,7 +2000,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
                 self.emit(Op::str_length); // array length
                 self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 let loop_start = self.current_offset();
                 // i < len
@@ -2012,7 +2019,7 @@ impl Compiler {
                 let found = self.emit_jump(Op::br_if_true);
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit_loop(loop_start);
@@ -2039,7 +2046,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
                 self.emit(Op::str_length);
                 self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
@@ -2055,7 +2062,7 @@ impl Compiler {
                 self.emit(Op::dyn_not);
                 let failed = self.emit_jump(Op::br_if_true);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit_loop(loop_start);
@@ -2082,7 +2089,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
                 self.emit(Op::str_length);
                 self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
-                self.emit_constant(Value::F64(0.0));
+                self.emit(Op::i32_const_0);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
@@ -2097,7 +2104,7 @@ impl Compiler {
                 self.emit(Op::dyn_to_bool);
                 let found = self.emit_jump(Op::br_if_true);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
                 self.emit_loop(loop_start);

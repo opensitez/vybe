@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 vybe_bytecode = { path = "../vybe_bytecode" }
 vybe_parser_python = { path = "../vybe_parser_python" }
+vybe_compiler_common = { path = "../vybe_compiler_common" }
 
 [lib]
 path = "src/lib.rs"

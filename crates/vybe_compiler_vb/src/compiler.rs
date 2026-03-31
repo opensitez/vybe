@@ -616,7 +616,7 @@ impl Compiler {
                     self.emit_u16(Op::local_set, tmp);
                     self.emit(Op::drop);
                     self.emit_u16(Op::local_get, slot); // box
-                    self.emit_constant(Value::F64(0.0));  // index 0
+                    self.emit(Op::i32_const_0);           // index 0
                     self.emit_u16(Op::local_get, tmp);    // value
                     self.emit(Op::array_set);
                     self.emit(Op::drop);

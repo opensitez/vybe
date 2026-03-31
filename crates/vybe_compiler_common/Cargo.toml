@@ -1,0 +1,9 @@
+[package]
+name = "vybe_compiler_common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_bytecode = { workspace = true }
