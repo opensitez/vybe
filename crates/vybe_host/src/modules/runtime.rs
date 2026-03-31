@@ -125,6 +125,7 @@ fn make_error(kind: &str, args: &[Value]) -> Value {
     if let Value::Object(ref obj) = this {
         let mut o = obj.borrow_mut();
         o.properties.insert("__type".into(), Value::String(Rc::from(kind)));
+        o.properties.insert("__exception_type".into(), Value::String(Rc::from(kind)));
         o.properties.insert("name".into(), Value::String(Rc::from(kind)));
         o.properties.insert("message".into(), Value::String(Rc::from(message.as_str())));
         o.properties.insert("stack".into(), Value::String(Rc::from(format!("{}: {}", kind, message).as_str())));

@@ -620,4 +620,27 @@ fn register_enums(vm: &mut VM) {
     for (name, val) in &[("none",0),("left",1),("right",2),("middle",4)] {
         vm.type_registry.add_constant(id, name, *val);
     }
+
+    // --- Exception types (cross-language: Python/JS/VB/C#/Dart) ---
+    // Register base Exception type and common subtypes.
+    // These enable `ref_test` and typed catch across all languages.
+    let exc_base = vm.type_registry.register(TypeDef::new("Exception"));
+    let exc_types = [
+        "ValueError", "TypeError", "KeyError", "IndexError",
+        "RuntimeError", "StopIteration", "AttributeError",
+        "ZeroDivisionError", "FileNotFoundError", "ImportError",
+        "NotImplementedError", "OverflowError", "IOError", "OSError",
+        // .NET exception types
+        "ArgumentException", "ArgumentNullException", "InvalidOperationException",
+        "NullReferenceException", "FormatException", "StackOverflowException",
+        // JS error types
+        "Error", "RangeError", "SyntaxError", "ReferenceError", "URIError",
+    ];
+    for name in &exc_types {
+        let mut td = TypeDef::new(name);
+        td.parent = Some(exc_base);
+        td.add_field("message");
+        td.add_field("name");
+        vm.type_registry.register(td);
+    }
 }
