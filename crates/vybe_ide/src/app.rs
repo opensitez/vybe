@@ -265,7 +265,7 @@ impl SkiaIde {
         if self.in_form_designer() && layout.properties.contains(lx, ly) && self.layout_config.show_properties {
             let form = self.current_form_idx().and_then(|i| self.project.forms.get(i)).map(|fm| &fm.form);
             let selected = form.and_then(|f| self.form_designer.selected_control_name(f));
-            self.properties.handle_click(lx, ly, layout.properties, form, selected);
+            self.properties.handle_click(lx, ly, layout.properties, form, selected, self.scale);
 
             // ── Handle immediate commits for inline toggles / pickers ──
             if self.properties.pending_commit {
@@ -520,7 +520,10 @@ impl SkiaIde {
     }
 
     fn commit_property_edit(&mut self) {
-        if let Some((key, value)) = self.properties.commit_edit() {
+        if let Some((key, mut value)) = self.properties.commit_edit() {
+            if value == "(none)" {
+                value = String::new();
+            }
             let key_display = key.clone();
             if let Some(idx) = self.current_form_idx() {
                 if let Some(fm) = self.project.forms.get_mut(idx) {
@@ -575,6 +578,8 @@ impl SkiaIde {
                             "Width" => { if let Ok(v) = value.parse() { fm.form.width = v; } }
                             "Height" => { if let Ok(v) = value.parse() { fm.form.height = v; } }
                             "BackColor" => { fm.form.back_color = if value.is_empty() { None } else { Some(value) }; }
+                            "ForeColor" => { fm.form.fore_color = if value.is_empty() { None } else { Some(value) }; }
+                            "Font" => { fm.form.font = if value.is_empty() { None } else { Some(value) }; }
                             _ => {}
                         }
                     }

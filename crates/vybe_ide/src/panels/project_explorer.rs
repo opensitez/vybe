@@ -249,7 +249,6 @@ impl ProjectExplorer {
                 self.refs_collapsed = !self.refs_collapsed;
                 return ExplorerEvent::None;
             }
-            y += ITEM_H;
             // Ref items are not clickable
         }
 

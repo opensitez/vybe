@@ -185,6 +185,11 @@ impl ApplicationHandler for WinitApp {
                             NamedKey::Delete => "Delete",
                             NamedKey::Tab => "Tab",
                             NamedKey::Escape => "Escape",
+                            NamedKey::Space => {
+                                self.ide.handle_char(' ');
+                                self.request_redraw();
+                                return;
+                            }
                             _ => return,
                         };
                         self.ide.handle_key(key_str);

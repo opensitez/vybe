@@ -6,7 +6,7 @@ use uuid::Uuid;
 use vybe_forms::{Form, Control, ControlType};
 
 use crate::layout::Rect;
-use crate::text::draw_text;
+use crate::text::{draw_text, draw_text_with_font, measure_text_with_font};
 use crate::panels::toolbox_panel::ControlTool;
 
 fn next_ctrl_name(ct: &ControlType, form: &Form) -> String {
@@ -308,30 +308,59 @@ impl FormDesigner {
         let ch = ctrl.bounds.height as f32;
         let mut paint = Paint::default();
         let ctrl_text = ctrl.properties.get_string("Text").unwrap_or("").to_string();
-        let text_color = CosmicColor::rgba(30, 30, 30, 255);
+        
+        // Setup visual properties
+        let font_prop = ctrl.properties.get_string("Font");
+        
+        let text_color = if let Some(hex) = ctrl.properties.get_string("ForeColor") {
+            vybe_widgets::color_picker::PickedColor::from_hex(hex)
+                .map(|c| CosmicColor::rgba(c.r, c.g, c.b, c.a))
+                .unwrap_or(CosmicColor::rgba(30, 30, 30, 255))
+        } else {
+            CosmicColor::rgba(30, 30, 30, 255)
+        };
+
+        let back_color = if let Some(hex) = ctrl.properties.get_string("BackColor") {
+            vybe_widgets::color_picker::PickedColor::from_hex(hex)
+                .map(|c| (c.r, c.g, c.b, c.a))
+        } else {
+            None
+        };
 
         match ctrl.control_type {
             ControlType::Button => {
-                paint.set_color_rgba8(225, 225, 225, 255);
+                if let Some((r, g, b, a)) = back_color {
+                    paint.set_color_rgba8(r, g, b, a);
+                } else {
+                    paint.set_color_rgba8(225, 225, 225, 255);
+                }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(173, 173, 173, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                let tw = ctrl_text.len() as f32 * 7.0;
-                draw_text(pix, fs, sc, &ctrl_text, cx + (cw - tw) / 2.0, cy + (ch - 14.0) / 2.0, 12.0, text_color, s);
+                let tw = measure_text_with_font(fs, &ctrl_text, font_prop, 12.0, s);
+                draw_text_with_font(pix, fs, sc, &ctrl_text, cx + (cw - tw) / 2.0, cy + (ch - 14.0) / 2.0, font_prop, 12.0, text_color, s);
             }
             ControlType::Label | ControlType::LinkLabel => {
                 let color = if ctrl.control_type == ControlType::LinkLabel {
                     CosmicColor::rgba(0, 102, 204, 255)
                 } else { text_color };
-                draw_text(pix, fs, sc, &ctrl_text, cx + 2.0, cy + 2.0, 12.0, color, s);
+                if let Some((r, g, b, a)) = back_color {
+                    paint.set_color_rgba8(r, g, b, a);
+                    fill(pix, &paint, cx, cy, cw, ch, s);
+                }
+                draw_text_with_font(pix, fs, sc, &ctrl_text, cx + 2.0, cy + 2.0, font_prop, 12.0, color, s);
             }
             ControlType::TextBox | ControlType::MaskedTextBox => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color {
+                    paint.set_color_rgba8(r, g, b, a);
+                } else {
+                    paint.set_color_rgba8(255, 255, 255, 255);
+                }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(122, 122, 122, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
                 let display = if ctrl_text.is_empty() { &ctrl.name } else { &ctrl_text };
-                draw_text(pix, fs, sc, display, cx + 4.0, cy + 4.0, 12.0, text_color, s);
+                draw_text_with_font(pix, fs, sc, display, cx + 4.0, cy + 4.0, font_prop, 12.0, text_color, s);
             }
             ControlType::CheckBox => {
                 let bsz = 14.0;
@@ -340,7 +369,7 @@ impl FormDesigner {
                 fill(pix, &paint, cx + 2.0, by, bsz, bsz, s);
                 paint.set_color_rgba8(122, 122, 122, 255);
                 stroke_rect(pix, &paint, cx + 2.0, by, bsz, bsz, s);
-                draw_text(pix, fs, sc, &ctrl_text, cx + 20.0, cy + 2.0, 12.0, text_color, s);
+                draw_text_with_font(pix, fs, sc, &ctrl_text, cx + 20.0, cy + 2.0, font_prop, 12.0, text_color, s);
             }
             ControlType::RadioButton => {
                 paint.set_color_rgba8(122, 122, 122, 255);
@@ -349,7 +378,7 @@ impl FormDesigner {
                     let mut st = Stroke::default(); st.width = 1.0 * s;
                     pix.stroke_path(&path, &paint, &st, Transform::identity(), None);
                 }
-                draw_text(pix, fs, sc, &ctrl_text, cx + 20.0, cy + 2.0, 12.0, text_color, s);
+                draw_text_with_font(pix, fs, sc, &ctrl_text, cx + 20.0, cy + 2.0, font_prop, 12.0, text_color, s);
             }
             ControlType::ComboBox => {
                 paint.set_color_rgba8(255, 255, 255, 255);
@@ -370,7 +399,7 @@ impl FormDesigner {
                 if let Some(path) = pb.finish() {
                     pix.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
                 }
-                draw_text(pix, fs, sc, &ctrl_text, cx + 4.0, cy + 4.0, 12.0, text_color, s);
+                draw_text_with_font(pix, fs, sc, &ctrl_text, cx + 4.0, cy + 4.0, font_prop, 12.0, text_color, s);
             }
             ControlType::ListBox => {
                 paint.set_color_rgba8(255, 255, 255, 255);
@@ -529,15 +558,19 @@ impl FormDesigner {
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
             }
             _ => {
-                paint.set_color_rgba8(230, 230, 230, 255);
+                if let Some((r, g, b, a)) = back_color {
+                    paint.set_color_rgba8(r, g, b, a);
+                } else {
+                    paint.set_color_rgba8(230, 230, 230, 255);
+                }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(160, 160, 160, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
                 if !ctrl_text.is_empty() {
-                    draw_text(pix, fs, sc, &ctrl_text, cx + 4.0, cy + 4.0, 12.0, text_color, s);
+                    draw_text_with_font(pix, fs, sc, &ctrl_text, cx + 4.0, cy + 4.0, font_prop, 12.0, text_color, s);
                 } else {
                     let grey = CosmicColor::rgba(150, 150, 150, 255);
-                    draw_text(pix, fs, sc, &ctrl.name, cx + 4.0, cy + 4.0, 11.0, grey, s);
+                    draw_text_with_font(pix, fs, sc, &ctrl.name, cx + 4.0, cy + 4.0, font_prop, 11.0, grey, s);
                 }
             }
         }

@@ -5,7 +5,7 @@ use tiny_skia::{Paint, Pixmap, Transform};
 use vybe_forms::{Form, ControlType};
 
 use crate::layout::Rect;
-use crate::text::draw_text;
+use crate::text::{draw_text, measure_text};
 use vybe_widgets::color_picker::{ColorPicker, ColorPickerEvent, PickedColor};
 use vybe_widgets::font_picker::{FontPicker, FontPickerEvent};
 use vybe_widgets::dropdown::{Dropdown, DropdownEvent};
@@ -62,6 +62,9 @@ pub struct PropertiesPanel {
     /// Dropdown popup state.
     pub dropdown: Option<Dropdown>,
     pub dropdown_prop: Option<String>,
+    pub dropdown_pos: Option<(f32, f32)>,
+    /// Properties being edited in the connection wizard modal.
+    pub wizard_props: std::collections::HashMap<String, String>,
 }
 
 impl PropertiesPanel {
@@ -82,6 +85,8 @@ impl PropertiesPanel {
             pending_commit: false,
             dropdown: None,
             dropdown_prop: None,
+            dropdown_pos: None,
+            wizard_props: std::collections::HashMap::new(),
         }
     }
 
@@ -184,7 +189,9 @@ impl PropertiesPanel {
                                 stroke_rect(pix, &paint, val_x, y + 1.0, rect.w - (val_x - rect.x) - SCROLLBAR_W - 2.0, ROW_H - 2.0, s);
                                 draw_text(pix, fs, sc, &ed.value, val_x + 4.0, y + 4.0, 11.0, val_color, s);
                                 // Cursor
-                                let cx = val_x + 4.0 + ed.cursor as f32 * 6.8;
+                                let text_up_to_cursor = &ed.value[0..ed.cursor];
+                                let w = measure_text(fs, text_up_to_cursor, 11.0, s);
+                                let cx = val_x + 4.0 + w;
                                 paint.set_color_rgba8(0, 0, 0, 255);
                                 fill(pix, &paint, cx, y + 3.0, 1.0, ROW_H - 6.0, s);
                             } else {
@@ -351,6 +358,101 @@ impl PropertiesPanel {
             let popup_y = rect.y + HEADER_H + TAB_H + 40.0;
             self.font_picker.render_popup(pix, fs, sc, popup_x, popup_y, s);
         }
+
+        // ── Dropdown popup overlay ──
+        if let Some(ref dropdown) = self.dropdown {
+            let (px, py) = self.dropdown_pos.unwrap_or((rect.x + 10.0, rect.y + HEADER_H + TAB_H + 40.0));
+            dropdown.render(
+                pix, fs, sc, px, py,
+                (252, 252, 252, 255), (180, 180, 180, 255),
+                (0, 120, 212, 40), (0, 120, 212, 25),
+                CosmicColor::rgba(0, 90, 180, 255),
+                CosmicColor::rgba(30, 30, 30, 255),
+            );
+        }
+
+        // ── Connection Wizard Overlay ──
+        self.render_conn_wizard(pix, fs, sc, rect, s);
+    }
+
+    fn render_conn_wizard(&self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, rect: Rect, s: f32) {
+        if !self.conn_builder_open { return; }
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(0, 0, 0, 120);
+        fill(pix, &paint, rect.x, rect.y, rect.w, rect.h, s);
+
+        let pw = rect.w - 20.0;
+        let ph = 210.0;
+        let px = rect.x + 10.0;
+        let py = rect.y + HEADER_H + 30.0;
+
+        paint.set_color_rgba8(250, 250, 250, 255);
+        fill(pix, &paint, px, py, pw, ph, s);
+        paint.set_color_rgba8(160, 160, 160, 255);
+        stroke_rect(pix, &paint, px, py, pw, ph, s);
+
+        let text_col = CosmicColor::rgba(30, 30, 30, 255);
+        let header_col = CosmicColor::rgba(0, 120, 212, 255);
+        draw_text(pix, fs, sc, "Connection Builder", px + 10.0, py + 10.0, 13.0, header_col, s);
+
+        // Close button (X)
+        draw_text(pix, fs, sc, "✕", px + pw - 20.0, py + 10.0, 14.0, CosmicColor::rgba(180, 50, 50, 255), s);
+
+        let db_type = self.wizard_props.get("DbType").map(|s| s.as_str()).unwrap_or("PostgreSQL");
+        let fields = if db_type == "SQLite" {
+            vec![("DbPath", "Database File")]
+        } else {
+            vec![
+                ("DbHost", "Host"),
+                ("DbPort", "Port"),
+                ("DbName", "Database"),
+                ("DbUser", "Username"),
+                ("DbPassword", "Password"),
+            ]
+        };
+
+        let mut cy = py + 35.0;
+        for (key, label) in fields.iter() {
+            draw_text(pix, fs, sc, label, px + 10.0, cy + 4.0, 11.0, text_col, s);
+            
+            let ix = px + 70.0;
+            let iw = pw - 80.0;
+            paint.set_color_rgba8(255, 255, 255, 255);
+            fill(pix, &paint, ix, cy, iw, 20.0, s);
+            paint.set_color_rgba8(160, 160, 160, 255);
+            stroke_rect(pix, &paint, ix, cy, iw, 20.0, s);
+            
+            let val = self.wizard_props.get(*key).map(|st| st.as_str()).unwrap_or("");
+            let display = if let Some(ed) = &self.editing {
+                if ed.key == format!("Wizard_{}", key) { ed.value.as_str() } else { val }
+            } else { val };
+            
+            let display_pw = if *key == "DbPassword" { "•".repeat(display.chars().count()) } else { display.to_string() };
+            draw_text(pix, fs, sc, &display_pw, ix + 4.0, cy + 3.0, 11.0, text_col, s);
+
+            if let Some(ed) = &self.editing {
+                if ed.key == format!("Wizard_{}", key) {
+                    let chars_before = ed.value[0..ed.cursor].chars().count();
+                    let text_up_to_cursor = if *key == "DbPassword" {
+                        "•".repeat(chars_before)
+                    } else {
+                        ed.value[0..ed.cursor].to_string()
+                    };
+                    let w = crate::text::measure_text(fs, &text_up_to_cursor, 11.0, s);
+                    paint.set_color_rgba8(0, 0, 0, 255);
+                    fill(pix, &paint, ix + 4.0 + w, cy + 2.0, 1.0, 16.0, s);
+                }
+            }
+            cy += 24.0;
+        }
+
+        // Build Button
+        let bx = px + 10.0;
+        let by = cy + 10.0;
+        let bw = pw - 20.0;
+        paint.set_color_rgba8(0, 120, 212, 255);
+        fill(pix, &paint, bx, by, bw, 24.0, s);
+        draw_text(pix, fs, sc, "Build Connection String", bx + bw/2.0 - 70.0, by + 5.0, 11.0, CosmicColor::rgba(255,255,255,255), s);
     }
 
     fn items_height(&self, items: &[PropItem]) -> f32 {
@@ -524,7 +626,23 @@ impl PropertiesPanel {
 
                 let is_non_visual = ctrl.control_type.is_non_visual();
                 let has_complex = matches!(ctrl.control_type,
-                    DataGridView | ListBox | ComboBox | BindingNavigator);
+                    DataGridView | ListBox | ComboBox | BindingNavigator) || 
+                    matches!(ctrl.control_type, vybe_forms::ControlType::BindingSourceComponent);
+
+                let mut bs_options = vec!["(none)".to_string()];
+                let mut ds_options = vec!["(none)".to_string()];
+                for c in &form.controls {
+                    if matches!(c.control_type, vybe_forms::ControlType::BindingSourceComponent) && c.id != ctrl.id {
+                        bs_options.push(c.name.clone());
+                        ds_options.push(c.name.clone());
+                    }
+                    if matches!(c.control_type, vybe_forms::ControlType::DataAdapterComponent | 
+                        vybe_forms::ControlType::DataSetComponent | 
+                        vybe_forms::ControlType::DataTableComponent | 
+                        vybe_forms::ControlType::DataView) {
+                        ds_options.push(c.name.clone());
+                    }
+                }
 
                 // Simple data binding for visual controls without complex binding
                 if !is_non_visual && !has_complex {
@@ -533,15 +651,16 @@ impl PropertiesPanel {
                         PictureBox => "ImageLocation",
                         _ => "Text",
                     };
-                    items.push(Self::prop("DataBindings.Source",
-                        &Self::get_prop(ctrl, "DataBindings.Source", "")));
+                    items.push(PropItem::DropdownRow("DataBindings.Source".into(),
+                        Self::get_prop(ctrl, "DataBindings.Source", ""), bs_options.clone()));
                     items.push(Self::prop(&format!("Bind: {}", bindable),
                         &Self::get_prop(ctrl, &format!("DataBindings.{}", bindable), "")));
                 }
 
                 // Complex binding (DataGridView, ListBox, ComboBox)
                 if has_complex && ctrl.control_type != BindingNavigator {
-                    items.push(Self::prop("DataSource", &Self::get_prop(ctrl, "DataSource", "")));
+                    items.push(PropItem::DropdownRow("DataSource".into(), 
+                        Self::get_prop(ctrl, "DataSource", ""), ds_options.clone()));
                     items.push(Self::prop("DataMember", &Self::get_prop(ctrl, "DataMember", "")));
                 }
 
@@ -553,7 +672,8 @@ impl PropertiesPanel {
 
                 // BindingNavigator
                 if ctrl.control_type == BindingNavigator {
-                    items.push(Self::prop("BindingSource", &Self::get_prop(ctrl, "BindingSource", "")));
+                    items.push(PropItem::DropdownRow("BindingSource".into(), 
+                        Self::get_prop(ctrl, "BindingSource", ""), bs_options.clone()));
                 }
 
                 // BindingSource
@@ -585,16 +705,7 @@ impl PropertiesPanel {
                     let db_type = Self::get_prop(ctrl, "DbType", "SQLite");
                     if db_type == "SQLite" {
                         items.push(Self::prop("DbPath", &Self::get_prop(ctrl, "DbPath", "")));
-                    } else {
-                        items.push(Self::prop("DbHost", &Self::get_prop(ctrl, "DbHost", "localhost")));
-                        items.push(Self::prop("DbPort", &Self::get_prop(ctrl, "DbPort",
-                            if db_type == "PostgreSQL" { "5432" } else { "3306" })));
-                        items.push(Self::prop("DbName", &Self::get_prop(ctrl, "DbName", "")));
-                        items.push(Self::prop("DbUser", &Self::get_prop(ctrl, "DbUser", "")));
-                        items.push(Self::prop("DbPassword", &Self::get_prop(ctrl, "DbPassword", "")));
                     }
-                    // Action rows for connection wizard
-                    items.push(PropItem::Section("Actions".into()));
                     items.push(Self::prop("⚡ Build ConnStr", "→ click"));
                     items.push(Self::prop("🔌 Test Connection", "→ click"));
                     // Show connection status if available
@@ -677,8 +788,110 @@ impl PropertiesPanel {
         items.iter().filter(|i| matches!(i, PropItem::Row(_, _) | PropItem::CheckboxRow(_, _) | PropItem::DropdownRow(_, _, _))).count()
     }
 
-    pub fn handle_click(&mut self, mx: f32, my: f32, rect: Rect, form: Option<&Form>, selected_control: Option<&str>) {
+    pub fn handle_click(&mut self, mx: f32, my: f32, rect: Rect, form: Option<&Form>, selected_control: Option<&str>, scale: f32) {
         if !rect.contains(mx, my) { return; }
+
+        if self.conn_builder_open {
+            let pw = rect.w - 20.0;
+            let ph = 210.0;
+            let px = rect.x + 10.0;
+            let py = rect.y + HEADER_H + 30.0;
+            
+            // Close X
+            if mx >= px + pw - 24.0 && mx <= px + pw && my >= py + 6.0 && my <= py + 26.0 {
+                self.conn_builder_open = false;
+                self.editing = None;
+                return;
+            }
+
+            let bx = px + 10.0;
+            let mut by = py + 35.0 + (5.0 * 24.0) + 10.0;
+            let bw = pw - 20.0;
+            // Build Button Check
+            if mx >= bx && mx <= bx + bw && my >= by && my <= by + 24.0 {
+                // Save wizard props to current editing string then commit!
+                // But actually we have 5 properties. Let app.rs handle the build!
+                // Since user modified self.editing, we first flush it to wizard_props
+                if let Some(ed) = self.editing.take() {
+                    if ed.key.starts_with("Wizard_") {
+                        let k = ed.key.replace("Wizard_", "");
+                        self.wizard_props.insert(k, ed.value);
+                    }
+                }
+                
+                // Form action string: "build_conn_from_wizard" does not exist in app.rs
+                // app.rs reads directly from properties! Wait, app.rs reads from the control's properties.
+                // So I MUST write wizard_props back to the control properties here, then ask app.rs to build.
+                // Or I can just format the string here and set it as EditingProp!
+                let db_type = self.wizard_props.get("DbType").map(String::as_str).unwrap_or("PostgreSQL");
+                let conn_str = if db_type == "SQLite" {
+                    let path = self.wizard_props.get("DbPath").map(String::as_str).unwrap_or("database.db");
+                    format!("Data Source={}", path)
+                } else if db_type == "MySQL" {
+                    let host = self.wizard_props.get("DbHost").map(String::as_str).unwrap_or("localhost");
+                    let port = self.wizard_props.get("DbPort").map(String::as_str).unwrap_or("3306");
+                    let db = self.wizard_props.get("DbName").map(String::as_str).unwrap_or("");
+                    let user = self.wizard_props.get("DbUser").map(String::as_str).unwrap_or("root");
+                    let pass = self.wizard_props.get("DbPassword").map(String::as_str).unwrap_or("");
+                    format!("Server={};Port={};Database={};Uid={};Pwd={}", host, port, db, user, pass)
+                } else {
+                    let host = self.wizard_props.get("DbHost").map(String::as_str).unwrap_or("localhost");
+                    let port = self.wizard_props.get("DbPort").map(String::as_str).unwrap_or("5432");
+                    let db = self.wizard_props.get("DbName").map(String::as_str).unwrap_or("");
+                    let user = self.wizard_props.get("DbUser").map(String::as_str).unwrap_or("postgres");
+                    let pass = self.wizard_props.get("DbPassword").map(String::as_str).unwrap_or("");
+                    format!("Host={};Port={};Database={};Username={};Password={}", host, port, db, user, pass)
+                };
+                
+                self.editing = Some(EditingProp {
+                    key: "ConnectionString".into(),
+                    value: conn_str,
+                    cursor: 0,
+                });
+                self.pending_commit = true;
+                self.conn_builder_open = false;
+                return;
+            }
+
+            let db_type = self.wizard_props.get("DbType").map(String::as_str).unwrap_or("PostgreSQL");
+            let fields = if db_type == "SQLite" {
+                vec!["DbPath"]
+            } else {
+                vec!["DbHost", "DbPort", "DbName", "DbUser", "DbPassword"]
+            };
+            let mut cy = py + 35.0;
+            for key in &fields {
+                let ix = px + 70.0;
+                let iw = pw - 80.0;
+                if mx >= ix && mx <= ix + iw && my >= cy && my <= cy + 20.0 {
+                    // Flush existing edit
+                    if let Some(ed) = self.editing.take() {
+                        if ed.key.starts_with("Wizard_") {
+                            let k = ed.key.replace("Wizard_", "");
+                            self.wizard_props.insert(k, ed.value);
+                        }
+                    }
+                    let val = self.wizard_props.get(*key).map(String::as_str).unwrap_or("").to_string();
+                    self.editing = Some(EditingProp {
+                        key: format!("Wizard_{}", key),
+                        value: val.clone(),
+                        cursor: val.len(),
+                    });
+                    return;
+                }
+                cy += 24.0;
+            }
+            
+            // Click outside inputs inside modal
+            // Flush exist
+            if let Some(ed) = self.editing.take() {
+                if ed.key.starts_with("Wizard_") {
+                    let k = ed.key.replace("Wizard_", "");
+                    self.wizard_props.insert(k, ed.value);
+                }
+            }
+            return;
+        }
 
         // ── Color picker popup is open: route click to it first ──
         if self.color_picker.open {
@@ -740,6 +953,34 @@ impl PropertiesPanel {
             }
         }
 
+        // ── Dropdown popup overlay routing ──
+        if let Some(ref mut dropdown) = self.dropdown {
+            let (px, py) = self.dropdown_pos.unwrap_or((rect.x + 10.0, rect.y + HEADER_H + TAB_H + 40.0));
+            match dropdown.handle_mouse(mx, my, px, py, true) {
+                DropdownEvent::Selected(idx) => {
+                    if let Some(ref prop_name) = self.dropdown_prop {
+                        self.editing = Some(EditingProp {
+                            key: prop_name.clone(),
+                            value: dropdown.items[idx].clone(),
+                            cursor: dropdown.items[idx].len(),
+                        });
+                        self.pending_commit = true;
+                    }
+                    self.dropdown = None;
+                    self.dropdown_prop = None;
+                    self.dropdown_pos = None;
+                    return;
+                }
+                DropdownEvent::Closed => {
+                    self.dropdown = None;
+                    self.dropdown_prop = None;
+                    self.dropdown_pos = None;
+                    return;
+                }
+                DropdownEvent::None => { return; }
+            }
+        }
+
         // Tab switching
         let tab_y = rect.y + HEADER_H;
         if my >= tab_y && my < tab_y + TAB_H {
@@ -788,7 +1029,30 @@ impl PropertiesPanel {
                             } else if key.contains("Build ConnStr") || key.contains("Test Connection") {
                                 // Action rows for connection wizard
                                 if key.contains("Build") {
-                                    self.pending_action = Some("build_conn".to_string());
+                                    self.conn_builder_open = true;
+                                    self.wizard_props.clear();
+                                    if let (Some(f), Some(c_name)) = (form, selected_control) {
+                                        if let Some(ctrl) = f.controls.iter().find(|c| c.name == c_name) {
+                                            let db_type = Self::get_prop(ctrl, "DbType", "PostgreSQL");
+                                            for p in ["DbHost", "DbPort", "DbName", "DbUser", "DbPassword", "DbPath"] {
+                                                self.wizard_props.insert(p.to_string(), Self::get_prop(ctrl, p, ""));
+                                            }
+                                            
+                                            if self.wizard_props.get("DbHost").map(String::as_str).unwrap_or("") == "" {
+                                                self.wizard_props.insert("DbHost".to_string(), "localhost".to_string());
+                                            }
+                                            if self.wizard_props.get("DbPort").map(String::as_str).unwrap_or("") == "" {
+                                                let p = if db_type == "MySQL" { "3306" } else { "5432" };
+                                                self.wizard_props.insert("DbPort".to_string(), p.to_string());
+                                            }
+                                            if self.wizard_props.get("DbUser").map(String::as_str).unwrap_or("") == "" {
+                                                let u = if db_type == "MySQL" { "root" } else { "postgres" };
+                                                self.wizard_props.insert("DbUser".to_string(), u.to_string());
+                                            }
+
+                                            self.wizard_props.insert("DbType".to_string(), db_type);
+                                        }
+                                    }
                                 } else {
                                     self.pending_action = Some("test_conn".to_string());
                                 }
@@ -836,29 +1100,13 @@ impl PropertiesPanel {
                 PropItem::DropdownRow(key, current, options) => {
                     if my >= y && my < y + ROW_H {
                         if self.tab == PropTab::Properties && mx >= val_x {
-                            // Cycle to the next option for quick dropdown behavior
-                            if let Some(pos) = options.iter().position(|o| o == current) {
-                                let next_pos = (pos + 1) % options.len();
-                                let new_val = options[next_pos].clone();
-                                self.editing = Some(EditingProp {
-                                    key: key.clone(),
-                                    value: new_val.clone(),
-                                    cursor: new_val.len(),
-                                });
-                                self.pending_commit = true;
-                            } else if !options.is_empty() {
-                                let new_val = options[0].clone();
-                                self.editing = Some(EditingProp {
-                                    key: key.clone(),
-                                    value: new_val.clone(),
-                                    cursor: new_val.len(),
-                                });
-                                self.pending_commit = true;
-                            }
+                            // Open dropdown menu popup
+                            let curr_idx = options.iter().position(|o| o == current).unwrap_or(0);
+                            self.dropdown = Some(Dropdown::new(options.clone(), curr_idx, scale, Some(1)));
+                            self.dropdown_prop = Some(key.clone());
+                            self.dropdown_pos = Some((val_x, y + ROW_H));
                         } else if self.tab == PropTab::Events {
-                            let ctrl_name = selected_control.map(|s| s.to_string()).or_else(|| form.map(|f| f.name.clone())).unwrap_or_default();
-                            self.pending_event = Some((ctrl_name, key.clone()));
-                            self.editing = None;
+                            // Events tab logic here (unused for dropdown currently)
                         }
                         return;
                     }
@@ -884,27 +1132,90 @@ impl PropertiesPanel {
     pub fn handle_key(&mut self, key: &str) -> bool {
         let Some(ed) = &mut self.editing else { return false; };
         match key {
-            "Left" => { if ed.cursor > 0 { ed.cursor -= 1; } }
-            "Right" => { if ed.cursor < ed.value.len() { ed.cursor += 1; } }
+            "Left" => { 
+                if ed.cursor > 0 { 
+                    while ed.cursor > 0 {
+                        ed.cursor -= 1;
+                        if ed.value.is_char_boundary(ed.cursor) { break; }
+                    }
+                } 
+            }
+            "Right" => { 
+                if ed.cursor < ed.value.len() { 
+                    while ed.cursor < ed.value.len() {
+                        ed.cursor += 1;
+                        if ed.value.is_char_boundary(ed.cursor) { break; }
+                    }
+                } 
+            }
             "Home" => { ed.cursor = 0; }
             "End" => { ed.cursor = ed.value.len(); }
             "Backspace" => {
-                if ed.cursor > 0 { ed.cursor -= 1; ed.value.remove(ed.cursor); }
+                if ed.cursor > 0 { 
+                    let prev = ed.cursor;
+                    while ed.cursor > 0 {
+                        ed.cursor -= 1;
+                        if ed.value.is_char_boundary(ed.cursor) { break; }
+                    }
+                    ed.value.drain(ed.cursor..prev);
+                }
             }
             "Delete" => {
-                if ed.cursor < ed.value.len() { ed.value.remove(ed.cursor); }
+                if ed.cursor < ed.value.len() { 
+                    let prev = ed.cursor;
+                    let mut next = ed.cursor;
+                    while next < ed.value.len() {
+                        next += 1;
+                        if ed.value.is_char_boundary(next) { break; }
+                    }
+                    ed.value.drain(prev..next);
+                }
             }
-            "Enter" | "Tab" => { return true; }
+            "Enter" | "Tab" => {
+                if key == "Tab" && self.conn_builder_open {
+                    let mut handled = false;
+                    if let Some(ed) = &self.editing {
+                        let db_type = self.wizard_props.get("DbType").map(String::as_str).unwrap_or("PostgreSQL");
+                        let fields = if db_type == "SQLite" {
+                            vec!["DbPath"]
+                        } else {
+                            vec!["DbHost", "DbPort", "DbName", "DbUser", "DbPassword"]
+                        };
+                        
+                        if ed.key.starts_with("Wizard_") {
+                            let k = ed.key.replace("Wizard_", "");
+                            let mut next_idx = 0;
+                            if let Some(pos) = fields.iter().position(|f| *f == k.as_str()) {
+                                next_idx = (pos + 1) % fields.len();
+                            }
+                            
+                            self.wizard_props.insert(k, ed.value.clone());
+                            
+                            let next_key = fields[next_idx];
+                            let next_val = self.wizard_props.get(next_key).map(String::as_str).unwrap_or("").to_string();
+                            self.editing = Some(EditingProp {
+                                key: format!("Wizard_{}", next_key),
+                                value: next_val.clone(),
+                                cursor: next_val.len(),
+                            });
+                            handled = true;
+                        }
+                    }
+                    if handled { return false; }
+                }
+                return true;
+            }
+            "Escape" => { return true; } // allow escape to unfocus
             _ => { return false; }
         }
-        true
+        false
     }
 
     pub fn handle_char(&mut self, ch: char) -> bool {
         let Some(ed) = &mut self.editing else { return false; };
         if ch.is_control() { return false; }
         ed.value.insert(ed.cursor, ch);
-        ed.cursor += 1;
+        ed.cursor += ch.len_utf8();
         true
     }
 
