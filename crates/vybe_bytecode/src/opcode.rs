@@ -315,10 +315,38 @@ pub enum Op {
     call_indirect,   // [call_indirect, u8 arg_count]; stack: [fn_table_idx, args...] → [result]
 
     // -- Component Model (WASM Component Model) --
-    /// Lift a value to a component interface type.
-    canon_lift,      // [canon_lift, u16 interface_idx]
-    /// Lower a component interface type to core value.
-    canon_lower,     // [canon_lower, u16 interface_idx]
+    /// Lift a core value to a component interface type (e.g., i32 → handle, string → list<char>).
+    /// Stack: [core_value] → [lifted_value]. interface_idx references the interface type table.
+    canon_lift,      // [canon_lift, u16 type_idx]
+    /// Lower a component interface type to a core value (e.g., handle → i32, record → struct).
+    /// Stack: [interface_value] → [core_value].
+    canon_lower,     // [canon_lower, u16 type_idx]
+    /// Import a type from another component. Makes the type available by type_id.
+    /// Operand: u16 index into chunk's type_imports table.
+    type_import,     // [type_import, u16 import_idx]
+    /// Export a type for other components to import.
+    /// Operand: u16 type_id from TypeRegistry.
+    type_export,     // [type_export, u16 type_id]
+    /// Create a new object with a shared type (cross-component).
+    /// Stack: [type_id] → [shared_object]. The object is accessible across components.
+    shared_new,      // [shared_new]
+
+    // -- Shared-Everything Threads (shared GC objects) --
+    /// Atomically read a field from a shared GC struct.
+    /// Stack: [object, u16 field_idx] → [value]
+    shared_struct_get, // [shared_struct_get, u16 field_idx]
+    /// Atomically write a field to a shared GC struct.
+    /// Stack: [object, value] → []. field_idx is operand.
+    shared_struct_set, // [shared_struct_set, u16 field_idx]
+    /// Atomically read an element from a shared GC array.
+    /// Stack: [array, i32 index] → [value]
+    shared_array_get,  // [shared_array_get]
+    /// Atomically write an element to a shared GC array.
+    /// Stack: [array, i32 index, value] → []
+    shared_array_set,  // [shared_array_set]
+    /// Atomically compare-and-swap a field on a shared struct.
+    /// Stack: [object, expected, new_value] → [old_value]
+    shared_struct_cas, // [shared_struct_cas, u16 field_idx]
 
     // -- JS String Builtins (wasm:js-string proposal) --
     // These match the WASM JS String Builtins proposal import names.

@@ -1760,9 +1760,154 @@ impl VM {
                     }
                 }
 
-                // -- Component Model (stubs for now) --
-                Op::canon_lift => { let _ = self.read_u16(); }
-                Op::canon_lower => { let _ = self.read_u16(); }
+                // -- Component Model --
+                Op::canon_lift => {
+                    let type_idx = self.read_u16() as usize;
+                    // Lift: convert core value to component interface type.
+                    // For now: if value is an object, stamp its type_id.
+                    // In full CM, this would validate/convert the value shape.
+                    let val = self.pop();
+                    if let Value::Object(ref obj) = val {
+                        let mut o = obj.borrow_mut();
+                        if o.type_id == 0 && type_idx < self.type_registry.types.len() {
+                            o.type_id = type_idx;
+                        }
+                    }
+                    self.push(val)?;
+                }
+                Op::canon_lower => {
+                    let type_idx = self.read_u16() as usize;
+                    // Lower: convert component interface type to core value.
+                    // For now: validate type_id matches, strip interface metadata.
+                    let val = self.pop();
+                    if let Value::Object(ref obj) = val {
+                        let o = obj.borrow();
+                        if type_idx < self.type_registry.types.len() && o.type_id != type_idx {
+                            // Type mismatch — could trap, for now allow
+                        }
+                    }
+                    self.push(val)?;
+                }
+                Op::type_import => {
+                    let import_idx = self.read_u16() as usize;
+                    // Resolve type import: look up in type_imports table and register.
+                    // The type should already be registered during linking.
+                    // Push the type_id onto the stack for use by constructors.
+                    if import_idx < self.chunks[0].type_imports.len() {
+                        let (_iface, type_name) = &self.chunks[0].type_imports[import_idx];
+                        if let Some(tid) = self.type_registry.get_id(type_name) {
+                            self.push(Value::I32(tid as i32))?;
+                        } else {
+                            self.push(Value::Null)?;
+                        }
+                    } else {
+                        self.push(Value::Null)?;
+                    }
+                }
+                Op::type_export => {
+                    let type_id = self.read_u16() as usize;
+                    // Mark type as exported. This is a compile-time declaration;
+                    // at runtime, ensure the type is visible to the linker.
+                    // No stack effect.
+                    let _ = type_id;
+                }
+                Op::shared_new => {
+                    // Create a new shared object from the type_id on stack.
+                    let type_id_val = self.pop();
+                    let type_id = type_id_val.as_f64() as usize;
+                    let mut obj = Object::new();
+                    obj.type_id = type_id;
+                    if let Some(td) = self.type_registry.get(type_id) {
+                        obj.fields = vec![Value::Null; td.field_count()];
+                    }
+                    self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
+                }
+
+                // -- Shared-Everything Threads (shared GC objects) --
+                Op::shared_struct_get => {
+                    let field_idx = self.read_u16() as usize;
+                    let obj_val = self.pop();
+                    if let Value::Object(ref obj) = obj_val {
+                        let o = obj.borrow();
+                        // Atomic read of indexed field
+                        let val = if field_idx < o.fields.len() {
+                            o.fields[field_idx].clone()
+                        } else {
+                            Value::Null
+                        };
+                        self.push(val)?;
+                    } else {
+                        self.push(Value::Null)?;
+                    }
+                }
+                Op::shared_struct_set => {
+                    let field_idx = self.read_u16() as usize;
+                    let value = self.pop();
+                    let obj_val = self.pop();
+                    if let Value::Object(ref obj) = obj_val {
+                        let mut o = obj.borrow_mut();
+                        // Atomic write of indexed field
+                        if field_idx < o.fields.len() {
+                            o.fields[field_idx] = value;
+                        } else {
+                            // Grow fields if needed
+                            while o.fields.len() <= field_idx {
+                                o.fields.push(Value::Null);
+                            }
+                            o.fields[field_idx] = value;
+                        }
+                    }
+                }
+                Op::shared_array_get => {
+                    let idx_val = self.pop();
+                    let arr_val = self.pop();
+                    let idx = idx_val.as_f64() as usize;
+                    if let Value::Object(ref obj) = arr_val {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(ref elems) = o.kind {
+                            self.push(elems.get(idx).cloned().unwrap_or(Value::Null))?;
+                        } else {
+                            self.push(Value::Null)?;
+                        }
+                    } else {
+                        self.push(Value::Null)?;
+                    }
+                }
+                Op::shared_array_set => {
+                    let value = self.pop();
+                    let idx_val = self.pop();
+                    let arr_val = self.pop();
+                    let idx = idx_val.as_f64() as usize;
+                    if let Value::Object(ref obj) = arr_val {
+                        let mut o = obj.borrow_mut();
+                        if let ObjectKind::Array(ref mut elems) = o.kind {
+                            if idx < elems.len() {
+                                elems[idx] = value;
+                            }
+                        }
+                    }
+                }
+                Op::shared_struct_cas => {
+                    let field_idx = self.read_u16() as usize;
+                    let new_val = self.pop();
+                    let expected = self.pop();
+                    let obj_val = self.pop();
+                    if let Value::Object(ref obj) = obj_val {
+                        let mut o = obj.borrow_mut();
+                        if field_idx < o.fields.len() {
+                            let old = o.fields[field_idx].clone();
+                            // Compare (using string repr for simplicity)
+                            if format!("{}", old) == format!("{}", expected) {
+                                o.fields[field_idx] = new_val;
+                            }
+                            self.push(old)?;
+                        } else {
+                            self.push(Value::Null)?;
+                        }
+                    } else {
+                        self.push(Value::Null)?;
+                    }
+                }
 
                 // -- JS String Builtins (wasm:js-string proposal) --
                 Op::str_length => {

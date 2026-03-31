@@ -53,6 +53,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::dyn_le | Op::dyn_ge | Op::dyn_neg | Op::dyn_not | Op::dyn_to_bool |
         Op::r#await | Op::set_timer |
         Op::r#return | Op::halt |
+        Op::shared_new | Op::shared_array_get | Op::shared_array_set |
         Op::null | Op::undefined | Op::r#true | Op::r#false |
         Op::i32_const_0 | Op::i32_const_1 | Op::f64_const_0 |
         Op::array_get | Op::array_set |
@@ -120,6 +121,8 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::r#const | Op::local_get | Op::local_set | Op::global_get | Op::global_set |
         Op::struct_get | Op::struct_set | Op::struct_new | Op::array_new | Op::class_new | Op::method_def |
         Op::block | Op::r#loop | Op::memory_grow | Op::canon_lift | Op::canon_lower |
+        Op::type_import | Op::type_export |
+        Op::shared_struct_get | Op::shared_struct_set | Op::shared_struct_cas |
         Op::ref_test | Op::ref_cast |
         Op::suspend | Op::resume | Op::switch => {
             let idx = chunk.read_u16(offset + 1);

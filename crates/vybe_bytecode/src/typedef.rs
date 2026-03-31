@@ -69,6 +69,18 @@ pub struct TypeDef {
     /// Which methods are exported cross-module (Component Model interface).
     /// Empty = all methods visible (default for user classes).
     pub exports: Vec<String>,
+
+    // -- Shared-Everything Threads --
+    /// Whether instances of this type can be shared across threads.
+    /// Shared types use atomic field access (shared_struct_get/set).
+    pub shared: bool,
+
+    // -- Component Model Interface Binding --
+    /// Interface this type belongs to (e.g., "my:api/types").
+    /// Used for cross-component type resolution.
+    pub interface: Option<String>,
+    /// Source component name (for tracking origin during linking).
+    pub source_component: Option<String>,
 }
 
 impl TypeDef {
@@ -84,6 +96,9 @@ impl TypeDef {
             is_resource: false,
             constants: HashMap::new(),
             exports: Vec::new(),
+            shared: false,
+            interface: None,
+            source_component: None,
         }
     }
 
@@ -123,6 +138,21 @@ impl TypeDef {
 
     pub fn resource(mut self) -> Self {
         self.is_resource = true;
+        self
+    }
+
+    pub fn shared(mut self) -> Self {
+        self.shared = true;
+        self
+    }
+
+    pub fn with_interface(mut self, iface: &str) -> Self {
+        self.interface = Some(iface.to_string());
+        self
+    }
+
+    pub fn with_source_component(mut self, component: &str) -> Self {
+        self.source_component = Some(component.to_string());
         self
     }
 
@@ -268,6 +298,71 @@ impl TypeRegistry {
     pub fn get_constant(&self, type_id: usize, name: &str) -> Option<i64> {
         let key = name.to_lowercase();
         self.types.get(type_id)?.constants.get(&key).copied()
+    }
+
+    /// Resolve a type import: look up a type by interface + name.
+    /// Returns the type_id if found.
+    pub fn resolve_type_import(&self, interface: &str, type_name: &str) -> Option<usize> {
+        let key = type_name.to_lowercase();
+        for (i, td) in self.types.iter().enumerate() {
+            if td.name.to_lowercase() == key {
+                if let Some(ref iface) = td.interface {
+                    if iface == interface { return Some(i); }
+                }
+                // Also match by name alone if no interface specified
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Export a type: mark it with an interface name so other components can import it.
+    pub fn export_type(&mut self, type_id: usize, interface: &str, component: &str) {
+        if let Some(td) = self.types.get_mut(type_id) {
+            td.interface = Some(interface.to_string());
+            td.source_component = Some(component.to_string());
+        }
+    }
+
+    /// Get all types exported by a given component.
+    pub fn get_component_exports(&self, component: &str) -> Vec<(usize, &TypeDef)> {
+        self.types.iter().enumerate()
+            .filter(|(_, td)| td.source_component.as_deref() == Some(component))
+            .collect()
+    }
+
+    /// Merge a type from another registry (for cross-component type sharing).
+    /// If the type already exists, merges fields and methods.
+    /// Returns the (possibly new) type_id in this registry.
+    pub fn import_type(&mut self, source: &TypeDef) -> usize {
+        if let Some(existing_id) = self.get_id(&source.name) {
+            // Merge: add any new fields and methods
+            let td = &mut self.types[existing_id];
+            for fd in &source.field_defs {
+                if td.field_index(&fd.name).is_none() {
+                    td.add_field(&fd.name);
+                }
+            }
+            for (name, method) in &source.methods {
+                if !td.methods.contains_key(name) {
+                    td.methods.insert(name.clone(), method.clone());
+                }
+            }
+            if td.interface.is_none() {
+                td.interface = source.interface.clone();
+            }
+            existing_id
+        } else {
+            // Clone the type into this registry
+            let mut td = source.clone();
+            // Remap parent if needed
+            if let Some(parent_id) = source.parent {
+                // If parent exists in source by id, try to find by name
+                // For now, keep parent as-is (works if registries are compatible)
+                td.parent = Some(parent_id);
+            }
+            self.register(td)
+        }
     }
 
     /// Check if type_id is a subtype of target_id (walks parent chain).

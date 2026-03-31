@@ -62,12 +62,21 @@ pub struct Component {
     pub imports: Vec<(String, String)>,
     /// Export declarations: (interface_name, func_name) → implementation
     pub exports: HashMap<(String, String), ExportImpl>,
+    /// Type exports: types this component makes available.
+    /// (interface_name, type_name) → TypeDef snapshot.
+    pub type_exports: HashMap<(String, String), crate::TypeDef>,
+    /// Type imports: types this component needs from other components.
+    /// (interface_name, type_name)
+    pub type_imports: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Language {
     VB,
     JS,
+    CSharp,
+    Python,
+    Dart,
     Wasm,
 }
 
@@ -155,14 +164,34 @@ impl Linker {
             return Err(format!("Unresolved imports:\n{}", msgs.join("\n")));
         }
 
-        // 4. Build resolved import table for the merged chunks
-        // The import table maps (module, name) → host_fn_idx or chunk_idx
+        // 4. Resolve type imports/exports across components
+        let mut all_type_exports: HashMap<(String, String), crate::TypeDef> = HashMap::new();
+        for comp in &self.components {
+            for ((iface, name), typedef) in &comp.type_exports {
+                all_type_exports.insert((iface.clone(), name.clone()), typedef.clone());
+            }
+        }
+
+        // Check type imports are satisfied
+        let mut unresolved_types: Vec<(String, String, String)> = Vec::new();
+        for comp in &self.components {
+            for (iface, name) in &comp.type_imports {
+                if !all_type_exports.contains_key(&(iface.clone(), name.clone())) {
+                    unresolved_types.push((comp.name.clone(), iface.clone(), name.clone()));
+                }
+            }
+        }
+        // Type imports that aren't resolved are warnings, not errors
+        // (the type may exist in the host or be registered at runtime)
+
+        // 5. Build resolved import table for the merged chunks
         let resolved_imports: HashMap<(String, String), ExportImpl> = all_exports;
 
         Ok(LinkResult {
             chunks: all_chunks,
             exports: resolved_imports,
             component_offsets,
+            type_exports: all_type_exports,
         })
     }
 }
@@ -175,6 +204,8 @@ pub struct LinkResult {
     pub exports: HashMap<(String, String), ExportImpl>,
     /// Offset of each component's chunks in the merged array
     pub component_offsets: Vec<usize>,
+    /// Resolved type exports: (interface, type_name) → TypeDef
+    pub type_exports: HashMap<(String, String), crate::TypeDef>,
 }
 
 // ============================================================

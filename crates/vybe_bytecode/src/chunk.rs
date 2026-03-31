@@ -40,6 +40,12 @@ pub struct Chunk {
     /// Each entry defines a class type with fields and vtable methods.
     /// Loaded into VM's TypeRegistry before execution.
     pub types: Vec<TypeEntry>,
+    /// Type imports — types from other components this chunk needs.
+    /// Each entry is (interface_name, type_name).
+    pub type_imports: Vec<(String, String)>,
+    /// Type exports — types this component makes available to others.
+    /// Each entry is (interface_name, type_name, type_id).
+    pub type_exports: Vec<(String, String, usize)>,
 }
 
 impl Chunk {
@@ -53,6 +59,8 @@ impl Chunk {
             local_count: 0,
             imports: Vec::new(),
             types: Vec::new(),
+            type_imports: Vec::new(),
+            type_exports: Vec::new(),
         }
     }
 
