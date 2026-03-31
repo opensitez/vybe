@@ -281,16 +281,6 @@ impl Compiler {
                 self.compile_lambda(params, body)?;
             }
 
-            // AddressOf (parsed as Variable with "AddressOf " prefix)
-            Expression::Variable(name) if name.as_str().to_lowercase().starts_with("addressof ") => {
-                let func_name = name.as_str()[10..].trim().to_lowercase();
-                let idx = self.add_string_constant(&func_name);
-                self.emit_u16(Op::global_get, idx);
-            }
-
-            _ => {
-                self.emit(Op::null);
-            }
         }
         Ok(())
     }

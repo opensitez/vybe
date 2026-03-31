@@ -6,7 +6,7 @@ use vybe_parser_dart::*;
 use crate::scope::Scope;
 
 struct LoopContext {
-    start_offset: usize,
+    _start_offset: usize,
     break_patches: Vec<usize>,
     continue_patches: Vec<usize>,
 }
@@ -360,7 +360,7 @@ impl Compiler {
             }
             Statement::While { condition, body } => {
                 let start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![] });
                 self.compile_expression(condition)?;
                 self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
@@ -373,7 +373,7 @@ impl Compiler {
             }
             Statement::DoWhile { body, condition } => {
                 let start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![] });
                 self.compile_statement(body)?;
                 for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
                 self.compile_expression(condition)?;
@@ -393,7 +393,7 @@ impl Compiler {
                     }
                 }
                 let start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![] });
                 let exit = if let Some(cond) = &for_stmt.condition {
                     self.compile_expression(cond)?;
                     self.emit(Op::dyn_to_bool);
@@ -424,7 +424,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
                 let loop_start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: loop_start, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { _start_offset: loop_start, break_patches: vec![], continue_patches: vec![] });
                 // __i < __arr.length
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
@@ -455,7 +455,7 @@ impl Compiler {
             }
             Statement::Switch { expr, cases } => {
                 self.compile_expression(expr)?;
-                self.loop_stack.push(LoopContext { start_offset: 0, break_patches: vec![], continue_patches: vec![] });
+                self.loop_stack.push(LoopContext { _start_offset: 0, break_patches: vec![], continue_patches: vec![] });
                 let mut test_jumps: Vec<(usize, usize)> = Vec::new();
                 let mut default_idx: Option<usize> = None;
                 for (i, case) in cases.iter().enumerate() {

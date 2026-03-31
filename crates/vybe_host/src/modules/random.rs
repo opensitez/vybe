@@ -3,7 +3,7 @@ use std::rc::Rc;
 use vybe_bytecode::{VM, Value};
 use vybe_bytecode::value::Object;
 
-/// Simple xorshift64 PRNG state — thread-local for safety.
+// Simple xorshift64 PRNG state — thread-local for safety.
 thread_local! {
     static RNG_STATE: RefCell<u64> = RefCell::new(
         std::time::SystemTime::now()

@@ -132,7 +132,7 @@ fn show_properties(ui: &mut Ui, state: &mut EditorState, sel_id: Option<uuid::Uu
             mut dataset_name,
             mut table_name,
             mut interval,
-            mut binding_source,
+            _binding_source,
             mut display_member, mut value_member,
             mut minimum, mut maximum,
             mut url,
@@ -143,7 +143,7 @@ fn show_properties(ui: &mut Ui, state: &mut EditorState, sel_id: Option<uuid::Uu
             mut border_style,
             mut value,
             mut db_source, mut db_text, mut db_checked, mut db_value,
-            mut db_selected_value, mut db_visible, mut db_enabled,
+            db_selected_value, db_visible, db_enabled,
         )) = snap else {
             ui.label("Control not found.");
             return;
@@ -410,7 +410,7 @@ fn show_properties(ui: &mut Ui, state: &mut EditorState, sel_id: Option<uuid::Uu
         // ── DataAdapter Connection Builder Sub-Panel ────────────────────
         if ct == ControlType::DataAdapterComponent {
             let mut lock = local_state_arc.lock().unwrap();
-            let mut cs_changed = false;
+            let mut _cs_changed = false;
             let mut test_clicked = false;
             if lock.show_conn_builder {
                 ui.group(|ui| {
@@ -451,7 +451,7 @@ fn show_properties(ui: &mut Ui, state: &mut EditorState, sel_id: Option<uuid::Uu
                             _ => String::new(),
                         };
                         conn_str = new_cs;
-                        cs_changed = true;
+                        _cs_changed = true;
                         lock.show_conn_builder = false;
                         ui.ctx().request_repaint();
                     }
@@ -473,7 +473,6 @@ fn show_properties(ui: &mut Ui, state: &mut EditorState, sel_id: Option<uuid::Uu
                 });
                 if !sel_table.is_empty() {
                     select_cmd = format!("SELECT * FROM {}", sel_table);
-                    cs_changed = true; // hack to force write-back
                     ui.ctx().request_repaint();
                 }
             }

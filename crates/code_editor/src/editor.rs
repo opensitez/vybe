@@ -19,6 +19,7 @@ pub enum TokenKind {
     LineComment,
     BlockComment,
     Punct,
+    #[allow(dead_code)]
     Unknown,
 }
 
@@ -237,6 +238,7 @@ impl Editor {
         self.retokenize_range(line_idx, new_line + 2, lang);
     }
 
+    #[allow(dead_code)]
     pub fn replace_all(&mut self, from: &str, to: &str, lang: &LanguageDef) {
         if from.is_empty() { return; }
         let content = self.rope.to_string();

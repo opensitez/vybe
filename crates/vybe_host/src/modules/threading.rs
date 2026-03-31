@@ -7,7 +7,7 @@ use vybe_bytecode::value::Object;
 
 pub fn register(vm: &mut VM) {
     // Task.Run — simplified: just call the function synchronously
-    vm.register_host_fn("vybe:threading", "taskRun", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "taskRun", Box::new(|_args: &[Value]| {
         // In our synchronous VM, Task.Run just executes immediately
         // The callback is args[0], but we can't call it from a host fn
         // Return a "completed task" object

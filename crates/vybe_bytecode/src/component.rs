@@ -157,7 +157,7 @@ impl Linker {
 
         // 4. Build resolved import table for the merged chunks
         // The import table maps (module, name) → host_fn_idx or chunk_idx
-        let mut resolved_imports: HashMap<(String, String), ExportImpl> = all_exports;
+        let resolved_imports: HashMap<(String, String), ExportImpl> = all_exports;
 
         Ok(LinkResult {
             chunks: all_chunks,

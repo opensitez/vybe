@@ -3,14 +3,14 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 pub fn launch_egui_form(
-    mut vm: vybe_bytecode::VM,
+    vm: vybe_bytecode::VM,
     queue: Rc<RefCell<vybe_host::SideEffectQueue>>,
     form: &vybe_forms::Form,
     title: &str,
 ) {
     let app = EguiApp::new(vm, queue, form.clone(), title.to_string());
     let native_options = eframe::NativeOptions::default();
-    eframe::run_native(
+    let _ = eframe::run_native(
         title,
         native_options,
         Box::new(|_cc| Box::new(app)),
@@ -21,7 +21,7 @@ struct EguiApp {
     vm: RefCell<vybe_bytecode::VM>,
     queue: Rc<RefCell<vybe_host::SideEffectQueue>>,
     form: vybe_forms::Form,
-    title: String,
+    _title: String,
 }
 
 impl EguiApp {
@@ -31,7 +31,7 @@ impl EguiApp {
         form: vybe_forms::Form,
         title: String,
     ) -> Self {
-        Self { vm: RefCell::new(vm), queue, form, title }
+        Self { vm: RefCell::new(vm), queue, form, _title: title }
     }
 
     fn handle_event(&self, control_name: &str, event_name: &str) {

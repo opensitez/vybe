@@ -19,7 +19,6 @@
 //! filesystem = true
 //! ```
 
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {

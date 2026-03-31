@@ -22,7 +22,7 @@ fn highlight_vb(theme: &egui::Style, text: &str) -> egui::text::LayoutJob {
     let mut in_string = false;
     let mut word = String::new();
 
-    let mut flush_word = |job: &mut egui::text::LayoutJob, word: &mut String, color: egui::Color32| {
+    let flush_word = |job: &mut egui::text::LayoutJob, word: &mut String, color: egui::Color32| {
         if !word.is_empty() {
             job.append(word, 0.0, egui::text::TextFormat { font_id: font_id.clone(), color, ..Default::default() });
             word.clear();
@@ -190,7 +190,7 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) {
                     ui.fonts(|f| f.layout_job(layout_job))
                 };
 
-                let response = ui.add_sized(
+                let _response = ui.add_sized(
                     ui.available_size(),
                     egui::TextEdit::multiline(code)
                         .id_source("code_edit")

@@ -1,4 +1,4 @@
-use super::{ControlDef, Props, base_css};
+use super::ControlDef;
 
 // Dialogs are non-visual — they don't render, they produce side effects.
 // These defs are mainly for documentation and property/event listing.

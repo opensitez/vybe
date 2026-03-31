@@ -144,11 +144,11 @@ impl Compiler {
                 self.emit(Op::dyn_le);
                 self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
-                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
+                self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
                 let ctx = self.loop_stack.pop().unwrap();
                 // Patch continue jumps to step
-                let step_offset = self.current_offset();
+                let _step_offset = self.current_offset();
                 for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
                 self.emit_u16(Op::local_get, i_slot);
                 if let Some(step_expr) = step {
@@ -184,7 +184,7 @@ impl Compiler {
                 let var_name = variable.as_str().to_lowercase();
                 let elem_slot = self.define_local(&var_name);
                 self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
-                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
+                self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
                 let ctx = self.loop_stack.pop().unwrap();
                 for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
@@ -202,7 +202,7 @@ impl Compiler {
                 self.compile_expression(condition)?;
                 self.emit(Op::dyn_to_bool);
                 let exit = self.emit_jump(Op::br_if_false);
-                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
+                self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
                 let ctx = self.loop_stack.pop().unwrap();
                 for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
@@ -221,7 +221,7 @@ impl Compiler {
                         LoopConditionType::Until => self.emit_jump(Op::br_if_true),
                     });
                 }
-                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
+                self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
                 let ctx = self.loop_stack.pop().unwrap();
                 for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
@@ -364,7 +364,7 @@ impl Compiler {
                     ctx.break_jumps.push(j);
                 }
             }
-            Statement::Continue(cont_type) => {
+            Statement::Continue(_cont_type) => {
                 let j = self.emit_jump(Op::br);
                 if let Some(ctx) = self.loop_stack.last_mut() {
                     ctx.continue_jumps.push(j);
@@ -743,9 +743,6 @@ impl Compiler {
                     }
                     _ => {}
                 }
-            }
-            _ => {
-                // VB statement types not yet compiled
             }
         }
         Ok(())

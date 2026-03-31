@@ -1,7 +1,7 @@
 use std::rc::Rc;
 use std::io::{BufRead, Write};
 use vybe_bytecode::{VM, Value};
-use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::value::Object;
 use std::cell::RefCell;
 
 pub fn register(vm: &mut VM) {

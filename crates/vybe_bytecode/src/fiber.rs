@@ -3,7 +3,7 @@
 //! When the awaited Promise resolves, the fiber is resumed.
 
 use crate::value::Value;
-use crate::value::{Upvalue, UpvalueLocation};
+use crate::value::Upvalue;
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -48,7 +48,7 @@ pub struct FormSnapshot {
 
 #[derive(Clone, Debug)]
 pub struct DragState {
-    pub ids: Vec<Uuid>,
+    pub _ids: Vec<Uuid>,
     pub start_mouse: egui::Pos2,
     pub initial_bounds: Vec<(Uuid, vybe_forms::Bounds)>,
 }
@@ -236,6 +236,7 @@ impl EditorState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn current_edit_name(&self) -> Option<&str> {
         self.current_form.as_deref().or(self.current_code_file.as_deref())
     }
@@ -305,10 +306,12 @@ impl EditorState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn can_undo(&self) -> bool {
         self.current_form.as_ref().and_then(|n| self.undo_stacks.get(n)).map(|s| !s.is_empty()).unwrap_or(false)
     }
 
+    #[allow(dead_code)]
     pub fn can_redo(&self) -> bool {
         self.current_form.as_ref().and_then(|n| self.redo_stacks.get(n)).map(|s| !s.is_empty()).unwrap_or(false)
     }
@@ -380,6 +383,7 @@ impl EditorState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn update_control_property(&mut self, id: Uuid, property: &str, value: String) {
         let Some(proj) = self.project.as_mut() else { return };
         let name_ref = match &self.current_form { Some(n) => n.clone(), None => return };
@@ -432,6 +436,7 @@ impl EditorState {
         fm.sync_designer_code();
     }
 
+    #[allow(dead_code)]
     pub fn update_control_geometry(&mut self, id: Uuid, x: i32, y: i32, w: i32, h: i32) {
         let Some(proj) = self.project.as_mut() else { return };
         let name_ref = match &self.current_form { Some(n) => n.clone(), None => return };

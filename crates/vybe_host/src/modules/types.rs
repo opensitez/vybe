@@ -340,10 +340,9 @@ fn register_list(vm: &mut VM) {
             if let ObjectKind::Array(elems) = &mut o.kind {
                 let pos = idx.min(elems.len());
                 elems.insert(pos, item);
-                let _len = elems.len() as f64;
-                drop(elems);
-                o.properties.insert("length".into(), Value::F64(_len));
-                o.properties.insert("count".into(), Value::F64(_len));
+                let len = elems.len() as f64;
+                o.properties.insert("length".into(), Value::F64(len));
+                o.properties.insert("count".into(), Value::F64(len));
             }
         }
         Value::Null
@@ -359,10 +358,9 @@ fn register_list(vm: &mut VM) {
                 let mut d = dst.borrow_mut();
                 if let ObjectKind::Array(ref mut dst_elems) = d.kind {
                     dst_elems.extend(items);
-                    let _len = dst_elems.len() as f64;
-                    drop(dst_elems);
-                    d.properties.insert("length".into(), Value::F64(_len));
-                    d.properties.insert("count".into(), Value::F64(_len));
+                    let len = dst_elems.len() as f64;
+                    d.properties.insert("length".into(), Value::F64(len));
+                    d.properties.insert("count".into(), Value::F64(len));
                 }
             }
         }
@@ -622,9 +620,8 @@ fn register_queue_stack(vm: &mut VM) {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {
                 elems.push(item);
-                let _len = elems.len() as f64;
-                drop(elems);
-                o.properties.insert("count".into(), Value::F64(_len));
+                let len = elems.len() as f64;
+                o.properties.insert("count".into(), Value::F64(len));
             }
         }
         Value::Null
@@ -635,9 +632,8 @@ fn register_queue_stack(vm: &mut VM) {
             if let ObjectKind::Array(elems) = &mut o.kind {
                 if !elems.is_empty() {
                     let val = elems.remove(0);
-                    let _len = elems.len() as f64;
-                    drop(elems);
-                    o.properties.insert("count".into(), Value::F64(_len));
+                    let len = elems.len() as f64;
+                    o.properties.insert("count".into(), Value::F64(len));
                     return val;
                 }
             }
@@ -666,9 +662,8 @@ fn register_queue_stack(vm: &mut VM) {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {
                 elems.push(item);
-                let _len = elems.len() as f64;
-                drop(elems);
-                o.properties.insert("count".into(), Value::F64(_len));
+                let len = elems.len() as f64;
+                o.properties.insert("count".into(), Value::F64(len));
             }
         }
         Value::Null
@@ -678,9 +673,8 @@ fn register_queue_stack(vm: &mut VM) {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {
                 let val = elems.pop().unwrap_or(Value::Null);
-                let _len = elems.len() as f64;
-                drop(elems);
-                o.properties.insert("count".into(), Value::F64(_len));
+                let len = elems.len() as f64;
+                o.properties.insert("count".into(), Value::F64(len));
                 return val;
             }
         }
@@ -710,9 +704,8 @@ fn register_queue_stack(vm: &mut VM) {
             if let ObjectKind::Array(elems) = &mut o.kind {
                 if !elems.iter().any(|e| format!("{}", e) == item_str) {
                     elems.push(item);
-                    let _len = elems.len() as f64;
-                    drop(elems);
-                    o.properties.insert("count".into(), Value::F64(_len));
+                    let len = elems.len() as f64;
+                    o.properties.insert("count".into(), Value::F64(len));
                     return Value::Bool(true);
                 }
             }
@@ -737,9 +730,8 @@ fn register_queue_stack(vm: &mut VM) {
                 let before = elems.len();
                 elems.retain(|e| format!("{}", e) != search);
                 let removed = elems.len() < before;
-                let _len = elems.len() as f64;
-                drop(elems);
-                o.properties.insert("count".into(), Value::F64(_len));
+                let len = elems.len() as f64;
+                o.properties.insert("count".into(), Value::F64(len));
                 return Value::Bool(removed);
             }
         }

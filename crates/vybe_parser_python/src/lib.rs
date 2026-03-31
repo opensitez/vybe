@@ -24,6 +24,7 @@ pub enum Stmt {
     Return { expr: Expr },
     Break,
     Continue,
+        For { target: String, iter: Expr, body: Vec<Stmt> },
     If { cond: Expr, then_branch: Vec<Stmt>, else_branch: Option<Vec<Stmt>> },
     While { cond: Expr, body: Vec<Stmt> },
     /// Multi-line or single-line function def
@@ -165,6 +166,19 @@ pub fn parse(source: &str) -> Result<Program, String> {
                     normalize_stmts(&mut body);
                     stmts.push(Stmt::While { cond, body });
                     i = consumed; continue;
+                }
+                if header.starts_with("for ") {
+                    // expect `for <name> in <expr>`
+                    let rest = header[4..].trim();
+                    if let Some(in_pos) = rest.find(" in ") {
+                        let target = rest[..in_pos].trim().to_string();
+                        let iter_text = rest[in_pos+4..].trim();
+                        let iter_expr = parse_expr(iter_text)?;
+                        let (mut body, consumed) = parse_block(lines, i+1, indent + 1)?;
+                        normalize_stmts(&mut body);
+                        stmts.push(Stmt::For { target, iter: iter_expr, body });
+                        i = consumed; continue;
+                    }
                 }
                 // other block -> treat as expr
                 stmts.push(Stmt::Expr { expr: Expr::Str(header.to_string()) });
@@ -309,7 +323,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
                     _=>{}
                 }
             }
-            if let Some(mut close) = close_idx {
+            if let Some(close) = close_idx {
                 // If there are chained indexes, iteratively build nested Index Exprs
                 if close < s.len()-1 {
                     // Start by parsing the primary `obj[index]` as a sub-expression

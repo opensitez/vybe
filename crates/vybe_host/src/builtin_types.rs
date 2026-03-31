@@ -24,7 +24,7 @@ pub fn register_all(vm: &mut VM) {
     }
 
     // --- String ---
-    let string_id = {
+    let _string_id = {
         let mut t = TypeDef::new("String");
         for (method, module, fname) in &[
             ("contains", "vybe:string", "includes"),

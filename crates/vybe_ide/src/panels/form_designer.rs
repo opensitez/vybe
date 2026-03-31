@@ -198,7 +198,7 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) {
                         .map(|c| (c.id, c.bounds))
                         .collect();
                     state.drag = Some(DragState {
-                        ids: sel_now,
+                        _ids: sel_now,
                         start_mouse: ctrl_resp.interact_pointer_pos().unwrap_or_default(),
                         initial_bounds,
                     });

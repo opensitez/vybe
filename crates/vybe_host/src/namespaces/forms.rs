@@ -224,7 +224,7 @@ pub fn register(vm: &mut VM) {
 
     // --- Mirror under System.Windows.Forms.* ---
     // All the above are under Window.Forms, also make them available under System.Windows.Forms
-    let sys_wf = ensure_namespace(vm, &["System", "Windows", "Forms"]);
+    let _sys_wf = ensure_namespace(vm, &["System", "Windows", "Forms"]);
 
     // DialogResult
     let sys_dr = ensure_namespace(vm, &["System", "Windows", "Forms", "DialogResult"]);

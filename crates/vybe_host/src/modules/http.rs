@@ -1,6 +1,5 @@
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use vybe_bytecode::{VM, Value};
 use vybe_bytecode::value::Object;

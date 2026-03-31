@@ -79,7 +79,7 @@ impl Scope {
         popped
     }
 
-    fn add_upvalue(&mut self, index: u8, is_local: bool) -> u8 {
+    fn _add_upvalue(&mut self, index: u8, is_local: bool) -> u8 {
         for (i, uv) in self.upvalues.iter().enumerate() {
             if uv.index == index && uv.is_local == is_local { return i as u8; }
         }
@@ -94,7 +94,7 @@ impl Scope {
 // ============================================================
 
 struct LoopContext {
-    start: usize,
+    _start: usize,
     break_jumps: Vec<usize>,
     continue_jumps: Vec<usize>,
 }
@@ -128,7 +128,7 @@ pub struct Compiler {
     class_field_map: HashMap<String, HashSet<String>>,
     class_method_map: HashMap<String, HashSet<String>>,
     interface_imports: Vec<String>,
-    known_types: HashMap<String, (&'static str, &'static str)>,
+    _known_types: HashMap<String, (&'static str, &'static str)>,
     type_entries: Vec<TypeEntry>,
     class_type_ids: HashMap<String, usize>,
 }
@@ -149,7 +149,7 @@ impl Compiler {
             class_methods: HashSet::new(),
             class_field_map: HashMap::new(),
             class_method_map: HashMap::new(),
-            known_types: Self::init_known_types(),
+            _known_types: Self::init_known_types(),
             type_entries: Vec::new(),
             class_type_ids: HashMap::new(),
             interface_imports: vec![
@@ -1107,7 +1107,7 @@ impl Compiler {
 
                 let loop_start = self.current_offset();
                 self.loop_stack.push(LoopContext {
-                    start: loop_start,
+                    _start: loop_start,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -1159,7 +1159,7 @@ impl Compiler {
 
                 let loop_start = self.current_offset();
                 self.loop_stack.push(LoopContext {
-                    start: loop_start,
+                    _start: loop_start,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -1203,7 +1203,7 @@ impl Compiler {
             Statement::While { condition, body } => {
                 let loop_start = self.current_offset();
                 self.loop_stack.push(LoopContext {
-                    start: loop_start,
+                    _start: loop_start,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -1228,7 +1228,7 @@ impl Compiler {
             Statement::DoWhile { body, condition } => {
                 let loop_start = self.current_offset();
                 self.loop_stack.push(LoopContext {
-                    start: loop_start,
+                    _start: loop_start,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -1504,7 +1504,7 @@ impl Compiler {
 
         // Push loop context so break statements work inside switch
         self.loop_stack.push(LoopContext {
-            start: 0,
+            _start: 0,
             break_jumps: Vec::new(),
             continue_jumps: Vec::new(),
         });

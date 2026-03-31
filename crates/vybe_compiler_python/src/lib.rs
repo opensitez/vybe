@@ -323,6 +323,70 @@ impl Compiler {
                                 fchunk.emit_loop(loop_start, 0);
                                 fchunk.patch_jump(exit_jump);
                             }
+                            Stmt::For { target, iter, body } => {
+                                // for <target> in <iter>:
+                                let iter_idx = f_alloc_local("__for_iter", &mut flocals, &mut fmax);
+                                let idx_idx = f_alloc_local("__for_idx", &mut flocals, &mut fmax);
+
+                                match iter {
+                                    Expr::Dict(_) => {
+                                        emit_expr(iter, &mut fchunk, &flocals, false)?;
+                                        let dict_keys_idx = fchunk.add_import("vybe:types", "dictKeys");
+                                        fchunk.emit_op_u16(Op::call_import, dict_keys_idx, 0);
+                                        fchunk.emit(1, 0);
+                                        fchunk.emit_op_u16(Op::local_set, iter_idx, 0);
+                                    }
+                                    Expr::Str(s) => {
+                                        let c = fchunk.add_constant(Value::String(Rc::from(s.as_str())));
+                                        fchunk.emit_op_u16(Op::r#const, c, 0);
+                                        fchunk.emit_op(Op::str_into_char_codes, 0);
+                                        fchunk.emit_op_u16(Op::local_set, iter_idx, 0);
+                                    }
+                                    _ => {
+                                        emit_expr(iter, &mut fchunk, &flocals, false)?;
+                                        fchunk.emit_op_u16(Op::local_set, iter_idx, 0);
+                                    }
+                                }
+
+                                // init index
+                                fchunk.emit_op(Op::i32_const_0, 0);
+                                fchunk.emit_op_u16(Op::local_set, idx_idx, 0);
+
+                                let loop_start = fchunk.current_offset();
+                                fchunk.emit_op_u16(Op::local_get, idx_idx, 0);
+                                fchunk.emit_op_u16(Op::local_get, iter_idx, 0);
+                                fchunk.emit_op(Op::array_length, 0);
+                                fchunk.emit_op(Op::dyn_lt, 0);
+                                let exit_jump = fchunk.emit_jump(Op::br_if_false, 0);
+
+                                let target_idx = f_alloc_local(target.as_str(), &mut flocals, &mut fmax);
+                                fchunk.emit_op_u16(Op::local_get, iter_idx, 0);
+                                fchunk.emit_op_u16(Op::local_get, idx_idx, 0);
+                                fchunk.emit_op(Op::array_get, 0);
+                                fchunk.emit_op_u16(Op::local_set, target_idx, 0);
+
+                                let mut break_jumps: Vec<usize> = Vec::new();
+                                let mut continue_jumps: Vec<usize> = Vec::new();
+                                for bs in body.iter() {
+                                    match bs {
+                                        Stmt::Assign { name, expr } => { let idx = f_alloc_local(name, &mut flocals, &mut fmax); emit_expr(expr, &mut fchunk, &flocals, false)?; fchunk.emit_op_u16(Op::local_set, idx, 0); fchunk.emit_op(Op::drop, 0); }
+                                        Stmt::Print { args } => { for a in args.iter() { emit_expr(a, &mut fchunk, &flocals, true)?; } fchunk.emit_op_u16(Op::call_import, import_idx, 0); fchunk.emit(args.len() as u8, 0); }
+                                        Stmt::Expr { expr } => { emit_expr(expr, &mut fchunk, &flocals, false)?; fchunk.emit_op(Op::drop, 0); }
+                                        Stmt::Return { expr } => { emit_expr(expr, &mut fchunk, &flocals, false)?; fchunk.emit_op(Op::r#return, 0); }
+                                        Stmt::Break => { let j = fchunk.emit_jump(Op::br, 0); break_jumps.push(j); }
+                                        Stmt::Continue => { let j = fchunk.emit_jump(Op::br, 0); continue_jumps.push(j); }
+                                        _ => { return Err(format!("Unsupported stmt in for-body: {:?}", bs)); }
+                                    }
+                                }
+                                for cj in continue_jumps.into_iter() { fchunk.patch_jump(cj); }
+                                fchunk.emit_op_u16(Op::local_get, idx_idx, 0);
+                                fchunk.emit_op(Op::i32_const_1, 0);
+                                fchunk.emit_op(Op::i32_add, 0);
+                                fchunk.emit_op_u16(Op::local_set, idx_idx, 0);
+                                fchunk.emit_loop(loop_start, 0);
+                                for bj in break_jumps.into_iter() { fchunk.patch_jump(bj); }
+                                fchunk.patch_jump(exit_jump);
+                            }
                             Stmt::Print { args } => {
                                 for a in args.iter() { emit_expr(a, &mut fchunk, &flocals, true)?; }
                                 fchunk.emit_op_u16(Op::call_import, import_idx, 0);
@@ -509,6 +573,81 @@ impl Compiler {
                     }
                     for bj in break_jumps.into_iter() { chunk.patch_jump(bj); }
                     chunk.emit_loop(loop_start, 0);
+                    chunk.patch_jump(exit_jump);
+                }
+                Stmt::For { target, iter, body } => {
+                    // for <target> in <iter>:
+                    // allocate locals
+                    let iter_idx = alloc_local("__for_iter", &mut locals, &mut max_local);
+                    let idx_idx = alloc_local("__for_idx", &mut locals, &mut max_local);
+
+                    // Emit iterable value — special-case certain static iterables
+                    match iter {
+                        Expr::Dict(_) => {
+                            // push dict then call dictKeys(dict) -> array
+                            emit_expr(iter, &mut chunk, &locals, false)?;
+                            let dict_keys_idx = chunk.add_import("vybe:types", "dictKeys");
+                            chunk.emit_op_u16(Op::call_import, dict_keys_idx, 0);
+                            chunk.emit(1, 0);
+                            // store resulting array into iter local
+                            chunk.emit_op_u16(Op::local_set, iter_idx, 0);
+                        }
+                        Expr::Str(s) => {
+                            // push string constant then convert to char-array
+                            let c = chunk.add_constant(Value::String(Rc::from(s.as_str())));
+                            chunk.emit_op_u16(Op::r#const, c, 0);
+                            chunk.emit_op(Op::str_into_char_codes, 0);
+                            chunk.emit_op_u16(Op::local_set, iter_idx, 0);
+                        }
+                        _ => {
+                            // default: evaluate and store iterable as-is (arrays, tuples, calls)
+                            emit_expr(iter, &mut chunk, &locals, false)?;
+                            chunk.emit_op_u16(Op::local_set, iter_idx, 0);
+                        }
+                    }
+
+                    // init index to 0
+                    chunk.emit_op(Op::i32_const_0, 0);
+                    chunk.emit_op_u16(Op::local_set, idx_idx, 0);
+
+                    let loop_start = chunk.current_offset();
+                    // condition: idx < len(iter)
+                    chunk.emit_op_u16(Op::local_get, idx_idx, 0);
+                    chunk.emit_op_u16(Op::local_get, iter_idx, 0);
+                    chunk.emit_op(Op::array_length, 0);
+                    chunk.emit_op(Op::dyn_lt, 0);
+                    let exit_jump = chunk.emit_jump(Op::br_if_false, 0);
+
+                    // load current element and bind to target
+                    let target_idx = alloc_local(target.as_str(), &mut locals, &mut max_local);
+                    chunk.emit_op_u16(Op::local_get, iter_idx, 0);
+                    chunk.emit_op_u16(Op::local_get, idx_idx, 0);
+                    chunk.emit_op(Op::array_get, 0);
+                    chunk.emit_op_u16(Op::local_set, target_idx, 0);
+
+                    let mut break_jumps: Vec<usize> = Vec::new();
+                    let mut continue_jumps: Vec<usize> = Vec::new();
+                    for bs in body.iter() {
+                        match bs {
+                            Stmt::Assign { name, expr } => { let idx = alloc_local(name, &mut locals, &mut max_local); emit_expr(expr, &mut chunk, &locals, false)?; chunk.emit_op_u16(Op::local_set, idx, 0); chunk.emit_op(Op::drop, 0); }
+                            Stmt::Print { args } => { for a in args.iter() { emit_expr(a, &mut chunk, &locals, true)?; } chunk.emit_op_u16(Op::call_import, import_idx, 0); chunk.emit(args.len() as u8, 0); }
+                            Stmt::Expr { expr } => { emit_expr(expr, &mut chunk, &locals, false)?; chunk.emit_op(Op::drop, 0); }
+                            Stmt::Return { expr } => { return Err(format!("Return outside function: {:?}", expr)); }
+                            Stmt::Break => { let j = chunk.emit_jump(Op::br, 0); break_jumps.push(j); }
+                            Stmt::Continue => { let j = chunk.emit_jump(Op::br, 0); continue_jumps.push(j); }
+                            _ => { return Err(format!("Unsupported stmt in for-body: {:?}", bs)); }
+                        }
+                    }
+                    // patch continues to increment
+                    for cj in continue_jumps.into_iter() { chunk.patch_jump(cj); }
+                    // increment
+                    chunk.emit_op_u16(Op::local_get, idx_idx, 0);
+                    chunk.emit_op(Op::i32_const_1, 0);
+                    chunk.emit_op(Op::i32_add, 0);
+                    chunk.emit_op_u16(Op::local_set, idx_idx, 0);
+                    // loop back
+                    chunk.emit_loop(loop_start, 0);
+                    for bj in break_jumps.into_iter() { chunk.patch_jump(bj); }
                     chunk.patch_jump(exit_jump);
                 }
                 Stmt::Print { args } => {

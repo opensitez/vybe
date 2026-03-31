@@ -6,9 +6,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use winit::application::ApplicationHandler;
 use winit::event::{WindowEvent, MouseButton, ElementState};
-use winit::event_loop::{EventLoop, EventLoopBuilder, ActiveEventLoop, ControlFlow};
-#[cfg(target_os = "macos")]
-use winit::platform::macos::EventLoopBuilderExtMacOS;
+use winit::event_loop::{EventLoop, ActiveEventLoop, ControlFlow};
 use winit::window::{Window, WindowId, WindowAttributes};
 
 use tiny_skia::*;
@@ -416,7 +414,7 @@ impl FormApp {
     /// Fire the Form_Load event — called when the form is first shown.
     fn fire_load_event(&mut self) {
         // Look for a Load handler on the form name
-        let form_name = self.form_obj_key.replace("__", "");
+        let _form_name = self.form_obj_key.replace("__", "");
         let callback = {
             let q = self.queue.borrow();
             // Try common Load event registrations
@@ -628,7 +626,7 @@ impl FormApp {
         let row = &store.rows[store.position as usize];
 
         // Update VM objects for bound controls
-        let mut vm = self.vm.borrow_mut();
+        let vm = self.vm.borrow_mut();
         if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
             let fo = form_obj.borrow();
             for binding in &self.data_bindings {
@@ -721,7 +719,7 @@ impl FormApp {
     /// Navigate a BindingSource: "first", "prev", "next", "last"
     fn navigate_binding_source(&mut self, bs_name: &str, action: &str) {
         let bs_lower = bs_name.to_lowercase();
-        let (new_pos, count) = {
+        let (new_pos, _count) = {
             let store = match self.data_store.get(&bs_lower) {
                 Some(s) => s,
                 None => return,
@@ -781,7 +779,7 @@ impl FormApp {
     }
 
     /// Handle click on a BindingNavigator — determine which button was clicked.
-    fn handle_navigator_click(&mut self, nav_name: &str, click_x: f64, click_y: f64) -> bool {
+    fn handle_navigator_click(&mut self, nav_name: &str, click_x: f64, _click_y: f64) -> bool {
         let nav_ctrl = self.controls.iter().find(|c| c.name.eq_ignore_ascii_case(nav_name));
         let nav_ctrl = match nav_ctrl {
             Some(c) => c,
@@ -1052,7 +1050,7 @@ pub fn launch_skia_form(
     mut vm: vybe_bytecode::VM,
     queue: Rc<RefCell<vybe_host::SideEffectQueue>>,
     form: &vybe_forms::Form,
-    title: &str,
+    _title: &str,
 ) {
     // Register native dialog functions (rfd)
     register_dialog_fns(&mut vm);

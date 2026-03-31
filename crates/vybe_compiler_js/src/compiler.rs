@@ -7,7 +7,7 @@ use vybe_parser_js::ast::*;
 use crate::scope::Scope;
 
 struct LoopContext {
-    start_offset: usize,
+    _start_offset: usize,
     break_patches: Vec<usize>,
     continue_patches: Vec<usize>,
     label: Option<String>,
@@ -363,7 +363,7 @@ impl Compiler {
             }
             Statement::While { test, body } => {
                 let start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
+                self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
                 self.compile_expression(test)?;
                 self.emit_to_bool();
                 let exit = self.emit_jump(Op::br_if_false);
@@ -376,7 +376,7 @@ impl Compiler {
             }
             Statement::DoWhile { body, test } => {
                 let start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
+                self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
                 self.compile_statement(body)?;
                 for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
                 self.compile_expression(test)?;
@@ -398,7 +398,7 @@ impl Compiler {
                     }
                 }
                 let start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
+                self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
                 let exit = if let Some(test) = test {
                     self.compile_expression(test)?;
                     self.emit_to_bool();
@@ -497,7 +497,7 @@ impl Compiler {
                 // JS switch with fallthrough: once a case matches, execute all subsequent
                 // case bodies until a break is hit.
                 self.compile_expression(discriminant)?;
-                self.loop_stack.push(LoopContext { start_offset: 0, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
+                self.loop_stack.push(LoopContext { _start_offset: 0, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
 
                 // Phase 1: emit all case tests, jumping to their body positions
                 let mut test_jumps: Vec<(usize, usize)> = Vec::new(); // (case_idx, jump_to_body)
@@ -521,12 +521,12 @@ impl Compiler {
 
                 // Phase 2: emit all case bodies sequentially (fallthrough order)
                 let mut body_offsets: Vec<usize> = Vec::new();
-                for (i, case) in cases.iter().enumerate() {
+                for (_i, case) in cases.iter().enumerate() {
                     body_offsets.push(self.current_offset());
                     for s in &case.consequent { self.compile_statement(s)?; }
                     // No implicit break — falls through to next case body
                 }
-                let end_offset = self.current_offset();
+                let _end_offset = self.current_offset();
 
                 // Phase 3: patch test jumps to body positions
                 for (case_idx, jump) in &test_jumps {
@@ -604,7 +604,7 @@ impl Compiler {
 
                 // Loop start: __i < __arr.length
                 let loop_start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: loop_start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
+                self.loop_stack.push(LoopContext { _start_offset: loop_start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
 
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
@@ -664,7 +664,7 @@ impl Compiler {
 
                 // Loop: __i < __keys.length
                 let loop_start = self.current_offset();
-                self.loop_stack.push(LoopContext { start_offset: loop_start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
+                self.loop_stack.push(LoopContext { _start_offset: loop_start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
 
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, keys_slot);
@@ -801,7 +801,7 @@ impl Compiler {
                     }
                 }
             }
-            Statement::Export { declaration, specifiers, default } => {
+            Statement::Export { declaration, specifiers: _, default } => {
                 // Compile the declaration if any
                 if let Some(decl) = declaration {
                     self.compile_statement(decl)?;

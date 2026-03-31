@@ -56,6 +56,7 @@ fn main() {
         "vb" => run_vb(path, dump, emit_wasm, sandbox),
         "js" => run_js(path, dump, emit_wasm, sandbox),
         "dart" => run_dart(path, dump, emit_wasm, sandbox),
+        "py" | "py3" => run_python(path, dump, emit_wasm, sandbox),
         "wasm" => run_wasm(path),
         "vybe" => run_project(path, dump),
         "vbp" | "vbproj" => vybe_cli::runner::run(path, &[]),
@@ -371,6 +372,48 @@ fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
     vybe_cli::runner::launch_vm_form(vm, queue, None);
 }
 
+fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
+    let source = read_file(path);
+    let program = match vybe_parser_python::parse(&source) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
+    };
+    
+
+    let mut vm = VM::new();
+    let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
+    if sandbox {
+        eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
+        vybe_host::register_with_capabilities_and_gui(
+            &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
+        );
+    } else {
+        vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    }
+    vybe_host::setup_namespaces(&mut vm);
+
+    let chunks = match vybe_compiler_python::Compiler::new().compile(&program) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+    };
+
+    if dump { dump_chunks(&chunks); return; }
+    if emit_wasm {
+        let wasm_bytes = vybe_bytecode::wasm::write_wasm(&chunks);
+        let out_path = path.with_extension("wasm");
+        std::fs::write(&out_path, &wasm_bytes).unwrap();
+        eprintln!("Wrote {} bytes to {}", wasm_bytes.len(), out_path.display());
+        return;
+    }
+
+    match vm.run(chunks) {
+        Ok(_) => {}
+        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+    }
+
+    vybe_cli::runner::launch_vm_form(vm, queue, None);
+}
+
 fn run_wasm(path: &Path) {
     let data = match std::fs::read(path) {
         Ok(d) => d,
@@ -406,7 +449,7 @@ fn read_file(path: &Path) -> String {
 }
 
 fn dump_chunks(chunks: &[vybe_bytecode::Chunk]) {
-    for (i, chunk) in chunks.iter().enumerate() {
+    for (_i, chunk) in chunks.iter().enumerate() {
         println!("{}", vybe_bytecode::debug::disassemble(chunk));
     }
 }

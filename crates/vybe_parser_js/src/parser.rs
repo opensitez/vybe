@@ -5,6 +5,7 @@ use crate::token::{Token, TokenKind};
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    #[allow(dead_code)]
     lexer: Lexer,
 }
 
@@ -1448,6 +1449,7 @@ impl Parser {
         }
     }
 
+    #[allow(dead_code)]
     fn resync_after_template(&mut self) {
         // Re-tokenize from the lexer's current position to get the next token
         // For now, templates with interpolation need special handling in the token stream

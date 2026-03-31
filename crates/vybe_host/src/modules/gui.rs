@@ -115,7 +115,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     // newControl(controlType) → creates an object representing a control
     // The object has __control_type, __control_name, and methods
     vm.register_host_fn("vybe:gui", "newControl", {
-        let q = q.clone();
+        let _q = q.clone();
         Box::new(move |args: &[Value]| {
             use vybe_bytecode::value::Object;
             static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);

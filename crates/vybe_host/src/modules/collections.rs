@@ -1,13 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use vybe_bytecode::{VM, Value};
-use vybe_bytecode::value::{Object, ObjectKind, Function, Upvalue};
+use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
     // -- Map constructor: new Map() --
     // Called with (this) from `new Map()`. Sets up methods on this.
     vm.register_host_fn("vybe:collections", "Map", Box::new(|args: &[Value]| {
-        let this = args.first().cloned().unwrap_or(Value::Null);
+        let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
+            .unwrap_or_else(|| Value::Object(Rc::new(RefCell::new(Object::new()))));
         if let Value::Object(obj) = &this {
             let mut o = obj.borrow_mut();
             o.properties.insert("__type".into(), Value::String(Rc::from("Map")));
@@ -89,7 +90,8 @@ pub fn register(vm: &mut VM) {
 
     // -- Set constructor: new Set() --
     vm.register_host_fn("vybe:collections", "Set", Box::new(|args: &[Value]| {
-        let this = args.first().cloned().unwrap_or(Value::Null);
+        let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
+            .unwrap_or_else(|| Value::Object(Rc::new(RefCell::new(Object::new()))));
         if let Value::Object(obj) = &this {
             let mut o = obj.borrow_mut();
             o.properties.insert("__type".into(), Value::String(Rc::from("Set")));

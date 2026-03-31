@@ -620,7 +620,9 @@ pub struct CodeEditorWidget {
     minimap_pixmap: Option<Pixmap>,
     minimap_needs_redraw: bool,
     pub wrap_lines: bool,
+    #[allow(dead_code)]
     pub diagnostics: Vec<Diagnostic>,
+    #[allow(dead_code)]
     pub matching_bracket: Option<usize>,
 }
 
@@ -760,6 +762,7 @@ impl CodeEditorWidget {
         }
     }
 
+    #[allow(dead_code)]
     pub fn toggle_comment(&mut self, fs: &mut FontSystem) {
         let prefix = match &self.lang_def.comments {
             Some(c) => c.line_comment.as_deref().unwrap_or("//"),
@@ -777,6 +780,7 @@ impl CodeEditorWidget {
         self.needs_reshape = true; self.sync();
     }
 
+    #[allow(dead_code)]
     fn draw_squiggle(&self, pixmap: &mut Pixmap, x: f32, y: f32, w: f32, color: Color) {
         let mut pb = PathBuilder::new();
         let mut cx = x;
@@ -1742,7 +1746,7 @@ impl ApplicationHandler for App {
                              if w.editor.selection_bounds().is_none() {
                                  let li = w.editor.cursor().line;
                                  w.my_editor.duplicate_line(li);
-                             } else if let Some(t) = w.editor.copy_selection() {
+                             } else if let Some(_t) = w.editor.copy_selection() {
                                  w.find_next(&mut self.font_system); // Simplified "Next occurrence" logic
                              }
                              w.needs_reshape = true; tab.is_modified = true;
@@ -1945,7 +1949,6 @@ impl ApplicationHandler for App {
                                 }
                                 DropdownEvent::Closed => { self.lang_dropdown = None; }
                                 DropdownEvent::None => self.lang_dropdown = Some(dropdown),
-                                _ => {}
                             }
                             self.window.as_ref().unwrap().request_redraw(); return;
                         }

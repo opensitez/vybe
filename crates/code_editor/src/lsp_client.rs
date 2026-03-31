@@ -10,15 +10,20 @@ use lsp_types::{
 
 pub enum LspEvent {
     Diagnostics(String, Vec<Diagnostic>), // URI, Diagnostics
+    #[allow(dead_code)]
     Hover(String, String),               // URI, Hover text
+    #[allow(dead_code)]
     Definition(String, Position),        // URI, Position
 }
 
 pub enum LspRequest {
     Init(String, String, String), // content, language_id, uri
     Change(String, String),        // content, uri
+    #[allow(dead_code)]
     Close(String),                 // uri
+    #[allow(dead_code)]
     Hover(String, u32, u32),       // uri, line, col
+    #[allow(dead_code)]
     Definition(String, u32, u32),  // uri, line, col
 }
 

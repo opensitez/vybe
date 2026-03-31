@@ -233,7 +233,7 @@ impl Parser {
         }
     }
 
-    fn parse_constructor(&mut self, class_name: &str, is_const: bool, is_factory: bool) -> Result<ClassMember, String> {
+    fn parse_constructor(&mut self, _class_name: &str, is_const: bool, is_factory: bool) -> Result<ClassMember, String> {
         self.expect_ident()?; // consume class name
         let ctor_name = if self.eat(&Token::Dot) { Some(self.expect_ident()?) } else { None };
         let params = self.parse_params()?;
@@ -243,7 +243,7 @@ impl Parser {
             loop {
                 if self.peek() == &Token::Super {
                     self.advance();
-                    let name = if self.eat(&Token::Dot) { Some(self.expect_ident()?) } else { None };
+                    let _name = if self.eat(&Token::Dot) { Some(self.expect_ident()?) } else { None };
                     let args = self.parse_args()?;
                     initializers.push(CtorInitializer::SuperCall(args));
                 } else if self.peek() == &Token::This {
@@ -1210,7 +1210,7 @@ impl Parser {
         }
     }
 
-    fn skip_balanced(&mut self, open: Token, close: Token) -> Result<(), String> {
+    fn skip_balanced(&mut self, open: Token, _close: Token) -> Result<(), String> {
         self.expect(open)?;
         let mut depth = 1;
         while depth > 0 && self.peek() != &Token::EOF {

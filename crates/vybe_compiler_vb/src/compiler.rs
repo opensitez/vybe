@@ -38,7 +38,7 @@ pub struct Compiler {
 }
 
 pub(crate) struct LoopContext {
-    pub start: usize,
+    pub _start: usize,
     pub break_jumps: Vec<usize>,
     pub continue_jumps: Vec<usize>,
 }
@@ -193,7 +193,7 @@ impl Compiler {
             | "environment" | "thread" | "json" | "color"
             | "datetime" | "stringbuilder" | "process"
             | "timespan" | "guid" | "point" | "size" | "font" | "random"
-            | "path" | "strings" | "messagebox" | "encoding"
+            | "path" | "messagebox" | "encoding"
         )
     }
 

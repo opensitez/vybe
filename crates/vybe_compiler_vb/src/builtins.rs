@@ -255,8 +255,8 @@ impl Compiler {
                             => Some(("vybe:convert", "cint")),
             // More string ($-suffixed variants)
             "lcase$" | "ucase$" | "trim$" | "ltrim$" | "rtrim$"
-            | "mid$" | "chr$" | "chrw$" | "left$" | "right$"
-            | "space$" | "spc" | "lset$" | "rset$" => {
+            | "left$" | "right$"
+            | "lset$" | "rset$" => {
                 // Strip $ and recurse
                 let base = fname.trim_end_matches('$');
                 return self.try_compile_builtin_call(base, args);

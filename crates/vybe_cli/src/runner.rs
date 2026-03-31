@@ -4,7 +4,6 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 use vybe_parser_basic::parse_program;
-use vybe_project::Project;
 
 // ---------------------------------------------------------------------------
 // Thread-local used to pass the Project into the named Dioxus App component.
@@ -148,6 +147,7 @@ fn run_js_file(path: &Path) {
 // ---------------------------------------------------------------------------
 
 /// Wire event handlers by finding compiled chunks that match method names with Handles clauses.
+#[allow(dead_code)]
 fn wire_handles_from_chunks(
     program: &vybe_parser_basic::ast::Program,
     vm: &mut vybe_bytecode::VM,
@@ -199,6 +199,7 @@ fn wire_handles_from_chunks(
 
 /// Scan parsed AST for Handles clauses and register event handlers with the side effect queue.
 /// Looks up the compiled function in VM globals and wires it to the control.event.
+#[allow(dead_code)]
 fn wire_handles_from_ast(
     program: &vybe_parser_basic::ast::Program,
     vm: &vybe_bytecode::VM,

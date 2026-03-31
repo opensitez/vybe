@@ -38,7 +38,7 @@ struct ExceptionHandler {
     /// Instruction pointer to jump to on catch.
     catch_ip: usize,
     /// Chunk index the handler was registered in.
-    chunk_index: usize,
+    _chunk_index: usize,
     /// Stack depth when try_start was executed (for unwinding).
     stack_depth: usize,
     /// Call frame depth when try_start was executed.
@@ -1349,7 +1349,7 @@ impl VM {
                     let catch_ip = (f.ip as i64 + catch_offset as i64) as usize;
                     self.exception_handlers.push(ExceptionHandler {
                         catch_ip,
-                        chunk_index: f.chunk_index,
+                        _chunk_index: f.chunk_index,
                         stack_depth: self.stack.len(),
                         frame_depth: self.frames.len(),
                     });
@@ -1408,7 +1408,7 @@ impl VM {
                             catch_ip: ip,
                             stack_depth: self.stack.len(),
                             frame_depth: self.frames.len(),
-                            chunk_index: self.frame().chunk_index,
+                            _chunk_index: self.frame().chunk_index,
                         });
                     }
                 }
@@ -1710,7 +1710,7 @@ impl VM {
                     let depth = self.read_byte() as usize;
                     if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
                         let target = entry.target;
-                        let ci = self.frame().chunk_index;
+                        let _ci = self.frame().chunk_index;
                         self.frames.last_mut().unwrap().ip = target;
                         // If branching out of a block (not loop), pop labels
                         if !entry.is_loop {

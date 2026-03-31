@@ -20,9 +20,9 @@ const SECTION_EXPORT: u8 = 7;
 const SECTION_CODE: u8 = 10;
 
 const TYPE_FUNC: u8 = 0x60;
-const TYPE_I32: u8 = 0x7F;
+const _TYPE_I32: u8 = 0x7F;
 const TYPE_I64: u8 = 0x7E;
-const TYPE_F64: u8 = 0x7C;
+const _TYPE_F64: u8 = 0x7C;
 const TYPE_VOID: u8 = 0x40;
 
 // ============================================================
@@ -170,7 +170,7 @@ fn encode_memory_section() -> Vec<u8> {
     out
 }
 
-fn encode_export_section(chunks: &[Chunk], import_count: usize) -> Vec<u8> {
+fn encode_export_section(_chunks: &[Chunk], import_count: usize) -> Vec<u8> {
     let mut out = Vec::new();
     write_leb128_u32(&mut out, 1);
     write_name(&mut out, "_start");
@@ -503,7 +503,7 @@ fn decode_standard_wasm(
     for i in 0..func_count as usize {
         let (body_size, read) = read_leb128_u32(&code_sec[cpos..]);
         cpos += read;
-        let body_start = cpos;
+        let _body_start = cpos;
         let body_end = cpos + body_size as usize;
 
         // Parse locals
@@ -561,7 +561,7 @@ struct WasmLabel {
     if_patch: Option<usize>,
 }
 
-fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count: u32, import_count: usize) -> Chunk {
+fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count: u32, _import_count: usize) -> Chunk {
     let mut chunk = Chunk::new(name);
     chunk.arity = arity;
     chunk.local_count = 1 + arity as u16 + wasm_local_count as u16;
@@ -627,7 +627,7 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             // end
             0x0B => {
                 if let Some(label) = label_stack.pop() {
-                    let end_offset = chunk.current_offset();
+                    let _end_offset = chunk.current_offset();
                     // Patch if_patch if not already patched (no else branch)
                     if let Some(patch) = label.if_patch {
                         chunk.patch_jump(patch);
