@@ -21,6 +21,12 @@ pub struct TypeEntry {
     pub fields: Vec<String>,
     /// Vtable: method_name → chunk_index. Methods are shared across all instances.
     pub methods: Vec<(String, usize)>,
+    /// Whether this is an interface definition (not a concrete class).
+    pub is_interface: bool,
+    /// Interface names this type implements.
+    pub implements: Vec<String>,
+    /// Constructor chunk index (if any). Resolved during load_type_table.
+    pub constructor_chunk: Option<usize>,
 }
 
 /// A constant initialization expression (Extended Const Expressions proposal).
@@ -35,6 +41,9 @@ pub enum ConstExpr {
     Add(Box<ConstExpr>, Box<ConstExpr>),
     /// Multiply two const exprs: left * right.
     Mul(Box<ConstExpr>, Box<ConstExpr>),
+    /// Create a function reference from a chunk index.
+    /// Evaluated at load time — produces a callable Function object.
+    RefFunc(usize),
 }
 
 /// A global variable initializer — evaluated at link/load time.

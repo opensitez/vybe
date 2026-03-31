@@ -69,6 +69,34 @@ impl Compiler {
         self.chunks[0].local_count = (scope.max_local + 1) as u16;
         self.chunks[0].emit_op(Op::halt, 0);
 
+        // Append stdlib and register as global_inits with RefFunc.
+        // The VM evaluates these at load time, creating Function refs in __vybe_* globals.
+        // On Vybe, register_all overwrites these globals with host fn refs.
+        // On any other runtime, the stdlib bytecode runs as-is via call_ref.
+        let stdlib = common::stdlib::build_stdlib();
+        let stdlib_base = self.chunks.len();
+        let mappings: &[(&str, &str)] = &[
+            ("__stdlib_range",      "__vybe_range"),
+            ("__stdlib_sorted",     "__vybe_sorted"),
+            ("__stdlib_reversed",   "__vybe_reversed"),
+            ("__stdlib_enumerate",  "__vybe_enumerate"),
+            ("__stdlib_zip",        "__vybe_zip"),
+            ("__stdlib_sum",        "__vybe_sum"),
+            ("__stdlib_min",        "__vybe_min"),
+            ("__stdlib_max",        "__vybe_max"),
+            ("__stdlib_pow",        "__vybe_pow"),
+        ];
+        for (i, &(chunk_name, global_name)) in mappings.iter().enumerate() {
+            if stdlib.exports.iter().any(|&n| n == chunk_name) {
+                use vybe_bytecode::chunk::{GlobalInit, ConstExpr};
+                self.chunks[0].global_inits.push(GlobalInit {
+                    name: global_name.to_string(),
+                    init: ConstExpr::RefFunc(stdlib_base + i),
+                });
+            }
+        }
+        self.chunks.extend(stdlib.chunks);
+
         Ok(std::mem::take(&mut self.chunks))
     }
 
@@ -723,7 +751,13 @@ impl Compiler {
                     }
                     BinOp::Mod => self.chunk(chunk_idx).emit_op(Op::i32_rem_s, 0),
                     BinOp::Pow => {
-                        common::math::emit_pow(self.chunk(chunk_idx), 0);
+                        // left and right already on stack — need func ref below them
+                        // Store right in temp, store left in temp, push func, push left, push right, call
+                        // Actually: emit_call expects [func, args...]. Left and right are already pushed.
+                        // Simplest: use the existing host call path for pow since 2 args are already on stack.
+                        let pow_idx = self.chunk(chunk_idx).add_import("vybe:math", "pow");
+                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, pow_idx, 0);
+                        self.chunk(chunk_idx).emit(2, 0);
                     }
                     BinOp::LShift => self.chunk(chunk_idx).emit_op(Op::i32_shl, 0),
                     BinOp::RShift => self.chunk(chunk_idx).emit_op(Op::i32_shr_s, 0),
@@ -868,25 +902,46 @@ impl Compiler {
                             return Ok(());
                         }
                         "enumerate" => {
-                            return self.compile_host_call("vybe:array", "enumerate", args, chunk_idx);
+                            common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_enumerate", 0);
+                            for a in args { self.compile_expr(a, chunk_idx)?; }
+                            common::bundle::emit_call_invoke(self.chunk(chunk_idx), args.len() as u8, 0);
+                            return Ok(());
                         }
                         "zip" => {
-                            return self.compile_host_call("vybe:array", "zip", args, chunk_idx);
+                            common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_zip", 0);
+                            for a in args { self.compile_expr(a, chunk_idx)?; }
+                            common::bundle::emit_call_invoke(self.chunk(chunk_idx), args.len() as u8, 0);
+                            return Ok(());
                         }
                         "sorted" => {
-                            return self.compile_host_call("vybe:array", "sorted", args, chunk_idx);
+                            common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_sorted", 0);
+                            for a in args { self.compile_expr(a, chunk_idx)?; }
+                            common::bundle::emit_call_invoke(self.chunk(chunk_idx), args.len() as u8, 0);
+                            return Ok(());
                         }
                         "reversed" => {
-                            return self.compile_host_call("vybe:array", "reversed", args, chunk_idx);
+                            common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_reversed", 0);
+                            for a in args { self.compile_expr(a, chunk_idx)?; }
+                            common::bundle::emit_call_invoke(self.chunk(chunk_idx), args.len() as u8, 0);
+                            return Ok(());
                         }
                         "sum" => {
-                            return self.compile_host_call("vybe:array", "sum", args, chunk_idx);
+                            common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_sum", 0);
+                            for a in args { self.compile_expr(a, chunk_idx)?; }
+                            common::bundle::emit_call_invoke(self.chunk(chunk_idx), args.len() as u8, 0);
+                            return Ok(());
                         }
                         "min" => {
-                            return self.compile_host_call("vybe:array", "pymin", args, chunk_idx);
+                            common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_min", 0);
+                            for a in args { self.compile_expr(a, chunk_idx)?; }
+                            common::bundle::emit_call_invoke(self.chunk(chunk_idx), args.len() as u8, 0);
+                            return Ok(());
                         }
                         "max" => {
-                            return self.compile_host_call("vybe:array", "pymax", args, chunk_idx);
+                            common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_max", 0);
+                            for a in args { self.compile_expr(a, chunk_idx)?; }
+                            common::bundle::emit_call_invoke(self.chunk(chunk_idx), args.len() as u8, 0);
+                            return Ok(());
                         }
                         "any" => {
                             return self.compile_host_call("vybe:array", "any", args, chunk_idx);
@@ -1150,12 +1205,24 @@ impl Compiler {
     }
 
     fn compile_range(&mut self, args: &[Expression], chunk_idx: usize) -> Result<(), String> {
-        let range_fn = self.chunk(chunk_idx).add_import("vybe:array", "range");
-        for a in args {
-            self.compile_expr(a, chunk_idx)?;
+        // Push func ref first, then normalized args
+        common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_range", 0);
+        match args.len() {
+            1 => {
+                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
+                self.compile_expr(&args[0], chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+            }
+            2 => {
+                self.compile_expr(&args[0], chunk_idx)?;
+                self.compile_expr(&args[1], chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+            }
+            _ => {
+                for a in args { self.compile_expr(a, chunk_idx)?; }
+            }
         }
-        self.chunk(chunk_idx).emit_op_u16(Op::call_import, range_fn, 0);
-        self.chunk(chunk_idx).emit(args.len() as u8, 0);
+        common::bundle::emit_call_invoke(self.chunk(chunk_idx), 3, 0);
         Ok(())
     }
 
@@ -1313,8 +1380,9 @@ impl Compiler {
                 self.chunk(chunk_idx).emit_op(Op::array_reverse, 0);
             }
             "sort" => {
+                common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_sorted", 0);
                 self.compile_expr(obj, chunk_idx)?;
-                common::collections::emit_sorted(self.chunk(chunk_idx), 0);
+                common::bundle::emit_call_invoke(self.chunk(chunk_idx), 1, 0);
             }
             "copy" => {
                 // array_slice(0, MAX) = shallow copy

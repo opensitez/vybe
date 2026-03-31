@@ -6,6 +6,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use crate::Target;
 
 // ── Direct WASM opcodes (no host call) ──────────────────────
 
@@ -64,4 +65,33 @@ pub fn emit_random(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:math", "random");
     chunk.emit_op_u16(Op::call_import, idx, line);
     chunk.emit(0, line);
+}
+
+// ── Target-aware variants ───────────────────────────────────
+// On Vybe: use vybe:math host imports.
+// On standard WASM: these must be provided by the embedder or linked from libm.
+
+/// Target-aware pow. Stack: [base, exp] → [result]
+pub fn emit_pow_targeted(chunk: &mut Chunk, target: &Target, line: u32) {
+    if target.has_module("vybe:math") {
+        emit_pow(chunk, line);
+    } else {
+        // Standard WASM fallback: import from a portable math module.
+        // Any compliant embedder must provide "env"/"pow" or "math"/"pow".
+        let idx = chunk.add_import("env", "pow");
+        chunk.emit_op_u16(Op::call_import, idx, line);
+        chunk.emit(2, line);
+    }
+}
+
+/// Target-aware sin/cos/tan/log/exp — all follow same pattern.
+pub fn emit_math_fn_targeted(chunk: &mut Chunk, name: &str, target: &Target, line: u32) {
+    let (module, func) = if target.has_module("vybe:math") {
+        ("vybe:math", name)
+    } else {
+        ("env", name)
+    };
+    let idx = chunk.add_import(module, func);
+    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit(1, line);
 }

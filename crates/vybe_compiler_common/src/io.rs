@@ -5,6 +5,8 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+// Target-aware variants can be added here when needed.
+// use crate::Target;
 
 /// Emit print/log. Stack: [arg1, arg2, ..., argN] → []
 /// `arg_count` values are consumed from the stack.

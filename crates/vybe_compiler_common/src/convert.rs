@@ -5,6 +5,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use crate::Target;
 
 // ── Direct WASM opcodes ─────────────────────────────────────
 
@@ -61,4 +62,20 @@ pub fn emit_is_numeric(chunk: &mut Chunk, line: u32) {
 /// Dynamic truthiness conversion. Stack: [value] → [bool]
 pub fn emit_to_bool(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::dyn_to_bool, line);
+}
+
+// ── Target-aware variants ───────────────────────────────────
+
+/// Target-aware toString. On Vybe, uses host import. On pure WASM, emits
+/// a type-switch that handles common cases inline.
+pub fn emit_to_string_targeted(chunk: &mut Chunk, target: &Target, line: u32) {
+    if target.has_module("vybe:convert") {
+        emit_to_string(chunk, line);
+    } else {
+        // Fallback: import from a generic "env" module.
+        // The embedder must provide env/toString.
+        let idx = chunk.add_import("env", "toString");
+        chunk.emit_op_u16(Op::call_import, idx, line);
+        chunk.emit(1, line);
+    }
 }

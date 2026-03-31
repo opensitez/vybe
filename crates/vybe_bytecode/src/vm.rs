@@ -129,6 +129,11 @@ impl VM {
         }
     }
 
+    /// Check if native Vybe host functions are registered.
+    pub fn has_vybe_host(&self) -> bool {
+        self.host_registry.contains_key(&("vybe:array".to_string(), "redim".to_string()))
+    }
+
     /// Evaluate a constant expression (Extended Const Expressions).
     /// Used for global initialization at load time.
     fn eval_const_expr(&self, expr: &crate::chunk::ConstExpr) -> Value {
@@ -156,6 +161,22 @@ impl VM {
                     (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_mul(*b)),
                     (Value::F64(a), Value::F64(b)) => Value::F64(a * b),
                     _ => Value::F64(l.as_f64() * r.as_f64()),
+                }
+            }
+            ConstExpr::RefFunc(chunk_idx) => {
+                if *chunk_idx < self.chunks.len() {
+                    let chunk = &self.chunks[*chunk_idx];
+                    let func = crate::value::Function {
+                        name: Some(chunk.name.clone()),
+                        arity: chunk.arity,
+                        chunk_index: *chunk_idx,
+                        upvalues: Vec::new(),
+                    };
+                    let mut obj = Object::new();
+                    obj.kind = ObjectKind::Function(func);
+                    Value::Object(Rc::new(RefCell::new(obj)))
+                } else {
+                    Value::Null
                 }
             }
         }
@@ -297,7 +318,7 @@ impl VM {
         }
         self.chunks.extend(adjusted);
 
-        // Resolve imports from the new script chunk's import table
+        // Resolve imports from the script chunk's import table.
         self.import_table.clear();
         for import in &self.chunks[script_idx].imports {
             let key = (import.module.clone(), import.name.clone());

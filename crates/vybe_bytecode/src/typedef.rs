@@ -70,6 +70,15 @@ pub struct TypeDef {
     /// Empty = all methods visible (default for user classes).
     pub exports: Vec<String>,
 
+    // -- Interface support --
+    /// Whether this type is an interface (not a concrete class).
+    pub is_interface: bool,
+    /// Interfaces this type implements (type_ids of interface types).
+    pub implements: Vec<usize>,
+    /// Required method signatures for interfaces (method_name → param_count).
+    /// Only populated for interface types.
+    pub required_methods: Vec<(String, u8)>,
+
     // -- Shared-Everything Threads --
     /// Whether instances of this type can be shared across threads.
     /// Shared types use atomic field access (shared_struct_get/set).
@@ -96,6 +105,9 @@ impl TypeDef {
             is_resource: false,
             constants: HashMap::new(),
             exports: Vec::new(),
+            is_interface: false,
+            implements: Vec::new(),
+            required_methods: Vec::new(),
             shared: false,
             interface: None,
             source_component: None,
@@ -143,6 +155,16 @@ impl TypeDef {
 
     pub fn shared(mut self) -> Self {
         self.shared = true;
+        self
+    }
+
+    pub fn as_interface(mut self) -> Self {
+        self.is_interface = true;
+        self
+    }
+
+    pub fn with_required_method(mut self, name: &str, param_count: u8) -> Self {
+        self.required_methods.push((name.to_lowercase(), param_count));
         self
     }
 
@@ -365,14 +387,30 @@ impl TypeRegistry {
         }
     }
 
-    /// Check if type_id is a subtype of target_id (walks parent chain).
+    /// Check if type_id is a subtype of target_id.
+    /// Walks parent chain AND checks interface implementations.
     pub fn is_subtype(&self, type_id: usize, target_id: usize) -> bool {
         if type_id == target_id { return true; }
+
+        // Check interface implementations
+        if let Some(typedef) = self.types.get(type_id) {
+            if typedef.implements.contains(&target_id) {
+                return true;
+            }
+        }
+
+        // Walk parent chain
         let mut tid = type_id;
         loop {
             if let Some(typedef) = self.types.get(tid) {
                 if let Some(parent) = typedef.parent {
                     if parent == target_id { return true; }
+                    // Also check parent's interface implementations
+                    if let Some(parent_td) = self.types.get(parent) {
+                        if parent_td.implements.contains(&target_id) {
+                            return true;
+                        }
+                    }
                     tid = parent;
                 } else {
                     return false;
@@ -383,36 +421,125 @@ impl TypeRegistry {
         }
     }
 
+    /// Add an interface implementation to a type.
+    pub fn add_implements(&mut self, type_id: usize, interface_id: usize) {
+        if let Some(typedef) = self.types.get_mut(type_id) {
+            if !typedef.implements.contains(&interface_id) {
+                typedef.implements.push(interface_id);
+            }
+        }
+    }
+
+    /// Register an interface type with required methods.
+    pub fn register_interface(&mut self, name: &str, methods: &[(&str, u8)]) -> usize {
+        let mut td = TypeDef::new(name).as_interface();
+        for (method_name, param_count) in methods {
+            td.required_methods.push((method_name.to_lowercase(), *param_count));
+        }
+        self.register(td)
+    }
+
+    /// Check if a type satisfies an interface (has all required methods).
+    pub fn satisfies_interface(&self, type_id: usize, interface_id: usize) -> bool {
+        let iface = match self.types.get(interface_id) {
+            Some(td) if td.is_interface => td,
+            _ => return false,
+        };
+        for (method_name, _) in &iface.required_methods {
+            if self.resolve_method(type_id, method_name).is_none() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Get the constructor for a type, walking parent chain if needed.
+    pub fn resolve_constructor(&self, type_id: usize) -> Option<&Method> {
+        let mut tid = type_id;
+        loop {
+            if let Some(typedef) = self.types.get(tid) {
+                if typedef.constructor.is_some() {
+                    return typedef.constructor.as_ref();
+                }
+                if let Some(parent) = typedef.parent {
+                    tid = parent;
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+    }
+
     /// Load type entries from a compiled chunk's type table.
     /// Called by VM.run() before execution. Registers user-defined types
     /// and adds their ChunkFn methods to the vtable.
     pub fn load_type_table(&mut self, types: &[super::chunk::TypeEntry]) {
+        // First pass: register all types (so interfaces exist before classes reference them)
         for entry in types {
-            // Check if type already exists (e.g., host type registered earlier)
-            let type_id = if let Some(existing) = self.get_id(&entry.name) {
-                existing
-            } else {
+            if self.get_id(&entry.name).is_none() {
                 let mut td = TypeDef::new(&entry.name);
-                // Set parent
+                if entry.is_interface {
+                    td.is_interface = true;
+                }
                 if !entry.parent.is_empty() {
                     if let Some(pid) = self.get_id(&entry.parent) {
                         td.parent = Some(pid);
                     }
                 }
-                self.register(td)
+                self.register(td);
+            }
+        }
+
+        // Second pass: add fields, methods, interface implementations, constructors
+        for entry in types {
+            let type_id = match self.get_id(&entry.name) {
+                Some(id) => id,
+                None => continue,
             };
 
             // Add fields
-            let typedef = &mut self.types[type_id];
-            for field_name in &entry.fields {
-                if typedef.field_index(field_name).is_none() {
-                    typedef.add_field(field_name);
+            {
+                let typedef = &mut self.types[type_id];
+                for field_name in &entry.fields {
+                    if typedef.field_index(field_name).is_none() {
+                        typedef.add_field(field_name);
+                    }
+                }
+
+                // Mark as interface if flagged
+                if entry.is_interface {
+                    typedef.is_interface = true;
+                    // For interfaces, methods are required method signatures
+                    for (method_name, _) in &entry.methods {
+                        typedef.required_methods.push((method_name.to_lowercase(), 0));
+                    }
+                }
+
+                // Add vtable methods (ChunkFn)
+                for (method_name, chunk_idx) in &entry.methods {
+                    typedef.methods.insert(method_name.to_lowercase(), Method::ChunkFn(*chunk_idx));
+                }
+
+                // Set constructor
+                if let Some(ctor_idx) = entry.constructor_chunk {
+                    typedef.constructor = Some(Method::ChunkFn(ctor_idx));
                 }
             }
 
-            // Add vtable methods (ChunkFn)
-            for (method_name, chunk_idx) in &entry.methods {
-                typedef.methods.insert(method_name.to_lowercase(), Method::ChunkFn(*chunk_idx));
+            // Resolve parent (may have been registered in first pass)
+            if !entry.parent.is_empty() {
+                if let Some(pid) = self.get_id(&entry.parent) {
+                    self.types[type_id].parent = Some(pid);
+                }
+            }
+
+            // Resolve interface implementations
+            for iface_name in &entry.implements {
+                if let Some(iface_id) = self.get_id(iface_name) {
+                    self.add_implements(type_id, iface_id);
+                }
             }
         }
     }
