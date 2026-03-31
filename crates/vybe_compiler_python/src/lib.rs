@@ -344,7 +344,26 @@ impl Compiler {
                     }
                 }
 
-                // Call __init__(self, *args) if it exists
+                // Compile class-level statements (class attributes).
+                // These run in the constructor, setting attributes on the new object.
+                for s in &other_stmts {
+                    if let Statement::Assign { targets, value } = s {
+                        // class-level assignment: set on self
+                        for target in targets {
+                            if let Expression::Name(attr_name) = target {
+                                self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                                self.compile_expr(value, ctor_idx)?;
+                                let attr_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(attr_name.as_str())));
+                                self.chunk(ctor_idx).emit_op_u16(Op::struct_set, attr_key, 0);
+                                self.chunk(ctor_idx).emit_op(Op::drop, 0);
+                            }
+                        }
+                    }
+                }
+
+                // Call __init__(self, *args) if it exists.
+                // If this class has no __init__ but has a parent, call the parent constructor
+                // with all args (Python inheritance: child inherits parent's __init__).
                 if let Some(init_ci) = init_chunk {
                     self.chunk(ctor_idx).emit_op_u16(Op::ref_func, init_ci as u16, 0);
                     self.chunk(ctor_idx).emit(0, 0);
@@ -353,7 +372,19 @@ impl Compiler {
                         self.chunk(ctor_idx).emit_op_u16(Op::local_get, (i + 1) as u16, 0);
                     }
                     self.chunk(ctor_idx).emit_op_u8(Op::call_ref, (user_params + 1) as u8, 0);
-                    self.chunk(ctor_idx).emit_op(Op::drop, 0); // discard __init__ return
+                    self.chunk(ctor_idx).emit_op(Op::drop, 0);
+                // If no __init__ and has parent, store parent constructor as __super
+                // so super().__init__() can find it. Users must call super() explicitly.
+                } else if !parent_name.is_empty() {
+                    // Store parent constructor ref on the object for super() access
+                    let parent_c = self.chunk(ctor_idx).add_constant(
+                        Value::String(Rc::from(parent_name.as_str()))
+                    );
+                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                    self.chunk(ctor_idx).emit_op_u16(Op::global_get, parent_c, 0);
+                    let super_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from("__super")));
+                    self.chunk(ctor_idx).emit_op_u16(Op::struct_set, super_key, 0);
+                    self.chunk(ctor_idx).emit_op(Op::drop, 0);
                 }
 
                 // Return this
@@ -790,15 +821,30 @@ impl Compiler {
                 self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop the array
             }
             Expression::Attribute { value, attr } => {
-                // obj.attr = value  →  struct_set
-                self.compile_expr(value, chunk_idx)?;
+                // obj.attr = rhs_value
+                // Stack has: [rhs_value]. struct_set pops val, then obj.
+                // We need: [obj, rhs_value] → struct_set pops rhs_value, then obj.
+                // So: compile obj (push it), then swap obj and rhs_value.
+                // But there's no swap opcode. Alternative: compile obj BEFORE rhs.
+                // But rhs is already on stack from the caller.
+                // Solution: store rhs in temp, push obj, push rhs back.
+                let tmp = self.scope(chunk_idx).alloc("__attr_tmp");
+                self.chunk(chunk_idx).emit_op_u16(Op::local_set, tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.compile_expr(value, chunk_idx)?; // push obj
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp, 0); // push rhs_value
                 let name_c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(attr.as_str())));
                 self.chunk(chunk_idx).emit_op_u16(Op::struct_set, name_c, 0);
             }
             Expression::Subscript { value, slice } => {
-                // obj[idx] = value  →  array_set
-                self.compile_expr(value, chunk_idx)?;
-                self.compile_expr(slice, chunk_idx)?;
+                // obj[idx] = rhs_value. array_set pops: val, key, obj.
+                // Stack has: [rhs_value]. Need: [obj, key, rhs_value].
+                let tmp = self.scope(chunk_idx).alloc("__sub_tmp");
+                self.chunk(chunk_idx).emit_op_u16(Op::local_set, tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.compile_expr(value, chunk_idx)?;  // push obj
+                self.compile_expr(slice, chunk_idx)?;   // push key
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp, 0); // push rhs_value
                 self.chunk(chunk_idx).emit_op(Op::array_set, 0);
             }
             _ => {
@@ -1019,6 +1065,14 @@ impl Compiler {
                 // Check for built-in functions
                 if let Expression::Name(name) = func.as_ref() {
                     match name.as_str() {
+                        "super" => {
+                            // super() → look up __super on self (slot 1)
+                            // In a constructor, self is at slot 1 (after callee at slot 0)
+                            // __super is set by the parent class binding
+                            // For now: push self — super().method() will find parent methods via vtable
+                            self.chunk(chunk_idx).emit_op_u16(Op::local_get, 1, 0); // self
+                            return Ok(());
+                        }
                         "print" => return self.compile_print(args, chunk_idx),
                         "len" => {
                             if args.len() == 1 {
@@ -1179,26 +1233,32 @@ impl Compiler {
                             return self.compile_host_call("wasi:filesystem", "readFile", args, chunk_idx);
                         }
                         "hasattr" => {
-                            return self.compile_host_call("vybe:object", "hasProperty", args, chunk_idx);
+                            if args.len() >= 2 {
+                                // hasattr(obj, key) → obj[key] is not null
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                self.compile_expr(&args[1], chunk_idx)?;
+                                self.chunk(chunk_idx).emit_op(Op::array_get, 0);
+                                self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
+                                self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
+                                return Ok(());
+                            }
                         }
                         "getattr" => {
                             if args.len() >= 2 {
+                                // getattr(obj, key) → obj[key] via array_get
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 self.compile_expr(&args[1], chunk_idx)?;
-                                let get_prop = self.chunk(chunk_idx).add_import("vybe:rt", "get_prop");
-                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, get_prop, 0);
-                                self.chunk(chunk_idx).emit(2, 0);
+                                self.chunk(chunk_idx).emit_op(Op::array_get, 0);
                                 return Ok(());
                             }
                         }
                         "setattr" => {
                             if args.len() >= 3 {
+                                // setattr(obj, key, val) → obj[key] = val via array_set
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 self.compile_expr(&args[1], chunk_idx)?;
                                 self.compile_expr(&args[2], chunk_idx)?;
-                                let set_prop = self.chunk(chunk_idx).add_import("vybe:rt", "set_prop");
-                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, set_prop, 0);
-                                self.chunk(chunk_idx).emit(3, 0);
+                                self.chunk(chunk_idx).emit_op(Op::array_set, 0);
                                 return Ok(());
                             }
                         }
@@ -1248,10 +1308,14 @@ impl Compiler {
                     self.compile_expr(value, chunk_idx)?;
                     common::dict::emit_get_const_key(self.chunk(chunk_idx), s, 0);
                 }
-                // Normal index
+                // Normal index — try array_get first, works for arrays and
+                // objects with __getitem__ (via struct_get fallback in VM)
                 else {
                     self.compile_expr(value, chunk_idx)?;
                     self.compile_expr(slice, chunk_idx)?;
+                    // array_get handles arrays. For objects with __getitem__,
+                    // check if the value is an array first — if not, use struct_get
+                    // which does property lookup (works for dicts with string keys).
                     self.chunk(chunk_idx).emit_op(Op::array_get, 0);
                 }
             }
@@ -1704,13 +1768,10 @@ impl Compiler {
         let result_local = self.scope(chunk_idx).alloc("__comp_result");
         self.chunk(chunk_idx).emit_op_u16(Op::local_set, result_local, 0);
 
-        let push_fn = self.chunk(chunk_idx).add_import("vybe:array", "push");
-
         self.compile_comp_generators(generators, &|s| {
             s.chunk(chunk_idx).emit_op_u16(Op::local_get, result_local, 0);
             s.compile_expr(element, chunk_idx)?;
-            s.chunk(chunk_idx).emit_op_u16(Op::call_import, push_fn, 0);
-            s.chunk(chunk_idx).emit(2, 0);
+            s.chunk(chunk_idx).emit_op(Op::array_push, 0);
             s.chunk(chunk_idx).emit_op(Op::drop, 0);
             Ok(())
         }, chunk_idx)?;

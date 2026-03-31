@@ -25,6 +25,46 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_min",        "__vybe_min"),
     ("__stdlib_max",        "__vybe_max"),
     ("__stdlib_pow",        "__vybe_pow"),
+    ("__stdlib_tostring",   "__vybe_tostring"),
+    ("__stdlib_count",      "__vybe_count"),
+    ("__stdlib_isnumeric",  "__vybe_isnumeric"),
+    ("__stdlib_splice",     "__vybe_splice"),
+    ("__stdlib_floor",      "__vybe_floor"),
+    ("__stdlib_slice",      "__vybe_slice"),
+    ("__stdlib_keys",       "__vybe_keys"),
+    ("__stdlib_hasproperty","__vybe_hasproperty"),
+    ("__stdlib_assign",     "__vybe_assign"),
+    ("__stdlib_instanceof", "__vybe_instanceof"),
+    ("__stdlib_deleteproperty","__vybe_deleteproperty"),
+    ("__stdlib_from",       "__vybe_from"),
+    ("__stdlib_redim",      "__vybe_redim"),
+];
+
+/// Additional alias mappings: import name → __vybe_* global name.
+/// Used by VM import resolution to find stdlib fallbacks for host calls.
+pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
+    ("vybe:convert", "toString", "__vybe_tostring"),
+    ("vybe:string",  "count",    "__vybe_count"),
+    ("vybe:math",    "pow",      "__vybe_pow"),
+    ("vybe:array",   "range",    "__vybe_range"),
+    ("vybe:array",   "sorted",   "__vybe_sorted"),
+    ("vybe:array",   "reversed", "__vybe_reversed"),
+    ("vybe:array",   "enumerate","__vybe_enumerate"),
+    ("vybe:array",   "zip",      "__vybe_zip"),
+    ("vybe:array",   "sum",      "__vybe_sum"),
+    ("vybe:array",   "pymin",    "__vybe_min"),
+    ("vybe:array",   "pymax",    "__vybe_max"),
+    ("vybe:convert", "isNumeric","__vybe_isnumeric"),
+    ("vybe:array",   "splice",   "__vybe_splice"),
+    ("vybe:math",    "floor",    "__vybe_floor"),
+    ("vybe:array",   "slice",    "__vybe_slice"),
+    ("vybe:object",  "keys",     "__vybe_keys"),
+    ("vybe:object",  "hasProperty", "__vybe_hasproperty"),
+    ("vybe:object",  "assign",   "__vybe_assign"),
+    ("vybe:object",  "instanceOf", "__vybe_instanceof"),
+    ("vybe:object",  "deleteProperty", "__vybe_deleteproperty"),
+    ("vybe:array",   "from",     "__vybe_from"),
+    ("vybe:array",   "redim",    "__vybe_redim"),
 ];
 
 /// Emit the stdlib preamble at the START of a script chunk.

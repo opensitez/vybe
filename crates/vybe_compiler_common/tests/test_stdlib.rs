@@ -393,7 +393,7 @@ fn stdlib_zip() {
 #[test]
 fn stdlib_has_all_functions() {
     let stdlib = build_stdlib();
-    assert_eq!(stdlib.chunks.len(), 9);
+    assert_eq!(stdlib.chunks.len(), 22);
     assert!(stdlib.get("__stdlib_range").is_some());
     assert!(stdlib.get("__stdlib_sorted").is_some());
     assert!(stdlib.get("__stdlib_reversed").is_some());

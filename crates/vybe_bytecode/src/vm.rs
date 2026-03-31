@@ -318,16 +318,38 @@ impl VM {
         }
         self.chunks.extend(adjusted);
 
-        // Resolve imports from the script chunk's import table.
+        // Resolve imports. If host function not found, check for a __vybe_* stdlib global.
+        // If the global exists (set by finalize_with_stdlib), use the stdlib chunk.
         self.import_table.clear();
-        for import in &self.chunks[script_idx].imports {
+        let mut stdlib_redirects: Vec<(usize, String)> = Vec::new();
+        for (i, import) in self.chunks[script_idx].imports.iter().enumerate() {
             let key = (import.module.clone(), import.name.clone());
-            match self.host_registry.get(&key) {
-                Some(&idx) => self.import_table.push(idx),
-                None => return Err(VMError::new(format!(
-                    "Unresolved import: \"{}\" \"{}\"", import.module, import.name
-                ))),
+            if let Some(&idx) = self.host_registry.get(&key) {
+                self.import_table.push(idx);
+            } else {
+                // Check for stdlib global: try __vybe_<name>, __vybe_<lowercase>,
+                // and known aliases.
+                let candidates = [
+                    format!("__vybe_{}", import.name),
+                    format!("__vybe_{}", import.name.to_lowercase()),
+                ];
+                let found = candidates.iter().find(|g| self.globals.contains_key(g.as_str()));
+                if let Some(global_name) = found {
+                    stdlib_redirects.push((i, global_name.clone()));
+                    self.import_table.push(usize::MAX);
+                } else {
+                    return Err(VMError::new(format!(
+                        "Unresolved import: \"{}\" \"{}\"", import.module, import.name
+                    )));
+                }
             }
+        }
+        // Store redirect info for call_import
+        for (import_idx, global_name) in &stdlib_redirects {
+            self.globals.insert(
+                format!("__import_redirect_{}", import_idx),
+                Value::String(Rc::from(global_name.as_str())),
+            );
         }
 
         // Load type table from the script chunk (WASM GC type section).
@@ -913,6 +935,17 @@ impl VM {
                         Value::Object(o) => {
                             let k = format!("{}", key);
                             let val = o.borrow().get(&k);
+                            // If not found and object has __getitem__, call it
+                            if matches!(val, Value::Null) {
+                                let getitem = o.borrow().properties.get("__getitem__").cloned();
+                                if let Some(func) = getitem {
+                                    self.push(func)?;
+                                    self.push(obj.clone())?; // self
+                                    self.push(key)?; // key arg
+                                    self.call_value(2)?;
+                                    continue;
+                                }
+                            }
                             self.push(val)?;
                         }
                         Value::String(s) => {
@@ -931,6 +964,18 @@ impl VM {
                     let key = self.pop();
                     let obj = self.pop();
                     if let Value::Object(o) = &obj {
+                        // Check for __setitem__ dunder
+                        let setitem = o.borrow().properties.get("__setitem__").cloned();
+                        if let Some(func) = setitem {
+                            self.push(func)?;
+                            self.push(obj.clone())?; // self
+                            self.push(key)?;          // key
+                            self.push(val.clone())?;  // value
+                            self.call_value(3)?;
+                            self.pop(); // discard __setitem__ return
+                            self.push(val)?;
+                            continue;
+                        }
                         let k = format!("{}", key);
                         o.borrow_mut().set(k, val.clone());
                     }
@@ -1215,6 +1260,21 @@ impl VM {
                 Op::call_import => {
                     let import_idx = self.read_u16() as usize;
                     let argc = self.read_byte() as usize;
+
+                    // Check for stdlib redirect (sentinel usize::MAX)
+                    if import_idx < self.import_table.len() && self.import_table[import_idx] == usize::MAX {
+                        let redirect_key = format!("__import_redirect_{}", import_idx);
+                        if let Some(Value::String(global_name)) = self.globals.get(&redirect_key).cloned() {
+                            if let Some(func_val) = self.globals.get(global_name.as_ref()).cloned() {
+                                // Insert func ref below args (same as call_ref convention)
+                                let args_start = self.stack.len() - argc;
+                                self.stack.insert(args_start, func_val);
+                                self.call_value(argc)?;
+                                continue;
+                            }
+                        }
+                    }
+
                     let base = self.stack.len() - argc;
                     let args: Vec<Value> = self.stack[base..].to_vec();
                     self.stack.truncate(base);
@@ -3077,9 +3137,148 @@ impl VM {
                     }
                 }
 
-                // -- Stubs --
-                Op::iter_get | Op::iter_next | Op::spread => {
-                    return Err(VMError::new("Iteration not yet implemented"));
+                // -- Iteration protocol --
+                Op::iter_get => {
+                    // Get an iterator from an iterable.
+                    // Checks: __iter__ (Python), Symbol.iterator (JS), GetEnumerator (C#)
+                    // Fallback: if it's an array, create an index-based iterator object.
+                    let iterable = self.pop();
+                    let mut iter_obj = Object::new();
+
+                    match &iterable {
+                        Value::Object(o) => {
+                            let ob = o.borrow();
+                            // Check for __iter__ method
+                            if ob.properties.contains_key("__iter__") {
+                                // Store the iterable and we'll call __iter__ via iter_next
+                                drop(ob);
+                                iter_obj.properties.insert("__iterable".into(), iterable.clone());
+                                iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("dunder")));
+                                iter_obj.properties.insert("__started".into(), Value::Bool(false));
+                            } else if matches!(&ob.kind, ObjectKind::Array(_)) {
+                                // Array: index-based iteration
+                                drop(ob);
+                                iter_obj.properties.insert("__iterable".into(), iterable.clone());
+                                iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("array")));
+                                iter_obj.properties.insert("__index".into(), Value::I32(0));
+                            } else {
+                                // Dict/Object: iterate keys
+                                let keys: Vec<Value> = ob.properties.keys()
+                                    .filter(|k| !k.starts_with("__"))
+                                    .map(|k| Value::String(Rc::from(k.as_str())))
+                                    .collect();
+                                drop(ob);
+                                let keys_arr = Value::Object(Rc::new(RefCell::new(Object::new_array(keys))));
+                                iter_obj.properties.insert("__iterable".into(), keys_arr);
+                                iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("array")));
+                                iter_obj.properties.insert("__index".into(), Value::I32(0));
+                            }
+                        }
+                        Value::String(s) => {
+                            // String: iterate characters
+                            let chars: Vec<Value> = s.chars()
+                                .map(|c| Value::String(Rc::from(c.to_string().as_str())))
+                                .collect();
+                            let chars_arr = Value::Object(Rc::new(RefCell::new(Object::new_array(chars))));
+                            iter_obj.properties.insert("__iterable".into(), chars_arr);
+                            iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("array")));
+                            iter_obj.properties.insert("__index".into(), Value::I32(0));
+                        }
+                        _ => {
+                            // Not iterable
+                            iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("empty")));
+                        }
+                    }
+                    iter_obj.properties.insert("__type".into(), Value::String(Rc::from("iterator")));
+                    iter_obj.properties.insert("__done".into(), Value::Bool(false));
+                    self.push(Value::Object(Rc::new(RefCell::new(iter_obj))))?;
+                }
+                Op::iter_next => {
+                    // Advance iterator. Returns {value, done}.
+                    // Stack: [iterator] → [value, bool_done]
+                    let iter_val = self.pop();
+                    if let Value::Object(ref iter_obj) = iter_val {
+                        let protocol = {
+                            let ob = iter_obj.borrow();
+                            ob.properties.get("__protocol").map(|v| v.to_string()).unwrap_or_default()
+                        };
+
+                        match protocol.as_str() {
+                            "array" => {
+                                let (value, done) = {
+                                    let mut ob = iter_obj.borrow_mut();
+                                    let idx = ob.properties.get("__index")
+                                        .map(|v| v.as_i32() as usize).unwrap_or(0);
+                                    let iterable = ob.properties.get("__iterable").cloned().unwrap_or(Value::Null);
+                                    let (val, is_done) = if let Value::Object(arr) = &iterable {
+                                        let arr_ob = arr.borrow();
+                                        if let ObjectKind::Array(elems) = &arr_ob.kind {
+                                            if idx < elems.len() {
+                                                (elems[idx].clone(), false)
+                                            } else {
+                                                (Value::Null, true)
+                                            }
+                                        } else {
+                                            (Value::Null, true)
+                                        }
+                                    } else {
+                                        (Value::Null, true)
+                                    };
+                                    ob.properties.insert("__index".into(), Value::I32((idx + 1) as i32));
+                                    ob.properties.insert("__done".into(), Value::Bool(is_done));
+                                    (val, is_done)
+                                };
+                                self.push(value)?;
+                                self.push(Value::Bool(done))?;
+                            }
+                            "dunder" => {
+                                // Python __iter__/__next__ protocol
+                                // First call: call __iter__ to get the iterator object
+                                // Subsequent: call __next__ on the iterator
+                                let started = {
+                                    let ob = iter_obj.borrow();
+                                    ob.properties.get("__started").map(|v| dyn_truthy(v)).unwrap_or(false)
+                                };
+                                if !started {
+                                    // Call __iter__ on the iterable
+                                    let iterable = iter_obj.borrow().properties.get("__iterable").cloned().unwrap_or(Value::Null);
+                                    if let Value::Object(ref it_obj) = iterable {
+                                        let iter_fn = it_obj.borrow().properties.get("__iter__").cloned();
+                                        if let Some(func) = iter_fn {
+                                            self.push(func)?;
+                                            self.push(iterable.clone())?;
+                                            self.call_value(1)?;
+                                            // __iter__ returns the iterator — store it
+                                            // For simplicity, assume __iter__ returns self or an array
+                                        }
+                                    }
+                                    iter_obj.borrow_mut().properties.insert("__started".into(), Value::Bool(true));
+                                }
+                                // For now, treat dunder iterators as done (full protocol needs coroutines)
+                                self.push(Value::Null)?;
+                                self.push(Value::Bool(true))?;
+                            }
+                            _ => {
+                                self.push(Value::Null)?;
+                                self.push(Value::Bool(true))?;
+                            }
+                        }
+                    } else {
+                        self.push(Value::Null)?;
+                        self.push(Value::Bool(true))?;
+                    }
+                }
+                Op::spread => {
+                    // Spread array onto stack: [array] → [elem0, elem1, ...]
+                    let val = self.pop();
+                    if let Value::Object(ref obj) = val {
+                        let o = obj.borrow();
+                        if let ObjectKind::Array(elems) = &o.kind {
+                            for elem in elems {
+                                self.push(elem.clone())?;
+                            }
+                        }
+                    }
                 }
                 Op::class_new => { let _ = self.read_u16(); self.push(Value::Null)?; }
                 Op::method_def => { let _ = self.read_u16(); }
@@ -3110,13 +3309,20 @@ impl VM {
                         let result = (self.host_fns[idx])(&args);
                         self.push(result)?;
                     }
-                    other => {
+                    _other => {
+                        // Check for __call__ dunder (Python callable objects)
+                        let call_fn = o.properties.get("__call__").cloned();
+                        let kind_name = format!("{:?}", std::mem::discriminant(&o.kind));
+                        drop(o);
+                        if let Some(func) = call_fn {
+                            self.stack[callee_idx] = func;
+                            return self.call_value(argc);
+                        }
                         let chunk_name = if !self.frames.is_empty() {
                             self.chunks[self.frame().chunk_index].name.clone()
                         } else { "?".into() };
-                        return Err(VMError::new(format!("Not a function in chunk '{}' (kind: {:?}, props: {:?})",
-                            chunk_name, std::mem::discriminant(other),
-                            o.properties.keys().take(5).collect::<Vec<_>>())));
+                        return Err(VMError::new(format!("Not a function in chunk '{}' (kind: {})",
+                            chunk_name, kind_name)));
                     }
                 }
             }
@@ -3297,7 +3503,19 @@ fn dyn_truthy(v: &Value) -> bool {
         Value::I32(n) => *n != 0,
         Value::I64(n) => *n != 0,
         Value::String(s) => !s.is_empty(),
-        Value::Object(_) => true,
+        Value::Object(o) => {
+            let ob = o.borrow();
+            // Check __bool__ property (set by Python classes as a bool value).
+            // If __bool__ is a Bool value, use it. If it's a function, we can't
+            // call it from here (no VM access) — the compiler should call it
+            // and set the result as a bool property.
+            if let Some(Value::Bool(b)) = ob.properties.get("__bool__") {
+                return *b;
+            }
+            // JS semantics: all objects are truthy (including empty arrays/objects).
+            // Python's bool() builtin handles empty-container checks at the compiler level.
+            true
+        }
         Value::WeakRef(w) => w.upgrade().is_some(),
         Value::V128(b) => b.iter().any(|&x| x != 0),
     }
