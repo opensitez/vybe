@@ -1,0 +1,11 @@
+[package]
+name = "vybe_compiler_python"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vybe_bytecode = { path = "../vybe_bytecode" }
+vybe_parser_python = { path = "../vybe_parser_python" }
+
+[lib]
+path = "src/lib.rs"
