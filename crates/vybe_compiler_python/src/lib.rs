@@ -69,33 +69,8 @@ impl Compiler {
         self.chunks[0].local_count = (scope.max_local + 1) as u16;
         self.chunks[0].emit_op(Op::halt, 0);
 
-        // Append stdlib and register as global_inits with RefFunc.
-        // The VM evaluates these at load time, creating Function refs in __vybe_* globals.
-        // On Vybe, register_all overwrites these globals with host fn refs.
-        // On any other runtime, the stdlib bytecode runs as-is via call_ref.
-        let stdlib = common::stdlib::build_stdlib();
-        let stdlib_base = self.chunks.len();
-        let mappings: &[(&str, &str)] = &[
-            ("__stdlib_range",      "__vybe_range"),
-            ("__stdlib_sorted",     "__vybe_sorted"),
-            ("__stdlib_reversed",   "__vybe_reversed"),
-            ("__stdlib_enumerate",  "__vybe_enumerate"),
-            ("__stdlib_zip",        "__vybe_zip"),
-            ("__stdlib_sum",        "__vybe_sum"),
-            ("__stdlib_min",        "__vybe_min"),
-            ("__stdlib_max",        "__vybe_max"),
-            ("__stdlib_pow",        "__vybe_pow"),
-        ];
-        for (i, &(chunk_name, global_name)) in mappings.iter().enumerate() {
-            if stdlib.exports.iter().any(|&n| n == chunk_name) {
-                use vybe_bytecode::chunk::{GlobalInit, ConstExpr};
-                self.chunks[0].global_inits.push(GlobalInit {
-                    name: global_name.to_string(),
-                    init: ConstExpr::RefFunc(stdlib_base + i),
-                });
-            }
-        }
-        self.chunks.extend(stdlib.chunks);
+        // Bundle stdlib — portable .wasm that works on any runtime.
+        common::bundle::finalize_with_stdlib(&mut self.chunks);
 
         Ok(std::mem::take(&mut self.chunks))
     }

@@ -125,6 +125,11 @@ impl Compiler {
             return Ok(Some(()));
         }
 
+        // String operations as direct opcodes (same as Python/JS — normalized)
+        if let Some(()) = self.try_compile_string_opcode(fname, args)? {
+            return Ok(Some(()));
+        }
+
         // Namespace resolution: "application.run", "math.pow", "window.forms.button", etc.
         // Resolve via global namespace objects. Console excluded (uses call_import for test overrides).
         if fname.contains('.') {
@@ -184,28 +189,11 @@ impl Compiler {
             "isdate"     => Some(("vybe:convert", "isDate")),
             "typename"   => Some(("vybe:convert", "typeName")),
             "vartype"    => Some(("vybe:convert", "varType")),
-            // String functions
-            "len"        => Some(("vybe:string", "length")),
-            "ucase"      => Some(("vybe:string", "ucase")),
-            "lcase"      => Some(("vybe:string", "lcase")),
-            "trim"       => Some(("vybe:string", "trim")),
-            "ltrim"      => Some(("vybe:string", "ltrim")),
-            "rtrim"      => Some(("vybe:string", "rtrim")),
-            "left"       => Some(("vybe:string", "left")),
+            // String functions — most are now direct opcodes (try_compile_string_opcode).
+            // These remain as host calls (no opcode equivalent):
+            // Join is now handled by try_compile_string_opcode → array_join
             "right"      => Some(("vybe:string", "right")),
-            "mid" | "mid$" => Some(("vybe:string", "mid")),
-            "instr"      => Some(("vybe:string", "instr")),
-            "instrrev"   => Some(("vybe:string", "instrrev")),
-            "replace"    => Some(("vybe:string", "replaceAll")),
-            "split"      => Some(("vybe:string", "split")),
-            "join"       => Some(("vybe:array", "join")),
-            "asc" | "ascw" => Some(("vybe:string", "asc")),
-            "chr" | "chr$" | "chrw" => Some(("vybe:string", "chr")),
-            "space" | "space$" | "spc" => Some(("vybe:string", "space")),
-            "strreverse" => Some(("vybe:string", "strreverse")),
-            "strcomp"    => Some(("vybe:string", "strcomp")),
             "format" | "format$" => Some(("vybe:string", "format")),
-            "string" | "string$" => Some(("vybe:string", "stringRepeat")),
             "lset"       => Some(("vybe:string", "lset")),
             "rset"       => Some(("vybe:string", "rset")),
             "filter"     => Some(("vybe:string", "filter")),
@@ -411,6 +399,199 @@ impl Compiler {
 
     /// Emit direct WASM opcodes for Math functions, type conversions, and type checks.
     /// Returns Some(()) if handled, None if not an intrinsic.
+    /// Compile VB string functions as direct WASM opcodes.
+    /// Same opcodes Python and JS use — normalized across all languages.
+    fn try_compile_string_opcode(&mut self, fname: &str, args: &[Expression]) -> Result<Option<()>, String> {
+        match fname {
+            // Len(s) → str_length
+            "len" => {
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_length);
+                    return Ok(Some(()));
+                }
+            }
+            // UCase(s) → str_to_upper
+            "ucase" | "ucase$" => {
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_to_upper);
+                    return Ok(Some(()));
+                }
+            }
+            // LCase(s) → str_to_lower
+            "lcase" | "lcase$" => {
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_to_lower);
+                    return Ok(Some(()));
+                }
+            }
+            // Trim(s), LTrim(s), RTrim(s)
+            "trim" | "trim$" => {
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_trim);
+                    return Ok(Some(()));
+                }
+            }
+            "ltrim" | "ltrim$" => {
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_trim_start);
+                    return Ok(Some(()));
+                }
+            }
+            "rtrim" | "rtrim$" => {
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_trim_end);
+                    return Ok(Some(()));
+                }
+            }
+            // StrReverse(s)
+            "strreverse" => {
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_reverse);
+                    return Ok(Some(()));
+                }
+            }
+            // Asc(s) → str_char_code_at (first char)
+            "asc" | "ascw" => {
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::i32_const_0);
+                    self.emit(Op::str_char_code_at);
+                    return Ok(Some(()));
+                }
+            }
+            // Chr(n) → str_from_char_code
+            "chr" | "chr$" | "chrw" => {
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_from_char_code);
+                    return Ok(Some(()));
+                }
+            }
+            // String(n, char) → str_repeat
+            "string" | "string$" => {
+                if args.len() == 2 {
+                    self.compile_expression(&args[1])?; // char/string
+                    self.compile_expression(&args[0])?; // count
+                    self.emit(Op::str_repeat);
+                    return Ok(Some(()));
+                }
+            }
+            // InStr(s, find) → str_index_of
+            "instr" => {
+                if args.len() == 2 {
+                    self.compile_expression(&args[0])?;
+                    self.compile_expression(&args[1])?;
+                    self.emit(Op::str_index_of);
+                    return Ok(Some(()));
+                }
+            }
+            // InStrRev(s, find) → str_last_index_of
+            "instrrev" => {
+                if args.len() == 2 {
+                    self.compile_expression(&args[0])?;
+                    self.compile_expression(&args[1])?;
+                    self.emit(Op::str_last_index_of);
+                    return Ok(Some(()));
+                }
+            }
+            // Replace(s, old, new) → str_replace
+            "replace" => {
+                if args.len() == 3 {
+                    self.compile_expression(&args[0])?;
+                    self.compile_expression(&args[1])?;
+                    self.compile_expression(&args[2])?;
+                    self.emit(Op::str_replace);
+                    return Ok(Some(()));
+                }
+            }
+            // Split(s, delim) → str_split
+            "split" => {
+                if args.len() >= 1 {
+                    self.compile_expression(&args[0])?;
+                    if args.len() >= 2 {
+                        self.compile_expression(&args[1])?;
+                    } else {
+                        self.emit_constant(Value::String(Rc::from(" ")));
+                    }
+                    self.emit(Op::str_split);
+                    return Ok(Some(()));
+                }
+            }
+            // Left(s, n) → str_substring(0, n)
+            "left" | "left$" => {
+                if args.len() == 2 {
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::i32_const_0);
+                    self.compile_expression(&args[1])?;
+                    self.emit(Op::str_substring);
+                    return Ok(Some(()));
+                }
+            }
+            // Right(s, n) — needs length, keep as host call for now
+            // Mid(s, start, len) → str_substring
+            "mid" | "mid$" => {
+                if args.len() >= 2 {
+                    self.compile_expression(&args[0])?; // string
+                    self.compile_expression(&args[1])?; // start (1-based in VB)
+                    // VB Mid is 1-based, subtract 1 for 0-based str_substring
+                    self.emit(Op::i32_const_1);
+                    self.emit(Op::i32_sub);
+                    if args.len() >= 3 {
+                        // start + len for end position
+                        self.emit(Op::dup);
+                        self.compile_expression(&args[2])?;
+                        self.emit(Op::dyn_add);
+                    } else {
+                        // No length — go to end (use large number)
+                        self.emit_constant(Value::I32(i32::MAX));
+                    }
+                    self.emit(Op::str_substring);
+                    return Ok(Some(()));
+                }
+            }
+            // Space(n) → str_repeat(" ", n)
+            "space" | "space$" | "spc" => {
+                if args.len() == 1 {
+                    self.emit_constant(Value::String(Rc::from(" ")));
+                    self.compile_expression(&args[0])?;
+                    self.emit(Op::str_repeat);
+                    return Ok(Some(()));
+                }
+            }
+            // Join(arr, delim) → array_join
+            "join" => {
+                if args.len() >= 1 {
+                    self.compile_expression(&args[0])?;
+                    if args.len() >= 2 {
+                        self.compile_expression(&args[1])?;
+                    } else {
+                        self.emit_constant(Value::String(Rc::from(" ")));
+                    }
+                    self.emit(Op::array_join);
+                    return Ok(Some(()));
+                }
+            }
+            // StrComp(s1, s2) → str_compare
+            "strcomp" => {
+                if args.len() >= 2 {
+                    self.compile_expression(&args[0])?;
+                    self.compile_expression(&args[1])?;
+                    self.emit(Op::str_compare);
+                    return Ok(Some(()));
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
     pub(crate) fn try_compile_wasm_intrinsic(&mut self, fname: &str, args: &[Expression]) -> Result<Option<()>, String> {
         // Zero-argument intrinsics
         if args.is_empty() {

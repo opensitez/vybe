@@ -73,6 +73,26 @@ pub fn emit_call_invoke(chunk: &mut Chunk, argc: u8, line: u32) {
     chunk.emit_op_u8(Op::call_ref, argc, line);
 }
 
+/// Append stdlib chunks to a compiled program and register them as global_inits.
+/// Call this at the END of compilation, after all user chunks are finalized.
+/// The script chunk (chunks[0]) gets global_inits with RefFunc entries.
+pub fn finalize_with_stdlib(chunks: &mut Vec<Chunk>) {
+    use vybe_bytecode::chunk::{GlobalInit, ConstExpr};
+
+    let stdlib = crate::stdlib::build_stdlib();
+    let stdlib_base = chunks.len();
+
+    for (i, &(chunk_name, global_name)) in MAPPINGS.iter().enumerate() {
+        if stdlib.exports.iter().any(|&n| n == chunk_name) {
+            chunks[0].global_inits.push(GlobalInit {
+                name: global_name.to_string(),
+                init: ConstExpr::RefFunc(stdlib_base + i),
+            });
+        }
+    }
+    chunks.extend(stdlib.chunks);
+}
+
 /// Convenience: emit func_ref push + args already on stack + call_ref.
 /// Args must already be on stack BEFORE calling this.
 /// This function inserts the func ref below the args using a temp local approach.

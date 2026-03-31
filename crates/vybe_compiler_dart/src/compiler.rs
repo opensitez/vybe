@@ -73,6 +73,7 @@ impl Compiler {
         self.chunks[0].local_count = local_count;
         // Attach type entries to script chunk
         self.chunks[0].types = self.type_entries;
+        vybe_compiler_common::bundle::finalize_with_stdlib(&mut self.chunks);
         Ok(self.chunks)
     }
 
