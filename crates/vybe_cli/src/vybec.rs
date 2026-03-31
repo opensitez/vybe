@@ -374,7 +374,7 @@ fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
 
 fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
     let source = read_file(path);
-    let program = match vybe_parser_python::parse(&source) {
+    let module = match vybe_parser_python::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
@@ -392,7 +392,7 @@ fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool) {
     }
     vybe_host::setup_namespaces(&mut vm);
 
-    let chunks = match vybe_compiler_python::Compiler::new().compile(&program) {
+    let chunks = match vybe_compiler_python::Compiler::new().compile(&module) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };
