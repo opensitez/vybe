@@ -164,7 +164,7 @@ pub fn register(vm: &mut VM) {
             Value::I64(_) => 3.0,   // vbLong
             Value::F64(_) => 5.0,   // vbDouble
             Value::String(_) => 8.0,// vbString
-            Value::Object(_) | Value::V128(_) => 9.0,// vbObject
+            Value::Object(_) | Value::V128(_) | Value::WeakRef(_) => 9.0,// vbObject
         };
         Value::F64(vt)
     }));

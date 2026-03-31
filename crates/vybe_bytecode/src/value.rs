@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 /// A universal VM value. Language-agnostic — no coercion rules here.
 /// The compiler is responsible for emitting type checks and conversions.
@@ -17,6 +17,9 @@ pub enum Value {
     F64(f64),
     String(Rc<str>),
     Object(Rc<RefCell<Object>>),
+    /// Weak reference to an object — does not prevent collection.
+    /// Upgrade to strong reference with `ref_deref` opcode.
+    WeakRef(Weak<RefCell<Object>>),
     /// SIMD 128-bit vector (4×i32, 2×f64, 4×f32, 16×i8, 8×i16).
     V128([u8; 16]),
 }
@@ -88,6 +91,7 @@ impl Value {
                 }
             }
             Value::V128(_) => "v128",
+            Value::WeakRef(_) => "weakref",
         }
     }
 
@@ -140,6 +144,13 @@ impl fmt::Display for Value {
                     }
                     ObjectKind::HostFunction(idx) => write!(f, "[host function {}]", idx),
                     ObjectKind::Ordinary => write!(f, "[object]"),
+                }
+            }
+            Value::WeakRef(weak) => {
+                if weak.upgrade().is_some() {
+                    write!(f, "[weakref (alive)]")
+                } else {
+                    write!(f, "[weakref (dead)]")
                 }
             }
             Value::V128(bytes) => {

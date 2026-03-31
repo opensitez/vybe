@@ -155,6 +155,7 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::V128(_) => "v128",
+            Value::WeakRef(_) => "weakref",
         };
         Value::String(Rc::from(tag))
     }));
@@ -207,6 +208,7 @@ fn truthy(v: &Value) -> bool {
         Value::I64(n) => *n != 0,
         Value::String(s) => !s.is_empty(),
         Value::Object(_) => true,
+        Value::WeakRef(w) => w.upgrade().is_some(),
         Value::V128(b) => b.iter().any(|&x| x != 0),
     }
 }

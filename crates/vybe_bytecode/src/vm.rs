@@ -71,11 +71,30 @@ pub struct VM {
     /// WASM GC-style type definitions with vtable method dispatch.
     pub type_registry: crate::typedef::TypeRegistry,
     /// Linear memory (WASM MVP) — byte buffer for binary data.
+    /// This is memory index 0 for backward compatibility.
     pub memory: Vec<u8>,
+    /// Additional memories for multi-memory support.
+    /// memory index 0 = self.memory, index 1+ = extra_memories[i-1].
+    extra_memories: Vec<Vec<u8>>,
+    /// Currently selected memory index (for load/store ops). Default 0.
+    active_memory: usize,
     /// Function table (WASM MVP) — for call_indirect.
     pub func_table: Vec<Value>,
     /// Block label stack for structured control flow.
     label_stack: Vec<LabelEntry>,
+    /// Finalizer registry: maps object identity to callback.
+    /// When an object's strong count reaches the weak+finalizer threshold,
+    /// the callback is queued for execution.
+    finalizers: Vec<FinalizerEntry>,
+}
+
+/// A registered finalizer for an object.
+#[derive(Clone)]
+struct FinalizerEntry {
+    /// Weak reference to the target object.
+    target: std::rc::Weak<RefCell<crate::value::Object>>,
+    /// Callback to invoke when the object is about to be collected.
+    callback: Value,
 }
 
 /// Entry in the structured control flow label stack.
@@ -102,9 +121,66 @@ impl VM {
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             type_registry: crate::typedef::TypeRegistry::new(),
             memory: Vec::new(),
+            extra_memories: Vec::new(),
+            active_memory: 0,
             func_table: Vec::new(),
             label_stack: Vec::new(),
+            finalizers: Vec::new(),
         }
+    }
+
+    /// Get a mutable reference to the currently active memory.
+    fn active_mem(&mut self) -> &mut Vec<u8> {
+        if self.active_memory == 0 {
+            &mut self.memory
+        } else {
+            let idx = self.active_memory - 1;
+            if idx >= self.extra_memories.len() {
+                // Auto-grow extra memories if needed
+                self.extra_memories.resize_with(idx + 1, Vec::new);
+            }
+            &mut self.extra_memories[idx]
+        }
+    }
+
+    /// Get a reference to a specific memory by index.
+    fn mem(&self, idx: usize) -> &[u8] {
+        if idx == 0 {
+            &self.memory
+        } else if idx - 1 < self.extra_memories.len() {
+            &self.extra_memories[idx - 1]
+        } else {
+            &[]
+        }
+    }
+
+    /// Get a mutable reference to a specific memory by index.
+    fn mem_mut(&mut self, idx: usize) -> &mut Vec<u8> {
+        if idx == 0 {
+            &mut self.memory
+        } else {
+            let i = idx - 1;
+            if i >= self.extra_memories.len() {
+                self.extra_memories.resize_with(i + 1, Vec::new);
+            }
+            &mut self.extra_memories[i]
+        }
+    }
+
+    /// Run any pending finalizers for objects whose strong count has dropped.
+    /// Returns collected callbacks that should be invoked by the caller.
+    pub fn collect_dead_finalizers(&mut self) -> Vec<Value> {
+        let mut callbacks = Vec::new();
+        let mut i = 0;
+        while i < self.finalizers.len() {
+            if self.finalizers[i].target.strong_count() == 0 {
+                let entry = self.finalizers.remove(i);
+                callbacks.push(entry.callback);
+            } else {
+                i += 1;
+            }
+        }
+        callbacks
     }
 
     /// Register a host function with a (module, name) pair.
@@ -557,6 +633,13 @@ impl VM {
             }
             Value::Bool(_) => target_name == "boolean" || target_name == "object",
             Value::V128(_) => target_name == "v128",
+            Value::WeakRef(weak) => {
+                if let Some(strong) = weak.upgrade() {
+                    self.test_type(&Value::Object(strong), target_name)
+                } else {
+                    false
+                }
+            }
             Value::Null | Value::Undefined => false,
         }
     }
@@ -1529,13 +1612,15 @@ impl VM {
 
                 // -- Linear memory --
                 Op::memory_size => {
-                    let pages = (self.memory.len() / 65536) as i32;
+                    let mem = self.active_mem();
+                    let pages = (mem.len() / 65536) as i32;
                     self.push(Value::I32(pages))?;
                 }
                 Op::memory_grow => {
                     let pages = self.pop().as_f64() as usize;
-                    let old_pages = self.memory.len() / 65536;
-                    self.memory.resize(self.memory.len() + pages * 65536, 0);
+                    let mem = self.active_mem();
+                    let old_pages = mem.len() / 65536;
+                    mem.resize(mem.len() + pages * 65536, 0);
                     self.push(Value::I32(old_pages as i32))?;
                 }
                 Op::i32_load => {
@@ -1972,6 +2057,80 @@ impl VM {
                     }
                 }
 
+                // -- Weak References & Finalizers --
+                Op::ref_make_weak => {
+                    let val = self.pop();
+                    if let Value::Object(ref obj) = val {
+                        self.push(Value::WeakRef(Rc::downgrade(obj)))?;
+                    } else {
+                        self.push(Value::Null)?;
+                    }
+                }
+                Op::ref_deref_weak => {
+                    let val = self.pop();
+                    if let Value::WeakRef(ref weak) = val {
+                        if let Some(strong) = weak.upgrade() {
+                            self.push(Value::Object(strong))?;
+                        } else {
+                            self.push(Value::Null)?;
+                        }
+                    } else {
+                        // If it's already a strong ref, just pass through
+                        self.push(val)?;
+                    }
+                }
+                Op::ref_is_alive => {
+                    let val = self.pop();
+                    let alive = match &val {
+                        Value::WeakRef(weak) => weak.upgrade().is_some(),
+                        Value::Object(_) => true,
+                        _ => false,
+                    };
+                    self.push(Value::Bool(alive))?;
+                }
+                Op::ref_register_finalizer => {
+                    let callback = self.pop();
+                    let target = self.pop();
+                    if let Value::Object(ref obj) = target {
+                        self.finalizers.push(FinalizerEntry {
+                            target: Rc::downgrade(obj),
+                            callback,
+                        });
+                    }
+                }
+
+                // -- Multi-Memory --
+                Op::memory_select => {
+                    let mem_idx = self.read_byte() as usize;
+                    self.active_memory = mem_idx;
+                }
+                Op::memory_init => {
+                    let pages = self.pop().as_f64() as usize;
+                    let mem_idx = self.extra_memories.len() + 1; // 0 is default memory
+                    self.extra_memories.push(vec![0u8; pages * 65536]);
+                    self.push(Value::I32(mem_idx as i32))?;
+                }
+                Op::memory_copy_cross => {
+                    let len = self.pop().as_f64() as usize;
+                    let src_addr = self.pop().as_f64() as usize;
+                    let src_mem = self.pop().as_f64() as usize;
+                    let dst_addr = self.pop().as_f64() as usize;
+                    let dst_mem = self.pop().as_f64() as usize;
+                    // Copy bytes between memories
+                    let src_data: Vec<u8> = {
+                        let src = self.mem(src_mem);
+                        if src_addr + len <= src.len() {
+                            src[src_addr..src_addr + len].to_vec()
+                        } else {
+                            vec![0u8; len]
+                        }
+                    };
+                    let dst = self.mem_mut(dst_mem);
+                    if dst_addr + len <= dst.len() {
+                        dst[dst_addr..dst_addr + len].copy_from_slice(&src_data);
+                    }
+                }
+
                 // -- JS String Builtins (wasm:js-string proposal) --
                 Op::str_length => {
                     let s = self.pop();
@@ -2222,6 +2381,7 @@ impl VM {
                         Value::I32(_) | Value::I64(_) | Value::F64(_) => "number",
                         Value::String(_) => "string",
                         Value::V128(_) => "v128",
+                        Value::WeakRef(_) => "weakref",
                         Value::Object(o) => {
                             let ob = o.borrow();
                             match &ob.kind {
@@ -2978,6 +3138,7 @@ fn dyn_truthy(v: &Value) -> bool {
         Value::I64(n) => *n != 0,
         Value::String(s) => !s.is_empty(),
         Value::Object(_) => true,
+        Value::WeakRef(w) => w.upgrade().is_some(),
         Value::V128(b) => b.iter().any(|&x| x != 0),
     }
 }

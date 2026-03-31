@@ -555,6 +555,17 @@ pub enum Op {
     /// Stamp type_id on TOS object. Stack: [obj, type_id_i32] → [obj]
     /// Used by compilers after struct_new to mark the object's type.
     set_type_id,
+
+    // -- Weak References & Finalizers (GC post-MVP) --
+    ref_make_weak,              // [object] → [weakref]
+    ref_deref_weak,             // [weakref] → [object_or_null]
+    ref_is_alive,               // [weakref] → [bool]
+    ref_register_finalizer,     // [object, callback] → []
+
+    // -- Multi-Memory --
+    memory_select,              // [memory_select, u8 mem_idx]
+    memory_init,                // [i32 pages] → [i32 mem_idx]
+    memory_copy_cross,          // [dst_mem, dst_addr, src_mem, src_addr, len] → []
 }
 
 impl Op {
@@ -575,7 +586,7 @@ impl Op {
         } else {
             b1 as u16
         };
-        if val <= Op::set_type_id as u16 {
+        if val <= Op::memory_copy_cross as u16 {
             Some(unsafe { std::mem::transmute(val) })
         } else {
             None
