@@ -23,6 +23,40 @@ pub struct TypeEntry {
     pub methods: Vec<(String, usize)>,
 }
 
+/// A constant initialization expression (Extended Const Expressions proposal).
+/// Evaluated at module instantiation time, before code execution.
+#[derive(Debug, Clone)]
+pub enum ConstExpr {
+    /// A literal value.
+    Value(Value),
+    /// Reference another global: global_name.
+    GlobalGet(String),
+    /// Add two const exprs: left + right.
+    Add(Box<ConstExpr>, Box<ConstExpr>),
+    /// Multiply two const exprs: left * right.
+    Mul(Box<ConstExpr>, Box<ConstExpr>),
+}
+
+/// A global variable initializer — evaluated at link/load time.
+#[derive(Debug, Clone)]
+pub struct GlobalInit {
+    /// Global name (stored in VM.globals).
+    pub name: String,
+    /// Initialization expression (evaluated before code runs).
+    pub init: ConstExpr,
+}
+
+/// A continuation tag — defines the type contract for typed continuations.
+#[derive(Debug, Clone)]
+pub struct ContinuationTag {
+    /// Tag name (for debugging and cross-language matching).
+    pub name: String,
+    /// Expected yield value type name (empty = any).
+    pub yield_type: String,
+    /// Expected resume value type name (empty = any).
+    pub resume_type: String,
+}
+
 /// A compiled chunk of bytecode — one per function/script.
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -50,6 +84,10 @@ pub struct Chunk {
     /// Type exports — types this component makes available to others.
     /// Each entry is (interface_name, type_name, type_id).
     pub type_exports: Vec<(String, String, usize)>,
+    /// Global initializers — const expressions evaluated at load time.
+    pub global_inits: Vec<GlobalInit>,
+    /// Continuation tags — typed contracts for suspend/resume.
+    pub continuation_tags: Vec<ContinuationTag>,
 }
 
 impl Chunk {
@@ -66,6 +104,8 @@ impl Chunk {
             exception_tags: Vec::new(),
             type_imports: Vec::new(),
             type_exports: Vec::new(),
+            global_inits: Vec::new(),
+            continuation_tags: Vec::new(),
         }
     }
 
@@ -92,6 +132,22 @@ impl Chunk {
         }
         self.exception_tags.push(name);
         (self.exception_tags.len() - 1) as u8
+    }
+
+    /// Add a global initializer (evaluated at load time).
+    pub fn add_global_init(&mut self, name: impl Into<String>, init: ConstExpr) {
+        self.global_inits.push(GlobalInit { name: name.into(), init });
+    }
+
+    /// Add a continuation tag and return its index.
+    pub fn add_continuation_tag(&mut self, name: impl Into<String>, yield_type: impl Into<String>, resume_type: impl Into<String>) -> u16 {
+        let tag = ContinuationTag {
+            name: name.into(),
+            yield_type: yield_type.into(),
+            resume_type: resume_type.into(),
+        };
+        self.continuation_tags.push(tag);
+        (self.continuation_tags.len() - 1) as u16
     }
 
     pub fn emit(&mut self, byte: u8, line: u32) {

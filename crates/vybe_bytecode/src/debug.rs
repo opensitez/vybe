@@ -56,6 +56,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::shared_new | Op::shared_array_get | Op::shared_array_set |
         Op::ref_make_weak | Op::ref_deref_weak | Op::ref_is_alive | Op::ref_register_finalizer |
         Op::memory_init | Op::memory_copy_cross |
+        Op::string_as_ref | Op::string_from_ref | Op::string_ref_eq |
         Op::null | Op::undefined | Op::r#true | Op::r#false |
         Op::i32_const_0 | Op::i32_const_1 | Op::f64_const_0 |
         Op::array_get | Op::array_set |
@@ -126,6 +127,8 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::type_import | Op::type_export |
         Op::shared_struct_get | Op::shared_struct_set | Op::shared_struct_cas |
         Op::memory_select |
+        Op::global_init |
+        Op::cont_new_typed | Op::suspend_typed | Op::resume_typed |
         Op::ref_test | Op::ref_cast |
         Op::suspend | Op::resume | Op::switch => {
             let idx = chunk.read_u16(offset + 1);

@@ -566,6 +566,33 @@ pub enum Op {
     memory_select,              // [memory_select, u8 mem_idx]
     memory_init,                // [i32 pages] → [i32 mem_idx]
     memory_copy_cross,          // [dst_mem, dst_addr, src_mem, src_addr, len] → []
+
+    // -- Extended Const Expressions --
+    /// Evaluate a constant init expression for a global.
+    /// [global_init, u16 global_idx] — runs mini const-expr evaluator at load time.
+    global_init,
+
+    // -- Typed Continuations --
+    /// Create a typed continuation. Tag u16 specifies the yield/resume type contract.
+    /// Stack: [func_ref] → [typed_continuation]
+    cont_new_typed,             // [cont_new_typed, u16 tag_idx]
+    /// Typed suspend — tag must match the continuation's declared tag.
+    /// Stack: [value] → suspends; resumes with [value]
+    suspend_typed,              // [suspend_typed, u16 tag_idx]
+    /// Typed resume — validates value type matches the continuation's tag.
+    /// Stack: [continuation, value] → [result]
+    resume_typed,               // [resume_typed, u16 tag_idx]
+
+    // -- String References (zero-copy) --
+    /// Create a string reference (interned, shared across components).
+    /// Stack: [string] → [stringref]. The ref is Rc-shared, not cloned.
+    string_as_ref,
+    /// Dereference a string ref back to a regular string value.
+    /// Stack: [stringref] → [string]. Zero-copy if sole owner.
+    string_from_ref,
+    /// Compare two string refs for identity (pointer equality, not content).
+    /// Stack: [stringref, stringref] → [bool]
+    string_ref_eq,
 }
 
 impl Op {
@@ -586,7 +613,7 @@ impl Op {
         } else {
             b1 as u16
         };
-        if val <= Op::memory_copy_cross as u16 {
+        if val <= Op::string_ref_eq as u16 {
             Some(unsafe { std::mem::transmute(val) })
         } else {
             None

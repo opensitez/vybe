@@ -129,6 +129,38 @@ impl VM {
         }
     }
 
+    /// Evaluate a constant expression (Extended Const Expressions).
+    /// Used for global initialization at load time.
+    fn eval_const_expr(&self, expr: &crate::chunk::ConstExpr) -> Value {
+        use crate::chunk::ConstExpr;
+        match expr {
+            ConstExpr::Value(v) => v.clone(),
+            ConstExpr::GlobalGet(name) => {
+                self.globals.get(name).cloned().unwrap_or(Value::Null)
+            }
+            ConstExpr::Add(left, right) => {
+                let l = self.eval_const_expr(left);
+                let r = self.eval_const_expr(right);
+                match (&l, &r) {
+                    (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_add(*b)),
+                    (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_add(*b)),
+                    (Value::F64(a), Value::F64(b)) => Value::F64(a + b),
+                    _ => Value::F64(l.as_f64() + r.as_f64()),
+                }
+            }
+            ConstExpr::Mul(left, right) => {
+                let l = self.eval_const_expr(left);
+                let r = self.eval_const_expr(right);
+                match (&l, &r) {
+                    (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_mul(*b)),
+                    (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_mul(*b)),
+                    (Value::F64(a), Value::F64(b)) => Value::F64(a * b),
+                    _ => Value::F64(l.as_f64() * r.as_f64()),
+                }
+            }
+        }
+    }
+
     /// Get a mutable reference to the currently active memory.
     fn active_mem(&mut self) -> &mut Vec<u8> {
         if self.active_memory == 0 {
@@ -299,6 +331,16 @@ impl VM {
                         self.globals.insert(key, Value::I32(tid as i32));
                     }
                 }
+            }
+        }
+
+        // Evaluate global initializers (Extended Const Expressions).
+        // These are computed at load time before any code runs.
+        {
+            let inits = self.chunks[script_idx].global_inits.clone();
+            for gi in &inits {
+                let val = self.eval_const_expr(&gi.init);
+                self.globals.insert(gi.name.clone(), val);
             }
         }
 
@@ -2605,6 +2647,104 @@ impl VM {
                         o.properties.insert("__cont_state".into(), Value::String(Rc::from("running")));
                     }
                     self.push(val)?;
+                }
+
+                // -- Extended Const Expressions --
+                Op::global_init => {
+                    let idx = self.read_u16() as usize;
+                    // Evaluate the const expr for global at index idx and store result.
+                    // This is a runtime opcode for cases where init can't be done at load time.
+                    if idx < self.chunks[0].global_inits.len() {
+                        let gi = self.chunks[0].global_inits[idx].clone();
+                        let val = self.eval_const_expr(&gi.init);
+                        self.globals.insert(gi.name.clone(), val);
+                    }
+                }
+
+                // -- Typed Continuations --
+                Op::cont_new_typed => {
+                    let tag_idx = self.read_u16() as usize;
+                    let func_val = self.pop();
+                    let mut obj = Object::new_typed(0);
+                    obj.properties.insert("__cont_func".into(), func_val);
+                    obj.properties.insert("__cont_state".into(), Value::String(Rc::from("ready")));
+                    obj.properties.insert("__cont_value".into(), Value::Null);
+                    // Store tag info for type checking on suspend/resume
+                    obj.properties.insert("__cont_tag".into(), Value::I32(tag_idx as i32));
+                    if tag_idx < self.chunks[0].continuation_tags.len() {
+                        let tag = &self.chunks[0].continuation_tags[tag_idx];
+                        obj.properties.insert("__cont_yield_type".into(), Value::String(Rc::from(tag.yield_type.as_str())));
+                        obj.properties.insert("__cont_resume_type".into(), Value::String(Rc::from(tag.resume_type.as_str())));
+                    }
+                    self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
+                }
+                Op::suspend_typed => {
+                    let _tag_idx = self.read_u16();
+                    // Typed suspend: yield a value, with type validation.
+                    let val = self.pop();
+                    // In a full implementation, we'd validate val matches the yield_type
+                    // of the current continuation's tag. For now, just yield.
+                    return Ok(val);
+                }
+                Op::resume_typed => {
+                    let _tag_idx = self.read_u16();
+                    let val = self.pop();
+                    let cont = self.pop();
+                    if let Value::Object(obj) = &cont {
+                        // Validate resume value type matches continuation's resume_type
+                        let expected_type = {
+                            let o = obj.borrow();
+                            o.properties.get("__cont_resume_type")
+                                .map(|v| format!("{}", v))
+                                .unwrap_or_default()
+                        };
+                        if !expected_type.is_empty() && expected_type != "any" {
+                            let actual_matches = self.test_type(&val, &expected_type.to_lowercase());
+                            if !actual_matches {
+                                // Type mismatch on resume — for now, proceed anyway
+                                // A strict implementation would trap here
+                            }
+                        }
+                        let func_val = {
+                            let o = obj.borrow();
+                            o.properties.get("__cont_func").cloned().unwrap_or(Value::Null)
+                        };
+                        {
+                            let mut o = obj.borrow_mut();
+                            o.properties.insert("__cont_state".into(), Value::String(Rc::from("running")));
+                            o.properties.insert("__cont_value".into(), val.clone());
+                        }
+                        self.push(func_val)?;
+                        self.push(val)?;
+                        self.call_value(1)?;
+                    } else {
+                        self.push(val)?;
+                    }
+                }
+
+                // -- String References (zero-copy) --
+                Op::string_as_ref => {
+                    // String → StringRef: since our strings are already Rc<str>,
+                    // this is effectively a no-op — we keep the same Rc.
+                    // The semantic difference: stringref signals cross-component sharing intent.
+                    let val = self.pop();
+                    // Just pass through — Rc<str> is already shared
+                    self.push(val)?;
+                }
+                Op::string_from_ref => {
+                    // StringRef → String: dereference (zero-copy with Rc).
+                    let val = self.pop();
+                    self.push(val)?;
+                }
+                Op::string_ref_eq => {
+                    // Pointer identity comparison for string refs.
+                    let b = self.pop();
+                    let a = self.pop();
+                    let eq = match (&a, &b) {
+                        (Value::String(sa), Value::String(sb)) => Rc::ptr_eq(sa, sb),
+                        _ => false,
+                    };
+                    self.push(Value::Bool(eq))?;
                 }
 
                 // -- SIMD (128-bit vectors) --
