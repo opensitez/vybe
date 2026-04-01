@@ -1701,11 +1701,125 @@ impl Compiler {
                         }
                         "setattr" => {
                             if args.len() >= 3 {
-                                // setattr(obj, key, val) → obj[key] = val via array_set
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 self.compile_expr(&args[1], chunk_idx)?;
                                 self.compile_expr(&args[2], chunk_idx)?;
                                 self.chunk(chunk_idx).emit_op(Op::array_set, 0);
+                                return Ok(());
+                            }
+                        }
+                        "pow" => {
+                            if args.len() >= 2 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                self.compile_expr(&args[1], chunk_idx)?;
+                                let pow_idx = self.chunk(chunk_idx).add_import("vybe:math", "pow");
+                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, pow_idx, 0);
+                                self.chunk(chunk_idx).emit(2, 0);
+                                // pow(x, y, mod) — apply modulo if 3 args
+                                if args.len() >= 3 {
+                                    self.compile_expr(&args[2], chunk_idx)?;
+                                    self.chunk(chunk_idx).emit_op(Op::i32_rem_s, 0);
+                                }
+                                return Ok(());
+                            }
+                        }
+                        "divmod" => {
+                            if args.len() == 2 {
+                                // divmod(a, b) → (a // b, a % b) as a 2-element array
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                self.compile_expr(&args[1], chunk_idx)?;
+                                let a_slot = self.scope(chunk_idx).alloc("__dm_a");
+                                let b_slot = self.scope(chunk_idx).alloc("__dm_b");
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, b_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, a_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                // a // b
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, b_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::f64_div, 0);
+                                self.chunk(chunk_idx).emit_op(Op::f64_floor, 0);
+                                // a % b
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, b_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::i32_rem_s, 0);
+                                // pack as [quotient, remainder]
+                                self.chunk(chunk_idx).emit_op_u16(Op::array_new, 2, 0);
+                                return Ok(());
+                            }
+                        }
+                        "format" => {
+                            // format(value, spec) → vybe:string/format host call
+                            if args.len() >= 2 {
+                                return self.compile_host_call("vybe:string", "format", args, chunk_idx);
+                            } else if args.len() == 1 {
+                                // format(value) → str(value)
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                common::convert::emit_to_string(self.chunk(chunk_idx), 0);
+                                return Ok(());
+                            }
+                        }
+                        "callable" => {
+                            if args.len() == 1 {
+                                // callable(obj): check if obj is a function or has __call__
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                let obj_slot = self.scope(chunk_idx).alloc("__call_obj");
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, obj_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                // Try struct_get "__call__"
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_slot, 0);
+                                let call_key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("__call__")));
+                                self.chunk(chunk_idx).emit_op_u16(Op::struct_get, call_key, 0);
+                                self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
+                                self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
+                                return Ok(());
+                            }
+                        }
+                        "bin" => {
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                let bin_fn = self.chunk(chunk_idx).add_import("vybe:convert", "bin");
+                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, bin_fn, 0);
+                                self.chunk(chunk_idx).emit(1, 0);
+                                return Ok(());
+                            }
+                        }
+                        "id" => {
+                            // id(obj) → return a numeric identifier (hash of the object ref)
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                let id_fn = self.chunk(chunk_idx).add_import("vybe:convert", "id");
+                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, id_fn, 0);
+                                self.chunk(chunk_idx).emit(1, 0);
+                                return Ok(());
+                            }
+                        }
+                        "hash" => {
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                let hash_fn = self.chunk(chunk_idx).add_import("vybe:convert", "hash");
+                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, hash_fn, 0);
+                                self.chunk(chunk_idx).emit(1, 0);
+                                return Ok(());
+                            }
+                        }
+                        "frozenset" => {
+                            // frozenset(iterable) → same as set (immutability not enforced at runtime)
+                            return self.compile_host_call("vybe:array", "pyset", args, chunk_idx);
+                        }
+                        "vars" => {
+                            // vars(obj) → get __keys and build dict of properties
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                // Return the object itself — it IS a dict of properties
+                                return Ok(());
+                            }
+                        }
+                        "dir" => {
+                            // dir(obj) → return __keys array (list of attribute names)
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                common::dict::emit_keys(self.chunk(chunk_idx), 0);
                                 return Ok(());
                             }
                         }

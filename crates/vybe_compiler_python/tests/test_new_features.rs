@@ -283,3 +283,19 @@ fn match_with_guard() {
 #[test] fn enumerate_no_start() {
     compile_ok("for i, x in enumerate(['a', 'b', 'c']):\n    print(i, x)\n");
 }
+
+// ── pow / divmod / format / callable / bin / id / hash / frozenset / vars / dir ──
+
+#[test] fn pow_two_args() { compile_ok("x = pow(2, 10)\n"); }
+#[test] fn pow_three_args() { compile_ok("x = pow(2, 10, 100)\n"); }
+#[test] fn divmod_basic() { compile_ok("q, r = divmod(17, 5)\n"); }
+#[test] fn format_with_spec() { compile_ok("s = format(3.14, '.2f')\n"); }
+#[test] fn format_no_spec() { compile_ok("s = format(42)\n"); }
+#[test] fn callable_func() { compile_ok("def f(): pass\nb = callable(f)\n"); }
+#[test] fn callable_obj() { compile_ok("class C:\n    def __call__(self):\n        pass\nc = C()\nb = callable(c)\n"); }
+#[test] fn bin_basic() { compile_ok("s = bin(42)\n"); }
+#[test] fn id_basic() { compile_ok("x = [1, 2]\nn = id(x)\n"); }
+#[test] fn hash_basic() { compile_ok("n = hash('hello')\n"); }
+#[test] fn frozenset_basic() { compile_ok("s = frozenset([1, 2, 3])\n"); }
+#[test] fn vars_basic() { compile_ok("class C:\n    def __init__(self):\n        self.x = 1\nc = C()\nd = vars(c)\n"); }
+#[test] fn dir_basic() { compile_ok("x = {'a': 1, 'b': 2}\nkeys = dir(x)\n"); }
