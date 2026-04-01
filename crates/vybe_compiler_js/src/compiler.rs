@@ -1204,11 +1204,8 @@ impl Compiler {
                 self.compile_function(&func)?;
             }
             Expression::Await(inner) => {
-                // For synchronous promises: await just evaluates the expression.
-                // Emit the expression, then the await opcode.
-                // The VM handles Promise checking and fiber suspension.
                 self.compile_expression(inner)?;
-                self.emit(Op::r#await);
+                common_fn::emit_await(&mut self.chunks[self.current_chunk_idx], self.line);
             }
             Expression::TemplateLiteral { quasis, expressions } => {
                 // str_concat_n handles type coercion (format!("{}", v)) so no toString call needed

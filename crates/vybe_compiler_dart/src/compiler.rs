@@ -938,36 +938,34 @@ impl Compiler {
         self.scopes.push(scope);
 
         if f.is_async {
-            // Compile the actual body into a sub-chunk (the "worker")
-            let body_chunk = Chunk::new(format!("{}$async", name));
-            let body_idx = self.chunks.len();
-            self.chunks.push(body_chunk);
-            
-            let saved_chunk = self.current_chunk_idx;
-            self.current_chunk_idx = body_idx;
-            
-            // Compile locals and body into the sub-chunk
-            // (Simplified: in a real implementation we'd pass all current locals as upvalues)
+            // Async functions compile like normal functions — the body runs
+            // synchronously until it hits an `await` expression, which emits
+            // Op::r#await. The VM suspends the fiber at that point and resumes
+            // when the promise resolves. No special wrapper needed.
+            //
+            // This is the same approach across all languages (Python, JS, Dart, C#).
+            // The VM's fiber system + event loop handle suspension/resumption.
             match &f.body {
                 FunctionBody::Block(stmts) => {
                     for s in stmts { self.compile_statement(s)?; }
                 }
                 FunctionBody::Expression(expr) => {
                     self.compile_expression(expr)?;
+                    self.emit(Op::r#return);
+                    let lc = self.current_scope().next_slot;
+                    self.chunks[idx].local_count = lc;
+                    let upvalues = self.current_scope().upvalues.clone();
+                    self.scopes.pop();
+                    self.current_chunk_idx = saved;
+                    self.emit_ref_func(idx, &upvalues);
+                    return Ok(());
                 }
                 FunctionBody::Empty => {}
             }
-            self.emit(Op::r#return);
-            self.chunks[body_idx].local_count = self.current_scope().next_slot;
-            
-            self.current_chunk_idx = saved_chunk;
-            
-            // In the main function, just call the async runner
-            let runner = self.import("vybe:runtime", "asyncStart");
-            self.emit_ref_func(body_idx, &[]); // 0 upvalues for now
-            self.emit_host_call(runner, 1);
-            self.emit(Op::r#return);
-            
+            common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
+            let lc = self.current_scope().next_slot;
+            self.chunks[idx].local_count = lc;
+            let upvalues = self.current_scope().upvalues.clone();
             self.scopes.pop();
             self.current_chunk_idx = saved;
             return Ok(());
@@ -1764,7 +1762,8 @@ impl Compiler {
             }
             Expression::Await(inner) => {
                 self.compile_expression(inner)?;
-                self.emit(Op::r#await);
+                let line = self.line;
+                common_fn::emit_await(self.chunk_mut(), line);
             }
             Expression::Spread(inner) => {
                 self.compile_expression(inner)?;

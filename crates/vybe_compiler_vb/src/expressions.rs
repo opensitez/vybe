@@ -211,10 +211,9 @@ impl Compiler {
                 self.emit_constant(Value::String(Rc::from(s.as_str())));
             }
 
-            // Await — suspend fiber until promise resolves (same as JS await)
             Expression::Await(expr) => {
                 self.compile_expression(expr)?;
-                self.emit(Op::r#await);
+                common_fn::emit_await(&mut self.chunks[self.current_chunk_idx], self.line);
             }
 
             // WithTarget — reference to the With block's target object

@@ -97,3 +97,54 @@ pub fn emit_push_global_func(chunk: &mut Chunk, name: &str, line: u32) {
 pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
     chunk.emit_op_u8(Op::call, arg_count, line);
 }
+
+// ── Async/await (WASM Stack Switching + JSPI) ───────────────────────────
+//
+// All languages use the same async pattern:
+//
+//   async function:
+//     1. Create continuation from body function (cont_new)
+//     2. Return the continuation as a Promise-like value
+//     3. The runtime schedules it on the event loop
+//
+//   await expression:
+//     1. Compile the expression (produces a value or Promise)
+//     2. Emit Op::r#await — VM checks if Promise, suspends fiber if pending
+//
+// Python `async def`, Dart `async`, JS `async function`, C# `async Task`
+// all compile to the same opcodes.
+
+/// Emit an await expression.
+/// Caller must have compiled the awaited expression onto the stack.
+/// If the value is a Promise, the VM suspends the current fiber until resolved.
+/// If the value is not a Promise, it passes through unchanged.
+/// Stack before: [value_or_promise]  Stack after: [resolved_value]
+pub fn emit_await(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::r#await, line);
+}
+
+/// Emit async function wrapper: wraps the body chunk as a continuation.
+/// Call this INSTEAD of the normal function body compilation for async functions.
+///
+/// The pattern:
+///   1. The outer function creates a continuation from the body chunk
+///   2. Returns a Promise that resolves when the continuation completes
+///
+/// `body_chunk_idx`: the chunk index containing the compiled async body
+/// Stack: [] → [promise]
+pub fn emit_async_wrapper(chunk: &mut Chunk, body_chunk_idx: usize, line: u32) {
+    // Create continuation from the body function
+    chunk.emit_op_u16(Op::ref_func, body_chunk_idx as u16, line);
+    chunk.emit(0, line); // 0 upvalues
+    chunk.emit_op(Op::cont_new, line);
+    // Resume the continuation immediately — it will suspend at each await point
+    // The VM's event loop handles re-resumption when promises resolve
+    let zero_tag = chunk.add_constant(Value::I32(0));
+    chunk.emit_op_u16(Op::resume, zero_tag, line);
+}
+
+/// Create an async function body chunk.
+/// Same as create_function_chunk but named with $async suffix for debugging.
+pub fn create_async_body_chunk(name: &str, arity: u8) -> Chunk {
+    create_function_chunk(&format!("{}$async", name), arity)
+}

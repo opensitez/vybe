@@ -2066,7 +2066,7 @@ impl Compiler {
 
             Expression::Await(inner) => {
                 self.compile_expr(inner, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::r#await, 0);
+                common::functions::emit_await(self.chunk(chunk_idx), 0);
             }
 
             Expression::Yield(expr) => {

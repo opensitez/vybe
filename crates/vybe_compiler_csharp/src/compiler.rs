@@ -1827,10 +1827,9 @@ impl Compiler {
                 self.compile_lambda_block(params, body)?;
             }
 
-            // -- Await --
             Expression::Await(inner) => {
                 self.compile_expression(inner)?;
-                self.emit(Op::r#await);
+                common_fn::emit_await(&mut self.chunks[self.current_chunk_idx], self.line);
             }
 
             // -- NameOf --
