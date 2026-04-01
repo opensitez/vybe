@@ -387,7 +387,7 @@ auto_property_decl = {
 auto_property_line = _{ auto_property_decl ~ (NEWLINE | EOI) }
 
 property_decl = {
-    (^"Public" | ^"Private")? ~ ^"Property" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI)
+    (^"Public" | ^"Private")? ~ (^"Overrides" | ^"Overloads")? ~ (^"ReadOnly" | ^"WriteOnly")? ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI)
     ~ (property_get | property_set | NEWLINE)*
     ~ property_end
 }

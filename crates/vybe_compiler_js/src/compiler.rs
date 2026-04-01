@@ -1157,7 +1157,6 @@ impl Compiler {
                     // null was already on stack from dup+branch, just leave it
                     self.patch_jump(end);
                 } else if property == "length" {
-                    // .length → direct opcode (works on strings and arrays)
                     self.emit(Op::str_length);
                 } else {
                     let idx = self.add_string_constant(property);
@@ -1173,10 +1172,8 @@ impl Compiler {
                 self.compile_call(callee, arguments)?;
             }
             Expression::New { callee, arguments } => {
-                // Check for builtin constructors (Map, Set, etc.)
                 if let Expression::Identifier(name) = callee.as_ref() {
                     if let Some(host_idx) = self.resolve_builtin_constructor(name) {
-                        // Create empty object, call host constructor with it
                         self.emit_u16(Op::struct_new, 0);
                         for arg in arguments { self.compile_expression(arg)?; }
                         self.emit_host_call(host_idx, (arguments.len() + 1) as u8);
@@ -1510,18 +1507,25 @@ impl Compiler {
             }
 
             // Method call: obj.method(args)
-            // Pure WASM: struct_get method from object, then call.
-            //
-            // For class instances: methods were bound with `this` as first param
-            // during construction, so we pass `this`.
-            // For everything else: the function is a plain closure stored as a
-            // property — call it without `this`.
+            // Try callMethod host first (handles Map/Set/List with __data).
+            // If returns Undefined, fall back to struct_get + call.
             self.compile_expression(object)?;
             let obj_tmp = self.define_local("__obj_tmp");
+            self.emit(Op::dup);
             self.emit_u16(Op::local_set, obj_tmp);
             self.emit(Op::drop);
+            self.emit_constant(Value::String(Rc::from(property.as_str())));
+            for arg in arguments { self.compile_expression(arg)?; }
+            let cm_idx = self.import("vybe:runtime", "callMethod");
+            self.emit_host_call(cm_idx, (arguments.len() + 2) as u8);
 
-            // Get the method/closure from the object
+            // Check if callMethod returned Undefined (not a builtin collection)
+            self.emit(Op::dup);
+            self.emit(Op::ref_is_null);
+            let done = self.emit_jump(Op::br_if_false);
+            self.emit(Op::drop); // drop undefined
+
+            // Fallback: struct_get + call
             self.emit_u16(Op::local_get, obj_tmp);
             let prop_idx = self.add_string_constant(property);
             self.emit_u16(Op::struct_get, prop_idx);
@@ -1529,29 +1533,22 @@ impl Compiler {
             let is_static = if let Expression::Identifier(obj_name) = object.as_ref() {
                 self.defined_classes.contains(obj_name)
             } else { false };
-
             let is_class_instance = if let Expression::Identifier(obj_name) = object.as_ref() {
                 self.class_instances.contains(obj_name)
             } else {
-                matches!(object.as_ref(), Expression::New { .. })
+                matches!(object.as_ref(), Expression::New { .. } | Expression::This)
             };
 
             if is_static {
-                // Static: ClassName.method(args) — no this
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, arguments.len() as u8);
-            } else if is_class_instance {
-                // Class instance: obj.method(this, args)
-                self.emit_u16(Op::local_get, obj_tmp);
-                for arg in arguments { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, (arguments.len() + 1) as u8);
             } else {
-                // Plain object: pass this (matches original behavior).
-                // The function may or may not use it — extra args are ignored.
+                // Pass this for all method calls (class instances AND object literals)
                 self.emit_u16(Op::local_get, obj_tmp);
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, (arguments.len() + 1) as u8);
             }
+            self.patch_jump(done);
             return Ok(());
         }
 
@@ -3032,10 +3029,17 @@ impl Compiler {
                     return Ok(Some(()));
                 }
                 "join" if !is_class_instance => {
-                    // join() with no args → join with ","
                     self.compile_expression(object)?;
                     self.emit_constant(Value::String(Rc::from(",")));
                     self.emit(Op::array_join);
+                    return Ok(Some(()));
+                }
+                "size" if !is_class_instance => {
+                    // map.size / set.size → __keys.length
+                    self.compile_expression(object)?;
+                    let line = self.line;
+                    vybe_compiler_common::dict::emit_keys(&mut self.chunks[self.current_chunk_idx], line);
+                    self.emit(Op::array_length);
                     return Ok(Some(()));
                 }
                 // Array methods — only safe on non-identifier objects (member accesses, etc.)
@@ -3130,54 +3134,6 @@ impl Compiler {
                     self.emit_host_call(splice_idx, (args.len() + 3) as u8);
                     return Ok(Some(()));
                 }
-            }
-            // Map/Set methods — route to host collections
-            "clear" => {
-                self.compile_expression(object)?;
-                let idx = self.import("vybe:collections", "collClear");
-                self.emit_host_call(idx, 1);
-                return Ok(Some(()));
-            }
-            "delete" => {
-                self.compile_expression(object)?;
-                if let Some(arg) = args.first() { self.compile_expression(arg)?; }
-                let idx = self.import("vybe:collections", "collDelete");
-                self.emit_host_call(idx, 2);
-                return Ok(Some(()));
-            }
-            "has" => {
-                self.compile_expression(object)?;
-                if let Some(arg) = args.first() { self.compile_expression(arg)?; }
-                let idx = self.import("vybe:collections", "collHas");
-                self.emit_host_call(idx, 2);
-                return Ok(Some(()));
-            }
-            "get" if !is_class_instance => {
-                self.compile_expression(object)?;
-                if let Some(arg) = args.first() { self.compile_expression(arg)?; }
-                let idx = self.import("vybe:collections", "mapGet");
-                self.emit_host_call(idx, 2);
-                return Ok(Some(()));
-            }
-            "set" if !is_class_instance && args.len() == 2 => {
-                self.compile_expression(object)?;
-                self.compile_expression(&args[0])?;
-                self.compile_expression(&args[1])?;
-                let idx = self.import("vybe:collections", "mapSet");
-                self.emit_host_call(idx, 3);
-                return Ok(Some(()));
-            }
-            "keys" if !is_class_instance && args.is_empty() => {
-                self.compile_expression(object)?;
-                let idx = self.import("vybe:collections", "mapKeys");
-                self.emit_host_call(idx, 1);
-                return Ok(Some(()));
-            }
-            "values" if !is_class_instance && args.is_empty() => {
-                self.compile_expression(object)?;
-                let idx = self.import("vybe:collections", "mapValues");
-                self.emit_host_call(idx, 1);
-                return Ok(Some(()));
             }
             "entries" if !is_class_instance => {
                 // arr.entries() → [[0, arr[0]], [1, arr[1]], ...]

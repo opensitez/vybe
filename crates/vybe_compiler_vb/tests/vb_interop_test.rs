@@ -1154,7 +1154,6 @@ Console.WriteLine(b.GetCount())
 /// KNOWN BUG: The parser does not support Property with explicit Get/Set blocks.
 /// It only supports auto-property syntax (Public Property Name As String).
 #[test]
-#[ignore = "known bug"]
 fn f51_property_get_set() {
     let out = run_vb(r#"
 Public Class Person
@@ -1182,7 +1181,6 @@ Console.WriteLine(p.Name)
 /// F52. Property with backing field pattern
 /// KNOWN BUG: Same as F51 — parser does not support Property with Get/Set blocks.
 #[test]
-#[ignore = "known bug"]
 fn f52_property_with_backing_field() {
     let out = run_vb(r#"
 Public Class Temperature
