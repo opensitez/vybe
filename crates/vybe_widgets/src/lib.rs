@@ -47,6 +47,10 @@ pub mod table_layout;
 pub mod toolbox;
 pub mod color_picker;
 pub mod font_picker;
+pub mod language;
+pub mod ide_text;
+pub mod text_editor;
+pub mod code_editor_widget;
 
 pub use checkbox::Checkbox;
 pub use radio::Radio;
@@ -81,6 +85,10 @@ pub use table_layout::TableLayoutPanel;
 pub use toolbox::Toolbox;
 pub use color_picker::{ColorPicker, PickedColor, ColorPickerEvent};
 pub use font_picker::{FontPicker, FontPickerEvent};
+pub use language::{LanguageDef, CommentDef, load_language};
+pub use ide_text::{draw_text, measure_text};
+pub use text_editor::{TextEditor, TokenKind, TokenSpan, LexerState, DiagnosticInfo, DiagnosticSeverity};
+pub use code_editor_widget::{CodeEditorWidget, Theme};
 
 use tiny_skia::PathBuilder;
 
