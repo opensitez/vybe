@@ -4,6 +4,7 @@ use vybe_bytecode::{Chunk, Value, Op};
 use vybe_bytecode::chunk::TypeEntry;
 use vybe_compiler_common::classes as common_classes;
 use vybe_compiler_common::expressions as common_expr;
+use vybe_compiler_common::functions as common_fn;
 use vybe_parser_js::ast::*;
 
 use crate::scope::Scope;
@@ -2182,8 +2183,7 @@ impl Compiler {
 
     fn compile_function(&mut self, func: &FunctionDecl) -> Result<(), String> {
         let name = func.name.clone().unwrap_or_else(|| "<anonymous>".into());
-        let mut chunk = Chunk::new(&name);
-        chunk.arity = func.params.len() as u8;
+        let chunk = common_fn::create_function_chunk(&name, func.params.len() as u8);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -2220,8 +2220,7 @@ impl Compiler {
         }
 
         for stmt in &func.body { self.compile_statement(stmt)?; }
-        self.emit(Op::null);
-        self.emit(Op::r#return);
+        common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
 
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;
@@ -2230,8 +2229,7 @@ impl Compiler {
         self.current_chunk_idx = saved;
 
         let line = self.line;
-        self.chunks[self.current_chunk_idx].emit_op_u16(Op::ref_func, idx as u16, line);
-        self.chunks[self.current_chunk_idx].emit(upvalues.len() as u8, line);
+        common_fn::emit_ref_func(&mut self.chunks[self.current_chunk_idx], idx, upvalues.len() as u8, line);
         for uv in &upvalues {
             self.chunks[self.current_chunk_idx].emit(if uv.is_local { 1 } else { 0 }, line);
             self.chunks[self.current_chunk_idx].emit(uv.index, line);
@@ -2244,8 +2242,7 @@ impl Compiler {
         self.in_method = true;
 
         let name = func.name.clone().unwrap_or_else(|| "<method>".into());
-        let mut chunk = Chunk::new(&name);
-        chunk.arity = (func.params.len() + 1) as u8; // +1 for this
+        let chunk = common_fn::create_function_chunk(&name, (func.params.len() + 1) as u8); // +1 for this
 
         let idx = self.chunks.len();
         self.chunks.push(chunk);
@@ -2269,8 +2266,7 @@ impl Compiler {
         self.current_chunk_idx = saved;
 
         let line = self.line;
-        self.chunks[self.current_chunk_idx].emit_op_u16(Op::ref_func, idx as u16, line);
-        self.chunks[self.current_chunk_idx].emit(upvalues.len() as u8, line);
+        common_fn::emit_ref_func(&mut self.chunks[self.current_chunk_idx], idx, upvalues.len() as u8, line);
         for uv in &upvalues {
             self.chunks[self.current_chunk_idx].emit(if uv.is_local { 1 } else { 0 }, line);
             self.chunks[self.current_chunk_idx].emit(uv.index, line);

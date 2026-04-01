@@ -13,6 +13,7 @@ use std::rc::Rc;
 use vybe_bytecode::{Chunk, Op, Value};
 use vybe_bytecode::chunk::TypeEntry;
 use vybe_compiler_common::expressions as common_expr;
+use vybe_compiler_common::functions as common_fn;
 use vybe_parser_csharp::ast::*;
 
 // ============================================================
@@ -884,8 +885,7 @@ impl Compiler {
 
     /// Compile an instance method as a closure (this as first param).
     fn compile_instance_method(&mut self, method: &MethodDecl) -> Result<(), String> {
-        let mut chunk = Chunk::new(method.name.as_str());
-        chunk.arity = (method.params.len() + 1) as u8; // this + params
+        let chunk = common_fn::create_function_chunk(method.name.as_str(), (method.params.len() + 1) as u8);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -938,8 +938,7 @@ impl Compiler {
 
     /// Compile a static method (no this parameter).
     fn compile_static_method(&mut self, method: &MethodDecl) -> Result<(), String> {
-        let mut chunk = Chunk::new(method.name.as_str());
-        chunk.arity = method.params.len() as u8;
+        let chunk = common_fn::create_function_chunk(method.name.as_str(), method.params.len() as u8);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -992,8 +991,7 @@ impl Compiler {
     /// Compile property getter body as closure (this as param).
     fn compile_property_getter(&mut self, prop_name: &str, body: &[Statement]) -> Result<(), String> {
         let label = format!("get_{}", prop_name);
-        let mut chunk = Chunk::new(label.as_str());
-        chunk.arity = 1; // this
+        let chunk = common_fn::create_function_chunk(label.as_str(), 1);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -1030,8 +1028,7 @@ impl Compiler {
     /// Compile property setter body as closure (this + value).
     fn compile_property_setter(&mut self, prop_name: &str, value_param: &str, body: &[Statement]) -> Result<(), String> {
         let label = format!("set_{}", prop_name);
-        let mut chunk = Chunk::new(label.as_str());
-        chunk.arity = 2; // this + value
+        let chunk = common_fn::create_function_chunk(label.as_str(), 2);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -1044,8 +1041,7 @@ impl Compiler {
         self.scopes.push(scope);
 
         for stmt in body { self.compile_statement(stmt)?; }
-        self.emit(Op::null);
-        self.emit(Op::r#return);
+        common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
 
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;
@@ -2534,8 +2530,7 @@ impl Compiler {
     }
 
     fn compile_lambda_expr(&mut self, params: &[String], body: &Expression) -> Result<(), String> {
-        let mut chunk = Chunk::new("<lambda>");
-        chunk.arity = params.len() as u8;
+        let chunk = common_fn::create_function_chunk("<lambda>", params.len() as u8);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -2561,8 +2556,7 @@ impl Compiler {
     }
 
     fn compile_lambda_block(&mut self, params: &[String], body: &[Statement]) -> Result<(), String> {
-        let mut chunk = Chunk::new("<lambda>");
-        chunk.arity = params.len() as u8;
+        let chunk = common_fn::create_function_chunk("<lambda>", params.len() as u8);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -2576,8 +2570,7 @@ impl Compiler {
         self.scopes.push(scope);
 
         for stmt in body { self.compile_statement(stmt)?; }
-        self.emit(Op::null);
-        self.emit(Op::r#return);
+        common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
 
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;

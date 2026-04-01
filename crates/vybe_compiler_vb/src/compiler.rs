@@ -3,6 +3,7 @@ use std::collections::HashSet;
 
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_bytecode::chunk::TypeEntry;
+use vybe_compiler_common::functions as common_fn;
 use vybe_parser_basic::ast::*;
 
 use crate::scope::Scope;
@@ -686,8 +687,7 @@ impl Compiler {
 
     fn compile_sub(&mut self, sub: &SubDecl) -> Result<(), String> {
         let name = sub.name.as_str();
-        let mut chunk = Chunk::new(name);
-        chunk.arity = sub.parameters.len() as u8;
+        let chunk = common_fn::create_function_chunk(name, sub.parameters.len() as u8);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
         let mut scope = Scope::new_function();
@@ -702,8 +702,7 @@ impl Compiler {
         self.current_chunk_idx = idx;
         self.scopes.push(scope);
         for stmt in &sub.body { self.compile_statement(stmt)?; }
-        self.emit(Op::null);
-        self.emit(Op::r#return);
+        common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;
         let upvalues = self.current_scope().upvalues.clone();
@@ -719,8 +718,7 @@ impl Compiler {
 
     fn compile_sub_like(&mut self, name: &Identifier, params: &[Parameter], body: &[Statement], return_var: Option<&Identifier>) -> Result<(), String> {
         let fname = name.as_str();
-        let mut chunk = Chunk::new(fname);
-        chunk.arity = params.len() as u8;
+        let chunk = common_fn::create_function_chunk(fname, params.len() as u8);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
         let mut scope = Scope::new_function();

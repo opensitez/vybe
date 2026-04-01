@@ -3,6 +3,7 @@ use std::rc::Rc;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_compiler_common::classes as common_classes;
 use vybe_compiler_common::expressions as common_expr;
+use vybe_compiler_common::functions as common_fn;
 use vybe_compiler_common::loops as common_loops;
 use vybe_parser_dart::*;
 
@@ -798,8 +799,9 @@ impl Compiler {
                     
                     if let Some(ref type_name) = catch.on_type {
                         self.emit(Op::dup);
-                        let type_name_norm = self.runtime_type_name(type_name);
-                        // Use ref_test with normalized runtime type name for consistent behavior.
+                        // Normalize for cross-language compat (Dart FormatException → ValueError etc)
+                        let canonical = vybe_compiler_common::errors::canonical_exception_name(type_name);
+                        let type_name_norm = self.runtime_type_name(canonical);
                         let type_idx = self.add_string_constant(&type_name_norm);
                         self.emit_u16(Op::ref_test, type_idx);
                         let next_catch = self.emit_jump(Op::br_if_false);
@@ -912,8 +914,8 @@ impl Compiler {
         let positional_arity = f.params.positional.len() + f.params.optional_pos.len();
         let has_named = !f.params.named.is_empty();
         
-        let mut chunk = Chunk::new(name);
-        chunk.arity = (positional_arity + if has_named { 1 } else { 0 }) as u8;
+        let arity = (positional_arity + if has_named { 1 } else { 0 }) as u8;
+        let chunk = common_fn::create_function_chunk(name, arity);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
         
@@ -975,20 +977,15 @@ impl Compiler {
         for p in &f.params.optional_pos {
             if let Some(dv) = &p.default_value {
                 let slot = self.current_scope().resolve_local(&p.name).unwrap();
-                self.emit_u16(Op::local_get, slot);
-                self.emit(Op::dup);
-                let is_null = self.emit_jump(Op::br_if_null);
-                
-                // Not null path: keep the dup
-                let done = self.emit_jump(Op::br);
-                
-                self.patch_jump(is_null);
-                self.emit(Op::drop); // drop the extra null
+                let line = self.line;
+                let skip = common_fn::emit_default_param_start(
+                    &mut self.chunks[self.current_chunk_idx], slot, line,
+                );
                 self.compile_expression(dv)?;
-                
-                self.patch_jump(done);
-                self.emit_u16(Op::local_set, slot);
-                self.emit(Op::drop); // clean up stack
+                let line = self.line;
+                common_fn::emit_default_param_end(
+                    &mut self.chunks[self.current_chunk_idx], slot, skip, line,
+                );
             }
         }
 
@@ -1039,8 +1036,8 @@ impl Compiler {
             }
             FunctionBody::Empty => {}
         }
-        self.emit(Op::null);
-        self.emit(Op::r#return);
+        let line = self.line;
+        common_fn::emit_function_epilogue(&mut self.chunks[idx], line);
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;
         let upvalues = self.current_scope().upvalues.clone();

@@ -1,16 +1,27 @@
-//! Function compilation helpers — shared bytecode patterns for parameters and calls.
+//! Function compilation helpers — shared bytecode patterns for function scaffolding.
 //!
-//! All compilers emit the same pattern for default parameter values:
-//! check if param is null → substitute default → patch jump.
+//! Every language compiles functions the same way at the bytecode level:
+//! - Create a Chunk (name, arity)
+//! - Map params to local slots
+//! - Handle default values
+//! - Compile body (language-specific)
+//! - Emit null + return as safety net
+//! - Store ref_func as local/global
+//!
+//! The scaffolding (everything except body compilation) is identical.
+//! Python `def`, Dart `void f()`, JS `function`, C# `void F()`, VB `Sub`
+//! all produce the same Chunk structure.
 
-use vybe_bytecode::Chunk;
+use std::rc::Rc;
+use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
+// ── Default parameter handling ──────────────────────────────────────────
+
 /// Emit the start of a default parameter check.
-/// If the parameter at `param_slot` is null, the caller should compile the default
-/// expression, then call `emit_default_param_end`.
+/// If the parameter at `param_slot` is null (missing arg), the caller should compile
+/// the default expression, then call `emit_default_param_end`.
 /// Returns a jump offset to patch.
-///
 /// Stack: unchanged
 pub fn emit_default_param_start(chunk: &mut Chunk, param_slot: u16, line: u32) -> usize {
     chunk.emit_op_u16(Op::local_get, param_slot, line);
@@ -25,4 +36,64 @@ pub fn emit_default_param_end(chunk: &mut Chunk, param_slot: u16, skip_jump: usi
     chunk.emit_op_u16(Op::local_set, param_slot, line);
     chunk.emit_op(Op::drop, line);
     chunk.patch_jump(skip_jump);
+}
+
+// ── Function chunk scaffolding ──────────────────────────────────────────
+
+/// Create a new function chunk with the given name and arity.
+/// Returns the chunk — caller adds it to their chunks vec and manages the scope.
+pub fn create_function_chunk(name: &str, arity: u8) -> Chunk {
+    let mut chunk = Chunk::new(name);
+    chunk.arity = arity;
+    chunk
+}
+
+/// Emit the function epilogue: null return (safety net for functions that
+/// fall through without explicit return).
+/// Stack: [] → diverges (return)
+pub fn emit_function_epilogue(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::null, line);
+    chunk.emit_op(Op::r#return, line);
+}
+
+/// Emit ref_func to push a closure reference onto the stack.
+/// `func_chunk_idx`: the chunk index of the compiled function.
+/// `upvalue_count`: 0 for most functions, >0 for closures.
+/// Stack: [] → [closure_ref]
+pub fn emit_ref_func(chunk: &mut Chunk, func_chunk_idx: usize, upvalue_count: u8, line: u32) {
+    chunk.emit_op_u16(Op::ref_func, func_chunk_idx as u16, line);
+    chunk.emit(upvalue_count, line);
+}
+
+/// Store a function as a global variable.
+/// Caller must have closure_ref on stack (from emit_ref_func).
+/// Stack before: [closure_ref]  Stack after: []
+pub fn emit_store_global_func(chunk: &mut Chunk, name: &str, line: u32) {
+    let idx = chunk.add_constant(Value::String(Rc::from(name)));
+    chunk.emit_op_u16(Op::global_set, idx, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+/// Store a function in a local slot.
+/// Caller must have closure_ref on stack (from emit_ref_func).
+/// Stack before: [closure_ref]  Stack after: []
+pub fn emit_store_local_func(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::local_set, slot, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+// ── Cross-language function call ────────────────────────────────────────
+
+/// Emit a call to a function by global name.
+/// Pushes the function ref, then caller pushes args, then calls emit_call_args.
+/// Stack: [] → [function_ref]
+pub fn emit_push_global_func(chunk: &mut Chunk, name: &str, line: u32) {
+    let idx = chunk.add_constant(Value::String(Rc::from(name)));
+    chunk.emit_op_u16(Op::global_get, idx, line);
+}
+
+/// Emit the call opcode after function ref + args are on stack.
+/// Stack before: [func_ref, arg1, arg2, ...]  Stack after: [return_value]
+pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
+    chunk.emit_op_u8(Op::call, arg_count, line);
 }

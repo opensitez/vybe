@@ -1,6 +1,7 @@
 use std::rc::Rc;
-use vybe_bytecode::{Chunk, Value, Op};
+use vybe_bytecode::{Value, Op};
 use vybe_compiler_common::expressions as common_expr;
+use vybe_compiler_common::functions as common_fn;
 use vybe_parser_basic::ast::*;
 
 use crate::compiler::{Compiler, VarResolution};
@@ -581,8 +582,7 @@ impl Compiler {
     }
 
     fn compile_lambda(&mut self, params: &[Parameter], body: &LambdaBody) -> Result<(), String> {
-        let mut chunk = Chunk::new("<lambda>");
-        chunk.arity = params.len() as u8;
+        let chunk = common_fn::create_function_chunk("<lambda>", params.len() as u8);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 

@@ -1,8 +1,9 @@
 use std::rc::Rc;
-use vybe_bytecode::{Chunk, Value, Op};
+use vybe_bytecode::{Value, Op};
 use vybe_bytecode::chunk::TypeEntry;
 use vybe_parser_basic::ast::*;
 use vybe_compiler_common as common;
+use vybe_compiler_common::functions as common_fn;
 
 use crate::compiler::Compiler;
 use crate::scope::Scope;
@@ -44,8 +45,7 @@ impl Compiler {
         }
 
         // --- Compile the constructor chunk ---
-        let mut chunk = Chunk::new(name);
-        chunk.arity = (1 + ctor_params.len()) as u8; // Me + ctor params
+        let chunk = common_fn::create_function_chunk(name, (1 + ctor_params.len()) as u8); // Me + ctor params
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -349,8 +349,7 @@ impl Compiler {
     fn compile_method_decl(&mut self, method: &MethodDecl) -> Result<(), String> {
         match method {
             MethodDecl::Sub(sub) => {
-                let mut chunk = Chunk::new(sub.name.as_str());
-                chunk.arity = (sub.parameters.len() + 1) as u8;
+                let chunk = common_fn::create_function_chunk(sub.name.as_str(), (sub.parameters.len() + 1) as u8);
                 let idx = self.chunks.len();
                 self.chunks.push(chunk);
 
@@ -365,8 +364,7 @@ impl Compiler {
                 self.scopes.push(scope);
 
                 for stmt in &sub.body { self.compile_statement(stmt)?; }
-                self.emit(Op::null);
-                self.emit(Op::r#return);
+                common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
 
                 let lc = self.current_scope().next_slot;
                 self.chunks[idx].local_count = lc;
@@ -376,8 +374,7 @@ impl Compiler {
                 self.emit_ref_func(idx, &upvalues);
             }
             MethodDecl::Function(func) => {
-                let mut chunk = Chunk::new(func.name.as_str());
-                chunk.arity = (func.parameters.len() + 1) as u8;
+                let chunk = common_fn::create_function_chunk(func.name.as_str(), (func.parameters.len() + 1) as u8);
                 let idx = self.chunks.len();
                 self.chunks.push(chunk);
 
@@ -420,8 +417,7 @@ impl Compiler {
     fn compile_shared_method(&mut self, method: &MethodDecl) -> Result<(), String> {
         match method {
             MethodDecl::Sub(sub) => {
-                let mut chunk = Chunk::new(sub.name.as_str());
-                chunk.arity = sub.parameters.len() as u8;
+                let chunk = common_fn::create_function_chunk(sub.name.as_str(), sub.parameters.len() as u8);
                 let idx = self.chunks.len();
                 self.chunks.push(chunk);
 
@@ -435,8 +431,7 @@ impl Compiler {
                 self.scopes.push(scope);
 
                 for stmt in &sub.body { self.compile_statement(stmt)?; }
-                self.emit(Op::null);
-                self.emit(Op::r#return);
+                common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
 
                 let lc = self.current_scope().next_slot;
                 self.chunks[idx].local_count = lc;
@@ -446,8 +441,7 @@ impl Compiler {
                 self.emit_ref_func(idx, &upvalues);
             }
             MethodDecl::Function(func) => {
-                let mut chunk = Chunk::new(func.name.as_str());
-                chunk.arity = func.parameters.len() as u8;
+                let chunk = common_fn::create_function_chunk(func.name.as_str(), func.parameters.len() as u8);
                 let idx = self.chunks.len();
                 self.chunks.push(chunk);
 
@@ -487,8 +481,7 @@ impl Compiler {
 
     /// Compile a property getter/setter body as a closure.
     fn compile_property_accessor(&mut self, label: &str, arity: u8, body: &[Statement], has_return: bool, prop_name: Option<&str>) -> Result<(), String> {
-        let mut chunk = Chunk::new(label);
-        chunk.arity = arity;
+        let chunk = common_fn::create_function_chunk(label, arity);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -535,8 +528,7 @@ impl Compiler {
 
     /// Compile a property setter (Me + value param).
     fn compile_property_accessor_with_param(&mut self, label: &str, param_name: &str, body: &[Statement]) -> Result<(), String> {
-        let mut chunk = Chunk::new(label);
-        chunk.arity = 2; // Me + value
+        let chunk = common_fn::create_function_chunk(label, 2); // Me + value
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
@@ -549,8 +541,7 @@ impl Compiler {
         self.scopes.push(scope);
 
         for stmt in body { self.compile_statement(stmt)?; }
-        self.emit(Op::null);
-        self.emit(Op::r#return);
+        common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
 
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;
