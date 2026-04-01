@@ -300,3 +300,42 @@ pub fn register_type(
         constructor_chunk,
     });
 }
+
+/// Register an interface/trait/protocol in the type table.
+/// Interfaces have no constructor and method entries with chunk_idx=0 (signatures only).
+/// This is the same across C# `interface`, VB `Interface`, Dart `abstract class`,
+/// Python ABC — different syntax, same TypeEntry shape.
+pub fn register_interface(
+    chunks: &mut [Chunk],
+    name: &str,
+    methods: Vec<String>,
+    parent_interfaces: Vec<String>,
+) {
+    let method_entries: Vec<(String, usize)> = methods.iter()
+        .map(|m| (m.to_lowercase(), 0usize))
+        .collect();
+    chunks[0].types.push(TypeEntry {
+        name: name.to_lowercase(),
+        parent: String::new(),
+        fields: Vec::new(),
+        methods: method_entries,
+        is_interface: true,
+        implements: parent_interfaces.iter().map(|s| s.to_lowercase()).collect(),
+        constructor_chunk: None,
+    });
+}
+
+/// Register a class that implements one or more interfaces.
+/// This is the standard pattern for C# `: IFoo, IBar`, Dart `implements Foo, Bar`,
+/// VB `Implements IFoo`, Python `class Foo(IBar)`.
+pub fn register_class_with_interfaces(
+    chunks: &mut [Chunk],
+    name: &str,
+    parent: &str,
+    fields: Vec<String>,
+    methods: Vec<(String, usize)>,
+    implements: Vec<String>,
+    constructor_chunk: Option<usize>,
+) {
+    register_type(chunks, name, parent, fields, methods, false, implements, constructor_chunk);
+}
