@@ -1116,12 +1116,7 @@ impl Parser {
             }
             TokenKind::Class => {
                 let class = self.parse_class()?;
-                Ok(Expression::Function(FunctionDecl {
-                    name: class.name,
-                    params: vec![],
-                    body: vec![],
-                    is_async: false,
-                }))
+                Ok(Expression::ClassExpression(class))
             }
             TokenKind::DotDotDot => {
                 self.advance();

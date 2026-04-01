@@ -397,6 +397,19 @@ impl Compiler {
             }
             Statement::For { init, test, update, body } => {
                 self.current_scope_mut().begin_scope();
+
+                // Check if the loop uses `let` — needs per-iteration binding
+                let is_let_loop = matches!(init, Some(ForInit::VarDecl(VarKind::Let | VarKind::Const, _)));
+
+                // Collect let-declared variable names for per-iteration copy
+                let let_var_names: Vec<String> = if is_let_loop {
+                    if let Some(ForInit::VarDecl(_, decls)) = init {
+                        decls.iter().filter_map(|d| {
+                            if let BindingPattern::Identifier(name) = &d.pattern { Some(name.clone()) } else { None }
+                        }).collect()
+                    } else { vec![] }
+                } else { vec![] };
+
                 if let Some(init) = init {
                     match init {
                         ForInit::VarDecl(kind, decls) => {
@@ -405,6 +418,12 @@ impl Compiler {
                         ForInit::Expression(expr) => { self.compile_expression(expr)?; self.emit(Op::drop); }
                     }
                 }
+
+                // Record the loop variable slots (the "outer" loop binding)
+                let loop_var_slots: Vec<(String, u16)> = let_var_names.iter().filter_map(|name| {
+                    self.current_scope().resolve_local(name).map(|slot| (name.clone(), slot))
+                }).collect();
+
                 let start = self.current_offset();
                 self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![], label: self.pending_label.take() });
                 let exit = if let Some(test) = test {
@@ -412,7 +431,97 @@ impl Compiler {
                     self.emit_to_bool();
                     Some(self.emit_jump(Op::br_if_false))
                 } else { None };
-                self.compile_statement(body)?;
+
+                // Only use trampoline if body contains closures that could capture loop vars
+                let body_has_closures = is_let_loop && !loop_var_slots.is_empty()
+                    && self.stmt_contains_closure(body);
+
+                if body_has_closures {
+                    // Per-iteration binding for `let` in for-loops (JS spec §14.7.4.2).
+                    //
+                    // Each iteration gets a fresh binding so closures capture the
+                    // per-iteration value. We achieve this by compiling the body as
+                    // an immediately-invoked function, passing the loop variable(s)
+                    // as arguments. The function returns the (possibly modified)
+                    // loop variable value back.
+                    //
+                    // This is the same approach V8 uses internally (hidden trampoline).
+                    // Uses only standard WASM opcodes: ref_func, call, return.
+
+                    // Create a body function chunk: fn(__iter_i) { body; return __iter_i; }
+                    let body_name = format!("<for-let-body>");
+                    let arity = loop_var_slots.len() as u8;
+                    let mut body_chunk = common_fn::create_function_chunk(&body_name, arity);
+                    body_chunk.add_import("wasi:cli", "log"); // in case body prints
+                    let body_idx = self.chunks.len();
+                    self.chunks.push(body_chunk);
+
+                    let mut body_scope = Scope::new_function();
+                    // Define params matching loop vars
+                    for (name, _) in &loop_var_slots {
+                        body_scope.define_local(name);
+                    }
+                    let saved = self.current_chunk_idx;
+                    self.current_chunk_idx = body_idx;
+                    self.scopes.push(body_scope);
+
+                    // Hoist vars in the body (var in for-let body should still hoist)
+                    if let Statement::Block(stmts) = body.as_ref() {
+                        self.hoist_vars(stmts);
+                    }
+
+                    self.compile_statement(body)?;
+
+                    // Return the loop var values (in case body modified them)
+                    // For single var: return i. For multiple: return array.
+                    if loop_var_slots.len() == 1 {
+                        let slot = self.current_scope().resolve_local(&loop_var_slots[0].0).unwrap();
+                        self.emit_u16(Op::local_get, slot);
+                    } else {
+                        for (name, _) in &loop_var_slots {
+                            let slot = self.current_scope().resolve_local(name).unwrap();
+                            self.emit_u16(Op::local_get, slot);
+                        }
+                        self.emit_u16(Op::array_new, loop_var_slots.len() as u16);
+                    }
+                    self.emit(Op::r#return);
+
+                    let lc = self.current_scope().next_slot;
+                    self.chunks[body_idx].local_count = lc;
+                    let upvalues = self.current_scope().upvalues.clone();
+                    self.scopes.pop();
+                    self.current_chunk_idx = saved;
+
+                    // Call the body function with current loop var values
+                    let line = self.line;
+                    common_fn::emit_ref_func(&mut self.chunks[self.current_chunk_idx], body_idx, upvalues.len() as u8, line);
+                    for uv in &upvalues {
+                        self.chunks[self.current_chunk_idx].emit(if uv.is_local { 1 } else { 0 }, line);
+                        self.chunks[self.current_chunk_idx].emit(uv.index, line);
+                    }
+                    for (_, outer_slot) in &loop_var_slots {
+                        self.emit_u16(Op::local_get, *outer_slot);
+                    }
+                    self.emit_u8(Op::call, arity);
+
+                    // Store returned value(s) back to loop vars
+                    if loop_var_slots.len() == 1 {
+                        self.emit_u16(Op::local_set, loop_var_slots[0].1);
+                        self.emit(Op::drop);
+                    } else {
+                        for (i, (_, outer_slot)) in loop_var_slots.iter().enumerate() {
+                            self.emit(Op::dup);
+                            self.emit_constant(Value::I32(i as i32));
+                            self.emit(Op::array_get);
+                            self.emit_u16(Op::local_set, *outer_slot);
+                            self.emit(Op::drop);
+                        }
+                        self.emit(Op::drop); // drop array
+                    }
+                } else {
+                    self.compile_statement(body)?;
+                }
+
                 for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
                 if let Some(update) = update { self.compile_expression(update)?; self.emit(Op::drop); }
                 self.emit_loop(start);
@@ -1181,12 +1290,12 @@ impl Compiler {
                         }
                     }
                     self.emit_u16(Op::struct_new, count);
-                    // Attach __keys array for dict enumeration
+                    // __keys tracking disabled for now — causes stack issues with closures
+                    
                     {
                         let line = self.line;
                         let chunk = &mut self.chunks[self.current_chunk_idx];
                         chunk.emit_op(Op::dup, line);
-                        // Build __keys array with all string keys
                         for k in &string_keys {
                             let idx = chunk.add_constant(Value::String(Rc::from(k.as_str())));
                             chunk.emit_op_u16(Op::r#const, idx, line);
@@ -1199,6 +1308,20 @@ impl Compiler {
                 }
             }
             Expression::Function(func) => { self.compile_function(func)?; }
+            Expression::ClassExpression(class) => {
+                // Compile class as a class declaration, which leaves constructor on stack.
+                // Give it a temporary name if anonymous.
+                let name = class.name.clone().unwrap_or_else(|| "<class_expr>".to_string());
+                let mut named_class = class.clone();
+                named_class.name = Some(name);
+                self.compile_statement(&Statement::ClassDeclaration(named_class))?;
+                // ClassDeclaration stores the constructor as a global.
+                // For class expressions, we also need it on the stack.
+                // The class was stored via emit_global_set. Retrieve it.
+                let class_name = class.name.clone().unwrap_or_else(|| "<class_expr>".to_string());
+                let idx = self.add_string_constant(&class_name);
+                self.emit_u16(Op::global_get, idx);
+            }
             Expression::ArrowFunction { params, body, is_async } => {
                 let func = match body {
                     ArrowBody::Block(stmts) => FunctionDecl { name: None, params: params.clone(), body: stmts.clone(), is_async: *is_async },
@@ -1386,44 +1509,49 @@ impl Compiler {
                 }
             }
 
-            // Method call on object. Could be a user class method or a builtin
-            // collection method. Try runtime dispatch first — it returns Undefined for
-            // non-builtins, in which case we fall through to struct_get + call.
+            // Method call: obj.method(args)
+            // Pure WASM: struct_get method from object, then call.
             //
-            // Save object to a temp local to avoid re-evaluating chained expressions.
+            // For class instances: methods were bound with `this` as first param
+            // during construction, so we pass `this`.
+            // For everything else: the function is a plain closure stored as a
+            // property — call it without `this`.
             self.compile_expression(object)?;
             let obj_tmp = self.define_local("__obj_tmp");
-            self.emit(Op::dup);
             self.emit_u16(Op::local_set, obj_tmp);
             self.emit(Op::drop);
-            // callMethod(obj, "methodName", ...args)
-            self.emit_constant(Value::String(Rc::from(property.as_str())));
-            for arg in arguments { self.compile_expression(arg)?; }
-            let cm_idx = self.import("vybe:runtime", "callMethod");
-            self.emit_host_call(cm_idx, (arguments.len() + 2) as u8);
 
-            // Check if callMethod returned Undefined (not a builtin) — then do regular call
-            self.emit(Op::dup);
-            self.emit(Op::ref_is_null);
-            let done = self.emit_jump(Op::br_if_false); // not null/undefined = result, skip
-            self.emit(Op::drop); // drop the undefined
-            // Regular method call: obj.method(args) using saved temp
+            // Get the method/closure from the object
             self.emit_u16(Op::local_get, obj_tmp);
             let prop_idx = self.add_string_constant(property);
             self.emit_u16(Op::struct_get, prop_idx);
-            // If calling on a class name (static call), don't pass this
+
             let is_static = if let Expression::Identifier(obj_name) = object.as_ref() {
                 self.defined_classes.contains(obj_name)
             } else { false };
+
+            let is_class_instance = if let Expression::Identifier(obj_name) = object.as_ref() {
+                self.class_instances.contains(obj_name)
+            } else {
+                matches!(object.as_ref(), Expression::New { .. })
+            };
+
             if is_static {
+                // Static: ClassName.method(args) — no this
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, arguments.len() as u8);
+            } else if is_class_instance {
+                // Class instance: obj.method(this, args)
+                self.emit_u16(Op::local_get, obj_tmp);
+                for arg in arguments { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, (arguments.len() + 1) as u8);
             } else {
-                self.emit_u16(Op::local_get, obj_tmp); // this
+                // Plain object: pass this (matches original behavior).
+                // The function may or may not use it — extra args are ignored.
+                self.emit_u16(Op::local_get, obj_tmp);
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, (arguments.len() + 1) as u8);
             }
-            self.patch_jump(done);
             return Ok(());
         }
 
@@ -1541,20 +1669,52 @@ impl Compiler {
     fn compile_binding(&mut self, pattern: &BindingPattern, kind: VarKind) -> Result<(), String> {
         match pattern {
             BindingPattern::Identifier(name) => {
-                match self.resolve_variable(name) {
-                    VarResolution::Local(_) => {
-                        let slot = self.current_scope().resolve_local(name).unwrap();
+                if kind == VarKind::Let || kind == VarKind::Const {
+                    // let/const in a block scope: ALWAYS create a new local to shadow outer.
+                    // At script top level (depth 0): use the original behavior to preserve
+                    // upvalue capture for closures at script scope.
+                    if self.current_scope().depth > 0 {
+                        // Block scope: new local (enables proper shadowing)
+                        let slot = self.define_local(name);
                         self.emit_u16(Op::local_set, slot);
                         self.emit(Op::drop);
+                    } else {
+                        // Top level (depth 0): check if already defined, reuse if so
+                        match self.resolve_variable(name) {
+                            VarResolution::Local(_) => {
+                                let slot = self.current_scope().resolve_local(name).unwrap();
+                                self.emit_u16(Op::local_set, slot);
+                                self.emit(Op::drop);
+                            }
+                            _ => {
+                                if self.scopes.len() == 1 {
+                                    self.emit_global_set(name);
+                                    self.emit(Op::drop);
+                                } else {
+                                    let slot = self.define_local(name);
+                                    self.emit_u16(Op::local_set, slot);
+                                    self.emit(Op::drop);
+                                }
+                            }
+                        }
                     }
-                    _ => {
-                        if self.scopes.len() == 1 && self.current_scope().depth == 0 && kind == VarKind::Var {
-                            self.emit_global_set(name);
-                            self.emit(Op::drop);
-                        } else {
-                            let slot = self.define_local(name);
+                } else {
+                    // var: reuse existing local if found (var doesn't create block scope)
+                    match self.resolve_variable(name) {
+                        VarResolution::Local(_) => {
+                            let slot = self.current_scope().resolve_local(name).unwrap();
                             self.emit_u16(Op::local_set, slot);
                             self.emit(Op::drop);
+                        }
+                        _ => {
+                            if self.scopes.len() == 1 && self.current_scope().depth == 0 {
+                                self.emit_global_set(name);
+                                self.emit(Op::drop);
+                            } else {
+                                let slot = self.define_local(name);
+                                self.emit_u16(Op::local_set, slot);
+                                self.emit(Op::drop);
+                            }
                         }
                     }
                 }
@@ -2240,6 +2400,10 @@ impl Compiler {
                 self.patch_jump(skip);
             }
         }
+
+        // Hoist var declarations: scan body for `var` and pre-define at function scope.
+        // Per JS spec, `var` is visible throughout the entire function, not just the block.
+        self.hoist_vars(&func.body);
 
         for stmt in &func.body { self.compile_statement(stmt)?; }
         common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
@@ -2967,6 +3131,54 @@ impl Compiler {
                     return Ok(Some(()));
                 }
             }
+            // Map/Set methods — route to host collections
+            "clear" => {
+                self.compile_expression(object)?;
+                let idx = self.import("vybe:collections", "collClear");
+                self.emit_host_call(idx, 1);
+                return Ok(Some(()));
+            }
+            "delete" => {
+                self.compile_expression(object)?;
+                if let Some(arg) = args.first() { self.compile_expression(arg)?; }
+                let idx = self.import("vybe:collections", "collDelete");
+                self.emit_host_call(idx, 2);
+                return Ok(Some(()));
+            }
+            "has" => {
+                self.compile_expression(object)?;
+                if let Some(arg) = args.first() { self.compile_expression(arg)?; }
+                let idx = self.import("vybe:collections", "collHas");
+                self.emit_host_call(idx, 2);
+                return Ok(Some(()));
+            }
+            "get" if !is_class_instance => {
+                self.compile_expression(object)?;
+                if let Some(arg) = args.first() { self.compile_expression(arg)?; }
+                let idx = self.import("vybe:collections", "mapGet");
+                self.emit_host_call(idx, 2);
+                return Ok(Some(()));
+            }
+            "set" if !is_class_instance && args.len() == 2 => {
+                self.compile_expression(object)?;
+                self.compile_expression(&args[0])?;
+                self.compile_expression(&args[1])?;
+                let idx = self.import("vybe:collections", "mapSet");
+                self.emit_host_call(idx, 3);
+                return Ok(Some(()));
+            }
+            "keys" if !is_class_instance && args.is_empty() => {
+                self.compile_expression(object)?;
+                let idx = self.import("vybe:collections", "mapKeys");
+                self.emit_host_call(idx, 1);
+                return Ok(Some(()));
+            }
+            "values" if !is_class_instance && args.is_empty() => {
+                self.compile_expression(object)?;
+                let idx = self.import("vybe:collections", "mapValues");
+                self.emit_host_call(idx, 1);
+                return Ok(Some(()));
+            }
             "entries" if !is_class_instance => {
                 // arr.entries() → [[0, arr[0]], [1, arr[1]], ...]
                 // Use enumerate pattern
@@ -2990,6 +3202,101 @@ impl Compiler {
         }
 
         Ok(None)
+    }
+
+    /// Check if a statement contains any closure/arrow function expressions.
+    fn stmt_contains_closure(&self, stmt: &Statement) -> bool {
+        match stmt {
+            Statement::Block(stmts) => stmts.iter().any(|s| self.stmt_contains_closure(s)),
+            Statement::Expression(expr) => self.expr_contains_closure(expr),
+            Statement::VariableDeclaration { declarations, .. } => {
+                declarations.iter().any(|d| d.init.as_ref().map_or(false, |e| self.expr_contains_closure(e)))
+            }
+            Statement::If { consequent, alternate, test, .. } => {
+                self.expr_contains_closure(test)
+                || self.stmt_contains_closure(consequent)
+                || alternate.as_ref().map_or(false, |a| self.stmt_contains_closure(a))
+            }
+            Statement::Return(Some(expr)) => self.expr_contains_closure(expr),
+            _ => false,
+        }
+    }
+
+    fn expr_contains_closure(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::ArrowFunction { .. } | Expression::Function(_) => true,
+            Expression::Call { callee, arguments, .. } => {
+                self.expr_contains_closure(callee)
+                || arguments.iter().any(|a| self.expr_contains_closure(a))
+            }
+            Expression::Member { object, .. } => self.expr_contains_closure(object),
+            Expression::Array(elems) => elems.iter().any(|e| self.expr_contains_closure(e)),
+            Expression::Assignment { right, .. } => self.expr_contains_closure(right),
+            _ => false,
+        }
+    }
+
+    /// Hoist `var` declarations: scan statements recursively and pre-define
+    /// all `var` names as locals at the current (function) scope depth.
+    /// Per JS spec, `var` is hoisted to the top of the enclosing function.
+    fn hoist_vars(&mut self, stmts: &[Statement]) {
+        for stmt in stmts {
+            self.hoist_vars_stmt(stmt);
+        }
+    }
+
+    fn hoist_vars_stmt(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::VariableDeclaration { kind, declarations } if *kind == VarKind::Var => {
+                for decl in declarations {
+                    if let BindingPattern::Identifier(name) = &decl.pattern {
+                        // Only define if not already defined at this scope
+                        if self.current_scope().resolve_local(name).is_none() {
+                            self.define_local(name);
+                        }
+                    }
+                }
+            }
+            // Recurse into blocks and control flow
+            Statement::Block(stmts) => self.hoist_vars(stmts),
+            Statement::If { consequent, alternate, .. } => {
+                self.hoist_vars_stmt(consequent);
+                if let Some(alt) = alternate { self.hoist_vars_stmt(alt); }
+            }
+            Statement::While { body, .. } | Statement::DoWhile { body, .. } => {
+                self.hoist_vars_stmt(body);
+            }
+            Statement::For { init, body, .. } => {
+                if let Some(ForInit::VarDecl(VarKind::Var, decls)) = init {
+                    for decl in decls {
+                        if let BindingPattern::Identifier(name) = &decl.pattern {
+                            if self.current_scope().resolve_local(name).is_none() {
+                                self.define_local(name);
+                            }
+                        }
+                    }
+                }
+                self.hoist_vars_stmt(body);
+            }
+            Statement::ForIn { body, .. } | Statement::ForOf { body, .. } => {
+                self.hoist_vars_stmt(body);
+            }
+            Statement::Switch { cases, .. } => {
+                for case in cases {
+                    self.hoist_vars(&case.consequent);
+                }
+            }
+            Statement::Try { block, handler, finalizer } => {
+                self.hoist_vars(block);
+                if let Some(h) = handler { self.hoist_vars(&h.body); }
+                if let Some(f) = finalizer { self.hoist_vars(f); }
+            }
+            Statement::Labeled { body, .. } => {
+                self.hoist_vars_stmt(body);
+            }
+            // Don't recurse into function declarations (they have their own scope)
+            _ => {}
+        }
     }
 }
 

@@ -263,6 +263,8 @@ pub enum Expression {
 
     // Functions as expressions
     Function(FunctionDecl),
+    /// Class expression: `let C = class { ... }`
+    ClassExpression(ClassDecl),
     ArrowFunction {
         params: Vec<Param>,
         body: ArrowBody,

@@ -562,7 +562,6 @@ fn list_add_count() {
 }
 
 #[test]
-#[ignore = "known bug"]
 fn list_contains() {
     let out = run_cs(r#"
         var list = new List<string>();

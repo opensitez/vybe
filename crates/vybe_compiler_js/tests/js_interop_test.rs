@@ -806,10 +806,7 @@ fn test_e51_invoke_after_class_definition() {
 // ============================================================
 
 // F52. Block scope: let in if doesn't leak
-// Known bug: `let` inside a block does not create a new scope — the inner `x` shadows the outer
-// for the rest of the function. Expected: ["inner", "outer"], Actual: ["inner", "inner"].
 #[test]
-#[ignore = "known bug"]
 fn test_f52_block_scope_let_doesnt_leak() {
     let code = r#"
         let x = "outer";
@@ -827,7 +824,6 @@ fn test_f52_block_scope_let_doesnt_leak() {
 // Known bug: `var` inside a block within a function is not hoisted to function scope.
 // Expected: 42, Actual: "undefined" (var is treated like let).
 #[test]
-#[ignore = "known bug"]
 fn test_f53_var_hoisting() {
     let code = r#"
         function test() {
@@ -843,9 +839,7 @@ fn test_f53_var_hoisting() {
 
 // F54. Closure over loop variable (let creates new binding per iteration)
 // Known bug: `let` in a for-loop does not create a fresh binding per iteration.
-// All closures capture the same variable. Expected: "0 1 2 3 4", Actual: "5 5 5 5 5".
 #[test]
-#[ignore = "known bug"]
 fn test_f54_closure_over_loop_let() {
     let code = r#"
         let fns = [];

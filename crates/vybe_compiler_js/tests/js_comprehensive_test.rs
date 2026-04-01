@@ -1139,3 +1139,4 @@ fn test_math_pi() {
     let result = run_js_one("console.log(Math.PI)");
     assert!(result.starts_with("3.14159"));
 }
+

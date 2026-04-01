@@ -2412,9 +2412,11 @@ impl Compiler {
                 return Ok(());
             }
             "contains" => {
-                self.compile_expression(obj)?;
+                // array_contains: stack = [needle, haystack] → [bool]
+                // C# calls: haystack.Contains(needle) — compile needle first, then haystack
                 if let Some(arg) = args.first() { self.compile_expression(arg)?; }
-                self.emit(Op::str_contains);
+                self.compile_expression(obj)?;
+                self.emit(Op::array_contains);
                 return Ok(());
             }
             "replace" => {
