@@ -299,3 +299,51 @@ fn match_with_guard() {
 #[test] fn frozenset_basic() { compile_ok("s = frozenset([1, 2, 3])\n"); }
 #[test] fn vars_basic() { compile_ok("class C:\n    def __init__(self):\n        self.x = 1\nc = C()\nd = vars(c)\n"); }
 #[test] fn dir_basic() { compile_ok("x = {'a': 1, 'b': 2}\nkeys = dir(x)\n"); }
+
+// ── math module ────────────────────────────────────────────
+
+#[test] fn math_sqrt() { compile_ok("import math\nx = math.sqrt(16)\n"); }
+#[test] fn math_pi() { compile_ok("import math\narea = math.pi * r * r\n"); }
+#[test] fn math_sin_cos() { compile_ok("import math\nx = math.sin(0.5)\ny = math.cos(0.5)\n"); }
+#[test] fn math_log() { compile_ok("import math\nx = math.log(100)\n"); }
+#[test] fn math_floor_ceil() { compile_ok("import math\nx = math.floor(3.7)\ny = math.ceil(3.2)\n"); }
+#[test] fn math_isnan() { compile_ok("import math\nb = math.isnan(float('nan'))\n"); }
+#[test] fn math_inf() { compile_ok("import math\nx = math.inf\n"); }
+#[test] fn math_e() { compile_ok("import math\nx = math.e\n"); }
+
+// ── json module ────────────────────────────────────────────
+
+#[test] fn json_loads() { compile_ok("import json\ndata = json.loads('{\"a\": 1}')\n"); }
+#[test] fn json_dumps() { compile_ok("import json\ns = json.dumps({'a': 1})\n"); }
+
+// ── random module ──────────────────────────────────────────
+
+#[test] fn random_random() { compile_ok("import random\nx = random.random()\n"); }
+#[test] fn random_randint() { compile_ok("import random\nn = random.randint(1, 10)\n"); }
+#[test] fn random_choice() { compile_ok("import random\nx = random.choice([1, 2, 3])\n"); }
+
+// ── re module ──────────────────────────────────────────────
+
+#[test] fn re_search() { compile_ok("import re\nm = re.search(r'\\d+', 'abc123')\n"); }
+#[test] fn re_findall() { compile_ok("import re\nmatches = re.findall(r'\\d+', 'a1b2c3')\n"); }
+#[test] fn re_sub() { compile_ok("import re\ns = re.sub(r'\\d', 'X', 'a1b2')\n"); }
+
+// ── os module ──────────────────────────────────────────────
+
+#[test] fn os_getcwd() { compile_ok("import os\ncwd = os.getcwd()\n"); }
+
+// ── Types: defaultdict, Counter, bytes ─────────────────────
+
+#[test] fn defaultdict_basic() { compile_ok("d = defaultdict(int)\n"); }
+#[test] fn defaultdict_no_arg() { compile_ok("d = defaultdict()\n"); }
+#[test] fn counter_from_list() { compile_ok("c = Counter([1, 1, 2, 3, 3, 3])\n"); }
+#[test] fn counter_empty() { compile_ok("c = Counter()\n"); }
+#[test] fn bytes_from_int() { compile_ok("b = bytes(10)\n"); }
+#[test] fn bytes_empty() { compile_ok("b = bytes()\n"); }
+#[test] fn bytearray_basic() { compile_ok("b = bytearray(10)\n"); }
+
+// ── Enum class ─────────────────────────────────────────────
+
+#[test] fn enum_class() {
+    compile_ok("class Color:\n    RED = 1\n    GREEN = 2\n    BLUE = 3\nc = Color()\n");
+}

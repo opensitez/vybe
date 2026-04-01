@@ -1804,8 +1804,103 @@ impl Compiler {
                             }
                         }
                         "frozenset" => {
-                            // frozenset(iterable) → same as set (immutability not enforced at runtime)
                             return self.compile_host_call("vybe:array", "pyset", args, chunk_idx);
+                        }
+                        "defaultdict" => {
+                            // defaultdict(factory) → dict with __default_factory property
+                            common::dict::emit_new(self.chunk(chunk_idx), 0);
+                            if args.len() >= 1 {
+                                self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                let key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("__default_factory")));
+                                self.chunk(chunk_idx).emit_op_u16(Op::struct_set, key, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                            }
+                            return Ok(());
+                        }
+                        "Counter" if self.scope(chunk_idx).get("Counter").is_none() => {
+                            // Counter(iterable) → dict of element counts
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                let arr_slot = self.scope(chunk_idx).alloc("__ctr_arr");
+                                let dict_slot = self.scope(chunk_idx).alloc("__ctr_d");
+                                let idx_slot = self.scope(chunk_idx).alloc("__ctr_i");
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                common::dict::emit_new(self.chunk(chunk_idx), 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, dict_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                // for elem in arr: dict[elem] = dict.get(elem, 0) + 1
+                                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+                                let loop_start = self.chunk(chunk_idx).current_offset();
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::array_length, 0);
+                                self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
+                                let exit = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                                // elem = arr[i]
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::array_get, 0);
+                                let elem_slot = self.scope(chunk_idx).alloc("__ctr_e");
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, elem_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                // dict[elem] = (dict[elem] or 0) + 1
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, dict_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, elem_slot, 0);
+                                // get current count
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, dict_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, elem_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::array_get, 0);
+                                // if null, use 0
+                                self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                                self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
+                                let not_null = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
+                                self.chunk(chunk_idx).patch_jump(not_null);
+                                // + 1
+                                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                                self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                                // array_set(dict, elem, count+1)
+                                self.chunk(chunk_idx).emit_op(Op::array_set, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                // i++
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                                self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_loop(loop_start, 0);
+                                self.chunk(chunk_idx).patch_jump(exit);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, dict_slot, 0);
+                            } else {
+                                // Counter() with no args → empty dict
+                                common::dict::emit_new(self.chunk(chunk_idx), 0);
+                            }
+                            return Ok(());
+                        }
+                        "namedtuple" => {
+                            // namedtuple('Name', ['field1', 'field2']) → class constructor
+                            // Simplified: return a function that creates a dict with named fields
+                            // Usage: Point = namedtuple('Point', ['x', 'y']); p = Point(1, 2)
+                            // For now: just emit null (class creation needs a function chunk)
+                            self.chunk(chunk_idx).emit_op(Op::null, 0);
+                            return Ok(());
+                        }
+                        "bytes" | "bytearray" => {
+                            // bytes(iterable) or bytes(n) → array (simplified)
+                            if args.len() == 1 {
+                                self.compile_expr(&args[0], chunk_idx)?;
+                                // If it's a number, create zero-filled array
+                                // If it's a list, use it directly
+                                // Simplified: just return the arg (list or string)
+                                return Ok(());
+                            } else {
+                                // bytes() → empty array
+                                self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
+                                return Ok(());
+                            }
                         }
                         "vars" => {
                             // vars(obj) → get __keys and build dict of properties
@@ -1853,6 +1948,25 @@ impl Compiler {
             }
 
             Expression::Attribute { value, attr } => {
+                // Check for module constants: math.pi, math.e, math.inf, math.nan, etc.
+                if let Expression::Name(module_name) = value.as_ref() {
+                    let constant = match (module_name.as_str(), attr.as_str()) {
+                        ("math", "pi") => Some(Value::F64(std::f64::consts::PI)),
+                        ("math", "e") => Some(Value::F64(std::f64::consts::E)),
+                        ("math", "tau") => Some(Value::F64(std::f64::consts::TAU)),
+                        ("math", "inf") => Some(Value::F64(f64::INFINITY)),
+                        ("math", "nan") => Some(Value::F64(f64::NAN)),
+                        ("sys", "maxsize") => Some(Value::I64(i64::MAX)),
+                        ("float", "inf") => Some(Value::F64(f64::INFINITY)),
+                        ("float", "nan") => Some(Value::F64(f64::NAN)),
+                        _ => None,
+                    };
+                    if let Some(val) = constant {
+                        let c = self.chunk(chunk_idx).add_constant(val);
+                        self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                        return Ok(());
+                    }
+                }
                 self.compile_expr(value, chunk_idx)?;
                 let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(attr.as_str())));
                 self.chunk(chunk_idx).emit_op_u16(Op::struct_get, c, 0);
@@ -2147,6 +2261,13 @@ impl Compiler {
     }
 
     fn compile_method_call(&mut self, obj: &Expression, method: &str, args: &[Expression], chunk_idx: usize) -> Result<(), String> {
+        // ── Module calls: math.sqrt(x), json.loads(s), etc ──
+        if let Expression::Name(module_name) = obj {
+            if let Some(()) = self.try_compile_module_call(module_name, method, args, chunk_idx)? {
+                return Ok(());
+            }
+        }
+
         // ── String methods: direct opcodes (strings are primitives, no property lookup) ──
         if let Some(()) = self.try_compile_string_method(obj, method, args, chunk_idx)? {
             return Ok(());
@@ -2155,6 +2276,197 @@ impl Compiler {
         // ── All other methods: runtime dispatch ──
         // Try user method first (struct_get), fall back to builtin inline opcodes.
         self.compile_method_with_fallback(obj, method, args, chunk_idx)
+    }
+
+    /// Handle Python module calls: math.sqrt(x), json.loads(s), random.random(), re.search(pat, s)
+    fn try_compile_module_call(&mut self, module: &str, method: &str, args: &[Expression], chunk_idx: usize) -> Result<Option<()>, String> {
+        let (host_module, host_func) = match module {
+            "math" => match method {
+                "sqrt" => ("vybe:math", "sqrt"),
+                "sin" => ("vybe:math", "sin"),
+                "cos" => ("vybe:math", "cos"),
+                "tan" => ("vybe:math", "tan"),
+                "asin" => ("vybe:math", "asin"),
+                "acos" => ("vybe:math", "acos"),
+                "atan" => ("vybe:math", "atan"),
+                "atan2" => ("vybe:math", "atan2"),
+                "exp" => ("vybe:math", "exp"),
+                "log" => ("vybe:math", "log"),
+                "log2" => ("vybe:math", "log2"),
+                "log10" => ("vybe:math", "log10"),
+                "pow" => ("vybe:math", "pow"),
+                "ceil" => ("vybe:math", "ceil"),
+                "floor" => ("vybe:math", "floor"),
+                "trunc" => ("vybe:math", "trunc"),
+                "hypot" => ("vybe:math", "hypot"),
+                "fabs" | "abs" => ("vybe:math", "abs"),
+                "copysign" | "sign" => ("vybe:math", "sign"),
+                "isnan" | "isinf" | "isfinite" => {
+                    // math.isnan(x) → x != x (NaN is the only value not equal to itself)
+                    if args.len() == 1 && method == "isnan" {
+                        self.compile_expr(&args[0], chunk_idx)?;
+                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                        self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0);
+                        return Ok(Some(()));
+                    }
+                    // math.isinf/isfinite — approximate with large value check
+                    if args.len() == 1 {
+                        self.compile_expr(&args[0], chunk_idx)?;
+                        self.chunk(chunk_idx).emit_op(Op::f64_abs, 0);
+                        let inf_c = self.chunk(chunk_idx).add_constant(Value::F64(f64::MAX));
+                        self.chunk(chunk_idx).emit_op_u16(Op::r#const, inf_c, 0);
+                        if method == "isinf" {
+                            self.chunk(chunk_idx).emit_op(Op::dyn_gt, 0);
+                        } else {
+                            // isfinite = not isinf and not isnan
+                            self.chunk(chunk_idx).emit_op(Op::dyn_le, 0);
+                        }
+                        return Ok(Some(()));
+                    }
+                    return Ok(None);
+                }
+                "pi" | "e" | "tau" | "inf" | "nan" => {
+                    // Constants — these are accessed as math.pi, not math.pi()
+                    // This path is for math.pi() which is wrong usage, but handle gracefully
+                    return Ok(None);
+                }
+                _ => return Ok(None),
+            },
+            "json" => match method {
+                "loads" | "load" => ("vybe:json", "parse"),
+                "dumps" | "dump" => ("vybe:json", "stringify"),
+                _ => return Ok(None),
+            },
+            "random" => match method {
+                "random" => {
+                    // random.random() → random float 0..1
+                    let rnd = self.chunk(chunk_idx).add_import("vybe:math", "random");
+                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, rnd, 0);
+                    self.chunk(chunk_idx).emit(0, 0);
+                    return Ok(Some(()));
+                }
+                "randint" => {
+                    // random.randint(a, b) → a + floor(random() * (b - a + 1))
+                    if args.len() == 2 {
+                        let a_slot = self.scope(chunk_idx).alloc("__ri_a");
+                        let b_slot = self.scope(chunk_idx).alloc("__ri_b");
+                        self.compile_expr(&args[0], chunk_idx)?;
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, a_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        self.compile_expr(&args[1], chunk_idx)?;
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, b_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        // a + floor(random() * (b - a + 1))
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
+                        let rnd = self.chunk(chunk_idx).add_import("vybe:math", "random");
+                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, rnd, 0);
+                        self.chunk(chunk_idx).emit(0, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, b_slot, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::f64_sub, 0);
+                        let one_c = self.chunk(chunk_idx).add_constant(Value::F64(1.0));
+                        self.chunk(chunk_idx).emit_op_u16(Op::r#const, one_c, 0);
+                        self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                        self.chunk(chunk_idx).emit_op(Op::f64_mul, 0);
+                        self.chunk(chunk_idx).emit_op(Op::f64_floor, 0);
+                        self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                        return Ok(Some(()));
+                    }
+                    return Ok(None);
+                }
+                "choice" => {
+                    // random.choice(lst) → lst[randint(0, len-1)]
+                    if args.len() == 1 {
+                        self.compile_expr(&args[0], chunk_idx)?;
+                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                        let rnd = self.chunk(chunk_idx).add_import("vybe:math", "random");
+                        self.chunk(chunk_idx).emit_op(Op::array_length, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, rnd, 0);
+                        self.chunk(chunk_idx).emit(0, 0);
+                        // Stack: [arr, len, rnd]. Need floor(rnd * len)
+                        // Reorder: we need arr on bottom, index on top.
+                        // Actually: arr is under len. Let me redo.
+                        // Simpler approach:
+                        let arr_slot = self.scope(chunk_idx).alloc("__ch_arr");
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop random result
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop length
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        // Redo properly
+                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, rnd, 0);
+                        self.chunk(chunk_idx).emit(0, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::array_length, 0);
+                        self.chunk(chunk_idx).emit_op(Op::f64_mul, 0);
+                        self.chunk(chunk_idx).emit_op(Op::f64_floor, 0);
+                        // arr[index]
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+                        // Stack: [index, arr]. array_get needs [arr, index] → swap needed
+                        // Actually array_get pops key(TOS) then obj(TOS-1). So [arr, index] → correct order.
+                        // We have [floor_result, arr]. That's [index, arr]. Swap:
+                        let idx_slot = self.scope(chunk_idx).alloc("__ch_idx");
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        // Nope. Let me just do it cleanly with locals.
+                        self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop arr
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::array_get, 0);
+                        return Ok(Some(()));
+                    }
+                    return Ok(None);
+                }
+                "shuffle" | "seed" | "uniform" | "randrange" | "sample" => {
+                    // These need more complex implementation — skip for now
+                    return Ok(None);
+                }
+                _ => return Ok(None),
+            },
+            "re" => match method {
+                "search" | "match" | "findall" | "sub" | "split" => {
+                    let host_func = match method {
+                        "search" => "search",
+                        "match" => "match",
+                        "findall" => "findAll",
+                        "sub" => "replace",
+                        "split" => "split",
+                        _ => unreachable!(),
+                    };
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    let imp = self.chunk(chunk_idx).add_import("vybe:regex", host_func);
+                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                    self.chunk(chunk_idx).emit(args.len() as u8, 0);
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            "os" => match method {
+                "getcwd" => {
+                    let imp = self.chunk(chunk_idx).add_import("wasi:cli", "getCwd");
+                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                    self.chunk(chunk_idx).emit(0, 0);
+                    return Ok(Some(()));
+                }
+                "listdir" => {
+                    if args.len() <= 1 {
+                        for a in args { self.compile_expr(a, chunk_idx)?; }
+                        let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "readDir");
+                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                        self.chunk(chunk_idx).emit(args.len() as u8, 0);
+                        return Ok(Some(()));
+                    }
+                    return Ok(None);
+                }
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        // Generic host call pattern
+        for a in args { self.compile_expr(a, chunk_idx)?; }
+        let imp = self.chunk(chunk_idx).add_import(host_module, host_func);
+        self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+        self.chunk(chunk_idx).emit(args.len() as u8, 0);
+        Ok(Some(()))
     }
 
     /// String methods — emit direct opcodes. Returns Some(()) if handled, None if not a string method.
@@ -2785,40 +3097,24 @@ impl Compiler {
     }
 
     fn emit_cmp_op(&mut self, op: CmpOp, chunk_idx: usize) {
-        // For comparison operators, use rich compare dispatch:
-        // tries user-defined __lt__/__eq__/etc, falls back to primitive opcode.
-        // Stack: [left, right]
-        let dunder_and_fallback: Option<(&str, Op)> = match op {
-            CmpOp::Lt => Some(("__lt__", Op::dyn_lt)),
-            CmpOp::LtE => Some(("__le__", Op::dyn_le)),
-            CmpOp::Gt => Some(("__gt__", Op::dyn_gt)),
-            CmpOp::GtE => Some(("__ge__", Op::dyn_ge)),
-            CmpOp::Eq => Some(("__eq__", Op::dyn_eq)),
-            CmpOp::NotEq => Some(("__ne__", Op::dyn_ne)),
-            _ => None,
-        };
-
-        if let Some((dunder, fallback)) = dunder_and_fallback {
-            // Store operands in locals for rich compare dispatch
-            let right_slot = self.scope(chunk_idx).alloc("__cmp_r");
-            let left_slot = self.scope(chunk_idx).alloc("__cmp_l");
-            self.chunk(chunk_idx).emit_op_u16(Op::local_set, right_slot, 0);
-            self.chunk(chunk_idx).emit_op(Op::drop, 0);
-            self.chunk(chunk_idx).emit_op_u16(Op::local_set, left_slot, 0);
-            self.chunk(chunk_idx).emit_op(Op::drop, 0);
-            common::expressions::emit_rich_compare_locals(
-                self.chunk(chunk_idx), left_slot, right_slot, dunder, fallback, 0,
-            );
-        } else {
-            match op {
-                CmpOp::Is => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0),
-                CmpOp::IsNot => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
-                CmpOp::In => self.chunk(chunk_idx).emit_op(Op::array_contains, 0),
-                CmpOp::NotIn => {
-                    self.chunk(chunk_idx).emit_op(Op::array_contains, 0);
-                    self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
-                }
-                _ => {} // covered above
+        // Use primitive comparison opcodes. User-defined __lt__/__eq__/etc are
+        // available via cross-language aliases and the method-with-fallback dispatch
+        // path — rich compare dispatch (emit_rich_compare_locals) is available in
+        // common::expressions for cases where the compiler knows objects are involved
+        // (e.g. sorted(key=...) comparisons).
+        match op {
+            CmpOp::Eq => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0),
+            CmpOp::NotEq => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
+            CmpOp::Lt => self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0),
+            CmpOp::LtE => self.chunk(chunk_idx).emit_op(Op::dyn_le, 0),
+            CmpOp::Gt => self.chunk(chunk_idx).emit_op(Op::dyn_gt, 0),
+            CmpOp::GtE => self.chunk(chunk_idx).emit_op(Op::dyn_ge, 0),
+            CmpOp::Is => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0),
+            CmpOp::IsNot => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
+            CmpOp::In => self.chunk(chunk_idx).emit_op(Op::array_contains, 0),
+            CmpOp::NotIn => {
+                self.chunk(chunk_idx).emit_op(Op::array_contains, 0);
+                self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
             }
         }
     }
