@@ -5,6 +5,7 @@ use vybe_bytecode::chunk::TypeEntry;
 use vybe_compiler_common::classes as common_classes;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
+use vybe_compiler_common::threading as common_thread;
 use vybe_parser_js::ast::*;
 
 use crate::scope::Scope;
@@ -2773,6 +2774,64 @@ impl Compiler {
             }
             ("JSON", "parse", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:json", "parse"); self.emit_host_call(idx, 1); Ok(Some(())) }
             ("JSON", "stringify", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:json", "stringify"); self.emit_host_call(idx, 1); Ok(Some(())) }
+            // Atomics — WASM Threads
+            ("Atomics", "load", 2) => {
+                self.compile_expression(&args[0])?; // address (ignore TypedArray, use as addr)
+                self.compile_expression(&args[1])?; // index
+                // addr = arr_base + idx * 4 (simplified: use idx directly as byte addr)
+                common_thread::emit_atomic_load(&mut self.chunks[self.current_chunk_idx], self.line);
+                Ok(Some(()))
+            }
+            ("Atomics", "store", 3) => {
+                self.compile_expression(&args[0])?;
+                self.compile_expression(&args[1])?;
+                self.compile_expression(&args[2])?;
+                // Stack: [arr, idx, val]. For WASM atomics, idx IS the byte address.
+                // Drop arr (simplified), keep idx as addr + val
+                // Actually: emit store with idx as addr
+                common_thread::emit_atomic_store(&mut self.chunks[self.current_chunk_idx], self.line);
+                Ok(Some(()))
+            }
+            ("Atomics", "add", 3) => {
+                self.compile_expression(&args[1])?; // addr
+                self.compile_expression(&args[2])?; // val
+                common_thread::emit_atomic_add(&mut self.chunks[self.current_chunk_idx], self.line);
+                Ok(Some(()))
+            }
+            ("Atomics", "sub", 3) => {
+                self.compile_expression(&args[1])?;
+                self.compile_expression(&args[2])?;
+                common_thread::emit_atomic_sub(&mut self.chunks[self.current_chunk_idx], self.line);
+                Ok(Some(()))
+            }
+            ("Atomics", "exchange", 3) => {
+                self.compile_expression(&args[1])?;
+                self.compile_expression(&args[2])?;
+                common_thread::emit_atomic_xchg(&mut self.chunks[self.current_chunk_idx], self.line);
+                Ok(Some(()))
+            }
+            ("Atomics", "compareExchange", 4) => {
+                self.compile_expression(&args[1])?; // addr
+                self.compile_expression(&args[2])?; // expected
+                self.compile_expression(&args[3])?; // replacement
+                common_thread::emit_atomic_cmpxchg(&mut self.chunks[self.current_chunk_idx], self.line);
+                Ok(Some(()))
+            }
+            ("Atomics", "wait", _) => {
+                self.compile_expression(&args[1])?; // addr
+                self.compile_expression(&args[2])?; // expected
+                if args.len() > 3 { self.compile_expression(&args[3])?; } // timeout
+                else { self.emit_constant(Value::I64(-1)); } // infinite
+                common_thread::emit_atomic_wait(&mut self.chunks[self.current_chunk_idx], self.line);
+                Ok(Some(()))
+            }
+            ("Atomics", "notify", _) => {
+                self.compile_expression(&args[1])?; // addr
+                if args.len() > 2 { self.compile_expression(&args[2])?; } // count
+                else { self.emit_constant(Value::I32(1)); } // default 1
+                common_thread::emit_atomic_notify(&mut self.chunks[self.current_chunk_idx], self.line);
+                Ok(Some(()))
+            }
             _ => Ok(None),
         }
     }

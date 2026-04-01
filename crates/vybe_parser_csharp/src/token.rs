@@ -24,7 +24,7 @@ pub enum TokenKind {
     If, Else, For, ForEach, In, While, Do, Switch, Case, Default,
     Return, Break, Continue, Throw, Try, Catch, Finally,
     Var, Int, String_, Double, Float, Bool, Char, Long, Byte, Object,
-    Is, As, TypeOf, NameOf, Async, Await, Params, Ref, Out, Event,
+    Is, As, TypeOf, NameOf, Async, Await, Params, Ref, Out, Event, Lock,
 
     // Operators
     Plus, Minus, Star, Slash, Percent,

@@ -244,6 +244,7 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 "ref" => TokenKind::Ref,
                 "out" => TokenKind::Out,
                 "event" => TokenKind::Event,
+                "lock" => TokenKind::Lock,
                 _ => TokenKind::Identifier(word),
             };
             tokens.push(Token { kind, line });

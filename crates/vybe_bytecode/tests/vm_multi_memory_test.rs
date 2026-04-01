@@ -84,7 +84,7 @@ fn memory_copy_cross_between_memories() {
     let mut vm = VM::new();
     // Default memory with data
     vm.memory.resize(65536, 0);
-    vm.memory[0..4].copy_from_slice(&99i32.to_le_bytes());
+    vm.memory.store_i32(0, 99);
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 2;

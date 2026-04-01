@@ -2459,6 +2459,29 @@ impl Compiler {
                 }
                 _ => return Ok(None),
             },
+            // threading module: threading.Thread(target=fn).start(), threading.Lock()
+            "threading" => match method {
+                "Thread" => {
+                    // threading.Thread(target=fn) → create thread handle
+                    // The target function is the first positional arg or target= keyword
+                    if args.len() >= 1 {
+                        self.compile_expr(&args[0], chunk_idx)?;
+                        common::threading::emit_thread_spawn(self.chunk(chunk_idx), 0);
+                        return Ok(Some(()));
+                    }
+                    return Ok(None);
+                }
+                "Lock" => {
+                    // threading.Lock() → allocate a lock word in shared memory
+                    // Returns a memory address (i32) for use with acquire/release
+                    // Simplified: allocate 4 bytes at end of memory, return address
+                    let alloc_fn = self.chunk(chunk_idx).add_import("wasi:thread", "allocLock");
+                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, alloc_fn, 0);
+                    self.chunk(chunk_idx).emit(0, 0);
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
             _ => return Ok(None),
         };
         // Generic host call pattern
@@ -2733,6 +2756,27 @@ impl Compiler {
             "reverse" => {
                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
                 common::collections::emit_reverse(self.chunk(chunk_idx), 0);
+            }
+            // Threading: lock.acquire() / lock.release()
+            "acquire" => {
+                // Lock acquire — obj_tmp holds the lock address
+                common::threading::emit_lock_acquire(self.chunk(chunk_idx), obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::null, 0); // return None
+            }
+            "release" => {
+                // Lock release
+                common::threading::emit_lock_release(self.chunk(chunk_idx), obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::null, 0);
+            }
+            "start" => {
+                // thread.start() — obj_tmp holds thread handle, just return it
+                // Thread was already spawned by threading.Thread(target=fn)
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+            }
+            "join" => {
+                // thread.join() — wait for thread to complete
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                common::threading::emit_thread_join(self.chunk(chunk_idx), 0);
             }
             // Cross-language compat: Dart/C# .contains(), JS .includes()
             "contains" | "includes" => {

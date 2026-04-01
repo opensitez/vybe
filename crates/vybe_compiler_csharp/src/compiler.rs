@@ -14,6 +14,7 @@ use vybe_bytecode::{Chunk, Op, Value};
 use vybe_bytecode::chunk::TypeEntry;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
+use vybe_compiler_common::threading as common_thread;
 use vybe_parser_csharp::ast::*;
 
 // ============================================================
@@ -1316,6 +1317,24 @@ impl Compiler {
                 let _popped = self.current_scope_mut().end_scope();
             }
 
+            Statement::Lock { lock_object, body } => {
+                self.current_scope_mut().begin_scope();
+                // Compile the lock object expression (should evaluate to a memory address i32)
+                self.compile_expression(lock_object)?;
+                let addr_slot = self.define_local("__lock_addr");
+                self.emit_u16(Op::local_set, addr_slot);
+                self.emit(Op::drop);
+                // Acquire lock
+                let line = self.line;
+                common_thread::emit_lock_acquire(&mut self.chunks[self.current_chunk_idx], addr_slot, line);
+                // Compile body
+                for s in body { self.compile_statement(s)?; }
+                // Release lock
+                let line = self.line;
+                common_thread::emit_lock_release(&mut self.chunks[self.current_chunk_idx], addr_slot, line);
+                let _popped = self.current_scope_mut().end_scope();
+            }
+
             Statement::Block(stmts) => {
                 // If all children are LocalDecl, this is a multi-variable decl — don't scope
                 let all_decls = stmts.iter().all(|s| matches!(s, Statement::LocalDecl { .. }));
@@ -2183,6 +2202,52 @@ impl Compiler {
                             let idx = self.import("vybe:math", &func_lower);
                             self.emit_host_call(idx, args.len() as u8);
                             return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Task.Run(() => fn()) → thread spawn
+                if parts.len() == 2 && parts[0].eq_ignore_ascii_case("Task") && parts[1].eq_ignore_ascii_case("Run") {
+                    if let Some(arg) = args.first() {
+                        self.compile_expression(arg)?;
+                        let line = self.line;
+                        common_thread::emit_thread_spawn(&mut self.chunks[self.current_chunk_idx], line);
+                        return Ok(());
+                    }
+                }
+
+                // Interlocked.Add(ref x, val) → atomic add
+                if parts.len() == 2 && parts[0].eq_ignore_ascii_case("Interlocked") {
+                    let method_lower = parts[1].to_lowercase();
+                    match method_lower.as_str() {
+                        "add" => {
+                            if args.len() >= 2 {
+                                self.compile_expression(&args[0])?;
+                                self.compile_expression(&args[1])?;
+                                let line = self.line;
+                                common_thread::emit_atomic_add(&mut self.chunks[self.current_chunk_idx], line);
+                                return Ok(());
+                            }
+                        }
+                        "exchange" => {
+                            if args.len() >= 2 {
+                                self.compile_expression(&args[0])?;
+                                self.compile_expression(&args[1])?;
+                                let line = self.line;
+                                common_thread::emit_atomic_xchg(&mut self.chunks[self.current_chunk_idx], line);
+                                return Ok(());
+                            }
+                        }
+                        "compareexchange" => {
+                            if args.len() >= 3 {
+                                self.compile_expression(&args[0])?;
+                                self.compile_expression(&args[1])?;
+                                self.compile_expression(&args[2])?;
+                                let line = self.line;
+                                common_thread::emit_atomic_cmpxchg(&mut self.chunks[self.current_chunk_idx], line);
+                                return Ok(());
+                            }
                         }
                         _ => {}
                     }

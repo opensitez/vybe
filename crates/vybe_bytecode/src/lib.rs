@@ -7,6 +7,7 @@ pub mod debug;
 pub mod fiber;
 pub mod event_loop;
 pub mod typedef;
+pub mod shared_memory;
 
 pub use opcode::Op;
 pub use value::Value;

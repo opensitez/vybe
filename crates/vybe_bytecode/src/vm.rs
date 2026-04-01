@@ -7,6 +7,7 @@ use crate::error::VMError;
 use crate::event_loop::{EventLoop, Task};
 use crate::fiber::{Fiber, SavedFrame};
 use crate::opcode::Op;
+use crate::shared_memory::SharedMemory;
 use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value};
 
 const MAX_FRAMES: usize = 256;
@@ -72,7 +73,7 @@ pub struct VM {
     pub type_registry: crate::typedef::TypeRegistry,
     /// Linear memory (WASM MVP) — byte buffer for binary data.
     /// This is memory index 0 for backward compatibility.
-    pub memory: Vec<u8>,
+    pub memory: SharedMemory,
     /// Additional memories for multi-memory support.
     /// memory index 0 = self.memory, index 1+ = extra_memories[i-1].
     extra_memories: Vec<Vec<u8>>,
@@ -120,7 +121,7 @@ impl VM {
             exception_handlers: Vec::new(),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             type_registry: crate::typedef::TypeRegistry::new(),
-            memory: Vec::new(),
+            memory: SharedMemory::default(),
             extra_memories: Vec::new(),
             active_memory: 0,
             func_table: Vec::new(),
@@ -182,42 +183,48 @@ impl VM {
         }
     }
 
-    /// Get a mutable reference to the currently active memory.
-    fn active_mem(&mut self) -> &mut Vec<u8> {
+    /// Get the size (in bytes) of the currently active memory.
+    fn active_mem_len(&self) -> usize {
         if self.active_memory == 0 {
-            &mut self.memory
+            self.memory.len()
+        } else {
+            let idx = self.active_memory - 1;
+            if idx < self.extra_memories.len() { self.extra_memories[idx].len() } else { 0 }
+        }
+    }
+
+    /// Grow the currently active memory by `pages` pages. Returns old page count.
+    fn active_mem_grow(&mut self, pages: usize) -> usize {
+        if self.active_memory == 0 {
+            self.memory.grow(pages)
         } else {
             let idx = self.active_memory - 1;
             if idx >= self.extra_memories.len() {
-                // Auto-grow extra memories if needed
                 self.extra_memories.resize_with(idx + 1, Vec::new);
             }
-            &mut self.extra_memories[idx]
+            let mem = &mut self.extra_memories[idx];
+            let old_pages = mem.len() / 65536;
+            mem.resize(mem.len() + pages * 65536, 0);
+            old_pages
         }
     }
 
-    /// Get a reference to a specific memory by index.
-    fn mem(&self, idx: usize) -> &[u8] {
-        if idx == 0 {
-            &self.memory
-        } else if idx - 1 < self.extra_memories.len() {
-            &self.extra_memories[idx - 1]
-        } else {
+    /// Get a reference to a specific extra memory by index (index > 0 only).
+    fn extra_mem(&self, idx: usize) -> &[u8] {
+        if idx == 0 || idx - 1 >= self.extra_memories.len() {
             &[]
+        } else {
+            &self.extra_memories[idx - 1]
         }
     }
 
-    /// Get a mutable reference to a specific memory by index.
-    fn mem_mut(&mut self, idx: usize) -> &mut Vec<u8> {
-        if idx == 0 {
-            &mut self.memory
-        } else {
-            let i = idx - 1;
-            if i >= self.extra_memories.len() {
-                self.extra_memories.resize_with(i + 1, Vec::new);
-            }
-            &mut self.extra_memories[i]
+    /// Get a mutable reference to a specific extra memory by index (index > 0 only).
+    fn extra_mem_mut(&mut self, idx: usize) -> &mut Vec<u8> {
+        let i = idx - 1;
+        if i >= self.extra_memories.len() {
+            self.extra_memories.resize_with(i + 1, Vec::new);
         }
+        &mut self.extra_memories[i]
     }
 
     /// Run any pending finalizers for objects whose strong count has dropped.
@@ -1747,190 +1754,139 @@ impl VM {
 
                 // -- Linear memory --
                 Op::memory_size => {
-                    let mem = self.active_mem();
-                    let pages = (mem.len() / 65536) as i32;
+                    let pages = (self.active_mem_len() / 65536) as i32;
                     self.push(Value::I32(pages))?;
                 }
                 Op::memory_grow => {
                     let pages = self.pop().as_f64() as usize;
-                    let mem = self.active_mem();
-                    let old_pages = mem.len() / 65536;
-                    mem.resize(mem.len() + pages * 65536, 0);
+                    let old_pages = self.active_mem_grow(pages);
                     self.push(Value::I32(old_pages as i32))?;
                 }
                 Op::i32_load => {
                     let addr = self.pop().as_f64() as usize;
-                    if addr + 4 <= self.memory.len() {
-                        let val = i32::from_le_bytes([self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3]]);
-                        self.push(Value::I32(val))?;
-                    } else {
-                        self.push(Value::I32(0))?;
-                    }
+                    self.push(Value::I32(self.memory.load_i32(addr)))?;
                 }
                 Op::i32_store => {
                     let val = self.pop().as_f64() as i32;
                     let addr = self.pop().as_f64() as usize;
-                    if addr + 4 <= self.memory.len() {
-                        let bytes = val.to_le_bytes();
-                        self.memory[addr..addr+4].copy_from_slice(&bytes);
-                    }
+                    self.memory.store_i32(addr, val);
                 }
                 Op::i64_load => {
                     let addr = self.pop().as_f64() as usize;
-                    if addr + 8 <= self.memory.len() {
-                        let val = i64::from_le_bytes([
-                            self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3],
-                            self.memory[addr+4], self.memory[addr+5], self.memory[addr+6], self.memory[addr+7],
-                        ]);
-                        self.push(Value::I64(val))?;
-                    } else {
-                        self.push(Value::I64(0))?;
-                    }
+                    self.push(Value::I64(self.memory.load_i64(addr)))?;
                 }
                 Op::i64_store => {
                     let val = self.pop().as_f64() as i64;
                     let addr = self.pop().as_f64() as usize;
-                    if addr + 8 <= self.memory.len() {
-                        let bytes = val.to_le_bytes();
-                        self.memory[addr..addr+8].copy_from_slice(&bytes);
-                    }
+                    self.memory.store_i64(addr, val);
                 }
                 Op::f64_load => {
                     let addr = self.pop().as_f64() as usize;
-                    if addr + 8 <= self.memory.len() {
-                        let val = f64::from_le_bytes([
-                            self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3],
-                            self.memory[addr+4], self.memory[addr+5], self.memory[addr+6], self.memory[addr+7],
-                        ]);
-                        self.push(Value::F64(val))?;
-                    } else {
-                        self.push(Value::F64(0.0))?;
-                    }
+                    self.push(Value::F64(self.memory.load_f64(addr)))?;
                 }
                 Op::f64_store => {
                     let val = self.pop().as_f64();
                     let addr = self.pop().as_f64() as usize;
-                    if addr + 8 <= self.memory.len() {
-                        let bytes = val.to_le_bytes();
-                        self.memory[addr..addr+8].copy_from_slice(&bytes);
-                    }
+                    self.memory.store_f64(addr, val);
                 }
                 Op::i32_load8_u => {
                     let addr = self.pop().as_f64() as usize;
-                    if addr < self.memory.len() {
-                        self.push(Value::I32(self.memory[addr] as i32))?;
-                    } else {
-                        self.push(Value::I32(0))?;
-                    }
+                    self.push(Value::I32(self.memory.load_u8(addr) as i32))?;
                 }
                 Op::i32_store8 => {
                     let val = self.pop().as_f64() as u8;
                     let addr = self.pop().as_f64() as usize;
-                    if addr < self.memory.len() {
-                        self.memory[addr] = val;
-                    }
+                    self.memory.store_u8(addr, val);
                 }
                 Op::f32_load => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 4 <= self.memory.len() {
-                        let val = f32::from_le_bytes([self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3]]);
-                        self.push(Value::F64(val as f64))?;
-                    } else { self.push(Value::F64(0.0))?; }
+                    let val = self.memory.with_buffer(|buf| {
+                        if addr + 4 <= buf.len() {
+                            f32::from_le_bytes(buf[addr..addr+4].try_into().unwrap()) as f64
+                        } else { 0.0 }
+                    });
+                    self.push(Value::F64(val))?;
                 }
                 Op::f32_store => {
                     let val = self.pop().as_f64() as f32;
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 4 <= self.memory.len() {
-                        let bytes = val.to_le_bytes();
-                        self.memory[addr..addr+4].copy_from_slice(&bytes);
-                    }
+                    self.memory.with_buffer_mut(|buf| {
+                        if addr + 4 <= buf.len() {
+                            buf[addr..addr+4].copy_from_slice(&val.to_le_bytes());
+                        }
+                    });
                 }
                 Op::i32_load8_s => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr < self.memory.len() {
-                        self.push(Value::I32(self.memory[addr] as i8 as i32))?;
-                    } else { self.push(Value::I32(0))?; }
+                    self.push(Value::I32(self.memory.load_u8(addr) as i8 as i32))?;
                 }
                 Op::i32_load16_s => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 2 <= self.memory.len() {
-                        let val = i16::from_le_bytes([self.memory[addr], self.memory[addr+1]]);
-                        self.push(Value::I32(val as i32))?;
-                    } else { self.push(Value::I32(0))?; }
+                    let val = self.memory.with_buffer(|buf| {
+                        if addr + 2 <= buf.len() { i16::from_le_bytes(buf[addr..addr+2].try_into().unwrap()) as i32 } else { 0 }
+                    });
+                    self.push(Value::I32(val))?;
                 }
                 Op::i32_load16_u => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 2 <= self.memory.len() {
-                        let val = u16::from_le_bytes([self.memory[addr], self.memory[addr+1]]);
-                        self.push(Value::I32(val as i32))?;
-                    } else { self.push(Value::I32(0))?; }
+                    let val = self.memory.with_buffer(|buf| {
+                        if addr + 2 <= buf.len() { u16::from_le_bytes(buf[addr..addr+2].try_into().unwrap()) as i32 } else { 0 }
+                    });
+                    self.push(Value::I32(val))?;
                 }
                 Op::i32_store16 => {
                     let val = self.pop().as_i32() as i16;
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 2 <= self.memory.len() {
-                        let bytes = val.to_le_bytes();
-                        self.memory[addr..addr+2].copy_from_slice(&bytes);
-                    }
+                    self.memory.with_buffer_mut(|buf| {
+                        if addr + 2 <= buf.len() { buf[addr..addr+2].copy_from_slice(&val.to_le_bytes()); }
+                    });
                 }
                 Op::i64_load8_s => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr < self.memory.len() { self.push(Value::I64(self.memory[addr] as i8 as i64))?; }
-                    else { self.push(Value::I64(0))?; }
+                    self.push(Value::I64(self.memory.load_u8(addr) as i8 as i64))?;
                 }
                 Op::i64_load8_u => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr < self.memory.len() { self.push(Value::I64(self.memory[addr] as i64))?; }
-                    else { self.push(Value::I64(0))?; }
+                    self.push(Value::I64(self.memory.load_u8(addr) as i64))?;
                 }
                 Op::i64_load16_s => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 2 <= self.memory.len() {
-                        let val = i16::from_le_bytes([self.memory[addr], self.memory[addr+1]]);
-                        self.push(Value::I64(val as i64))?;
-                    } else { self.push(Value::I64(0))?; }
+                    let val = self.memory.with_buffer(|buf| {
+                        if addr + 2 <= buf.len() { i16::from_le_bytes(buf[addr..addr+2].try_into().unwrap()) as i64 } else { 0 }
+                    });
+                    self.push(Value::I64(val))?;
                 }
                 Op::i64_load16_u => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 2 <= self.memory.len() {
-                        let val = u16::from_le_bytes([self.memory[addr], self.memory[addr+1]]);
-                        self.push(Value::I64(val as i64))?;
-                    } else { self.push(Value::I64(0))?; }
+                    let val = self.memory.with_buffer(|buf| {
+                        if addr + 2 <= buf.len() { u16::from_le_bytes(buf[addr..addr+2].try_into().unwrap()) as i64 } else { 0 }
+                    });
+                    self.push(Value::I64(val))?;
                 }
                 Op::i64_load32_s => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 4 <= self.memory.len() {
-                        let val = i32::from_le_bytes([self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3]]);
-                        self.push(Value::I64(val as i64))?;
-                    } else { self.push(Value::I64(0))?; }
+                    self.push(Value::I64(self.memory.load_i32(addr) as i64))?;
                 }
                 Op::i64_load32_u => {
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 4 <= self.memory.len() {
-                        let val = u32::from_le_bytes([self.memory[addr], self.memory[addr+1], self.memory[addr+2], self.memory[addr+3]]);
-                        self.push(Value::I64(val as i64))?;
-                    } else { self.push(Value::I64(0))?; }
+                    self.push(Value::I64(self.memory.load_i32(addr) as u32 as i64))?;
                 }
                 Op::i64_store8 => {
                     let val = self.pop().as_i64() as u8;
                     let addr = self.pop().as_i32() as usize;
-                    if addr < self.memory.len() { self.memory[addr] = val; }
+                    self.memory.store_u8(addr, val);
                 }
                 Op::i64_store16 => {
                     let val = self.pop().as_i64() as i16;
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 2 <= self.memory.len() {
-                        let bytes = val.to_le_bytes();
-                        self.memory[addr..addr+2].copy_from_slice(&bytes);
-                    }
+                    self.memory.with_buffer_mut(|buf| {
+                        if addr + 2 <= buf.len() { buf[addr..addr+2].copy_from_slice(&val.to_le_bytes()); }
+                    });
                 }
                 Op::i64_store32 => {
                     let val = self.pop().as_i64() as i32;
                     let addr = self.pop().as_i32() as usize;
-                    if addr + 4 <= self.memory.len() {
-                        let bytes = val.to_le_bytes();
-                        self.memory[addr..addr+4].copy_from_slice(&bytes);
-                    }
+                    self.memory.store_i32(addr, val);
                 }
 
                 // -- Conversions --
@@ -2252,17 +2208,25 @@ impl VM {
                     let dst_addr = self.pop().as_f64() as usize;
                     let dst_mem = self.pop().as_f64() as usize;
                     // Copy bytes between memories
-                    let src_data: Vec<u8> = {
-                        let src = self.mem(src_mem);
+                    let src_data: Vec<u8> = if src_mem == 0 {
+                        let mut buf = vec![0u8; len];
+                        self.memory.read_bytes(src_addr, &mut buf);
+                        buf
+                    } else {
+                        let src = self.extra_mem(src_mem);
                         if src_addr + len <= src.len() {
                             src[src_addr..src_addr + len].to_vec()
                         } else {
                             vec![0u8; len]
                         }
                     };
-                    let dst = self.mem_mut(dst_mem);
-                    if dst_addr + len <= dst.len() {
-                        dst[dst_addr..dst_addr + len].copy_from_slice(&src_data);
+                    if dst_mem == 0 {
+                        self.memory.write_bytes(dst_addr, &src_data);
+                    } else {
+                        let dst = self.extra_mem_mut(dst_mem);
+                        if dst_addr + len <= dst.len() {
+                            dst[dst_addr..dst_addr + len].copy_from_slice(&src_data);
+                        }
                     }
                 }
 
@@ -2857,18 +2821,14 @@ impl VM {
                 Op::v128_load => {
                     let addr = self.pop().as_i32() as usize;
                     let mut bytes = [0u8; 16];
-                    if addr + 16 <= self.memory.len() {
-                        bytes.copy_from_slice(&self.memory[addr..addr+16]);
-                    }
+                    self.memory.read_bytes(addr, &mut bytes);
                     self.push(Value::V128(bytes))?;
                 }
                 Op::v128_store => {
                     let val = self.pop();
                     let addr = self.pop().as_i32() as usize;
                     if let Value::V128(bytes) = val {
-                        if addr + 16 <= self.memory.len() {
-                            self.memory[addr..addr+16].copy_from_slice(&bytes);
-                        }
+                        self.memory.write_bytes(addr, &bytes);
                     }
                 }
                 Op::v128_const => {
@@ -3038,35 +2998,35 @@ impl VM {
 
                 // -- Atomics (single-threaded: same as non-atomic for now) --
                 Op::atomic_fence => {} // no-op in single-threaded
-                Op::i32_atomic_load => { let addr = self.pop().as_i32() as usize; if addr+4 <= self.memory.len() { let v = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.push(Value::I32(v))?; } else { self.push(Value::I32(0))?; } }
+                Op::i32_atomic_load => { let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_load_i32(addr)))?; }
                 // Atomic store: stack is [addr, value] — pop value first (top), then addr
-                Op::i32_atomic_store => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr + 4 <= self.memory.len() { self.memory[addr..addr+4].copy_from_slice(&v.to_le_bytes()); } }
+                Op::i32_atomic_store => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.memory.atomic_store_i32(addr, v); }
                 // Atomic RMW: stack is [addr, value] — pop value (top), addr (second), return old
-                Op::i32_atomic_rmw_add => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr + 4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&old.wrapping_add(v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
-                Op::i32_atomic_rmw_sub => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr + 4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&old.wrapping_sub(v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
-                Op::i32_atomic_rmw_and => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr + 4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&(old & v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
-                Op::i32_atomic_rmw_or  => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr + 4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&(old | v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
-                Op::i32_atomic_rmw_xor => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr + 4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&(old ^ v).to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
-                Op::i32_atomic_rmw_xchg => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr + 4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); self.memory[addr..addr+4].copy_from_slice(&v.to_le_bytes()); self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
+                Op::i32_atomic_rmw_add => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_add_i32(addr, v)))?; }
+                Op::i32_atomic_rmw_sub => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_sub_i32(addr, v)))?; }
+                Op::i32_atomic_rmw_and => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_and_i32(addr, v)))?; }
+                Op::i32_atomic_rmw_or  => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_or_i32(addr, v)))?; }
+                Op::i32_atomic_rmw_xor => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_xor_i32(addr, v)))?; }
+                Op::i32_atomic_rmw_xchg => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_xchg_i32(addr, v)))?; }
                 // Atomic CmpXchg: stack is [addr, expected, replacement]
-                Op::i32_atomic_rmw_cmpxchg => { let replacement = self.pop().as_i32(); let expected = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; if addr + 4 <= self.memory.len() { let old = i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap()); if old == expected { self.memory[addr..addr+4].copy_from_slice(&replacement.to_le_bytes()); } self.push(Value::I32(old))?; } else { self.push(Value::I32(0))?; } }
-                Op::i64_atomic_load => { let addr = self.pop().as_i32() as usize; if addr + 8 <= self.memory.len() { let v = i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap()); self.push(Value::I64(v))?; } else { self.push(Value::I64(0))?; } }
-                Op::i64_atomic_store => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; if addr + 8 <= self.memory.len() { self.memory[addr..addr+8].copy_from_slice(&v.to_le_bytes()); } }
-                Op::i64_atomic_rmw_add => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; if addr + 8 <= self.memory.len() { let old = i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap()); self.memory[addr..addr+8].copy_from_slice(&old.wrapping_add(v).to_le_bytes()); self.push(Value::I64(old))?; } else { self.push(Value::I64(0))?; } }
-                Op::i64_atomic_rmw_sub => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; if addr + 8 <= self.memory.len() { let old = i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap()); self.memory[addr..addr+8].copy_from_slice(&old.wrapping_sub(v).to_le_bytes()); self.push(Value::I64(old))?; } else { self.push(Value::I64(0))?; } }
-                Op::i64_atomic_rmw_cmpxchg => { let repl = self.pop().as_i64(); let exp = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; if addr + 8 <= self.memory.len() { let old = i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap()); if old == exp { self.memory[addr..addr+8].copy_from_slice(&repl.to_le_bytes()); } self.push(Value::I64(old))?; } else { self.push(Value::I64(0))?; } }
-                Op::memory_atomic_wait32 => { self.pop(); self.pop(); self.pop(); self.push(Value::I32(1))?; } // not-equal (single-threaded)
-                Op::memory_atomic_notify => { self.pop(); self.pop(); self.push(Value::I32(0))?; } // 0 woken (single-threaded)
+                Op::i32_atomic_rmw_cmpxchg => { let replacement = self.pop().as_i32(); let expected = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_cmpxchg_i32(addr, expected, replacement)))?; }
+                Op::i64_atomic_load => { let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_load_i64(addr)))?; }
+                Op::i64_atomic_store => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.memory.atomic_store_i64(addr, v); }
+                Op::i64_atomic_rmw_add => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_rmw_add_i64(addr, v)))?; }
+                Op::i64_atomic_rmw_sub => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_rmw_sub_i64(addr, v)))?; }
+                Op::i64_atomic_rmw_cmpxchg => { let repl = self.pop().as_i64(); let exp = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_cmpxchg_i64(addr, exp, repl)))?; }
+                Op::memory_atomic_wait32 => { let timeout = self.pop().as_i64(); let expected = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.wait32(addr, expected, timeout)))?; }
+                Op::memory_atomic_notify => { let count = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.notify(addr, count)))?; }
 
                 // -- Memory64 --
                 Op::i64_memory_size => { self.push(Value::I64((self.memory.len() / 65536) as i64))?; }
-                Op::i64_memory_grow => { let pages = self.pop().as_i64() as usize; let old = self.memory.len() / 65536; self.memory.resize(self.memory.len() + pages * 65536, 0); self.push(Value::I64(old as i64))?; }
-                Op::i32_load_64 => { let addr = self.pop().as_i64() as usize; if addr+4 <= self.memory.len() { self.push(Value::I32(i32::from_le_bytes(self.memory[addr..addr+4].try_into().unwrap())))?; } else { self.push(Value::I32(0))?; } }
-                Op::i64_load_64 => { let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.push(Value::I64(i64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap())))?; } else { self.push(Value::I64(0))?; } }
-                Op::f64_load_64 => { let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.push(Value::F64(f64::from_le_bytes(self.memory[addr..addr+8].try_into().unwrap())))?; } else { self.push(Value::F64(0.0))?; } }
-                Op::i32_store_64 => { let v = self.pop().as_i32(); let addr = self.pop().as_i64() as usize; if addr+4 <= self.memory.len() { self.memory[addr..addr+4].copy_from_slice(&v.to_le_bytes()); } }
-                Op::i64_store_64 => { let v = self.pop().as_i64(); let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.memory[addr..addr+8].copy_from_slice(&v.to_le_bytes()); } }
-                Op::f64_store_64 => { let v = self.pop().as_f64(); let addr = self.pop().as_i64() as usize; if addr+8 <= self.memory.len() { self.memory[addr..addr+8].copy_from_slice(&v.to_le_bytes()); } }
+                Op::i64_memory_grow => { let pages = self.pop().as_i64() as usize; let old = self.memory.grow(pages); self.push(Value::I64(old as i64))?; }
+                Op::i32_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I32(self.memory.load_i32(addr)))?; }
+                Op::i64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I64(self.memory.load_i64(addr)))?; }
+                Op::f64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::F64(self.memory.load_f64(addr)))?; }
+                Op::i32_store_64 => { let v = self.pop().as_i32(); let addr = self.pop().as_i64() as usize; self.memory.store_i32(addr, v); }
+                Op::i64_store_64 => { let v = self.pop().as_i64(); let addr = self.pop().as_i64() as usize; self.memory.store_i64(addr, v); }
+                Op::f64_store_64 => { let v = self.pop().as_f64(); let addr = self.pop().as_i64() as usize; self.memory.store_f64(addr, v); }
 
                 // -- Relaxed SIMD FMA --
                 Op::f32x4_relaxed_madd => {

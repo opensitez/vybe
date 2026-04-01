@@ -104,7 +104,7 @@ fn memory_fill_via_rust() {
     let mut vm = VM::new();
     vm.memory.resize(256, 0);
     // Fill bytes 0..16 with 0xFF
-    for i in 0..16 { vm.memory[i] = 0xFF; }
+    for i in 0..16 { vm.memory.store_u8(i, 0xFF); }
     // Verify via i32_load
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
@@ -120,9 +120,9 @@ fn memory_fill_via_rust() {
 fn memory_copy_via_rust() {
     let mut vm = VM::new();
     vm.memory.resize(256, 0);
-    vm.memory[0..4].copy_from_slice(&42i32.to_le_bytes());
+    vm.memory.store_i32(0, 42);
     // Copy 4 bytes from offset 0 to offset 16
-    vm.memory.copy_within(0..4, 16);
+    vm.memory.with_buffer_mut(|buf| { buf.copy_within(0..4, 16); });
     // Verify via i32_load at offset 16
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;

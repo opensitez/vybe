@@ -460,6 +460,7 @@ impl Parser {
                 Ok(Statement::Throw(expr))
             }
             TokenKind::Try => self.parse_try(),
+            TokenKind::Lock => self.parse_lock_statement(),
             TokenKind::Using => self.parse_using_statement(),
             TokenKind::Var => self.parse_local_var_decl(),
             TokenKind::Semicolon => { self.advance(); Ok(Statement::Empty) }
@@ -666,6 +667,15 @@ impl Parser {
         self.expect(TokenKind::RParen)?;
         let body = self.parse_block()?;
         Ok(Statement::Using { var_name, initializer, body })
+    }
+
+    fn parse_lock_statement(&mut self) -> Result<Statement, String> {
+        self.expect(TokenKind::Lock)?;
+        self.expect(TokenKind::LParen)?;
+        let lock_object = self.parse_expression()?;
+        self.expect(TokenKind::RParen)?;
+        let body = self.parse_block()?;
+        Ok(Statement::Lock { lock_object, body })
     }
 
     fn parse_local_var_decl(&mut self) -> Result<Statement, String> {

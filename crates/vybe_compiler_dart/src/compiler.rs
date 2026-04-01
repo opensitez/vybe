@@ -5,6 +5,7 @@ use vybe_compiler_common::classes as common_classes;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
 use vybe_compiler_common::loops as common_loops;
+use vybe_compiler_common::threading as common_thread;
 use vybe_parser_dart::*;
 
 use crate::scope::Scope;
@@ -1926,6 +1927,18 @@ impl Compiler {
                     let count = self.emit_args(args)?;
                     self.emit_u8(Op::call, count);
                     return Ok(());
+                }
+            }
+
+            // Isolate.spawn(fn, message) → thread spawn
+            if let Expression::Identifier(obj_name) = object.as_ref() {
+                if obj_name == "Isolate" && member == "spawn" {
+                    if let Some(arg) = args.first() {
+                        self.compile_expression(&arg.value)?;
+                        let line = self.line;
+                        common_thread::emit_thread_spawn(&mut self.chunks[self.current_chunk_idx], line);
+                        return Ok(());
+                    }
                 }
             }
 

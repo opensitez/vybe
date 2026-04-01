@@ -194,6 +194,11 @@ pub enum Statement {
         initializer: Expression,
         body: Vec<Statement>,
     },
+    // Lock
+    Lock {
+        lock_object: Expression,
+        body: Vec<Statement>,
+    },
     // Block
     Block(Vec<Statement>),
     // Empty

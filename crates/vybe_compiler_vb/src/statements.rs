@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use vybe_bytecode::{Value, Op};
+use vybe_compiler_common::threading as common_thread;
 use vybe_parser_basic::ast::*;
 
 use crate::compiler::{Compiler, VarResolution, LoopContext};
@@ -499,9 +500,21 @@ impl Compiler {
                 // Resume — VB6 style: continue execution after error
                 // In our model this is effectively a no-op after try/catch
             }
-            // SyncLock — no-op in single-threaded VM
-            Statement::SyncLock { body, .. } => {
+            // SyncLock obj ... End SyncLock → lock acquire + body + lock release
+            Statement::SyncLock { lock_object, body } => {
+                // Compile the lock object expression (should evaluate to a memory address i32)
+                self.compile_expression(lock_object)?;
+                let addr_slot = self.define_local("__lock_addr");
+                self.emit_u16(Op::local_set, addr_slot);
+                self.emit(Op::drop);
+                // Acquire lock
+                let line = self.line;
+                common_thread::emit_lock_acquire(&mut self.chunks[self.current_chunk_idx], addr_slot, line);
+                // Compile body
                 for s in body { self.compile_statement(s)?; }
+                // Release lock
+                let line = self.line;
+                common_thread::emit_lock_release(&mut self.chunks[self.current_chunk_idx], addr_slot, line);
             }
             // VB6 file I/O — compile as host calls with file number
             Statement::Open { file_path, mode, file_number } => {

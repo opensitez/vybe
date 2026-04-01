@@ -347,3 +347,18 @@ fn match_with_guard() {
 #[test] fn enum_class() {
     compile_ok("class Color:\n    RED = 1\n    GREEN = 2\n    BLUE = 3\nc = Color()\n");
 }
+
+// ── Threading ──────────────────────────────────────────────
+
+#[test] fn threading_thread() {
+    compile_ok("import threading\ndef worker():\n    print('hello from thread')\nt = threading.Thread(worker)\n");
+}
+#[test] fn threading_lock() {
+    compile_ok("import threading\nlock = threading.Lock()\n");
+}
+#[test] fn lock_acquire_release() {
+    compile_ok("import threading\nlock = threading.Lock()\nlock.acquire()\nprint('critical section')\nlock.release()\n");
+}
+#[test] fn thread_join() {
+    compile_ok("import threading\ndef worker():\n    pass\nt = threading.Thread(worker)\nt.start()\nt.join()\n");
+}
