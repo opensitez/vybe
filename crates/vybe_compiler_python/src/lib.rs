@@ -2631,7 +2631,6 @@ impl Compiler {
         let result_local = self.scope(chunk_idx).alloc("__map_res");
         let idx_local = self.scope(chunk_idx).alloc("__map_i");
 
-        // Evaluate fn and iterable
         self.compile_expr(&args[0], chunk_idx)?;
         self.chunk(chunk_idx).emit_op_u16(Op::local_set, fn_local, 0);
         self.chunk(chunk_idx).emit_op(Op::drop, 0);
@@ -2639,53 +2638,17 @@ impl Compiler {
         self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_local, 0);
         self.chunk(chunk_idx).emit_op(Op::drop, 0);
 
-        // result = []
-        self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, result_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
-        // i = 0
-        self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_local, 0);
-
-        let loop_start = self.chunk(chunk_idx).current_offset();
-        // while i < len(arr)
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::array_length, 0);
-        self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-        let exit_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
-
-        // result.push(fn(arr[i]))
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, fn_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::array_get, 0);
-        self.chunk(chunk_idx).emit_op_u8(Op::call_ref, 1, 0);
-        self.chunk(chunk_idx).emit_op(Op::array_push, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
-
-        // i += 1
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_local, 0);
-
-        self.chunk(chunk_idx).emit_loop(loop_start, 0);
-        self.chunk(chunk_idx).patch_jump(exit_jump);
-
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_local, 0);
+        common::loops::emit_map(self.chunk(chunk_idx), fn_local, arr_local, result_local, idx_local, 0);
         Ok(())
     }
 
-    /// filter(fn, iterable) → [x for x in iterable if fn(x)]
     fn compile_filter(&mut self, args: &[Expression], chunk_idx: usize) -> Result<(), String> {
         let fn_local = self.scope(chunk_idx).alloc("__filt_fn");
         let arr_local = self.scope(chunk_idx).alloc("__filt_arr");
         let result_local = self.scope(chunk_idx).alloc("__filt_res");
         let idx_local = self.scope(chunk_idx).alloc("__filt_i");
+        let elem_local = self.scope(chunk_idx).alloc("__filt_elem");
 
-        // Evaluate fn and iterable
         self.compile_expr(&args[0], chunk_idx)?;
         self.chunk(chunk_idx).emit_op_u16(Op::local_set, fn_local, 0);
         self.chunk(chunk_idx).emit_op(Op::drop, 0);
@@ -2693,54 +2656,7 @@ impl Compiler {
         self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_local, 0);
         self.chunk(chunk_idx).emit_op(Op::drop, 0);
 
-        // result = []
-        self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, result_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
-        // i = 0
-        self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_local, 0);
-
-        let loop_start = self.chunk(chunk_idx).current_offset();
-        // while i < len(arr)
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::array_length, 0);
-        self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-        let exit_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
-
-        // elem = arr[i]
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::array_get, 0);
-        let elem_local = self.scope(chunk_idx).alloc("__filt_elem");
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, elem_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
-
-        // if fn(elem): result.push(elem)
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, fn_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, elem_local, 0);
-        self.chunk(chunk_idx).emit_op_u8(Op::call_ref, 1, 0);
-        self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
-        let skip_push = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
-
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, elem_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::array_push, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
-
-        self.chunk(chunk_idx).patch_jump(skip_push);
-
-        // i += 1
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_local, 0);
-
-        self.chunk(chunk_idx).emit_loop(loop_start, 0);
-        self.chunk(chunk_idx).patch_jump(exit_jump);
-
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_local, 0);
+        common::loops::emit_filter(self.chunk(chunk_idx), fn_local, arr_local, result_local, idx_local, elem_local, 0);
         Ok(())
     }
 
