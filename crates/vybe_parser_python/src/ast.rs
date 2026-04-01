@@ -308,6 +308,8 @@ pub enum Pattern {
 pub enum FStringPart {
     Literal(String),
     Expr(Expression),
+    /// Expression with format spec, e.g. f"{x:.2f}" → FormattedExpr(x, ".2f")
+    FormattedExpr(Expression, String),
 }
 
 // Operator enums

@@ -17,6 +17,7 @@ pub enum TokenKind {
     Str(String),
     FStringStart,
     FStringText(String),
+    FStringFormatSpec(String),
     FStringEnd,
     ByteStr(Vec<u8>),
     Identifier(String),

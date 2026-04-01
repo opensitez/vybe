@@ -1286,7 +1286,14 @@ impl Parser {
                 _ => {
                     // Expression tokens
                     let expr = self.parse_expression()?;
-                    parts.push(FStringPart::Expr(expr));
+                    // Check for format spec after expression
+                    if let TokenKind::FStringFormatSpec(ref spec) = self.current_kind() {
+                        let spec = spec.clone();
+                        self.advance();
+                        parts.push(FStringPart::FormattedExpr(expr, spec));
+                    } else {
+                        parts.push(FStringPart::Expr(expr));
+                    }
                 }
             }
         }

@@ -457,6 +457,7 @@ impl Lexer {
                 self.bracket_depth = 0;
                 let mut brace_depth = 1i32;
                 let mut expr_tokens = Vec::new();
+                let mut format_spec: Option<String> = None;
                 loop {
                     if self.is_at_end() {
                         return Err(format!("line {}: unterminated f-string expression", line));
@@ -469,10 +470,10 @@ impl Lexer {
                     if self.chars[self.pos] == '{' { brace_depth += 1; }
                     if self.chars[self.pos] == '}' { brace_depth -= 1; }
 
-                    // Skip colon format specs at top level: f"{x:.2f}"
+                    // Capture colon format specs at top level: f"{x:.2f}"
                     if self.chars[self.pos] == ':' && brace_depth == 1 {
-                        // Everything after : until } is format spec, skip it
-                        self.pos += 1;
+                        self.pos += 1; // skip ':'
+                        let mut fmt_spec = String::new();
                         let mut fmt_depth = 1i32;
                         while self.pos < self.chars.len() {
                             if self.chars[self.pos] == '{' { fmt_depth += 1; }
@@ -480,8 +481,10 @@ impl Lexer {
                                 fmt_depth -= 1;
                                 if fmt_depth == 0 { self.pos += 1; break; }
                             }
+                            fmt_spec.push(self.chars[self.pos]);
                             self.pos += 1;
                         }
+                        format_spec = Some(fmt_spec);
                         break;
                     }
                     // Skip !r, !s, !a conversion specs
@@ -505,6 +508,10 @@ impl Lexer {
                 // Push expression tokens into pending
                 for tok in expr_tokens {
                     self.pending.push_back(tok);
+                }
+                // Push format spec after expression tokens (if captured)
+                if let Some(spec) = format_spec {
+                    self.pending.push_back(Token { kind: TokenKind::FStringFormatSpec(spec), line: self.line });
                 }
                 continue;
             }

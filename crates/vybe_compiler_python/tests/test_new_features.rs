@@ -114,3 +114,116 @@ fn match_with_guard() {
 
 #[test] fn del_nested_dict() { compile_ok("d = {'a': {'b': 1}}\ndel d['a']\n"); }
 #[test] fn del_dict_variable_key() { compile_ok("d = {'x': 1}\nk = 'x'\ndel d[k]\n"); }
+
+// ── Method dispatch: user methods override builtins ──────────
+
+#[test] fn user_method_named_get() {
+    compile_ok("class C:\n    def get(self):\n        return 42\nc = C()\nprint(c.get())\n");
+}
+#[test] fn user_method_named_keys() {
+    compile_ok("class C:\n    def keys(self):\n        return ['a']\nc = C()\nprint(c.keys())\n");
+}
+#[test] fn user_method_named_pop() {
+    compile_ok("class C:\n    def pop(self):\n        return 'popped'\nc = C()\nprint(c.pop())\n");
+}
+#[test] fn user_method_named_append() {
+    compile_ok("class C:\n    def append(self, x):\n        print(x)\nc = C()\nc.append(42)\n");
+}
+#[test] fn builtin_list_append_still_works() {
+    compile_ok("x = [1, 2]\nx.append(3)\nprint(x)\n");
+}
+#[test] fn builtin_dict_get_still_works() {
+    compile_ok("d = {'a': 1}\nprint(d.get('a'))\n");
+}
+#[test] fn builtin_dict_keys_still_works() {
+    compile_ok("d = {'a': 1, 'b': 2}\nprint(d.keys())\n");
+}
+
+// ── map / filter / iter / next ─────────────────────────────
+
+#[test] fn map_basic() {
+    compile_ok("result = list(map(lambda x: x * 2, [1, 2, 3]))\nprint(result)\n");
+}
+#[test] fn map_with_named_func() {
+    compile_ok("def double(x):\n    return x * 2\nresult = map(double, [1, 2, 3])\n");
+}
+#[test] fn filter_basic() {
+    compile_ok("result = list(filter(lambda x: x > 0, [-1, 0, 1, 2]))\nprint(result)\n");
+}
+#[test] fn filter_with_named_func() {
+    compile_ok("def is_even(x):\n    return x % 2 == 0\nresult = filter(is_even, [1, 2, 3, 4])\n");
+}
+#[test] fn iter_passthrough() {
+    compile_ok("it = iter([1, 2, 3])\n");
+}
+#[test] fn next_basic() {
+    compile_ok("items = [1, 2, 3]\nx = next(items)\n");
+}
+
+// ── Set methods ────────────────────────────────────────────
+
+#[test] fn set_add() {
+    compile_ok("s = {1, 2, 3}\ns.add(4)\n");
+}
+#[test] fn set_discard() {
+    compile_ok("s = {1, 2, 3}\ns.discard(2)\n");
+}
+#[test] fn set_union() {
+    compile_ok("a = {1, 2}\nb = {3, 4}\nc = a.union(b)\n");
+}
+#[test] fn set_intersection() {
+    compile_ok("a = {1, 2, 3}\nb = {2, 3, 4}\nc = a.intersection(b)\n");
+}
+#[test] fn set_difference() {
+    compile_ok("a = {1, 2, 3}\nb = {2, 3}\nc = a.difference(b)\n");
+}
+
+// ── @staticmethod / @classmethod ───────────────────────────
+
+#[test] fn staticmethod_basic() {
+    compile_ok("class Math:\n    @staticmethod\n    def add(a, b):\n        return a + b\nresult = Math.add(1, 2)\n");
+}
+#[test] fn staticmethod_no_self_param() {
+    // Static method with no params at all
+    compile_ok("class Config:\n    @staticmethod\n    def default_value():\n        return 42\nv = Config.default_value()\n");
+}
+#[test] fn staticmethod_with_instance_methods() {
+    // Mix of static and instance methods
+    compile_ok("class Counter:\n    def __init__(self, n):\n        self.n = n\n    def value(self):\n        return self.n\n    @staticmethod\n    def zero():\n        return Counter(0)\nc = Counter.zero()\nprint(c.value())\n");
+}
+#[test] fn classmethod_basic() {
+    compile_ok("class Foo:\n    @classmethod\n    def create(cls):\n        return Foo()\n    def __init__(self):\n        pass\n");
+}
+#[test] fn classmethod_with_args() {
+    compile_ok("class Point:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\n    @classmethod\n    def origin(cls):\n        return Point(0, 0)\np = Point.origin()\n");
+}
+
+// ── f-string format specs ──────────────────────────────────
+
+#[test] fn fstring_format_float() {
+    compile_ok("x = 3.14159\ns = f\"{x:.2f}\"\n");
+}
+#[test] fn fstring_format_width() {
+    compile_ok("name = \"hello\"\ns = f\"{name:>20}\"\n");
+}
+#[test] fn fstring_format_int() {
+    compile_ok("n = 42\ns = f\"{n:04d}\"\n");
+}
+#[test] fn fstring_no_spec_still_works() {
+    compile_ok("x = 10\ns = f\"value is {x}\"\n");
+}
+
+// ── dict.setdefault ────────────────────────────────────────
+
+#[test] fn dict_setdefault_existing() {
+    compile_ok("d = {'a': 1}\nv = d.setdefault('a', 99)\n");
+}
+#[test] fn dict_setdefault_missing() {
+    compile_ok("d = {}\nv = d.setdefault('key', 42)\n");
+}
+
+// ── splitlines ─────────────────────────────────────────────
+
+#[test] fn splitlines_basic() {
+    compile_ok("text = \"hello\\nworld\\n\"\nlines = text.splitlines()\n");
+}

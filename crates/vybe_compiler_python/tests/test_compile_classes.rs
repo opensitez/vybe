@@ -186,7 +186,6 @@ print(d.species)
 }
 
 #[test]
-#[ignore] // Known: two instances share state — struct_new in constructor may reuse backing store
 fn class_multiple_instances() {
     let out = run_prints(r#"
 class Counter:
