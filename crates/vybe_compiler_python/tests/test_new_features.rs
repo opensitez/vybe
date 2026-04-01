@@ -227,3 +227,26 @@ fn match_with_guard() {
 #[test] fn splitlines_basic() {
     compile_ok("text = \"hello\\nworld\\n\"\nlines = text.splitlines()\n");
 }
+
+// ── Cross-language compatibility ───────────────────────────
+
+#[test] fn list_contains_method() {
+    // Dart/C#/JS call .contains() — should work on Python lists
+    compile_ok("x = [1, 2, 3]\nb = x.contains(2)\n");
+}
+#[test] fn list_includes_method() {
+    // JS calls .includes() — should work on Python lists
+    compile_ok("x = [1, 2, 3]\nb = x.includes(2)\n");
+}
+#[test] fn list_length_method() {
+    // Dart calls .length — should work as method fallback
+    compile_ok("x = [1, 2, 3]\nn = x.length()\n");
+}
+#[test] fn class_tostring_alias() {
+    // Python __str__ should be callable as toString from JS/Dart
+    compile_ok("class Dog:\n    def __init__(self, name):\n        self.name = name\n    def __str__(self):\n        return self.name\nd = Dog('Rex')\n");
+}
+#[test] fn class_contains_alias() {
+    // Python __contains__ should be callable as contains/includes
+    compile_ok("class Bag:\n    def __init__(self):\n        self.items = []\n    def __contains__(self, item):\n        return item in self.items\nb = Bag()\n");
+}

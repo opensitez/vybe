@@ -4,8 +4,74 @@
 //! - try_start → body → try_end → handler
 //! - try_table for typed multi-catch
 
-use vybe_bytecode::Chunk;
+use std::rc::Rc;
+use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+
+/// Build a standard exception constructor chunk.
+/// All languages should use this shape: { __type, __exception_type, name, message }.
+/// This ensures Python `except ValueError` can catch a Dart `throw ValueError("...")`.
+pub fn emit_exception_constructor(chunk: &mut Chunk, this_slot: u16, exc_name: &str, msg_slot: u16, line: u32) {
+    // Create object
+    chunk.emit_op_u16(Op::struct_new, 0, line);
+    chunk.emit_op_u16(Op::local_set, this_slot, line);
+    chunk.emit_op(Op::drop, line);
+
+    // __type = exc_name (for ref_test matching)
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    let t_val = chunk.add_constant(Value::String(Rc::from(exc_name)));
+    chunk.emit_op_u16(Op::r#const, t_val, line);
+    let t_key = chunk.add_constant(Value::String(Rc::from("__type")));
+    chunk.emit_op_u16(Op::struct_set, t_key, line);
+    chunk.emit_op(Op::drop, line);
+
+    // __exception_type = exc_name (Python convention)
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    let et_val = chunk.add_constant(Value::String(Rc::from(exc_name)));
+    chunk.emit_op_u16(Op::r#const, et_val, line);
+    let et_key = chunk.add_constant(Value::String(Rc::from("__exception_type")));
+    chunk.emit_op_u16(Op::struct_set, et_key, line);
+    chunk.emit_op(Op::drop, line);
+
+    // name = exc_name (JS Error convention)
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    let n_val = chunk.add_constant(Value::String(Rc::from(exc_name)));
+    chunk.emit_op_u16(Op::r#const, n_val, line);
+    let n_key = chunk.add_constant(Value::String(Rc::from("name")));
+    chunk.emit_op_u16(Op::struct_set, n_key, line);
+    chunk.emit_op(Op::drop, line);
+
+    // message = msg_slot
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::local_get, msg_slot, line);
+    let m_key = chunk.add_constant(Value::String(Rc::from("message")));
+    chunk.emit_op_u16(Op::struct_set, m_key, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+/// Standard exception type names shared across all languages.
+/// Maps language-specific names to a canonical set.
+pub fn canonical_exception_name(name: &str) -> &str {
+    match name.to_lowercase().as_str() {
+        // Python → canonical
+        "valueerror" | "formaterror" | "formatexception" => "ValueError",
+        "typeerror" => "TypeError",
+        "keyerror" | "keynotfoundexception" => "KeyError",
+        "indexerror" | "indexoutofrangeexception" | "rangerror" => "IndexError",
+        "runtimeerror" | "runtimeexception" => "RuntimeError",
+        "stopiteration" | "stateexception" => "StopIteration",
+        "attributeerror" | "nosuchmethoderror" => "AttributeError",
+        "zerodivisionerror" | "integerdivisionbyzeroexception" => "ZeroDivisionError",
+        "filenotfounderror" | "filenotfoundexception" => "FileNotFoundError",
+        "importerror" => "ImportError",
+        "notimplementederror" | "unimplementederror" => "NotImplementedError",
+        "overflowerror" | "overflowexception" | "stackoverflowerror" => "OverflowError",
+        "ioerror" | "ioexception" => "IOError",
+        "oserror" => "OSError",
+        "exception" | "error" => "Exception",
+        _ => name,
+    }
+}
 
 /// Emit the start of a try block. Returns the catch_jump offset to patch later.
 /// Stack: unchanged

@@ -1856,41 +1856,8 @@ impl Compiler {
         let msg_slot = 1u16;
         let this_slot = 2u16;
 
-        // Create object
-        ctor.emit_op_u16(Op::struct_new, 0, 0);
-        ctor.emit_op_u16(Op::local_set, this_slot, 0);
-        ctor.emit_op(Op::drop, 0);
-
-        // Set __exception_type = exc_name
-        ctor.emit_op_u16(Op::local_get, this_slot, 0);
-        let et_val = ctor.add_constant(Value::String(Rc::from(exc_name)));
-        ctor.emit_op_u16(Op::r#const, et_val, 0);
-        let et_key = ctor.add_constant(Value::String(Rc::from("__exception_type")));
-        ctor.emit_op_u16(Op::struct_set, et_key, 0);
-        ctor.emit_op(Op::drop, 0);
-
-        // Set name = exc_name (JS Error convention)
-        ctor.emit_op_u16(Op::local_get, this_slot, 0);
-        let n_val = ctor.add_constant(Value::String(Rc::from(exc_name)));
-        ctor.emit_op_u16(Op::r#const, n_val, 0);
-        let n_key = ctor.add_constant(Value::String(Rc::from("name")));
-        ctor.emit_op_u16(Op::struct_set, n_key, 0);
-        ctor.emit_op(Op::drop, 0);
-
-        // Set message = arg
-        ctor.emit_op_u16(Op::local_get, this_slot, 0);
-        ctor.emit_op_u16(Op::local_get, msg_slot, 0);
-        let m_key = ctor.add_constant(Value::String(Rc::from("message")));
-        ctor.emit_op_u16(Op::struct_set, m_key, 0);
-        ctor.emit_op(Op::drop, 0);
-
-        // Set __type for TypeOf checks
-        ctor.emit_op_u16(Op::local_get, this_slot, 0);
-        let t_val = ctor.add_constant(Value::String(Rc::from(exc_name)));
-        ctor.emit_op_u16(Op::r#const, t_val, 0);
-        let t_key = ctor.add_constant(Value::String(Rc::from("__type")));
-        ctor.emit_op_u16(Op::struct_set, t_key, 0);
-        ctor.emit_op(Op::drop, 0);
+        // Use shared exception object shape (compatible across all languages)
+        common::errors::emit_exception_constructor(&mut ctor, this_slot, exc_name, msg_slot, 0);
 
         // Return this
         ctor.emit_op_u16(Op::local_get, this_slot, 0);
@@ -2221,6 +2188,17 @@ impl Compiler {
             "reverse" => {
                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
                 common::collections::emit_reverse(self.chunk(chunk_idx), 0);
+            }
+            // Cross-language compat: Dart/C# .contains(), JS .includes()
+            "contains" | "includes" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                self.chunk(chunk_idx).emit_op(Op::array_contains, 0);
+            }
+            // Cross-language compat: Dart .length, .isEmpty, .isNotEmpty
+            "length" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::array_length, 0);
             }
             "insert" => {
                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
