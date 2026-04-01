@@ -994,11 +994,10 @@ impl Compiler {
             for p in &f.params.named {
                 let target_slot = self.define_local(&p.name, false, false);
                 
-                // Get from the named args Map: mapValue = map[name]
+                // Get from the named args map: map[name] via array_get (standard WASM)
                 self.emit_u16(Op::local_get, map_slot);
                 self.emit_constant(Value::String(Rc::from(p.name.as_str())));
-                let get_idx = self.import("vybe:collections", "mapGet");
-                self.emit_host_call(get_idx, 2);
+                self.emit(Op::array_get);
                 
                 // If Null/Undefined and we have a default value, apply it
                 if let Some(dv) = &p.default_value {
@@ -1458,22 +1457,26 @@ impl Compiler {
                     self.emit_u16(Op::array_new, elements.len() as u16);
                 }
             }
-            Expression::Map { entries, type_args } => {
-                // Build map via host call
-                let ctor = self.import("vybe:collections", "Map");
-                let argc = if let Some((k, v)) = type_args {
-                    self.emit_constant(Value::String(Rc::from(k.name.as_str())));
-                    self.emit_constant(Value::String(Rc::from(v.name.as_str())));
-                    2
-                } else { 0 };
-                self.emit_host_call(ctor, argc);
+            Expression::Map { entries, type_args: _ } => {
+                // Create dict as plain Object with __keys tracking — same as all languages.
+                // Pure WASM opcodes, no host calls.
+                let line = self.line;
+                vybe_compiler_common::dict::emit_new(self.chunk_mut(), line);
                 for (key, val) in entries {
                     self.emit(Op::dup);
-                    self.compile_expression(key)?;
                     self.compile_expression(val)?;
-                    let set_idx = self.import("vybe:collections", "mapSet");
-                    self.emit_host_call(set_idx, 3);
-                    self.emit(Op::drop);
+                    if let Expression::String(StringExpr::Simple(s)) = key {
+                        let line = self.line;
+                        vybe_compiler_common::dict::emit_set_const_key(self.chunk_mut(), s, line);
+                    } else {
+                        let tmp = self.define_local("__map_v", true, false);
+                        self.emit_u16(Op::local_set, tmp);
+                        self.emit(Op::drop);
+                        self.compile_expression(key)?;
+                        self.emit_u16(Op::local_get, tmp);
+                        let line = self.line;
+                        vybe_compiler_common::dict::emit_set_dynamic(self.chunk_mut(), line);
+                    }
                 }
             }
             Expression::Set { elements, type_arg } => {
@@ -1867,16 +1870,14 @@ impl Compiler {
         }
 
         if !named_args.is_empty() {
-            // Build Map for named args
-            let ctor = self.import("vybe:collections", "Map");
-            self.emit_host_call(ctor, 0);
+            // Build dict for named args — pure WASM, same shape as all dicts
+            let line = self.line;
+            vybe_compiler_common::dict::emit_new(self.chunk_mut(), line);
             for (label, value) in named_args {
                 self.emit(Op::dup);
-                self.emit_constant(Value::String(Rc::from(label.as_str())));
                 self.compile_expression(value)?;
-                let set_idx = self.import("vybe:collections", "mapSet");
-                self.emit_host_call(set_idx, 3);
-                self.emit(Op::drop);
+                let line = self.line;
+                vybe_compiler_common::dict::emit_set_const_key(self.chunk_mut(), &label, line);
             }
             Ok(positional_count + 1)
         } else {

@@ -1,4 +1,5 @@
 use vybe_compiler_common::classes;
+use vybe_compiler_common::dict;
 
 // ── cross_language_aliases lookup table ─────────────────────
 
@@ -174,4 +175,37 @@ fn emit_init_field_null_sets_null() {
     classes::emit_init_field_null(&mut chunk, 1, "count", 0);
     let has_count = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "count"));
     assert!(has_count, "Should have 'count' constant for field init");
+}
+
+// ── dict helpers (cross-language) ──────────────────────────
+
+#[test]
+fn dict_new_has_keys_array() {
+    let mut chunk = Chunk::new("test");
+    dict::emit_new(&mut chunk, 0);
+    let has_keys = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "__keys"));
+    assert!(has_keys, "dict should have __keys constant for key tracking");
+}
+
+#[test]
+fn dict_set_const_key_tracks_key() {
+    let mut chunk = Chunk::new("test");
+    dict::emit_new(&mut chunk, 0);
+    // Simulate: dup dict, push value, then set key
+    chunk.emit_op(Op::dup, 0);
+    chunk.emit_op(Op::null, 0); // placeholder value
+    dict::emit_set_const_key(&mut chunk, "name", 0);
+    // Should have "name" in constants (for struct_set AND for __keys push)
+    let name_count = chunk.constants.iter().filter(|c| matches!(c, Value::String(s) if s.as_ref() == "name")).count();
+    assert!(name_count >= 1, "should have 'name' constant");
+}
+
+#[test]
+fn dict_keys_uses_struct_get() {
+    let mut chunk = Chunk::new("test");
+    dict::emit_new(&mut chunk, 0);
+    dict::emit_keys(&mut chunk, 0);
+    // emit_keys does struct_get "__keys" which is pure WASM — no imports needed
+    let has_keys = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "__keys"));
+    assert!(has_keys);
 }

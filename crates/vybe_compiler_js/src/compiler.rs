@@ -1093,15 +1093,17 @@ impl Compiler {
                 let has_spread = properties.iter().any(|p| matches!(p, PropertyDef::Spread(_)));
                 if has_spread {
                     // Object with spread: build incrementally via struct_set
-                    self.emit_u16(Op::struct_new, 0); // start with empty object
+                    {
+                        let line = self.line;
+                        vybe_compiler_common::dict::emit_new(&mut self.chunks[self.current_chunk_idx], line);
+                    }
                     for prop in properties {
                         match prop {
                             PropertyDef::KeyValue { key, value } => {
                                 self.emit(Op::dup);
                                 self.compile_expression(value)?;
-                                let idx = self.add_string_constant(key);
-                                self.emit_u16(Op::struct_set, idx);
-                                self.emit(Op::drop);
+                                let line = self.line;
+                                vybe_compiler_common::dict::emit_set_const_key(&mut self.chunks[self.current_chunk_idx], key, line);
                             }
                             PropertyDef::Shorthand(name) => {
                                 self.emit(Op::dup);
@@ -1138,13 +1140,16 @@ impl Compiler {
                         }
                     }
                 } else {
-                    // No spread: use efficient struct_new with k/v pairs on stack
+                    // No spread: use efficient struct_new with k/v pairs on stack,
+                    // then attach __keys array for enumeration tracking.
                     let mut count = 0u16;
+                    let mut string_keys: Vec<String> = Vec::new();
                     for prop in properties {
                         match prop {
                             PropertyDef::KeyValue { key, value } => {
                                 self.emit_constant(Value::String(Rc::from(key.as_str())));
                                 self.compile_expression(value)?;
+                                string_keys.push(key.clone());
                                 count += 1;
                             }
                             PropertyDef::Shorthand(name) => {
@@ -1154,22 +1159,40 @@ impl Compiler {
                                     VarResolution::Upvalue(idx) => self.emit_u8(Op::upvalue_get, idx),
                                     VarResolution::Global => { let idx = self.add_string_constant(name); self.emit_u16(Op::global_get, idx); }
                                 }
+                                string_keys.push(name.clone());
                                 count += 1;
                             }
                             PropertyDef::Method { key, value } => {
                                 self.emit_constant(Value::String(Rc::from(key.as_str())));
                                 self.compile_method(value)?; // method, not function — adds `this` as local 0
+                                string_keys.push(key.clone());
                                 count += 1;
                             }
                             PropertyDef::Computed { key, value } => {
                                 self.compile_expression(key)?;
                                 self.compile_expression(value)?;
+                                // Computed keys can't be tracked statically in __keys
                                 count += 1;
                             }
                             PropertyDef::Spread(_) => unreachable!(),
                         }
                     }
                     self.emit_u16(Op::struct_new, count);
+                    // Attach __keys array for dict enumeration
+                    {
+                        let line = self.line;
+                        let chunk = &mut self.chunks[self.current_chunk_idx];
+                        chunk.emit_op(Op::dup, line);
+                        // Build __keys array with all string keys
+                        for k in &string_keys {
+                            let idx = chunk.add_constant(Value::String(Rc::from(k.as_str())));
+                            chunk.emit_op_u16(Op::r#const, idx, line);
+                        }
+                        chunk.emit_op_u16(Op::array_new, string_keys.len() as u16, line);
+                        let keys_idx = chunk.add_constant(Value::String(Rc::from("__keys")));
+                        chunk.emit_op_u16(Op::struct_set, keys_idx, line);
+                        chunk.emit_op(Op::drop, line);
+                    }
                 }
             }
             Expression::Function(func) => { self.compile_function(func)?; }

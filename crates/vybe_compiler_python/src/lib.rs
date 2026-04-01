@@ -238,6 +238,7 @@ impl Compiler {
 
             Statement::If { test, body, elif_clauses, else_body } => {
                 self.compile_expr(test, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
                 let exit_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
                 for s in body { self.compile_stmt(s, chunk_idx)?; }
 
@@ -249,6 +250,7 @@ impl Compiler {
 
                     for (elif_test, elif_body) in elif_clauses {
                         self.compile_expr(elif_test, chunk_idx)?;
+                        self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
                         let elif_exit = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
                         for s in elif_body { self.compile_stmt(s, chunk_idx)?; }
                         // Jump to after all branches
@@ -279,6 +281,7 @@ impl Compiler {
 
                 let loop_start = self.chunk(chunk_idx).current_offset();
                 self.compile_expr(test, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
                 let exit_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
 
                 self.loop_stack.push(LoopCtx { _start: loop_start, break_jumps: Vec::new(), continue_jumps: Vec::new() });
@@ -1235,26 +1238,22 @@ impl Compiler {
                 for (k, v) in keys.iter().zip(values.iter()) {
                     if let Some(key) = k {
                         if let Expression::Str(s) = key {
-                            // String key: dict is on stack, push value, struct_set
-                            self.chunk(chunk_idx).emit_op(Op::dup, 0); // keep dict
-                            self.compile_expr(v, chunk_idx)?; // push value
-                            let key_idx = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(s.as_str())));
-                            self.chunk(chunk_idx).emit_op_u16(Op::struct_set, key_idx, 0);
-                            self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop struct_set result
+                            // String key with __keys tracking
+                            self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                            self.compile_expr(v, chunk_idx)?;
+                            common::dict::emit_set_const_key(self.chunk(chunk_idx), s, 0);
                         } else {
-                            // Dynamic key: use array_set (obj, key, val)
+                            // Dynamic key
                             self.chunk(chunk_idx).emit_op(Op::dup, 0);
                             self.compile_expr(key, chunk_idx)?;
                             self.compile_expr(v, chunk_idx)?;
-                            self.chunk(chunk_idx).emit_op(Op::array_set, 0);
-                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                            common::dict::emit_set_dynamic(self.chunk(chunk_idx), 0);
                         }
                     } else {
                         self.chunk(chunk_idx).emit_op(Op::dup, 0);
                         self.chunk(chunk_idx).emit_op(Op::null, 0);
                         self.compile_expr(v, chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::array_set, 0);
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        common::dict::emit_set_dynamic(self.chunk(chunk_idx), 0);
                     }
                 }
             }
@@ -1755,6 +1754,7 @@ impl Compiler {
 
             Expression::IfExp { test, body, orelse } => {
                 self.compile_expr(test, chunk_idx)?;
+                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
                 let false_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
                 self.compile_expr(body, chunk_idx)?;
                 let end_jump = self.chunk(chunk_idx).emit_jump(Op::br, 0);
@@ -2157,19 +2157,26 @@ impl Compiler {
                 common::dict::emit_keys(self.chunk(chunk_idx), 0);
             }
             "values" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
-                common::dict::emit_values(self.chunk(chunk_idx), 0);
+                let keys_slot = self.scope(chunk_idx).alloc("__dv_keys");
+                let result_slot = self.scope(chunk_idx).alloc("__dv_res");
+                let idx_slot = self.scope(chunk_idx).alloc("__dv_i");
+                common::dict::emit_values_from_local(
+                    self.chunk(chunk_idx), obj_tmp, keys_slot, result_slot, idx_slot, 0,
+                );
             }
             "items" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
-                common::dict::emit_items(self.chunk(chunk_idx), 0);
+                let keys_slot = self.scope(chunk_idx).alloc("__di_keys");
+                let result_slot = self.scope(chunk_idx).alloc("__di_res");
+                let idx_slot = self.scope(chunk_idx).alloc("__di_i");
+                common::dict::emit_items_from_local(
+                    self.chunk(chunk_idx), obj_tmp, keys_slot, result_slot, idx_slot, 0,
+                );
             }
             "get" => {
-                // dict.get(key, default=None)
+                // dict.get(key) — dynamic key via array_get
                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
-                common::dict::emit_get(self.chunk(chunk_idx), 0);
-                self.chunk(chunk_idx).emit(2, 0);
+                common::dict::emit_get_dynamic(self.chunk(chunk_idx), 0);
             }
             "sort" => {
                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
@@ -2513,6 +2520,7 @@ impl Compiler {
         let mut filter_jumps = Vec::new();
         for f in &generator.ifs {
             self.compile_expr(f, chunk_idx)?;
+            self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
             let j = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
             filter_jumps.push(j);
         }
