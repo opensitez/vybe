@@ -38,6 +38,8 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_deleteproperty","__vybe_deleteproperty"),
     ("__stdlib_from",       "__vybe_from"),
     ("__stdlib_redim",      "__vybe_redim"),
+    ("__stdlib_slicestep",  "__vybe_slicestep"),
+    ("__stdlib_dynmul",     "__vybe_dynmul"),
 ];
 
 /// Additional alias mappings: import name → __vybe_* global name.
@@ -65,6 +67,8 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("vybe:object",  "deleteProperty", "__vybe_deleteproperty"),
     ("vybe:array",   "from",     "__vybe_from"),
     ("vybe:array",   "redim",    "__vybe_redim"),
+    ("vybe:array",   "sliceStep","__vybe_slicestep"),
+    ("vybe:math",    "dynMul",   "__vybe_dynmul"),
 ];
 
 /// Emit the stdlib preamble at the START of a script chunk.

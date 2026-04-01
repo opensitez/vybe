@@ -94,6 +94,12 @@ pub fn build_stdlib() -> StdLib {
     chunks.push(build_redim());
     exports.push("__stdlib_redim");
 
+    chunks.push(build_slice_step());
+    exports.push("__stdlib_slicestep");
+
+    chunks.push(build_dyn_mul());
+    exports.push("__stdlib_dynmul");
+
     StdLib { chunks, exports }
 }
 
@@ -923,6 +929,97 @@ fn build_redim() -> Chunk {
     c.emit_op(Op::i32_const_0, 0);
     c.emit_op_u16(Op::local_get, 2, 0); // new_size
     c.emit_op(Op::array_slice, 0);
+    c.emit_op(Op::r#return, 0);
+    c
+}
+
+// ── sliceStep(arr, start, end, step) → array ─────────────────
+fn build_slice_step() -> Chunk {
+    let mut c = Chunk::new("__stdlib_slicestep");
+    c.arity = 4;
+    c.local_count = 7; // arr(1) start(2) end(3) step(4) result(5) i(6)
+    let zero = c.add_constant(Value::I32(0));
+    c.emit_op_u16(Op::array_new, 0, 0);
+    c.emit_op_u16(Op::local_set, 5, 0);
+    c.emit_op_u16(Op::local_get, 2, 0);
+    c.emit_op_u16(Op::local_set, 6, 0);
+    let loop_start = c.current_offset();
+    c.emit_op_u16(Op::local_get, 4, 0);
+    c.emit_op_u16(Op::r#const, zero, 0);
+    c.emit_op(Op::dyn_gt, 0);
+    let step_pos = c.emit_jump(Op::br_if_true, 0);
+    c.emit_op_u16(Op::local_get, 6, 0);
+    c.emit_op_u16(Op::local_get, 3, 0);
+    c.emit_op(Op::dyn_gt, 0);
+    let cond_done = c.emit_jump(Op::br, 0);
+    c.patch_jump(step_pos);
+    c.emit_op_u16(Op::local_get, 6, 0);
+    c.emit_op_u16(Op::local_get, 3, 0);
+    c.emit_op(Op::dyn_lt, 0);
+    c.patch_jump(cond_done);
+    let exit = c.emit_jump(Op::br_if_false, 0);
+    // bounds check
+    c.emit_op_u16(Op::local_get, 6, 0);
+    c.emit_op_u16(Op::r#const, zero, 0);
+    c.emit_op(Op::dyn_lt, 0);
+    let skip = c.emit_jump(Op::br_if_true, 0);
+    c.emit_op_u16(Op::local_get, 6, 0);
+    c.emit_op_u16(Op::local_get, 1, 0);
+    c.emit_op(Op::array_length, 0);
+    c.emit_op(Op::dyn_ge, 0);
+    let skip2 = c.emit_jump(Op::br_if_true, 0);
+    c.emit_op_u16(Op::local_get, 5, 0);
+    c.emit_op_u16(Op::local_get, 1, 0);
+    c.emit_op_u16(Op::local_get, 6, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op(Op::array_push, 0);
+    c.emit_op(Op::drop, 0);
+    c.patch_jump(skip);
+    c.patch_jump(skip2);
+    c.emit_op_u16(Op::local_get, 6, 0);
+    c.emit_op_u16(Op::local_get, 4, 0);
+    c.emit_op(Op::dyn_add, 0);
+    c.emit_op_u16(Op::local_set, 6, 0);
+    c.emit_loop(loop_start, 0);
+    c.patch_jump(exit);
+    c.emit_op_u16(Op::local_get, 5, 0);
+    c.emit_op(Op::r#return, 0);
+    c
+}
+
+// ── dynMul(a, b) → string repeat or numeric multiply ─────────
+fn build_dyn_mul() -> Chunk {
+    use std::rc::Rc;
+    let mut c = Chunk::new("__stdlib_dynmul");
+    c.arity = 2;
+    c.local_count = 3;
+    let str_tag = c.add_constant(Value::String(Rc::from("string")));
+    // if typeof(a) == "string": return str_repeat(a, b)
+    c.emit_op_u16(Op::local_get, 1, 0);
+    c.emit_op(Op::ref_typeof, 0);
+    c.emit_op_u16(Op::r#const, str_tag, 0);
+    c.emit_op(Op::dyn_eq, 0);
+    let a_not_str = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::local_get, 1, 0);
+    c.emit_op_u16(Op::local_get, 2, 0);
+    c.emit_op(Op::str_repeat, 0);
+    c.emit_op(Op::r#return, 0);
+    c.patch_jump(a_not_str);
+    // if typeof(b) == "string": return str_repeat(b, a)
+    c.emit_op_u16(Op::local_get, 2, 0);
+    c.emit_op(Op::ref_typeof, 0);
+    c.emit_op_u16(Op::r#const, str_tag, 0);
+    c.emit_op(Op::dyn_eq, 0);
+    let b_not_str = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::local_get, 2, 0);
+    c.emit_op_u16(Op::local_get, 1, 0);
+    c.emit_op(Op::str_repeat, 0);
+    c.emit_op(Op::r#return, 0);
+    c.patch_jump(b_not_str);
+    // numeric
+    c.emit_op_u16(Op::local_get, 1, 0);
+    c.emit_op_u16(Op::local_get, 2, 0);
+    c.emit_op(Op::f64_mul, 0);
     c.emit_op(Op::r#return, 0);
     c
 }

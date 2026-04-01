@@ -22,24 +22,19 @@ fn run_portable(mut build_fn: impl FnMut(&mut Chunk)) -> Value {
     let stdlib_base = chunks.len();
 
     // Register stdlib functions as global_inits with RefFunc
-    let mappings: &[(&str, &str)] = &[
-        ("__stdlib_range",      "__vybe_range"),
-        ("__stdlib_sorted",     "__vybe_sorted"),
-        ("__stdlib_reversed",   "__vybe_reversed"),
-        ("__stdlib_enumerate",  "__vybe_enumerate"),
-        ("__stdlib_zip",        "__vybe_zip"),
-        ("__stdlib_sum",        "__vybe_sum"),
-        ("__stdlib_min",        "__vybe_min"),
-        ("__stdlib_max",        "__vybe_max"),
-        ("__stdlib_pow",        "__vybe_pow"),
-    ];
-    for (i, &(chunk_name, global_name)) in mappings.iter().enumerate() {
-        if stdlib.exports.iter().any(|&n| n == chunk_name) {
-            chunks[0].global_inits.push(GlobalInit {
-                name: global_name.to_string(),
-                init: ConstExpr::RefFunc(stdlib_base + i),
-            });
-        }
+    // Use ALL stdlib exports so chunk indices are correct
+    let mappings: Vec<(&str, String)> = stdlib.exports.iter()
+        .map(|&name| {
+            // Convert "__stdlib_foo" → "__vybe_foo"
+            let global = name.replace("__stdlib_", "__vybe_");
+            (name, global)
+        })
+        .collect();
+    for (i, (_, global_name)) in mappings.iter().enumerate() {
+        chunks[0].global_inits.push(GlobalInit {
+            name: global_name.clone(),
+            init: ConstExpr::RefFunc(stdlib_base + i),
+        });
     }
     chunks.extend(stdlib.chunks);
 
@@ -180,6 +175,57 @@ fn vybe_host_overrides() {
         chunk.emit_op_u16(Op::r#const, three, 0);
         chunk.emit_op(Op::i32_const_1, 0);
         bundle::emit_call_invoke(chunk, 3, 0);
+        chunk.emit_op(Op::array_length, 0);
+    });
+    assert_eq!(result.as_i32(), 3);
+}
+
+#[test]
+fn portable_dynmul_str_repeat() {
+    let result = run_portable(|chunk| {
+        bundle::emit_call_push_func(chunk, "__vybe_dynmul", 0);
+        let s = chunk.add_constant(Value::String(Rc::from("ab")));
+        chunk.emit_op_u16(Op::r#const, s, 0);
+        let three = chunk.add_constant(Value::I32(3));
+        chunk.emit_op_u16(Op::r#const, three, 0);
+        bundle::emit_call_invoke(chunk, 2, 0);
+        chunk.emit_op(Op::str_length, 0);
+    });
+    assert_eq!(result.as_i32(), 6);
+}
+
+#[test]
+fn portable_dynmul_numeric() {
+    let result = run_portable(|chunk| {
+        bundle::emit_call_push_func(chunk, "__vybe_dynmul", 0);
+        let six = chunk.add_constant(Value::F64(6.0));
+        chunk.emit_op_u16(Op::r#const, six, 0);
+        let seven = chunk.add_constant(Value::F64(7.0));
+        chunk.emit_op_u16(Op::r#const, seven, 0);
+        bundle::emit_call_invoke(chunk, 2, 0);
+    });
+    assert_eq!(result.as_f64(), 42.0);
+}
+
+#[test]
+fn portable_slicestep_every_other() {
+    let result = run_portable(|chunk| {
+        for i in 1..=6i32 {
+            let c = chunk.add_constant(Value::I32(i));
+            chunk.emit_op_u16(Op::r#const, c, 0);
+        }
+        chunk.emit_op_u16(Op::array_new, 6, 0);
+        chunk.emit_op_u16(Op::local_set, 1, 0);
+
+        bundle::emit_call_push_func(chunk, "__vybe_slicestep", 0);
+        chunk.emit_op_u16(Op::local_get, 1, 0);
+        let zero = chunk.add_constant(Value::I32(0));
+        chunk.emit_op_u16(Op::r#const, zero, 0);
+        let six = chunk.add_constant(Value::I32(6));
+        chunk.emit_op_u16(Op::r#const, six, 0);
+        let two = chunk.add_constant(Value::I32(2));
+        chunk.emit_op_u16(Op::r#const, two, 0);
+        bundle::emit_call_invoke(chunk, 4, 0);
         chunk.emit_op(Op::array_length, 0);
     });
     assert_eq!(result.as_i32(), 3);

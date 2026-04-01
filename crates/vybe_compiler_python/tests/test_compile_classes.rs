@@ -186,7 +186,7 @@ print(d.species)
 }
 
 #[test]
-#[ignore] // TODO: repeated method calls with self mutation
+#[ignore] // Known: two instances share state — struct_new in constructor may reuse backing store
 fn class_multiple_instances() {
     let out = run_prints(r#"
 class Counter:
@@ -267,7 +267,7 @@ fn class_exception_types_registered() {
 }
 
 #[test]
-#[ignore] // TODO: exception constructor scope resolution
+#[ignore] // Known: typed except handler (try_table) doesn't preserve thrown object properties
 fn class_exception_constructor() {
     let out = run_prints(r#"
 try:

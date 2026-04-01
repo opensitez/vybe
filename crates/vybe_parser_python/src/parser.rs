@@ -426,6 +426,37 @@ impl Parser {
                 self.expect_kind(&TokenKind::RBrace)?;
                 Pattern::Mapping(pairs)
             }
+            TokenKind::Identifier(name) if !name.starts_with('_') => {
+                // Could be a name capture (case x:) or a value (case MyConst:)
+                // If followed by 'if' or ':', treat as name capture for guard support
+                let name = name.clone();
+                self.advance();
+                if self.check(&TokenKind::If) || self.check(&TokenKind::Colon) {
+                    // Name capture pattern
+                    Pattern::As { pattern: None, name: Some(name) }
+                } else if self.check(&TokenKind::LParen) {
+                    // Class pattern: ClassName(...)
+                    self.advance();
+                    let mut pats = Vec::new();
+                    while !self.check(&TokenKind::RParen) && !self.is_at_end() {
+                        pats.push(self.parse_pattern()?);
+                        if !self.eat(&TokenKind::Comma) { break; }
+                    }
+                    self.expect_kind(&TokenKind::RParen)?;
+                    Pattern::Class { cls: Expression::Name(name), patterns: pats, kw_patterns: Vec::new() }
+                } else if self.check(&TokenKind::Dot) {
+                    // Dotted name like module.CONST — parse as value
+                    let mut expr = Expression::Name(name);
+                    while self.eat(&TokenKind::Dot) {
+                        let attr = self.expect_identifier()?;
+                        expr = Expression::Attribute { value: Box::new(expr), attr };
+                    }
+                    Pattern::Value(expr)
+                } else {
+                    // Treat as name capture
+                    Pattern::As { pattern: None, name: Some(name) }
+                }
+            }
             _ => {
                 let expr = self.parse_expression()?;
                 Pattern::Value(expr)

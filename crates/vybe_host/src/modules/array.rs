@@ -63,6 +63,74 @@ pub fn register(vm: &mut VM) {
             _ => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
         }
     }));
+    // sliceStep(arr, start, end, step) — slice with step, handles negative step for reverse
+    vm.register_host_fn("vybe:array", "sliceStep", Box::new(|args: &[Value]| {
+        match args.first() {
+            Some(Value::Object(obj)) => {
+                let o = obj.borrow();
+                if let ObjectKind::Array(ref elems) = o.kind {
+                    let len = elems.len() as i64;
+                    let step = args.get(3).map(|v| v.as_f64() as i64).unwrap_or(1);
+                    if step == 0 { return Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))); }
+                    let (default_start, default_end) = if step > 0 { (0i64, len) } else { (len - 1, -len - 1) };
+                    let start = args.get(1).and_then(|v| if matches!(v, Value::Null) { None } else { Some(v.as_f64() as i64) }).unwrap_or(default_start);
+                    let end = args.get(2).and_then(|v| if matches!(v, Value::Null) { None } else { Some(v.as_f64() as i64) }).unwrap_or(default_end);
+                    let s = if start < 0 { (len + start).max(0) } else { start.min(len) };
+                    let e = if end < 0 { (len + end).max(-1) } else { end.min(len) };
+                    let mut result = Vec::new();
+                    if step > 0 {
+                        let mut i = s;
+                        while i < e { result.push(elems[i as usize].clone()); i += step; }
+                    } else {
+                        let mut i = s;
+                        while i > e { result.push(elems[i as usize].clone()); i += step; }
+                    }
+                    return Value::Object(Rc::new(RefCell::new(Object::new_array(result))));
+                }
+                Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+            }
+            Some(Value::String(s)) => {
+                let chars: Vec<char> = s.chars().collect();
+                let len = chars.len() as i64;
+                let step = args.get(3).map(|v| v.as_f64() as i64).unwrap_or(1);
+                if step == 0 { return Value::String(Rc::from("")); }
+                let (default_start, default_end) = if step > 0 { (0i64, len) } else { (len - 1, -len - 1) };
+                let start = args.get(1).and_then(|v| if matches!(v, Value::Null) { None } else { Some(v.as_f64() as i64) }).unwrap_or(default_start);
+                let end = args.get(2).and_then(|v| if matches!(v, Value::Null) { None } else { Some(v.as_f64() as i64) }).unwrap_or(default_end);
+                let sv = if start < 0 { (len + start).max(0) } else { start.min(len) };
+                let ev = if end < 0 { (len + end).max(-1) } else { end.min(len) };
+                let mut result = String::new();
+                if step > 0 {
+                    let mut i = sv;
+                    while i < ev { result.push(chars[i as usize]); i += step; }
+                } else {
+                    let mut i = sv;
+                    while i > ev { result.push(chars[i as usize]); i += step; }
+                }
+                Value::String(Rc::from(result.as_str()))
+            }
+            _ => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+        }
+    }));
+
+    // dynMul(a, b) — dynamic multiply: str*int → repeat, int*int → multiply
+    vm.register_host_fn("vybe:math", "dynMul", Box::new(|args: &[Value]| {
+        let a = args.first().cloned().unwrap_or(Value::Null);
+        let b = args.get(1).cloned().unwrap_or(Value::Null);
+        match (&a, &b) {
+            (Value::String(s), _) => {
+                let count = b.as_f64() as usize;
+                Value::String(Rc::from(s.repeat(count).as_str()))
+            }
+            (_, Value::String(s)) => {
+                let count = a.as_f64() as usize;
+                Value::String(Rc::from(s.repeat(count).as_str()))
+            }
+            (Value::I32(x), Value::I32(y)) => Value::I32(x.wrapping_mul(*y)),
+            _ => Value::F64(a.as_f64() * b.as_f64()),
+        }
+    }));
+
     // setAt(arr, index, value) — set element at index
     vm.register_host_fn("vybe:array", "setAt", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
