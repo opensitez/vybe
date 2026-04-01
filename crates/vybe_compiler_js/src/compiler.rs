@@ -2751,6 +2751,29 @@ impl Compiler {
             ("Object", "freeze", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:object", "freeze"); self.emit_host_call(idx, 1); Ok(Some(())) }
             ("Object", "fromEntries", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:object", "fromEntries"); self.emit_host_call(idx, 1); Ok(Some(())) }
             ("Object", "hasOwn", 2) => { self.compile_expression(&args[0])?; self.compile_expression(&args[1])?; let idx = self.import("vybe:object", "hasOwn"); self.emit_host_call(idx, 2); Ok(Some(())) }
+            ("Object", "assign", _) => {
+                for a in args { self.compile_expression(a)?; }
+                let idx = self.import("vybe:object", "assign");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(Some(()))
+            }
+            ("Object", "create", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:object", "create"); self.emit_host_call(idx, 1); Ok(Some(())) }
+            ("Array", "isArray", 1) => { self.compile_expression(&args[0])?; self.emit(Op::ref_is_array); Ok(Some(())) }
+            ("Array", "from", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:array", "from"); self.emit_host_call(idx, 1); Ok(Some(())) }
+            ("Number", "isNaN", 1) => { self.compile_expression(&args[0])?; self.emit(Op::dup); self.emit(Op::dyn_ne); Ok(Some(())) }
+            ("Number", "isFinite", 1) => { self.compile_expression(&args[0])?; self.emit(Op::f64_abs); self.emit_constant(Value::F64(f64::MAX)); self.emit(Op::dyn_le); Ok(Some(())) }
+            ("Number", "parseInt", _) => {
+                for a in args { self.compile_expression(a)?; }
+                let idx = self.import("vybe:convert", "cint");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(Some(()))
+            }
+            ("Number", "parseFloat", 1) => {
+                self.compile_expression(&args[0])?;
+                let idx = self.import("vybe:convert", "cdbl");
+                self.emit_host_call(idx, 1);
+                Ok(Some(()))
+            }
             ("JSON", "parse", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:json", "parse"); self.emit_host_call(idx, 1); Ok(Some(())) }
             ("JSON", "stringify", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:json", "stringify"); self.emit_host_call(idx, 1); Ok(Some(())) }
             _ => Ok(None),
@@ -2791,6 +2814,7 @@ impl Compiler {
                 "pop" if !is_class_instance => Some(Op::array_pop),
                 "shift" if !is_class_instance => Some(Op::array_shift),
                 "reverse" if !is_class_instance => Some(Op::array_reverse),
+                "lastIndexOf" => Some(Op::str_last_index_of),
                 _ => None,
             };
             if let Some(op) = op {
@@ -2814,7 +2838,9 @@ impl Compiler {
                 "push" if !is_class_instance => Some(Op::array_push),
                 "join" if !is_class_instance => Some(Op::array_join),
                 "concat" if !is_class_instance => Some(Op::array_concat),
-                "indexOf" => Some(Op::str_index_of), // works on both strings and arrays
+                "indexOf" => Some(Op::str_index_of),
+                "lastIndexOf" => Some(Op::str_last_index_of),
+                // "includes" is polymorphic (string + array) — handled by existing dispatch
                 "fill" if !is_class_instance => Some(Op::array_fill),
                 _ => None,
             };
@@ -2843,6 +2869,60 @@ impl Compiler {
                 self.emit(op);
                 return Ok(Some(()));
             }
+        }
+
+        // ── Special multi-arg methods ──
+        match method {
+            "at" => {
+                // arr.at(i) / str.at(i) — supports negative indexing
+                if args.len() == 1 {
+                    self.compile_expression(object)?;
+                    self.compile_expression(&args[0])?;
+                    // Negative index: handled by array_get in VM (already supports negative)
+                    self.emit(Op::array_get);
+                    return Ok(Some(()));
+                }
+            }
+            "splice" if !is_class_instance => {
+                if args.len() >= 2 {
+                    self.compile_expression(object)?;
+                    for a in args { self.compile_expression(a)?; }
+                    let splice_idx = self.import("vybe:array", "splice");
+                    self.emit_host_call(splice_idx, (args.len() + 1) as u8);
+                    return Ok(Some(()));
+                }
+            }
+            "unshift" if !is_class_instance => {
+                if args.len() >= 1 {
+                    self.compile_expression(object)?;
+                    self.emit_constant(Value::I32(0));
+                    self.emit_constant(Value::I32(0));
+                    for a in args { self.compile_expression(a)?; }
+                    let splice_idx = self.import("vybe:array", "splice");
+                    self.emit_host_call(splice_idx, (args.len() + 3) as u8);
+                    return Ok(Some(()));
+                }
+            }
+            "entries" if !is_class_instance => {
+                // arr.entries() → [[0, arr[0]], [1, arr[1]], ...]
+                // Use enumerate pattern
+                self.compile_expression(object)?;
+                let enumerate_fn = self.import("vybe:array", "enumerate");
+                self.emit_host_call(enumerate_fn, 1);
+                return Ok(Some(()));
+            }
+            "flat" if !is_class_instance && args.len() <= 1 => {
+                self.compile_expression(object)?;
+                if args.len() == 1 {
+                    self.compile_expression(&args[0])?;
+                } else {
+                    self.emit_constant(Value::I32(1)); // default depth = 1
+                }
+                let flat_fn = self.import("vybe:array", "flat");
+                self.emit_host_call(flat_fn, 2);
+                return Ok(Some(()));
+            }
+            _ => {}
         }
 
         Ok(None)
