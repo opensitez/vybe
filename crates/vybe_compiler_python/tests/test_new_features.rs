@@ -250,3 +250,36 @@ fn match_with_guard() {
     // Python __contains__ should be callable as contains/includes
     compile_ok("class Bag:\n    def __init__(self):\n        self.items = []\n    def __contains__(self, item):\n        return item in self.items\nb = Bag()\n");
 }
+
+// ── removeprefix / removesuffix ────────────────────────────
+
+#[test] fn removeprefix_basic() {
+    compile_ok("s = 'HelloWorld'\nr = s.removeprefix('Hello')\n");
+}
+#[test] fn removesuffix_basic() {
+    compile_ok("s = 'HelloWorld'\nr = s.removesuffix('World')\n");
+}
+#[test] fn removeprefix_no_match() {
+    compile_ok("s = 'HelloWorld'\nr = s.removeprefix('Bye')\n");
+}
+
+// ── sorted(key=...) ───────────────────────────────────────
+
+#[test] fn sorted_with_key() {
+    compile_ok("words = ['banana', 'apple', 'cherry']\nresult = sorted(words, key=len)\n");
+}
+#[test] fn sorted_with_lambda_key() {
+    compile_ok("pairs = [(1, 'b'), (3, 'a'), (2, 'c')]\nresult = sorted(pairs, key=lambda x: x[1])\n");
+}
+#[test] fn sorted_no_key() {
+    compile_ok("result = sorted([3, 1, 2])\n");
+}
+
+// ── enumerate(start=N) ────────────────────────────────────
+
+#[test] fn enumerate_with_start() {
+    compile_ok("for i, x in enumerate(['a', 'b', 'c'], start=1):\n    print(i, x)\n");
+}
+#[test] fn enumerate_no_start() {
+    compile_ok("for i, x in enumerate(['a', 'b', 'c']):\n    print(i, x)\n");
+}

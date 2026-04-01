@@ -1382,7 +1382,7 @@ impl Compiler {
                 }
             }
 
-            Expression::Call { func, args, keywords: _ } => {
+            Expression::Call { func, args, keywords } => {
                 // Check for built-in functions
                 if let Expression::Name(name) = func.as_ref() {
                     match name.as_str() {
@@ -1452,9 +1452,62 @@ impl Compiler {
                             return Ok(());
                         }
                         "enumerate" => {
+                            // Check for start= keyword
+                            let start_kw = keywords.iter().find(|kw| kw.name.as_deref() == Some("start"));
                             common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_enumerate", 0);
                             for a in args { self.compile_expr(a, chunk_idx)?; }
                             common::bundle::emit_call_invoke(self.chunk(chunk_idx), args.len() as u8, 0);
+                            // If start=N, adjust indices: add N to each pair's index
+                            if let Some(kw) = start_kw {
+                                // result is array of [i, val] pairs. Map: [i+start, val]
+                                let result_slot = self.scope(chunk_idx).alloc("__enum_res");
+                                let idx_slot = self.scope(chunk_idx).alloc("__enum_i");
+                                let start_slot = self.scope(chunk_idx).alloc("__enum_st");
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, result_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.compile_expr(&kw.value, chunk_idx)?;
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, start_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                // for i in 0..len(result): result[i][0] += start
+                                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+                                let loop_start = self.chunk(chunk_idx).current_offset();
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::array_length, 0);
+                                self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
+                                let exit = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                                // pair = result[i]; pair[0] = pair[0] + start
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::array_get, 0); // pair
+                                let zero_c = self.chunk(chunk_idx).add_constant(Value::I32(0));
+                                self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero_c, 0);
+                                self.chunk(chunk_idx).emit_op(Op::dup, 0); // keep 0 for set
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0); // cleanup
+                                // Simpler: pair[0] += start → pair, 0, pair[0]+start → array_set
+                                self.chunk(chunk_idx).emit_op(Op::dup, 0); // dup pair
+                                self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero_c, 0);
+                                self.chunk(chunk_idx).emit_op(Op::array_get, 0); // pair[0]
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, start_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::dyn_add, 0); // pair[0] + start
+                                // Stack: [pair, new_idx]. Need [pair, 0, new_idx] for array_set.
+                                let new_idx_tmp = self.scope(chunk_idx).alloc("__enum_ni");
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, new_idx_tmp, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero_c, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, new_idx_tmp, 0);
+                                self.chunk(chunk_idx).emit_op(Op::array_set, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                // i++
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                                self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_loop(loop_start, 0);
+                                self.chunk(chunk_idx).patch_jump(exit);
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
+                            }
                             return Ok(());
                         }
                         "zip" => {
@@ -1464,6 +1517,15 @@ impl Compiler {
                             return Ok(());
                         }
                         "sorted" => {
+                            // Check for key= keyword argument
+                            let key_fn = keywords.iter().find(|kw| kw.name.as_deref() == Some("key"));
+                            if let Some(kw) = key_fn {
+                                // sorted(iterable, key=fn): map key fn, sort, unsort
+                                // Strategy: build [(key(x), x)] pairs, sort by key, extract values
+                                if args.len() == 1 {
+                                    return self.compile_sorted_with_key(&args[0], &kw.value, chunk_idx);
+                                }
+                            }
                             common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_sorted", 0);
                             for a in args { self.compile_expr(a, chunk_idx)?; }
                             common::bundle::emit_call_invoke(self.chunk(chunk_idx), args.len() as u8, 0);
@@ -2094,6 +2156,66 @@ impl Compiler {
                 self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
                 self.chunk(chunk_idx).emit_op(Op::str_split, 0);
             }
+            "removeprefix" => {
+                // s.removeprefix(prefix): if s.startswith(prefix), return s[len(prefix):]
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                // Stack: [s, prefix]. Dup both for startswith check.
+                let prefix_tmp = self.scope(chunk_idx).alloc("__rp_pfx");
+                let str_tmp = self.scope(chunk_idx).alloc("__rp_str");
+                self.chunk(chunk_idx).emit_op_u16(Op::local_set, prefix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_set, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                // if s.startswith(prefix):
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, prefix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::str_starts_with, 0);
+                let no_match = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                // return s[len(prefix):]
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, prefix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::str_length, 0);
+                let max_c = self.chunk(chunk_idx).add_constant(Value::I32(i32::MAX));
+                self.chunk(chunk_idx).emit_op_u16(Op::r#const, max_c, 0);
+                self.chunk(chunk_idx).emit_op(Op::str_substring, 0);
+                let done = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                // else return s unchanged
+                self.chunk(chunk_idx).patch_jump(no_match);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                self.chunk(chunk_idx).patch_jump(done);
+            }
+            "removesuffix" => {
+                // s.removesuffix(suffix): if s.endswith(suffix), return s[:len(s)-len(suffix)]
+                self.compile_expr(obj, chunk_idx)?;
+                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
+                let suffix_tmp = self.scope(chunk_idx).alloc("__rs_sfx");
+                let str_tmp = self.scope(chunk_idx).alloc("__rs_str");
+                self.chunk(chunk_idx).emit_op_u16(Op::local_set, suffix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_set, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                // if s.endswith(suffix):
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, suffix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::str_ends_with, 0);
+                let no_match = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                // return s[:len(s)-len(suffix)]
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                let zero_c = self.chunk(chunk_idx).add_constant(Value::I32(0));
+                self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero_c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::str_length, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, suffix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::str_length, 0);
+                self.chunk(chunk_idx).emit_op(Op::f64_sub, 0);
+                self.chunk(chunk_idx).emit_op(Op::str_substring, 0);
+                let done = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                // else return s unchanged
+                self.chunk(chunk_idx).patch_jump(no_match);
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                self.chunk(chunk_idx).patch_jump(done);
+            }
             "zfill" | "rjust" => {
                 self.compile_expr(obj, chunk_idx)?;
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
@@ -2651,6 +2773,103 @@ impl Compiler {
         self.chunk(chunk_idx).emit_op(Op::drop, 0);
 
         common::loops::emit_filter(self.chunk(chunk_idx), fn_local, arr_local, result_local, idx_local, elem_local, 0);
+        Ok(())
+    }
+
+    /// sorted(iterable, key=fn): map key, sort pairs by key, extract values.
+    /// Emits: pairs = [[key(x), x] for x in iterable] → sort pairs → [p[1] for p in pairs]
+    fn compile_sorted_with_key(&mut self, iterable: &Expression, key_fn: &Expression, chunk_idx: usize) -> Result<(), String> {
+        let arr_slot = self.scope(chunk_idx).alloc("__sk_arr");
+        let fn_slot = self.scope(chunk_idx).alloc("__sk_fn");
+        let pairs_slot = self.scope(chunk_idx).alloc("__sk_pairs");
+        let result_slot = self.scope(chunk_idx).alloc("__sk_res");
+        let idx_slot = self.scope(chunk_idx).alloc("__sk_i");
+
+        // Evaluate iterable and key function
+        self.compile_expr(iterable, chunk_idx)?;
+        self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.compile_expr(key_fn, chunk_idx)?;
+        self.chunk(chunk_idx).emit_op_u16(Op::local_set, fn_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+
+        // Step 1: Build pairs = [[key(x), x] for x in arr]
+        self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_set, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+
+        let loop1 = self.chunk(chunk_idx).current_offset();
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::array_length, 0);
+        self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
+        let exit1 = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+
+        // pair = [key(arr[i]), arr[i]]
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, pairs_slot, 0);
+        // key(arr[i])
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, fn_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::array_get, 0);
+        self.chunk(chunk_idx).emit_op_u8(Op::call_ref, 1, 0);
+        // arr[i]
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::array_get, 0);
+        // [key, val]
+        self.chunk(chunk_idx).emit_op_u16(Op::array_new, 2, 0);
+        self.chunk(chunk_idx).emit_op(Op::array_push, 0);
+        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        // i++
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+        self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+        self.chunk(chunk_idx).emit_loop(loop1, 0);
+        self.chunk(chunk_idx).patch_jump(exit1);
+
+        // Step 2: Sort pairs by first element (key) using stdlib sorted
+        common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_sorted", 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, pairs_slot, 0);
+        common::bundle::emit_call_invoke(self.chunk(chunk_idx), 1, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_set, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+
+        // Step 3: Extract values: result = [pair[1] for pair in sorted_pairs]
+        self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_set, result_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+
+        let loop2 = self.chunk(chunk_idx).current_offset();
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::array_length, 0);
+        self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
+        let exit2 = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::array_get, 0); // pair
+        let one_c = self.chunk(chunk_idx).add_constant(Value::I32(1));
+        self.chunk(chunk_idx).emit_op_u16(Op::r#const, one_c, 0);
+        self.chunk(chunk_idx).emit_op(Op::array_get, 0); // pair[1] = original value
+        self.chunk(chunk_idx).emit_op(Op::array_push, 0);
+        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+        self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+        self.chunk(chunk_idx).emit_loop(loop2, 0);
+        self.chunk(chunk_idx).patch_jump(exit2);
+
+        self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
         Ok(())
     }
 
