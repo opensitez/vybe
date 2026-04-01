@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use vybe_bytecode::{Chunk, Value, Op};
+use vybe_compiler_common::expressions as common_expr;
 use vybe_parser_basic::ast::*;
 
 use crate::compiler::{Compiler, VarResolution};
@@ -153,19 +154,15 @@ impl Compiler {
             // Logical (short-circuit)
             Expression::And(a, b) | Expression::AndAlso(a, b) => {
                 self.compile_expression(a)?;
-                self.emit(Op::dup); self.emit(Op::dyn_to_bool);
-                let end = self.emit_jump(Op::br_if_false);
-                self.emit(Op::drop);
+                let jump = common_expr::emit_and_start(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.compile_expression(b)?;
-                self.patch_jump(end);
+                common_expr::emit_short_circuit_end(&mut self.chunks[self.current_chunk_idx], jump);
             }
             Expression::Or(a, b) | Expression::OrElse(a, b) => {
                 self.compile_expression(a)?;
-                self.emit(Op::dup); self.emit(Op::dyn_to_bool);
-                let end = self.emit_jump(Op::br_if_true);
-                self.emit(Op::drop);
+                let jump = common_expr::emit_or_start(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.compile_expression(b)?;
-                self.patch_jump(end);
+                common_expr::emit_short_circuit_end(&mut self.chunks[self.current_chunk_idx], jump);
             }
 
             // Bitwise operators
@@ -275,17 +272,15 @@ impl Compiler {
             // If expression (ternary)
             Expression::IfExpression(cond, then_val, else_val) => {
                 self.compile_expression(cond)?;
-                self.emit(Op::dyn_to_bool);
-                let else_j = self.emit_jump(Op::br_if_false);
+                let false_jump = common_expr::emit_ternary_start(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.compile_expression(then_val)?;
-                let end_j = self.emit_jump(Op::br);
-                self.patch_jump(else_j);
+                let end_jump = common_expr::emit_ternary_middle(&mut self.chunks[self.current_chunk_idx], false_jump, self.line);
                 if let Some(ev) = else_val {
                     self.compile_expression(ev)?;
                 } else {
                     self.emit(Op::null);
                 }
-                self.patch_jump(end_j);
+                common_expr::emit_ternary_end(&mut self.chunks[self.current_chunk_idx], end_jump);
             }
 
             // Cast

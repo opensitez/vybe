@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_compiler_common::classes as common_classes;
+use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::loops as common_loops;
 use vybe_parser_dart::*;
 
@@ -80,6 +81,10 @@ impl Compiler {
     }
 
     // ── Emit helpers ──────────────────────────────────────────────────────
+
+    fn chunk_mut(&mut self) -> &mut Chunk {
+        &mut self.chunks[self.current_chunk_idx]
+    }
 
     fn emit(&mut self, op: Op) {
         let line = self.line;
@@ -1608,34 +1613,27 @@ impl Compiler {
             }
             Expression::Ternary { cond, then, else_ } => {
                 self.compile_expression(cond)?;
-                self.emit(Op::dyn_to_bool);
-                let else_j = self.emit_jump(Op::br_if_false);
+                let line = self.line;
+                let false_jump = common_expr::emit_ternary_start(self.chunk_mut(), line);
                 self.compile_expression(then)?;
-                let end_j = self.emit_jump(Op::br);
-                self.patch_jump(else_j);
+                let end_jump = common_expr::emit_ternary_middle(self.chunk_mut(), false_jump, line);
                 self.compile_expression(else_)?;
-                self.patch_jump(end_j);
+                common_expr::emit_ternary_end(self.chunk_mut(), end_jump);
             }
             Expression::NullCoalesce { left, right } => {
                 self.compile_expression(left)?;
-                self.emit(Op::dup);
-                let skip = self.emit_jump(Op::br_if_null);
-                // left is not null — skip right
-                let end = self.emit_jump(Op::br);
-                self.patch_jump(skip);
-                self.emit(Op::drop); // drop null
+                let line = self.line;
+                let (_null_jump, end_jump) = common_expr::emit_null_coalesce_start(self.chunk_mut(), line);
                 self.compile_expression(right)?;
-                self.patch_jump(end);
+                common_expr::emit_null_coalesce_end(self.chunk_mut(), end_jump);
             }
             Expression::Member { object, member, null_safe } => {
                 self.compile_expression(object)?;
                 if *null_safe {
-                    self.emit(Op::dup);
-                    let skip = self.emit_jump(Op::br_if_null);
+                    let line = self.line;
+                    let (skip, _) = common_expr::emit_null_safe_start(self.chunk_mut(), line);
                     self.compile_member_access(member)?;
-                    let end = self.emit_jump(Op::br);
-                    self.patch_jump(skip);
-                    self.patch_jump(end);
+                    common_expr::emit_null_safe_end(self.chunk_mut(), skip, line);
                 } else {
                     self.compile_member_access(member)?;
                 }
@@ -1775,13 +1773,10 @@ impl Compiler {
             }
             Expression::IfNull { left, right } => {
                 self.compile_expression(left)?;
-                self.emit(Op::dup);
-                let not_null = self.emit_jump(Op::br_if_null);
-                let end = self.emit_jump(Op::br);
-                self.patch_jump(not_null);
-                self.emit(Op::drop);
+                let line = self.line;
+                let (_null_jump, end_jump) = common_expr::emit_null_coalesce_start(self.chunk_mut(), line);
                 self.compile_expression(right)?;
-                self.patch_jump(end);
+                common_expr::emit_null_coalesce_end(self.chunk_mut(), end_jump);
             }
             Expression::Record { elements } => {
                 for el in elements {

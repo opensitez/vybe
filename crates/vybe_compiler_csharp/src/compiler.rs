@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use vybe_bytecode::{Chunk, Op, Value};
 use vybe_bytecode::chunk::TypeEntry;
+use vybe_compiler_common::expressions as common_expr;
 use vybe_parser_csharp::ast::*;
 
 // ============================================================
@@ -1804,26 +1805,22 @@ impl Compiler {
             // -- Ternary --
             Expression::Conditional(cond, then_expr, else_expr) => {
                 self.compile_expression(cond)?;
-                self.emit(Op::dyn_to_bool);
-                let else_j = self.emit_jump(Op::br_if_false);
+                let chunk = &mut self.chunks[self.current_chunk_idx];
+                let false_jump = common_expr::emit_ternary_start(chunk, self.line);
                 self.compile_expression(then_expr)?;
-                let end_j = self.emit_jump(Op::br);
-                self.patch_jump(else_j);
+                let chunk = &mut self.chunks[self.current_chunk_idx];
+                let end_jump = common_expr::emit_ternary_middle(chunk, false_jump, self.line);
                 self.compile_expression(else_expr)?;
-                self.patch_jump(end_j);
+                common_expr::emit_ternary_end(&mut self.chunks[self.current_chunk_idx], end_jump);
             }
 
             // -- Null coalescing --
             Expression::NullCoalescing(left, right) => {
                 self.compile_expression(left)?;
-                self.emit(Op::dup);
-                let end_j = self.emit_jump(Op::br_if_null);
-                // Left is not null — keep it, skip right
-                let done_j = self.emit_jump(Op::br);
-                self.patch_jump(end_j);
-                self.emit(Op::drop); // drop the null
+                let chunk = &mut self.chunks[self.current_chunk_idx];
+                let (_null_jump, end_jump) = common_expr::emit_null_coalesce_start(chunk, self.line);
                 self.compile_expression(right)?;
-                self.patch_jump(done_j);
+                common_expr::emit_null_coalesce_end(&mut self.chunks[self.current_chunk_idx], end_jump);
             }
 
             // -- Lambda --
@@ -1912,26 +1909,18 @@ impl Compiler {
         match op {
             BinaryOp::And => {
                 self.compile_expression(left)?;
-                self.emit(Op::dyn_to_bool);
-                let short_j = self.emit_jump(Op::br_if_false);
+                let chunk = &mut self.chunks[self.current_chunk_idx];
+                let jump = common_expr::emit_and_start(chunk, self.line);
                 self.compile_expression(right)?;
-                self.emit(Op::dyn_to_bool);
-                let end_j = self.emit_jump(Op::br);
-                self.patch_jump(short_j);
-                self.emit(Op::r#false);
-                self.patch_jump(end_j);
+                common_expr::emit_short_circuit_end(&mut self.chunks[self.current_chunk_idx], jump);
                 return Ok(());
             }
             BinaryOp::Or => {
                 self.compile_expression(left)?;
-                self.emit(Op::dyn_to_bool);
-                let short_j = self.emit_jump(Op::br_if_true);
+                let chunk = &mut self.chunks[self.current_chunk_idx];
+                let jump = common_expr::emit_or_start(chunk, self.line);
                 self.compile_expression(right)?;
-                self.emit(Op::dyn_to_bool);
-                let end_j = self.emit_jump(Op::br);
-                self.patch_jump(short_j);
-                self.emit(Op::r#true);
-                self.patch_jump(end_j);
+                common_expr::emit_short_circuit_end(&mut self.chunks[self.current_chunk_idx], jump);
                 return Ok(());
             }
             _ => {}

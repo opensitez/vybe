@@ -19,6 +19,7 @@ pub mod loops;
 pub mod errors;
 pub mod strings;
 pub mod functions;
+pub mod expressions;
 pub mod target;
 pub mod stdlib;
 pub mod bundle;

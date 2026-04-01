@@ -3,6 +3,7 @@ use std::rc::Rc;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_bytecode::chunk::TypeEntry;
 use vybe_compiler_common::classes as common_classes;
+use vybe_compiler_common::expressions as common_expr;
 use vybe_parser_js::ast::*;
 
 use crate::scope::Scope;
@@ -878,13 +879,10 @@ impl Compiler {
             Expression::Binary { op, left, right } => {
                 if *op == BinaryOp::NullishCoalescing {
                     self.compile_expression(left)?;
-                    self.emit(Op::dup);
-                    let not_null = self.emit_jump(Op::br_if_null);
-                    let end = self.emit_jump(Op::br);
-                    self.patch_jump(not_null);
-                    self.emit(Op::drop);
+                    let chunk = &mut self.chunks[self.current_chunk_idx];
+                    let (_null_jump, end_jump) = common_expr::emit_null_coalesce_start(chunk, self.line);
                     self.compile_expression(right)?;
-                    self.patch_jump(end);
+                    common_expr::emit_null_coalesce_end(&mut self.chunks[self.current_chunk_idx], end_jump);
                     return Ok(());
                 }
                 self.compile_expression(left)?;
@@ -944,18 +942,14 @@ impl Compiler {
                 self.compile_expression(left)?;
                 match op {
                     LogicalOp::And => {
-                        self.emit(Op::dup); self.emit_to_bool();
-                        let end = self.emit_jump(Op::br_if_false);
-                        self.emit(Op::drop);
+                        let jump = common_expr::emit_and_start(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.compile_expression(right)?;
-                        self.patch_jump(end);
+                        common_expr::emit_short_circuit_end(&mut self.chunks[self.current_chunk_idx], jump);
                     }
                     LogicalOp::Or => {
-                        self.emit(Op::dup); self.emit_to_bool();
-                        let end = self.emit_jump(Op::br_if_true);
-                        self.emit(Op::drop);
+                        let jump = common_expr::emit_or_start(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.compile_expression(right)?;
-                        self.patch_jump(end);
+                        common_expr::emit_short_circuit_end(&mut self.chunks[self.current_chunk_idx], jump);
                     }
                 }
             }
@@ -1019,13 +1013,12 @@ impl Compiler {
                 }
             }
             Expression::Conditional { test, consequent, alternate } => {
-                self.compile_expression(test)?; self.emit_to_bool();
-                let else_j = self.emit_jump(Op::br_if_false);
+                self.compile_expression(test)?;
+                let false_jump = common_expr::emit_ternary_start(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.compile_expression(consequent)?;
-                let end_j = self.emit_jump(Op::br);
-                self.patch_jump(else_j);
+                let end_jump = common_expr::emit_ternary_middle(&mut self.chunks[self.current_chunk_idx], false_jump, self.line);
                 self.compile_expression(alternate)?;
-                self.patch_jump(end_j);
+                common_expr::emit_ternary_end(&mut self.chunks[self.current_chunk_idx], end_jump);
             }
             Expression::Member { object, property, optional } => {
                 // Check for namespace constants: Math.PI, Math.E, Number.MAX_VALUE, etc.
