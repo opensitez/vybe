@@ -6,6 +6,8 @@ use vybe_compiler_common::classes as common_classes;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
 use vybe_compiler_common::threading as common_thread;
+use vybe_compiler_common::io as common_io;
+use vybe_compiler_common::strings as common_strings;
 use vybe_parser_js::ast::*;
 
 use crate::scope::Scope;
@@ -1221,8 +1223,7 @@ impl Compiler {
                         count += 1;
                     }
                 }
-                if count == 0 { self.emit_constant(Value::String(Rc::from(""))); }
-                else if count > 1 { self.emit_u8(Op::str_concat_n, count); }
+                common_strings::emit_concat(&mut self.chunks[self.current_chunk_idx], count as usize, self.line);
             }
             Expression::Typeof(arg) => {
                 self.compile_expression(arg)?;
@@ -2704,6 +2705,13 @@ impl Compiler {
     /// Emit direct WASM opcodes for namespace.method() calls (String.*, Array.*, Number.*).
     fn try_namespace_intrinsic(&mut self, ns: &str, method: &str, args: &[Expression]) -> Result<Option<()>, String> {
         match (ns, method, args.len()) {
+            // console.log(...) → wasi:cli/log (import routed to chunk 0)
+            ("console", "log", _) => {
+                for a in args { self.compile_expression(a)?; }
+                let idx = self.import("wasi:cli", "log");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(Some(()))
+            }
             // String.fromCharCode(n) → str_from_char_code
             ("String", "fromCharCode", 1) => {
                 self.compile_expression(&args[0])?;

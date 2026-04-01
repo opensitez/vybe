@@ -14,6 +14,7 @@ use vybe_bytecode::{Chunk, Op, Value};
 use vybe_bytecode::chunk::TypeEntry;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
+use vybe_compiler_common::strings as common_strings;
 use vybe_compiler_common::threading as common_thread;
 use vybe_parser_csharp::ast::*;
 
@@ -289,6 +290,30 @@ impl Compiler {
         c.emit((import_idx >> 8) as u8, line);
         c.emit((import_idx & 0xff) as u8, line);
         c.emit(argc, line);
+    }
+
+    /// Print N args on the stack via wasi:cli/log (import routed to chunk 0).
+    fn emit_print(&mut self, arg_count: u8) {
+        let idx = self.import("wasi:cli", "log");
+        self.emit_host_call(idx, arg_count);
+    }
+
+    /// Read a line from stdin via wasi:cli/readLine (import routed to chunk 0).
+    fn emit_input(&mut self) {
+        let idx = self.import("wasi:cli", "readLine");
+        self.emit_host_call(idx, 0);
+    }
+
+    /// Convert TOS to string via vybe:convert/toString (import routed to chunk 0).
+    fn emit_to_string_call(&mut self) {
+        let idx = self.import("vybe:convert", "toString");
+        self.emit_host_call(idx, 1);
+    }
+
+    /// Concatenate N string parts on stack. Delegates to common_strings::emit_concat.
+    fn emit_string_concat(&mut self, part_count: usize) {
+        let line = self.line;
+        common_strings::emit_concat(&mut self.chunks[self.current_chunk_idx], part_count, line);
     }
 
     fn emit_global_set(&mut self, name: &str) {
@@ -2125,23 +2150,29 @@ impl Compiler {
     }
 
     fn compile_call(&mut self, callee: &Expression, args: &[Expression]) -> Result<(), String> {
-        // Console.* — uses call_import so tests can override wasi:cli log
+        // Console.* — centralised via common helpers
         if let Expression::MemberAccess(obj, method) = callee {
             if let Expression::Identifier(ref obj_name) = **obj {
                 let obj_lower = obj_name.to_lowercase();
                 let meth_lower = method.to_lowercase();
                 if obj_lower == "console" {
-                    let host = match meth_lower.as_str() {
-                        "writeline" | "write" => Some(("wasi:cli", "log")),
-                        "readline" => Some(("wasi:cli", "readLine")),
-                        "error" => Some(("wasi:cli", "error")),
-                        _ => None,
-                    };
-                    if let Some((module, func)) = host {
-                        for arg in args { self.compile_expression(arg)?; }
-                        let idx = self.import(module, func);
-                        self.emit_host_call(idx, args.len() as u8);
-                        return Ok(());
+                    match meth_lower.as_str() {
+                        "writeline" | "write" => {
+                            for arg in args { self.compile_expression(arg)?; }
+                            self.emit_print(args.len() as u8);
+                            return Ok(());
+                        }
+                        "readline" => {
+                            self.emit_input();
+                            return Ok(());
+                        }
+                        "error" => {
+                            for arg in args { self.compile_expression(arg)?; }
+                            let idx = self.import("wasi:cli", "error");
+                            self.emit_host_call(idx, args.len() as u8);
+                            return Ok(());
+                        }
+                        _ => {}
                     }
                 }
                 // string.Join(sep, arr) → array_join opcode
@@ -2559,18 +2590,18 @@ impl Compiler {
 
     fn compile_interpolated_string(&mut self, parts: &[StringPart]) -> Result<(), String> {
         if parts.is_empty() {
-            self.emit_constant(Value::String(Rc::from("")));
+            self.emit_string_concat(0);
             return Ok(());
         }
         if parts.len() == 1 {
             match &parts[0] {
                 StringPart::Text(s) => {
-                    self.emit_constant(Value::String(Rc::from(s.as_str())));
+                    let line = self.line;
+                    common_strings::emit_literal_part(&mut self.chunks[self.current_chunk_idx], s, line);
                 }
                 StringPart::Expr(e) => {
                     self.compile_expression(e)?;
-                    let idx = self.import("vybe:convert", "toString");
-                    self.emit_host_call(idx, 1);
+                    self.emit_to_string_call();
                 }
             }
             return Ok(());
@@ -2580,16 +2611,16 @@ impl Compiler {
         for part in parts {
             match part {
                 StringPart::Text(s) => {
-                    self.emit_constant(Value::String(Rc::from(s.as_str())));
+                    let line = self.line;
+                    common_strings::emit_literal_part(&mut self.chunks[self.current_chunk_idx], s, line);
                 }
                 StringPart::Expr(e) => {
                     self.compile_expression(e)?;
-                    let idx = self.import("vybe:convert", "toString");
-                    self.emit_host_call(idx, 1);
+                    self.emit_to_string_call();
                 }
             }
         }
-        self.emit_u8(Op::str_concat_n, count as u8);
+        self.emit_string_concat(count);
         Ok(())
     }
 

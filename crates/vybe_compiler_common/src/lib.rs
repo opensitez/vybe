@@ -21,6 +21,7 @@ pub mod strings;
 pub mod functions;
 pub mod expressions;
 pub mod threading;
+pub mod components;
 pub mod target;
 pub mod stdlib;
 pub mod bundle;

@@ -4,7 +4,9 @@ use vybe_bytecode::{Chunk, Value, Op};
 use vybe_compiler_common::classes as common_classes;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
+use vybe_compiler_common::io as common_io;
 use vybe_compiler_common::loops as common_loops;
+use vybe_compiler_common::strings as common_strings;
 use vybe_compiler_common::threading as common_thread;
 use vybe_parser_dart::*;
 
@@ -641,37 +643,23 @@ impl Compiler {
                 let arr_slot = self.define_local("__for_in_arr", true, false);
                 self.emit_u16(Op::local_set, arr_slot);
                 self.emit(Op::drop);
-                // __i = 0
-                self.emit_constant(Value::F64(0.0));
+                // __i — reserve slot (common helper sets it to 0)
                 let i_slot = self.define_local("__for_in_i", false, false);
-                self.emit_u16(Op::local_set, i_slot);
-                self.emit(Op::drop);
-                let loop_start = self.current_offset();
+
+                let line = self.line;
+                let (loop_start, exit) = common_loops::emit_for_in_start(self.chunk_mut(), arr_slot, i_slot, line);
                 self.loop_stack.push(LoopContext { _start_offset: loop_start, break_patches: vec![], continue_patches: vec![] });
-                // __i < __arr.length
-                self.emit_u16(Op::local_get, i_slot);
-                self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length);
-                self.emit(Op::dyn_lt);
-                self.emit(Op::dyn_to_bool);
-                let exit = self.emit_jump(Op::br_if_false);
-                // var = __arr[__i]
-                self.emit_u16(Op::local_get, arr_slot);
-                self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+
+                // element is on stack from emit_for_in_start → assign to loop var
                 let var_slot = self.define_local(var_name, false, false);
                 self.emit_u16(Op::local_set, var_slot);
                 self.emit(Op::drop);
                 self.compile_statement(body)?;
                 for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
-                // __i++
-                self.emit_u16(Op::local_get, i_slot);
-                self.emit_constant(Value::F64(1.0));
-                self.emit(Op::dyn_add);
-                self.emit_u16(Op::local_set, i_slot);
-                self.emit(Op::drop);
-                self.emit_loop(loop_start);
-                self.patch_jump(exit);
+
+                let line = self.line;
+                common_loops::emit_for_in_end(self.chunk_mut(), i_slot, loop_start, exit, line);
+
                 let ctx = self.loop_stack.pop().unwrap();
                 for p in ctx.break_patches { self.patch_jump(p); }
                 self.current_scope_mut().end_scope();
@@ -1408,14 +1396,13 @@ impl Compiler {
                                 }
                                 StringPart::Expr(e) => {
                                     self.compile_expression(e)?;
-                                    let to_str = self.import("vybe:convert", "toString");
-                                    self.emit_host_call(to_str, 1);
+                                    let line = self.line;
+                                    common_strings::emit_to_string(self.chunk_mut(), line);
                                 }
                             }
                         }
-                        if count > 1 {
-                            self.emit_u8(Op::str_concat_n, count as u8);
-                        }
+                        let line = self.line;
+                        common_strings::emit_concat(self.chunk_mut(), count, line);
                     }
                 }
             }
@@ -1890,8 +1877,8 @@ impl Compiler {
         if let Expression::Identifier(name) = callee {
             if name == "print" {
                 let count = self.emit_args(args)?;
-                let idx = self.import("wasi:cli", "log");
-                self.emit_host_call(idx, count);
+                let line = self.line;
+                common_io::emit_print(self.chunk_mut(), count, line);
                 return Ok(());
             }
             // Other bare imports
@@ -1989,8 +1976,8 @@ impl Compiler {
             // toString() method
             if member == "toString" {
                 self.compile_expression(object)?;
-                let idx = self.import("vybe:convert", "toString");
-                self.emit_host_call(idx, 1);
+                let line = self.line;
+                common_strings::emit_to_string(self.chunk_mut(), line);
                 return Ok(());
             }
 

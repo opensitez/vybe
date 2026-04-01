@@ -162,6 +162,12 @@ impl Compiler {
         c.emit((import_idx & 0xff) as u8, line);
         c.emit(argc, line);
     }
+    /// Print N args on the stack via wasi:cli/log (import routed to chunk 0).
+    pub(crate) fn emit_print(&mut self, arg_count: u8) {
+        let idx = self.import("wasi:cli", "log");
+        self.emit_host_call(idx, arg_count);
+    }
+
     pub(crate) fn emit_global_set(&mut self, name: &str) {
         let idx = self.add_string_constant(name);
         self.emit_u16(Op::global_set, idx);

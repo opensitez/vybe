@@ -8,18 +8,33 @@ use vybe_bytecode::opcode::Op;
 // Target-aware variants can be added here when needed.
 // use crate::Target;
 
-/// Emit print/log. Stack: [arg1, arg2, ..., argN] → []
-/// `arg_count` values are consumed from the stack.
+/// Emit print/log. Adds import to the given chunk.
+/// Use `emit_print_with_import` if your compiler requires imports in chunk 0.
+/// Stack: [arg1, arg2, ..., argN] → []
 pub fn emit_print(chunk: &mut Chunk, arg_count: u8, line: u32) {
     let idx = chunk.add_import("wasi:cli", "log");
     chunk.emit_op_u16(Op::call_import, idx, line);
     chunk.emit(arg_count, line);
 }
 
-/// Emit readline (input). Stack: [] → [string]
+/// Emit print using a pre-resolved import index.
+/// Use this when your compiler routes imports to chunk 0 separately.
+/// Stack: [arg1, arg2, ..., argN] → []
+pub fn emit_print_with_import(chunk: &mut Chunk, import_idx: u16, arg_count: u8, line: u32) {
+    chunk.emit_op_u16(Op::call_import, import_idx, line);
+    chunk.emit(arg_count, line);
+}
+
+/// Emit readline (input). Adds import to the given chunk.
 pub fn emit_input(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasi:cli", "readLine");
     chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit(0, line);
+}
+
+/// Emit readline using a pre-resolved import index.
+pub fn emit_input_with_import(chunk: &mut Chunk, import_idx: u16, line: u32) {
+    chunk.emit_op_u16(Op::call_import, import_idx, line);
     chunk.emit(0, line);
 }
 

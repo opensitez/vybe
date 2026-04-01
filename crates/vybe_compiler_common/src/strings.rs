@@ -10,9 +10,17 @@ use vybe_bytecode::opcode::Op;
 
 /// Emit toString conversion on TOS via host call.
 /// Stack before: [value]  Stack after: [string]
+/// Emit toString conversion. Adds import to the given chunk.
+/// Use `emit_to_string_with_import` if your compiler requires imports in chunk 0.
 pub fn emit_to_string(chunk: &mut Chunk, line: u32) {
     let to_str = chunk.add_import("vybe:convert", "toString");
     chunk.emit_op_u16(Op::call_import, to_str, line);
+    chunk.emit(1, line);
+}
+
+/// Emit toString using a pre-resolved import index.
+pub fn emit_to_string_with_import(chunk: &mut Chunk, import_idx: u16, line: u32) {
+    chunk.emit_op_u16(Op::call_import, import_idx, line);
     chunk.emit(1, line);
 }
 
