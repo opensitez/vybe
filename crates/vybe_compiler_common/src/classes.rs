@@ -108,27 +108,36 @@ pub fn cross_language_aliases(method_name: &str) -> &'static [&'static str] {
         "__contains__" | "contains" | "includes" =>
             &["__contains__", "contains", "includes"],
 
-        // Indexing: Python __getitem__/__setitem__
-        "__getitem__" => &["__getitem__"],
-        "__setitem__" => &["__setitem__"],
+        // Indexing: Python __getitem__/__setitem__ ↔ Dart operator[]/operator[]=
+        "__getitem__" | "operator[]" => &["__getitem__", "operator[]"],
+        "__setitem__" | "operator[]=" => &["__setitem__", "operator[]="],
 
-        // Iteration: Python __iter__/__next__
-        "__iter__" => &["__iter__"],
-        "__next__" => &["__next__"],
+        // Iteration: Python __iter__/__next__ ↔ Dart iterator/moveNext ↔ JS Symbol.iterator
+        "__iter__" | "iterator" | "getIterator" =>
+            &["__iter__", "iterator", "getIterator"],
+        "__next__" | "moveNext" =>
+            &["__next__", "moveNext"],
 
-        // Equality: Python __eq__ ↔ VB/C# Equals()
-        "__eq__" | "equals" =>
-            &["__eq__", "equals"],
+        // Equality: Python __eq__ ↔ Dart operator== ↔ VB/C# Equals()
+        "__eq__" | "equals" | "operator==" =>
+            &["__eq__", "equals", "operator=="],
 
-        // Hashing: Python __hash__ ↔ VB/C# GetHashCode()
-        "__hash__" | "gethashcode" =>
-            &["__hash__", "gethashcode"],
+        // Hashing: Python __hash__ ↔ VB/C# GetHashCode() ↔ Dart hashCode
+        "__hash__" | "gethashcode" | "__get_hashcode" =>
+            &["__hash__", "gethashcode", "__get_hashcode"],
 
-        // Comparison: Python __lt__ etc ↔ VB/C# CompareTo()
-        "__lt__" => &["__lt__"],
-        "__le__" => &["__le__"],
-        "__gt__" => &["__gt__"],
-        "__ge__" => &["__ge__"],
+        // Comparison: Python __lt__/__gt__/etc ↔ Dart operator</>/ ↔ C# CompareTo
+        "__lt__" | "operator<" => &["__lt__", "operator<"],
+        "__le__" | "operator<=" => &["__le__", "operator<="],
+        "__gt__" | "operator>" => &["__gt__", "operator>"],
+        "__ge__" | "operator>=" => &["__ge__", "operator>="],
+
+        // Arithmetic: Python __add__/etc ↔ Dart operator+/etc
+        "__add__" | "operator+" => &["__add__", "operator+"],
+        "__sub__" | "operator-" => &["__sub__", "operator-"],
+        "__mul__" | "operator*" => &["__mul__", "operator*"],
+        "__truediv__" | "operator/" => &["__truediv__", "operator/"],
+        "__mod__" | "operator%" => &["__mod__", "operator%"],
 
         // Context manager — Python only, no aliases needed
         "__enter__" | "__exit__" => &[],

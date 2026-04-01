@@ -1421,8 +1421,13 @@ impl Compiler {
                         "print" => return self.compile_print(args, chunk_idx),
                         "len" => {
                             if args.len() == 1 {
+                                // Smart length: tries __get_length/__len__ on user objects,
+                                // falls back to array_length for plain arrays/strings.
                                 self.compile_expr(&args[0], chunk_idx)?;
-                                self.chunk(chunk_idx).emit_op(Op::array_length, 0);
+                                let obj_slot = self.scope(chunk_idx).alloc("__len_obj");
+                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, obj_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                common::expressions::emit_smart_length(self.chunk(chunk_idx), obj_slot, 0);
                                 return Ok(());
                             }
                         }
@@ -2551,22 +2556,40 @@ impl Compiler {
     }
 
     fn emit_cmp_op(&mut self, op: CmpOp, chunk_idx: usize) {
-        match op {
-            CmpOp::Eq => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0),
-            CmpOp::NotEq => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
-            CmpOp::Lt => self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0),
-            CmpOp::LtE => self.chunk(chunk_idx).emit_op(Op::dyn_le, 0),
-            CmpOp::Gt => self.chunk(chunk_idx).emit_op(Op::dyn_gt, 0),
-            CmpOp::GtE => self.chunk(chunk_idx).emit_op(Op::dyn_ge, 0),
-            CmpOp::Is => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0), // simplified
-            CmpOp::IsNot => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
-            CmpOp::In => {
-                // Stack: [needle, haystack]. array_contains pops haystack(TOS), needle.
-                self.chunk(chunk_idx).emit_op(Op::array_contains, 0);
-            }
-            CmpOp::NotIn => {
-                self.chunk(chunk_idx).emit_op(Op::array_contains, 0);
-                self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
+        // For comparison operators, use rich compare dispatch:
+        // tries user-defined __lt__/__eq__/etc, falls back to primitive opcode.
+        // Stack: [left, right]
+        let dunder_and_fallback: Option<(&str, Op)> = match op {
+            CmpOp::Lt => Some(("__lt__", Op::dyn_lt)),
+            CmpOp::LtE => Some(("__le__", Op::dyn_le)),
+            CmpOp::Gt => Some(("__gt__", Op::dyn_gt)),
+            CmpOp::GtE => Some(("__ge__", Op::dyn_ge)),
+            CmpOp::Eq => Some(("__eq__", Op::dyn_eq)),
+            CmpOp::NotEq => Some(("__ne__", Op::dyn_ne)),
+            _ => None,
+        };
+
+        if let Some((dunder, fallback)) = dunder_and_fallback {
+            // Store operands in locals for rich compare dispatch
+            let right_slot = self.scope(chunk_idx).alloc("__cmp_r");
+            let left_slot = self.scope(chunk_idx).alloc("__cmp_l");
+            self.chunk(chunk_idx).emit_op_u16(Op::local_set, right_slot, 0);
+            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+            self.chunk(chunk_idx).emit_op_u16(Op::local_set, left_slot, 0);
+            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+            common::expressions::emit_rich_compare_locals(
+                self.chunk(chunk_idx), left_slot, right_slot, dunder, fallback, 0,
+            );
+        } else {
+            match op {
+                CmpOp::Is => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0),
+                CmpOp::IsNot => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
+                CmpOp::In => self.chunk(chunk_idx).emit_op(Op::array_contains, 0),
+                CmpOp::NotIn => {
+                    self.chunk(chunk_idx).emit_op(Op::array_contains, 0);
+                    self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
+                }
+                _ => {} // covered above
             }
         }
     }
