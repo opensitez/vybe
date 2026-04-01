@@ -137,6 +137,110 @@ pub fn emit_null_safe_end(chunk: &mut Chunk, skip: usize, line: u32) {
     chunk.patch_jump(end);
 }
 
+// ── Generic dynamic dispatch ────────────────────────────────────────────
+//
+// The universal pattern for dynamic languages:
+//   1. struct_get a method/property on the object
+//   2. If found (non-null), call it
+//   3. If not found, execute a fallback
+//
+// All rich_compare, smart_length, rich_arithmetic, etc. are instances of this.
+
+/// Emit a try-method-or-fallback dispatch.
+/// Checks if `obj_slot` has a method named `method_name`. If found, calls it with
+/// `arg_count` args (which the caller pushes between start and end).
+/// Returns (is_null_jump, found_done_jump) for the caller to emit the fallback.
+///
+/// Usage:
+///   let (null_jump, done_jump) = emit_dynamic_dispatch_start(chunk, obj_slot, "method", line);
+///   // push args for the found case
+///   emit_dynamic_dispatch_call(chunk, arg_count, line);
+///   let done = emit_dynamic_dispatch_middle(chunk, line);
+///   // patch null case, emit fallback
+///   emit_dynamic_dispatch_fallback(chunk, null_jump, done, line);
+///
+/// Or use the simpler one-shot helpers below.
+pub fn emit_try_method(chunk: &mut Chunk, obj_slot: u16, method_name: &str, line: u32) -> (usize, bool) {
+    chunk.emit_op_u16(Op::local_get, obj_slot, line);
+    let key = chunk.add_constant(Value::String(Rc::from(method_name)));
+    chunk.emit_op_u16(Op::struct_get, key, line);
+    chunk.emit_op(Op::dup, line);
+    chunk.emit_op(Op::ref_is_null, line);
+    let is_null = chunk.emit_jump(Op::br_if_true, line);
+    (is_null, true)
+}
+
+/// After emit_try_method found a method: clean up the null path.
+/// Call this after emitting the call_ref in the found path.
+pub fn emit_try_method_fallback_start(chunk: &mut Chunk, is_null: usize, line: u32) -> usize {
+    let done = chunk.emit_jump(Op::br, line);
+    chunk.patch_jump(is_null);
+    chunk.emit_op(Op::drop, line); // drop null from dup
+    chunk.emit_op(Op::drop, line); // drop null from struct_get
+    done
+}
+
+/// End the try-method dispatch.
+pub fn emit_try_method_end(chunk: &mut Chunk, done: usize) {
+    chunk.patch_jump(done);
+}
+
+// ── Rich arithmetic (user-defined __add__/__sub__/etc) ──────────────────
+//
+// Same pattern as rich_compare but for binary arithmetic operators.
+// Tries user-defined dunder method, falls back to primitive opcode.
+
+/// Emit rich arithmetic: tries user-defined __add__/etc, falls back to primitive opcode.
+/// Caller must store left in `left_slot` and right in `right_slot`.
+/// Stack before: []  Stack after: [result_value]
+pub fn emit_rich_arithmetic(chunk: &mut Chunk, left_slot: u16, right_slot: u16, dunder: &str, fallback_op: Op, line: u32) {
+    // Same dispatch pattern as rich_compare
+    emit_rich_compare_locals(chunk, left_slot, right_slot, dunder, fallback_op, line);
+}
+
+// ── Rich toString (user-defined __str__ / toString) ─────────────────────
+
+/// Emit smart toString: tries __str__/toString getter on objects, falls back to host toString.
+/// Object must be in `obj_slot`.
+/// Stack before: []  Stack after: [string_value]
+pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    // Try struct_get "__str__" on object
+    let (is_null, _) = emit_try_method(chunk, obj_slot, "__str__", line);
+
+    // Found: call __str__(self) → returns string
+    chunk.emit_op_u16(Op::local_get, obj_slot, line);
+    chunk.emit_op_u8(Op::call_ref, 1, line);
+    let done = emit_try_method_fallback_start(chunk, is_null, line);
+
+    // Fallback: use host toString
+    chunk.emit_op_u16(Op::local_get, obj_slot, line);
+    let to_str = chunk.add_import("vybe:convert", "toString");
+    chunk.emit_op_u16(Op::call_import, to_str, line);
+    chunk.emit(1, line);
+
+    emit_try_method_end(chunk, done);
+}
+
+// ── Rich bool (user-defined __bool__ / valueOf) ─────────────────────────
+
+/// Emit smart bool: tries __bool__ on objects, falls back to dyn_to_bool.
+/// Object must be in `obj_slot`.
+/// Stack before: []  Stack after: [bool_value]
+pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    let (is_null, _) = emit_try_method(chunk, obj_slot, "__bool__", line);
+
+    // Found: call __bool__(self) → returns bool
+    chunk.emit_op_u16(Op::local_get, obj_slot, line);
+    chunk.emit_op_u8(Op::call_ref, 1, line);
+    let done = emit_try_method_fallback_start(chunk, is_null, line);
+
+    // Fallback: use dyn_to_bool
+    chunk.emit_op_u16(Op::local_get, obj_slot, line);
+    chunk.emit_op(Op::dyn_to_bool, line);
+
+    emit_try_method_end(chunk, done);
+}
+
 // ── Rich comparison (user-defined __lt__/__gt__/etc) ────────────────────
 //
 // Standard WASM opcodes only. Emits inline dispatch:

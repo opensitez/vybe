@@ -1289,6 +1289,9 @@ impl Compiler {
                 self.compile_expr(left, chunk_idx)?;
                 self.compile_expr(right, chunk_idx)?;
                 match op {
+                    // Arithmetic: use primitive opcodes (dyn_add handles string+int natively).
+                    // User-defined __add__/__sub__ are available via cross-language aliases
+                    // and the method-with-fallback dispatch path — not needed on every `+`.
                     BinOp::Add => self.chunk(chunk_idx).emit_op(Op::dyn_add, 0),
                     BinOp::Sub => self.chunk(chunk_idx).emit_op(Op::f64_sub, 0),
                     BinOp::Mul => {
