@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_bytecode::chunk::TypeEntry;
+use vybe_compiler_common::classes as common_classes;
 use vybe_parser_js::ast::*;
 
 use crate::scope::Scope;
@@ -2488,15 +2489,11 @@ impl Compiler {
 
         // Save parent methods as __base_name before child overrides them
         if super_class.is_some() {
+            let line = self.line;
             for (method_name, _) in methods.iter() {
-                self.emit_u16(Op::local_get, 1); // this
-                self.emit(Op::dup);
-                let prop_idx = self.add_string_constant(method_name);
-                self.emit_u16(Op::struct_get, prop_idx); // parent's version (or null)
-                let base_name = format!("__base_{}", method_name);
-                let base_idx = self.add_string_constant(&base_name);
-                self.emit_u16(Op::struct_set, base_idx);
-                self.emit(Op::drop);
+                common_classes::emit_save_base_method(
+                    &mut self.chunks[self.current_chunk_idx], 1, method_name, line,
+                );
             }
         }
 
@@ -2505,32 +2502,50 @@ impl Compiler {
         for (method_name, method_fn) in methods {
             self.emit_u16(Op::local_get, 1); // this
             self.compile_method(method_fn)?;
-            method_entries.push((method_name.clone(), self.chunks.len() - 1));
+            let method_chunk_idx = self.chunks.len() - 1;
+            method_entries.push((method_name.clone(), method_chunk_idx));
             let prop_idx = self.add_string_constant(method_name);
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
+            // Cross-language aliases so JS classes are callable from Python/VB/C#
+            let line = self.line;
+            common_classes::emit_cross_language_aliases(
+                &mut self.chunks[self.current_chunk_idx], 1, method_name, method_chunk_idx, line,
+            );
         }
 
         // Attach getters as __get_name methods
         for (getter_name, getter_fn) in getters {
             self.emit_u16(Op::local_get, 1);
             self.compile_method(getter_fn)?;
-            method_entries.push((format!("__get_{}", getter_name), self.chunks.len() - 1));
+            let getter_chunk_idx = self.chunks.len() - 1;
             let prop_name = format!("__get_{}", getter_name);
+            method_entries.push((prop_name.clone(), getter_chunk_idx));
             let prop_idx = self.add_string_constant(&prop_name);
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
+            // Cross-language aliases for getters (e.g. __get_length → __len__)
+            let line = self.line;
+            common_classes::emit_cross_language_aliases(
+                &mut self.chunks[self.current_chunk_idx], 1, &prop_name, getter_chunk_idx, line,
+            );
         }
 
         // Attach setters as __set_name methods
         for (setter_name, setter_fn) in setters {
             self.emit_u16(Op::local_get, 1);
             self.compile_method(setter_fn)?;
-            method_entries.push((format!("__set_{}", setter_name), self.chunks.len() - 1));
+            let setter_chunk_idx = self.chunks.len() - 1;
             let prop_name = format!("__set_{}", setter_name);
+            method_entries.push((prop_name.clone(), setter_chunk_idx));
             let prop_idx = self.add_string_constant(&prop_name);
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
+            // Cross-language aliases for setters
+            let line = self.line;
+            common_classes::emit_cross_language_aliases(
+                &mut self.chunks[self.current_chunk_idx], 1, &prop_name, setter_chunk_idx, line,
+            );
         }
 
         // Compile remaining constructor body after methods are attached
@@ -2586,8 +2601,13 @@ impl Compiler {
             self.emit(Op::set_type_id);
         }
 
-        self.emit_u16(Op::local_get, 1); // return this
-        self.emit(Op::r#return);
+        // Return `this` from constructor
+        {
+            let line = self.line;
+            common_classes::emit_constructor_return(
+                &mut self.chunks[self.current_chunk_idx], 1, line,
+            );
+        }
 
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;

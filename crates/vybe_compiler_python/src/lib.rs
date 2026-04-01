@@ -416,65 +416,15 @@ impl Compiler {
                 self.scopes.push(ctor_scope);
                 let scope_idx = self.scopes.len() - 1;
 
-                // Create empty object
-                self.chunk(ctor_idx).emit_op_u16(Op::struct_new, 0, 0);
-                self.chunk(ctor_idx).emit_op_u16(Op::local_set, this_local, 0);
-                self.chunk(ctor_idx).emit_op(Op::drop, 0);
+                // Create empty object, stamp __type + type_id
+                common::classes::emit_new_typed_object(self.chunk(ctor_idx), this_local, name, 0);
 
-                // Stamp __type (for untyped fallback)
-                self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
-                let type_str = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(name.as_str())));
-                let type_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from("__type")));
-                self.chunk(ctor_idx).emit_op_u16(Op::r#const, type_str, 0);
-                self.chunk(ctor_idx).emit_op_u16(Op::struct_set, type_key, 0);
-                self.chunk(ctor_idx).emit_op(Op::drop, 0);
-
-                // Stamp type_id via __tid_ global (set by TypeRegistry at load time)
-                let tid_name = self.chunk(ctor_idx).add_constant(
-                    Value::String(Rc::from(format!("__tid_{}", ctor_name).as_str()))
-                );
-                self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
-                self.chunk(ctor_idx).emit_op_u16(Op::global_get, tid_name, 0);
-                self.chunk(ctor_idx).emit_op(Op::set_type_id, 0);
-                self.chunk(ctor_idx).emit_op(Op::drop, 0);
-
-                // Bind instance methods on the object.
-                // Also create cross-language aliases for Python dunders:
-                //   __str__  → toString (JS), __get_tostring (VB/C#)
-                //   __len__  → length property
-                //   __bool__ → valueOf (JS truthiness)
-                //   __getitem__ → mapped at call site
-                //   __enter__/__exit__ → stored as-is (with statement)
+                // Bind instance methods + cross-language aliases
                 for (method_name, method_ci) in &method_entries {
                     if method_name == "__init__" { continue; }
-
-                    // Bind under original dunder name
-                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
-                    self.chunk(ctor_idx).emit_op_u16(Op::ref_func, *method_ci as u16, 0);
-                    self.chunk(ctor_idx).emit(0, 0);
-                    let m_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(method_name.as_str())));
-                    self.chunk(ctor_idx).emit_op_u16(Op::struct_set, m_key, 0);
-                    self.chunk(ctor_idx).emit_op(Op::drop, 0);
-
-                    // Cross-language aliases
-                    let aliases: &[&str] = match method_name.as_str() {
-                        "__str__" => &["toString", "__get_tostring"],
-                        "__repr__" => &["toDebugString"],
-                        "__len__" => &["__get_length", "__get_count"],
-                        "__bool__" => &["valueOf"],
-                        "__contains__" => &["contains", "includes"],
-                        "__enter__" => &[],
-                        "__exit__" => &[],
-                        _ => &[],
-                    };
-                    for alias in aliases {
-                        self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
-                        self.chunk(ctor_idx).emit_op_u16(Op::ref_func, *method_ci as u16, 0);
-                        self.chunk(ctor_idx).emit(0, 0);
-                        let a_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(*alias)));
-                        self.chunk(ctor_idx).emit_op_u16(Op::struct_set, a_key, 0);
-                        self.chunk(ctor_idx).emit_op(Op::drop, 0);
-                    }
+                    common::classes::emit_bind_method_with_aliases(
+                        self.chunk(ctor_idx), this_local, method_name, *method_ci, 0,
+                    );
                 }
 
                 // Compile class-level statements (class attributes).
@@ -509,56 +459,30 @@ impl Compiler {
                 // If no __init__ and has parent, store parent constructor as __super
                 // so super().__init__() can find it. Users must call super() explicitly.
                 } else if !parent_name.is_empty() {
-                    // Store parent constructor ref on the object for super() access
-                    let parent_c = self.chunk(ctor_idx).add_constant(
-                        Value::String(Rc::from(parent_name.as_str()))
-                    );
-                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
-                    self.chunk(ctor_idx).emit_op_u16(Op::global_get, parent_c, 0);
-                    let super_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from("__super")));
-                    self.chunk(ctor_idx).emit_op_u16(Op::struct_set, super_key, 0);
-                    self.chunk(ctor_idx).emit_op(Op::drop, 0);
+                    common::classes::emit_store_super(self.chunk(ctor_idx), this_local, &parent_name, 0);
                 }
 
-                // Return this
-                self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
-                self.chunk(ctor_idx).emit_op(Op::r#return, 0);
+                common::classes::emit_constructor_return(self.chunk(ctor_idx), this_local, 0);
 
                 let scope = self.scopes.remove(scope_idx);
                 self.chunks[ctor_idx].local_count = (scope.max_local + 1) as u16;
 
-                // Store constructor as a global (ClassName = constructor function)
+                // Store constructor as local + global
                 let class_local = self.scope(chunk_idx).alloc(name);
-                self.chunk(chunk_idx).emit_op_u16(Op::ref_func, ctor_idx as u16, 0);
-                self.chunk(chunk_idx).emit(0, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, class_local, 0);
-                // Also store as global for cross-module access
-                let global_name = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(name.to_lowercase().as_str())));
-                self.chunk(chunk_idx).emit_op_u16(Op::global_set, global_name, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                common::classes::emit_store_constructor(self.chunk(chunk_idx), name, ctor_idx, class_local, 0);
 
-                // Attach static/class methods to the constructor function (not instances).
-                // Same pattern as VB Shared, JS static, C# static.
+                // Attach static/class methods to the constructor function
                 for (sm_name, sm_ci) in &static_method_entries {
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, class_local, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::ref_func, *sm_ci as u16, 0);
-                    self.chunk(chunk_idx).emit(0, 0);
-                    let sm_key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(sm_name.as_str())));
-                    self.chunk(chunk_idx).emit_op_u16(Op::struct_set, sm_key, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    common::classes::emit_attach_static_method(self.chunk(chunk_idx), class_local, sm_name, *sm_ci, 0);
                 }
 
                 // Register type entry
-                use vybe_bytecode::chunk::TypeEntry;
-                self.chunks[0].types.push(TypeEntry {
-                    name: name.to_lowercase(),
-                    parent: parent_name,
-                    fields: Vec::new(),
-                    methods: { let mut all = method_entries; all.extend(static_method_entries); all },
-                    is_interface: false,
-                    implements: if all_bases.len() > 1 { all_bases[1..].to_vec() } else { Vec::new() },
-                    constructor_chunk: Some(ctor_idx),
-                });
+                let all_methods = { let mut all = method_entries; all.extend(static_method_entries); all };
+                let implements = if all_bases.len() > 1 { all_bases[1..].to_vec() } else { Vec::new() };
+                common::classes::register_type(
+                    &mut self.chunks, name, &parent_name,
+                    Vec::new(), all_methods, false, implements, Some(ctor_idx),
+                );
             }
 
             Statement::Return(expr) => {

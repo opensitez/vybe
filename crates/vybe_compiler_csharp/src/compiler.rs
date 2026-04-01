@@ -652,12 +652,9 @@ impl Compiler {
             let is_interface = self.defined_interfaces.contains(&parent_lower);
             if !parent_lower.is_empty() && !is_framework && !is_interface {
                 // Store __super
-                self.emit_u16(Op::local_get, this_slot);
-                let parent_idx = self.add_string_constant(&parent_lower);
-                self.emit_u16(Op::global_get, parent_idx);
-                let super_idx = self.add_string_constant("__super");
-                self.emit_u16(Op::struct_set, super_idx);
-                self.emit(Op::drop);
+                vybe_compiler_common::classes::emit_store_super(
+                    &mut self.chunks[idx], this_slot, &parent_lower, self.line,
+                );
 
                 // Call base constructor with args
                 let parent_idx = self.add_string_constant(&parent_lower);
@@ -691,26 +688,18 @@ impl Compiler {
         let base_is_class = class.base_type.as_ref().map(|b| !self.defined_interfaces.contains(&b.to_lowercase())).unwrap_or(false);
         if base_is_class {
             for method in &instance_methods {
-                let base_name = format!("__base_{}", method.name.to_lowercase());
-                self.emit_u16(Op::local_get, this_slot);
-                self.emit_u16(Op::local_get, this_slot);
-                let prop_idx = self.add_string_constant(&method.name.to_lowercase());
-                self.emit_u16(Op::struct_get, prop_idx);
-                let base_idx = self.add_string_constant(&base_name);
-                self.emit_u16(Op::struct_set, base_idx);
-                self.emit(Op::drop);
+                vybe_compiler_common::classes::emit_save_base_method(
+                    &mut self.chunks[idx], this_slot, &method.name.to_lowercase(), self.line,
+                );
             }
         }
 
         // Initialize auto-properties to null BEFORE constructor body
         for prop in &properties {
             if prop.is_auto {
-                let prop_name = prop.name.to_lowercase();
-                self.emit_u16(Op::local_get, this_slot);
-                self.emit(Op::null);
-                let pidx = self.add_string_constant(&prop_name);
-                self.emit_u16(Op::struct_set, pidx);
-                self.emit(Op::drop);
+                vybe_compiler_common::classes::emit_init_field_null(
+                    &mut self.chunks[idx], this_slot, &prop.name.to_lowercase(), self.line,
+                );
             }
         }
 
@@ -721,12 +710,16 @@ impl Compiler {
             self.emit_u16(Op::local_get, this_slot);
             self.compile_instance_method(method)?;
             // Record chunk index for type table (the chunk was just added)
-            let chunk_idx = self.chunks.len() - 1;
-            method_entries.push((method.name.to_lowercase(), chunk_idx));
+            let method_chunk_idx = self.chunks.len() - 1;
+            method_entries.push((method.name.to_lowercase(), method_chunk_idx));
             // Attach to instance (backward compat)
             let prop_idx = self.add_string_constant(&method.name.to_lowercase());
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
+            // Cross-language aliases (Python __str__ ↔ JS toString ↔ C# ToString etc.)
+            vybe_compiler_common::classes::emit_cross_language_aliases(
+                &mut self.chunks[idx], this_slot, &method.name.to_lowercase(), method_chunk_idx, self.line,
+            );
         }
 
         // Compile constructor body
@@ -768,8 +761,9 @@ impl Compiler {
         }
 
         // Return this
-        self.emit_u16(Op::local_get, this_slot);
-        self.emit(Op::r#return);
+        vybe_compiler_common::classes::emit_constructor_return(
+            &mut self.chunks[idx], this_slot, self.line,
+        );
 
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;

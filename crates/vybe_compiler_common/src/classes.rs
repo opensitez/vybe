@@ -1,0 +1,293 @@
+//! Class compilation helpers — shared bytecode patterns for classes across all languages.
+//!
+//! Every Vybe language (VB, JS, C#, Python) compiles classes to the same constructor
+//! pattern. This module provides the common emit sequences so all compilers produce
+//! compatible bytecode regardless of source language syntax.
+//!
+//! Cross-language compatibility:
+//! - Python `__str__` and JS `toString()` resolve to the same method
+//! - VB `Shared`, JS `static`, C# `static`, Python `@staticmethod` all attach to constructor
+//! - All languages use `__get_`/`__set_` prefixed closures for property accessors
+//! - `set_type_id` + TypeEntry registration is identical everywhere
+//!
+//! ## Stack discipline
+//!
+//! These helpers only cover patterns where the stack state is fully determined —
+//! no compiler callbacks needed. Field initialization (where a language-specific
+//! expression must be compiled between pushing `this` and calling `struct_set`)
+//! is left to each compiler. The `struct_set` opcode expects `[obj, val]` on stack
+//! and leaves `[val]` — callers must `drop` if they don't need the result.
+
+use std::rc::Rc;
+use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::chunk::TypeEntry;
+
+// ── Object creation ─────────────────────────────────────────────────────
+
+/// Create a new empty object and stamp it with type info.
+/// Emits: struct_new 0 → local, __type string stamp, set_type_id via __tid_ global.
+/// Stack: unchanged (object stored in this_slot)
+pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
+    // Create empty object → store in this_slot
+    chunk.emit_op_u16(Op::struct_new, 0, line);
+    chunk.emit_op_u16(Op::local_set, this_slot, line);
+    chunk.emit_op(Op::drop, line);
+
+    // Stamp __type string (untyped fallback for typeof/instanceof)
+    // struct_set expects [obj, val] → leaves [val]
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    let type_str = chunk.add_constant(Value::String(Rc::from(class_name)));
+    let type_key = chunk.add_constant(Value::String(Rc::from("__type")));
+    chunk.emit_op_u16(Op::r#const, type_str, line);
+    chunk.emit_op_u16(Op::struct_set, type_key, line);
+    chunk.emit_op(Op::drop, line);
+
+    // Stamp WASM GC type_id via __tid_ global (set at load time by TypeRegistry)
+    let tid_name = chunk.add_constant(
+        Value::String(Rc::from(format!("__tid_{}", class_name.to_lowercase()).as_str()))
+    );
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::global_get, tid_name, line);
+    chunk.emit_op(Op::set_type_id, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+// ── Method binding ──────────────────────────────────────────────────────
+
+/// Bind an instance method on the object: this.<method_name> = ref_func(chunk_idx).
+/// Emits: local_get this → ref_func ci → struct_set key → drop
+/// Stack: unchanged
+pub fn emit_bind_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::ref_func, method_chunk_idx as u16, line);
+    chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
+    let key = chunk.add_constant(Value::String(Rc::from(method_name)));
+    chunk.emit_op_u16(Op::struct_set, key, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+/// Bind a method AND all its cross-language aliases.
+/// This is the primary entry point — ensures a method defined in any language
+/// is callable from every other language.
+///
+/// Example: Python defines `__str__`, this also binds `toString` and `tostring`
+/// so JS/VB/C# code can call it transparently.
+/// Stack: unchanged
+pub fn emit_bind_method_with_aliases(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+    // Bind under the original name
+    emit_bind_method(chunk, this_slot, method_name, method_chunk_idx, line);
+    // Bind under all cross-language aliases
+    emit_cross_language_aliases(chunk, this_slot, method_name, method_chunk_idx, line);
+}
+
+/// Return the cross-language alias list for a method name.
+/// This is the single source of truth for cross-language method resolution.
+/// Returns all equivalent names (including the input name itself).
+/// Compilers can filter this list (e.g. skip `__get_`/`__set_` prefixed aliases
+/// if the language treats the method as a callable, not a property).
+pub fn cross_language_aliases(method_name: &str) -> &'static [&'static str] {
+    match method_name {
+        // String representation: Python __str__ ↔ JS toString() ↔ VB/C# ToString()
+        "__str__" | "tostring" | "toString" =>
+            &["__str__", "toString", "tostring", "__get_tostring"],
+
+        // Debug representation: Python __repr__
+        "__repr__" | "todebugstring" | "toDebugString" =>
+            &["__repr__", "toDebugString", "todebugstring"],
+
+        // Length/Count: Python __len__ ↔ JS .length ↔ VB/C# .Count
+        "__len__" | "__get_length" | "__get_count" =>
+            &["__len__", "__get_length", "__get_count"],
+
+        // Truthiness: Python __bool__ ↔ JS valueOf
+        "__bool__" | "valueof" | "valueOf" =>
+            &["__bool__", "valueOf", "valueof"],
+
+        // Membership test: Python __contains__ ↔ JS includes() ↔ VB/C# Contains()
+        "__contains__" | "contains" | "includes" =>
+            &["__contains__", "contains", "includes"],
+
+        // Indexing: Python __getitem__/__setitem__
+        "__getitem__" => &["__getitem__"],
+        "__setitem__" => &["__setitem__"],
+
+        // Iteration: Python __iter__/__next__
+        "__iter__" => &["__iter__"],
+        "__next__" => &["__next__"],
+
+        // Equality: Python __eq__ ↔ VB/C# Equals()
+        "__eq__" | "equals" =>
+            &["__eq__", "equals"],
+
+        // Hashing: Python __hash__ ↔ VB/C# GetHashCode()
+        "__hash__" | "gethashcode" =>
+            &["__hash__", "gethashcode"],
+
+        // Comparison: Python __lt__ etc ↔ VB/C# CompareTo()
+        "__lt__" => &["__lt__"],
+        "__le__" => &["__le__"],
+        "__gt__" => &["__gt__"],
+        "__ge__" => &["__ge__"],
+
+        // Context manager — Python only, no aliases needed
+        "__enter__" | "__exit__" => &[],
+
+        // No aliases for regular method names
+        _ => &[],
+    }
+}
+
+/// Emit cross-language aliases for a method name.
+/// Maps between Python dunders, JS camelCase, and VB/C# PascalCase.
+///
+/// The alias table is the single source of truth for cross-language method resolution.
+/// All compilers MUST use this when binding methods so that objects are interoperable.
+/// Stack: unchanged
+pub fn emit_cross_language_aliases(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+    for alias in cross_language_aliases(method_name) {
+        if *alias != method_name {
+            emit_bind_method(chunk, this_slot, alias, method_chunk_idx, line);
+        }
+    }
+}
+
+// ── Inheritance ─────────────────────────────────────────────────────────
+
+/// Save parent's version of a method as __base_<name> before child override.
+/// Used for super()/MyBase/base calls.
+/// Emits: local_get this → local_get this → struct_get name → struct_set __base_name → drop
+/// Stack: unchanged
+pub fn emit_save_base_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
+    let base_name = format!("__base_{}", method_name);
+    chunk.emit_op_u16(Op::local_get, this_slot, line);  // obj for struct_set
+    chunk.emit_op_u16(Op::local_get, this_slot, line);  // obj for struct_get
+    let prop_idx = chunk.add_constant(Value::String(Rc::from(method_name)));
+    chunk.emit_op_u16(Op::struct_get, prop_idx, line);   // val = this.method (parent version)
+    let base_idx = chunk.add_constant(Value::String(Rc::from(base_name.as_str())));
+    chunk.emit_op_u16(Op::struct_set, base_idx, line);   // this.__base_method = val
+    chunk.emit_op(Op::drop, line);
+}
+
+/// Store parent constructor ref as __super on the instance.
+/// Stack: unchanged
+pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, line: u32) {
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    let parent_c = chunk.add_constant(Value::String(Rc::from(parent_name)));
+    chunk.emit_op_u16(Op::global_get, parent_c, line);
+    let super_key = chunk.add_constant(Value::String(Rc::from("__super")));
+    chunk.emit_op_u16(Op::struct_set, super_key, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+/// Inherit static methods from parent constructor via Object.assign.
+/// Caller must have the constructor on TOS (typically via dup before this call).
+/// Stack before: [constructor]  Stack after: [constructor]
+pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
+    chunk.emit_op(Op::dup, line);
+    let parent_c = chunk.add_constant(Value::String(Rc::from(parent_name)));
+    chunk.emit_op_u16(Op::global_get, parent_c, line);
+    let assign_fn = chunk.add_import("vybe:object", "assign");
+    chunk.emit_op_u16(Op::call_import, assign_fn, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+// ── Static methods ──────────────────────────────────────────────────────
+
+/// Attach a static method to the constructor function object.
+/// Same pattern as VB Shared, JS static, C# static, Python @staticmethod.
+/// Stack: unchanged (reads constructor from local)
+pub fn emit_attach_static_method(chunk: &mut Chunk, ctor_local: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+    chunk.emit_op_u16(Op::local_get, ctor_local, line);
+    chunk.emit_op_u16(Op::ref_func, method_chunk_idx as u16, line);
+    chunk.emit(0, line);
+    let key = chunk.add_constant(Value::String(Rc::from(method_name)));
+    chunk.emit_op_u16(Op::struct_set, key, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+// ── Property accessors ──────────────────────────────────────────────────
+
+/// Bind a property getter as __get_<name> on the instance.
+/// The getter_chunk_idx should point to a compiled closure with arity=1 (self/this).
+/// Stack: unchanged
+pub fn emit_bind_getter(chunk: &mut Chunk, this_slot: u16, prop_name: &str, getter_chunk_idx: usize, line: u32) {
+    let get_name = format!("__get_{}", prop_name);
+    emit_bind_method(chunk, this_slot, &get_name, getter_chunk_idx, line);
+}
+
+/// Bind a property setter as __set_<name> on the instance.
+/// The setter_chunk_idx should point to a compiled closure with arity=2 (self/this, value).
+/// Stack: unchanged
+pub fn emit_bind_setter(chunk: &mut Chunk, this_slot: u16, prop_name: &str, setter_chunk_idx: usize, line: u32) {
+    let set_name = format!("__set_{}", prop_name);
+    emit_bind_method(chunk, this_slot, &set_name, setter_chunk_idx, line);
+}
+
+// ── Constructor return ──────────────────────────────────────────────────
+
+/// Emit return-this at the end of a constructor.
+/// Stack: [] → returns this to caller
+pub fn emit_constructor_return(chunk: &mut Chunk, this_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op(Op::r#return, line);
+}
+
+// ── Constructor storage ─────────────────────────────────────────────────
+
+/// Store a constructor function as a local + global variable.
+/// Stack: unchanged
+pub fn emit_store_constructor(chunk: &mut Chunk, class_name: &str, ctor_chunk_idx: usize, local_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::ref_func, ctor_chunk_idx as u16, line);
+    chunk.emit(0, line);
+    chunk.emit_op_u16(Op::local_set, local_slot, line);
+    let global_name = chunk.add_constant(Value::String(Rc::from(class_name.to_lowercase().as_str())));
+    chunk.emit_op_u16(Op::global_set, global_name, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+// ── Field initialization ────────────────────────────────────────────────
+
+/// Set a field on the object to null (pre-declaration / auto-property init).
+/// Stack: unchanged
+pub fn emit_init_field_null(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op(Op::null, line);
+    let key = chunk.add_constant(Value::String(Rc::from(field_name)));
+    chunk.emit_op_u16(Op::struct_set, key, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+// NOTE: No emit_set_field — field initialization requires the compiler to emit
+// a value expression between pushing `this` and calling `struct_set`. Since
+// struct_set expects [obj, val] on stack, the caller must:
+//   1. chunk.emit_op_u16(Op::local_get, this_slot, line);  // push obj
+//   2. <compile value expression>                           // push val
+//   3. chunk.emit_op_u16(Op::struct_set, key, line);        // [obj,val] → [val]
+//   4. chunk.emit_op(Op::drop, line);                       // discard result
+// This is inherently language-specific and doesn't belong here.
+
+// ── Type registration ───────────────────────────────────────────────────
+
+/// Register a type entry in chunk 0's type table.
+pub fn register_type(
+    chunks: &mut [Chunk],
+    name: &str,
+    parent: &str,
+    fields: Vec<String>,
+    methods: Vec<(String, usize)>,
+    is_interface: bool,
+    implements: Vec<String>,
+    constructor_chunk: Option<usize>,
+) {
+    chunks[0].types.push(TypeEntry {
+        name: name.to_lowercase(),
+        parent: parent.to_string(),
+        fields,
+        methods,
+        is_interface,
+        implements,
+        constructor_chunk,
+    });
+}

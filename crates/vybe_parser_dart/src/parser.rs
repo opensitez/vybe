@@ -38,6 +38,41 @@ impl Parser {
         else { Err(format!("Expected {:?}, got {:?}", t, self.peek())) }
     }
 
+    /// Parse operator name after the `operator` keyword.
+    /// Returns the operator symbol as a string: "+", "-", "*", "[]", "[]=", "==", "<", etc.
+    fn parse_operator_name(&mut self) -> Result<String, String> {
+        let tok = self.advance();
+        let name = match tok {
+            Token::Plus => "+",
+            Token::Minus => "-",
+            Token::Star => "*",
+            Token::Slash => "/",
+            Token::Percent => "%",
+            Token::TildeSlash => "~/",
+            Token::EqEq => "==",
+            Token::BangEq => "!=",
+            Token::Less => "<",
+            Token::Greater => ">",
+            Token::LessEq => "<=",
+            Token::GreaterEq => ">=",
+            Token::Amp => "&",
+            Token::Bar => "|",
+            Token::Caret => "^",
+            Token::Tilde => "~",
+            Token::LessLess => "<<",
+            Token::GreaterGreater => ">>",
+            Token::GreaterGreaterGreater => ">>>",
+            Token::LBracket => {
+                // operator[] or operator[]=
+                self.expect(Token::RBracket)?;
+                if self.eat(&Token::Eq) { return Ok("[]=".to_string()); }
+                return Ok("[]".to_string());
+            }
+            _ => return Err(format!("Expected operator symbol after 'operator', got {:?}", tok)),
+        };
+        Ok(name.to_string())
+    }
+
     fn expect_ident(&mut self) -> Result<String, String> {
         let t = self.advance();
         if let Some(s) = t.to_ident_str() {
@@ -204,8 +239,88 @@ impl Parser {
             return Ok(vec![self.parse_constructor(class_name, is_const, is_factory)?]);
         }
 
+        // Operator overloading: `operator +(Other o) { ... }` or `ReturnType operator +(Other o) { ... }`
+        // Must check BEFORE type annotation parsing to avoid `operator` being consumed as a type.
+        if self.peek() == &Token::Operator {
+            self.advance();
+            let op_name = self.parse_operator_name()?;
+            let name = format!("operator{}", op_name);
+            let params = self.parse_params()?;
+            let is_async = self.eat(&Token::Async);
+            let body = self.parse_function_body()?;
+            let decl = FunctionDecl { name, type_params: vec![], params, return_type: None, body, is_async, is_generator: false };
+            return Ok(vec![ClassMember::Method { is_static, is_abstract, is_override, kind, decl }]);
+        }
+
+        // Getters: `get name { ... }` or `get name => expr;` — name immediately after get
+        // Setters: `set name(param) { ... }` — name then params
+        if kind == MethodKind::Getter {
+            let return_type = self.try_parse_type_annotation();
+            let name = self.expect_ident()?;
+            let is_async = self.eat(&Token::Async);
+            let body = self.parse_function_body()?;
+            let decl = FunctionDecl { name, type_params: vec![], params: Params { positional: vec![], optional_pos: vec![], named: vec![] }, return_type, body, is_async, is_generator: false };
+            return Ok(vec![ClassMember::Method { is_static, is_abstract, is_override, kind, decl }]);
+        }
+        if kind == MethodKind::Setter {
+            let return_type = self.try_parse_type_annotation();
+            let name = self.expect_ident()?;
+            let params = self.parse_params()?;
+            let is_async = self.eat(&Token::Async);
+            let body = self.parse_function_body()?;
+            let decl = FunctionDecl { name, type_params: vec![], params, return_type, body, is_async, is_generator: false };
+            return Ok(vec![ClassMember::Method { is_static, is_abstract, is_override, kind, decl }]);
+        }
+
+        // Operator overloading: `ReturnType operator +(Other o) { ... }`
+        // The `operator` keyword may appear after the return type annotation.
+        // We check for it before or after type annotation.
+        if self.peek() == &Token::Operator {
+            self.advance(); // consume 'operator'
+            let op_name = self.parse_operator_name()?;
+            let name = format!("operator{}", op_name);
+            let params = self.parse_params()?;
+            let is_async = self.eat(&Token::Async);
+            let body = self.parse_function_body()?;
+            let decl = FunctionDecl { name, type_params: vec![], params, return_type: None, body, is_async, is_generator: false };
+            return Ok(vec![ClassMember::Method { is_static, is_abstract, is_override, kind, decl }]);
+        }
+
+        // Check for `ReturnType operator <op>(...)` pattern — peek is type name, peek2 is `operator`
+        if self.peek2() == &Token::Operator {
+            if let Token::Identifier(_) | Token::Void | Token::Dynamic = self.peek() {
+                // Force-consume the return type identifier
+                let saved = self.pos;
+                let return_type = if let Ok(t) = self.parse_type_annotation() { Some(t) } else { self.pos = saved; None };
+                if self.peek() == &Token::Operator {
+                    self.advance();
+                    let op_name = self.parse_operator_name()?;
+                    let name = format!("operator{}", op_name);
+                    let params = self.parse_params()?;
+                    let is_async = self.eat(&Token::Async);
+                    let body = self.parse_function_body()?;
+                    let decl = FunctionDecl { name, type_params: vec![], params, return_type, body, is_async, is_generator: false };
+                    return Ok(vec![ClassMember::Method { is_static, is_abstract, is_override, kind, decl }]);
+                }
+                self.pos = saved; // rollback if not operator after all
+            }
+        }
+
         // Return type or field/method type
         let type_ann = self.try_parse_type_annotation();
+
+        // Check for operator after return type (for cases try_parse_type_annotation consumed it)
+        if self.peek() == &Token::Operator {
+            self.advance();
+            let op_name = self.parse_operator_name()?;
+            let name = format!("operator{}", op_name);
+            let params = self.parse_params()?;
+            let is_async = self.eat(&Token::Async);
+            let body = self.parse_function_body()?;
+            let decl = FunctionDecl { name, type_params: vec![], params, return_type: type_ann, body, is_async, is_generator: false };
+            return Ok(vec![ClassMember::Method { is_static, is_abstract, is_override, kind, decl }]);
+        }
+
         let name = self.expect_ident()?;
 
         if self.peek() == &Token::LParen || self.peek() == &Token::Less {

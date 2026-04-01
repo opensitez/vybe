@@ -2,6 +2,7 @@ use std::rc::Rc;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_bytecode::chunk::TypeEntry;
 use vybe_parser_basic::ast::*;
+use vybe_compiler_common as common;
 
 use crate::compiler::Compiler;
 use crate::scope::Scope;
@@ -106,12 +107,11 @@ impl Compiler {
                 || parent_name.contains("windows.forms");
             if !parent_name.is_empty() && !is_framework_type {
                 // Store __super on this
-                self.emit_u16(Op::local_get, this_slot);
-                let parent_idx = self.add_string_constant(&parent_name);
-                self.emit_u16(Op::global_get, parent_idx);
-                let super_idx = self.add_string_constant("__super");
-                self.emit_u16(Op::struct_set, super_idx);
-                self.emit(Op::drop);
+                let line = self.line;
+                common::classes::emit_store_super(
+                    &mut self.chunks[self.current_chunk_idx],
+                    this_slot, &parent_name, line,
+                );
 
                 // Auto-call parent constructor if no explicit Sub New
                 if !has_explicit_ctor {
@@ -144,14 +144,11 @@ impl Compiler {
                     MethodDecl::Sub(sub) => sub.name.as_str().to_lowercase(),
                     MethodDecl::Function(func) => func.name.as_str().to_lowercase(),
                 };
-                let base_name = format!("__base_{}", method_name);
-                self.emit_u16(Op::local_get, this_slot);
-                self.emit_u16(Op::local_get, this_slot);
-                let prop_idx = self.add_string_constant(&method_name);
-                self.emit_u16(Op::struct_get, prop_idx);
-                let base_idx = self.add_string_constant(&base_name);
-                self.emit_u16(Op::struct_set, base_idx);
-                self.emit(Op::drop);
+                let line = self.line;
+                common::classes::emit_save_base_method(
+                    &mut self.chunks[self.current_chunk_idx],
+                    this_slot, &method_name, line,
+                );
             }
         }
 
@@ -175,6 +172,22 @@ impl Compiler {
             let prop_idx = self.add_string_constant(&method_name);
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
+            // Emit cross-language aliases (e.g. VB tostring → JS toString, Python __str__)
+            // Uses 0-upvalue ref_func — safe because aliases point to the same chunk
+            // and VB instance methods don't capture constructor-scope upvalues.
+            // Skip __get_/__set_ aliases — VB uses explicit method calls, and getter
+            // aliases would cause the VM to invoke toString as a property getter,
+            // breaking `p.ToString()` (which expects a callable, not a string).
+            let line = self.line;
+            let aliases = common::classes::cross_language_aliases(&method_name);
+            for alias in aliases {
+                if *alias != method_name && !alias.starts_with("__get_") && !alias.starts_with("__set_") {
+                    common::classes::emit_bind_method(
+                        &mut self.chunks[self.current_chunk_idx],
+                        this_slot, alias, chunk_idx, line,
+                    );
+                }
+            }
         }
 
         // Compile constructor body (may call InitializeComponent, MyBase.New, etc.)
@@ -255,8 +268,13 @@ impl Compiler {
         }
 
         // Return this
-        self.emit_u16(Op::local_get, this_slot);
-        self.emit(Op::r#return);
+        {
+            let line = self.line;
+            common::classes::emit_constructor_return(
+                &mut self.chunks[self.current_chunk_idx],
+                this_slot, line,
+            );
+        }
 
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;

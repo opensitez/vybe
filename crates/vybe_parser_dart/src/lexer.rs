@@ -340,6 +340,7 @@ fn keyword_or_ident(s: String) -> Token {
         "new" => Token::New,
         "null" => Token::Null,
         "on" => Token::On,
+        "operator" => Token::Operator,
         "override" => Token::Override,
         "part" => Token::Part,
         "required" => Token::Required,
