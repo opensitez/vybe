@@ -43,10 +43,193 @@ const UI_BAR_HEIGHT: f32 = 0.0;
 const FOOTER_HEIGHT: f32 = 24.0;
 const GUTTER_WIDTH: f32 = 64.0;
 const SPLITTER_WIDTH: f32 = 4.0;
+const SIDEBAR_TAB_H: f32 = 28.0;
+
+#[derive(Clone, Copy, PartialEq)]
+enum SidebarTab { Files, Project }
+
+struct ProjectExplorerState {
+    scroll_y: f32,
+    forms_collapsed: bool,
+    code_collapsed: bool,
+    refs_collapsed: bool,
+}
+
+impl ProjectExplorerState {
+    fn new() -> Self { Self { scroll_y: 0.0, forms_collapsed: false, code_collapsed: false, refs_collapsed: false } }
+}
+
+struct ProjectPropsDialog {
+    visible: bool,
+    selected_startup: usize,
+}
+
+impl ProjectPropsDialog {
+    fn new() -> Self { Self { visible: false, selected_startup: 0 } }
+
+    fn open(&mut self, project: &vybe_project::project::Project) {
+        self.visible = true;
+        self.selected_startup = match &project.startup_object {
+            vybe_project::project::StartupObject::SubMain => 0,
+            vybe_project::project::StartupObject::None => 1,
+            vybe_project::project::StartupObject::Form(name) => {
+                project.forms.iter().position(|f| &f.form.name == name).map(|i| i + 2).unwrap_or(0)
+            }
+        };
+    }
+
+    fn close(&mut self) { self.visible = false; }
+
+    fn apply(&self, project: &mut vybe_project::project::Project) {
+        match self.selected_startup {
+            0 => { project.startup_object = vybe_project::project::StartupObject::SubMain; project.startup_form = None; }
+            1 => { project.startup_object = vybe_project::project::StartupObject::None; project.startup_form = None; }
+            n => {
+                let idx = n - 2;
+                if let Some(fm) = project.forms.get(idx) {
+                    let name = fm.form.name.clone();
+                    project.startup_object = vybe_project::project::StartupObject::Form(name.clone());
+                    project.startup_form = Some(name);
+                }
+            }
+        }
+    }
+
+    fn startup_options(&self, project: &vybe_project::project::Project) -> Vec<String> {
+        let mut opts = vec!["Sub Main".into(), "(None)".into()];
+        for fm in &project.forms { opts.push(fm.form.name.clone()); }
+        opts
+    }
+
+    fn render(&self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, win_w: f32, win_h: f32, scale: f32, project: &vybe_project::project::Project) {
+        if !self.visible { return; }
+        let s = scale;
+        let mut paint = Paint::default();
+        let dw = 400.0f32; let dh = 280.0f32;
+        let dx = (win_w - dw) / 2.0; let dy = (win_h - dh) / 2.0;
+
+        // Overlay
+        paint.set_color_rgba8(0, 0, 0, 120);
+        if let Some(r) = tiny_skia::Rect::from_xywh(0.0, 0.0, win_w * s, win_h * s) { pix.fill_rect(r, &paint, Transform::identity(), None); }
+
+        // Shadow + bg
+        paint.set_color_rgba8(0, 0, 0, 40);
+        if let Some(r) = tiny_skia::Rect::from_xywh((dx+4.0)*s, (dy+4.0)*s, dw*s, dh*s) { pix.fill_rect(r, &paint, Transform::identity(), None); }
+        paint.set_color_rgba8(255, 255, 255, 255);
+        if let Some(r) = tiny_skia::Rect::from_xywh(dx*s, dy*s, dw*s, dh*s) { pix.fill_rect(r, &paint, Transform::identity(), None); }
+
+        // Title bar
+        paint.set_color_rgba8(0, 120, 212, 255);
+        if let Some(r) = tiny_skia::Rect::from_xywh(dx*s, dy*s, dw*s, 30.0*s) { pix.fill_rect(r, &paint, Transform::identity(), None); }
+        let white = Color::rgba(255, 255, 255, 255);
+        let text_col = Color::rgba(30, 30, 30, 255);
+        crate::ide_text::draw_text(pix, fs, sc, &format!("{} - Project Properties", project.name), dx + 10.0, dy + 7.0, 13.0, white, s);
+        crate::ide_text::draw_text(pix, fs, sc, "X", dx + dw - 22.0, dy + 7.0, 13.0, white, s);
+
+        let label_col = Color::rgba(60, 60, 60, 255);
+        let mut y = dy + 30.0 + 16.0;
+
+        // Project Name
+        crate::ide_text::draw_text(pix, fs, sc, "Project Name:", dx + 16.0, y, 12.0, label_col, s);
+        y += 20.0;
+        paint.set_color_rgba8(245, 245, 245, 255);
+        if let Some(r) = tiny_skia::Rect::from_xywh((dx+16.0)*s, y*s, (dw-32.0)*s, 28.0*s) { pix.fill_rect(r, &paint, Transform::identity(), None); }
+        crate::ide_text::draw_text(pix, fs, sc, &project.name, dx + 22.0, y + 6.0, 12.0, text_col, s);
+        y += 28.0 + 16.0;
+
+        // Startup Object
+        crate::ide_text::draw_text(pix, fs, sc, "Startup Object:", dx + 16.0, y, 12.0, label_col, s);
+        y += 20.0;
+
+        let options = self.startup_options(project);
+        let opt_h = 22.0f32;
+        for (i, label) in options.iter().enumerate() {
+            let oy = y + i as f32 * opt_h;
+            if i == self.selected_startup {
+                paint.set_color_rgba8(0, 120, 212, 255);
+                if let Some(r) = tiny_skia::Rect::from_xywh((dx+17.0)*s, (oy+1.0)*s, (dw-34.0)*s, (opt_h-2.0)*s) { pix.fill_rect(r, &paint, Transform::identity(), None); }
+                crate::ide_text::draw_text(pix, fs, sc, label, dx + 24.0, oy + 4.0, 11.0, white, s);
+            } else {
+                crate::ide_text::draw_text(pix, fs, sc, label, dx + 24.0, oy + 4.0, 11.0, text_col, s);
+            }
+        }
+
+        // Footer
+        let footer_y = dy + dh - 44.0;
+        paint.set_color_rgba8(240, 240, 240, 255);
+        if let Some(r) = tiny_skia::Rect::from_xywh(dx*s, footer_y*s, dw*s, 44.0*s) { pix.fill_rect(r, &paint, Transform::identity(), None); }
+
+        // OK button
+        let btn_w = 80.0; let btn_h = 28.0;
+        let ok_x = dx + dw - btn_w * 2.0 - 24.0;
+        let btn_y = footer_y + 8.0;
+        paint.set_color_rgba8(0, 120, 212, 255);
+        if let Some(r) = tiny_skia::Rect::from_xywh(ok_x*s, btn_y*s, btn_w*s, btn_h*s) { pix.fill_rect(r, &paint, Transform::identity(), None); }
+        crate::ide_text::draw_text(pix, fs, sc, "OK", ok_x + 30.0, btn_y + 6.0, 12.0, white, s);
+
+        // Cancel button
+        let cancel_x = dx + dw - btn_w - 16.0;
+        paint.set_color_rgba8(240, 240, 240, 255);
+        if let Some(r) = tiny_skia::Rect::from_xywh(cancel_x*s, btn_y*s, btn_w*s, btn_h*s) { pix.fill_rect(r, &paint, Transform::identity(), None); }
+        crate::ide_text::draw_text(pix, fs, sc, "Cancel", cancel_x + 20.0, btn_y + 6.0, 12.0, text_col, s);
+    }
+
+    fn handle_click(&mut self, mx: f32, my: f32, win_w: f32, win_h: f32, project: &vybe_project::project::Project) -> bool {
+        if !self.visible { return false; }
+        let dw = 400.0f32; let dh = 280.0f32;
+        let dx = (win_w - dw) / 2.0; let dy = (win_h - dh) / 2.0;
+
+        // Outside dialog
+        if mx < dx || mx > dx + dw || my < dy || my > dy + dh { self.close(); return true; }
+
+        // Close button
+        if mx >= dx + dw - 28.0 && my < dy + 30.0 { self.close(); return true; }
+
+        // Startup option list
+        let list_y = dy + 30.0 + 16.0 + 20.0 + 28.0 + 16.0 + 20.0;
+        let options = self.startup_options(project);
+        let opt_h = 22.0;
+        if mx >= dx + 16.0 && mx < dx + dw - 16.0 {
+            let rel_y = my - list_y;
+            if rel_y >= 0.0 {
+                let idx = (rel_y / opt_h) as usize;
+                if idx < options.len() { self.selected_startup = idx; return true; }
+            }
+        }
+
+        // Cancel button
+        let footer_y = dy + dh - 44.0;
+        let btn_w = 80.0; let btn_h = 28.0;
+        let cancel_x = dx + dw - btn_w - 16.0;
+        let btn_y = footer_y + 8.0;
+        if mx >= cancel_x && mx < cancel_x + btn_w && my >= btn_y && my < btn_y + btn_h {
+            self.close(); return true;
+        }
+
+        true // consume click inside dialog
+    }
+
+    fn is_ok_clicked(&self, mx: f32, my: f32, win_w: f32, win_h: f32) -> bool {
+        if !self.visible { return false; }
+        let dw = 400.0f32; let dh = 280.0f32;
+        let dx = (win_w - dw) / 2.0; let dy = (win_h - dh) / 2.0;
+        let footer_y = dy + dh - 44.0;
+        let btn_w = 80.0; let btn_h = 28.0;
+        let ok_x = dx + dw - btn_w * 2.0 - 24.0;
+        let btn_y = footer_y + 8.0;
+        mx >= ok_x && mx < ok_x + btn_w && my >= btn_y && my < btn_y + btn_h
+    }
+}
+
+pub enum TabContent {
+    Code(CodeEditorWidget),
+    Form(crate::form_designer_tab::FormDesignerState),
+}
+
 pub struct Tab {
     pub name: String,
     pub path: Option<String>,
-    pub widget: CodeEditorWidget,
+    pub content: TabContent,
     pub is_sticky: bool,
     pub buffer: Option<Buffer>,
     pub is_modified: bool,
@@ -827,6 +1010,9 @@ impl CodeEditorWidget {
         self.scroll_y = self.scroll_y.clamp(0.0, (total_h - (rect.height() - FOOTER_HEIGHT * SCALE) + 100.0).max(0.0));
         
         let theme = &self.theme;
+        let cursor_state = self.editor.cursor(); let selection = self.editor.selection_bounds();
+        let selected_text = self.editor.copy_selection();
+        let partner = self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def).or_else(|| if cursor_state.index > 0 { self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index - 1, &self.lang_def) } else { None });
         let mut cp = Paint::default(); cp.set_color_rgba8(theme.current_line.r(), theme.current_line.g(), theme.current_line.b(), theme.current_line.a());
         let mut mp = Paint::default(); mp.set_color_rgba8(theme.match_highlight.r(), theme.match_highlight.g(), theme.match_highlight.b(), 100);
         let mut last_para = None;
@@ -1197,10 +1383,16 @@ struct App {
     current_theme_idx: usize,
     breadcrumb_rects: Vec<(Rect, String)>,
     keybindings: Vec<Keybinding>,
+    open_form: bool,
+    sidebar_tab: SidebarTab,
+    project: vybe_project::project::Project,
+    project_explorer: ProjectExplorerState,
+    project_props_dialog: ProjectPropsDialog,
+    control_clipboard: Vec<vybe_forms::Control>,
 }
 
 impl App {
-    fn new(_my_editor: MyEditor) -> Self {
+    fn new(_my_editor: MyEditor, open_form: bool) -> Self {
         let mut langs = Vec::new(); 
         // Try multiple paths to find the basic-languages folder
         let search_paths = ["crates/code_editor/basic-languages", "basic-languages", "../code_editor/basic-languages"];
@@ -1236,6 +1428,7 @@ impl App {
             tab_scroll_x: 0.0,
             current_theme_idx: 0,
             breadcrumb_rects: Vec::new(),
+            open_form,
             keybindings: {
                 let paths = ["keybindings.json", "crates/code_editor/keybindings.json"];
                 let mut kb = Vec::new();
@@ -1268,6 +1461,26 @@ impl App {
                 }
                 kb
             },
+            sidebar_tab: SidebarTab::Project,
+            project: {
+                let mut p = vybe_project::project::Project::new("Project1".to_string());
+                let mut form = vybe_forms::Form::new("Form1".to_string());
+                form.width = 640; form.height = 480;
+                p.forms.push(vybe_project::project::FormModule::new_classic(form));
+                p.startup_object = vybe_project::project::StartupObject::Form("Form1".to_string());
+                p
+            },
+            project_explorer: ProjectExplorerState::new(),
+            project_props_dialog: ProjectPropsDialog::new(),
+            control_clipboard: Vec::new(),
+        }
+    }
+    /// Height in logical pixels of menu bar + toolbar (always present if any Form tab exists).
+    fn top_chrome_h(&self) -> f32 {
+        if self.tabs.iter().any(|t| matches!(&t.content, TabContent::Form(_))) {
+            28.0 + 36.0
+        } else {
+            0.0
         }
     }
     pub fn active_theme(&self) -> Theme {
@@ -1304,9 +1517,11 @@ impl App {
         // Debounce LSP Update
         if self.pending_lsp_update && self.last_lsp_update.elapsed().as_millis() > 300 {
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                let text = tab.widget.my_editor.rope.to_string();
-                let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
-                tab.widget.lsp.send(LspRequest::Change(text, uri));
+                if let TabContent::Code(cw) = &mut tab.content {
+                    let text = cw.my_editor.rope.to_string();
+                    let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
+                    cw.lsp.send(LspRequest::Change(text, uri));
+                }
             }
             self.pending_lsp_update = false;
         }
@@ -1318,36 +1533,183 @@ impl App {
         let to_skia = |c: Color| SkiaColor::from_rgba8(c.r(), c.g(), c.b(), c.a());
         pix.fill(to_skia(theme.bg));
 
-        // 1. Sidebar (Project Explorer)
-        let mut sp = Paint::default(); sp.set_color_rgba8(theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), theme.sidebar_bg.a());
-        pix.fill_rect(Rect::from_xywh(0.0, 0.0, self.explorer_width * SCALE, pix.height() as f32).unwrap(), &sp, Transform::identity(), None);
-        
-        // Vertical marker for Sidebar header
-        App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "PROJECT EXPLORER", 10.0 * SCALE, 10.0 * SCALE, theme.sidebar_text);
-        
-        // Sync Sidebar Selection
-        if let Some(tab) = self.tabs.get(self.active_tab) {
-             if let Some(path) = &tab.path {
-                  self.tree_view.reveal_path(path);
-             }
+        // Compute top chrome height (menu + toolbar when any Form tab exists)
+        let has_form_tab = self.tabs.iter().any(|t| matches!(&t.content, TabContent::Form(_)));
+        let top_chrome_h: f32 = if has_form_tab { 28.0 + 36.0 } else { 0.0 };
+        let top_chrome_px = top_chrome_h * SCALE;
+
+        // 0. Menu bar + Toolbar (always present when a Form tab exists)
+        if has_form_tab {
+            // Find the Form tab to get menu_bar state
+            if let Some(form_tab) = self.tabs.iter().find(|t| matches!(&t.content, TabContent::Form(_))) {
+                if let TabContent::Form(f) = &form_tab.content {
+                    let menu_rect = crate::form_designer_tab::Rect { x: 0.0, y: 0.0, w: pix.width() as f32 / SCALE, h: 28.0 };
+                    let tb_rect = crate::form_designer_tab::Rect { x: 0.0, y: 28.0, w: pix.width() as f32 / SCALE, h: 36.0 };
+                    f.menu_bar.render(pix, &mut self.font_system, &mut self.swash_cache, menu_rect, SCALE);
+                    crate::form_designer_tab::render_toolbar_pub(pix, &mut self.font_system, &mut self.swash_cache, tb_rect, SCALE);
+                }
+            }
         }
-        self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, 0.0, TAB_BAR_HEIGHT * SCALE, self.explorer_width * SCALE, theme.sidebar_text, (theme.selection.r(), theme.selection.g(), theme.selection.b(), theme.selection.a()));
+
+        // 1. Sidebar
+        let sidebar_x = 0.0;
+        let sidebar_top = top_chrome_px;
+        let sidebar_w = self.explorer_width * SCALE;
+        let sidebar_h = pix.height() as f32 - top_chrome_px;
+
+        // Sidebar background
+        let mut sp = Paint::default(); sp.set_color_rgba8(theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), theme.sidebar_bg.a());
+        pix.fill_rect(Rect::from_xywh(sidebar_x, sidebar_top, sidebar_w, sidebar_h).unwrap(), &sp, Transform::identity(), None);
+
+        // Sidebar tabs (Files | Project)
+        let stab_h = SIDEBAR_TAB_H * SCALE;
+        let stab_w = sidebar_w / 2.0;
+        let stab_y = sidebar_top;
+        // Files tab
+        {
+            let active = self.sidebar_tab == SidebarTab::Files;
+            let mut tp = Paint::default();
+            if active { tp.set_color_rgba8(theme.active_tab_bg.r(), theme.active_tab_bg.g(), theme.active_tab_bg.b(), theme.active_tab_bg.a()); }
+            else { tp.set_color_rgba8(theme.inactive_tab_bg.r(), theme.inactive_tab_bg.g(), theme.inactive_tab_bg.b(), theme.inactive_tab_bg.a()); }
+            pix.fill_rect(Rect::from_xywh(sidebar_x, stab_y, stab_w, stab_h).unwrap(), &tp, Transform::identity(), None);
+            if active {
+                let mut up = Paint::default(); up.set_color_rgba8(theme.kw.r(), theme.kw.g(), theme.kw.b(), 255);
+                pix.fill_rect(Rect::from_xywh(sidebar_x, stab_y + stab_h - 2.0 * SCALE, stab_w, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
+            }
+            let col = if active { theme.active_tab_text } else { theme.inactive_tab_text };
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "Files", sidebar_x + 10.0 * SCALE, stab_y + 6.0 * SCALE, col);
+        }
+        // Project tab
+        {
+            let active = self.sidebar_tab == SidebarTab::Project;
+            let mut tp = Paint::default();
+            if active { tp.set_color_rgba8(theme.active_tab_bg.r(), theme.active_tab_bg.g(), theme.active_tab_bg.b(), theme.active_tab_bg.a()); }
+            else { tp.set_color_rgba8(theme.inactive_tab_bg.r(), theme.inactive_tab_bg.g(), theme.inactive_tab_bg.b(), theme.inactive_tab_bg.a()); }
+            pix.fill_rect(Rect::from_xywh(sidebar_x + stab_w, stab_y, stab_w, stab_h).unwrap(), &tp, Transform::identity(), None);
+            if active {
+                let mut up = Paint::default(); up.set_color_rgba8(theme.kw.r(), theme.kw.g(), theme.kw.b(), 255);
+                pix.fill_rect(Rect::from_xywh(sidebar_x + stab_w, stab_y + stab_h - 2.0 * SCALE, stab_w, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
+            }
+            let col = if active { theme.active_tab_text } else { theme.inactive_tab_text };
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "Project", sidebar_x + stab_w + 10.0 * SCALE, stab_y + 6.0 * SCALE, col);
+        }
+        // Tab separator
+        {
+            let mut lp = Paint::default(); lp.set_color_rgba8(theme.splitter_bg.r(), theme.splitter_bg.g(), theme.splitter_bg.b(), 255);
+            pix.fill_rect(Rect::from_xywh(sidebar_x, stab_y + stab_h - 1.0, sidebar_w, 1.0).unwrap(), &lp, Transform::identity(), None);
+        }
+
+        // Sidebar content below tabs
+        let sidebar_content_y = stab_y + stab_h;
+        match self.sidebar_tab {
+            SidebarTab::Files => {
+                // Sync Sidebar Selection
+                if let Some(tab) = self.tabs.get(self.active_tab) {
+                    if let Some(path) = &tab.path {
+                        self.tree_view.reveal_path(path);
+                    }
+                }
+                // Tree view starts below sidebar tabs (not below editor tab bar)
+                self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, sidebar_x, sidebar_content_y, sidebar_w, theme.sidebar_text, (theme.selection.r(), theme.selection.g(), theme.selection.b(), theme.selection.a()));
+            }
+            SidebarTab::Project => {
+                let pe = &self.project_explorer;
+                let project = &self.project;
+                let current_form: Option<&str> = if self.active_tab < self.tabs.len() {
+                    if let TabContent::Form(f) = &self.tabs[self.active_tab].content { Some(&f.form.name) } else { None }
+                } else { None };
+                let pe_x = sidebar_x / SCALE;
+                let pe_y = sidebar_content_y / SCALE;
+                let pe_w = self.explorer_width;
+                let pe_h = (sidebar_h - stab_h) / SCALE;
+                let item_h = 24.0f32;
+                let indent = 16.0f32;
+                let sel_bg = (theme.selection.r(), theme.selection.g(), theme.selection.b(), 80u8);
+                let text_col = Color::rgba(theme.sidebar_text.r(), theme.sidebar_text.g(), theme.sidebar_text.b(), theme.sidebar_text.a());
+                let dim_col = Color::rgba(theme.sidebar_text.r().saturating_sub(60), theme.sidebar_text.g().saturating_sub(60), theme.sidebar_text.b().saturating_sub(60), 255);
+                let mut iy = pe_y - pe.scroll_y;
+                let mut pp = Paint::default();
+
+                // Project name
+                if iy + item_h > pe_y && iy < pe_y + pe_h {
+                    crate::ide_text::draw_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("\u{1F4C1} {}", project.name), pe_x + 8.0, iy + 4.0, 12.0, text_col, SCALE);
+                }
+                iy += item_h;
+
+                // Forms section
+                let forms_arrow = if pe.forms_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+                if iy + item_h > pe_y && iy < pe_y + pe_h {
+                    crate::ide_text::draw_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("{} Forms", forms_arrow), pe_x + 8.0 + indent, iy + 4.0, 12.0, text_col, SCALE);
+                }
+                iy += item_h;
+
+                if !pe.forms_collapsed {
+                    for fm in &project.forms {
+                        if iy + item_h > pe_y && iy < pe_y + pe_h {
+                            let is_sel = current_form == Some(fm.form.name.as_str());
+                            if is_sel {
+                                pp.set_color_rgba8(sel_bg.0, sel_bg.1, sel_bg.2, sel_bg.3);
+                                if let Some(r) = tiny_skia::Rect::from_xywh(pe_x * SCALE, iy * SCALE, pe_w * SCALE, item_h * SCALE) {
+                                    pix.fill_rect(r, &pp, Transform::identity(), None);
+                                }
+                            }
+                            crate::ide_text::draw_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("  {}", fm.form.name), pe_x + 8.0 + indent * 2.0, iy + 4.0, 12.0, text_col, SCALE);
+                        }
+                        iy += item_h;
+                    }
+                }
+
+                // Code section
+                if !project.code_files.is_empty() {
+                    let code_arrow = if pe.code_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+                    if iy + item_h > pe_y && iy < pe_y + pe_h {
+                        crate::ide_text::draw_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("{} Code", code_arrow), pe_x + 8.0 + indent, iy + 4.0, 12.0, text_col, SCALE);
+                    }
+                    iy += item_h;
+                    if !pe.code_collapsed {
+                        for cf in &project.code_files {
+                            if iy + item_h > pe_y && iy < pe_y + pe_h {
+                                crate::ide_text::draw_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("  {}", cf.name), pe_x + 8.0 + indent * 2.0, iy + 4.0, 12.0, text_col, SCALE);
+                            }
+                            iy += item_h;
+                        }
+                    }
+                }
+
+                // References section
+                if !project.project_references.is_empty() {
+                    let refs_arrow = if pe.refs_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+                    if iy + item_h > pe_y && iy < pe_y + pe_h {
+                        crate::ide_text::draw_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("{} References", refs_arrow), pe_x + 8.0 + indent, iy + 4.0, 12.0, text_col, SCALE);
+                    }
+                    iy += item_h;
+                    if !pe.refs_collapsed {
+                        for rn in &project.project_references {
+                            if iy + item_h > pe_y && iy < pe_y + pe_h {
+                                crate::ide_text::draw_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("  {}", rn), pe_x + 8.0 + indent * 2.0, iy + 4.0, 12.0, dim_col, SCALE);
+                            }
+                            iy += item_h;
+                        }
+                    }
+                }
+            }
+        }
 
         // 1b. Splitter
         let mut slp = Paint::default();
         if self.is_dragging_splitter { slp.set_color_rgba8(0,122,204,255); }
         else if self.hovering_splitter { slp.set_color_rgba8(theme.splitter_bg.r(), theme.splitter_bg.g(), theme.splitter_bg.b(), 255); }
         else { slp.set_color_rgba8(theme.splitter_bg.r(), theme.splitter_bg.g(), theme.splitter_bg.b(), 255); }
-        pix.fill_rect(Rect::from_xywh(self.explorer_width * SCALE, 0.0, SPLITTER_WIDTH * SCALE, pix.height() as f32).unwrap(), &slp, Transform::identity(), None);
-        
+        pix.fill_rect(Rect::from_xywh(self.explorer_width * SCALE, top_chrome_px, SPLITTER_WIDTH * SCALE, pix.height() as f32 - top_chrome_px).unwrap(), &slp, Transform::identity(), None);
+
         // Splitter separation line
         let mut lp = Paint::default(); lp.set_color_rgba8(theme.splitter_bg.r().saturating_add(20), theme.splitter_bg.g().saturating_add(20), theme.splitter_bg.b().saturating_add(20), 255);
-        pix.fill_rect(Rect::from_xywh((self.explorer_width + SPLITTER_WIDTH) * SCALE, 0.0, 1.0 * SCALE, pix.height() as f32).unwrap(), &lp, Transform::identity(), None);
+        pix.fill_rect(Rect::from_xywh((self.explorer_width + SPLITTER_WIDTH) * SCALE, top_chrome_px, 1.0 * SCALE, pix.height() as f32 - top_chrome_px).unwrap(), &lp, Transform::identity(), None);
 
         // 2. Tab Bar
         let ed_start_x = (self.explorer_width + SPLITTER_WIDTH + 1.0) * SCALE;
         let mut tp = Paint::default(); tp.set_color_rgba8(theme.tab_bar_bg.r(), theme.tab_bar_bg.g(), theme.tab_bar_bg.b(), theme.tab_bar_bg.a());
-        pix.fill_rect(Rect::from_xywh(ed_start_x, 0.0, pix.width() as f32 - ed_start_x, TAB_BAR_HEIGHT * SCALE).unwrap(), &tp, Transform::identity(), None);
+        pix.fill_rect(Rect::from_xywh(ed_start_x, top_chrome_px, pix.width() as f32 - ed_start_x, TAB_BAR_HEIGHT * SCALE).unwrap(), &tp, Transform::identity(), None);
 
             let mut tx_off = ed_start_x + self.tab_scroll_x;
             for i in 0..self.tabs.len() {
@@ -1360,13 +1722,13 @@ impl App {
                 // Render Background & Underline
                 if active {
                     let mut ap = Paint::default(); ap.set_color_rgba8(theme.active_tab_bg.r(), theme.active_tab_bg.g(), theme.active_tab_bg.b(), theme.active_tab_bg.a());
-                    pix.fill_rect(Rect::from_xywh(tx_off, 0.0, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ap, Transform::identity(), None);
-                    
+                    pix.fill_rect(Rect::from_xywh(tx_off, top_chrome_px, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ap, Transform::identity(), None);
+
                     let mut up = Paint::default(); up.set_color_rgba8(theme.kw.r(), theme.kw.g(), theme.kw.b(), 255);
-                    pix.fill_rect(Rect::from_xywh(tx_off, (TAB_BAR_HEIGHT - 2.0) * SCALE, tw, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
+                    pix.fill_rect(Rect::from_xywh(tx_off, top_chrome_px + (TAB_BAR_HEIGHT - 2.0) * SCALE, tw, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
                 } else {
                     let mut ip = Paint::default(); ip.set_color_rgba8(theme.inactive_tab_bg.r(), theme.inactive_tab_bg.g(), theme.inactive_tab_bg.b(), theme.inactive_tab_bg.a());
-                    pix.fill_rect(Rect::from_xywh(tx_off, 0.0, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ip, Transform::identity(), None);
+                    pix.fill_rect(Rect::from_xywh(tx_off, top_chrome_px, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ip, Transform::identity(), None);
                 }
 
                 // Get tab properties for name calculation
@@ -1388,7 +1750,7 @@ impl App {
                 if let Some(lab) = &tab_mut.buffer {
                     for r in lab.layout_runs() {
                         for g in r.glyphs {
-                            let pg = g.physical((tx_off + 10.0 * SCALE, 10.0 * SCALE + r.line_y), 1.0);
+                            let pg = g.physical((tx_off + 10.0 * SCALE, top_chrome_px + 10.0 * SCALE + r.line_y), 1.0);
                             if let Some(im) = self.swash_cache.get_image(&mut self.font_system, pg.cache_key) {
                                 let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap();
                                 let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
@@ -1404,10 +1766,10 @@ impl App {
                 
                 // Tab close button [X] or Modified dot [•]
                 if is_modified {
-                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "•", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, Color::rgb(180, 180, 180));
+                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "•", tx_off + tw - 24.0 * SCALE, top_chrome_px + 10.0 * SCALE, Color::rgb(180, 180, 180));
                 } else {
                     let is_close_hover = self.hovering_tab_close == Some(i);
-                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "×", tx_off + tw - 24.0 * SCALE, 10.0 * SCALE, if is_close_hover { Color::rgb(255, 100, 100) } else { Color::rgb(120,120,120) });
+                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "×", tx_off + tw - 24.0 * SCALE, top_chrome_px + 10.0 * SCALE, if is_close_hover { Color::rgb(255, 100, 100) } else { Color::rgb(120,120,120) });
                 }
 
                 tx_off += tw;
@@ -1415,43 +1777,75 @@ impl App {
 
         // 2b. Breadcrumbs Removed (Unified in Status Bar)
 
-        // 3. Active Editor
+        // 3. Active Editor or Designer
         if self.active_tab < self.tabs.len() {
-             let ed_top = (TAB_BAR_HEIGHT + UI_BAR_HEIGHT) * SCALE;
+             let ed_top = top_chrome_px + (TAB_BAR_HEIGHT + UI_BAR_HEIGHT) * SCALE;
              let rect = Rect::from_xywh(ed_start_x, ed_top, pix.width() as f32 - ed_start_x, pix.height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
-             
+
+             // Drain LSP events first
              while let Ok(evt) = self.lsp.rx.try_recv() {
                 match evt {
                     LspEvent::Diagnostics(uri, diags) => { 
                         for t in &mut self.tabs {
                             let t_uri = t.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", t.name));
                             if t_uri == uri {
-                                t.widget.my_editor.diagnostics = diags;
-                                self.needs_redraw = true;
-                                break;
+                                if let TabContent::Code(cw) = &mut t.content {
+                                    cw.my_editor.diagnostics = diags;
+                                    self.needs_redraw = true;
+                                    break;
+                                }
                             }
                         }
                     }
                     _ => {}
                 }
              }
-             let w = &mut self.tabs[self.active_tab].widget;
-             
-             // Update Editor Wrapping if changed
-             w.editor.with_buffer_mut(|b| {
-                 let wrap = if w.wrap_lines { cosmic_text::Wrap::Word } else { cosmic_text::Wrap::None };
-                 if b.wrap() != wrap {
-                     b.set_wrap(&mut self.font_system, wrap);
-                     w.needs_reshape = true;
-                 }
-                 if w.wrap_lines {
-                     b.set_size(&mut self.font_system, Some(rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE), Some(rect.height()));
-                 } else {
-                     b.set_size(&mut self.font_system, Some(999999.0), Some(999999.0));
-                 }
-             });
 
-             w.render(pix, &mut self.font_system, &mut self.swash_cache, rect);
+             let tab = &mut self.tabs[self.active_tab];
+             match &mut tab.content {
+                 TabContent::Form(f) => {
+                     // Render form designer into a clipped sub-pixmap so it can't bleed over tabs/menu
+                     let clip_w = rect.width() as u32;
+                     let clip_h = rect.height() as u32;
+                     if clip_w > 0 && clip_h > 0 {
+                         if let Some(mut sub) = Pixmap::new(clip_w, clip_h) {
+                             // Render at origin (0,0) in the sub-pixmap
+                             f.render(&mut sub, &mut self.font_system, &mut self.swash_cache,
+                                 crate::form_designer_tab::Rect { x: 0.0, y: 0.0, w: clip_w as f32 / SCALE, h: clip_h as f32 / SCALE }, SCALE);
+                             // Blit sub-pixmap into the main pixmap at the editor rect position
+                             pix.draw_pixmap(rect.left() as i32, rect.top() as i32, sub.as_ref(),
+                                 &PixmapPaint::default(), Transform::identity(), None);
+                         }
+                     }
+                 }
+                 TabContent::Code(w) => {
+                     // Update Editor Wrapping if changed
+                     w.editor.with_buffer_mut(|b| {
+                         let wrap = if w.wrap_lines { cosmic_text::Wrap::Word } else { cosmic_text::Wrap::None };
+                         if b.wrap() != wrap {
+                             b.set_wrap(&mut self.font_system, wrap);
+                             w.needs_reshape = true;
+                         }
+                         if w.wrap_lines {
+                             b.set_size(&mut self.font_system, Some(rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE), Some(rect.height()));
+                         } else {
+                             b.set_size(&mut self.font_system, Some(999999.0), Some(999999.0));
+                         }
+                     });
+
+                     // Render code editor into a clipped sub-pixmap so it can't bleed over tabs/menu
+                     let clip_w = rect.width() as u32;
+                     let clip_h = rect.height() as u32;
+                     if clip_w > 0 && clip_h > 0 {
+                         if let Some(mut sub) = Pixmap::new(clip_w, clip_h) {
+                             let sub_rect = Rect::from_xywh(0.0, 0.0, clip_w as f32, clip_h as f32).unwrap();
+                             w.render(&mut sub, &mut self.font_system, &mut self.swash_cache, sub_rect);
+                             pix.draw_pixmap(rect.left() as i32, rect.top() as i32, sub.as_ref(),
+                                 &PixmapPaint::default(), Transform::identity(), None);
+                         }
+                     }
+                 }
+             }
         }
 
         // 4. Footer (Enhanced)
@@ -1459,16 +1853,23 @@ impl App {
         pix.fill_rect(Rect::from_xywh(0.0, pix.height() as f32 - FOOTER_HEIGHT * SCALE, pix.width() as f32, FOOTER_HEIGHT * SCALE).unwrap(), &fp, Transform::identity(), None);
         
         if let Some(tab) = self.tabs.get(self.active_tab) {
-            let cursor = tab.widget.editor.cursor();
-            let text = tab.widget.my_editor.rope.to_string();
-            let line_endings = if text.contains("\r\n") { "CRLF" } else { "LF" };
-            
-            // segments for breadcrumbs and zoom indicator
             let path_str = tab.path.clone().unwrap_or_else(|| tab.name.clone());
             let segments: Vec<&str> = path_str.split(|c| c == '/' || c == '\\').filter(|s| !s.is_empty()).collect();
             
-            let zoom_pct = (tab.widget.font_size / 14.0 * 100.0) as i32;
-            let status_prefix = format!("Ln {}, Col {} | {}% | {} | UTF-8 | ", cursor.line + 1, cursor.index + 1, zoom_pct, line_endings);
+            let status_prefix = match &tab.content {
+                TabContent::Code(cw) => {
+                    let cursor = cw.editor.cursor();
+                    let text = cw.my_editor.rope.to_string();
+                    let line_endings = if text.contains("\r\n") { "CRLF" } else { "LF" };
+                    let zoom_pct = (cw.font_size / 14.0 * 100.0) as i32;
+                    format!("Ln {}, Col {} | {}% | {} | UTF-8 | ", cursor.line + 1, cursor.index + 1, zoom_pct, line_endings)
+                }
+                TabContent::Form(f) => {
+                    let sels = f.selected_controls.len();
+                    format!("{} Selected | Form Designer | ", sels)
+                }
+            };
+            
             App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &status_prefix, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
             
             // Draw interactive breadcrumbs
@@ -1530,7 +1931,6 @@ impl App {
 
         // 5. Diagnostic Tooltip on Hover
         if let Some(tab) = self.tabs.get(self.active_tab) {
-            let _w = &tab.widget;
             let _mx = self.mouse_pos.0; let _my = self.mouse_pos.1;
             // Diagnostic tooltips logic...
         }
@@ -1571,6 +1971,23 @@ impl App {
             }
         }
 
+        // Menu dropdown overlay (drawn last, on top of everything)
+        if has_form_tab {
+            if let Some(form_tab) = self.tabs.iter().find(|t| matches!(&t.content, TabContent::Form(_))) {
+                if let TabContent::Form(f) = &form_tab.content {
+                    let menu_rect = crate::form_designer_tab::Rect { x: 0.0, y: 0.0, w: pix.width() as f32 / SCALE, h: 28.0 };
+                    f.menu_bar.render_dropdown_overlay(pix, &mut self.font_system, &mut self.swash_cache, menu_rect, SCALE);
+                }
+            }
+        }
+
+        // Project properties dialog (modal overlay)
+        {
+            let win_w = pix.width() as f32 / SCALE;
+            let win_h = pix.height() as f32 / SCALE;
+            self.project_props_dialog.render(pix, &mut self.font_system, &mut self.swash_cache, win_w, win_h, SCALE, &self.project);
+        }
+
         let mut buffer = surf.buffer_mut().unwrap();
         for (i, p) in pix.pixels().iter().enumerate() {
             buffer[i] = (p.red() as u32) << 16 | (p.green() as u32) << 8 | (p.blue() as u32);
@@ -1592,7 +2009,17 @@ impl ApplicationHandler for App {
         let my_editor = MyEditor::from_text("// Welcome to Vybe IDE\nfn main() {\n    println!(\"Multi-file support active!\");\n}", &lang);
         let uri = "file:///Users/youness/www/html/vybe/welcome.rs".to_string();
         let widget = CodeEditorWidget::new(my_editor, &mut self.font_system, self.lsp.clone(), uri);
-        self.tabs.push(Tab { name: "welcome.rs".to_string(), path: None, widget, is_sticky: true, buffer: None, is_modified: false });
+        self.tabs.push(Tab { name: "welcome.rs".to_string(), path: None, content: TabContent::Code(widget), is_sticky: true, buffer: None, is_modified: false });
+
+        // Always add the Form Designer tab — sync with project's first form
+        {
+            let mut designer_state = crate::form_designer_tab::FormDesignerState::new();
+            if let Some(fm) = self.project.forms.first() {
+                designer_state.form = fm.form.clone();
+            }
+            self.tabs.push(Tab { name: "Form Designer".to_string(), path: None, content: TabContent::Form(designer_state), is_sticky: true, buffer: None, is_modified: false });
+        }
+        self.active_tab = self.tabs.len().saturating_sub(1);
         self.window = Some(window); self.context = Some(ctx); self.surface = Some(surf);
         self.pixmap = Some(Pixmap::new(sz.width, sz.height).unwrap()); self.surface.as_mut().unwrap().resize(NonZeroU32::new(sz.width).unwrap(), NonZeroU32::new(sz.height).unwrap()).unwrap();
     }
@@ -1605,20 +2032,152 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y * 120.0, 
                     MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 2.0 
                 }; 
-                if self.mouse_pos.1 / SCALE < TAB_BAR_HEIGHT {
+                let tch = self.top_chrome_h();
+                if self.mouse_pos.1 / SCALE < tch + TAB_BAR_HEIGHT && self.mouse_pos.1 / SCALE >= tch {
                     self.tab_scroll_x -= a;
                 } else if self.active_tab < self.tabs.len() {
-                    self.tabs[self.active_tab].widget.scroll_y -= a;
+                    match &mut self.tabs[self.active_tab].content {
+                        TabContent::Code(w) => w.scroll_y -= a,
+                        TabContent::Form(f) => {
+                            let ed_sx = self.explorer_width + SPLITTER_WIDTH + 1.0;
+                            let ed_top = tch + TAB_BAR_HEIGHT;
+                            let ph = self.pixmap.as_ref().map(|p| p.height() as f32).unwrap_or(800.0) / SCALE;
+                            let pw = self.pixmap.as_ref().map(|p| p.width() as f32).unwrap_or(0.0) / SCALE;
+                            let form_rect = crate::form_designer_tab::Rect { x: ed_sx, y: ed_top, w: pw - ed_sx, h: ph - ed_top - FOOTER_HEIGHT };
+                            let lay = f.layout(form_rect);
+                            let lmx = self.mouse_pos.0 / SCALE;
+                            let lmy = self.mouse_pos.1 / SCALE;
+                            if lay.toolbox.contains(lmx, lmy) {
+                                f.toolbox.scroll(a, lay.toolbox);
+                            } else if lay.properties.contains(lmx, lmy) {
+                                f.scroll_properties(a);
+                            } else if lay.content.contains(lmx, lmy) {
+                                f.scroll_y -= a;
+                            }
+                        }
+                    }
                 }
                 self.window.as_ref().unwrap().request_redraw(); 
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
                     if self.tabs.is_empty() { return; }
-                    let mut acted = true; 
-                    let _theme = self.tabs[self.active_tab].widget.theme;
+                    // Handle Form tab keyboard events
+                    if let TabContent::Form(f) = &mut self.tabs[self.active_tab].content {
+                        let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
+                        let key = &event.logical_key;
+                        match key {
+                            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+                                let sel = f.selected_controls.clone();
+                                f.form.controls.retain(|c| !sel.contains(&c.id));
+                                f.selected_controls.clear();
+                            }
+                            Key::Named(NamedKey::Escape) => {
+                                if self.project_props_dialog.visible {
+                                    self.project_props_dialog.close();
+                                } else {
+                                    f.selected_controls.clear();
+                                    f.menu_bar.open_menu = None;
+                                }
+                            }
+                            Key::Character(c) if cmd => {
+                                let ch = c.to_lowercase();
+                                match ch.as_str() {
+                                    "a" => {
+                                        // Select all visual controls
+                                        f.selected_controls = f.form.controls.iter()
+                                            .filter(|c| !c.control_type.is_non_visual())
+                                            .map(|c| c.id).collect();
+                                    }
+                                    "c" => {
+                                        // Copy selected controls
+                                        self.control_clipboard = f.selected_controls.iter()
+                                            .filter_map(|id| f.form.controls.iter().find(|c| c.id == *id).cloned())
+                                            .collect();
+                                    }
+                                    "x" => {
+                                        // Cut selected controls
+                                        self.control_clipboard = f.selected_controls.iter()
+                                            .filter_map(|id| f.form.controls.iter().find(|c| c.id == *id).cloned())
+                                            .collect();
+                                        let sel = f.selected_controls.clone();
+                                        f.form.controls.retain(|c| !sel.contains(&c.id));
+                                        f.selected_controls.clear();
+                                    }
+                                    "v" => {
+                                        // Paste controls with new IDs and offset
+                                        let mut new_ids = Vec::new();
+                                        for orig in &self.control_clipboard {
+                                            let mut ctrl = orig.clone();
+                                            ctrl.id = uuid::Uuid::new_v4();
+                                            ctrl.bounds.x += 20;
+                                            ctrl.bounds.y += 20;
+                                            // Auto-rename to avoid duplicates
+                                            let base = format!("{:?}", ctrl.control_type);
+                                            let mut max = 0u32;
+                                            for c in &f.form.controls {
+                                                if c.name.starts_with(&base) {
+                                                    if let Ok(n) = c.name[base.len()..].parse::<u32>() { max = max.max(n); }
+                                                }
+                                            }
+                                            ctrl.name = format!("{}{}", base, max + 1);
+                                            new_ids.push(ctrl.id);
+                                            f.form.controls.push(ctrl);
+                                        }
+                                        f.selected_controls = new_ids;
+                                    }
+                                    "s" => {
+                                        // Save project
+                                        if let Some(path) = rfd::FileDialog::new()
+                                            .add_filter("VB Project", &["vbproj"])
+                                            .save_file()
+                                        {
+                                            if let Some(fm) = self.project.forms.first_mut() {
+                                                fm.form = f.form.clone();
+                                            }
+                                            let _ = vybe_project::serialization::save_project_auto(&self.project, &path.to_string_lossy().to_string());
+                                        }
+                                    }
+                                    "n" => {
+                                        // New project
+                                        self.project = vybe_project::project::Project::new("Project1".to_string());
+                                        let mut form = vybe_forms::Form::new("Form1".to_string());
+                                        form.width = 640; form.height = 480;
+                                        self.project.forms.push(vybe_project::project::FormModule::new_classic(form.clone()));
+                                        f.form = form;
+                                        f.selected_controls.clear();
+                                    }
+                                    "o" => {
+                                        // Open project
+                                        if let Some(path) = rfd::FileDialog::new()
+                                            .add_filter("VB Project", &["vbproj", "vbp"])
+                                            .pick_file()
+                                        {
+                                            if let Ok(proj) = vybe_project::serialization::load_project_auto(&path.to_string_lossy().to_string()) {
+                                                if let Some(first) = proj.forms.first() {
+                                                    f.form = first.form.clone();
+                                                    f.selected_controls.clear();
+                                                }
+                                                self.project = proj;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            _ => {}
+                        }
+                        self.window.as_ref().unwrap().request_redraw();
+                        return;
+                    }
+
+                    let mut acted = true;
                     let tab = &mut self.tabs[self.active_tab];
-                    let w = &mut tab.widget;
+                    let w = match &mut tab.content {
+                        TabContent::Code(cw) => cw,
+                        TabContent::Form(_) => unreachable!(),
+                    };
+                    let _theme = w.theme;
                     let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
                     let alt = self.modifiers.state().alt_key(); let shift = self.modifiers.state().shift_key();
 
@@ -1823,11 +2382,12 @@ impl ApplicationHandler for App {
                         } } } } else { acted = false; } } else { acted = false; } }
                     }
                     if acted { 
-                        let w = &mut self.tabs[self.active_tab].widget; 
-                        w.needs_reshape = true; 
-                        w.sync(); 
-                        self.pending_lsp_update = true;
-                        self.last_lsp_update = Instant::now();
+                        if let TabContent::Code(w) = &mut self.tabs[self.active_tab].content {
+                            w.needs_reshape = true; 
+                            w.sync(); 
+                            self.pending_lsp_update = true;
+                            self.last_lsp_update = Instant::now();
+                        }
                         self.window.as_ref().unwrap().request_redraw(); 
                     }
                 }
@@ -1882,7 +2442,8 @@ impl ApplicationHandler for App {
                 let last_tab_hover = self.hovering_tab_close;
                 self.hovering_tab_close = None;
                 let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
-                if my < TAB_BAR_HEIGHT && mx > ed_start_x {
+                let tch = self.top_chrome_h();
+                if my >= tch && my < tch + TAB_BAR_HEIGHT && mx > ed_start_x {
                     let mut tx = ed_start_x;
                     for i in 0..self.tabs.len() {
                         let tw = 160.0;
@@ -1894,20 +2455,35 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // 3. Editor Drag
+                // 3. Menu hover for form designer
+                if let Some(form_tab) = self.tabs.iter_mut().find(|t| matches!(&t.content, TabContent::Form(_))) {
+                    if let TabContent::Form(f) = &mut form_tab.content {
+                        let menu_rect = crate::form_designer_tab::Rect { x: 0.0, y: 0.0, w: self.pixmap.as_ref().unwrap().width() as f32 / SCALE, h: 28.0 };
+                        f.menu_bar.handle_hover(self.mouse_pos.0 / SCALE, self.mouse_pos.1 / SCALE, menu_rect);
+                    }
+                }
+
+                // 4. Editor Drag
                 let mut needs_editor_redraw = false;
-                if self.is_dragging && !self.is_dragging_splitter && self.active_tab < self.tabs.len() { 
-                    let ed_top = TAB_BAR_HEIGHT * SCALE;
-                    let r = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap(); 
-                    self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); 
+                if self.is_dragging && !self.is_dragging_splitter && self.active_tab < self.tabs.len() {
+                    let ed_top = (tch + TAB_BAR_HEIGHT) * SCALE;
+                    let r = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
+                    match &mut self.tabs[self.active_tab].content {
+                        TabContent::Code(cw) => cw.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard),
+                        TabContent::Form(f) => f.handle_mouse_move(self.mouse_pos.0 / SCALE, self.mouse_pos.1 / SCALE, crate::form_designer_tab::Rect { x: ed_start_x, y: ed_top / SCALE, w: r.width() / SCALE, h: r.height() / SCALE }),
+                    }
                     needs_editor_redraw = true;
-                } 
+                }
+
+                // Form designer menu open needs continuous redraw for hover
+                let form_menu_open = self.tabs.iter().any(|t| matches!(&t.content, TabContent::Form(f) if f.menu_bar.open_menu.is_some()));
 
                 // Smart Redraw: Only if interaction state changed or dragging
-                if was_hovering_splitter != self.hovering_splitter || 
-                   last_tab_hover != self.hovering_tab_close || 
-                   self.is_dragging_splitter || 
+                if was_hovering_splitter != self.hovering_splitter ||
+                   last_tab_hover != self.hovering_tab_close ||
+                   self.is_dragging_splitter ||
                    self.lang_dropdown.is_some() ||
+                   form_menu_open ||
                    needs_editor_redraw {
                     self.window.as_ref().unwrap().request_redraw();
                 }
@@ -1924,12 +2500,28 @@ impl ApplicationHandler for App {
                     let height = ph; // restore height alias
 
                     if state == ElementState::Pressed && button == MouseButton::Right {
-                        self.tabs[self.active_tab].widget.context_menu = Some(((mx, my), vec!["Cut".into(), "Copy".into(), "Paste".into(), "Go to Def".into()]));
-                        self.window.as_ref().unwrap().request_redraw();
+                        if let TabContent::Code(cw) = &mut self.tabs[self.active_tab].content {
+                            cw.context_menu = Some(((mx, my), vec!["Cut".into(), "Copy".into(), "Paste".into(), "Go to Def".into()]));
+                            self.window.as_ref().unwrap().request_redraw();
+                        }
                         return;
                     }
 
                     if state == ElementState::Pressed && button == MouseButton::Left {
+                        // 0. Project Properties Dialog (modal — must be first)
+                        if self.project_props_dialog.visible {
+                            let win_w = pw / SCALE;
+                            let win_h = height;
+                            if self.project_props_dialog.is_ok_clicked(mx, my, win_w, win_h) {
+                                self.project_props_dialog.apply(&mut self.project);
+                                self.project_props_dialog.close();
+                            } else {
+                                self.project_props_dialog.handle_click(mx, my, win_w, win_h, &self.project);
+                            }
+                            self.window.as_ref().unwrap().request_redraw();
+                            return;
+                        }
+
                         // 0a. Language Picker Menu Intercept
                         if let Some(mut dropdown) = self.lang_dropdown.take() {
                             let (w, h) = dropdown.get_size();
@@ -1943,7 +2535,9 @@ impl ApplicationHandler for App {
                                         self.current_lang = new_lang.clone();
                                         let tab = &mut self.tabs[self.active_tab];
                                         let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
-                                        tab.widget.set_language(&new_lang, uri);
+                                        if let TabContent::Code(cw) = &mut tab.content {
+                                            cw.set_language(&new_lang, uri);
+                                        }
                                     }
                                     self.lang_dropdown = None;
                                 }
@@ -1967,7 +2561,11 @@ impl ApplicationHandler for App {
                                 DropdownEvent::Selected(idx) => {
                                     self.current_theme_idx = idx;
                                     let new_theme = self.active_theme();
-                                    for tab in &mut self.tabs { tab.widget.theme = new_theme; tab.widget.needs_reshape = true; }
+                                    for tab in &mut self.tabs { 
+                                        if let TabContent::Code(cw) = &mut tab.content {
+                                            cw.theme = new_theme; cw.needs_reshape = true; 
+                                        }
+                                    }
                                     self.window.as_ref().unwrap().request_redraw();
                                     return;
                                 }
@@ -1977,15 +2575,16 @@ impl ApplicationHandler for App {
                             self.window.as_ref().unwrap().request_redraw(); return;
                         }
 
-                        // 1. Minimap Hit-testing
+                        // 1. Minimap Hit-testing (code editor only — form designer handles its own right panel)
                         if mx > pw / SCALE - MINIMAP_WIDTH {
                             if self.active_tab < self.tabs.len() {
-                                let tab = &mut self.tabs[self.active_tab];
-                                let mut th = 0.0; tab.widget.editor.with_buffer(|b| { for r in b.layout_runs() { if !tab.widget.is_line_hidden(r.line_i) { th += r.line_height; } } });
-                                let mry = (my - TAB_BAR_HEIGHT) / (height - TAB_BAR_HEIGHT - FOOTER_HEIGHT);
-                                tab.widget.scroll_y = (mry * th).max(0.0);
-                                self.window.as_ref().unwrap().request_redraw();
-                                return;
+                                if let TabContent::Code(cw) = &mut self.tabs[self.active_tab].content {
+                                    let mut th = 0.0; cw.editor.with_buffer(|b| { for r in b.layout_runs() { if !cw.is_line_hidden(r.line_i) { th += r.line_height; } } });
+                                    let mry = (my - TAB_BAR_HEIGHT) / (height - TAB_BAR_HEIGHT - FOOTER_HEIGHT);
+                                    cw.scroll_y = (mry * th).max(0.0);
+                                    self.window.as_ref().unwrap().request_redraw();
+                                    return;
+                                }
                             }
                         }
 
@@ -2022,9 +2621,157 @@ impl ApplicationHandler for App {
                             self.window.as_ref().unwrap().request_redraw(); return;
                         }
 
-                        // 4. Tab Bar Click
+                        // 4a. Menu bar / toolbar / dropdown click
+                    let tch = self.top_chrome_h();
+                    if tch > 0.0 {
+                        // Check if a menu dropdown is open — must handle dropdown clicks first
+                        let menu_open = self.tabs.iter().any(|t| matches!(&t.content, TabContent::Form(ref f) if f.menu_bar.open_menu.is_some()));
+
+                        if my < tch || menu_open {
+                            if let Some(form_tab) = self.tabs.iter_mut().find(|t| matches!(&t.content, TabContent::Form(_))) {
+                                if let TabContent::Form(f) = &mut form_tab.content {
+                                    let menu_rect = crate::form_designer_tab::Rect { x: 0.0, y: 0.0, w: pw / SCALE, h: 28.0 };
+                                    if let Some(action) = f.menu_bar.handle_click(mx, my, menu_rect) {
+                                        self.window.as_ref().unwrap().request_redraw();
+                                        // Dispatch menu action
+                                        match action {
+                                            crate::form_designer_tab::MenuAction::NewProject => {
+                                                self.project = vybe_project::project::Project::new("Project1".to_string());
+                                                let mut form = vybe_forms::Form::new("Form1".to_string());
+                                                form.width = 640; form.height = 480;
+                                                let fm = vybe_project::project::FormModule::new_classic(form);
+                                                self.project.forms.push(fm);
+                                                // Switch to form designer
+                                                if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
+                                                    self.active_tab = idx;
+                                                    if let TabContent::Form(fd) = &mut self.tabs[idx].content {
+                                                        fd.form = self.project.forms[0].form.clone();
+                                                    }
+                                                }
+                                            }
+                                            crate::form_designer_tab::MenuAction::OpenProject => {
+                                                if let Some(path) = rfd::FileDialog::new()
+                                                    .add_filter("VB Project", &["vbproj", "vbp"])
+                                                    .pick_file()
+                                                {
+                                                    let path_str = path.to_string_lossy().to_string();
+                                                    match vybe_project::serialization::load_project_auto(&path_str) {
+                                                        Ok(proj) => {
+                                                            if let Some(first_form) = proj.forms.first() {
+                                                                if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
+                                                                    if let TabContent::Form(fd) = &mut self.tabs[idx].content {
+                                                                        fd.form = first_form.form.clone();
+                                                                        fd.selected_controls.clear();
+                                                                    }
+                                                                    self.active_tab = idx;
+                                                                }
+                                                            }
+                                                            self.project = proj;
+                                                        }
+                                                        Err(e) => { println!("Error loading project: {}", e); }
+                                                    }
+                                                }
+                                            }
+                                            crate::form_designer_tab::MenuAction::SaveProject => {
+                                                if let Some(path) = rfd::FileDialog::new()
+                                                    .add_filter("VB Project", &["vbproj"])
+                                                    .save_file()
+                                                {
+                                                    let path_str = path.to_string_lossy().to_string();
+                                                    // Sync form back to project before saving
+                                                    if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
+                                                        if let TabContent::Form(fd) = &self.tabs[idx].content {
+                                                            if let Some(fm) = self.project.forms.first_mut() {
+                                                                fm.form = fd.form.clone();
+                                                            }
+                                                        }
+                                                    }
+                                                    match vybe_project::serialization::save_project_auto(&self.project, &path_str) {
+                                                        Ok(_) => { println!("Saved: {}", path_str); }
+                                                        Err(e) => { println!("Save error: {}", e); }
+                                                    }
+                                                }
+                                            }
+                                            crate::form_designer_tab::MenuAction::SaveAs => {
+                                                // Same as SaveProject for now
+                                            }
+                                            crate::form_designer_tab::MenuAction::Exit => {
+                                                std::process::exit(0);
+                                            }
+                                            crate::form_designer_tab::MenuAction::AddForm => {
+                                                let name = format!("Form{}", self.project.forms.len() + 1);
+                                                let mut form = vybe_forms::Form::new(name.clone());
+                                                form.width = 640; form.height = 480;
+                                                let fm = vybe_project::project::FormModule::new_classic(form);
+                                                self.project.forms.push(fm);
+                                            }
+                                            crate::form_designer_tab::MenuAction::AddModule => {
+                                                let name = format!("Module{}.vb", self.project.code_files.len() + 1);
+                                                self.project.code_files.push(vybe_project::project::CodeFile {
+                                                    name: name.clone(),
+                                                    code: format!("Module {}\n\nEnd Module\n", name.replace(".vb", "")),
+                                                });
+                                            }
+                                            crate::form_designer_tab::MenuAction::ProjectProperties => {
+                                                self.project_props_dialog.open(&self.project);
+                                            }
+                                            crate::form_designer_tab::MenuAction::RunProject => {
+                                                println!("Run not yet implemented");
+                                            }
+                                            crate::form_designer_tab::MenuAction::StopProject => {
+                                                println!("Stopped");
+                                            }
+                                            _ => {}
+                                        }
+                                        return;
+                                    }
+                                    // If no menu action but clicked in toolbar area
+                                    if my >= 28.0 && my < tch {
+                                        if let Some(action) = crate::form_designer_tab::toolbar_handle_click_pub(mx, my, crate::form_designer_tab::Rect { x: 0.0, y: 28.0, w: pw / SCALE, h: 36.0 }) {
+                                            match action {
+                                                crate::form_designer_tab::ToolbarAction::Run => { println!("Running..."); }
+                                                crate::form_designer_tab::ToolbarAction::Stop => { println!("Stopped"); }
+                                                crate::form_designer_tab::ToolbarAction::ViewDesigner => {
+                                                    if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
+                                                        self.active_tab = idx;
+                                                    }
+                                                }
+                                                crate::form_designer_tab::ToolbarAction::ViewCode => {
+                                                    if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Code(_))) {
+                                                        self.active_tab = idx;
+                                                    }
+                                                }
+                                                crate::form_designer_tab::ToolbarAction::AddForm => {
+                                                    let name = format!("Form{}", self.project.forms.len() + 1);
+                                                    let mut form = vybe_forms::Form::new(name.clone());
+                                                    form.width = 640; form.height = 480;
+                                                    self.project.forms.push(vybe_project::project::FormModule::new_classic(form));
+                                                }
+                                                crate::form_designer_tab::ToolbarAction::AddCode => {
+                                                    let name = format!("Module{}.vb", self.project.code_files.len() + 1);
+                                                    self.project.code_files.push(vybe_project::project::CodeFile {
+                                                        name: name.clone(),
+                                                        code: format!("Module {}\n\nEnd Module\n", name.replace(".vb", "")),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // If dropdown was open but clicked outside, it closed — absorb click
+                                    if menu_open {
+                                        self.window.as_ref().unwrap().request_redraw(); return;
+                                    }
+                                }
+                            }
+                            if my < tch {
+                                self.window.as_ref().unwrap().request_redraw(); return;
+                            }
+                        }
+                    }
+
+                    // 4. Tab Bar Click
                     let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
-                    if my < TAB_BAR_HEIGHT && mx > ed_start_x {
+                    if my >= tch && my < tch + TAB_BAR_HEIGHT && mx > ed_start_x {
                         if let Some(idx) = self.hovering_tab_close {
                              println!("DEBUG: Tab Bar Click -> Close Tab {}", idx);
                              self.tabs.remove(idx);
@@ -2042,32 +2789,114 @@ impl ApplicationHandler for App {
 
                     // 3. Sidebar Click
                     if mx < self.explorer_width {
-                        println!("DEBUG: Sidebar Click at mx={}, my={}", mx, my);
+                        // Sidebar tab click
+                        let stab_top = tch;
+                        if my >= stab_top && my < stab_top + SIDEBAR_TAB_H {
+                            let half = self.explorer_width / 2.0;
+                            if mx < half {
+                                self.sidebar_tab = SidebarTab::Files;
+                            } else {
+                                self.sidebar_tab = SidebarTab::Project;
+                            }
+                            self.window.as_ref().unwrap().request_redraw(); return;
+                        }
+
                         let now = Instant::now();
                         let is_double = (now - self.last_click_time) < Duration::from_millis(300);
                         self.last_click_time = now;
-                        match self.tree_view.handle_mouse(self.mouse_pos.0, self.mouse_pos.1, 0.0, TAB_BAR_HEIGHT * SCALE) {
-                             TreeEvent::Open(path) => {
-                                 if let Some(idx) = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path)) {
-                                     println!("DEBUG: Sidebar -> Reveal existing tab: {}", path);
-                                     self.active_tab = idx; if is_double { self.tabs[idx].is_sticky = true; }
-                                     self.window.as_ref().unwrap().request_redraw(); return;
-                                 }
-                                 if let Ok(content) = fs::read_to_string(&path) {
-                                     println!("DEBUG: Sidebar -> Open new tab: {}", path);
-                                     let ext = path.split('.').last().unwrap_or("txt");
-                                     let lang_name = match ext { "rs" => "rust", "js" => "javascript", "bas" | "vb" => "vb", "cs" => "csharp", _ => "text" };
-                                     let lang = load_language(lang_name).or_else(|| load_language("rust")).expect("rust language not found");
-                                     let my_editor = MyEditor::from_text(&content, &lang);
-                                     let uri = format!("file://{}", path);
-                                     let mut widget = CodeEditorWidget::new(my_editor, &mut self.font_system, self.lsp.clone(), uri.clone());
-                                     widget.set_language(lang_name, uri);
-                                     let name = Path::new(&path).file_name().unwrap_or_default().to_string_lossy().to_string();
-                                     let new_tab = Tab { name, path: Some(path.clone()), widget, is_sticky: is_double, buffer: None, is_modified: false };
-                                     self.tabs.push(new_tab); self.active_tab = self.tabs.len() - 1; self.tree_view.reveal_path(&path);
-                                 }
-                             }
-                             _ => { self.window.as_ref().unwrap().request_redraw(); }
+
+                        match self.sidebar_tab {
+                            SidebarTab::Files => {
+                                match self.tree_view.handle_mouse(self.mouse_pos.0, self.mouse_pos.1, 0.0, (tch + SIDEBAR_TAB_H) * SCALE) {
+                                     TreeEvent::Open(path) => {
+                                         if let Some(idx) = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path)) {
+                                             self.active_tab = idx; if is_double { self.tabs[idx].is_sticky = true; }
+                                             self.window.as_ref().unwrap().request_redraw(); return;
+                                         }
+                                         if let Ok(content) = fs::read_to_string(&path) {
+                                             let ext = path.split('.').last().unwrap_or("txt");
+                                             let lang_name = match ext { "rs" => "rust", "js" => "javascript", "bas" | "vb" => "vb", "cs" => "csharp", _ => "text" };
+                                             let lang = load_language(lang_name).or_else(|| load_language("rust")).expect("rust language not found");
+                                             let my_editor = MyEditor::from_text(&content, &lang);
+                                             let uri = format!("file://{}", path);
+                                             let mut widget = CodeEditorWidget::new(my_editor, &mut self.font_system, self.lsp.clone(), uri.clone());
+                                             widget.set_language(lang_name, uri);
+                                             let name = Path::new(&path).file_name().unwrap_or_default().to_string_lossy().to_string();
+                                             let new_tab = Tab { name, path: Some(path.clone()), content: TabContent::Code(widget), is_sticky: is_double, buffer: None, is_modified: false };
+                                             self.tabs.push(new_tab); self.active_tab = self.tabs.len() - 1; self.tree_view.reveal_path(&path);
+                                         }
+                                     }
+                                     _ => {}
+                                }
+                            }
+                            SidebarTab::Project => {
+                                // Project explorer click — handle collapse toggles
+                                let pe_y = tch + SIDEBAR_TAB_H;
+                                let item_h = 24.0f32;
+                                let mut iy = pe_y - self.project_explorer.scroll_y;
+
+                                // Project name — skip
+                                iy += item_h;
+
+                                // Forms header
+                                if my >= iy && my < iy + item_h {
+                                    self.project_explorer.forms_collapsed = !self.project_explorer.forms_collapsed;
+                                    self.window.as_ref().unwrap().request_redraw(); return;
+                                }
+                                iy += item_h;
+
+                                if !self.project_explorer.forms_collapsed {
+                                    for i in 0..self.project.forms.len() {
+                                        if my >= iy && my < iy + item_h {
+                                            // Load this form into the Form Designer tab
+                                            let form_clone = self.project.forms[i].form.clone();
+                                            if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
+                                                if let TabContent::Form(fd) = &mut self.tabs[idx].content {
+                                                    fd.form = form_clone;
+                                                    fd.selected_controls.clear();
+                                                }
+                                                self.active_tab = idx;
+                                            }
+                                            self.window.as_ref().unwrap().request_redraw(); return;
+                                        }
+                                        iy += item_h;
+                                    }
+                                }
+
+                                // Code header
+                                if !self.project.code_files.is_empty() {
+                                    if my >= iy && my < iy + item_h {
+                                        self.project_explorer.code_collapsed = !self.project_explorer.code_collapsed;
+                                        self.window.as_ref().unwrap().request_redraw(); return;
+                                    }
+                                    iy += item_h;
+                                    if !self.project_explorer.code_collapsed {
+                                        for i in 0..self.project.code_files.len() {
+                                            if my >= iy && my < iy + item_h {
+                                                // Open code file in a code tab
+                                                let cf = &self.project.code_files[i];
+                                                let lang = load_language("vb").or_else(|| load_language("rust")).expect("language not found");
+                                                let my_editor = MyEditor::from_text(&cf.code, &lang);
+                                                let uri = format!("file:///project/{}", cf.name);
+                                                let widget = CodeEditorWidget::new(my_editor, &mut self.font_system, self.lsp.clone(), uri);
+                                                let new_tab = Tab { name: cf.name.clone(), path: None, content: TabContent::Code(widget), is_sticky: true, buffer: None, is_modified: false };
+                                                self.tabs.push(new_tab);
+                                                self.active_tab = self.tabs.len() - 1;
+                                                self.window.as_ref().unwrap().request_redraw(); return;
+                                            }
+                                            iy += item_h;
+                                        }
+                                    }
+                                }
+
+                                // References header
+                                if !self.project.project_references.is_empty() {
+                                    if my >= iy && my < iy + item_h {
+                                        self.project_explorer.refs_collapsed = !self.project_explorer.refs_collapsed;
+                                        self.window.as_ref().unwrap().request_redraw(); return;
+                                    }
+                                }
+                            }
                         }
                         self.window.as_ref().unwrap().request_redraw(); return;
                     }
@@ -2080,19 +2909,46 @@ impl ApplicationHandler for App {
 
                     // 5. Editor Click (Deep Isolation)
                     if !self.tabs.is_empty() {
-                        let ed_top = TAB_BAR_HEIGHT * SCALE;
+                        let ed_top = (tch + TAB_BAR_HEIGHT) * SCALE;
                         let ed_bottom = height * SCALE - FOOTER_HEIGHT * SCALE;
                         if self.mouse_pos.1 >= ed_top && self.mouse_pos.1 < ed_bottom && mx >= self.explorer_width + SPLITTER_WIDTH {
                             println!("DEBUG: Editor Click at mx={}, my={}", mx, my);
                             let rect = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, ed_bottom - ed_top).unwrap();
                             self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now();
-                            self.tabs[self.active_tab].widget.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
-                            self.is_dragging = true; self.window.as_ref().unwrap().request_redraw();
+                            
+                            let mut start_drag = true;
+                            match &mut self.tabs[self.active_tab].content {
+                                TabContent::Code(cw) => {
+                                    cw.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
+                                }
+                                TabContent::Form(f) => {
+                                    let ctrl_held = self.modifiers.state().control_key() || self.modifiers.state().super_key();
+                                    let form_rect = crate::form_designer_tab::Rect { x: ed_start_x, y: ed_top / SCALE, w: rect.width() / SCALE, h: rect.height() / SCALE };
+                                    let handled = f.handle_mouse_down(self.mouse_pos.0 / SCALE, self.mouse_pos.1 / SCALE, form_rect, ctrl_held);
+                                    // Only start drag if the click was on the form canvas content area
+                                    let lay = f.layout(form_rect);
+                                    let lmx = self.mouse_pos.0 / SCALE;
+                                    let lmy = self.mouse_pos.1 / SCALE;
+                                    start_drag = handled && lay.content.contains(lmx, lmy);
+                                }
+                            }
+                            if start_drag { self.is_dragging = true; }
+                            self.window.as_ref().unwrap().request_redraw();
                         }
                     }
                 } else if state == ElementState::Released {
                     println!("DEBUG: Mouse Released");
-                    self.is_dragging = false; 
+                    let tch_rel = self.top_chrome_h();
+                    if self.active_tab < self.tabs.len() {
+                        if let TabContent::Form(f) = &mut self.tabs[self.active_tab].content {
+                            let ed_sx = self.explorer_width + SPLITTER_WIDTH + 1.0;
+                            let ed_top = tch_rel + TAB_BAR_HEIGHT;
+                            let ed_h = height - ed_top - FOOTER_HEIGHT;
+                            let ed_w = pw / SCALE - ed_sx;
+                            f.handle_mouse_up(crate::form_designer_tab::Rect { x: ed_sx, y: ed_top, w: ed_w, h: ed_h });
+                        }
+                    }
+                    self.is_dragging = false;
                     self.is_dragging_splitter = false;
                     self.window.as_ref().unwrap().request_redraw();
                 }
@@ -2103,7 +2959,7 @@ impl ApplicationHandler for App {
     }
 }
 
-pub fn run_gui(my_editor: MyEditor) {
+pub fn run_gui(my_editor: MyEditor, open_form: bool) {
     let el = EventLoop::new().expect("event loop"); el.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(my_editor); el.run_app(&mut app).expect("run app");
+    let mut app = App::new(my_editor, open_form); el.run_app(&mut app).expect("run app");
 }

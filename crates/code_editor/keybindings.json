@@ -1,0 +1,17 @@
+[
+  { "key": "z", "cmd": true, "action": "Undo" },
+  { "key": "z", "cmd": true, "shift": true, "action": "Redo" },
+  { "key": "a", "cmd": true, "action": "SelectAll" },
+  { "key": "s", "cmd": true, "action": "Save" },
+  { "key": "f", "cmd": true, "action": "Find" },
+  { "key": "h", "cmd": true, "action": "Replace" },
+  { "key": "/", "cmd": true, "action": "ToggleComment" },
+  { "key": "Tab", "shift": false, "action": "Indent" },
+  { "key": "Tab", "shift": true, "action": "Unindent" },
+  { "key": "ArrowUp", "cmd": true, "action": "MoveBufferStart" },
+  { "key": "ArrowDown", "cmd": true, "action": "MoveBufferEnd" },
+  { "key": "ArrowLeft", "cmd": true, "action": "MoveLineStart" },
+  { "key": "ArrowRight", "cmd": true, "action": "MoveLineEnd" },
+  { "key": "ArrowLeft", "alt": true, "action": "MoveWordLeft" },
+  { "key": "ArrowRight", "alt": true, "action": "MoveWordRight" }
+]

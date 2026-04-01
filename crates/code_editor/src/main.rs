@@ -2,6 +2,8 @@ mod editor;
 mod renderer;
 pub mod language;
 mod lsp_client;
+pub mod ide_text;
+pub mod form_designer_tab;
 
 use editor::Editor;
 
@@ -23,9 +25,11 @@ fn main() {
     };
     let mut ed = Editor::from_text(sample, &lang);
 
-    // Default to GUI. Pass `cli` as the first argument to force CLI output.
-    if args.len() == 1 || (args.len() > 1 && args[1] == "gui") {
-        renderer::run_gui(ed);
+    let is_gui = args.len() == 1 || args.contains(&"gui".to_string()) || args.contains(&"form".to_string());
+    
+    if is_gui {
+        let open_form = args.contains(&"form".to_string());
+        renderer::run_gui(ed, open_form);
         return;
     }
 
