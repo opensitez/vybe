@@ -13,3 +13,17 @@ pub fn setup_and_compile(
     vybe_host::register_all(vm);
     Compiler::new().compile(program)
 }
+
+/// Compile PHP to a Component (cross-language module with exports).
+/// Enables PHP functions/classes to be imported by JS, Python, Dart, etc.
+pub fn compile_component(
+    program: &vybe_parser_php::Program,
+    module_name: &str,
+) -> Result<vybe_bytecode::component::Component, String> {
+    let chunks = Compiler::new().compile(program)?;
+    Ok(vybe_compiler_common::components::build_component(
+        module_name,
+        vybe_bytecode::component::Language::Php,
+        chunks,
+    ))
+}

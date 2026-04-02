@@ -430,34 +430,32 @@ impl Compiler {
 
             Statement::Throw(expr) => {
                 self.compile_expression(expr)?;
-                self.emit(Op::throw);
+                let line = self.line;
+                common::errors::emit_throw(&mut self.chunks[self.current_chunk_idx], line);
             }
 
             Statement::Try { block, catches, finalizer } => {
-                // Emit try_start with placeholder offsets (same pattern as JS compiler)
-                let try_start_pos = self.current_offset();
+                // Use common::errors helpers (same as Python/JS/Dart)
                 let line = self.line;
-                let c = &mut self.chunks[self.current_chunk_idx];
-                c.emit_op(Op::try_start, line);
-                c.emit(0, line); c.emit(0, line); // catch offset placeholder
-                c.emit(0, line); c.emit(0, line); // finally offset placeholder
+                let c = self.current_chunk_idx;
+                let catch_jump = common::errors::emit_try_start(&mut self.chunks[c], line);
 
                 // Compile try body
                 for s in block { self.compile_statement(s)?; }
-                self.emit(Op::try_end);
+                let line = self.line;
+                common::errors::emit_try_end(&mut self.chunks[c], line);
                 let skip_catch = self.emit_jump(Op::br);
 
-                // Patch catch offset: relative from IP after try_start operands
-                // IP after try_start = try_start_pos + 5 (1 opcode + 2 catch + 2 finally)
-                let catch_pos = self.current_offset();
-                let ip_after_try_start = try_start_pos + 5;
-                let catch_offset = catch_pos as i16 - ip_after_try_start as i16;
-                let c = &mut self.chunks[self.current_chunk_idx];
-                c.code[try_start_pos + 1] = (catch_offset >> 8) as u8;
-                c.code[try_start_pos + 2] = (catch_offset & 0xff) as u8;
+                // Patch catch offset
+                common::errors::patch_catch(&mut self.chunks[c], catch_jump);
 
-                // Catch block — exception value is on stack
+                // Catch blocks — exception value is on stack
                 for catch in catches {
+                    // Map PHP exception types to canonical names for cross-language compat
+                    for type_name in &catch.types {
+                        let _canonical = common::errors::canonical_exception_name(type_name);
+                        // TODO: type-check exception against canonical name
+                    }
                     if let Some(var) = &catch.var {
                         let slot = self.define_local_or_get(var);
                         self.emit_u16(Op::local_set, slot);
@@ -1527,7 +1525,7 @@ impl Compiler {
             // ── Type conversion (common::convert + opcodes) ─────────
             "intval"   => { compile_args!(); common::convert::emit_parse_int(&mut self.chunks[c], line); return Ok(Some(())); }
             "floatval" | "doubleval" => { compile_args!(); common::convert::emit_parse_float(&mut self.chunks[c], line); return Ok(Some(())); }
-            "strval"   => { compile_args!(); common::convert::emit_to_string(&mut self.chunks[c], line); return Ok(Some(())); }
+            "strval"   => { compile_args!(); common::strings::emit_to_string(&mut self.chunks[c], line); return Ok(Some(())); }
             "boolval"  => { compile_args!(); common::convert::emit_to_bool(&mut self.chunks[c], line); return Ok(Some(())); }
             "is_numeric" => { compile_args!(); common::convert::emit_is_numeric(&mut self.chunks[c], line); return Ok(Some(())); }
             "is_null"  => { compile_args!(); self.emit(Op::ref_is_null); return Ok(Some(())); }
