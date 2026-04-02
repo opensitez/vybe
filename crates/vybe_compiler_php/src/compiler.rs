@@ -1055,12 +1055,17 @@ impl Compiler {
         if let Expression::Identifier(method_name) = method {
             match method_name.as_str() {
                 "start" => {
-                    // $fiber->start(args...) → resume(continuation, null_or_args)
+                    // $fiber->start(args...) → resume(continuation, args_or_null)
+                    // Multiple args: pack into array for the continuation to unpack
                     self.compile_expression(object)?; // continuation
                     if args.is_empty() {
                         self.emit(Op::null);
-                    } else {
+                    } else if args.len() == 1 {
                         self.compile_expression(&args[0].value)?;
+                    } else {
+                        // Pack multiple args into an array
+                        for arg in args { self.compile_expression(&arg.value)?; }
+                        self.emit_u16(Op::array_new, args.len() as u16);
                     }
                     self.emit_u16(Op::resume, 0);
                     return Ok(());
@@ -2032,9 +2037,33 @@ impl Compiler {
         }
 
         // Set class constants on the constructor object
+        // For enum cases: create objects with ->name and ->value accessors
+        let is_enum = !constants.is_empty() && constants.iter().all(|(_, v)| !matches!(v, Expression::Number(_) | Expression::Bool(_)) || true);
         for (const_name, const_val) in &constants {
             self.emit_u16(Op::local_get, class_local);
+            // Build enum case object: { name: "CaseName", value: val, __type: "ClassName" }
+            let line = self.line;
+            let c = self.current_chunk_idx;
+            common::dict::emit_new(&mut self.chunks[c], line);
+            // name property
+            self.emit(Op::dup);
+            self.emit_constant(Value::String(Rc::from(const_name.as_str())));
+            let name_key = self.add_string_constant("name");
+            self.emit_u16(Op::struct_set, name_key);
+            self.emit(Op::drop);
+            // value property
+            self.emit(Op::dup);
             self.compile_expression(const_val)?;
+            let val_key = self.add_string_constant("value");
+            self.emit_u16(Op::struct_set, val_key);
+            self.emit(Op::drop);
+            // __type property for instanceof
+            self.emit(Op::dup);
+            self.emit_constant(Value::String(Rc::from(class_name.as_str())));
+            let type_key = self.add_string_constant("__type");
+            self.emit_u16(Op::struct_set, type_key);
+            self.emit(Op::drop);
+            // Store on class constructor
             let key = self.add_string_constant(const_name);
             self.emit_u16(Op::struct_set, key);
             self.emit(Op::drop);

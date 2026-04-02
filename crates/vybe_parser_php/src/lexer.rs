@@ -424,47 +424,77 @@ impl Lexer {
                 continue;
             }
 
-            // Variable interpolation: $name or ${expr} or {$expr}
+            // Variable interpolation: $name, $name[idx], $name->prop
             if ch == '$' && self.pos + 1 < self.src.len() && (self.src[self.pos + 1].is_alphabetic() || self.src[self.pos + 1] == '_') {
                 // Flush text buffer
                 if !buf.is_empty() {
                     if !parts.is_empty() { parts.push(Token { kind: TokenKind::Dot, line }); }
                     parts.push(Token { kind: TokenKind::Str(std::mem::take(&mut buf)), line });
-                    parts.push(Token { kind: TokenKind::Dot, line });
                 }
+                if !parts.is_empty() { parts.push(Token { kind: TokenKind::Dot, line }); }
                 self.pos += 1; // skip $
                 // Read variable name
                 let mut name = String::new();
                 while self.pos < self.src.len() && (self.src[self.pos].is_alphanumeric() || self.src[self.pos] == '_') {
                     name.push(self.src[self.pos]); self.pos += 1;
                 }
-                // Handle $var->prop or $var[idx]
-                if !parts.is_empty() || !buf.is_empty() {
-                    // already pushed Dot above
-                } else {
-                    // first part — no leading Dot needed
-                }
                 parts.push(Token { kind: TokenKind::Variable(name), line });
+                // Follow with [index] access
+                if self.pos < self.src.len() && self.src[self.pos] == '[' {
+                    self.pos += 1;
+                    parts.push(Token { kind: TokenKind::LBracket, line });
+                    // Lex index expression until ]
+                    while self.pos < self.src.len() && self.src[self.pos] != ']' {
+                        let tok = self.next_token()?;
+                        if tok.kind == TokenKind::Eof { break; }
+                        parts.push(tok);
+                    }
+                    if self.pos < self.src.len() && self.src[self.pos] == ']' {
+                        self.pos += 1;
+                    }
+                    parts.push(Token { kind: TokenKind::RBracket, line });
+                }
+                // Follow with ->prop access
+                else if self.pos + 1 < self.src.len() && self.src[self.pos] == '-' && self.src[self.pos + 1] == '>' {
+                    self.pos += 2;
+                    parts.push(Token { kind: TokenKind::Arrow, line });
+                    let mut prop = String::new();
+                    while self.pos < self.src.len() && (self.src[self.pos].is_alphanumeric() || self.src[self.pos] == '_') {
+                        prop.push(self.src[self.pos]); self.pos += 1;
+                    }
+                    parts.push(Token { kind: TokenKind::Identifier(prop), line });
+                }
                 continue;
             }
 
-            // {$expr} — curly brace interpolation
+            // {$expr} — curly brace interpolation with full expression support
+            // Handles: {$var}, {$arr[0]}, {$obj->name}, {$obj->method()}
             if ch == '{' && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == '$' {
                 if !buf.is_empty() {
                     if !parts.is_empty() { parts.push(Token { kind: TokenKind::Dot, line }); }
                     parts.push(Token { kind: TokenKind::Str(std::mem::take(&mut buf)), line });
-                    parts.push(Token { kind: TokenKind::Dot, line });
                 }
                 self.pos += 1; // skip {
-                // Lex tokens until matching }
-                // Simple version: just read $varname
-                self.pos += 1; // skip $
-                let mut name = String::new();
-                while self.pos < self.src.len() && self.src[self.pos] != '}' && (self.src[self.pos].is_alphanumeric() || self.src[self.pos] == '_') {
-                    name.push(self.src[self.pos]); self.pos += 1;
+                // Lex all tokens until matching } — full expression support
+                let mut depth = 1;
+                let mut expr_tokens = Vec::new();
+                while self.pos < self.src.len() && depth > 0 {
+                    if self.src[self.pos] == '{' { depth += 1; }
+                    if self.src[self.pos] == '}' {
+                        depth -= 1;
+                        if depth == 0 { self.pos += 1; break; }
+                    }
+                    let tok = self.next_token()?;
+                    if tok.kind == TokenKind::Eof { break; }
+                    expr_tokens.push(tok);
                 }
-                if self.pos < self.src.len() && self.src[self.pos] == '}' { self.pos += 1; }
-                parts.push(Token { kind: TokenKind::Variable(name), line });
+                if !expr_tokens.is_empty() {
+                    if !parts.is_empty() { parts.push(Token { kind: TokenKind::Dot, line }); }
+                    // Wrap expression tokens in parens so parser treats them as a single expr
+                    parts.push(Token { kind: TokenKind::LParen, line });
+                    parts.extend(expr_tokens);
+                    parts.push(Token { kind: TokenKind::RParen, line });
+                }
                 continue;
             }
 
