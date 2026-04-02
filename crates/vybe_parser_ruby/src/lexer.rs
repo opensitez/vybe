@@ -40,8 +40,14 @@ impl Lexer {
                     // Don't emit newline after operators or opening delimiters
                     if let Some(last) = tokens.last() {
                         if !Self::suppresses_newline(&last.kind) {
-                            tokens.push(Token { kind: TokenKind::Newline, line: self.line });
-                            last_was_newline = true;
+                            // Also check if next non-whitespace char is . or &. (method chain continuation)
+                            let next_significant = self.peek_next_significant();
+                            if next_significant == Some('.') || next_significant == Some('&') {
+                                // Don't emit newline — this is a continued method chain
+                            } else {
+                                tokens.push(Token { kind: TokenKind::Newline, line: self.line });
+                                last_was_newline = true;
+                            }
                         }
                     }
                 }
@@ -79,6 +85,23 @@ impl Lexer {
             TokenKind::Colon | TokenKind::Do | TokenKind::Then |
             TokenKind::Newline | TokenKind::And | TokenKind::Or | TokenKind::Not
         )
+    }
+
+    /// Peek at the next non-whitespace, non-newline char without advancing.
+    fn peek_next_significant(&self) -> Option<char> {
+        let mut i = self.pos;
+        while i < self.src.len() {
+            let c = self.src[i];
+            if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+                i += 1;
+            } else if c == '#' {
+                // Skip comment line
+                while i < self.src.len() && self.src[i] != '\n' { i += 1; }
+            } else {
+                return Some(c);
+            }
+        }
+        None
     }
 
     fn skip_spaces_and_comments(&mut self) {
