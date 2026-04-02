@@ -258,22 +258,17 @@ impl Parser {
                     name,
                     parent: None,
                     interfaces: Vec::new(),
+                    traits: Vec::new(),
                     members: Vec::new(),
                 })))
             }
             TokenKind::Trait => {
+                // Parse trait as a class — same structure (methods + properties)
+                // Compiled as a regular class; `use TraitName` in another class
+                // will be handled by inheriting its methods.
                 self.advance();
-                _ = self.expect_ident()?;
-                self.expect(&TokenKind::LBrace)?;
-                let mut depth = 1;
-                while depth > 0 && !self.is_at_end() {
-                    match self.advance() {
-                        TokenKind::LBrace => depth += 1,
-                        TokenKind::RBrace => depth -= 1,
-                        _ => {}
-                    }
-                }
-                Ok(None)
+                let decl = self.parse_class_decl()?;
+                Ok(Some(Statement::ClassDeclaration(decl)))
             }
             TokenKind::Const => {
                 self.advance();
@@ -524,15 +519,22 @@ impl Parser {
         }
         self.expect(&TokenKind::LBrace)?;
         let mut members = Vec::new();
+        let mut traits = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
             match self.peek().clone() {
                 TokenKind::Semicolon => { self.advance(); }
                 TokenKind::Use => {
-                    // trait use: skip
+                    // `use TraitName, TraitName2;` — collect trait names
                     self.advance();
-                    while !matches!(self.peek(), TokenKind::Semicolon | TokenKind::LBrace | TokenKind::Eof) {
-                        self.advance();
+                    if let Ok(name) = self.expect_ident() {
+                        traits.push(name);
+                        while self.eat(&TokenKind::Comma) {
+                            if let Ok(name) = self.expect_ident() {
+                                traits.push(name);
+                            }
+                        }
                     }
+                    // Handle `use Trait { ... }` conflict resolution block
                     if self.eat(&TokenKind::LBrace) {
                         let mut d = 1;
                         while d > 0 && !self.is_at_end() {
@@ -554,7 +556,7 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RBrace)?;
-        Ok(ClassDecl { name, parent, interfaces, members })
+        Ok(ClassDecl { name, parent, interfaces, traits, members })
     }
 
     fn parse_class_member(&mut self) -> Result<Option<ClassMember>, String> {

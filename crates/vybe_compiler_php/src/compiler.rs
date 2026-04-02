@@ -124,9 +124,29 @@ impl Compiler {
         self.current_scope().resolve_local(name)
     }
 
+    fn resolve_upvalue(&mut self, scope_idx: usize, name: &str) -> Option<u8> {
+        if scope_idx == 0 { return None; }
+        let parent = scope_idx - 1;
+        if let Some(slot) = self.scopes[parent].resolve_local(name) {
+            self.scopes[parent].mark_captured(slot);
+            return Some(self.scopes[scope_idx].add_upvalue(slot as u8, true));
+        }
+        if let Some(uv) = self.resolve_upvalue(parent, name) {
+            return Some(self.scopes[scope_idx].add_upvalue(uv, false));
+        }
+        None
+    }
+
     fn emit_var_get(&mut self, name: &str) {
         if let Some(slot) = self.resolve_var(name) {
             self.emit_u16(Op::local_get, slot);
+        } else if self.scopes.len() > 1 {
+            if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
+                self.emit_u8(Op::upvalue_get, uv);
+                return;
+            }
+            let idx = self.add_string_constant(name);
+            self.emit_u16(Op::global_get, idx);
         } else {
             let idx = self.add_string_constant(name);
             self.emit_u16(Op::global_get, idx);
@@ -136,6 +156,14 @@ impl Compiler {
     fn emit_var_set(&mut self, name: &str) {
         if let Some(slot) = self.resolve_var(name) {
             self.emit_u16(Op::local_set, slot);
+        } else if self.scopes.len() > 1 {
+            if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
+                self.emit_u8(Op::upvalue_set, uv);
+                return;
+            }
+            let idx = self.add_string_constant(name);
+            self.emit_u16(Op::global_set, idx);
+            self.defined_globals.insert(name.to_string());
         } else {
             let idx = self.add_string_constant(name);
             self.emit_u16(Op::global_set, idx);
@@ -507,8 +535,31 @@ impl Compiler {
                 }
             }
             Expression::ClassKeyword(kw) => {
-                let idx = self.add_string_constant(&format!("__class_{}", kw));
-                self.emit_u16(Op::global_get, idx);
+                match kw.as_str() {
+                    "parent" => {
+                        // parent:: resolves to $this->__super (the parent constructor)
+                        self.emit_u16(Op::local_get, 1); // $this
+                        let idx = self.add_string_constant("__super");
+                        self.emit_u16(Op::struct_get, idx);
+                    }
+                    "self" | "static" => {
+                        // self:: resolves to the class constructor (stored as global)
+                        // For now, get it from $this->__type name → global
+                        self.emit_u16(Op::local_get, 1); // $this
+                        let idx = self.add_string_constant("__type");
+                        self.emit_u16(Op::struct_get, idx);
+                        // type name is a string, get the constructor from globals
+                        self.emit(Op::str_to_lower);
+                        // Can't do dynamic global_get — use the class name from context
+                        // Fallback: just push $this for self:: method calls
+                        self.emit(Op::drop);
+                        self.emit_u16(Op::local_get, 1);
+                    }
+                    _ => {
+                        let idx = self.add_string_constant(kw);
+                        self.emit_u16(Op::global_get, idx);
+                    }
+                }
             }
             Expression::Array(elements) => {
                 self.compile_array_literal(elements)?;
@@ -666,7 +717,9 @@ impl Compiler {
                     }
                 }
             }
-            Expression::Closure { params, uses: _, body, is_arrow: _ } => {
+            Expression::Closure { params, uses, body, is_arrow: _ } => {
+                // Compile closure body — `use` vars are resolved as upvalues
+                // by resolve_upvalue() during body compilation
                 let decl = FunctionDecl {
                     name: "<closure>".to_string(),
                     params: params.clone(),
@@ -678,9 +731,21 @@ impl Compiler {
                     visibility: Visibility::None,
                     return_by_ref: false,
                 };
+
+                // For `use ($x, $y)` — ensure those vars are visible in parent scope
+                // so resolve_upvalue finds them. If they're not already locals, define them.
+                if !uses.is_empty() && !self.is_global_scope() {
+                    for use_var in uses {
+                        if self.current_scope().resolve_local(use_var).is_none() {
+                            self.define_local(use_var);
+                        }
+                    }
+                }
+
                 let ci = self.compile_function(&decl)?;
+                let upvalue_count = self.scopes.last().map(|s| s.upvalues.len()).unwrap_or(0);
                 let line = self.line;
-                common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
+                common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, upvalue_count as u8, line);
             }
             Expression::Match { subject, arms } => {
                 self.compile_expression(subject)?;
@@ -731,6 +796,18 @@ impl Compiler {
     fn compile_assign(&mut self, op: &AssignOp, left: &Expression, right: &Expression) -> Result<(), String> {
         if *op == AssignOp::Assign {
             self.compile_expression(right)?;
+            self.emit(Op::dup);
+            self.compile_assign_lhs(left)?;
+            return Ok(());
+        }
+        // ??= : $x ??= val → if $x is null, $x = val
+        if *op == AssignOp::NullCoalesceAssign {
+            let c = self.current_chunk_idx;
+            let line = self.line;
+            self.compile_expression(left)?;
+            let (_null_jump, end_jump) = common::expressions::emit_null_coalesce_start(&mut self.chunks[c], line);
+            self.compile_expression(right)?;
+            common::expressions::emit_null_coalesce_end(&mut self.chunks[c], end_jump);
             self.emit(Op::dup);
             self.compile_assign_lhs(left)?;
             return Ok(());
@@ -805,6 +882,41 @@ impl Compiler {
                 self.emit_u16(Op::local_get, tmp);
                 self.emit(Op::array_set);
                 self.emit(Op::drop);
+            }
+            Expression::List(targets) => {
+                // list($a, $b) = [1, 2]
+                let arr_tmp = self.define_local("__list_arr");
+                self.emit_u16(Op::local_set, arr_tmp);
+                for (i, target) in targets.iter().enumerate() {
+                    if let Some(t) = target {
+                        self.emit_u16(Op::local_get, arr_tmp);
+                        self.emit_constant(Value::I32(i as i32));
+                        self.emit(Op::array_get);
+                        match t {
+                            Expression::Variable(name) => { self.emit_var_set(name); }
+                            _ => { self.emit(Op::drop); }
+                        }
+                    }
+                }
+            }
+            Expression::Array(elements) => {
+                // [$a, $b, $c] = [10, 20, 30] — short destructuring syntax
+                let arr_tmp = self.define_local("__destruct_arr");
+                self.emit_u16(Op::local_set, arr_tmp);
+                for (i, elem) in elements.iter().enumerate() {
+                    self.emit_u16(Op::local_get, arr_tmp);
+                    let key = match &elem.key {
+                        Some(Expression::Str(s)) => s.clone(),
+                        Some(Expression::Number(n)) => n.to_string(),
+                        _ => i.to_string(),
+                    };
+                    self.emit_constant(Value::String(Rc::from(key.as_str())));
+                    self.emit(Op::array_get);
+                    match &elem.value {
+                        Expression::Variable(name) => { self.emit_var_set(name); }
+                        _ => { self.emit(Op::drop); }
+                    }
+                }
             }
             _ => {
                 return Err("invalid assignment target".to_string());
@@ -1698,6 +1810,28 @@ impl Compiler {
         if !parent_name.is_empty() {
             let line = self.line;
             common::classes::emit_store_super(&mut self.chunks[ctor_idx], this_slot, &parent_name, line);
+        }
+
+        // Mix in trait methods — same pattern as Dart mixins:
+        // Create a trait instance, then use __vybe_assign to copy its methods to this.
+        // Traits are compiled as regular classes, so calling their constructor
+        // returns an object with all methods bound.
+        for trait_name in &decl.traits {
+            let line = self.line;
+            let trait_lower = trait_name.to_lowercase();
+            // Get trait constructor, call with 0 args to get prototype with bound methods
+            let trait_c = self.chunks[ctor_idx].add_constant(Value::String(Rc::from(trait_lower.as_str())));
+            self.chunks[ctor_idx].emit_op_u16(Op::global_get, trait_c, line);
+            self.chunks[ctor_idx].emit_op_u8(Op::call_ref, 0, line);
+            // assign(this, traitPrototype) — copies all methods onto this
+            let trait_slot = self.define_local(&format!("__trait_{}", trait_lower));
+            self.chunks[ctor_idx].emit_op_u16(Op::local_set, trait_slot, line);
+            self.chunks[ctor_idx].emit_op(Op::drop, line);
+            common::bundle::emit_call_push_func(&mut self.chunks[ctor_idx], "__vybe_assign", line);
+            self.chunks[ctor_idx].emit_op_u16(Op::local_get, this_slot, line);
+            self.chunks[ctor_idx].emit_op_u16(Op::local_get, trait_slot, line);
+            common::bundle::emit_call_invoke(&mut self.chunks[ctor_idx], 2, line);
+            self.chunks[ctor_idx].emit_op(Op::drop, line);
         }
 
         // Bind instance methods + cross-language aliases

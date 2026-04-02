@@ -119,6 +119,7 @@ pub struct ClassDecl {
     pub name: String,
     pub parent: Option<String>,
     pub interfaces: Vec<String>,
+    pub traits: Vec<String>,
     pub members: Vec<ClassMember>,
 }
 

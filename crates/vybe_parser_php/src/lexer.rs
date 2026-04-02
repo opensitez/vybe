@@ -4,6 +4,7 @@ pub struct Lexer {
     src: Vec<char>,
     pos: usize,
     line: u32,
+    pending_tokens: Vec<Token>,
 }
 
 impl Lexer {
@@ -13,7 +14,7 @@ impl Lexer {
         if src.first() == Some(&'\u{FEFF}') {
             src.remove(0);
         }
-        Lexer { src, pos: 0, line: 1 }
+        Lexer { src, pos: 0, line: 1, pending_tokens: Vec::new() }
     }
 
     pub fn tokenize(&mut self) -> Result<Vec<Token>, String> {
@@ -29,6 +30,12 @@ impl Lexer {
             // Skip close tag
             if self.peek_str("?>") {
                 self.pos += 2;
+                continue;
+            }
+            // Drain any pending tokens from interpolated strings
+            if !self.pending_tokens.is_empty() {
+                let pending = std::mem::take(&mut self.pending_tokens);
+                tokens.extend(pending);
                 continue;
             }
             let tok = self.next_token()?;
@@ -108,16 +115,69 @@ impl Lexer {
             return Ok(Token { kind: TokenKind::Variable(name), line });
         }
 
-        // String literals
+        // String literals — double-quoted with interpolation
         if ch == '"' {
             self.pos += 1;
-            let s = self.read_double_quoted_string()?;
-            return Ok(Token { kind: TokenKind::Str(s), line });
+            let toks = self.read_double_quoted_interpolated()?;
+            if toks.len() == 1 {
+                return Ok(toks.into_iter().next().unwrap());
+            }
+            // Multiple tokens (interpolated) — return first, queue rest
+            let mut iter = toks.into_iter();
+            let first = iter.next().unwrap();
+            self.pending_tokens = iter.collect();
+            return Ok(first);
         }
         if ch == '\'' {
             self.pos += 1;
             let s = self.read_single_quoted_string()?;
             return Ok(Token { kind: TokenKind::Str(s), line });
+        }
+
+        // Heredoc/Nowdoc: <<<LABEL or <<<'LABEL'
+        if ch == '<' && self.pos + 2 < self.src.len() && self.src[self.pos + 1] == '<' && self.src[self.pos + 2] == '<' {
+            self.pos += 3;
+            // Skip optional whitespace
+            while self.pos < self.src.len() && self.src[self.pos] == ' ' { self.pos += 1; }
+            let is_nowdoc = self.pos < self.src.len() && self.src[self.pos] == '\'';
+            if is_nowdoc { self.pos += 1; }
+            // Read label
+            let mut label = String::new();
+            while self.pos < self.src.len() && (self.src[self.pos].is_alphanumeric() || self.src[self.pos] == '_') {
+                label.push(self.src[self.pos]); self.pos += 1;
+            }
+            if is_nowdoc && self.pos < self.src.len() && self.src[self.pos] == '\'' { self.pos += 1; }
+            // Skip to next line
+            while self.pos < self.src.len() && self.src[self.pos] != '\n' { self.pos += 1; }
+            if self.pos < self.src.len() { self.pos += 1; self.line += 1; }
+            // Read body until line starting with label
+            let mut body = String::new();
+            loop {
+                if self.pos >= self.src.len() { break; }
+                // Check if current line starts with the label
+                let remaining: String = self.src[self.pos..].iter().collect();
+                if remaining.starts_with(&label) {
+                    let after = self.pos + label.len();
+                    if after >= self.src.len() || self.src[after] == ';' || self.src[after] == '\n' || self.src[after] == '\r' {
+                        self.pos = after;
+                        // Do NOT consume ; — the parser needs it for statement termination
+                        break;
+                    }
+                }
+                let c = self.src[self.pos]; self.pos += 1;
+                if c == '\n' { self.line += 1; }
+                body.push(c);
+            }
+            // Remove trailing newline
+            if body.ends_with('\n') { body.pop(); }
+            if body.ends_with('\r') { body.pop(); }
+            if is_nowdoc {
+                return Ok(Token { kind: TokenKind::Str(body), line });
+            } else {
+                // Heredoc — treat like double-quoted (with interpolation)
+                // For now, return as plain string (interpolation TODO)
+                return Ok(Token { kind: TokenKind::Str(body), line });
+            }
         }
 
         // Numbers
@@ -327,48 +387,104 @@ impl Lexer {
         Ok(Token { kind: TokenKind::Number(n), line })
     }
 
-    fn read_double_quoted_string(&mut self) -> Result<String, String> {
-        let mut s = String::new();
+    /// Lex a double-quoted string with interpolation support.
+    /// "Hello $name!" → [Str("Hello "), Dot, Variable("name"), Dot, Str("!")]
+    /// "plain string"  → [Str("plain string")]
+    fn read_double_quoted_interpolated(&mut self) -> Result<Vec<Token>, String> {
+        let line = self.line;
+        let mut parts: Vec<Token> = Vec::new();
+        let mut buf = String::new();
+
         while self.pos < self.src.len() {
-            let ch = self.advance();
-            if ch == '"' { break; }
-            if ch == '\\' && self.pos < self.src.len() {
-                let esc = self.advance();
+            let ch = self.src[self.pos];
+            if ch == '"' { self.pos += 1; break; }
+
+            if ch == '\\' && self.pos + 1 < self.src.len() {
+                self.pos += 1;
+                let esc = self.src[self.pos]; self.pos += 1;
                 match esc {
-                    'n' => s.push('\n'),
-                    't' => s.push('\t'),
-                    'r' => s.push('\r'),
-                    '\\' => s.push('\\'),
-                    '"' => s.push('"'),
-                    '$' => s.push('$'),
+                    'n' => buf.push('\n'),
+                    't' => buf.push('\t'),
+                    'r' => buf.push('\r'),
+                    '\\' => buf.push('\\'),
+                    '"' => buf.push('"'),
+                    '$' => buf.push('$'),
                     '0'..='9' => {
                         let mut oct = esc.to_string();
                         for _ in 0..2 {
                             if self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
-                                oct.push(self.advance());
+                                oct.push(self.src[self.pos]); self.pos += 1;
                             }
                         }
                         let n = u8::from_str_radix(&oct, 8).unwrap_or(0);
-                        s.push(n as char);
+                        buf.push(n as char);
                     }
-                    _ => { s.push('\\'); s.push(esc); }
+                    _ => { buf.push('\\'); buf.push(esc); }
                 }
-            } else if ch == '$' && self.pos < self.src.len() && (self.src[self.pos].is_alphabetic() || self.src[self.pos] == '_') {
-                // Simple variable interpolation: just read the name and embed as {$name}
-                // For now we concatenate the variable name placeholder — compiler handles it
-                // Actually let's just push a placeholder and note it needs runtime concat.
-                // Simplest: push the variable name surrounded by special markers is complex.
-                // Instead: read the var name and emit as a concat expression.
-                // For this first version, we just push `{$name}` literally so users know,
-                // or better: we can NOT handle interpolation in the lexer and let the parser do it.
-                // Easiest path: push the $ and re-handle as concat in parser.
-                // For now: treat as plain text by pushing the dollar sign.
-                s.push('$');
-            } else {
-                s.push(ch);
+                continue;
             }
+
+            // Variable interpolation: $name or ${expr} or {$expr}
+            if ch == '$' && self.pos + 1 < self.src.len() && (self.src[self.pos + 1].is_alphabetic() || self.src[self.pos + 1] == '_') {
+                // Flush text buffer
+                if !buf.is_empty() {
+                    if !parts.is_empty() { parts.push(Token { kind: TokenKind::Dot, line }); }
+                    parts.push(Token { kind: TokenKind::Str(std::mem::take(&mut buf)), line });
+                    parts.push(Token { kind: TokenKind::Dot, line });
+                }
+                self.pos += 1; // skip $
+                // Read variable name
+                let mut name = String::new();
+                while self.pos < self.src.len() && (self.src[self.pos].is_alphanumeric() || self.src[self.pos] == '_') {
+                    name.push(self.src[self.pos]); self.pos += 1;
+                }
+                // Handle $var->prop or $var[idx]
+                if !parts.is_empty() || !buf.is_empty() {
+                    // already pushed Dot above
+                } else {
+                    // first part — no leading Dot needed
+                }
+                parts.push(Token { kind: TokenKind::Variable(name), line });
+                continue;
+            }
+
+            // {$expr} — curly brace interpolation
+            if ch == '{' && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == '$' {
+                if !buf.is_empty() {
+                    if !parts.is_empty() { parts.push(Token { kind: TokenKind::Dot, line }); }
+                    parts.push(Token { kind: TokenKind::Str(std::mem::take(&mut buf)), line });
+                    parts.push(Token { kind: TokenKind::Dot, line });
+                }
+                self.pos += 1; // skip {
+                // Lex tokens until matching }
+                // Simple version: just read $varname
+                self.pos += 1; // skip $
+                let mut name = String::new();
+                while self.pos < self.src.len() && self.src[self.pos] != '}' && (self.src[self.pos].is_alphanumeric() || self.src[self.pos] == '_') {
+                    name.push(self.src[self.pos]); self.pos += 1;
+                }
+                if self.pos < self.src.len() && self.src[self.pos] == '}' { self.pos += 1; }
+                parts.push(Token { kind: TokenKind::Variable(name), line });
+                continue;
+            }
+
+            if ch == '\n' { self.line += 1; }
+            buf.push(ch);
+            self.pos += 1;
         }
-        Ok(s)
+
+        // Flush remaining buffer
+        if !buf.is_empty() {
+            if !parts.is_empty() { parts.push(Token { kind: TokenKind::Dot, line }); }
+            parts.push(Token { kind: TokenKind::Str(buf), line });
+        }
+
+        // If no interpolation, return single Str token
+        if parts.is_empty() {
+            return Ok(vec![Token { kind: TokenKind::Str(String::new()), line }]);
+        }
+
+        Ok(parts)
     }
 
     fn read_single_quoted_string(&mut self) -> Result<String, String> {

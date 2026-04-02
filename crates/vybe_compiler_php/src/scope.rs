@@ -79,6 +79,17 @@ impl Scope {
         }
     }
 
+    pub fn add_upvalue(&mut self, index: u8, is_local: bool) -> u8 {
+        for (i, uv) in self.upvalues.iter().enumerate() {
+            if uv.index == index && uv.is_local == is_local {
+                return i as u8;
+            }
+        }
+        let idx = self.upvalues.len() as u8;
+        self.upvalues.push(UpvalueDesc { index, is_local });
+        idx
+    }
+
     pub fn begin_block(&mut self) {
         self.depth += 1;
     }

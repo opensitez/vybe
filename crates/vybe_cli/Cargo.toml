@@ -28,10 +28,12 @@ vybe_compiler_csharp = { workspace = true }
 vybe_parser_dart = { workspace = true }
 vybe_compiler_dart = { workspace = true }
 vybe_host = { workspace = true }
-vybe_forms = { workspace = true }
-vybe_project = { workspace = true }
+vybe_parser_php = { workspace = true }
+vybe_compiler_php = { workspace = true }
 vybe_parser_python = { workspace = true }
 vybe_compiler_python = { workspace = true }
+vybe_forms = { workspace = true }
+vybe_project = { workspace = true }
 winit = "0.30"
 tiny-skia = "0.11"
 softbuffer = "0.4"
