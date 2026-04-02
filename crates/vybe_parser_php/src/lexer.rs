@@ -365,31 +365,31 @@ impl Lexer {
         if self.pos + 1 < self.src.len() && self.src[self.pos] == '0'
             && (self.src[self.pos + 1] == 'x' || self.src[self.pos + 1] == 'X') {
             self.pos += 2;
-            while self.pos < self.src.len() && self.src[self.pos].is_ascii_hexdigit() {
+            while self.pos < self.src.len() && (self.src[self.pos].is_ascii_hexdigit() || self.src[self.pos] == '_') {
                 self.pos += 1;
             }
-            let hex: String = self.src[start + 2..self.pos].iter().collect();
+            let hex: String = self.src[start + 2..self.pos].iter().filter(|&&c| c != '_').collect();
             let n = u64::from_str_radix(&hex, 16).map_err(|e| e.to_string())?;
             return Ok(Token { kind: TokenKind::Number(n as f64), line });
         }
-        // Octal 0b
+        // Binary 0b
         if self.pos + 1 < self.src.len() && self.src[self.pos] == '0'
             && (self.src[self.pos + 1] == 'b' || self.src[self.pos + 1] == 'B') {
             self.pos += 2;
-            while self.pos < self.src.len() && (self.src[self.pos] == '0' || self.src[self.pos] == '1') {
+            while self.pos < self.src.len() && (self.src[self.pos] == '0' || self.src[self.pos] == '1' || self.src[self.pos] == '_') {
                 self.pos += 1;
             }
-            let bin: String = self.src[start + 2..self.pos].iter().collect();
+            let bin: String = self.src[start + 2..self.pos].iter().filter(|&&c| c != '_').collect();
             let n = u64::from_str_radix(&bin, 2).map_err(|e| e.to_string())?;
             return Ok(Token { kind: TokenKind::Number(n as f64), line });
         }
-        // Decimal / float
-        while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+        // Decimal / float — allow _ separators (PHP 7.4+)
+        while self.pos < self.src.len() && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_') {
             self.pos += 1;
         }
         if self.pos < self.src.len() && self.src[self.pos] == '.' {
             self.pos += 1;
-            while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+            while self.pos < self.src.len() && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_') {
                 self.pos += 1;
             }
         }
@@ -398,7 +398,7 @@ impl Lexer {
             if self.pos < self.src.len() && (self.src[self.pos] == '+' || self.src[self.pos] == '-') {
                 self.pos += 1;
             }
-            while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+            while self.pos < self.src.len() && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_') {
                 self.pos += 1;
             }
         }
@@ -606,6 +606,7 @@ impl Lexer {
             "global" => TokenKind::Global,
             "enum" => TokenKind::Enum,
             "readonly" => TokenKind::Readonly,
+            "clone" => TokenKind::Clone,
             "and" => TokenKind::AmpAmp,
             "or" => TokenKind::PipePipe,
             "not" => TokenKind::Bang,

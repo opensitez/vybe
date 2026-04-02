@@ -518,9 +518,7 @@ impl Parser {
             while matches!(self.peek(), TokenKind::Public | TokenKind::Protected | TokenKind::Private | TokenKind::Readonly) {
                 self.advance();
             }
-            let variadic = self.eat(&TokenKind::Ellipsis);
-            let by_ref = self.eat(&TokenKind::Amp);
-            // optional type hint before $var — handle ?Type, Type|Type, (A&B)|C, etc.
+            // optional type hint BEFORE ... and & — handle int ...$nums, ?Type &$ref
             let type_hint = if self.has_type_hint_ahead() {
                 let start = self.pos;
                 self.skip_type_hint();
@@ -544,6 +542,9 @@ impl Parser {
                 }).collect();
                 if th.is_empty() { None } else { Some(th) }
             } else { None };
+            // ... and & come after type hint: int ...$nums, ?string &$ref
+            let variadic = self.eat(&TokenKind::Ellipsis);
+            let by_ref = self.eat(&TokenKind::Amp);
             let name = self.expect_var()?;
             let default = if self.eat(&TokenKind::Eq) {
                 Some(self.parse_expression()?)
@@ -649,6 +650,31 @@ impl Parser {
                 _ => break,
             }
         }
+    }
+
+    /// Parse anonymous class body: { members } with optional extends/implements
+    fn parse_class_decl_body(&mut self, name: String) -> Result<ClassDecl, String> {
+        let parent = if self.eat(&TokenKind::Extends) {
+            Some(self.expect_ident()?)
+        } else { None };
+        let mut interfaces = Vec::new();
+        if self.eat(&TokenKind::Implements) {
+            interfaces.push(self.expect_ident()?);
+            while self.eat(&TokenKind::Comma) { interfaces.push(self.expect_ident()?); }
+        }
+        self.expect(&TokenKind::LBrace)?;
+        let mut members = Vec::new();
+        let mut traits = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
+            if self.eat(&TokenKind::Semicolon) { continue; }
+            if matches!(self.peek(), TokenKind::Use) {
+                self.advance();
+                if let Ok(n) = self.expect_ident() { traits.push(n); while self.eat(&TokenKind::Comma) { if let Ok(n) = self.expect_ident() { traits.push(n); } } }
+                if self.eat(&TokenKind::LBrace) { let mut d=1; while d>0 && !self.is_at_end() { match self.advance() { TokenKind::LBrace=>d+=1, TokenKind::RBrace=>d-=1, _=>{} } } } else { self.eat(&TokenKind::Semicolon); }
+            } else if let Some(m) = self.parse_class_member()? { members.push(m); }
+        }
+        self.expect(&TokenKind::RBrace)?;
+        Ok(ClassDecl { name, parent, interfaces, traits, members })
     }
 
     fn parse_class_decl(&mut self) -> Result<ClassDecl, String> {
@@ -1015,6 +1041,16 @@ impl Parser {
             TokenKind::PlusPlus => { self.advance(); let e = self.parse_postfix()?; Ok(Expression::PreUpdate { op: UpdateOp::Inc, expr: Box::new(e) }) }
             TokenKind::MinusMinus => { self.advance(); let e = self.parse_postfix()?; Ok(Expression::PreUpdate { op: UpdateOp::Dec, expr: Box::new(e) }) }
             TokenKind::At => { self.advance(); self.parse_prefix() } // @expr — suppress errors, just evaluate
+            TokenKind::Clone => {
+                // clone $obj — shallow copy
+                self.advance();
+                let expr = self.parse_prefix()?;
+                // Compile as: __vybe_assign(new_empty_obj, $obj)
+                Ok(Expression::Call {
+                    callee: Box::new(Expression::Identifier("__clone".to_string())),
+                    args: vec![Argument { value: expr, by_ref: false, spread: false, name: None }],
+                })
+            }
             // Casts: (int) (float) (string) (bool) (array) (object)
             TokenKind::LParen => {
                 // peek ahead to see if it's a cast
@@ -1073,6 +1109,17 @@ impl Parser {
                 }
                 TokenKind::ColonColon => {
                     self.advance();
+                    // Foo::class → string of class name
+                    if matches!(self.peek(), TokenKind::Class) {
+                        self.advance();
+                        // expr is the class identifier — convert to string
+                        if let Expression::Identifier(name) = &expr {
+                            expr = Expression::Str(name.clone());
+                        } else {
+                            expr = Expression::Str("unknown".into());
+                        }
+                        continue;
+                    }
                     let member = self.parse_member_name()?;
                     if matches!(self.peek(), TokenKind::LParen) {
                         if self.is_first_class_callable() {
@@ -1184,6 +1231,22 @@ impl Parser {
             }
             TokenKind::New => {
                 self.advance();
+                // Anonymous class: new class { ... } or new class(...) { ... }
+                if matches!(self.peek(), TokenKind::Class) {
+                    self.advance();
+                    let args = if matches!(self.peek(), TokenKind::LParen) {
+                        self.parse_args()?
+                    } else { Vec::new() };
+                    // Parse the class body as an inline class declaration
+                    let anon_name = format!("__anon_{}", self.pos);
+                    let decl = self.parse_class_decl_body(anon_name)?;
+                    // Compile as: declare class + instantiate
+                    // For now, wrap as New with the anon class name
+                    return Ok(Expression::New {
+                        class: Box::new(Expression::Identifier(decl.name.clone())),
+                        args,
+                    });
+                }
                 let class = self.parse_class_name_expr()?;
                 let args = if matches!(self.peek(), TokenKind::LParen) {
                     self.parse_args()?

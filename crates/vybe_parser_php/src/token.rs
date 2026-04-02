@@ -62,6 +62,7 @@ pub enum TokenKind {
     Global,
     Enum,
     Readonly,
+    Clone,
 
     // Arithmetic / concat
     Plus,        // +
