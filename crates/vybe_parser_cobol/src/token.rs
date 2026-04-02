@@ -83,6 +83,13 @@ pub enum TokenKind {
     Lock, Unlock,
     Yield_, Suspend,
 
+    // Embedded SQL
+    Exec, Sql, EndExec,
+    /// Raw SQL text between EXEC SQL and END-EXEC
+    SqlText(String),
+    /// Host variable reference :WS-NAME
+    HostVar(String),
+
     // Intrinsic functions
     Function,
     Length, UpperCase, LowerCase, Trim, Reverse,

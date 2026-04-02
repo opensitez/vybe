@@ -465,6 +465,121 @@ impl Parser {
     // DATA DIVISION
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // Embedded SQL parsing
+    // ------------------------------------------------------------------
+
+    fn parse_sql_text(&mut self, encoded: &str) -> Result<Option<Statement>, String> {
+        // Encoded format: "SQL_TEXT\x00var1\x00var2\x00..."
+        let parts: Vec<&str> = encoded.split('\x00').collect();
+        let sql = parts[0].to_string();
+        let host_vars: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+        let sql_upper = sql.to_uppercase();
+
+        // Classify the SQL statement
+        if sql_upper.starts_with("CONNECT") {
+            // EXEC SQL CONNECT :dsn END-EXEC
+            let dsn = host_vars.first().cloned().unwrap_or_default();
+            return Ok(Some(Statement::SqlConnect { dsn, handle_var: None }));
+        }
+
+        if sql_upper.starts_with("COMMIT") {
+            return Ok(Some(Statement::SqlCommit));
+        }
+
+        if sql_upper.starts_with("ROLLBACK") {
+            return Ok(Some(Statement::SqlRollback));
+        }
+
+        if sql_upper.starts_with("DECLARE") {
+            // DECLARE cursor-name CURSOR FOR SELECT ...
+            let words: Vec<&str> = sql.split_whitespace().collect();
+            let cursor_name = words.get(1).unwrap_or(&"C1").to_uppercase();
+            // Find "FOR" and extract the SELECT after it
+            let for_pos = sql_upper.find("FOR").unwrap_or(0);
+            let select_sql = if for_pos > 0 { sql[for_pos + 3..].trim().to_string() } else { sql.clone() };
+            return Ok(Some(Statement::SqlDeclareCursor {
+                cursor_name,
+                sql: select_sql,
+                host_vars,
+            }));
+        }
+
+        if sql_upper.starts_with("OPEN") {
+            let words: Vec<&str> = sql.split_whitespace().collect();
+            let cursor_name = words.get(1).unwrap_or(&"C1").to_uppercase();
+            return Ok(Some(Statement::SqlOpenCursor(cursor_name)));
+        }
+
+        if sql_upper.starts_with("FETCH") {
+            // FETCH cursor-name INTO :var1, :var2
+            let words: Vec<&str> = sql.split_whitespace().collect();
+            let cursor_name = words.get(1).unwrap_or(&"C1").to_uppercase();
+            return Ok(Some(Statement::SqlFetch {
+                cursor_name,
+                into_vars: host_vars,
+            }));
+        }
+
+        if sql_upper.starts_with("CLOSE") {
+            let words: Vec<&str> = sql.split_whitespace().collect();
+            let cursor_name = words.get(1).unwrap_or(&"C1").to_uppercase();
+            return Ok(Some(Statement::SqlCloseCursor(cursor_name)));
+        }
+
+        if sql_upper.starts_with("SELECT") {
+            // SELECT ... INTO :var1, :var2 FROM ...
+            // Host vars after INTO are the target vars, host vars in WHERE are from_vars
+            // Simple heuristic: split at INTO keyword
+            let into_pos = sql_upper.find("INTO");
+            let from_pos = sql_upper.find("FROM");
+
+            let mut into_vars = Vec::new();
+            let mut from_vars = Vec::new();
+
+            if let Some(ip) = into_pos {
+                if let Some(fp) = from_pos {
+                    // Vars between INTO and FROM are target vars
+                    // Vars after WHERE are source vars
+                    let into_section = &sql[ip + 4..fp];
+                    // Count ? placeholders in into_section to know how many host vars are targets
+                    let into_count = into_section.matches('?').count();
+                    for (i, var) in host_vars.iter().enumerate() {
+                        if i < into_count {
+                            into_vars.push(var.clone());
+                        } else {
+                            from_vars.push(var.clone());
+                        }
+                    }
+                } else {
+                    into_vars = host_vars.clone();
+                }
+            } else {
+                from_vars = host_vars.clone();
+            }
+
+            // Build clean SQL without INTO clause for the query
+            let clean_sql = if let (Some(ip), Some(fp)) = (into_pos, from_pos) {
+                format!("{} {}", &sql[..ip].trim(), &sql[fp..].trim())
+            } else {
+                sql.clone()
+            };
+
+            return Ok(Some(Statement::SqlSelect {
+                sql: clean_sql,
+                into_vars,
+                from_vars,
+            }));
+        }
+
+        // INSERT, UPDATE, DELETE — generic execute
+        Ok(Some(Statement::SqlExecute { sql, host_vars }))
+    }
+
+    // ------------------------------------------------------------------
+    // FILE SECTION
+    // ------------------------------------------------------------------
+
     fn parse_file_section(&mut self) -> Result<Vec<FileDescription>, String> {
         let mut fds = Vec::new();
         while matches!(self.current(), TokenKind::Ident(_)) {
@@ -910,6 +1025,11 @@ impl Parser {
             TokenKind::Suspend => {
                 self.advance();
                 Ok(Some(Statement::SuspendStmt))
+            }
+            TokenKind::SqlText(ref encoded) => {
+                let encoded = encoded.clone();
+                self.advance();
+                self.parse_sql_text(&encoded)
             }
             TokenKind::Ident(ref s) if s == "STOP" => {
                 self.advance();

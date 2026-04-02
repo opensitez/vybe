@@ -157,6 +157,76 @@ impl Lexer {
         Ok(Token { kind: TokenKind::Number(val), line })
     }
 
+    /// Read EXEC SQL ... END-EXEC block.
+    /// Emits: Exec, Sql, SqlText(...), EndExec tokens.
+    /// Host variables (:WS-NAME) are extracted and emitted as HostVar tokens.
+    fn read_exec_sql(&mut self, line: u32) -> Result<Token, String> {
+        // Skip whitespace to find "SQL"
+        self.skip_whitespace_and_comments();
+        // Read next word — should be "SQL"
+        let mut sql_word = String::new();
+        while self.pos < self.src.len() && self.src[self.pos].is_alphabetic() {
+            sql_word.push(self.src[self.pos]);
+            self.pos += 1;
+        }
+        if sql_word.to_uppercase() != "SQL" {
+            // Not EXEC SQL — just return EXEC as ident
+            return Ok(Token { kind: TokenKind::Ident("EXEC".to_string()), line });
+        }
+
+        // Now read everything until END-EXEC as raw SQL
+        self.skip_whitespace_and_comments();
+        let mut sql_text = String::new();
+        let mut host_vars: Vec<String> = Vec::new();
+
+        loop {
+            if self.pos >= self.src.len() { break; }
+
+            // Check for END-EXEC
+            if self.pos + 8 <= self.src.len() {
+                let ahead: String = self.src[self.pos..self.pos + 8].iter().collect();
+                if ahead.to_uppercase() == "END-EXEC" {
+                    self.pos += 8;
+                    break;
+                }
+            }
+
+            let ch = self.src[self.pos];
+
+            // Host variable: :WS-NAME
+            if ch == ':' {
+                self.pos += 1;
+                let mut var_name = String::new();
+                while self.pos < self.src.len() {
+                    let c = self.src[self.pos];
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        var_name.push(c);
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let upper = var_name.to_uppercase();
+                host_vars.push(upper.clone());
+                sql_text.push('?'); // Replace :var with ? placeholder
+                continue;
+            }
+
+            if ch == '\n' { self.line += 1; }
+            sql_text.push(ch);
+            self.pos += 1;
+        }
+
+        // Encode SQL + host vars as a single token: "SQL_TEXT\x00var1\x00var2"
+        let mut encoded = sql_text.trim().to_string();
+        for var in &host_vars {
+            encoded.push('\x00');
+            encoded.push_str(var);
+        }
+
+        Ok(Token { kind: TokenKind::SqlText(encoded), line })
+    }
+
     fn read_word(&mut self, first: char, line: u32) -> Result<Token, String> {
         let mut word = String::new();
         word.push(first);
@@ -311,6 +381,10 @@ impl Lexer {
             "SELF" => TokenKind::Self_,
             "OVERRIDE" => TokenKind::Override,
             "GET" => TokenKind::Get,
+            "EXEC" => {
+                // Check if next word is SQL
+                return self.read_exec_sql(line);
+            }
             "ASYNC" => TokenKind::Async,
             "WAIT" => TokenKind::Wait,
             "RUN-UNIT" => TokenKind::RunUnit,

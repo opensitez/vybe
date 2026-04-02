@@ -1005,11 +1005,187 @@ impl Compiler {
             }
 
             Statement::AcceptCommandLine(var) => {
-                // ACCEPT var FROM COMMAND-LINE → get CLI args
                 let i = self.import("wasi:cli", "getArgs");
                 self.emit_host_call(i, 0);
                 let idx = self.add_string_constant(var);
                 self.emit_u16(Op::global_set, idx);
+            }
+
+            // ── Embedded SQL ───────────────────────────────────
+            Statement::SqlConnect { dsn, handle_var } => {
+                // EXEC SQL CONNECT :dsn END-EXEC → vybe:database connect
+                let di = self.add_string_constant(dsn);
+                self.emit_u16(Op::global_get, di);
+                let i = self.import("vybe:database", "connect");
+                self.emit_host_call(i, 1);
+                if let Some(hv) = handle_var {
+                    let hi = self.add_string_constant(hv);
+                    self.emit_u16(Op::global_set, hi);
+                } else {
+                    // Store as default connection
+                    let idx = self.add_string_constant("__SQL_CONN");
+                    self.emit_u16(Op::global_set, idx);
+                }
+            }
+
+            Statement::SqlSelect { sql, into_vars, from_vars } => {
+                // EXEC SQL SELECT ... INTO :var1, :var2 FROM ... WHERE :var3 END-EXEC
+                // Build SQL string, push host vars, call query
+                let conn_idx = self.add_string_constant("__SQL_CONN");
+                self.emit_u16(Op::global_get, conn_idx);
+                self.emit_constant(Value::String(Rc::from(sql.as_str())));
+                // Push WHERE-clause host vars as parameters
+                for var in from_vars {
+                    let vi = self.add_string_constant(var);
+                    self.emit_u16(Op::global_get, vi);
+                }
+                let i = self.import("vybe:database", "query");
+                self.emit_host_call(i, (from_vars.len() + 2) as u8);
+                // Result is array of rows. For SELECT INTO, take first row.
+                let result_slot = self.next_local; self.next_local += 1;
+                self.emit_u16(Op::local_set, result_slot);
+                // Assign each INTO var from the result
+                for (col, var) in into_vars.iter().enumerate() {
+                    self.emit_u16(Op::local_get, result_slot);
+                    // First row: result[0]
+                    self.emit_constant(Value::I32(0));
+                    self.emit(Op::array_get);
+                    // Column: row[col]
+                    self.emit_constant(Value::I32(col as i32));
+                    self.emit(Op::array_get);
+                    let vi = self.add_string_constant(var);
+                    self.emit_u16(Op::global_set, vi);
+                }
+                // Set SQLCODE = 0 (success)
+                self.emit_constant(Value::F64(0.0));
+                let sc = self.add_string_constant("SQLCODE");
+                self.emit_u16(Op::global_set, sc);
+            }
+
+            Statement::SqlExecute { sql, host_vars } => {
+                // EXEC SQL INSERT/UPDATE/DELETE ... END-EXEC
+                let conn_idx = self.add_string_constant("__SQL_CONN");
+                self.emit_u16(Op::global_get, conn_idx);
+                self.emit_constant(Value::String(Rc::from(sql.as_str())));
+                for var in host_vars {
+                    let vi = self.add_string_constant(var);
+                    self.emit_u16(Op::global_get, vi);
+                }
+                let i = self.import("vybe:database", "execute");
+                self.emit_host_call(i, (host_vars.len() + 2) as u8);
+                self.emit(Op::drop);
+                // SQLCODE = 0
+                self.emit_constant(Value::F64(0.0));
+                let sc = self.add_string_constant("SQLCODE");
+                self.emit_u16(Op::global_set, sc);
+            }
+
+            Statement::SqlCommit => {
+                let conn_idx = self.add_string_constant("__SQL_CONN");
+                self.emit_u16(Op::global_get, conn_idx);
+                self.emit_constant(Value::String(Rc::from("COMMIT")));
+                let i = self.import("vybe:database", "execute");
+                self.emit_host_call(i, 2);
+                self.emit(Op::drop);
+            }
+
+            Statement::SqlRollback => {
+                let conn_idx = self.add_string_constant("__SQL_CONN");
+                self.emit_u16(Op::global_get, conn_idx);
+                self.emit_constant(Value::String(Rc::from("ROLLBACK")));
+                let i = self.import("vybe:database", "execute");
+                self.emit_host_call(i, 2);
+                self.emit(Op::drop);
+            }
+
+            Statement::SqlDeclareCursor { cursor_name, sql, host_vars } => {
+                // Store cursor SQL + params for later OPEN
+                let cursor_sql_key = self.add_string_constant(&format!("__CURSOR_{}_SQL", cursor_name));
+                self.emit_constant(Value::String(Rc::from(sql.as_str())));
+                self.emit_u16(Op::global_set, cursor_sql_key);
+                // Store host var names for parameter binding
+                for (i, var) in host_vars.iter().enumerate() {
+                    let pk = self.add_string_constant(&format!("__CURSOR_{}_P{}", cursor_name, i));
+                    let vi = self.add_string_constant(var);
+                    self.emit_u16(Op::global_get, vi);
+                    self.emit_u16(Op::global_set, pk);
+                }
+                let pc = self.add_string_constant(&format!("__CURSOR_{}_PCNT", cursor_name));
+                self.emit_constant(Value::F64(host_vars.len() as f64));
+                self.emit_u16(Op::global_set, pc);
+            }
+
+            Statement::SqlOpenCursor(cursor_name) => {
+                // Execute the cursor's SQL and store result set
+                let conn_idx = self.add_string_constant("__SQL_CONN");
+                self.emit_u16(Op::global_get, conn_idx);
+                let sql_key = self.add_string_constant(&format!("__CURSOR_{}_SQL", cursor_name));
+                self.emit_u16(Op::global_get, sql_key);
+                let i = self.import("vybe:database", "query");
+                self.emit_host_call(i, 2);
+                // Store result set
+                let rs_key = self.add_string_constant(&format!("__CURSOR_{}_RS", cursor_name));
+                self.emit_u16(Op::global_set, rs_key);
+                // Reset row index to 0
+                let idx_key = self.add_string_constant(&format!("__CURSOR_{}_IDX", cursor_name));
+                self.emit_constant(Value::F64(0.0));
+                self.emit_u16(Op::global_set, idx_key);
+            }
+
+            Statement::SqlFetch { cursor_name, into_vars } => {
+                // Fetch next row from cursor result set
+                let rs_key = self.add_string_constant(&format!("__CURSOR_{}_RS", cursor_name));
+                let idx_key = self.add_string_constant(&format!("__CURSOR_{}_IDX", cursor_name));
+
+                // Check if index < result set length
+                self.emit_u16(Op::global_get, idx_key);
+                self.emit_u16(Op::global_get, rs_key);
+                self.emit(Op::array_length);
+                self.emit(Op::dyn_lt);
+                let no_more = self.emit_jump(Op::br_if_false);
+
+                // Get current row
+                self.emit_u16(Op::global_get, rs_key);
+                self.emit_u16(Op::global_get, idx_key);
+                self.emit(Op::array_get);
+                let row_slot = self.next_local; self.next_local += 1;
+                self.emit_u16(Op::local_set, row_slot);
+
+                // Assign each column to INTO var
+                for (col, var) in into_vars.iter().enumerate() {
+                    self.emit_u16(Op::local_get, row_slot);
+                    self.emit_constant(Value::I32(col as i32));
+                    self.emit(Op::array_get);
+                    let vi = self.add_string_constant(var);
+                    self.emit_u16(Op::global_set, vi);
+                }
+
+                // Increment index
+                self.emit_u16(Op::global_get, idx_key);
+                self.emit_constant(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::global_set, idx_key);
+
+                // SQLCODE = 0 (success)
+                self.emit_constant(Value::F64(0.0));
+                let sc = self.add_string_constant("SQLCODE");
+                self.emit_u16(Op::global_set, sc);
+                let end = self.emit_jump(Op::br);
+
+                // No more rows: SQLCODE = 100
+                self.patch_jump(no_more);
+                self.emit_constant(Value::F64(100.0));
+                let sc2 = self.add_string_constant("SQLCODE");
+                self.emit_u16(Op::global_set, sc2);
+
+                self.patch_jump(end);
+            }
+
+            Statement::SqlCloseCursor(cursor_name) => {
+                // Clear cursor state
+                let rs_key = self.add_string_constant(&format!("__CURSOR_{}_RS", cursor_name));
+                self.emit(Op::null);
+                self.emit_u16(Op::global_set, rs_key);
             }
         }
         Ok(())

@@ -239,6 +239,26 @@ pub enum Statement {
     YieldStmt,
     /// SUSPEND → pause execution
     SuspendStmt,
+
+    // ── Embedded SQL ───────────────────────────────────────
+    /// EXEC SQL CONNECT dsn END-EXEC
+    SqlConnect { dsn: String, handle_var: Option<String> },
+    /// EXEC SQL SELECT ... INTO :var1, :var2 FROM ... END-EXEC
+    SqlSelect { sql: String, into_vars: Vec<String>, from_vars: Vec<String> },
+    /// EXEC SQL INSERT/UPDATE/DELETE ... END-EXEC
+    SqlExecute { sql: String, host_vars: Vec<String> },
+    /// EXEC SQL COMMIT END-EXEC
+    SqlCommit,
+    /// EXEC SQL ROLLBACK END-EXEC
+    SqlRollback,
+    /// EXEC SQL DECLARE cursor CURSOR FOR SELECT ... END-EXEC
+    SqlDeclareCursor { cursor_name: String, sql: String, host_vars: Vec<String> },
+    /// EXEC SQL OPEN cursor END-EXEC
+    SqlOpenCursor(String),
+    /// EXEC SQL FETCH cursor INTO :var1, :var2 END-EXEC
+    SqlFetch { cursor_name: String, into_vars: Vec<String> },
+    /// EXEC SQL CLOSE cursor END-EXEC
+    SqlCloseCursor(String),
 }
 
 #[derive(Debug, Clone)]
