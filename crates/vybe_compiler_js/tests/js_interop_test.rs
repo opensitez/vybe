@@ -590,10 +590,7 @@ fn test_d40_setter_dispatch() {
     assert_eq!(run_js_one(code), "10");
 }
 
-// D41. Class expression (anonymous)
-// Known limitation: class expressions are not supported in the parser/compiler.
 #[test]
-#[ignore = "known bug"]
 fn test_d41_class_expression() {
     let code = r#"
         let MyClass = class {
@@ -681,7 +678,6 @@ fn test_e45_invoke_with_multiple_args() {
 // Known bug: `let obj = { ... }` does not store into globals (only `var` or top-level declarations
 // that use global_set). The VM globals map does not contain `obj` after run.
 #[test]
-#[ignore = "known bug"]
 fn test_e46_invoke_method_on_global_object() {
     let code = r#"
         let obj = {
@@ -755,7 +751,8 @@ fn test_e49_invoke_class_method_with_this() {
     if let vybe_bytecode::Value::Object(ref rc) = adder {
         let borrowed = rc.borrow();
         let method = borrowed.properties.get("add").cloned().expect("add not found");
-        let result = vm.invoke(&method, &[vybe_bytecode::Value::F64(5.0)]).expect("invoke failed");
+        // Pass adder as `this` (first arg) + the actual arg
+        let result = vm.invoke(&method, &[adder.clone(), vybe_bytecode::Value::F64(5.0)]).expect("invoke failed");
         assert_eq!(format!("{}", result), "105");
     } else {
         panic!("adder is not an Object");

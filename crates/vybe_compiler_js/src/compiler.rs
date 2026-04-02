@@ -232,11 +232,22 @@ impl Compiler {
             "clock"   => "wasi:clocks",
             "env"     => "wasi:cli",
             "random"  => "wasi:random",
-            "http"    => "wasi:http",
+            "http" | "https" => "wasi:http",
+            // Node.js modules → vybe host (same as VB/Python/PHP)
+            "crypto"        => "vybe:crypto",
+            "net" | "tls"   => "vybe:net",
+            "dgram"         => "vybe:net",
+            "path"          => "wasi:filesystem",
+            "os"            => "wasi:cli",
+            "child_process" => "vybe:types",
+            "url"           => "vybe:convert",
+            "xml" | "xml2js" => "vybe:xml",
             // Platform modules — vybe names for non-WASI
             "gui"     => "vybe:gui",
             "db"      => "vybe:database",
             "Promise" => "vybe:runtime",
+            // Threading (Web Workers / Node worker_threads)
+            "worker_threads" => "vybe:threading",
             // Unknown → pass through as-is
             _ => obj_name,
         }
@@ -1172,7 +1183,19 @@ impl Compiler {
                 self.compile_call(callee, arguments)?;
             }
             Expression::New { callee, arguments } => {
+                // Map/Set: flat dict via common::dict (cross-language compatible)
                 if let Expression::Identifier(name) = callee.as_ref() {
+                    if name == "Map" || name == "Set" {
+                        let line = self.line;
+                        vybe_compiler_common::dict::emit_new(&mut self.chunks[self.current_chunk_idx], line);
+                        // Also set size = 0 as a property for .size access
+                        self.emit(Op::dup);
+                        self.emit_constant(Value::F64(0.0));
+                        let si = self.add_string_constant("size");
+                        self.emit_u16(Op::struct_set, si);
+                        self.emit(Op::drop);
+                        return Ok(());
+                    }
                     if let Some(host_idx) = self.resolve_builtin_constructor(name) {
                         self.emit_u16(Op::struct_new, 0);
                         for arg in arguments { self.compile_expression(arg)?; }
@@ -1437,8 +1460,13 @@ impl Compiler {
             match property.as_str() {
                 "call" => {
                     // fn.call(thisArg, arg1, arg2, ...) → call fn with args (skip thisArg for non-methods)
-                    self.compile_expression(object)?; // fn
-                    // Skip thisArg (first argument), pass the rest
+                    // fn.call(thisArg, arg1, arg2, ...)
+                    // Pass thisArg + remaining args. The function's slot layout:
+                    //   slot 0 = callee, slot 1 = thisArg, slot 2+ = args
+                    // Regular functions ignore thisArg (their params start at slot 1).
+                    // Class methods use thisArg as `this` (slot 1).
+                    self.compile_expression(object)?; // push fn
+                    // Skip thisArg for regular functions, pass it for methods
                     for arg in arguments.iter().skip(1) { self.compile_expression(arg)?; }
                     let argc = if arguments.is_empty() { 0 } else { (arguments.len() - 1) as u8 };
                     self.emit_u8(Op::call, argc);
@@ -1507,48 +1535,179 @@ impl Compiler {
             }
 
             // Method call: obj.method(args)
-            // Try callMethod host first (handles Map/Set/List with __data).
-            // If returns Undefined, fall back to struct_get + call.
+            // Pure struct_get + call. No host function dispatch.
+            // Works for all objects: class instances, object literals, Map/Set, builders.
+            // Reuse a single temp local per scope to avoid inflation.
+            let obj_tmp = if let Some(slot) = self.current_scope().resolve_local("__method_obj") {
+                slot
+            } else {
+                self.define_local("__method_obj")
+            };
+
             self.compile_expression(object)?;
-            let obj_tmp = self.define_local("__obj_tmp");
-            self.emit(Op::dup);
             self.emit_u16(Op::local_set, obj_tmp);
             self.emit(Op::drop);
-            self.emit_constant(Value::String(Rc::from(property.as_str())));
-            for arg in arguments { self.compile_expression(arg)?; }
-            let cm_idx = self.import("vybe:runtime", "callMethod");
-            self.emit_host_call(cm_idx, (arguments.len() + 2) as u8);
 
-            // Check if callMethod returned Undefined (not a builtin collection)
-            self.emit(Op::dup);
-            self.emit(Op::ref_is_null);
-            let done = self.emit_jump(Op::br_if_false);
-            self.emit(Op::drop); // drop undefined
-
-            // Fallback: struct_get + call
+            // Get method from object
             self.emit_u16(Op::local_get, obj_tmp);
             let prop_idx = self.add_string_constant(property);
             self.emit_u16(Op::struct_get, prop_idx);
 
+            // Null check: if struct_get returned null, handle as Map/Set method
+            self.emit(Op::dup);
+            self.emit(Op::ref_is_null);
+            let method_found = self.emit_jump(Op::br_if_false);
+
+            // NULL: struct_get returned null. Stack: [local@obj_tmp, null_from_dup].
+            // ref_is_null consumed the bool from dup. Original null from struct_get is TOS.
+            // Drop just the null. The local at slot 0 must survive.
+            self.emit(Op::drop); // drop null
+            match property.as_str() {
+                "get" if arguments.len() == 1 => {
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.compile_expression(&arguments[0])?;
+                    self.emit(Op::array_get);
+                }
+                "set" if arguments.len() == 2 => {
+                    // Check if key exists
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.compile_expression(&arguments[0])?;
+                    self.emit(Op::array_get);
+                    self.emit(Op::ref_is_null);
+                    let is_new = self.emit_jump(Op::br_if_true);
+                    // Existing: just update
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.compile_expression(&arguments[0])?;
+                    self.compile_expression(&arguments[1])?;
+                    self.emit(Op::array_set);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    let done_s = self.emit_jump(Op::br);
+                    // New: set + __keys + size
+                    self.patch_jump(is_new);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.compile_expression(&arguments[0])?;
+                    self.compile_expression(&arguments[1])?;
+                    self.emit(Op::array_set);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    let ki = self.add_string_constant("__keys");
+                    self.emit_u16(Op::struct_get, ki);
+                    self.compile_expression(&arguments[0])?;
+                    self.emit(Op::array_push);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    let sg = self.add_string_constant("size");
+                    self.emit_u16(Op::struct_get, sg);
+                    self.emit_constant(Value::F64(1.0));
+                    self.emit(Op::dyn_add);
+                    let ss = self.add_string_constant("size");
+                    self.emit_u16(Op::struct_set, ss);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.patch_jump(done_s);
+                }
+                "has" if arguments.len() == 1 => {
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.compile_expression(&arguments[0])?;
+                    self.emit(Op::array_get);
+                    self.emit(Op::ref_is_null);
+                    self.emit(Op::dyn_not);
+                }
+                "delete" if arguments.len() == 1 => {
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.compile_expression(&arguments[0])?;
+                    self.emit(Op::null);
+                    self.emit(Op::array_set);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    let sg = self.add_string_constant("size");
+                    self.emit_u16(Op::struct_get, sg);
+                    self.emit_constant(Value::F64(1.0));
+                    self.emit(Op::f64_sub);
+                    let ss = self.add_string_constant("size");
+                    self.emit_u16(Op::struct_set, ss);
+                    self.emit(Op::drop);
+                    self.emit(Op::r#true);
+                }
+                "add" if arguments.len() == 1 => {
+                    // Set.add — check duplicate
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.compile_expression(&arguments[0])?;
+                    self.emit(Op::array_get);
+                    self.emit(Op::ref_is_null);
+                    let is_new_a = self.emit_jump(Op::br_if_true);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    let done_a = self.emit_jump(Op::br);
+                    self.patch_jump(is_new_a);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.compile_expression(&arguments[0])?;
+                    self.emit(Op::r#true);
+                    self.emit(Op::array_set);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    let ki = self.add_string_constant("__keys");
+                    self.emit_u16(Op::struct_get, ki);
+                    self.compile_expression(&arguments[0])?;
+                    self.emit(Op::array_push);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    let sg = self.add_string_constant("size");
+                    self.emit_u16(Op::struct_get, sg);
+                    self.emit_constant(Value::F64(1.0));
+                    self.emit(Op::dyn_add);
+                    let ss = self.add_string_constant("size");
+                    self.emit_u16(Op::struct_set, ss);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.patch_jump(done_a);
+                }
+                "clear" => {
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.emit_u16(Op::array_new, 0);
+                    let ki = self.add_string_constant("__keys");
+                    self.emit_u16(Op::struct_set, ki);
+                    self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.emit_constant(Value::F64(0.0));
+                    let ss = self.add_string_constant("size");
+                    self.emit_u16(Op::struct_set, ss);
+                    self.emit(Op::drop);
+                    self.emit(Op::null);
+                }
+                "keys" => {
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    let ki = self.add_string_constant("__keys");
+                    self.emit_u16(Op::struct_get, ki);
+                }
+                "values" => {
+                    self.emit_u16(Op::local_get, obj_tmp);
+                    let idx = self.import("vybe:object", "values");
+                    self.emit_host_call(idx, 1);
+                }
+                _ => { self.emit(Op::null); }
+            }
+            let done_dispatch = self.emit_jump(Op::br);
+
+            // FOUND: method exists on object — call it
+            self.patch_jump(method_found);
+
             let is_static = if let Expression::Identifier(obj_name) = object.as_ref() {
                 self.defined_classes.contains(obj_name)
             } else { false };
-            let is_class_instance = if let Expression::Identifier(obj_name) = object.as_ref() {
-                self.class_instances.contains(obj_name)
-            } else {
-                matches!(object.as_ref(), Expression::New { .. } | Expression::This)
-            };
 
             if is_static {
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, arguments.len() as u8);
             } else {
-                // Pass this for all method calls (class instances AND object literals)
-                self.emit_u16(Op::local_get, obj_tmp);
+                self.emit_u16(Op::local_get, obj_tmp); // this
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, (arguments.len() + 1) as u8);
             }
-            self.patch_jump(done);
+            self.patch_jump(done_dispatch);
             return Ok(());
         }
 
@@ -3001,6 +3160,117 @@ impl Compiler {
                 common_thread::emit_atomic_notify(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
+            // ── crypto module (same as VB SHA256/MD5, Python hashlib, PHP md5/sha1) ──
+            ("crypto", "createHash", _) => {
+                // crypto.createHash('sha256') — for now just return the algo name
+                // The actual hashing happens on .update().digest()
+                for arg in args { self.compile_expression(arg)?; }
+                Ok(Some(()))
+            }
+            ("crypto", "randomBytes", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("wasi:random", "randomBytes");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(Some(()))
+            }
+            ("crypto", "randomUUID", _) => {
+                let idx = self.import("wasi:random", "uuid");
+                self.emit_host_call(idx, 0);
+                Ok(Some(()))
+            }
+            // ── net module (same as VB TcpClient, Python socket, PHP fsockopen) ──
+            ("net", "createConnection" | "connect", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("vybe:net", "tcpConnect");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(Some(()))
+            }
+            ("net", "createServer", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("vybe:net", "tcpListenerNew");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(Some(()))
+            }
+            // ── dgram module (same as VB UdpClient, Python socket.SOCK_DGRAM) ──
+            ("dgram", "createSocket", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("vybe:net", "udpNew");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(Some(()))
+            }
+            // ── dns module ──
+            ("dns", "resolve" | "lookup", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("vybe:net", "dnsResolve");
+                self.emit_host_call(idx, 1);
+                Ok(Some(()))
+            }
+            // ── path module (same as VB System.IO.Path, Python os.path, PHP pathinfo) ──
+            ("path", "join", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("wasi:filesystem", "pathCombine");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(Some(()))
+            }
+            ("path", "dirname", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("wasi:filesystem", "pathGetDirectory");
+                self.emit_host_call(idx, 1);
+                Ok(Some(()))
+            }
+            ("path", "basename", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("wasi:filesystem", "pathGetFileName");
+                self.emit_host_call(idx, 1);
+                Ok(Some(()))
+            }
+            ("path", "extname", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("wasi:filesystem", "pathGetExtension");
+                self.emit_host_call(idx, 1);
+                Ok(Some(()))
+            }
+            ("path", "resolve", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("wasi:filesystem", "pathGetFullPath");
+                self.emit_host_call(idx, 1);
+                Ok(Some(()))
+            }
+            // ── os module (same as VB Environment, Python os, PHP php_uname) ──
+            ("os", "hostname", _) => {
+                let idx = self.import("wasi:cli", "machineName");
+                self.emit_host_call(idx, 0);
+                Ok(Some(()))
+            }
+            ("os", "platform" | "type" | "arch", _) => {
+                let idx = self.import("wasi:cli", "platform");
+                self.emit_host_call(idx, 0);
+                Ok(Some(()))
+            }
+            ("os", "tmpdir", _) => {
+                let idx = self.import("wasi:filesystem", "pathGetTempPath");
+                self.emit_host_call(idx, 0);
+                Ok(Some(()))
+            }
+            ("os", "homedir", _) => {
+                let idx = self.import("wasi:cli", "userName");
+                self.emit_host_call(idx, 0);
+                Ok(Some(()))
+            }
+            // ── child_process module (same as VB Process.Start, Python os.system) ──
+            ("child_process", "execSync" | "exec" | "spawn", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("vybe:types", "processStart");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(Some(()))
+            }
+            // ── xml module ──
+            ("xml" | "xml2js", "parseString" | "parse", _) => {
+                for arg in args { self.compile_expression(arg)?; }
+                let idx = self.import("vybe:xml", "parse");
+                self.emit_host_call(idx, 1);
+                Ok(Some(()))
+            }
             _ => Ok(None),
         }
     }
@@ -3047,6 +3317,18 @@ impl Compiler {
                 "shift" if !is_class_instance => Some(Op::array_shift),
                 "reverse" if !is_class_instance => Some(Op::array_reverse),
                 "lastIndexOf" => Some(Op::str_last_index_of),
+                "keys" if !is_class_instance => {
+                    self.compile_expression(object)?;
+                    let line = self.line;
+                    vybe_compiler_common::dict::emit_keys(&mut self.chunks[self.current_chunk_idx], line);
+                    return Ok(Some(()));
+                }
+                "values" if !is_class_instance => {
+                    self.compile_expression(object)?;
+                    let idx = self.import("vybe:object", "values");
+                    self.emit_host_call(idx, 1);
+                    return Ok(Some(()));
+                }
                 _ => None,
             };
             if let Some(op) = op {
@@ -3154,6 +3436,9 @@ impl Compiler {
                 self.emit_host_call(flat_fn, 2);
                 return Ok(Some(()));
             }
+            // Map/Set/Dict methods are handled in the null-check fallback of the
+            // generic method dispatch — NOT here. This avoids intercepting class
+            // methods named get/set/has/add on non-Map objects and chained calls.
             _ => {}
         }
 

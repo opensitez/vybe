@@ -179,7 +179,6 @@ fn test_class_with_closure() {
 // ============================================================
 
 #[test]
-#[ignore] // TODO: chained method calls on this.property need work
 fn test_class_with_array() {
     let code = r#"
         class Stack {
