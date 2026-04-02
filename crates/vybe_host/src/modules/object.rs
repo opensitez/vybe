@@ -8,8 +8,15 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:object", "keys", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
+            // If __keys array exists (dict with key tracking), use it directly
+            if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
+                let ka = keys_arr.borrow();
+                if let ObjectKind::Array(ref elems) = ka.kind {
+                    return Value::Object(Rc::new(RefCell::new(Object::new_array(elems.clone()))));
+                }
+            }
             let keys: Vec<Value> = o.properties.keys()
-                .filter(|k| *k != "length") // exclude internal 'length' for arrays
+                .filter(|k| *k != "length" && !k.starts_with("__")) // exclude internal properties
                 .map(|k| Value::String(Rc::from(k.as_str())))
                 .collect();
             return Value::Object(Rc::new(RefCell::new(Object::new_array(keys))));
@@ -21,7 +28,20 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:object", "values", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
-            let vals: Vec<Value> = o.properties.values().cloned().collect();
+            // If __keys array exists, use it to get values in insertion order
+            if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
+                let ka = keys_arr.borrow();
+                if let ObjectKind::Array(ref elems) = ka.kind {
+                    let vals: Vec<Value> = elems.iter()
+                        .filter_map(|k| if let Value::String(s) = k { o.properties.get(s.as_ref()).cloned() } else { None })
+                        .collect();
+                    return Value::Object(Rc::new(RefCell::new(Object::new_array(vals))));
+                }
+            }
+            let vals: Vec<Value> = o.properties.iter()
+                .filter(|(k, _)| !k.starts_with("__"))
+                .map(|(_, v)| v.clone())
+                .collect();
             return Value::Object(Rc::new(RefCell::new(Object::new_array(vals))));
         }
         Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
@@ -31,7 +51,27 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:object", "entries", Box::new(|args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
+            // If __keys array exists, use it for insertion-order entries
+            if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
+                let ka = keys_arr.borrow();
+                if let ObjectKind::Array(ref elems) = ka.kind {
+                    let entries: Vec<Value> = elems.iter()
+                        .filter_map(|k| {
+                            if let Value::String(s) = k {
+                                o.properties.get(s.as_ref()).map(|v| {
+                                    Value::Object(Rc::new(RefCell::new(Object::new_array(vec![
+                                        Value::String(s.clone()),
+                                        v.clone(),
+                                    ]))))
+                                })
+                            } else { None }
+                        })
+                        .collect();
+                    return Value::Object(Rc::new(RefCell::new(Object::new_array(entries))));
+                }
+            }
             let entries: Vec<Value> = o.properties.iter()
+                .filter(|(k, _)| !k.starts_with("__"))
                 .map(|(k, v)| {
                     Value::Object(Rc::new(RefCell::new(Object::new_array(vec![
                         Value::String(Rc::from(k.as_str())),
