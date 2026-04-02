@@ -1,113 +1,137 @@
-# Vybe Compiler/Interpreter with Visual Form Editor
+# Vybe
 
-A Visual Basic-style development environment built from scratch in Rust, featuring a parser, interpreter, and visual form designer.
+A multi-language compiler and runtime built in Rust. Vybe compiles Visual Basic, JavaScript, Python, C#, Dart, and PHP to a shared bytecode VM with WASM output support. All languages share the same runtime, host functions, and object model — objects created in one language are fully compatible with any other.
+
+## Supported Languages
+
+| Language | Parser | Compiler | Status |
+|----------|--------|----------|--------|
+| Visual Basic (.vb) | `vybe_parser_basic` | `vybe_compiler_vb` | Mature |
+| JavaScript (.js) | `vybe_parser_js` | `vybe_compiler_js` | Mature |
+| Python (.py) | `vybe_parser_python` | `vybe_compiler_python` | Mature |
+| C# (.cs) | `vybe_parser_csharp` | `vybe_compiler_csharp` | In progress |
+| Dart (.dart) | `vybe_parser_dart` | `vybe_compiler_dart` | In progress |
+| PHP (.php) | `vybe_parser_php` | `vybe_compiler_php` | In progress |
 
 ## Features
 
-- **Vybe Basic Parser**: Full support for Basic syntax including:
-  - Variables, assignments, and expressions
-  - Control flow (If/Then/Else, For/Next, While/Wend, Do/Loop)
-  - Procedures (Sub/Function) with parameters
-  - Classes with properties and methods
-  - Event handlers
-
-- **Interpreter**: Tree-walking interpreter with:
-  - Expression evaluation
-  - Variable scoping
-  - Function calls
-  - Built-in functions (MsgBox, Len, Left, Right, Mid, UCase, LCase)
-  - Event system for control events
-
-- **Visual Form Designer**:
-  - Drag-and-drop control placement
-  - Property editor
-  - Toolbox with standard controls (Button, Label, TextBox, CheckBox, RadioButton)
-  - Grid-based designer canvas
-  - Code editor view
-
-- **Project System**:
-  - JSON-based project files
-  - Form serialization
-  - Multiple forms and modules support
+- **Multi-language compilation** to a single bytecode format
+- **Cross-language interop** — classes, functions, and objects are shared across languages
+- **Bytecode VM** with a WASI-compatible host interface
+- **WASM output** (`--emit-wasm`) for browser and portable execution
+- **Visual Form Designer** with drag-and-drop controls, property editor, and event handlers
+- **Project system** — multi-file, multi-language projects via `.vybe` config
+- **Sandbox mode** for restricted execution
 
 ## Architecture
 
 ```
-vb/
+vybe/
 ├── crates/
-│   ├── vybe_parser/      # PEG parser using pest
-│   ├── vybe_runtime/     # Tree-walking interpreter
-│   ├── vybe_forms/       # Form model and controls
-│   ├── vybe_editor/      # Visual editor (iced GUI)
-│   └── vybe_project/     # Project file management
-└── examples/            # Sample vybe programs
+│   ├── vybe_bytecode/          # Bytecode VM, opcodes, WASM emitter
+│   ├── vybe_compiler_common/   # Shared compiler helpers (classes, functions, I/O)
+│   ├── vybe_compiler_vb/       # VB → bytecode
+│   ├── vybe_compiler_js/       # JS → bytecode
+│   ├── vybe_compiler_python/   # Python → bytecode
+│   ├── vybe_compiler_csharp/   # C# → bytecode
+│   ├── vybe_compiler_dart/     # Dart → bytecode
+│   ├── vybe_compiler_php/      # PHP → bytecode
+│   ├── vybe_parser_basic/      # VB parser
+│   ├── vybe_parser_js/         # JS parser
+│   ├── vybe_parser_python/     # Python parser
+│   ├── vybe_parser_csharp/     # C# parser
+│   ├── vybe_parser_dart/       # Dart parser
+│   ├── vybe_parser_php/        # PHP parser
+│   ├── vybe_host/              # Host function registry (I/O, math, strings, etc.)
+│   ├── vybe_cli/               # CLI runner (vybec)
+│   ├── vybe_ide/               # IDE with Skia renderer
+│   ├── vybe_forms/             # Form model and controls
+│   ├── vybe_designer/          # Visual form designer
+│   ├── vybe_project/           # Project file management
+│   └── vybe_widgets/           # UI widget library
+└── examples/                   # Example programs per language
 ```
 
 ## Building
 
 ```bash
-cd vb
 cargo build --release
-```
-
-## Running the Editor
-
-```bash
-cargo run --bin vybe_editor
-```
-
-## Running Example Code
-
-```bash
-# Parse and execute a IRIS file
-cargo run --example parse_and_run examples/hello_world.vb
-
 ```
 
 ## Usage
 
-1. **Create a New Project**: Click "New" to create a new vybe Basic project
-2. **Add Controls**: Click a control type from the toolbox, then click on the form to place it
-3. **Edit Properties**: Select a control to view and edit its properties
-4. **Write Code**: Click "View Code" to write event handlers
-5. **Run**: Click "Run" to execute your program
+```bash
+# Compile and run
+vybec hello.vb
+vybec app.js
+vybec script.py
+vybec page.php
+vybec main.dart
 
-## Example vybe Code
+# Dump bytecode
+vybec --dump hello.js
+
+# Emit WASM
+vybec --emit-wasm hello.js
+
+# Run a multi-language project
+vybec project.vybe
+
+# Sandbox mode (restricted host access)
+vybec --sandbox untrusted.py
+```
+
+## Examples
+
+```js
+// JavaScript
+function greet(name) {
+    console.log("Hello, " + name + "!");
+}
+greet("World");
+```
+
+```python
+# Python
+def factorial(n):
+    if n <= 1:
+        return 1
+    return n * factorial(n - 1)
+
+print(factorial(6))
+```
+
+```php
+<?php
+$fruits = ["apple", "banana", "cherry"];
+foreach ($fruits as $fruit) {
+    echo $fruit;
+}
+```
 
 ```vb
-' Button click event handler
-Sub btnHello_Click()
-    MsgBox("Hello, World!")
+' Visual Basic
+Sub Main()
+    Dim x As Integer = 42
+    Console.WriteLine("The answer is " & x)
 End Sub
-
-' Function with parameters
-Function Add(a As Integer, b As Integer) As Integer
-    Add = a + b
-End Function
 ```
+
+## IDE
+
+```bash
+cargo build -p vybe_ide --bin skia_ide
+```
+
+The IDE includes a code editor with syntax highlighting, a visual form designer, and integrated run/debug support.
 
 ## Technology Stack
 
-- **Language**: Rust 2021
-- **Parser**: pest (PEG parser)
-- **GUI**: Dioxus (retained-mode GUI framework)
-- **Serialization**: serde + serde_json
-- **Syntax Highlight**: Monaco Editor
-
-## Roadmap
-
-- [x] Basic parser for VB syntax
-- [x] Tree-walking interpreter
-- [x] Form model with controls
-- [x] Visual designer with iced
-- [x] Property editor
-- [x] Event system
-- [x] More controls (ComboBox, ListBox, Frame, PictureBox)
-- [ ] File dialogs for Open/Save
-- [ ] Debugger
-- [ ] Bytecode VM for better performance
-- [x] IntelliSense/autocomplete
-- [ ] WASM compilation
+- **Language**: Rust
+- **Bytecode VM**: Custom stack-based VM with WASI-compatible imports
+- **WASM**: Component-model output for portable execution
+- **GUI Rendering**: tiny-skia
+- **Syntax Highlighting**: Monaco Editor (web), tree-sitter (native)
 
 ## License
 
