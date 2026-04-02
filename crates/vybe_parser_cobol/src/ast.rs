@@ -126,6 +126,39 @@ pub enum Statement {
     SearchTable { table: String, at_end: Vec<Statement>, when_cond: Expr, when_body: Vec<Statement> },
     /// ACCEPT var FROM DATE/TIME/DAY
     AcceptFrom { var: String, source: AcceptSource },
+    /// REWRITE record FROM var
+    Rewrite { record: String, from: Option<String> },
+    /// DELETE file
+    DeleteFile(String),
+    /// START file KEY = var
+    StartFile { file: String, key: Option<String> },
+    /// EXIT PERFORM / EXIT PARAGRAPH
+    ExitPerform,
+    ExitParagraph,
+    /// MERGE file ON ASCENDING/DESCENDING KEY field
+    Merge { file: String, ascending: bool, key: String },
+    /// COPY copybook
+    Copy(String),
+    /// INSPECT var CONVERTING from-chars TO to-chars
+    InspectConverting { var: String, from: String, to: String },
+    /// EVALUATE subject ALSO subject2 ...
+    EvaluateAlso { subjects: Vec<Expr>, whens: Vec<WhenAlsoClause>, other: Option<Vec<Statement>> },
+    /// INVOKE object method USING args [RETURNING result]
+    Invoke { object: String, method: String, args: Vec<String>, returning: Option<String> },
+    /// TYPEDEF type-name AS ...
+    TypeDef { name: String, pic: Option<String> },
+    /// VALIDATE var
+    ValidateStmt(String),
+    /// FREE var
+    FreeStmt(String),
+    /// ALLOCATE var
+    AllocateStmt(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct WhenAlsoClause {
+    pub values: Vec<Vec<Expr>>,  // one value per subject
+    pub body: Vec<Statement>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -193,6 +226,25 @@ pub enum Expr {
     Bool(bool),
     /// Reference modification: name(start:length)
     RefMod { name: String, start: Box<Expr>, length: Option<Box<Expr>> },
+    /// Class condition: var IS NUMERIC / ALPHABETIC
+    ClassTest { var: Box<Expr>, class: ClassCondition },
+    /// Sign condition: var IS POSITIVE / NEGATIVE / ZERO
+    SignTest { var: Box<Expr>, sign: SignCondition },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClassCondition {
+    Numeric,
+    Alphabetic,
+    AlphabeticLower,
+    AlphabeticUpper,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignCondition {
+    Positive,
+    Negative,
+    Zero,
 }
 
 #[derive(Debug, Clone, PartialEq)]

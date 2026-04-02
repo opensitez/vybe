@@ -59,6 +59,20 @@ pub enum TokenKind {
     Reference, Content,  // CALL BY REFERENCE/CONTENT
     DependingOn,  // OCCURS DEPENDING ON
     Colon,  // : for reference modification
+    // Additional verbs
+    Rewrite, EndRewrite, Delete, EndDelete, Start, EndStart,
+    Exit, Paragraph, Merge,
+    Copy, Converting,
+    Numeric, Alphabetic, AlphabeticLower, AlphabeticUpper,
+    Positive, Negative,
+    PointerKw, Count,
+    // COBOL 2023
+    ClassId, MethodId, Invoke, EndClass, EndMethod,
+    Typedef, Validate, EndValidate,
+    Free, Allocate,
+    Boolean, FloatLong, FloatShort, National,
+    Property, Get, Set2, EndInvoke,
+    Resume,
 
     // Intrinsic functions
     Function,

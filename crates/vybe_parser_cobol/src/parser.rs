@@ -384,6 +384,85 @@ impl Parser {
             TokenKind::Write => self.parse_write(),
             TokenKind::Sort => self.parse_sort(),
             TokenKind::Search => self.parse_search(),
+            TokenKind::Rewrite => {
+                self.advance();
+                let record = self.expect_ident()?;
+                let from = if self.match_token(&TokenKind::From) { Some(self.expect_ident()?) } else { None };
+                self.match_token(&TokenKind::EndRewrite);
+                Ok(Some(Statement::Rewrite { record, from }))
+            }
+            TokenKind::Delete => {
+                self.advance();
+                let file = self.expect_ident()?;
+                self.match_token(&TokenKind::EndDelete);
+                Ok(Some(Statement::DeleteFile(file)))
+            }
+            TokenKind::Start => {
+                self.advance();
+                let file = self.expect_ident()?;
+                let key = if self.match_token(&TokenKind::Key) {
+                    self.match_token(&TokenKind::Eq);
+                    Some(self.expect_ident()?)
+                } else { None };
+                self.match_token(&TokenKind::EndStart);
+                Ok(Some(Statement::StartFile { file, key }))
+            }
+            TokenKind::Exit => {
+                self.advance();
+                if self.match_token(&TokenKind::Perform) {
+                    Ok(Some(Statement::ExitPerform))
+                } else if self.match_token(&TokenKind::Paragraph) {
+                    Ok(Some(Statement::ExitParagraph))
+                } else {
+                    Ok(Some(Statement::Continue))
+                }
+            }
+            TokenKind::Merge => {
+                self.advance();
+                let file = self.expect_ident()?;
+                self.match_token(&TokenKind::On);
+                let ascending = if self.match_token(&TokenKind::Descending) { false }
+                else { self.match_token(&TokenKind::Ascending); true };
+                self.match_token(&TokenKind::Key);
+                let key = self.expect_ident()?;
+                Ok(Some(Statement::Merge { file, ascending, key }))
+            }
+            TokenKind::Copy => {
+                self.advance();
+                let name = self.expect_ident()?;
+                Ok(Some(Statement::Copy(name)))
+            }
+            TokenKind::Invoke => {
+                self.advance();
+                let object = self.expect_ident()?;
+                let method = self.expect_ident()?;
+                let mut args = Vec::new();
+                if self.match_token(&TokenKind::Using) {
+                    while !matches!(self.current(), TokenKind::Returning | TokenKind::Period | TokenKind::Eof | TokenKind::EndIf | TokenKind::EndPerform) {
+                        args.push(self.expect_ident()?);
+                    }
+                }
+                let returning = if self.match_token(&TokenKind::Returning) {
+                    Some(self.expect_ident()?)
+                } else { None };
+                Ok(Some(Statement::Invoke { object, method, args, returning }))
+            }
+            TokenKind::Validate => {
+                self.advance();
+                let var = self.expect_ident()?;
+                self.match_token(&TokenKind::EndValidate);
+                Ok(Some(Statement::ValidateStmt(var)))
+            }
+            TokenKind::Free => {
+                self.advance();
+                let var = self.expect_ident()?;
+                Ok(Some(Statement::FreeStmt(var)))
+            }
+            TokenKind::Allocate => {
+                self.advance();
+                let var = self.expect_ident()?;
+                Ok(Some(Statement::AllocateStmt(var)))
+            }
             TokenKind::Ident(ref s) if s == "STOP" => {
                 self.advance();
                 if let TokenKind::Ident(s) = self.current() {
@@ -689,6 +768,16 @@ impl Parser {
             } else { self.expect_ident()? };
             return Ok(Some(Statement::InspectTallying { var, counter, mode, target }));
         }
+        if self.match_token(&TokenKind::Converting) {
+            let from = if let TokenKind::Str(s) = self.current().clone() {
+                self.advance(); s
+            } else { self.expect_ident()? };
+            self.expect(&TokenKind::To)?;
+            let to = if let TokenKind::Str(s) = self.current().clone() {
+                self.advance(); s
+            } else { self.expect_ident()? };
+            return Ok(Some(Statement::InspectConverting { var, from, to }));
+        }
         if self.match_token(&TokenKind::Replacing) {
             let mode = self.parse_inspect_mode()?;
             let old = if let TokenKind::Str(s) = self.current().clone() {
@@ -881,6 +970,57 @@ impl Parser {
 
     fn parse_comparison(&mut self) -> Result<Expr, String> {
         let left = self.parse_expr()?;
+
+        // Check for IS NUMERIC / IS ALPHABETIC / IS POSITIVE / IS NEGATIVE / IS ZERO
+        if let TokenKind::Ident(s) = self.current() {
+            if s == "IS" {
+                self.advance(); // IS
+                // Check for NOT
+                let negated = self.match_token(&TokenKind::Not);
+                match self.current() {
+                    TokenKind::Numeric => {
+                        self.advance();
+                        let expr = Expr::ClassTest { var: Box::new(left), class: ClassCondition::Numeric };
+                        return Ok(if negated { Expr::Not(Box::new(expr)) } else { expr });
+                    }
+                    TokenKind::Alphabetic => {
+                        self.advance();
+                        let expr = Expr::ClassTest { var: Box::new(left), class: ClassCondition::Alphabetic };
+                        return Ok(if negated { Expr::Not(Box::new(expr)) } else { expr });
+                    }
+                    TokenKind::AlphabeticLower => {
+                        self.advance();
+                        let expr = Expr::ClassTest { var: Box::new(left), class: ClassCondition::AlphabeticLower };
+                        return Ok(if negated { Expr::Not(Box::new(expr)) } else { expr });
+                    }
+                    TokenKind::AlphabeticUpper => {
+                        self.advance();
+                        let expr = Expr::ClassTest { var: Box::new(left), class: ClassCondition::AlphabeticUpper };
+                        return Ok(if negated { Expr::Not(Box::new(expr)) } else { expr });
+                    }
+                    TokenKind::Positive => {
+                        self.advance();
+                        let expr = Expr::SignTest { var: Box::new(left), sign: SignCondition::Positive };
+                        return Ok(if negated { Expr::Not(Box::new(expr)) } else { expr });
+                    }
+                    TokenKind::Negative => {
+                        self.advance();
+                        let expr = Expr::SignTest { var: Box::new(left), sign: SignCondition::Negative };
+                        return Ok(if negated { Expr::Not(Box::new(expr)) } else { expr });
+                    }
+                    TokenKind::Zeros => {
+                        self.advance();
+                        let expr = Expr::SignTest { var: Box::new(left), sign: SignCondition::Zero };
+                        return Ok(if negated { Expr::Not(Box::new(expr)) } else { expr });
+                    }
+                    _ => {
+                        // IS was not followed by a class/sign keyword — back up
+                        // (IS might be noise word before = or other comparison)
+                    }
+                }
+            }
+        }
+
         let op = match self.current() {
             TokenKind::Eq => Some(CmpOp::Eq),
             TokenKind::Gt => Some(CmpOp::Gt),
@@ -888,9 +1028,8 @@ impl Parser {
             TokenKind::GtEq => Some(CmpOp::Ge),
             TokenKind::LtEq => Some(CmpOp::Le),
             TokenKind::Not => {
-                // NOT = (not equal)
                 if self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].kind == TokenKind::Eq {
-                    self.advance(); // NOT
+                    self.advance();
                     Some(CmpOp::Ne)
                 } else {
                     None

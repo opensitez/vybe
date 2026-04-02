@@ -726,6 +726,138 @@ impl Compiler {
                 let idx = self.add_string_constant(var);
                 self.emit_u16(Op::global_set, idx);
             }
+
+            Statement::Rewrite { record, from } => {
+                // REWRITE record FROM var → write updated record
+                let fi = self.add_string_constant(&format!("__file_{}", record));
+                self.emit_u16(Op::global_get, fi);
+                if let Some(var) = from {
+                    let vi = self.add_string_constant(var);
+                    self.emit_u16(Op::global_get, vi);
+                } else {
+                    let ri = self.add_string_constant(record);
+                    self.emit_u16(Op::global_get, ri);
+                }
+                let i = self.import("wasi:filesystem", "printFile");
+                self.emit_host_call(i, 2);
+                self.emit(Op::drop);
+            }
+
+            Statement::DeleteFile(file) => {
+                self.emit_constant(Value::String(Rc::from(file.as_str())));
+                let i = self.import("wasi:filesystem", "remove");
+                self.emit_host_call(i, 1);
+                self.emit(Op::drop);
+            }
+
+            Statement::StartFile { file, key: _ } => {
+                // START positions file pointer — simplified as no-op
+                let _ = file;
+            }
+
+            Statement::ExitPerform => {
+                // EXIT PERFORM → break out of current perform loop
+                self.emit(Op::null);
+                self.emit(Op::r#return);
+            }
+
+            Statement::ExitParagraph => {
+                // EXIT PARAGRAPH → return from current paragraph
+                self.emit(Op::null);
+                self.emit(Op::r#return);
+            }
+
+            Statement::Merge { file: _, ascending: _, key: _ } => {
+                // MERGE → simplified no-op
+            }
+
+            Statement::Copy(_name) => {
+                // COPY → preprocessor directive, no-op at compile time
+            }
+
+            Statement::InspectConverting { var, from, to } => {
+                // INSPECT var CONVERTING from TO to → character-by-character translation
+                let var_idx = self.add_string_constant(var);
+                self.emit_u16(Op::global_get, var_idx);
+                self.emit_constant(Value::String(Rc::from(from.as_str())));
+                self.emit_constant(Value::String(Rc::from(to.as_str())));
+                self.emit(Op::str_replace);
+                self.emit_u16(Op::global_set, var_idx);
+            }
+
+            Statement::EvaluateAlso { subjects, whens, other } => {
+                // EVALUATE subject1 ALSO subject2 → multi-discriminator switch
+                // Simplified: evaluate first subject only
+                if let Some(first) = subjects.first() {
+                    self.compile_expr(first)?;
+                }
+                let disc_slot = self.next_local; self.next_local += 1;
+                self.emit_u16(Op::local_set, disc_slot);
+                let mut end_jumps = Vec::new();
+                for when in whens {
+                    if let Some(first_vals) = when.values.first() {
+                        if let Some(val) = first_vals.first() {
+                            self.emit_u16(Op::local_get, disc_slot);
+                            self.compile_expr(val)?;
+                            self.emit(Op::dyn_eq);
+                            let skip = self.emit_jump(Op::br_if_false);
+                            for s in &when.body { self.compile_statement(s)?; }
+                            end_jumps.push(self.emit_jump(Op::br));
+                            self.patch_jump(skip);
+                        }
+                    }
+                }
+                if let Some(other_body) = other {
+                    for s in other_body { self.compile_statement(s)?; }
+                }
+                for j in end_jumps { self.patch_jump(j); }
+            }
+
+            Statement::Invoke { object, method, args, returning } => {
+                // INVOKE object method USING args RETURNING result
+                let oi = self.add_string_constant(object);
+                self.emit_u16(Op::global_get, oi);
+                let mi = self.add_string_constant(method);
+                self.emit_u16(Op::struct_get, mi);
+                // Push self + args
+                self.emit_u16(Op::global_get, oi);
+                for arg in args {
+                    let ai = self.add_string_constant(arg);
+                    self.emit_u16(Op::global_get, ai);
+                }
+                self.emit_u8(Op::call_ref, (args.len() + 1) as u8);
+                if let Some(ret_var) = returning {
+                    let ri = self.add_string_constant(ret_var);
+                    self.emit_u16(Op::global_set, ri);
+                } else {
+                    self.emit(Op::drop);
+                }
+            }
+
+            Statement::TypeDef { name: _, pic: _ } => {
+                // TYPEDEF → no runtime effect
+            }
+
+            Statement::ValidateStmt(var) => {
+                // VALIDATE → check if variable is valid (simplified: no-op)
+                let _ = var;
+            }
+
+            Statement::FreeStmt(var) => {
+                // FREE → set variable to null
+                self.emit(Op::null);
+                let idx = self.add_string_constant(var);
+                self.emit_u16(Op::global_set, idx);
+            }
+
+            Statement::AllocateStmt(var) => {
+                // ALLOCATE → create empty object
+                let line = self.line;
+                let c = self.current_chunk_idx;
+                common::dict::emit_new(&mut self.chunks[c], line);
+                let idx = self.add_string_constant(var);
+                self.emit_u16(Op::global_set, idx);
+            }
         }
         Ok(())
     }
@@ -839,6 +971,41 @@ impl Compiler {
                     self.emit_constant(Value::I32(i32::MAX));
                 }
                 self.emit(Op::str_substring);
+                Ok(())
+            }
+            Expr::ClassTest { var, class } => {
+                self.compile_expr(var)?;
+                match class {
+                    ClassCondition::Numeric => {
+                        let c = self.current_chunk_idx;
+                        let line = self.line;
+                        common::convert::emit_is_numeric(&mut self.chunks[c], line);
+                    }
+                    ClassCondition::Alphabetic | ClassCondition::AlphabeticLower | ClassCondition::AlphabeticUpper => {
+                        // Simplified: check string length > 0
+                        self.emit(Op::str_length);
+                        self.emit_constant(Value::I32(0));
+                        self.emit(Op::dyn_gt);
+                    }
+                }
+                Ok(())
+            }
+            Expr::SignTest { var, sign } => {
+                self.compile_expr(var)?;
+                match sign {
+                    SignCondition::Positive => {
+                        self.emit_constant(Value::F64(0.0));
+                        self.emit(Op::dyn_gt);
+                    }
+                    SignCondition::Negative => {
+                        self.emit_constant(Value::F64(0.0));
+                        self.emit(Op::dyn_lt);
+                    }
+                    SignCondition::Zero => {
+                        self.emit_constant(Value::F64(0.0));
+                        self.emit(Op::dyn_eq);
+                    }
+                }
                 Ok(())
             }
         }
