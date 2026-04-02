@@ -63,7 +63,36 @@ pub enum Statement {
         ensure: Option<Vec<Statement>>,
     },
     Require(String),
+    /// a, b = 1, 2
+    MultiAssign {
+        targets: Vec<Expression>,
+        splat_index: Option<usize>,
+        values: Vec<Expression>,
+    },
+    /// alias new_name old_name
+    Alias {
+        new_name: String,
+        old_name: String,
+    },
+    /// private / protected / public
+    AccessModifier(AccessLevel),
+    /// retry (in rescue)
+    Retry,
+    /// loop { body }
+    Loop(Vec<Statement>),
+    /// catch(:tag) { body }
+    CatchThrow {
+        tag: Expression,
+        body: Vec<Statement>,
+    },
     Empty,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AccessLevel {
+    Public,
+    Private,
+    Protected,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +129,7 @@ pub struct Param {
     pub splat: bool,      // *args
     pub double_splat: bool, // **kwargs
     pub block: bool,      // &block
+    pub keyword: bool,    // name: (keyword arg)
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +241,60 @@ pub enum Expression {
     Include(String),
     /// extend ModuleName
     Extend(String),
+    /// /pattern/ regex literal
+    Regex(String),
+    /// defined?(expr)
+    Defined(Box<Expression>),
+    /// &:method_name (symbol-to-proc)
+    SymbolProc(String),
+    /// proc { |x| body }
+    ProcLiteral {
+        params: Vec<String>,
+        body: Vec<Statement>,
+    },
+    /// Struct.new(:field1, :field2)
+    StructNew {
+        name: Option<String>,
+        fields: Vec<String>,
+    },
+    /// throw :tag, value
+    Throw {
+        tag: Box<Expression>,
+        value: Option<Box<Expression>>,
+    },
+    /// obj.freeze
+    Freeze(Box<Expression>),
+    /// obj.frozen?
+    FrozenCheck(Box<Expression>),
+    /// obj.respond_to?(:method)
+    RespondTo {
+        object: Box<Expression>,
+        method: String,
+    },
+    /// obj.send(:method, args)
+    Send {
+        object: Box<Expression>,
+        method: Box<Expression>,
+        args: Vec<Expression>,
+    },
+    /// Chained assignment: a = b = c = 1
+    ChainedAssign {
+        targets: Vec<Expression>,
+        value: Box<Expression>,
+    },
+    /// case expr; in pattern => body; end (Ruby 3)
+    PatternMatch {
+        subject: Box<Expression>,
+        arms: Vec<PatternArm>,
+        else_body: Option<Vec<Statement>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct PatternArm {
+    pub pattern: Expression,
+    pub guard: Option<Expression>,
+    pub body: Vec<Statement>,
 }
 
 #[derive(Debug, Clone)]

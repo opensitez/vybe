@@ -62,6 +62,20 @@ pub enum TokenKind {
     Puts,
     Print,
     P,
+    Private,
+    Protected,
+    Public,
+    Alias,
+    Defined,
+    Loop,
+    Catch,
+    Throw,
+    Freeze,
+    Frozen,
+
+    // Regex
+    Regex(String),
+    EqTilde,     // =~
 
     // Arithmetic
     Plus,        // +

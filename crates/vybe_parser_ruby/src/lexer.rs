@@ -186,14 +186,23 @@ impl Lexer {
             }
             '/' => {
                 if self.peek() == Some('=') { self.pos += 1; Ok(Token { kind: TokenKind::SlashEq, line }) }
+                else if self.is_regex_context() {
+                    self.read_regex(line)
+                }
                 else { Ok(Token { kind: TokenKind::Slash, line }) }
             }
             '%' => {
                 if self.peek() == Some('=') { self.pos += 1; Ok(Token { kind: TokenKind::PercentEq, line }) }
+                else if let Some(tok) = self.try_percent_literal(line)? {
+                    Ok(tok)
+                }
                 else { Ok(Token { kind: TokenKind::Percent, line }) }
             }
             '=' => {
-                if self.peek() == Some('=') {
+                if self.peek() == Some('~') {
+                    self.pos += 1;
+                    Ok(Token { kind: TokenKind::EqTilde, line })
+                } else if self.peek() == Some('=') {
                     self.pos += 1;
                     if self.peek() == Some('=') {
                         self.pos += 1;
@@ -244,7 +253,10 @@ impl Lexer {
                     }
                 } else if self.peek() == Some('<') {
                     self.pos += 1;
-                    if self.peek() == Some('=') {
+                    // Check for heredoc <<IDENT or <<~IDENT or <<-IDENT
+                    if let Some(tok) = self.try_heredoc(line)? {
+                        Ok(tok)
+                    } else if self.peek() == Some('=') {
                         self.pos += 1;
                         Ok(Token { kind: TokenKind::LtLtEq, line })
                     } else {
@@ -494,6 +506,206 @@ impl Lexer {
         Ok(Token { kind: TokenKind::Str(s), line })
     }
 
+    /// Determine if / starts a regex (vs division).
+    /// Regex follows: operator, keyword, open paren/bracket, comma, newline, BOF.
+    fn is_regex_context(&self) -> bool {
+        // Look back for the last significant token-producing character
+        // Simple heuristic: if the char before whitespace is an operator or keyword start
+        let mut i = self.pos.saturating_sub(2); // pos already advanced past '/'
+        while i > 0 && (self.src[i] == ' ' || self.src[i] == '\t') {
+            i -= 1;
+        }
+        if i == 0 { return true; }
+        let ch = self.src[i];
+        // After these chars, / is regex
+        matches!(ch, '=' | '(' | '[' | '{' | ',' | ';' | '!' | '~' | '+' | '-' | '*' | '/' | '%' | '<' | '>' | '&' | '|' | '^' | '\n')
+    }
+
+    fn read_regex(&mut self, line: u32) -> Result<Token, String> {
+        let mut pattern = String::new();
+        while self.pos < self.src.len() && self.src[self.pos] != '/' {
+            if self.src[self.pos] == '\\' && self.pos + 1 < self.src.len() {
+                pattern.push(self.src[self.pos]);
+                self.pos += 1;
+                pattern.push(self.src[self.pos]);
+                self.pos += 1;
+            } else {
+                pattern.push(self.src[self.pos]);
+                self.pos += 1;
+            }
+        }
+        if self.pos < self.src.len() { self.pos += 1; } // closing /
+        // Skip flags (i, m, x, etc)
+        while self.pos < self.src.len() && self.src[self.pos].is_alphabetic() {
+            self.pos += 1;
+        }
+        Ok(Token { kind: TokenKind::Regex(pattern), line })
+    }
+
+    fn try_heredoc(&mut self, line: u32) -> Result<Option<Token>, String> {
+        let start_pos = self.pos;
+        // Check for ~ or - prefix
+        let mut squiggly = false;
+        if self.peek() == Some('~') {
+            self.pos += 1;
+            squiggly = true;
+        } else if self.peek() == Some('-') {
+            self.pos += 1;
+        }
+        // Read delimiter (optionally quoted)
+        let mut delim = String::new();
+        let quoted = if self.peek() == Some('\'') || self.peek() == Some('"') {
+            self.pos += 1; // skip opening quote
+            true
+        } else {
+            false
+        };
+        while self.pos < self.src.len() {
+            let c = self.src[self.pos];
+            if c.is_alphanumeric() || c == '_' {
+                delim.push(c);
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if delim.is_empty() {
+            self.pos = start_pos;
+            return Ok(None);
+        }
+        if quoted && self.pos < self.src.len() && (self.src[self.pos] == '\'' || self.src[self.pos] == '"') {
+            self.pos += 1;
+        }
+        // Skip to end of current line
+        while self.pos < self.src.len() && self.src[self.pos] != '\n' {
+            self.pos += 1;
+        }
+        if self.pos < self.src.len() { self.pos += 1; self.line += 1; }
+        // Read content until delimiter on its own line
+        let mut content = String::new();
+        loop {
+            if self.pos >= self.src.len() { break; }
+            // Check if this line starts with the delimiter (with optional leading whitespace for squiggly)
+            let line_start = self.pos;
+            if squiggly {
+                while self.pos < self.src.len() && (self.src[self.pos] == ' ' || self.src[self.pos] == '\t') {
+                    self.pos += 1;
+                }
+            }
+            let remaining: String = self.src[self.pos..].iter().take(delim.len()).collect();
+            if remaining == delim {
+                let after = self.pos + delim.len();
+                if after >= self.src.len() || self.src[after] == '\n' || self.src[after] == '\r' {
+                    self.pos = after;
+                    break;
+                }
+            }
+            self.pos = line_start;
+            // Read this line into content
+            while self.pos < self.src.len() && self.src[self.pos] != '\n' {
+                content.push(self.src[self.pos]);
+                self.pos += 1;
+            }
+            content.push('\n');
+            if self.pos < self.src.len() { self.pos += 1; self.line += 1; }
+        }
+        // Strip common indent for squiggly heredoc
+        if squiggly && !content.is_empty() {
+            let min_indent = content.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.len() - l.trim_start().len())
+                .min()
+                .unwrap_or(0);
+            if min_indent > 0 {
+                let stripped: String = content.lines()
+                    .map(|l| if l.len() > min_indent { &l[min_indent..] } else { l.trim_start() })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                content = stripped;
+            }
+        }
+        // Remove trailing newline
+        if content.ends_with('\n') { content.pop(); }
+        Ok(Some(Token { kind: TokenKind::Str(content), line }))
+    }
+
+    fn try_percent_literal(&mut self, line: u32) -> Result<Option<Token>, String> {
+        let next = match self.peek() {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        match next {
+            'w' | 'W' => {
+                self.pos += 1; // skip w/W
+                let (open, close) = self.read_percent_delimiters()?;
+                let content = self.read_until_close(open, close)?;
+                let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
+                // Encode as array of strings — use special prefix
+                let encoded = format!("\x03w{}", words.join("\x04"));
+                Ok(Some(Token { kind: TokenKind::Str(encoded), line }))
+            }
+            'i' | 'I' => {
+                self.pos += 1;
+                let (open, close) = self.read_percent_delimiters()?;
+                let content = self.read_until_close(open, close)?;
+                let symbols: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
+                let encoded = format!("\x03i{}", symbols.join("\x04"));
+                Ok(Some(Token { kind: TokenKind::Str(encoded), line }))
+            }
+            'q' => {
+                self.pos += 1;
+                let (open, close) = self.read_percent_delimiters()?;
+                let content = self.read_until_close(open, close)?;
+                Ok(Some(Token { kind: TokenKind::Str(content), line }))
+            }
+            'Q' => {
+                self.pos += 1;
+                let (open, close) = self.read_percent_delimiters()?;
+                let content = self.read_until_close(open, close)?;
+                Ok(Some(Token { kind: TokenKind::Str(content), line }))
+            }
+            'r' => {
+                self.pos += 1;
+                let (open, close) = self.read_percent_delimiters()?;
+                let pattern = self.read_until_close(open, close)?;
+                Ok(Some(Token { kind: TokenKind::Regex(pattern), line }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn read_percent_delimiters(&mut self) -> Result<(char, char), String> {
+        if self.pos >= self.src.len() {
+            return Err("Unexpected end of input in percent literal".to_string());
+        }
+        let open = self.src[self.pos];
+        self.pos += 1;
+        let close = match open {
+            '(' => ')',
+            '[' => ']',
+            '{' => '}',
+            '<' => '>',
+            _ => open, // same char for open and close
+        };
+        Ok((open, close))
+    }
+
+    fn read_until_close(&mut self, open: char, close: char) -> Result<String, String> {
+        let mut content = String::new();
+        let mut depth = 1;
+        while self.pos < self.src.len() && depth > 0 {
+            let c = self.src[self.pos];
+            if c == open && open != close { depth += 1; }
+            else if c == close { depth -= 1; }
+            if depth > 0 {
+                if c == '\n' { self.line += 1; }
+                content.push(c);
+            }
+            self.pos += 1;
+        }
+        Ok(content)
+    }
+
     fn keyword_or_ident(name: String) -> TokenKind {
         match name.as_str() {
             "if" => TokenKind::If,
@@ -537,9 +749,20 @@ impl Lexer {
             "attr_writer" => TokenKind::Attr_writer,
             "attr_accessor" => TokenKind::Attr_accessor,
             "lambda" => TokenKind::Lambda,
+            "proc" => TokenKind::Proc,
             "puts" => TokenKind::Puts,
             "print" => TokenKind::Print,
             "p" => TokenKind::P,
+            "private" => TokenKind::Private,
+            "protected" => TokenKind::Protected,
+            "public" => TokenKind::Public,
+            "alias" => TokenKind::Alias,
+            "defined?" => TokenKind::Defined,
+            "loop" => TokenKind::Loop,
+            "catch" => TokenKind::Catch,
+            "throw" => TokenKind::Throw,
+            "freeze" => TokenKind::Freeze,
+            "frozen?" => TokenKind::Frozen,
             _ => TokenKind::Identifier(name),
         }
     }

@@ -180,6 +180,69 @@ impl Parser {
                     Statement::Expression(expr)
                 }
             }
+            TokenKind::Retry => {
+                self.advance();
+                Statement::Retry
+            }
+            TokenKind::Alias => {
+                self.advance();
+                let new_name = self.parse_method_name()?;
+                let old_name = self.parse_method_name()?;
+                Statement::Alias { new_name, old_name }
+            }
+            TokenKind::Private => {
+                self.advance();
+                Statement::AccessModifier(AccessLevel::Private)
+            }
+            TokenKind::Protected => {
+                self.advance();
+                Statement::AccessModifier(AccessLevel::Protected)
+            }
+            TokenKind::Public => {
+                self.advance();
+                Statement::AccessModifier(AccessLevel::Public)
+            }
+            TokenKind::Loop => {
+                self.advance();
+                if self.match_token(&TokenKind::Do) || self.match_token(&TokenKind::LBrace) {
+                    let close = if self.tokens[self.pos - 1].kind == TokenKind::LBrace {
+                        TokenKind::RBrace
+                    } else {
+                        TokenKind::End
+                    };
+                    self.skip_newlines();
+                    let body = self.parse_body_until(&[close.clone()])?;
+                    self.expect(&close)?;
+                    Statement::Loop(body)
+                } else {
+                    self.skip_newlines();
+                    let body = self.parse_body_until(&[TokenKind::End])?;
+                    self.expect(&TokenKind::End)?;
+                    Statement::Loop(body)
+                }
+            }
+            TokenKind::Catch => {
+                self.advance();
+                self.expect(&TokenKind::LParen)?;
+                let tag = self.parse_expression()?;
+                self.expect(&TokenKind::RParen)?;
+                if self.match_token(&TokenKind::Do) || self.match_token(&TokenKind::LBrace) {
+                    let close = if self.tokens[self.pos - 1].kind == TokenKind::LBrace {
+                        TokenKind::RBrace
+                    } else {
+                        TokenKind::End
+                    };
+                    self.skip_newlines();
+                    let body = self.parse_body_until(&[close.clone()])?;
+                    self.expect(&close)?;
+                    Statement::CatchThrow { tag, body }
+                } else {
+                    self.skip_newlines();
+                    let body = self.parse_body_until(&[TokenKind::End])?;
+                    self.expect(&TokenKind::End)?;
+                    Statement::CatchThrow { tag, body }
+                }
+            }
             _ => {
                 let expr = self.parse_expression()?;
                 // Check for trailing if/unless/while/until modifiers
@@ -220,9 +283,30 @@ impl Parser {
     }
 
     fn parse_modifier(&mut self, expr: Expression) -> Result<Statement, String> {
+        // Check for comma (multiple assignment: a, b = 1, 2)
+        if *self.current() == TokenKind::Comma {
+            let mut targets = vec![expr.clone()];
+            let mut splat_index = None;
+            while self.match_token(&TokenKind::Comma) {
+                if *self.current() == TokenKind::Star {
+                    self.advance();
+                    splat_index = Some(targets.len());
+                }
+                targets.push(self.parse_expression()?);
+            }
+            if self.match_token(&TokenKind::Eq) {
+                let mut values = vec![self.parse_expression()?];
+                while self.match_token(&TokenKind::Comma) {
+                    values.push(self.parse_expression()?);
+                }
+                return Ok(Statement::MultiAssign { targets, splat_index, values });
+            }
+        }
         // Check for assignment
         if let Some(op) = self.try_assign_op() {
-            let value = self.parse_expression()?;
+            // For chained assignment (a = b = c = 1), parse the rhs
+            // which may itself be an assignment
+            let value = self.parse_assign_value()?;
             let stmt = Statement::Assignment { target: expr, op, value };
             return self.parse_stmt_modifier(stmt);
         }
@@ -266,6 +350,23 @@ impl Parser {
             }
             _ => Ok(Statement::Expression(expr)),
         }
+    }
+
+    /// Parse assignment value, handling chained assignments like a = b = c = 1
+    fn parse_assign_value(&mut self) -> Result<Expression, String> {
+        let expr = self.parse_expression()?;
+        // Check if followed by = (chained assignment)
+        if *self.current() == TokenKind::Eq {
+            self.advance();
+            let inner_value = self.parse_assign_value()?;
+            // Return the inner value — the chained target was already an expression
+            // We need to emit assignment to the intermediate. Wrap as ChainedAssign.
+            return Ok(Expression::ChainedAssign {
+                targets: vec![expr],
+                value: Box::new(inner_value),
+            });
+        }
+        Ok(expr)
     }
 
     fn try_assign_op(&mut self) -> Option<AssignOp> {
@@ -531,6 +632,19 @@ impl Parser {
                     Err("Expected ] after [".to_string())
                 }
             }
+            // Keywords that can also be method names after .
+            TokenKind::Class => { self.advance(); Ok("class".to_string()) }
+            TokenKind::Freeze => { self.advance(); Ok("freeze".to_string()) }
+            TokenKind::Frozen => { self.advance(); Ok("frozen?".to_string()) }
+            TokenKind::Include => { self.advance(); Ok("include?".to_string()) }
+            TokenKind::Extend => { self.advance(); Ok("extend".to_string()) }
+            TokenKind::Nil => {
+                self.advance();
+                // .nil? — consume trailing ? if present
+                self.match_token(&TokenKind::Question);
+                Ok("nil?".to_string())
+            }
+            TokenKind::Defined => { self.advance(); Ok("defined?".to_string()) }
             _ => Err(format!("Expected method name, got {:?} at line {}", self.current(), self.current_line())),
         }
     }
@@ -558,13 +672,23 @@ impl Parser {
                 _ => return Err(format!("Expected parameter name at line {}", self.current_line())),
             };
 
-            let default = if self.match_token(&TokenKind::Eq) {
+            // Check for keyword argument: name:
+            let keyword = if self.match_token(&TokenKind::Colon) {
+                true
+            } else {
+                false
+            };
+
+            let default = if keyword && !matches!(self.current(), TokenKind::Comma | TokenKind::RParen | TokenKind::Pipe | TokenKind::Newline | TokenKind::Eof) {
+                // keyword arg with default: name: default_val
+                Some(self.parse_expression()?)
+            } else if !keyword && self.match_token(&TokenKind::Eq) {
                 Some(self.parse_expression()?)
             } else {
                 None
             };
 
-            params.push(Param { name, default, splat, double_splat, block });
+            params.push(Param { name, default, splat, double_splat, block, keyword });
 
             if !self.match_token(&TokenKind::Comma) { break; }
         }
@@ -679,6 +803,7 @@ impl Parser {
                 TokenKind::GtEq => BinaryOp::Ge,
                 TokenKind::Spaceship => BinaryOp::Spaceship,
                 TokenKind::EqEqEq => BinaryOp::Eq, // case equality
+                TokenKind::EqTilde => BinaryOp::Eq, // regex match (treated as equality for now)
                 _ => break,
             };
             self.advance();
@@ -813,6 +938,17 @@ impl Parser {
                 let expr = self.parse_postfix()?;
                 Ok(Expression::Splat(Box::new(expr)))
             }
+            TokenKind::Amp => {
+                self.advance();
+                // &:method_name → symbol-to-proc
+                if let TokenKind::Symbol(name) = self.current().clone() {
+                    self.advance();
+                    return Ok(Expression::SymbolProc(name));
+                }
+                // &block_var
+                let expr = self.parse_postfix()?;
+                Ok(expr)
+            }
             _ => self.parse_postfix(),
         }
     }
@@ -876,6 +1012,33 @@ impl Parser {
         if self.match_token(&TokenKind::LParen) {
             if *self.current() != TokenKind::RParen {
                 loop {
+                    // Check for keyword arg: ident: value → becomes Hash entry
+                    if let TokenKind::Identifier(_) = self.current().clone() {
+                        if self.peek() == &TokenKind::Colon {
+                            // keyword arg — build inline hash
+                            let mut pairs = Vec::new();
+                            loop {
+                                if let TokenKind::Identifier(name) = self.current().clone() {
+                                    if self.peek() == &TokenKind::Colon {
+                                        self.advance(); // ident
+                                        self.advance(); // colon
+                                        let val = self.parse_expression()?;
+                                        pairs.push((Expression::Symbol(name), val));
+                                    } else {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                                if !self.match_token(&TokenKind::Comma) { break; }
+                            }
+                            if !pairs.is_empty() {
+                                args.push(Expression::Hash(pairs));
+                                break;
+                            }
+                        }
+                    }
+                    // Check for &:symbol
                     args.push(self.parse_expression()?);
                     if !self.match_token(&TokenKind::Comma) { break; }
                 }
@@ -1088,7 +1251,7 @@ impl Parser {
                     let body = self.parse_body_until(&[TokenKind::RBrace])?;
                     self.expect(&TokenKind::RBrace)?;
                     Ok(Expression::Lambda {
-                        params: params.iter().map(|n| Param { name: n.clone(), default: None, splat: false, double_splat: false, block: false }).collect(),
+                        params: params.iter().map(|n| Param { name: n.clone(), default: None, splat: false, double_splat: false, block: false, keyword: false }).collect(),
                         body,
                     })
                 } else {
@@ -1181,6 +1344,87 @@ impl Parser {
                 match self.current().clone() {
                     TokenKind::Constant(name) => { self.advance(); Ok(Expression::Extend(name)) }
                     _ => Err(format!("Expected module name after extend at line {}", self.current_line())),
+                }
+            }
+
+            // Regex literal
+            TokenKind::Regex(pattern) => {
+                self.advance();
+                Ok(Expression::Regex(pattern))
+            }
+
+            // defined?(expr)
+            TokenKind::Defined => {
+                self.advance();
+                if self.match_token(&TokenKind::LParen) {
+                    let expr = self.parse_expression()?;
+                    self.expect(&TokenKind::RParen)?;
+                    Ok(Expression::Defined(Box::new(expr)))
+                } else {
+                    let expr = self.parse_expression()?;
+                    Ok(Expression::Defined(Box::new(expr)))
+                }
+            }
+
+            // proc { |x| body }
+            TokenKind::Proc => {
+                self.advance();
+                if *self.current() == TokenKind::LBrace {
+                    self.advance();
+                    let params = self.parse_block_params()?;
+                    self.skip_newlines();
+                    let body = self.parse_body_until(&[TokenKind::RBrace])?;
+                    self.expect(&TokenKind::RBrace)?;
+                    Ok(Expression::ProcLiteral { params, body })
+                } else if *self.current() == TokenKind::Do {
+                    self.advance();
+                    let params = self.parse_block_params()?;
+                    self.skip_newlines();
+                    let body = self.parse_body_until(&[TokenKind::End])?;
+                    self.expect(&TokenKind::End)?;
+                    Ok(Expression::ProcLiteral { params, body })
+                } else {
+                    // Proc.new { }
+                    Ok(Expression::ProcLiteral { params: Vec::new(), body: Vec::new() })
+                }
+            }
+
+            // throw :tag [, value]
+            TokenKind::Throw => {
+                self.advance();
+                let tag = self.parse_expression()?;
+                let value = if self.match_token(&TokenKind::Comma) {
+                    Some(Box::new(self.parse_expression()?))
+                } else {
+                    None
+                };
+                Ok(Expression::Throw { tag: Box::new(tag), value })
+            }
+
+            // Handle %w[] / %i[] / %q{} string that was encoded by lexer
+            TokenKind::Str(ref s) if s.starts_with('\x03') => {
+                let s = s.clone();
+                self.advance();
+                if s.starts_with("\x03w") {
+                    // Word array
+                    let content = &s[2..];
+                    let words: Vec<Expression> = if content.is_empty() {
+                        Vec::new()
+                    } else {
+                        content.split('\x04').map(|w| Expression::Str(w.to_string())).collect()
+                    };
+                    Ok(Expression::Array(words))
+                } else if s.starts_with("\x03i") {
+                    // Symbol array
+                    let content = &s[2..];
+                    let syms: Vec<Expression> = if content.is_empty() {
+                        Vec::new()
+                    } else {
+                        content.split('\x04').map(|w| Expression::Symbol(w.to_string())).collect()
+                    };
+                    Ok(Expression::Array(syms))
+                } else {
+                    Ok(Expression::Str(s[2..].to_string()))
                 }
             }
 
