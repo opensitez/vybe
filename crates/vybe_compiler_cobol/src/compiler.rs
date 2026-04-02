@@ -1011,6 +1011,560 @@ impl Compiler {
                 self.emit_u16(Op::global_set, idx);
             }
 
+            // ── CICS ───────────────────────────────────────────
+            Statement::CicsCommand { command, params } => {
+                // Map CICS commands to host functions
+                match command.as_str() {
+                    "SEND" => {
+                        // SEND MAP(mapname) MAPSET(setname) — display screen
+                        for (key, val) in params {
+                            if key == "FROM" || key == "MAP" {
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_get, vi);
+                                let c = self.current_chunk_idx;
+                                let line = self.line;
+                                common::io::emit_print(&mut self.chunks[c], 1, line);
+                                self.emit(Op::drop);
+                            }
+                        }
+                    }
+                    "RECEIVE" => {
+                        // RECEIVE MAP(mapname) INTO(dataname) — read screen
+                        for (key, val) in params {
+                            if key == "INTO" {
+                                let i = self.import("wasi:cli", "readLine");
+                                self.emit_host_call(i, 0);
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_set, vi);
+                            }
+                        }
+                    }
+                    "READ" => {
+                        // READ FILE(filename) INTO(dataname) RIDFLD(key)
+                        for (key, val) in params {
+                            if key == "INTO" {
+                                let i = self.import("wasi:cli", "readLine");
+                                self.emit_host_call(i, 0);
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_set, vi);
+                            }
+                        }
+                    }
+                    "WRITE" => {
+                        for (key, val) in params {
+                            if key == "FROM" {
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_get, vi);
+                                let c = self.current_chunk_idx;
+                                let line = self.line;
+                                common::io::emit_print(&mut self.chunks[c], 1, line);
+                                self.emit(Op::drop);
+                            }
+                        }
+                    }
+                    "RETURN" => {
+                        // RETURN TRANSID(next-trans) — return to CICS
+                        self.emit(Op::null);
+                        self.emit(Op::r#return);
+                    }
+                    "LINK" | "XCTL" => {
+                        // LINK/XCTL PROGRAM(progname) — call another program
+                        for (key, val) in params {
+                            if key == "PROGRAM" {
+                                let ni = self.add_string_constant(val);
+                                self.emit_u16(Op::global_get, ni);
+                                self.emit_u8(Op::call_ref, 0);
+                                self.emit(Op::drop);
+                            }
+                        }
+                    }
+                    "STARTBR" | "READNEXT" | "READPREV" | "ENDBR" | "REWRITE" | "DELETE" | "UNLOCK" => {
+                        // File browsing — simplified no-ops
+                    }
+                    "ASKTIME" | "FORMATTIME" => {
+                        // Time functions
+                        for (key, val) in params {
+                            if key == "ABSTIME" || key == "DDMMYYYY" || key == "TIME" {
+                                let i = self.import("wasi:clocks", "toISOString");
+                                self.emit_host_call(i, 0);
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_set, vi);
+                            }
+                        }
+                    }
+                    "GETMAIN" => {
+                        // Allocate memory — create empty object
+                        for (key, val) in params {
+                            if key == "SET" {
+                                let line = self.line;
+                                let c = self.current_chunk_idx;
+                                common::dict::emit_new(&mut self.chunks[c], line);
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_set, vi);
+                            }
+                        }
+                    }
+                    "FREEMAIN" => {
+                        // Free memory — set to null
+                        for (key, val) in params {
+                            if key == "DATA" || key == "DATAPOINTER" {
+                                self.emit(Op::null);
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_set, vi);
+                            }
+                        }
+                    }
+
+                    // ── HANDLE CONDITION (error routing) ───────
+                    "HANDLE" => {
+                        // HANDLE CONDITION ERROR(para) NOTFND(para) etc.
+                        // Store handler paragraph names as globals for later dispatch
+                        for (condition, handler) in params {
+                            let key = format!("__CICS_HANDLER_{}", condition);
+                            let ki = self.add_string_constant(&key);
+                            self.emit_constant(Value::String(Rc::from(handler.as_str())));
+                            self.emit_u16(Op::global_set, ki);
+                        }
+                    }
+
+                    // ── HANDLE AID (key handling) ──────────────
+                    // HANDLE AID PF1(para) PF3(para) ENTER(para) CLEAR(para)
+                    // Same pattern — store handler names
+                    // (handled by "HANDLE" above since lexer puts it all together)
+
+                    // ── WRITEQ TS (temporary storage queue) ────
+                    "WRITEQ" => {
+                        // WRITEQ TS QUEUE(name) FROM(data) [ITEM(n)]
+                        let mut queue_name = String::new();
+                        let mut from_var = String::new();
+                        for (key, val) in params {
+                            match key.as_str() {
+                                "TS" | "TD" => {} // just the queue type indicator
+                                "QUEUE" => queue_name = val.clone(),
+                                "FROM" => from_var = val.clone(),
+                                _ => {}
+                            }
+                        }
+                        if !queue_name.is_empty() {
+                            // Queue is stored as a global array
+                            let qk = self.add_string_constant(&format!("__CICS_Q_{}", queue_name));
+                            // Get or create the queue array
+                            self.emit_u16(Op::global_get, qk);
+                            self.emit(Op::dup);
+                            self.emit(Op::ref_is_null);
+                            let exists = self.emit_jump(Op::br_if_false);
+                            self.emit(Op::drop);
+                            self.emit_u16(Op::array_new, 0);
+                            self.patch_jump(exists);
+                            // Push data to queue
+                            if !from_var.is_empty() {
+                                let fi = self.add_string_constant(&from_var);
+                                self.emit_u16(Op::global_get, fi);
+                            } else {
+                                self.emit_constant(Value::String(Rc::from("")));
+                            }
+                            self.emit(Op::array_push);
+                            self.emit(Op::drop);
+                            // Save queue back
+                            self.emit_u16(Op::global_set, qk);
+                        }
+                    }
+
+                    // ── READQ TS (read from temp storage queue) ─
+                    "READQ" => {
+                        // READQ TS QUEUE(name) INTO(data) [ITEM(n)]
+                        let mut queue_name = String::new();
+                        let mut into_var = String::new();
+                        let mut item_num: Option<String> = None;
+                        for (key, val) in params {
+                            match key.as_str() {
+                                "TS" | "TD" => {}
+                                "QUEUE" => queue_name = val.clone(),
+                                "INTO" => into_var = val.clone(),
+                                "ITEM" => item_num = Some(val.clone()),
+                                _ => {}
+                            }
+                        }
+                        if !queue_name.is_empty() {
+                            let qk = self.add_string_constant(&format!("__CICS_Q_{}", queue_name));
+                            self.emit_u16(Op::global_get, qk);
+                            // Get item by index (default: first item = shift)
+                            if let Some(item) = &item_num {
+                                let ii = self.add_string_constant(item);
+                                self.emit_u16(Op::global_get, ii);
+                                self.emit_constant(Value::I32(1));
+                                self.emit(Op::f64_sub); // CICS is 1-indexed
+                                self.emit(Op::array_get);
+                            } else {
+                                // Read next = shift from front
+                                let c = self.current_chunk_idx;
+                                let line = self.line;
+                                common::collections::emit_shift(&mut self.chunks[c], line);
+                            }
+                            if !into_var.is_empty() {
+                                let vi = self.add_string_constant(&into_var);
+                                self.emit_u16(Op::global_set, vi);
+                            } else {
+                                self.emit(Op::drop);
+                            }
+                        }
+                    }
+
+                    // ── DELETEQ TS (delete temp storage queue) ──
+                    "DELETEQ" => {
+                        for (key, val) in params {
+                            if key == "QUEUE" {
+                                let qk = self.add_string_constant(&format!("__CICS_Q_{}", val));
+                                self.emit(Op::null);
+                                self.emit_u16(Op::global_set, qk);
+                            }
+                        }
+                    }
+
+                    // ── ENQ / DEQ (named resource locking) ─────
+                    "ENQ" => {
+                        // ENQ RESOURCE(name) LENGTH(n)
+                        for (key, val) in params {
+                            if key == "RESOURCE" {
+                                let rk = self.add_string_constant(&format!("__CICS_LOCK_{}", val));
+                                // Simple spinlock via global flag
+                                self.emit_constant(Value::I32(1));
+                                self.emit_u16(Op::global_set, rk);
+                            }
+                        }
+                    }
+                    "DEQ" => {
+                        for (key, val) in params {
+                            if key == "RESOURCE" {
+                                let rk = self.add_string_constant(&format!("__CICS_LOCK_{}", val));
+                                self.emit_constant(Value::I32(0));
+                                self.emit_u16(Op::global_set, rk);
+                            }
+                        }
+                    }
+
+                    // ── ASSIGN (system info) ───────────────────
+                    "ASSIGN" => {
+                        // ASSIGN USERID(var) TERMINAL(var) SYSID(var) etc.
+                        for (key, val) in params {
+                            match key.as_str() {
+                                "USERID" => {
+                                    let i = self.import("wasi:cli", "userName");
+                                    self.emit_host_call(i, 0);
+                                    let vi = self.add_string_constant(val);
+                                    self.emit_u16(Op::global_set, vi);
+                                }
+                                "SYSID" | "APPLID" => {
+                                    self.emit_constant(Value::String(Rc::from("VYBE")));
+                                    let vi = self.add_string_constant(val);
+                                    self.emit_u16(Op::global_set, vi);
+                                }
+                                "CWALENGTH" => {
+                                    self.emit_constant(Value::F64(0.0));
+                                    let vi = self.add_string_constant(val);
+                                    self.emit_u16(Op::global_set, vi);
+                                }
+                                _ => {
+                                    // Generic: return empty string
+                                    self.emit_constant(Value::String(Rc::from("")));
+                                    let vi = self.add_string_constant(val);
+                                    self.emit_u16(Op::global_set, vi);
+                                }
+                            }
+                        }
+                    }
+
+                    // ── COMMAREA (communication area) ──────────
+                    // COMMAREA is passed via LINK/XCTL — it's just data
+                    // Our implementation uses global variables as the shared area.
+                    // LINK PROGRAM(X) COMMAREA(data) LENGTH(n) → call with data as arg
+
+                    // ── PUT/GET CONTAINER (Channels) ───────────
+                    "PUT" => {
+                        // PUT CONTAINER(name) CHANNEL(ch) FROM(data)
+                        let mut container = String::new();
+                        let mut channel = String::new();
+                        let mut from_var = String::new();
+                        for (key, val) in params {
+                            match key.as_str() {
+                                "CONTAINER" => container = val.clone(),
+                                "CHANNEL" => channel = val.clone(),
+                                "FROM" => from_var = val.clone(),
+                                _ => {}
+                            }
+                        }
+                        if !container.is_empty() {
+                            let ck = self.add_string_constant(&format!("__CICS_CONT_{}_{}", channel, container));
+                            if !from_var.is_empty() {
+                                let fi = self.add_string_constant(&from_var);
+                                self.emit_u16(Op::global_get, fi);
+                            } else {
+                                self.emit_constant(Value::String(Rc::from("")));
+                            }
+                            self.emit_u16(Op::global_set, ck);
+                        }
+                    }
+                    "GET" => {
+                        // GET CONTAINER(name) CHANNEL(ch) INTO(data)
+                        let mut container = String::new();
+                        let mut channel = String::new();
+                        let mut into_var = String::new();
+                        for (key, val) in params {
+                            match key.as_str() {
+                                "CONTAINER" => container = val.clone(),
+                                "CHANNEL" => channel = val.clone(),
+                                "INTO" | "SET" => into_var = val.clone(),
+                                _ => {}
+                            }
+                        }
+                        if !container.is_empty() {
+                            let ck = self.add_string_constant(&format!("__CICS_CONT_{}_{}", channel, container));
+                            self.emit_u16(Op::global_get, ck);
+                            if !into_var.is_empty() {
+                                let vi = self.add_string_constant(&into_var);
+                                self.emit_u16(Op::global_set, vi);
+                            } else {
+                                self.emit(Op::drop);
+                            }
+                        }
+                    }
+
+                    // ── DELAY / START (time control) ───────────
+                    "DELAY" => {
+                        // DELAY INTERVAL(hhmmss) or DELAY FOR SECONDS(n)
+                        for (key, val) in params {
+                            if key == "SECONDS" || key == "INTERVAL" {
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_get, vi);
+                                let i = self.import("wasi:clocks", "sleep");
+                                self.emit_host_call(i, 1);
+                            }
+                        }
+                    }
+                    "START" => {
+                        // START TRANSID(txn) — schedule transaction
+                        for (key, val) in params {
+                            if key == "TRANSID" {
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_get, vi);
+                                self.emit_u8(Op::call_ref, 0);
+                                self.emit(Op::drop);
+                            }
+                        }
+                    }
+
+                    // ── SUSPEND / POST / WAIT EVENT ────────────
+                    "SUSPEND" => {
+                        self.emit(Op::null);
+                        self.emit_u16(Op::suspend, 0);
+                    }
+                    "POST" => {
+                        // POST EVENT(name) — signal event
+                        for (key, val) in params {
+                            if key == "EVENT" {
+                                let ek = self.add_string_constant(&format!("__CICS_EVT_{}", val));
+                                self.emit(Op::r#true);
+                                self.emit_u16(Op::global_set, ek);
+                            }
+                        }
+                    }
+                    "WAIT" => {
+                        // WAIT EVENT — wait for posted event
+                        // Simplified: just continue (real impl would suspend)
+                    }
+
+                    // ── WEB (CICS Web Services) ────────────────
+                    "WEB" => {
+                        // WEB SEND/RECEIVE — HTTP operations
+                        for (key, val) in params {
+                            if key == "FROM" {
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_get, vi);
+                                let c = self.current_chunk_idx;
+                                let line = self.line;
+                                common::io::emit_print(&mut self.chunks[c], 1, line);
+                                self.emit(Op::drop);
+                            }
+                            if key == "INTO" || key == "SET" {
+                                let i = self.import("wasi:cli", "readLine");
+                                self.emit_host_call(i, 0);
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_set, vi);
+                            }
+                        }
+                    }
+
+                    // ── DOCUMENT (CICS Document) ───────────────
+                    "DOCUMENT" => {
+                        // DOCUMENT CREATE/SET/INSERT — build response document
+                        for (key, val) in params {
+                            if key == "DOCTOKEN" || key == "SET" {
+                                let line = self.line;
+                                let c = self.current_chunk_idx;
+                                common::dict::emit_new(&mut self.chunks[c], line);
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_set, vi);
+                            }
+                        }
+                    }
+
+                    // ── ABEND ──────────────────────────────────
+                    "ABEND" => {
+                        // ABEND ABCODE(code) — abnormal end
+                        let mut code = "ASRA".to_string();
+                        for (key, val) in params {
+                            if key == "ABCODE" { code = val.clone(); }
+                        }
+                        self.emit_constant(Value::String(Rc::from(code.as_str())));
+                        let line = self.line;
+                        common::errors::emit_throw(&mut self.chunks[self.current_chunk_idx], line);
+                    }
+
+                    // ── INQUIRE / SET (system queries) ─────────
+                    "INQUIRE" | "SET" => {
+                        // System resource queries — simplified
+                        for (key, val) in params {
+                            if !val.is_empty() {
+                                self.emit_constant(Value::String(Rc::from("")));
+                                let vi = self.add_string_constant(val);
+                                self.emit_u16(Op::global_set, vi);
+                            }
+                        }
+                    }
+
+                    _ => {
+                        // Unknown CICS command — no-op
+                    }
+                }
+            }
+
+            Statement::DliCommand { command, params } => {
+                // IMS/DLI commands
+                match command.as_str() {
+                    "GU" | "GN" | "GNP" | "GHU" | "GHN" => {
+                        // Get Unique / Get Next — database read
+                        for (key, val) in params {
+                            if key == "INTO" || key.is_empty() {
+                                let i = self.import("wasi:cli", "readLine");
+                                self.emit_host_call(i, 0);
+                                if !val.is_empty() {
+                                    let vi = self.add_string_constant(val);
+                                    self.emit_u16(Op::global_set, vi);
+                                } else {
+                                    self.emit(Op::drop);
+                                }
+                            }
+                        }
+                    }
+                    "ISRT" | "REPL" | "DLET" => {
+                        // Insert / Replace / Delete
+                        for (key, val) in params {
+                            if key == "FROM" || key.is_empty() {
+                                if !val.is_empty() {
+                                    let vi = self.add_string_constant(val);
+                                    self.emit_u16(Op::global_get, vi);
+                                    let c = self.current_chunk_idx;
+                                    let line = self.line;
+                                    common::io::emit_print(&mut self.chunks[c], 1, line);
+                                    self.emit(Op::drop);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // ── Arithmetic with clauses ────────────────────────
+            Statement::AddRounded { srcs, to, giving } => {
+                let to_idx = self.add_string_constant(to);
+                if let Some(giving_name) = giving {
+                    let mut first = true;
+                    for src in srcs { self.compile_expr(src)?; if !first { self.emit(Op::dyn_add); } first = false; }
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::math::emit_round(&mut self.chunks[c], line);
+                    let idx = self.add_string_constant(giving_name);
+                    self.emit_u16(Op::global_set, idx);
+                } else {
+                    self.emit_u16(Op::global_get, to_idx);
+                    for src in srcs { self.compile_expr(src)?; self.emit(Op::dyn_add); }
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::math::emit_round(&mut self.chunks[c], line);
+                    self.emit_u16(Op::global_set, to_idx);
+                }
+            }
+
+            Statement::ComputeWithError { dst, expr, rounded, on_error, not_on_error } => {
+                // Try the computation, catch overflow
+                let line = self.line;
+                let c = self.current_chunk_idx;
+                let catch_jump = common::errors::emit_try_start(&mut self.chunks[c], line);
+                self.compile_expr(expr)?;
+                if *rounded {
+                    common::math::emit_round(&mut self.chunks[c], line);
+                }
+                let di = self.add_string_constant(dst);
+                self.emit_u16(Op::global_set, di);
+                let line = self.line;
+                common::errors::emit_try_end(&mut self.chunks[c], line);
+                // NOT ON SIZE ERROR
+                for s in not_on_error { self.compile_statement(s)?; }
+                let skip = self.emit_jump(Op::br);
+                common::errors::patch_catch(&mut self.chunks[c], catch_jump);
+                self.emit(Op::drop);
+                // ON SIZE ERROR
+                for s in on_error { self.compile_statement(s)?; }
+                self.patch_jump(skip);
+            }
+
+            Statement::ReadFileAtEnd { file, into, at_end, not_at_end } => {
+                let fi = self.add_string_constant(&format!("__file_{}", file));
+                self.emit_u16(Op::global_get, fi);
+                let i = self.import("wasi:filesystem", "lineInput");
+                self.emit_host_call(i, 1);
+                // Check if null (end of file)
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_null);
+                let eof_jump = self.emit_jump(Op::br_if_true);
+                // NOT AT END — got data
+                if let Some(var) = into {
+                    let idx = self.add_string_constant(var);
+                    self.emit_u16(Op::global_set, idx);
+                } else {
+                    self.emit(Op::drop);
+                }
+                for s in not_at_end { self.compile_statement(s)?; }
+                let end = self.emit_jump(Op::br);
+                // AT END
+                self.patch_jump(eof_jump);
+                self.emit(Op::drop);
+                for s in at_end { self.compile_statement(s)?; }
+                self.patch_jump(end);
+            }
+
+            Statement::NestedProgram(inner_prog) => {
+                // Compile nested program as a separate set of chunks
+                // Simplified: compile its main body inline
+                for s in &inner_prog.main_body {
+                    self.compile_statement(s)?;
+                }
+            }
+
+            Statement::DisplayFormatted { var, pic } => {
+                // Format a number using PIC editing mask
+                let vi = self.add_string_constant(var);
+                self.emit_u16(Op::global_get, vi);
+                self.emit_constant(Value::String(Rc::from(pic.as_str())));
+                let i = self.import("vybe:string", "format");
+                self.emit_host_call(i, 2);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::io::emit_print(&mut self.chunks[c], 1, line);
+                self.emit(Op::drop);
+            }
+
             // ── Embedded SQL ───────────────────────────────────
             Statement::SqlConnect { dsn, handle_var } => {
                 // EXEC SQL CONNECT :dsn END-EXEC → vybe:database connect

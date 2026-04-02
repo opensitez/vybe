@@ -83,12 +83,22 @@ pub enum TokenKind {
     Lock, Unlock,
     Yield_, Suspend,
 
-    // Embedded SQL
+    // Embedded SQL / CICS / DLI
     Exec, Sql, EndExec,
-    /// Raw SQL text between EXEC SQL and END-EXEC
     SqlText(String),
-    /// Host variable reference :WS-NAME
     HostVar(String),
+    CicsText(String),  // EXEC CICS ... END-EXEC
+    DliText(String),   // EXEC DLI ... END-EXEC
+
+    // Arithmetic clauses
+    Rounded, OnSizeError, NotOnSizeError,
+    AtEnd, NotAtEnd, InvalidKey, NotInvalidKey,
+
+    // Screen section
+    Screen,
+
+    // Nested programs / scope
+    Global, External, EndProgram,
 
     // Intrinsic functions
     Function,

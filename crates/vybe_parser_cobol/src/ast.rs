@@ -79,6 +79,8 @@ pub struct DataItem {
     pub redefines: Option<String>,
     pub usage: Option<String>,
     pub is_national: bool,  // USAGE NATIONAL (UTF-8)
+    pub is_global: bool,    // GLOBAL clause
+    pub is_external: bool,  // EXTERNAL clause
     pub children: Vec<DataItem>,
     pub conditions: Vec<Condition88>,
 }
@@ -259,6 +261,39 @@ pub enum Statement {
     SqlFetch { cursor_name: String, into_vars: Vec<String> },
     /// EXEC SQL CLOSE cursor END-EXEC
     SqlCloseCursor(String),
+
+    // ── CICS / DLI ─────────────────────────────────────────
+    /// EXEC CICS command END-EXEC
+    CicsCommand { command: String, params: Vec<(String, String)> },
+    /// EXEC DLI command END-EXEC
+    DliCommand { command: String, params: Vec<(String, String)> },
+
+    // ── Arithmetic clauses ─────────────────────────────────
+    /// ADD ... ROUNDED
+    AddRounded { srcs: Vec<Expr>, to: String, giving: Option<String> },
+    /// COMPUTE ... ON SIZE ERROR ... END-COMPUTE
+    ComputeWithError {
+        dst: String,
+        expr: Expr,
+        rounded: bool,
+        on_error: Vec<Statement>,
+        not_on_error: Vec<Statement>,
+    },
+    /// READ ... AT END ... NOT AT END ... END-READ
+    ReadFileAtEnd {
+        file: String,
+        into: Option<String>,
+        at_end: Vec<Statement>,
+        not_at_end: Vec<Statement>,
+    },
+
+    // ── Nested programs ────────────────────────────────────
+    /// Nested program definition
+    NestedProgram(Box<Program>),
+
+    // ── Editing PIC display ────────────────────────────────
+    /// DISPLAY with PIC editing (format number with PIC mask)
+    DisplayFormatted { var: String, pic: String },
 }
 
 #[derive(Debug, Clone)]

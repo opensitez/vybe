@@ -169,8 +169,14 @@ impl Lexer {
             sql_word.push(self.src[self.pos]);
             self.pos += 1;
         }
-        if sql_word.to_uppercase() != "SQL" {
-            // Not EXEC SQL — just return EXEC as ident
+        let upper_word = sql_word.to_uppercase();
+        if upper_word == "CICS" {
+            return self.read_exec_block(line, TokenKind::CicsText("".into()));
+        }
+        if upper_word == "DLI" {
+            return self.read_exec_block(line, TokenKind::DliText("".into()));
+        }
+        if upper_word != "SQL" {
             return Ok(Token { kind: TokenKind::Ident("EXEC".to_string()), line });
         }
 
@@ -225,6 +231,32 @@ impl Lexer {
         }
 
         Ok(Token { kind: TokenKind::SqlText(encoded), line })
+    }
+
+    /// Generic EXEC block reader for CICS/DLI
+    fn read_exec_block(&mut self, line: u32, _kind_tag: TokenKind) -> Result<Token, String> {
+        self.skip_whitespace_and_comments();
+        let mut text = String::new();
+        loop {
+            if self.pos >= self.src.len() { break; }
+            if self.pos + 8 <= self.src.len() {
+                let ahead: String = self.src[self.pos..self.pos + 8].iter().collect();
+                if ahead.to_uppercase() == "END-EXEC" {
+                    self.pos += 8;
+                    break;
+                }
+            }
+            if self.src[self.pos] == '\n' { self.line += 1; }
+            text.push(self.src[self.pos]);
+            self.pos += 1;
+        }
+        let trimmed = text.trim().to_string();
+        // Determine type from the tag
+        match _kind_tag {
+            TokenKind::CicsText(_) => Ok(Token { kind: TokenKind::CicsText(trimmed), line }),
+            TokenKind::DliText(_) => Ok(Token { kind: TokenKind::DliText(trimmed), line }),
+            _ => Ok(Token { kind: TokenKind::Ident(trimmed), line }),
+        }
     }
 
     fn read_word(&mut self, first: char, line: u32) -> Result<Token, String> {
@@ -381,8 +413,12 @@ impl Lexer {
             "SELF" => TokenKind::Self_,
             "OVERRIDE" => TokenKind::Override,
             "GET" => TokenKind::Get,
+            "ROUNDED" => TokenKind::Rounded,
+            "SCREEN" => TokenKind::Screen,
+            "GLOBAL" => TokenKind::Global,
+            "EXTERNAL" => TokenKind::External,
+            "END-PROGRAM" => TokenKind::EndProgram,
             "EXEC" => {
-                // Check if next word is SQL
                 return self.read_exec_sql(line);
             }
             "ASYNC" => TokenKind::Async,

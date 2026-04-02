@@ -378,7 +378,7 @@ impl Parser {
                     let ret_name = self.expect_ident()?;
                     returning = Some(DataItem {
                         level: 1, name: ret_name, pic: None, value: None,
-                        occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false,
+                        occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false, is_global: false, is_external: false,
                         children: Vec::new(), conditions: Vec::new(),
                     });
                 }
@@ -426,7 +426,8 @@ impl Parser {
                             self.advance();
                             params.push(DataItem {
                                 level: 1, name, pic: None, value: None,
-                                occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false,
+                                occurs: None, occurs_depending: None, redefines: None, usage: None,
+                                is_national: false, is_global: false, is_external: false,
                                 children: Vec::new(), conditions: Vec::new(),
                             });
                         } else { self.advance(); }
@@ -437,7 +438,8 @@ impl Parser {
                         self.advance();
                         returning = Some(DataItem {
                             level: 1, name, pic: None, value: None,
-                            occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false,
+                            occurs: None, occurs_depending: None, redefines: None, usage: None,
+                            is_national: false, is_global: false, is_external: false,
                             children: Vec::new(), conditions: Vec::new(),
                         });
                     }
@@ -580,6 +582,39 @@ impl Parser {
     // FILE SECTION
     // ------------------------------------------------------------------
 
+    fn parse_cics_text(&mut self, text: &str) -> Result<Option<Statement>, String> {
+        // Parse EXEC CICS command — format: "COMMAND PARAM(value) PARAM(value)"
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let command = words.first().unwrap_or(&"UNKNOWN").to_uppercase();
+        let mut params = Vec::new();
+        for word in &words[1..] {
+            if let Some(paren) = word.find('(') {
+                let key = word[..paren].to_string();
+                let val = word[paren + 1..].trim_end_matches(')').to_string();
+                params.push((key, val));
+            } else {
+                params.push((word.to_string(), String::new()));
+            }
+        }
+        Ok(Some(Statement::CicsCommand { command, params }))
+    }
+
+    fn parse_dli_text(&mut self, text: &str) -> Result<Option<Statement>, String> {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let command = words.first().unwrap_or(&"UNKNOWN").to_uppercase();
+        let mut params = Vec::new();
+        for word in &words[1..] {
+            if let Some(paren) = word.find('(') {
+                let key = word[..paren].to_string();
+                let val = word[paren + 1..].trim_end_matches(')').to_string();
+                params.push((key, val));
+            } else {
+                params.push((word.to_string(), String::new()));
+            }
+        }
+        Ok(Some(Statement::DliCommand { command, params }))
+    }
+
     fn parse_file_section(&mut self) -> Result<Vec<FileDescription>, String> {
         let mut fds = Vec::new();
         while matches!(self.current(), TokenKind::Ident(_)) {
@@ -661,7 +696,7 @@ impl Parser {
             self.skip_to_period();
             return Ok(DataItem {
                 level: 88, name: name.clone(), pic: None, value: None,
-                occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false,
+                occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false, is_global: false, is_external: false,
                 children: Vec::new(),
                 conditions: vec![Condition88 { name, values, thru: None }],
             });
@@ -676,6 +711,8 @@ impl Parser {
         let mut redefines = None;
         let mut usage = None;
         let mut is_national = false;
+        let mut is_global = false;
+        let mut is_external = false;
 
         // Parse clauses until period
         while *self.current() != TokenKind::Period && !self.at_end() {
@@ -718,6 +755,14 @@ impl Parser {
                     self.advance();
                     is_national = true;
                 }
+                TokenKind::Global => {
+                    self.advance();
+                    is_global = true;
+                }
+                TokenKind::External => {
+                    self.advance();
+                    is_external = true;
+                }
                 TokenKind::Redefines => {
                     self.advance();
                     redefines = Some(self.expect_ident()?);
@@ -751,7 +796,7 @@ impl Parser {
             }
         }
 
-        Ok(DataItem { level, name, pic, value, occurs, occurs_depending, redefines, usage, is_national, children, conditions })
+        Ok(DataItem { level, name, pic, value, occurs, occurs_depending, redefines, usage, is_national, is_global, is_external, children, conditions })
     }
 
     fn parse_pic_string(&mut self) -> Result<String, String> {
@@ -1030,6 +1075,16 @@ impl Parser {
                 let encoded = encoded.clone();
                 self.advance();
                 self.parse_sql_text(&encoded)
+            }
+            TokenKind::CicsText(ref text) => {
+                let text = text.clone();
+                self.advance();
+                self.parse_cics_text(&text)
+            }
+            TokenKind::DliText(ref text) => {
+                let text = text.clone();
+                self.advance();
+                self.parse_dli_text(&text)
             }
             TokenKind::Ident(ref s) if s == "STOP" => {
                 self.advance();
