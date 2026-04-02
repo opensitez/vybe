@@ -460,14 +460,27 @@ impl Compiler {
                 self.patch_jump(exit);
             }
 
-            Statement::PerformUntil { test, body } => {
-                let loop_start = self.current_offset();
-                self.compile_expr(test)?;
-                self.emit(Op::dyn_to_bool);
-                let exit = self.emit_jump(Op::br_if_true); // exit when condition is true
-                for s in body { self.compile_statement(s)?; }
-                self.emit_loop(loop_start);
-                self.patch_jump(exit);
+            Statement::PerformUntil { test, body, test_after } => {
+                if *test_after {
+                    // WITH TEST AFTER: do-while (execute body at least once)
+                    let loop_start = self.current_offset();
+                    for s in body { self.compile_statement(s)?; }
+                    self.compile_expr(test)?;
+                    self.emit(Op::dyn_to_bool);
+                    self.emit(Op::dyn_not); // loop while NOT condition
+                    let exit = self.emit_jump(Op::br_if_false);
+                    self.emit_loop(loop_start);
+                    self.patch_jump(exit);
+                } else {
+                    // WITH TEST BEFORE (default): test-then-loop
+                    let loop_start = self.current_offset();
+                    self.compile_expr(test)?;
+                    self.emit(Op::dyn_to_bool);
+                    let exit = self.emit_jump(Op::br_if_true);
+                    for s in body { self.compile_statement(s)?; }
+                    self.emit_loop(loop_start);
+                    self.patch_jump(exit);
+                }
             }
 
             Statement::PerformVarying { var, from, by, until, body } => {
@@ -503,7 +516,7 @@ impl Compiler {
                 }
             }
 
-            Statement::StringConcat { sources, into } => {
+            Statement::StringConcat { sources, into, pointer: _ } => {
                 let mut first = true;
                 for source in sources {
                     self.compile_expr(&source.value)?;
@@ -515,7 +528,7 @@ impl Compiler {
                 self.emit_u16(Op::global_set, idx);
             }
 
-            Statement::Unstring { src, delimiters, into } => {
+            Statement::Unstring { src, delimiters, into, pointer: _ } => {
                 let src_idx = self.add_string_constant(src);
                 self.emit_u16(Op::global_get, src_idx);
                 if let Some(delim) = delimiters.first() {
@@ -527,11 +540,11 @@ impl Compiler {
                 // Assign each part to the target variables
                 let arr_slot = self.next_local; self.next_local += 1;
                 self.emit_u16(Op::local_set, arr_slot);
-                for (i, name) in into.iter().enumerate() {
+                for (i, target) in into.iter().enumerate() {
                     self.emit_u16(Op::local_get, arr_slot);
                     self.emit_constant(Value::I32(i as i32));
                     self.emit(Op::array_get);
-                    let idx = self.add_string_constant(name);
+                    let idx = self.add_string_constant(&target.name);
                     self.emit_u16(Op::global_set, idx);
                 }
             }
@@ -726,6 +739,10 @@ impl Compiler {
                     }
                     AcceptSource::Time => {
                         let i = self.import("wasi:clocks", "now");
+                        self.emit_host_call(i, 0);
+                    }
+                    AcceptSource::CommandLine => {
+                        let i = self.import("wasi:cli", "getArgs");
                         self.emit_host_call(i, 0);
                     }
                     AcceptSource::Day | AcceptSource::DayOfWeek => {
@@ -959,9 +976,40 @@ impl Compiler {
             }
 
             Statement::SuspendStmt => {
-                // SUSPEND → pause execution (same as yield for fibers)
                 self.emit(Op::null);
                 self.emit_u16(Op::suspend, 0);
+            }
+
+            Statement::AddCorresponding { src, dst } => {
+                // ADD CORRESPONDING src TO dst → add matching fields
+                // Same pattern as MOVE CORRESPONDING but with addition
+                let src_idx = self.add_string_constant(src);
+                let dst_idx = self.add_string_constant(dst);
+                self.emit_u16(Op::global_get, dst_idx);
+                self.emit_u16(Op::global_get, src_idx);
+                self.emit(Op::dyn_add);
+                self.emit_u16(Op::global_set, dst_idx);
+            }
+
+            Statement::SubtractCorresponding { src, dst } => {
+                let dst_idx = self.add_string_constant(dst);
+                let src_idx = self.add_string_constant(src);
+                self.emit_u16(Op::global_get, dst_idx);
+                self.emit_u16(Op::global_get, src_idx);
+                self.emit(Op::f64_sub);
+                self.emit_u16(Op::global_set, dst_idx);
+            }
+
+            Statement::CopyReplacing { copybook: _, replacements: _ } => {
+                // COPY REPLACING is a preprocessor directive — no runtime effect
+            }
+
+            Statement::AcceptCommandLine(var) => {
+                // ACCEPT var FROM COMMAND-LINE → get CLI args
+                let i = self.import("wasi:cli", "getArgs");
+                self.emit_host_call(i, 0);
+                let idx = self.add_string_constant(var);
+                self.emit_u16(Op::global_set, idx);
             }
         }
         Ok(())

@@ -4,10 +4,29 @@ pub struct Program {
     pub program_id: String,
     pub author: Option<String>,
     pub data_items: Vec<DataItem>,
+    pub file_descriptions: Vec<FileDescription>,
     pub paragraphs: Vec<Paragraph>,
     pub main_body: Vec<Statement>,
     pub classes: Vec<ClassDef>,
     pub interfaces: Vec<InterfaceDef>,
+    pub special_names: Vec<SpecialName>,
+}
+
+/// FD/SD entry in FILE SECTION
+#[derive(Debug, Clone)]
+pub struct FileDescription {
+    pub name: String,
+    pub record_size: Option<u32>,
+    pub records: Vec<DataItem>,
+    pub is_sort: bool,  // SD vs FD
+}
+
+/// SPECIAL-NAMES paragraph entries
+#[derive(Debug, Clone)]
+pub enum SpecialName {
+    DecimalPointIsComma,
+    CurrencySign(String),
+    ClassName { name: String, values: String },
 }
 
 /// COBOL 2023 Class definition (CLASS-ID ... END CLASS)
@@ -56,8 +75,10 @@ pub struct DataItem {
     pub pic: Option<String>,
     pub value: Option<Literal>,
     pub occurs: Option<u32>,
+    pub occurs_depending: Option<String>,  // OCCURS DEPENDING ON var
     pub redefines: Option<String>,
     pub usage: Option<String>,
+    pub is_national: bool,  // USAGE NATIONAL (UTF-8)
     pub children: Vec<DataItem>,
     pub conditions: Vec<Condition88>,
 }
@@ -67,6 +88,7 @@ pub struct DataItem {
 pub struct Condition88 {
     pub name: String,
     pub values: Vec<Literal>,
+    pub thru: Option<(Literal, Literal)>,  // VALUE low THRU high
 }
 
 /// Literal value
@@ -117,15 +139,15 @@ pub enum Statement {
     /// PERFORM n TIMES body END-PERFORM
     PerformTimes { count: Expr, body: Vec<Statement> },
     /// PERFORM UNTIL cond body END-PERFORM
-    PerformUntil { test: Expr, body: Vec<Statement> },
+    PerformUntil { test: Expr, body: Vec<Statement>, test_after: bool },
     /// PERFORM VARYING var FROM start BY step UNTIL cond body END-PERFORM
     PerformVarying { var: String, from: Expr, by: Expr, until: Expr, body: Vec<Statement> },
     /// PERFORM paragraph-name
     PerformParagraph(String),
-    /// STRING ... INTO dst END-STRING
-    StringConcat { sources: Vec<StringSource>, into: String },
-    /// UNSTRING src DELIMITED BY delim INTO dst1 dst2 ... END-UNSTRING
-    Unstring { src: String, delimiters: Vec<String>, into: Vec<String> },
+    /// STRING ... INTO dst [WITH POINTER ptr] END-STRING
+    StringConcat { sources: Vec<StringSource>, into: String, pointer: Option<String> },
+    /// UNSTRING src DELIMITED BY delim INTO dst1 [COUNT c1] [DELIMITER d1] ... [WITH POINTER p]
+    Unstring { src: String, delimiters: Vec<String>, into: Vec<UnstringTarget>, pointer: Option<String> },
     /// INSPECT var TALLYING counter FOR ALL/LEADING/FIRST char
     InspectTallying { var: String, counter: String, mode: InspectMode, target: String },
     /// INSPECT var REPLACING ALL/LEADING/FIRST old BY new
@@ -134,8 +156,16 @@ pub enum Statement {
     Call { name: String, args: Vec<String> },
     /// INITIALIZE var
     Initialize(String),
-    /// SET condition TO TRUE/FALSE
+    /// SET condition TO TRUE/FALSE (properly sets parent to 88's value)
     Set { target: String, value: bool },
+    /// ADD CORRESPONDING src TO dst
+    AddCorresponding { src: String, dst: String },
+    /// SUBTRACT CORRESPONDING src FROM dst
+    SubtractCorresponding { src: String, dst: String },
+    /// COPY copybook REPLACING ==old== BY ==new== ...
+    CopyReplacing { copybook: String, replacements: Vec<(String, String)> },
+    /// ACCEPT var FROM COMMAND-LINE
+    AcceptCommandLine(String),
     /// STOP RUN
     StopRun,
     /// GOBACK
@@ -232,6 +262,7 @@ pub enum AcceptSource {
     Time,
     Day,
     DayOfWeek,
+    CommandLine,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +281,14 @@ pub struct StringSource {
 pub enum DelimitedBy {
     Size,
     Value(String),
+}
+
+/// Target in UNSTRING with optional COUNT and DELIMITER
+#[derive(Debug, Clone)]
+pub struct UnstringTarget {
+    pub name: String,
+    pub count: Option<String>,
+    pub delimiter: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

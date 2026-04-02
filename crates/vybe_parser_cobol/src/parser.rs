@@ -60,7 +60,7 @@ impl Parser {
             // Parse class body
             let class = self.parse_class_body(class_name, inherits, implements_list)?;
             classes.push(class);
-            return Ok(Program { program_id, author, data_items, paragraphs, main_body, classes, interfaces });
+            return Ok(Program { program_id, author, data_items, file_descriptions: Vec::new(), paragraphs, main_body, classes, interfaces, special_names: Vec::new() });
         }
 
         if *self.current() == TokenKind::InterfaceId {
@@ -80,7 +80,7 @@ impl Parser {
             self.expect(&TokenKind::Period)?;
             let iface = self.parse_interface_body(iface_name, inherits_list)?;
             interfaces.push(iface);
-            return Ok(Program { program_id, author, data_items, paragraphs, main_body, classes, interfaces });
+            return Ok(Program { program_id, author, data_items, file_descriptions: Vec::new(), paragraphs, main_body, classes, interfaces, special_names: Vec::new() });
         }
 
         // PROGRAM-ID (normal program)
@@ -100,11 +100,66 @@ impl Parser {
             if *self.current() == TokenKind::Period { self.advance(); }
         }
 
+        // ENVIRONMENT DIVISION (optional) — parse SPECIAL-NAMES
+        let mut special_names = Vec::new();
+        let mut file_descriptions = Vec::new();
+        if *self.current() == TokenKind::Environment {
+            self.advance();
+            self.expect(&TokenKind::Division)?;
+            self.expect(&TokenKind::Period)?;
+            // Skip until DATA or PROCEDURE division, but capture SPECIAL-NAMES
+            while !matches!(self.current(), TokenKind::Data | TokenKind::Procedure | TokenKind::Eof) {
+                if let TokenKind::Ident(s) = self.current().clone() {
+                    if s == "SPECIAL-NAMES" {
+                        self.advance();
+                        self.expect(&TokenKind::Period)?;
+                        // Parse special names entries until next section
+                        while !matches!(self.current(), TokenKind::Data | TokenKind::Procedure | TokenKind::Eof | TokenKind::Ident(_)) || {
+                            if let TokenKind::Ident(s) = self.current() { s == "DECIMAL-POINT" || s == "CURRENCY" || s == "CLASS" } else { false }
+                        } {
+                            if let TokenKind::Ident(s) = self.current().clone() {
+                                match s.as_str() {
+                                    "DECIMAL-POINT" => {
+                                        self.advance();
+                                        // skip IS COMMA
+                                        while *self.current() != TokenKind::Period && !self.at_end() { self.advance(); }
+                                        self.match_token(&TokenKind::Period);
+                                        special_names.push(SpecialName::DecimalPointIsComma);
+                                    }
+                                    "CURRENCY" => {
+                                        self.advance();
+                                        // CURRENCY SIGN IS "X"
+                                        while !matches!(self.current(), TokenKind::Str(_) | TokenKind::Period | TokenKind::Eof) { self.advance(); }
+                                        if let TokenKind::Str(s) = self.current().clone() {
+                                            self.advance();
+                                            special_names.push(SpecialName::CurrencySign(s));
+                                        }
+                                        self.skip_to_period();
+                                    }
+                                    _ => break,
+                                }
+                            } else { break; }
+                        }
+                        continue;
+                    }
+                }
+                self.advance();
+                if *self.current() == TokenKind::Period { self.advance(); }
+            }
+        }
+
         // DATA DIVISION (optional)
         if *self.current() == TokenKind::Data {
             self.advance(); // DATA
             self.expect(&TokenKind::Division)?;
             self.expect(&TokenKind::Period)?;
+            // FILE SECTION
+            if *self.current() == TokenKind::FileSection {
+                self.advance();
+                self.expect(&TokenKind::Section)?;
+                self.expect(&TokenKind::Period)?;
+                file_descriptions = self.parse_file_section()?;
+            }
             data_items = self.parse_data_division()?;
         }
 
@@ -126,7 +181,7 @@ impl Parser {
             paragraphs = paras;
         }
 
-        Ok(Program { program_id, author, data_items, paragraphs, main_body, classes, interfaces })
+        Ok(Program { program_id, author, data_items, file_descriptions, paragraphs, main_body, classes, interfaces, special_names })
     }
 
     // ------------------------------------------------------------------
@@ -323,7 +378,7 @@ impl Parser {
                     let ret_name = self.expect_ident()?;
                     returning = Some(DataItem {
                         level: 1, name: ret_name, pic: None, value: None,
-                        occurs: None, redefines: None, usage: None,
+                        occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false,
                         children: Vec::new(), conditions: Vec::new(),
                     });
                 }
@@ -371,7 +426,7 @@ impl Parser {
                             self.advance();
                             params.push(DataItem {
                                 level: 1, name, pic: None, value: None,
-                                occurs: None, redefines: None, usage: None,
+                                occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false,
                                 children: Vec::new(), conditions: Vec::new(),
                             });
                         } else { self.advance(); }
@@ -382,7 +437,7 @@ impl Parser {
                         self.advance();
                         returning = Some(DataItem {
                             level: 1, name, pic: None, value: None,
-                            occurs: None, redefines: None, usage: None,
+                            occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false,
                             children: Vec::new(), conditions: Vec::new(),
                         });
                     }
@@ -409,6 +464,49 @@ impl Parser {
     // ------------------------------------------------------------------
     // DATA DIVISION
     // ------------------------------------------------------------------
+
+    fn parse_file_section(&mut self) -> Result<Vec<FileDescription>, String> {
+        let mut fds = Vec::new();
+        while matches!(self.current(), TokenKind::Ident(_)) {
+            if let TokenKind::Ident(s) = self.current().clone() {
+                if s == "FD" || s == "SD" {
+                    let is_sort = s == "SD";
+                    self.advance();
+                    let name = self.expect_ident()?;
+                    let mut record_size = None;
+                    // Parse FD clauses
+                    while *self.current() != TokenKind::Period && !self.at_end() {
+                        if let TokenKind::Ident(s) = self.current().clone() {
+                            if s == "RECORD" {
+                                self.advance();
+                                // RECORD CONTAINS n CHARACTERS
+                                while !matches!(self.current(), TokenKind::Number(_) | TokenKind::Period | TokenKind::Eof) {
+                                    self.advance();
+                                }
+                                if let TokenKind::Number(n) = self.current().clone() {
+                                    self.advance();
+                                    record_size = Some(n as u32);
+                                }
+                                while *self.current() != TokenKind::Period && !self.at_end() { self.advance(); }
+                            } else {
+                                self.advance();
+                            }
+                        } else {
+                            self.advance();
+                        }
+                    }
+                    self.match_token(&TokenKind::Period);
+                    let records = self.parse_data_items()?;
+                    fds.push(FileDescription { name, record_size, records, is_sort });
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(fds)
+    }
 
     fn parse_data_division(&mut self) -> Result<Vec<DataItem>, String> {
         let mut items = Vec::new();
@@ -448,9 +546,9 @@ impl Parser {
             self.skip_to_period();
             return Ok(DataItem {
                 level: 88, name: name.clone(), pic: None, value: None,
-                occurs: None, redefines: None, usage: None,
+                occurs: None, occurs_depending: None, redefines: None, usage: None, is_national: false,
                 children: Vec::new(),
-                conditions: vec![Condition88 { name, values }],
+                conditions: vec![Condition88 { name, values, thru: None }],
             });
         }
 
@@ -459,8 +557,10 @@ impl Parser {
         let mut pic = None;
         let mut value = None;
         let mut occurs = None;
+        let mut occurs_depending = None;
         let mut redefines = None;
         let mut usage = None;
+        let mut is_national = false;
 
         // Parse clauses until period
         while *self.current() != TokenKind::Period && !self.at_end() {
@@ -484,12 +584,24 @@ impl Parser {
                         occurs = Some(n as u32);
                     }
                     self.match_token(&TokenKind::Times);
+                    // DEPENDING ON var
+                    if let TokenKind::Ident(s) = self.current().clone() {
+                        if s == "DEPENDING" {
+                            self.advance();
+                            self.match_token(&TokenKind::On);
+                            occurs_depending = Some(self.expect_ident()?);
+                        }
+                    }
                     // Skip INDEXED BY
                     if *self.current() == TokenKind::Indexed {
                         self.advance();
                         self.match_token(&TokenKind::By);
                         self.expect_ident()?;
                     }
+                }
+                TokenKind::National => {
+                    self.advance();
+                    is_national = true;
                 }
                 TokenKind::Redefines => {
                     self.advance();
@@ -499,6 +611,11 @@ impl Parser {
                     self.advance();
                     // Optional IS
                     if let TokenKind::Ident(s) = self.current() { if s == "IS" { self.advance(); } }
+                    // Check for NATIONAL
+                    if *self.current() == TokenKind::National {
+                        self.advance();
+                        is_national = true;
+                    }
                     usage = Some(self.expect_ident()?);
                 }
                 _ => { self.advance(); } // skip unknown clauses
@@ -519,7 +636,7 @@ impl Parser {
             }
         }
 
-        Ok(DataItem { level, name, pic, value, occurs, redefines, usage, children, conditions })
+        Ok(DataItem { level, name, pic, value, occurs, occurs_depending, redefines, usage, is_national, children, conditions })
     }
 
     fn parse_pic_string(&mut self) -> Result<String, String> {
@@ -708,7 +825,23 @@ impl Parser {
             TokenKind::Copy => {
                 self.advance();
                 let name = self.expect_ident()?;
-                Ok(Some(Statement::Copy(name)))
+                let mut replacements = Vec::new();
+                if self.match_token(&TokenKind::Replacing) {
+                    while !matches!(self.current(), TokenKind::Period | TokenKind::Eof) {
+                        // ==old== BY ==new== or "old" BY "new"
+                        let old = if let TokenKind::Str(s) = self.current().clone() { self.advance(); s }
+                        else if let TokenKind::Ident(s) = self.current().clone() { self.advance(); s }
+                        else { break; };
+                        self.expect(&TokenKind::By)?;
+                        let new = if let TokenKind::Str(s) = self.current().clone() { self.advance(); s }
+                        else if let TokenKind::Ident(s) = self.current().clone() { self.advance(); s }
+                        else { break; };
+                        replacements.push((old, new));
+                    }
+                    Ok(Some(Statement::CopyReplacing { copybook: name, replacements }))
+                } else {
+                    Ok(Some(Statement::Copy(name)))
+                }
             }
             TokenKind::Invoke => {
                 self.advance();
@@ -816,6 +949,7 @@ impl Parser {
                 TokenKind::Ident(s) if s == "TIME" => { self.advance(); AcceptSource::Time }
                 TokenKind::Ident(s) if s == "DAY" => { self.advance(); AcceptSource::Day }
                 TokenKind::Ident(s) if s == "DAY-OF-WEEK" => { self.advance(); AcceptSource::DayOfWeek }
+                TokenKind::Ident(s) if s == "COMMAND-LINE" => { self.advance(); AcceptSource::CommandLine }
                 _ => AcceptSource::Console,
             };
             return Ok(Some(Statement::AcceptFrom { var: name, source }));
@@ -843,6 +977,13 @@ impl Parser {
 
     fn parse_add(&mut self) -> Result<Option<Statement>, String> {
         self.advance(); // ADD
+        // ADD CORRESPONDING
+        if self.match_token(&TokenKind::Corresponding) || self.match_token(&TokenKind::Corr) {
+            let src = self.expect_ident()?;
+            self.expect(&TokenKind::To)?;
+            let dst = self.expect_ident()?;
+            return Ok(Some(Statement::AddCorresponding { src, dst }));
+        }
         let mut srcs = vec![self.parse_expr()?];
         while !matches!(self.current(), TokenKind::To | TokenKind::Giving | TokenKind::Period | TokenKind::Eof) {
             srcs.push(self.parse_expr()?);
@@ -857,6 +998,13 @@ impl Parser {
 
     fn parse_subtract(&mut self) -> Result<Option<Statement>, String> {
         self.advance(); // SUBTRACT
+        // SUBTRACT CORRESPONDING
+        if self.match_token(&TokenKind::Corresponding) || self.match_token(&TokenKind::Corr) {
+            let src = self.expect_ident()?;
+            self.expect(&TokenKind::From)?;
+            let dst = self.expect_ident()?;
+            return Ok(Some(Statement::SubtractCorresponding { src, dst }));
+        }
         let src = self.parse_expr()?;
         self.expect(&TokenKind::From)?;
         let from = self.expect_ident()?;
@@ -982,7 +1130,16 @@ impl Parser {
             return Ok(Some(Statement::PerformVarying { var, from, by, until, body }));
         }
 
-        // PERFORM UNTIL
+        // PERFORM [WITH TEST BEFORE/AFTER] UNTIL
+        let mut test_after = false;
+        if self.match_token(&TokenKind::With) {
+            self.match_token(&TokenKind::Test);
+            if self.match_token(&TokenKind::After) {
+                test_after = true;
+            } else {
+                self.match_token(&TokenKind::Before);
+            }
+        }
         if self.match_token(&TokenKind::Until) {
             let test = self.parse_condition()?;
             let mut body = Vec::new();
@@ -993,7 +1150,7 @@ impl Parser {
                 self.skip_periods();
             }
             self.match_token(&TokenKind::EndPerform);
-            return Ok(Some(Statement::PerformUntil { test, body }));
+            return Ok(Some(Statement::PerformUntil { test, body, test_after }));
         }
 
         // PERFORM n TIMES
@@ -1053,8 +1210,15 @@ impl Parser {
         }
         self.expect(&TokenKind::Into)?;
         let into = self.expect_ident()?;
+        // WITH POINTER var
+        let pointer = if self.match_token(&TokenKind::With) {
+            if let TokenKind::Ident(s) = self.current().clone() {
+                if s == "POINTER" { self.advance(); Some(self.expect_ident()?) }
+                else { None }
+            } else { self.match_token(&TokenKind::PointerKw); Some(self.expect_ident()?) }
+        } else { None };
         self.match_token(&TokenKind::EndString);
-        Ok(Some(Statement::StringConcat { sources, into }))
+        Ok(Some(Statement::StringConcat { sources, into, pointer }))
     }
 
     fn parse_unstring(&mut self) -> Result<Option<Statement>, String> {
@@ -1063,18 +1227,52 @@ impl Parser {
         let mut delimiters = Vec::new();
         if self.match_token(&TokenKind::Delimited) {
             self.expect(&TokenKind::By)?;
+            self.match_token(&TokenKind::All);
             if let TokenKind::Str(s) = self.current().clone() {
                 self.advance();
                 delimiters.push(s);
             }
+            // OR delim2
+            while self.match_token(&TokenKind::Or) {
+                self.match_token(&TokenKind::All);
+                if let TokenKind::Str(s) = self.current().clone() {
+                    self.advance();
+                    delimiters.push(s);
+                }
+            }
         }
         self.expect(&TokenKind::Into)?;
         let mut into = Vec::new();
-        while !matches!(self.current(), TokenKind::EndUnstring | TokenKind::Period | TokenKind::Eof) {
-            into.push(self.expect_ident()?);
+        let mut pointer = None;
+        while !matches!(self.current(), TokenKind::EndUnstring | TokenKind::Period | TokenKind::Eof | TokenKind::With) {
+            if let TokenKind::Ident(s) = self.current() {
+                if s == "POINTER" { break; }
+            }
+            let name = self.expect_ident()?;
+            let mut count = None;
+            let mut delimiter = None;
+            // COUNT IN var
+            if self.match_token(&TokenKind::Count) {
+                self.match_token(&TokenKind::In);
+                count = Some(self.expect_ident()?);
+            }
+            // DELIMITER IN var
+            if self.match_token(&TokenKind::Delimited) {
+                self.match_token(&TokenKind::In);
+                delimiter = Some(self.expect_ident()?);
+            }
+            into.push(UnstringTarget { name, count, delimiter });
+        }
+        // WITH POINTER var or POINTER var
+        if self.match_token(&TokenKind::With) {
+            if let TokenKind::Ident(s) = self.current().clone() {
+                if s == "POINTER" { self.advance(); pointer = Some(self.expect_ident()?); }
+            }
+        } else if let TokenKind::Ident(s) = self.current().clone() {
+            if s == "POINTER" { self.advance(); pointer = Some(self.expect_ident()?); }
         }
         self.match_token(&TokenKind::EndUnstring);
-        Ok(Some(Statement::Unstring { src, delimiters, into }))
+        Ok(Some(Statement::Unstring { src, delimiters, into, pointer }))
     }
 
     fn parse_inspect(&mut self) -> Result<Option<Statement>, String> {
