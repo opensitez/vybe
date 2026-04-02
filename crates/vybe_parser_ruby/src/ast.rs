@@ -85,6 +85,10 @@ pub enum Statement {
         tag: Expression,
         body: Vec<Statement>,
     },
+    /// redo
+    Redo,
+    /// at_exit { body }
+    AtExit(Vec<Statement>),
     Empty,
 }
 
@@ -288,6 +292,58 @@ pub enum Expression {
         arms: Vec<PatternArm>,
         else_body: Option<Vec<Statement>>,
     },
+    /// if/unless/case/begin as expression (returns value of last expr in branch)
+    IfExpr {
+        test: Box<Expression>,
+        body: Vec<Statement>,
+        elsifs: Vec<ElsIf>,
+        else_body: Option<Vec<Statement>>,
+    },
+    UnlessExpr {
+        test: Box<Expression>,
+        body: Vec<Statement>,
+        else_body: Option<Vec<Statement>>,
+    },
+    BeginExpr {
+        body: Vec<Statement>,
+        rescues: Vec<RescueClause>,
+        else_body: Option<Vec<Statement>>,
+        ensure: Option<Vec<Statement>>,
+    },
+    /// expr rescue default
+    InlineRescue {
+        expr: Box<Expression>,
+        rescue_val: Box<Expression>,
+    },
+    /// `command` backtick shell
+    Backtick(String),
+    /// obj&.method (safe navigation)
+    SafeNav {
+        receiver: Box<Expression>,
+        method: String,
+        args: Vec<Expression>,
+        block: Option<Box<BlockArg>>,
+    },
+    /// __FILE__, __LINE__, __dir__, __method__
+    MagicConstant(MagicConst),
+    /// obj.instance_variable_get/set
+    IvarGet {
+        object: Box<Expression>,
+        name: String,
+    },
+    IvarSet {
+        object: Box<Expression>,
+        name: String,
+        value: Box<Expression>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MagicConst {
+    File,
+    Line,
+    Dir,
+    Method,
 }
 
 #[derive(Debug, Clone)]

@@ -73,9 +73,17 @@ pub enum TokenKind {
     Freeze,
     Frozen,
 
-    // Regex
+    Pp,
+    Format,
+    Sprintf,
+    Redo,
+    AtExit,
+
+    // Regex / special
     Regex(String),
     EqTilde,     // =~
+    Backtick(String), // `command`
+    AmpDot,      // &. (safe navigation)
 
     // Arithmetic
     Plus,        // +

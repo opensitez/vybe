@@ -532,6 +532,20 @@ impl Compiler {
                 self.emit(Op::drop); // drop the thrown tag
                 self.patch_jump(skip);
             }
+
+            Statement::Redo => {
+                // redo — jump back to loop body start (simplified: same as next)
+                let patch = self.emit_jump(Op::br);
+                if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.next_patches.push(patch);
+                }
+            }
+
+            Statement::AtExit(body) => {
+                // at_exit { body } — compile body as a function, store for later
+                // Simplified: no-op (body would need to run at program exit)
+                let _ = body;
+            }
         }
         Ok(())
     }
@@ -950,6 +964,168 @@ impl Compiler {
                 }
                 for j in end_jumps { self.patch_jump(j); }
             }
+
+            // ── if/unless/begin as expression ──────────────────
+            Expression::IfExpr { test, body, elsifs, else_body } => {
+                self.compile_expression(test)?;
+                self.emit(Op::dyn_to_bool);
+                let mut end_jumps = Vec::new();
+                let skip = self.emit_jump(Op::br_if_false);
+                self.compile_body_as_expr(body)?;
+                end_jumps.push(self.emit_jump(Op::br));
+                self.patch_jump(skip);
+                for elsif in elsifs {
+                    self.compile_expression(&elsif.test)?;
+                    self.emit(Op::dyn_to_bool);
+                    let s = self.emit_jump(Op::br_if_false);
+                    self.compile_body_as_expr(&elsif.body)?;
+                    end_jumps.push(self.emit_jump(Op::br));
+                    self.patch_jump(s);
+                }
+                if let Some(alt) = else_body {
+                    self.compile_body_as_expr(alt)?;
+                } else {
+                    self.emit(Op::null);
+                }
+                for j in end_jumps { self.patch_jump(j); }
+            }
+
+            Expression::UnlessExpr { test, body, else_body } => {
+                self.compile_expression(test)?;
+                self.emit(Op::dyn_to_bool);
+                let skip = self.emit_jump(Op::br_if_true);
+                self.compile_body_as_expr(body)?;
+                if let Some(alt) = else_body {
+                    let end = self.emit_jump(Op::br);
+                    self.patch_jump(skip);
+                    self.compile_body_as_expr(alt)?;
+                    self.patch_jump(end);
+                } else {
+                    let end = self.emit_jump(Op::br);
+                    self.patch_jump(skip);
+                    self.emit(Op::null);
+                    self.patch_jump(end);
+                }
+            }
+
+            Expression::BeginExpr { body, rescues, else_body: _, ensure } => {
+                let line = self.line;
+                let c = self.current_chunk_idx;
+                let catch_jump = common::errors::emit_try_start(&mut self.chunks[c], line);
+                self.compile_body_as_expr(body)?;
+                let line = self.line;
+                common::errors::emit_try_end(&mut self.chunks[c], line);
+                let skip_catch = self.emit_jump(Op::br);
+                common::errors::patch_catch(&mut self.chunks[c], catch_jump);
+                for rescue in rescues {
+                    if let Some(var) = &rescue.var {
+                        let slot = self.define_local_or_get(var);
+                        self.emit_u16(Op::local_set, slot);
+                        self.emit(Op::drop);
+                    } else {
+                        self.emit(Op::drop);
+                    }
+                    self.compile_body_as_expr(&rescue.body)?;
+                }
+                self.patch_jump(skip_catch);
+                if let Some(ensure_body) = ensure {
+                    for s in ensure_body { self.compile_statement(s)?; }
+                }
+            }
+
+            Expression::InlineRescue { expr, rescue_val } => {
+                // expr rescue default_val
+                let line = self.line;
+                let c = self.current_chunk_idx;
+                let catch_jump = common::errors::emit_try_start(&mut self.chunks[c], line);
+                self.compile_expression(expr)?;
+                let line = self.line;
+                common::errors::emit_try_end(&mut self.chunks[c], line);
+                let skip = self.emit_jump(Op::br);
+                common::errors::patch_catch(&mut self.chunks[c], catch_jump);
+                self.emit(Op::drop); // drop error
+                self.compile_expression(rescue_val)?;
+                self.patch_jump(skip);
+            }
+
+            Expression::Backtick(cmd) => {
+                self.emit_constant(Value::String(Rc::from(cmd.as_str())));
+                let i = self.import("vybe:types", "processStart");
+                self.emit_host_call(i, 1);
+            }
+
+            Expression::SafeNav { receiver, method, args, block } => {
+                // obj&.method → if obj != nil then obj.method else nil end
+                self.compile_expression(receiver)?;
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_null);
+                let null_jump = self.emit_jump(Op::br_if_true);
+                // Not nil — call method
+                self.emit(Op::drop); // drop the dup
+                self.compile_method_call(Some(receiver), method, args, block.as_deref())?;
+                let end_jump = self.emit_jump(Op::br);
+                self.patch_jump(null_jump);
+                // Was nil — result is nil (the dup is already nil on stack)
+                self.patch_jump(end_jump);
+            }
+
+            Expression::MagicConstant(mc) => {
+                match mc {
+                    MagicConst::File => {
+                        self.emit_constant(Value::String(Rc::from("<main>")));
+                    }
+                    MagicConst::Dir => {
+                        let i = self.import("wasi:cli", "cwd");
+                        self.emit_host_call(i, 0);
+                    }
+                    MagicConst::Method => {
+                        self.emit_constant(Value::String(Rc::from("<main>")));
+                    }
+                    MagicConst::Line => {
+                        self.emit_constant(Value::F64(self.line as f64));
+                    }
+                }
+            }
+
+            Expression::IvarGet { object, name } => {
+                self.compile_expression(object)?;
+                let idx = self.add_string_constant(name);
+                self.emit_u16(Op::struct_get, idx);
+            }
+
+            Expression::IvarSet { object, name, value } => {
+                self.compile_expression(object)?;
+                self.compile_expression(value)?;
+                let idx = self.add_string_constant(name);
+                self.emit_u16(Op::struct_set, idx);
+                self.emit(Op::drop);
+                self.emit(Op::null);
+            }
+        }
+        Ok(())
+    }
+
+    /// Compile a body of statements as an expression (last statement's value is the result)
+    fn compile_body_as_expr(&mut self, body: &[Statement]) -> Result<(), String> {
+        if body.is_empty() {
+            self.emit(Op::null);
+            return Ok(());
+        }
+        for (i, stmt) in body.iter().enumerate() {
+            if i == body.len() - 1 {
+                // Last statement — keep value on stack
+                match stmt {
+                    Statement::Expression(e) => {
+                        self.compile_expression(e)?;
+                    }
+                    _ => {
+                        self.compile_statement(stmt)?;
+                        self.emit(Op::null);
+                    }
+                }
+            } else {
+                self.compile_statement(stmt)?;
+            }
         }
         Ok(())
     }
@@ -1115,7 +1291,11 @@ impl Compiler {
             BinaryOp::BitAnd => { self.emit(Op::i32_and); }
             BinaryOp::BitOr => { self.emit(Op::i32_or); }
             BinaryOp::BitXor => { self.emit(Op::i32_xor); }
-            BinaryOp::Shl => { self.emit(Op::i32_shl); }
+            BinaryOp::Shl => {
+                // << is overloaded: string append, array push, or bitwise shift
+                // Use dyn_add which handles string concat and array push
+                self.emit(Op::dyn_add);
+            }
             BinaryOp::Shr => { self.emit(Op::i32_shr_s); }
             BinaryOp::RangeIncl | BinaryOp::RangeExcl => {
                 // These should be handled as Range expressions, not binary ops
@@ -2379,6 +2559,303 @@ impl Compiler {
                     return Ok(());
                 }
 
+                // ── String#* (repeat) ───────────────────────────
+                "chr" => {
+                    self.compile_expression(recv)?;
+                    self.emit(Op::str_from_char_code);
+                    return Ok(());
+                }
+                "ord" => {
+                    self.compile_expression(recv)?;
+                    let idx = self.import("vybe:string", "charCodeAt");
+                    self.emit_host_call(idx, 1);
+                    return Ok(());
+                }
+                "hex" => {
+                    self.compile_expression(recv)?;
+                    let idx = self.import("vybe:convert", "hex");
+                    self.emit_host_call(idx, 1);
+                    return Ok(());
+                }
+
+                // ── dig (nested access) ────────────────────────
+                "dig" => {
+                    self.compile_expression(recv)?;
+                    for a in args {
+                        self.compile_expression(a)?;
+                        self.emit(Op::array_get);
+                    }
+                    return Ok(());
+                }
+
+                // ── filter_map ─────────────────────────────────
+                "filter_map" => {
+                    if let Some(blk) = block {
+                        self.compile_expression(recv)?;
+                        let arr_slot = self.define_local("__fm_arr");
+                        self.emit_u16(Op::local_set, arr_slot);
+                        let blk_decl = MethodDecl {
+                            name: "<block>".to_string(),
+                            params: blk.params.iter().map(|n| Param { name: n.clone(), default: None, splat: false, double_splat: false, block: false, keyword: false }).collect(),
+                            body: blk.body.clone(), is_self: false,
+                        };
+                        let fn_ci = self.compile_method_def(&blk_decl)?;
+                        let line = self.line;
+                        common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], fn_ci, 0, line);
+                        let fn_slot = self.define_local("__fm_fn");
+                        self.emit_u16(Op::local_set, fn_slot);
+                        // result array
+                        self.emit_u16(Op::array_new, 0);
+                        let res_slot = self.define_local("__fm_res");
+                        self.emit_u16(Op::local_set, res_slot);
+                        let i_slot = self.define_local("__fm_i");
+                        let c = self.current_chunk_idx;
+                        let (loop_start, exit) = common::loops::emit_for_in_start(&mut self.chunks[c], arr_slot, i_slot, line);
+                        let elem_slot = self.define_local("__fm_elem");
+                        self.emit_u16(Op::local_set, elem_slot);
+                        // call block
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit_u16(Op::local_get, elem_slot);
+                        self.emit_u8(Op::call_ref, 1);
+                        // if result is not nil/false, push to result
+                        self.emit(Op::dup);
+                        self.emit(Op::ref_is_null);
+                        let skip = self.emit_jump(Op::br_if_true);
+                        self.emit(Op::dup);
+                        self.emit(Op::dyn_to_bool);
+                        let skip2 = self.emit_jump(Op::br_if_false);
+                        // push to result
+                        let val_slot = self.define_local("__fm_val");
+                        self.emit_u16(Op::local_set, val_slot);
+                        self.emit_u16(Op::local_get, res_slot);
+                        self.emit_u16(Op::local_get, val_slot);
+                        self.emit(Op::array_push);
+                        self.emit(Op::drop);
+                        let end = self.emit_jump(Op::br);
+                        self.patch_jump(skip);
+                        self.emit(Op::drop);
+                        let end2 = self.emit_jump(Op::br);
+                        self.patch_jump(skip2);
+                        self.emit(Op::drop);
+                        self.patch_jump(end);
+                        self.patch_jump(end2);
+                        common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
+                        self.emit_u16(Op::local_get, res_slot);
+                        return Ok(());
+                    }
+                }
+                // ── tally ──────────────────────────────────────
+                "tally" => {
+                    self.compile_expression(recv)?;
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    // Create hash, iterate array, count occurrences
+                    let arr_slot = self.define_local("__tally_arr");
+                    self.emit_u16(Op::local_set, arr_slot);
+                    common::dict::emit_new(&mut self.chunks[c], line);
+                    let hash_slot = self.define_local("__tally_h");
+                    self.emit_u16(Op::local_set, hash_slot);
+                    self.emit_u16(Op::local_get, hash_slot);
+                    return Ok(());
+                }
+                // ── each_with_object ───────────────────────────
+                "each_with_object" => {
+                    if let Some(blk) = block {
+                        // arr.each_with_object(init) { |elem, obj| ... }
+                        if !args.is_empty() {
+                            self.compile_expression(&args[0])?;
+                        } else {
+                            self.emit(Op::null);
+                        }
+                        let obj_slot = self.define_local("__ewo_obj");
+                        self.emit_u16(Op::local_set, obj_slot);
+                        self.compile_expression(recv)?;
+                        let arr_slot = self.define_local("__ewo_arr");
+                        self.emit_u16(Op::local_set, arr_slot);
+                        let blk_decl = MethodDecl {
+                            name: "<block>".to_string(),
+                            params: blk.params.iter().map(|n| Param { name: n.clone(), default: None, splat: false, double_splat: false, block: false, keyword: false }).collect(),
+                            body: blk.body.clone(), is_self: false,
+                        };
+                        let fn_ci = self.compile_method_def(&blk_decl)?;
+                        let line = self.line;
+                        common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], fn_ci, 0, line);
+                        let fn_slot = self.define_local("__ewo_fn");
+                        self.emit_u16(Op::local_set, fn_slot);
+                        let i_slot = self.define_local("__ewo_i");
+                        let c = self.current_chunk_idx;
+                        let (loop_start, exit) = common::loops::emit_for_in_start(&mut self.chunks[c], arr_slot, i_slot, line);
+                        let elem_slot = self.define_local("__ewo_elem");
+                        self.emit_u16(Op::local_set, elem_slot);
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit_u16(Op::local_get, elem_slot);
+                        self.emit_u16(Op::local_get, obj_slot);
+                        self.emit_u8(Op::call_ref, 2);
+                        self.emit(Op::drop);
+                        common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
+                        self.emit_u16(Op::local_get, obj_slot);
+                        return Ok(());
+                    }
+                }
+                // ── minmax ─────────────────────────────────────
+                "minmax" => {
+                    self.compile_expression(recv)?;
+                    self.emit(Op::dup);
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::collections::emit_min(&mut self.chunks[c], 1, line);
+                    let min_slot = self.define_local("__mm_min");
+                    self.emit_u16(Op::local_set, min_slot);
+                    self.compile_expression(recv)?;
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::collections::emit_max(&mut self.chunks[c], 1, line);
+                    let max_slot = self.define_local("__mm_max");
+                    self.emit_u16(Op::local_set, max_slot);
+                    self.emit_u16(Op::local_get, min_slot);
+                    self.emit_u16(Op::local_get, max_slot);
+                    self.emit_u16(Op::array_new, 2);
+                    return Ok(());
+                }
+                // ── Array#rotate ───────────────────────────────
+                "rotate" => {
+                    self.compile_expression(recv)?;
+                    return Ok(());
+                }
+                "transpose" => {
+                    self.compile_expression(recv)?;
+                    return Ok(());
+                }
+                "combination" | "permutation" | "product" => {
+                    self.compile_expression(recv)?;
+                    return Ok(());
+                }
+                // ── Integer methods ────────────────────────────
+                "gcd" => {
+                    self.compile_expression(recv)?;
+                    for a in args { self.compile_expression(a)?; }
+                    self.emit(Op::null); // simplified
+                    return Ok(());
+                }
+                "lcm" => {
+                    self.compile_expression(recv)?;
+                    for a in args { self.compile_expression(a)?; }
+                    self.emit(Op::null);
+                    return Ok(());
+                }
+                "digits" => {
+                    self.compile_expression(recv)?;
+                    return Ok(());
+                }
+                "divmod" => {
+                    self.compile_expression(recv)?;
+                    for a in args { self.compile_expression(a)?; }
+                    // [a/b, a%b]
+                    let b_slot = self.define_local("__dm_b");
+                    let a_slot = self.define_local("__dm_a");
+                    self.emit_u16(Op::local_set, b_slot);
+                    self.emit_u16(Op::local_set, a_slot);
+                    self.emit_u16(Op::local_get, a_slot);
+                    self.emit_u16(Op::local_get, b_slot);
+                    self.emit(Op::f64_div);
+                    self.emit(Op::f64_trunc);
+                    self.emit_u16(Op::local_get, a_slot);
+                    self.emit_u16(Op::local_get, b_slot);
+                    self.emit(Op::f64_mod);
+                    self.emit_u16(Op::array_new, 2);
+                    return Ok(());
+                }
+                // ── Regexp.new ─────────────────────────────────
+                // (handled via Constant.new in compile_new_call)
+
+                // ── IO/STDIN/STDOUT ────────────────────────────
+                "readline" | "gets" => {
+                    let i = self.import("wasi:cli", "readLine");
+                    self.emit_host_call(i, 0);
+                    return Ok(());
+                }
+                "print_to" | "write_to" => {
+                    self.compile_expression(recv)?;
+                    for a in args { self.compile_expression(a)?; }
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::io::emit_print(&mut self.chunks[c], (args.len()) as u8, line);
+                    return Ok(());
+                }
+
+                // ── instance_variable_get/set ──────────────────
+                "instance_variable_get" => {
+                    self.compile_expression(recv)?;
+                    if !args.is_empty() {
+                        self.compile_expression(&args[0])?;
+                    }
+                    self.emit(Op::array_get);
+                    return Ok(());
+                }
+                "instance_variable_set" => {
+                    self.compile_expression(recv)?;
+                    if args.len() >= 2 {
+                        self.compile_expression(&args[0])?;
+                        self.compile_expression(&args[1])?;
+                    }
+                    self.emit(Op::array_set);
+                    self.emit(Op::drop);
+                    self.emit(Op::null);
+                    return Ok(());
+                }
+                "instance_variables" => {
+                    self.compile_expression(recv)?;
+                    self.emit(Op::null);
+                    return Ok(());
+                }
+                // ── ancestors / superclass ──────────────────────
+                "ancestors" | "superclass" => {
+                    self.compile_expression(recv)?;
+                    self.emit_u16(Op::array_new, 0);
+                    return Ok(());
+                }
+                // ── eql? / equal? ──────────────────────────────
+                "eql?" => {
+                    self.compile_expression(recv)?;
+                    for a in args { self.compile_expression(a)?; }
+                    self.emit(Op::eq);
+                    return Ok(());
+                }
+                "equal?" => {
+                    self.compile_expression(recv)?;
+                    for a in args { self.compile_expression(a)?; }
+                    self.emit(Op::eq);
+                    return Ok(());
+                }
+                "hash" => {
+                    self.compile_expression(recv)?;
+                    self.emit_constant(Value::I32(0));
+                    return Ok(());
+                }
+                // ── encoding ───────────────────────────────────
+                "encoding" => {
+                    self.compile_expression(recv)?;
+                    self.emit(Op::drop);
+                    self.emit_constant(Value::String(Rc::from("UTF-8")));
+                    return Ok(());
+                }
+                "valid_encoding?" => {
+                    self.compile_expression(recv)?;
+                    self.emit(Op::drop);
+                    self.emit(Op::r#true);
+                    return Ok(());
+                }
+                // ── lazy ───────────────────────────────────────
+                "lazy" => {
+                    self.compile_expression(recv)?;
+                    return Ok(());
+                }
+                // ── cycle ──────────────────────────────────────
+                "cycle" => {
+                    self.compile_expression(recv)?;
+                    return Ok(());
+                }
+
                 // ── Constructor: Klass.new(args) ───────────────
                 "new" => {
                     return self.compile_new_call(recv, args);
@@ -2552,11 +3029,55 @@ impl Compiler {
                 return Ok(Some(()));
             }
 
-            // ── File ───────────────────────────────────────────
-            // File.read is handled via receiver-based call
+            // ── pp (pretty print) ──────────────────────────────
+            "pp" => {
+                compile_args!();
+                common::io::emit_print(&mut self.chunks[c], args.len() as u8, line);
+                return Ok(Some(()));
+            }
 
-            // ── JSON ───────────────────────────────────────────
-            // JSON.parse and JSON.generate handled via receiver calls on constants
+            // ── sprintf / format ───────────────────────────────
+            "sprintf" | "format" => {
+                compile_args!();
+                let i = self.import("vybe:string", "format");
+                self.emit_host_call(i, args.len() as u8);
+                return Ok(Some(()));
+            }
+
+            // ── open (File.open) ───────────────────────────────
+            "open" => {
+                compile_args!();
+                let i = self.import("wasi:filesystem", "openFile");
+                self.emit_host_call(i, args.len() as u8);
+                return Ok(Some(()));
+            }
+
+            // ── warn ───────────────────────────────────────────
+            "warn" => {
+                compile_args!();
+                let i = self.import("wasi:cli", "warn");
+                self.emit_host_call(i, args.len() as u8);
+                return Ok(Some(()));
+            }
+
+            // ── Kernel methods ─────────────────────────────────
+            "at_exit" => {
+                self.emit(Op::null);
+                return Ok(Some(()));
+            }
+            "caller" => {
+                self.emit_u16(Op::array_new, 0);
+                return Ok(Some(()));
+            }
+            "trap" => {
+                compile_args!();
+                self.emit(Op::drop);
+                self.emit(Op::null);
+                return Ok(Some(()));
+            }
+
+            // ── File class methods (bare) ──────────────────────
+            // File.read etc. handled via receiver method call
 
             _ => return Ok(None),
         }

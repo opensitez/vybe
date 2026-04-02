@@ -125,6 +125,17 @@ impl Lexer {
             // String literals
             '"' => self.read_double_quoted_string(line),
             '\'' => self.read_single_quoted_string(line),
+            // Backtick shell command
+            '`' => {
+                let mut cmd = String::new();
+                while self.pos < self.src.len() && self.src[self.pos] != '`' {
+                    if self.src[self.pos] == '\n' { self.line += 1; }
+                    cmd.push(self.src[self.pos]);
+                    self.pos += 1;
+                }
+                if self.pos < self.src.len() { self.pos += 1; }
+                Ok(Token { kind: TokenKind::Backtick(cmd), line })
+            }
 
             // Numbers
             '0'..='9' => self.read_number(ch, line),
@@ -288,6 +299,9 @@ impl Lexer {
                     } else {
                         Ok(Token { kind: TokenKind::AmpAmp, line })
                     }
+                } else if self.peek() == Some('.') {
+                    self.pos += 1;
+                    Ok(Token { kind: TokenKind::AmpDot, line })
                 } else if self.peek() == Some('=') {
                     self.pos += 1;
                     Ok(Token { kind: TokenKind::AmpEq, line })
@@ -763,6 +777,15 @@ impl Lexer {
             "throw" => TokenKind::Throw,
             "freeze" => TokenKind::Freeze,
             "frozen?" => TokenKind::Frozen,
+            "pp" => TokenKind::Pp,
+            "format" => TokenKind::Format,
+            "sprintf" => TokenKind::Sprintf,
+            "redo" => TokenKind::Redo,
+            "at_exit" => TokenKind::AtExit,
+            "__FILE__" | "__file__" => TokenKind::Identifier("__FILE__".to_string()),
+            "__LINE__" | "__line__" => TokenKind::Identifier("__LINE__".to_string()),
+            "__dir__" | "__DIR__" => TokenKind::Identifier("__dir__".to_string()),
+            "__method__" | "__METHOD__" => TokenKind::Identifier("__method__".to_string()),
             _ => TokenKind::Identifier(name),
         }
     }

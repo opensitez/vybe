@@ -221,6 +221,35 @@ impl Parser {
                     Statement::Loop(body)
                 }
             }
+            TokenKind::Redo => {
+                self.advance();
+                let stmt = Statement::Redo;
+                self.parse_stmt_modifier(stmt)?
+            }
+            TokenKind::AtExit => {
+                self.advance();
+                if *self.current() == TokenKind::LBrace {
+                    self.advance();
+                    self.skip_newlines();
+                    let body = self.parse_body_until(&[TokenKind::RBrace])?;
+                    self.expect(&TokenKind::RBrace)?;
+                    Statement::AtExit(body)
+                } else if *self.current() == TokenKind::Do {
+                    self.advance();
+                    self.skip_newlines();
+                    let body = self.parse_body_until(&[TokenKind::End])?;
+                    self.expect(&TokenKind::End)?;
+                    Statement::AtExit(body)
+                } else {
+                    Statement::AtExit(Vec::new())
+                }
+            }
+            TokenKind::Pp => {
+                self.advance();
+                let args = self.parse_expr_list()?;
+                let stmt = Statement::P(args);
+                self.parse_stmt_modifier(stmt)?
+            }
             TokenKind::Catch => {
                 self.advance();
                 self.expect(&TokenKind::LParen)?;
@@ -735,7 +764,17 @@ impl Parser {
     // ------------------------------------------------------------------
 
     fn parse_expression(&mut self) -> Result<Expression, String> {
-        self.parse_ternary()
+        let expr = self.parse_ternary()?;
+        // Inline rescue: expr rescue default_value
+        if *self.current() == TokenKind::Rescue {
+            self.advance();
+            let rescue_val = self.parse_ternary()?;
+            return Ok(Expression::InlineRescue {
+                expr: Box::new(expr),
+                rescue_val: Box::new(rescue_val),
+            });
+        }
+        Ok(expr)
     }
 
     fn parse_ternary(&mut self) -> Result<Expression, String> {
@@ -963,6 +1002,17 @@ impl Parser {
                     let (args, block) = self.parse_call_args_and_block()?;
                     expr = Expression::MethodCall {
                         receiver: Some(Box::new(expr)),
+                        method,
+                        args,
+                        block,
+                    };
+                }
+                TokenKind::AmpDot => {
+                    self.advance();
+                    let method = self.parse_method_name()?;
+                    let (args, block) = self.parse_call_args_and_block()?;
+                    expr = Expression::SafeNav {
+                        receiver: Box::new(expr),
                         method,
                         args,
                         block,
@@ -1386,6 +1436,143 @@ impl Parser {
                 } else {
                     // Proc.new { }
                     Ok(Expression::ProcLiteral { params: Vec::new(), body: Vec::new() })
+                }
+            }
+
+            // if/unless/begin/case as expression
+            TokenKind::If => {
+                self.advance();
+                let test = self.parse_expression()?;
+                self.match_token(&TokenKind::Then);
+                self.skip_newlines();
+                let body = self.parse_body_until(&[TokenKind::Elsif, TokenKind::Else, TokenKind::End])?;
+                let mut elsifs = Vec::new();
+                while *self.current() == TokenKind::Elsif {
+                    self.advance();
+                    let etest = self.parse_expression()?;
+                    self.match_token(&TokenKind::Then);
+                    self.skip_newlines();
+                    let ebody = self.parse_body_until(&[TokenKind::Elsif, TokenKind::Else, TokenKind::End])?;
+                    elsifs.push(ElsIf { test: etest, body: ebody });
+                }
+                let else_body = if *self.current() == TokenKind::Else {
+                    self.advance();
+                    self.skip_newlines();
+                    Some(self.parse_body_until(&[TokenKind::End])?)
+                } else { None };
+                self.expect(&TokenKind::End)?;
+                Ok(Expression::IfExpr { test: Box::new(test), body, elsifs, else_body })
+            }
+            TokenKind::Unless => {
+                self.advance();
+                let test = self.parse_expression()?;
+                self.match_token(&TokenKind::Then);
+                self.skip_newlines();
+                let body = self.parse_body_until(&[TokenKind::Else, TokenKind::End])?;
+                let else_body = if *self.current() == TokenKind::Else {
+                    self.advance(); self.skip_newlines();
+                    Some(self.parse_body_until(&[TokenKind::End])?)
+                } else { None };
+                self.expect(&TokenKind::End)?;
+                Ok(Expression::UnlessExpr { test: Box::new(test), body, else_body })
+            }
+            TokenKind::Begin => {
+                self.advance();
+                self.skip_newlines();
+                let body = self.parse_body_until(&[TokenKind::Rescue, TokenKind::Else, TokenKind::Ensure, TokenKind::End])?;
+                let mut rescues = Vec::new();
+                while *self.current() == TokenKind::Rescue {
+                    self.advance();
+                    let mut types = Vec::new();
+                    let mut var = None;
+                    if let TokenKind::Constant(name) = self.current().clone() {
+                        self.advance(); types.push(name);
+                        while self.match_token(&TokenKind::Comma) {
+                            if let TokenKind::Constant(name) = self.current().clone() { self.advance(); types.push(name); }
+                        }
+                    }
+                    if self.match_token(&TokenKind::FatArrow) {
+                        if let TokenKind::Identifier(name) = self.current().clone() { self.advance(); var = Some(name); }
+                    }
+                    self.skip_newlines();
+                    let rbody = self.parse_body_until(&[TokenKind::Rescue, TokenKind::Else, TokenKind::Ensure, TokenKind::End])?;
+                    rescues.push(RescueClause { types, var, body: rbody });
+                }
+                let else_body = if *self.current() == TokenKind::Else {
+                    self.advance(); self.skip_newlines();
+                    Some(self.parse_body_until(&[TokenKind::Ensure, TokenKind::End])?)
+                } else { None };
+                let ensure = if *self.current() == TokenKind::Ensure {
+                    self.advance(); self.skip_newlines();
+                    Some(self.parse_body_until(&[TokenKind::End])?)
+                } else { None };
+                self.expect(&TokenKind::End)?;
+                Ok(Expression::BeginExpr { body, rescues, else_body, ensure })
+            }
+
+            // Backtick shell command
+            TokenKind::Backtick(cmd) => {
+                self.advance();
+                Ok(Expression::Backtick(cmd))
+            }
+
+            // Magic constants
+            TokenKind::Identifier(ref name) if name == "__FILE__" => {
+                self.advance();
+                Ok(Expression::MagicConstant(MagicConst::File))
+            }
+            TokenKind::Identifier(ref name) if name == "__LINE__" => {
+                let line = self.current_line();
+                self.advance();
+                Ok(Expression::Number(line as f64))
+            }
+            TokenKind::Identifier(ref name) if name == "__dir__" => {
+                self.advance();
+                Ok(Expression::MagicConstant(MagicConst::Dir))
+            }
+            TokenKind::Identifier(ref name) if name == "__method__" => {
+                self.advance();
+                Ok(Expression::MagicConstant(MagicConst::Method))
+            }
+
+            // pp (pretty print)
+            TokenKind::Pp => {
+                self.advance();
+                let args = self.parse_expr_list()?;
+                Ok(Expression::MethodCall {
+                    receiver: None,
+                    method: "pp".to_string(),
+                    args,
+                    block: None,
+                })
+            }
+
+            // sprintf / format
+            TokenKind::Sprintf | TokenKind::Format => {
+                self.advance();
+                if self.match_token(&TokenKind::LParen) {
+                    let mut args = Vec::new();
+                    if *self.current() != TokenKind::RParen {
+                        loop {
+                            args.push(self.parse_expression()?);
+                            if !self.match_token(&TokenKind::Comma) { break; }
+                        }
+                    }
+                    self.expect(&TokenKind::RParen)?;
+                    Ok(Expression::MethodCall {
+                        receiver: None,
+                        method: "sprintf".to_string(),
+                        args,
+                        block: None,
+                    })
+                } else {
+                    let args = self.parse_expr_list()?;
+                    Ok(Expression::MethodCall {
+                        receiver: None,
+                        method: "sprintf".to_string(),
+                        args,
+                        block: None,
+                    })
                 }
             }
 
