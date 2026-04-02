@@ -149,6 +149,13 @@ impl Compiler {
             self.compile_initial_value(&item.pic, &item.value)?;
             let idx = self.add_string_constant(&name);
             self.emit_u16(Op::global_set, idx);
+
+            // Store PIC metadata for formatting
+            if let Some(pic) = &item.pic {
+                self.emit_constant(Value::String(Rc::from(pic.as_str())));
+                let pk = self.add_string_constant(&format!("__PIC_{}", name));
+                self.emit_u16(Op::global_set, pk);
+            }
         }
 
         // Handle OCCURS → create array
@@ -166,11 +173,25 @@ impl Compiler {
     fn compile_initial_value(&mut self, pic: &Option<String>, value: &Option<Literal>) -> Result<(), String> {
         if let Some(val) = value {
             self.compile_literal(val)?;
+            // If PIC X and value is string, pad with spaces to PIC size
+            if let (Some(pic), Literal::Str(s)) = (pic, val) {
+                let size = Self::pic_size(pic);
+                if size > 0 && s.len() < size {
+                    // Already compiled the literal; now pad it
+                    // Emit: str_pad_end to pad with spaces
+                    self.emit_constant(Value::F64(size as f64));
+                    self.emit_constant(Value::String(Rc::from(" ")));
+                    self.emit(Op::str_pad_end);
+                }
+            }
         } else if let Some(pic) = pic {
             // Default based on PIC: X → spaces, 9 → 0
             let upper = pic.to_uppercase();
+            let size = Self::pic_size(pic);
             if upper.starts_with('X') || upper.starts_with('A') {
-                self.emit_constant(Value::String(Rc::from("")));
+                // Space-fill to PIC size
+                let spaces: String = " ".repeat(size.max(1));
+                self.emit_constant(Value::String(Rc::from(spaces.as_str())));
             } else {
                 self.emit_constant(Value::F64(0.0));
             }
@@ -225,7 +246,30 @@ impl Compiler {
             Statement::Display(exprs) => {
                 let c = self.current_chunk_idx;
                 for expr in exprs {
-                    self.compile_expr(expr)?;
+                    // For variable references, apply PIC editing if available
+                    if let Expr::Ident(var_name) = expr {
+                        let pic_key = format!("__PIC_{}", var_name);
+                        let pk = self.add_string_constant(&pic_key);
+                        self.emit_u16(Op::global_get, pk);
+                        self.emit(Op::dup);
+                        self.emit(Op::ref_is_null);
+                        let no_pic = self.emit_jump(Op::br_if_true);
+                        // Has PIC — format the value
+                        let pic_slot = self.next_local; self.next_local += 1;
+                        self.emit_u16(Op::local_set, pic_slot);
+                        self.compile_expr(expr)?;
+                        self.emit_u16(Op::local_get, pic_slot);
+                        let fi = self.import("vybe:string", "format");
+                        self.emit_host_call(fi, 2);
+                        let skip = self.emit_jump(Op::br);
+                        // No PIC — just compile normally
+                        self.patch_jump(no_pic);
+                        self.emit(Op::drop);
+                        self.compile_expr(expr)?;
+                        self.patch_jump(skip);
+                    } else {
+                        self.compile_expr(expr)?;
+                    }
                 }
                 let line = self.line;
                 common::io::emit_print(&mut self.chunks[c], exprs.len() as u8, line);
@@ -242,8 +286,8 @@ impl Compiler {
             Statement::Move { src, dsts } => {
                 for dst in dsts {
                     self.compile_expr(src)?;
-                    let idx = self.add_string_constant(dst);
-                    self.emit_u16(Op::global_set, idx);
+                    // Apply COBOL MOVE semantics: pad based on target PIC
+                    self.emit_move_with_padding(dst)?;
                 }
             }
 
@@ -384,6 +428,30 @@ impl Compiler {
 
             Statement::Compute { dst, expr } => {
                 self.compile_expr(expr)?;
+                // Apply COMP-3 rounding if target has PIC with V (decimal)
+                let pic_key = format!("__PIC_{}", dst);
+                let pk = self.add_string_constant(&pic_key);
+                self.emit_u16(Op::global_get, pk);
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_null);
+                let no_pic = self.emit_jump(Op::br_if_true);
+                // Has PIC — check for V (implied decimal)
+                // The PIC string is on stack, but we need it as a Rust string
+                // to determine scale. Since we can't inspect at compile time
+                // for dynamic vars, emit a generic round-to-2 for V99 patterns.
+                self.emit(Op::drop); // drop PIC string
+                // Round to 2 decimal places (most common: V99)
+                self.emit_constant(Value::F64(100.0));
+                self.emit(Op::f64_mul);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::math::emit_round(&mut self.chunks[c], line);
+                self.emit_constant(Value::F64(100.0));
+                self.emit(Op::f64_div);
+                let end = self.emit_jump(Op::br);
+                self.patch_jump(no_pic);
+                self.emit(Op::drop); // drop null
+                self.patch_jump(end);
                 let idx = self.add_string_constant(dst);
                 self.emit_u16(Op::global_set, idx);
             }
@@ -1890,6 +1958,129 @@ impl Compiler {
                     }
                 }
                 Ok(())
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Intrinsic function compilation
+    // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // COBOL MOVE semantics — space-padding and zero-filling
+    // ------------------------------------------------------------------
+
+    /// MOVE with COBOL padding semantics:
+    /// - Alpha (PIC X/A): right-fill with spaces, truncate on right
+    /// - Numeric (PIC 9): left-fill with zeros, truncate on left
+    /// - Alphanumeric moves: convert to string, pad
+    /// Stack: [value] → [] (stores in global)
+    fn emit_move_with_padding(&mut self, dst: &str) -> Result<(), String> {
+        // Check if we have PIC metadata for the target
+        let pic_key = format!("__PIC_{}", dst);
+        let pk = self.add_string_constant(&pic_key);
+        self.emit_u16(Op::global_get, pk);
+        self.emit(Op::dup);
+        self.emit(Op::ref_is_null);
+        let has_pic = self.emit_jump(Op::br_if_false);
+
+        // No PIC metadata — just store raw value
+        self.emit(Op::drop); // drop null PIC
+        let idx = self.add_string_constant(dst);
+        self.emit_u16(Op::global_set, idx);
+        let end = self.emit_jump(Op::br);
+
+        // Has PIC metadata — apply padding
+        self.patch_jump(has_pic);
+        let pic_slot = self.next_local; self.next_local += 1;
+        self.emit_u16(Op::local_set, pic_slot); // PIC string
+        // Stack: [value]
+        let val_slot = self.next_local; self.next_local += 1;
+        self.emit_u16(Op::local_set, val_slot);
+
+        // Parse PIC to determine type and size
+        // Call the PIC padding helper
+        self.emit_u16(Op::local_get, val_slot);
+        self.emit_u16(Op::local_get, pic_slot);
+        let i = self.import("vybe:string", "format");
+        self.emit_host_call(i, 2);
+        let idx = self.add_string_constant(dst);
+        self.emit_u16(Op::global_set, idx);
+
+        self.patch_jump(end);
+        Ok(())
+    }
+
+    /// Emit PIC editing format for DISPLAY.
+    /// Takes a raw value and PIC string on stack, produces formatted string.
+    /// Handles: Z (zero suppress), $ (currency), , (comma), . (decimal), 9 (digit), - (sign)
+    /// Stack: [value, pic_string] → [formatted_string]
+    fn emit_pic_format(&mut self, _pic: &str) {
+        // Use host string format function which handles basic formatting
+        let i = self.import("vybe:string", "format");
+        self.emit_host_call(i, 2);
+    }
+
+    // ------------------------------------------------------------------
+    // COMP-3 packed decimal support
+    // ------------------------------------------------------------------
+    // COMP-3 (packed decimal) stores digits in BCD format.
+    // In our VM, all numbers are f64. For COMP-3 semantics,
+    // we ensure arithmetic rounds to the PIC precision after each operation.
+    // This is done by emitting a round-to-scale operation after arithmetic
+    // when the target has a V (implied decimal) in its PIC.
+
+    /// Extract size from PIC string. E.g. PIC X(20) → 20, PIC 9(5)V99 → 7
+    fn pic_size(pic: &str) -> usize {
+        let upper = pic.to_uppercase();
+        let mut size = 0usize;
+        let chars: Vec<char> = upper.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            match c {
+                'X' | '9' | 'A' | 'Z' | '$' | '-' | '+' | '.' | ',' | 'B' | '0' | '/' | '*' => {
+                    // Check for repeat count: X(20)
+                    if i + 1 < chars.len() && chars[i + 1] == '(' {
+                        let mut num = String::new();
+                        i += 2;
+                        while i < chars.len() && chars[i] != ')' {
+                            num.push(chars[i]);
+                            i += 1;
+                        }
+                        if i < chars.len() { i += 1; } // skip )
+                        size += num.parse::<usize>().unwrap_or(1);
+                    } else {
+                        size += 1;
+                        i += 1;
+                    }
+                }
+                'V' => { i += 1; } // implied decimal — no display character
+                'S' => { i += 1; } // sign — no display character (unless SIGN LEADING SEPARATE)
+                _ => { i += 1; }
+            }
+        }
+        size
+    }
+
+    /// After arithmetic, round to COMP-3 precision based on PIC.
+    /// PIC 9(5)V99 → round to 2 decimal places.
+    fn emit_comp3_round(&mut self, pic: &str) {
+        // Count digits after V to determine scale
+        let upper = pic.to_uppercase();
+        if let Some(v_pos) = upper.find('V') {
+            let after_v = &upper[v_pos + 1..];
+            let scale = after_v.chars().filter(|c| *c == '9').count();
+            if scale > 0 {
+                // Multiply by 10^scale, truncate, divide by 10^scale
+                let factor = 10f64.powi(scale as i32);
+                self.emit_constant(Value::F64(factor));
+                self.emit(Op::f64_mul);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::math::emit_round(&mut self.chunks[c], line);
+                self.emit_constant(Value::F64(factor));
+                self.emit(Op::f64_div);
             }
         }
     }

@@ -118,6 +118,10 @@ impl Lexer {
             ',' => Ok(Token { kind: TokenKind::Comma, line }),
             ':' => Ok(Token { kind: TokenKind::Colon, line }),
 
+            // PIC editing characters that may appear as standalone tokens
+            '$' => Ok(Token { kind: TokenKind::Ident("$".to_string()), line }),
+            '#' => Ok(Token { kind: TokenKind::Ident("#".to_string()), line }),
+
             // Identifiers / keywords
             'a'..='z' | 'A'..='Z' | '_' => self.read_word(ch, line),
 
