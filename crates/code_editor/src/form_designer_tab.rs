@@ -79,8 +79,8 @@ const TOOLBAR_H: f32 = 36.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MenuAction {
     NewProject, OpenProject, SaveProject, SaveAs, Exit,
-    Undo, Redo, Cut, Copy, Paste,
-    AddForm, AddModule, ProjectProperties,
+    Undo, Redo, Cut, Copy, Paste, Delete,
+    AddForm, AddModule, AddExistingForm, AddExistingCode, AddResourceFile, ProjectProperties,
     RunProject, StopProject,
 }
 
@@ -97,15 +97,18 @@ const FILE_ITEMS: &[(&str, MenuAction)] = &[
 const EDIT_ITEMS: &[(&str, MenuAction)] = &[
     ("Undo          Ctrl+Z", MenuAction::Undo),
     ("Redo          Ctrl+Y", MenuAction::Redo),
-    ("Delete", MenuAction::Cut),
-    ("Cut", MenuAction::Cut),
-    ("Copy", MenuAction::Copy),
-    ("Paste", MenuAction::Paste),
+    ("Delete        Del", MenuAction::Delete),
+    ("Cut           Ctrl+X", MenuAction::Cut),
+    ("Copy          Ctrl+C", MenuAction::Copy),
+    ("Paste         Ctrl+V", MenuAction::Paste),
 ];
 
 const PROJECT_ITEMS: &[(&str, MenuAction)] = &[
     ("Add Form", MenuAction::AddForm),
     ("Add Module", MenuAction::AddModule),
+    ("Add Existing Form...", MenuAction::AddExistingForm),
+    ("Add Existing Code...", MenuAction::AddExistingCode),
+    ("Add Resource File", MenuAction::AddResourceFile),
     ("Project Properties...", MenuAction::ProjectProperties),
 ];
 
@@ -249,12 +252,14 @@ impl MenuBarState {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ToolbarAction {
-    Run, Stop, ViewDesigner, ViewCode, AddForm, AddCode,
+    Run, Stop, ViewDesigner, ViewCode, AddForm, AddCode, Save,
 }
 
 struct TButton { label: &'static str, action: Option<ToolbarAction>, is_sep: bool }
 
 const TBUTTONS: &[TButton] = &[
+    TButton { label: "\u{1F4BE} Save", action: Some(ToolbarAction::Save), is_sep: false },
+    TButton { label: "",               action: None, is_sep: true },
     TButton { label: "\u{25B6} Start", action: Some(ToolbarAction::Run), is_sep: false },
     TButton { label: "\u{25A0} End",   action: Some(ToolbarAction::Stop), is_sep: false },
     TButton { label: "",               action: None, is_sep: true },

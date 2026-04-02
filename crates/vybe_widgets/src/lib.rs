@@ -51,6 +51,7 @@ pub mod language;
 pub mod ide_text;
 pub mod text_editor;
 pub mod code_editor_widget;
+pub mod resource_editor;
 
 pub use checkbox::Checkbox;
 pub use radio::Radio;
@@ -89,6 +90,7 @@ pub use language::{LanguageDef, CommentDef, load_language};
 pub use ide_text::{draw_text, measure_text};
 pub use text_editor::{TextEditor, TokenKind, TokenSpan, LexerState, DiagnosticInfo, DiagnosticSeverity};
 pub use code_editor_widget::{CodeEditorWidget, Theme};
+pub use resource_editor::{ResourceEditor, ResourceEditorEvent, ResourceEntry, ResourceTab};
 
 use tiny_skia::PathBuilder;
 
