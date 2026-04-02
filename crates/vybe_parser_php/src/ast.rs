@@ -245,6 +245,10 @@ pub enum Expression {
     ClassKeyword(String),
     /// Spread: ...$args
     Spread(Box<Expression>),
+    /// yield expr  or  yield $key => $value
+    Yield(Option<Box<Expression>>),
+    /// yield from expr
+    YieldFrom(Box<Expression>),
 }
 
 #[derive(Debug, Clone)]

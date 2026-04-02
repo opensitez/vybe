@@ -629,6 +629,22 @@ impl Parser {
     // ------------------------------------------------------------------
 
     pub fn parse_expression(&mut self) -> Result<Expression, String> {
+        // yield [expr]  or  yield from expr
+        if matches!(self.peek(), TokenKind::Yield) {
+            self.advance();
+            // yield from expr
+            if matches!(self.peek(), TokenKind::Identifier(s) if s == "from") {
+                self.advance();
+                let expr = self.parse_assign()?;
+                return Ok(Expression::YieldFrom(Box::new(expr)));
+            }
+            // yield expr  or  bare yield
+            if matches!(self.peek(), TokenKind::Semicolon | TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Comma) {
+                return Ok(Expression::Yield(None));
+            }
+            let expr = self.parse_assign()?;
+            return Ok(Expression::Yield(Some(Box::new(expr))));
+        }
         self.parse_assign()
     }
 

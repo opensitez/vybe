@@ -785,6 +785,20 @@ impl Compiler {
             Expression::List(_) => {
                 self.emit(Op::null);
             }
+            Expression::Yield(value) => {
+                // yield $value → suspend opcode (returns value to caller, pauses generator)
+                if let Some(val) = value {
+                    self.compile_expression(val)?;
+                } else {
+                    self.emit(Op::null);
+                }
+                self.emit_u16(Op::suspend, 0); // tag 0
+            }
+            Expression::YieldFrom(expr) => {
+                // yield from $generator → delegate to sub-generator
+                // For now: just evaluate the expression (simplified)
+                self.compile_expression(expr)?;
+            }
         }
         Ok(())
     }
@@ -1037,7 +1051,59 @@ impl Compiler {
     }
 
     fn compile_method_call(&mut self, object: &Expression, method: &Expression, args: &[Argument], _nullsafe: bool) -> Result<(), String> {
-        // Get method: obj.method
+        // Special: Fiber methods — $fiber->start(), $fiber->resume($val), $fiber->isStarted(), etc.
+        if let Expression::Identifier(method_name) = method {
+            match method_name.as_str() {
+                "start" => {
+                    // $fiber->start(args...) → resume(continuation, null_or_args)
+                    self.compile_expression(object)?; // continuation
+                    if args.is_empty() {
+                        self.emit(Op::null);
+                    } else {
+                        self.compile_expression(&args[0].value)?;
+                    }
+                    self.emit_u16(Op::resume, 0);
+                    return Ok(());
+                }
+                "resume" => {
+                    // $fiber->resume($value) → resume(continuation, value)
+                    self.compile_expression(object)?; // continuation
+                    if args.is_empty() {
+                        self.emit(Op::null);
+                    } else {
+                        self.compile_expression(&args[0].value)?;
+                    }
+                    self.emit_u16(Op::resume, 0);
+                    return Ok(());
+                }
+                "isStarted" | "isRunning" | "isTerminated" | "isSuspended" => {
+                    // Read state from continuation object
+                    self.compile_expression(object)?;
+                    let state_key = self.add_string_constant("__cont_state");
+                    self.emit_u16(Op::struct_get, state_key);
+                    let expected = match method_name.as_str() {
+                        "isStarted" => "running",
+                        "isRunning" => "running",
+                        "isTerminated" => "done",
+                        "isSuspended" => "suspended",
+                        _ => "unknown",
+                    };
+                    self.emit_constant(Value::String(Rc::from(expected)));
+                    self.emit(Op::dyn_eq);
+                    return Ok(());
+                }
+                "getReturn" => {
+                    // Read the return value from continuation
+                    self.compile_expression(object)?;
+                    let val_key = self.add_string_constant("__cont_value");
+                    self.emit_u16(Op::struct_get, val_key);
+                    return Ok(());
+                }
+                _ => {} // fall through to generic method call
+            }
+        }
+
+        // Generic method call: obj.method(args...)
         self.compile_expression(object)?;
         match method {
             Expression::Identifier(name) => {
@@ -1057,6 +1123,24 @@ impl Compiler {
     }
 
     fn compile_static_call(&mut self, class: &Expression, method: &Expression, args: &[Argument]) -> Result<(), String> {
+        // Special: Fiber::suspend($value) → suspend opcode
+        if let Expression::Identifier(class_name) = class {
+            if class_name == "Fiber" {
+                if let Expression::Identifier(method_name) = method {
+                    if method_name == "suspend" {
+                        if args.is_empty() {
+                            self.emit(Op::null);
+                        } else {
+                            self.compile_expression(&args[0].value)?;
+                        }
+                        self.emit_u16(Op::suspend, 0);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Generic static call: Class::method(args...)
         self.compile_expression(class)?;
         match method {
             Expression::Identifier(name) => {
@@ -1649,6 +1733,45 @@ impl Compiler {
                 return Ok(Some(()));
             }
 
+            // ── Threading (common::threading — same as Python/JS) ──
+            "thread_create" => {
+                // thread_create(fn) → spawn thread running fn, return handle
+                compile_args!();
+                common::threading::emit_thread_spawn(&mut self.chunks[c], line);
+                return Ok(Some(()));
+            }
+            "thread_join" => {
+                // thread_join($handle) → wait for thread, return result
+                compile_args!();
+                common::threading::emit_thread_join(&mut self.chunks[c], line);
+                return Ok(Some(()));
+            }
+            "mutex_create" => {
+                // mutex_create() → allocate lock word, return address
+                let alloc_fn = self.chunks[c].add_import("wasi:thread", "allocLock");
+                self.chunks[c].emit_op_u16(Op::call_import, alloc_fn, line);
+                self.chunks[c].emit(0, line);
+                return Ok(Some(()));
+            }
+            "mutex_lock" => {
+                // mutex_lock($lock) → acquire spinlock
+                compile_args!();
+                let lock_slot = self.define_local("__lock_addr");
+                self.emit_u16(Op::local_set, lock_slot);
+                common::threading::emit_lock_acquire(&mut self.chunks[c], lock_slot, line);
+                self.emit(Op::null);
+                return Ok(Some(()));
+            }
+            "mutex_unlock" => {
+                // mutex_unlock($lock) → release spinlock
+                compile_args!();
+                let lock_slot = self.define_local("__unlock_addr");
+                self.emit_u16(Op::local_set, lock_slot);
+                common::threading::emit_lock_release(&mut self.chunks[c], lock_slot, line);
+                self.emit(Op::null);
+                return Ok(Some(()));
+            }
+
             _ => return Ok(None),
         }
     }
@@ -1683,6 +1806,16 @@ impl Compiler {
     // ------------------------------------------------------------------
 
     fn compile_new(&mut self, class: &Expression, args: &[Argument]) -> Result<(), String> {
+        // Special: new Fiber(fn) → create continuation via cont_new
+        if let Expression::Identifier(name) = class {
+            if name == "Fiber" && args.len() == 1 {
+                // Compile the callback function
+                self.compile_expression(&args[0].value)?;
+                // cont_new: [func_ref] → [continuation]
+                self.emit(Op::cont_new);
+                return Ok(());
+            }
+        }
         // Get the class constructor (stored as a global)
         self.compile_expression(class)?;
         // Call it — the constructor function (from emit_store_constructor) is a ref_func
