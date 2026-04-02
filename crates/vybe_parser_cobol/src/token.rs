@@ -73,6 +73,10 @@ pub enum TokenKind {
     Boolean, FloatLong, FloatShort, National,
     Property, Get, Set2, EndInvoke,
     Resume,
+    Inherits, Implements, InterfaceId, EndInterface,
+    Factory, Object_, EndFactory, EndObject,
+    New, Self_,
+    Override,
 
     // Intrinsic functions
     Function,

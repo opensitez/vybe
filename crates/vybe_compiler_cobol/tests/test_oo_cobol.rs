@@ -1,0 +1,476 @@
+use vybe_parser_cobol::parse;
+use vybe_compiler_cobol::Compiler;
+
+fn compile_ok(src: &str) {
+    let program = parse(src).expect("parse failed");
+    let c = Compiler::new();
+    let res = c.compile(&program);
+    assert!(res.is_ok(), "compile failed for:\n{}\nerror: {:?}", src, res.err());
+}
+
+fn parse_ok(src: &str) -> bool {
+    parse(src).is_ok()
+}
+
+// ═══════════════════════════════════════════════════════════
+// BASIC CLASS DEFINITION
+// ═══════════════════════════════════════════════════════════
+#[test]
+fn class_empty() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. MY-CLASS.
+END CLASS MY-CLASS.
+"#);
+}
+
+#[test]
+fn class_with_method() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. GREETER.
+OBJECT.
+METHOD-ID. GREET.
+PROCEDURE DIVISION.
+    DISPLAY "Hello from COBOL class!".
+END METHOD GREET.
+END OBJECT.
+END CLASS GREETER.
+"#);
+}
+
+#[test]
+fn class_with_data() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. PERSON.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME PIC X(30).
+01 WS-AGE  PIC 9(3).
+METHOD-ID. GET-NAME.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    DISPLAY WS-NAME.
+END METHOD GET-NAME.
+METHOD-ID. SET-NAME.
+PROCEDURE DIVISION USING WS-INPUT.
+    MOVE WS-INPUT TO WS-NAME.
+END METHOD SET-NAME.
+END OBJECT.
+END CLASS PERSON.
+"#);
+}
+
+#[test]
+fn class_with_init() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. COUNTER.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-COUNT PIC 9(10) VALUE 0.
+METHOD-ID. NEW.
+PROCEDURE DIVISION.
+    MOVE 0 TO WS-COUNT.
+END METHOD NEW.
+METHOD-ID. INCREMENT.
+PROCEDURE DIVISION.
+    ADD 1 TO WS-COUNT.
+END METHOD INCREMENT.
+METHOD-ID. GET-VALUE.
+PROCEDURE DIVISION.
+    DISPLAY WS-COUNT.
+END METHOD GET-VALUE.
+END OBJECT.
+END CLASS COUNTER.
+"#);
+}
+
+// ═══════════════════════════════════════════════════════════
+// INHERITANCE
+// ═══════════════════════════════════════════════════════════
+#[test]
+fn class_inherits() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. ANIMAL.
+OBJECT.
+METHOD-ID. SPEAK.
+PROCEDURE DIVISION.
+    DISPLAY "...".
+END METHOD SPEAK.
+END OBJECT.
+END CLASS ANIMAL.
+"#);
+}
+
+#[test]
+fn class_inherits_from() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. DOG INHERITS FROM ANIMAL.
+OBJECT.
+METHOD-ID. SPEAK OVERRIDE.
+PROCEDURE DIVISION.
+    DISPLAY "Woof!".
+END METHOD SPEAK.
+END OBJECT.
+END CLASS DOG.
+"#);
+}
+
+// ═══════════════════════════════════════════════════════════
+// INTERFACES
+// ═══════════════════════════════════════════════════════════
+#[test]
+fn interface_basic() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+INTERFACE-ID. PRINTABLE.
+METHOD-ID. TO-STRING.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+END METHOD TO-STRING.
+END INTERFACE PRINTABLE.
+"#);
+}
+
+#[test]
+fn interface_multi_method() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+INTERFACE-ID. COMPARABLE.
+METHOD-ID. COMPARE-TO.
+PROCEDURE DIVISION USING OTHER-OBJ RETURNING WS-RESULT.
+END METHOD COMPARE-TO.
+METHOD-ID. EQUALS.
+PROCEDURE DIVISION USING OTHER-OBJ RETURNING WS-RESULT.
+END METHOD EQUALS.
+END INTERFACE COMPARABLE.
+"#);
+}
+
+#[test]
+fn class_implements() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. MY-STRING IMPLEMENTS PRINTABLE.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VALUE PIC X(100).
+METHOD-ID. TO-STRING.
+PROCEDURE DIVISION.
+    DISPLAY WS-VALUE.
+END METHOD TO-STRING.
+END OBJECT.
+END CLASS MY-STRING.
+"#);
+}
+
+// ═══════════════════════════════════════════════════════════
+// FACTORY METHODS (static methods)
+// ═══════════════════════════════════════════════════════════
+#[test]
+fn class_factory() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. MATH-UTILS.
+FACTORY.
+METHOD-ID. SQUARE.
+PROCEDURE DIVISION USING WS-X RETURNING WS-RESULT.
+    COMPUTE WS-RESULT = WS-X * WS-X.
+END METHOD SQUARE.
+METHOD-ID. CUBE.
+PROCEDURE DIVISION USING WS-X RETURNING WS-RESULT.
+    COMPUTE WS-RESULT = WS-X ** 3.
+END METHOD CUBE.
+END FACTORY.
+END CLASS MATH-UTILS.
+"#);
+}
+
+// ═══════════════════════════════════════════════════════════
+// PROPERTY GET/SET
+// ═══════════════════════════════════════════════════════════
+#[test]
+fn property_get_set() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. POINT.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-X PIC S9(5)V99 VALUE 0.
+01 WS-Y PIC S9(5)V99 VALUE 0.
+METHOD-ID. GET-X PROPERTY GET.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    MOVE WS-X TO WS-RESULT.
+END METHOD GET-X.
+METHOD-ID. SET-X PROPERTY SET.
+PROCEDURE DIVISION USING WS-VAL.
+    MOVE WS-VAL TO WS-X.
+END METHOD SET-X.
+METHOD-ID. GET-Y PROPERTY GET.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    MOVE WS-Y TO WS-RESULT.
+END METHOD GET-Y.
+METHOD-ID. SET-Y PROPERTY SET.
+PROCEDURE DIVISION USING WS-VAL.
+    MOVE WS-VAL TO WS-Y.
+END METHOD SET-Y.
+END OBJECT.
+END CLASS POINT.
+"#);
+}
+
+// ═══════════════════════════════════════════════════════════
+// INVOKE (method calls)
+// ═══════════════════════════════════════════════════════════
+#[test]
+fn invoke_method() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TESTINVOKE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OBJ PIC X(20).
+01 WS-RESULT PIC X(50).
+PROCEDURE DIVISION.
+    INVOKE WS-OBJ GREET RETURNING WS-RESULT.
+    DISPLAY WS-RESULT.
+    STOP RUN.
+"#);
+}
+
+#[test]
+fn invoke_with_using() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TESTINVOKE2.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OBJ PIC X(20).
+01 WS-ARG PIC X(20) VALUE "World".
+01 WS-RESULT PIC X(50).
+PROCEDURE DIVISION.
+    INVOKE WS-OBJ SAY-HELLO USING WS-ARG RETURNING WS-RESULT.
+    DISPLAY WS-RESULT.
+    STOP RUN.
+"#);
+}
+
+// ═══════════════════════════════════════════════════════════
+// COMPLEX OO PROGRAMS
+// ═══════════════════════════════════════════════════════════
+#[test]
+fn bank_account_class() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. BANK-ACCOUNT.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-BALANCE PIC 9(10)V99 VALUE 0.
+01 WS-OWNER   PIC X(30).
+METHOD-ID. NEW.
+PROCEDURE DIVISION.
+    MOVE 0 TO WS-BALANCE.
+END METHOD NEW.
+METHOD-ID. DEPOSIT.
+PROCEDURE DIVISION USING WS-AMOUNT.
+    ADD WS-AMOUNT TO WS-BALANCE.
+END METHOD DEPOSIT.
+METHOD-ID. WITHDRAW.
+PROCEDURE DIVISION USING WS-AMOUNT.
+    IF WS-AMOUNT <= WS-BALANCE
+        SUBTRACT WS-AMOUNT FROM WS-BALANCE
+    ELSE
+        DISPLAY "Insufficient funds"
+    END-IF.
+END METHOD WITHDRAW.
+METHOD-ID. GET-BALANCE.
+PROCEDURE DIVISION.
+    DISPLAY "Balance: " WS-BALANCE.
+END METHOD GET-BALANCE.
+END OBJECT.
+END CLASS BANK-ACCOUNT.
+"#);
+}
+
+#[test]
+fn shape_hierarchy() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. SHAPE.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-COLOR PIC X(10) VALUE "Red".
+METHOD-ID. AREA.
+PROCEDURE DIVISION.
+    DISPLAY 0.
+END METHOD AREA.
+METHOD-ID. DESCRIBE.
+PROCEDURE DIVISION.
+    DISPLAY "Shape: " WS-COLOR.
+END METHOD DESCRIBE.
+END OBJECT.
+END CLASS SHAPE.
+"#);
+}
+
+#[test]
+fn rectangle_class() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. RECTANGLE INHERITS FROM SHAPE.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-WIDTH  PIC 9(5)V99 VALUE 0.
+01 WS-HEIGHT PIC 9(5)V99 VALUE 0.
+METHOD-ID. NEW.
+PROCEDURE DIVISION USING WS-W WS-H.
+    MOVE WS-W TO WS-WIDTH.
+    MOVE WS-H TO WS-HEIGHT.
+END METHOD NEW.
+METHOD-ID. AREA OVERRIDE.
+PROCEDURE DIVISION.
+    COMPUTE WS-WIDTH = WS-WIDTH * WS-HEIGHT.
+    DISPLAY WS-WIDTH.
+END METHOD AREA.
+END OBJECT.
+END CLASS RECTANGLE.
+"#);
+}
+
+#[test]
+fn employee_class() {
+    compile_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. EMPLOYEE.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-EMP-ID   PIC 9(5).
+01 WS-EMP-NAME PIC X(30).
+01 WS-EMP-SAL  PIC 9(8)V99.
+METHOD-ID. NEW.
+PROCEDURE DIVISION USING WS-ID WS-NAME WS-SAL.
+    MOVE WS-ID TO WS-EMP-ID.
+    MOVE WS-NAME TO WS-EMP-NAME.
+    MOVE WS-SAL TO WS-EMP-SAL.
+END METHOD NEW.
+METHOD-ID. GET-ANNUAL-SALARY.
+PROCEDURE DIVISION.
+    COMPUTE WS-EMP-SAL = WS-EMP-SAL * 12.
+    DISPLAY WS-EMP-SAL.
+END METHOD GET-ANNUAL-SALARY.
+METHOD-ID. DISPLAY-INFO.
+PROCEDURE DIVISION.
+    DISPLAY "ID:     " WS-EMP-ID.
+    DISPLAY "Name:   " WS-EMP-NAME.
+    DISPLAY "Salary: " WS-EMP-SAL.
+END METHOD DISPLAY-INFO.
+END OBJECT.
+END CLASS EMPLOYEE.
+"#);
+}
+
+// ═══════════════════════════════════════════════════════════
+// CROSS-LANGUAGE COMPONENT
+// ═══════════════════════════════════════════════════════════
+#[test]
+fn class_as_component() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. CALCULATOR.
+OBJECT.
+METHOD-ID. ADD-NUMBERS.
+PROCEDURE DIVISION USING WS-A WS-B RETURNING WS-RESULT.
+    COMPUTE WS-RESULT = WS-A + WS-B.
+END METHOD ADD-NUMBERS.
+METHOD-ID. MULTIPLY-NUMBERS.
+PROCEDURE DIVISION USING WS-A WS-B RETURNING WS-RESULT.
+    COMPUTE WS-RESULT = WS-A * WS-B.
+END METHOD MULTIPLY-NUMBERS.
+END OBJECT.
+END CLASS CALCULATOR.
+"#;
+    let program = parse(src).expect("parse failed");
+    let result = vybe_compiler_cobol::compile_component(&program, "calculator");
+    assert!(result.is_ok(), "component compile failed: {:?}", result.err());
+    let component = result.unwrap();
+    assert_eq!(component.language, vybe_bytecode::component::Language::Cobol);
+}
+
+#[test]
+fn interface_as_component() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+INTERFACE-ID. SERIALIZABLE.
+METHOD-ID. SERIALIZE.
+PROCEDURE DIVISION RETURNING WS-JSON.
+END METHOD SERIALIZE.
+METHOD-ID. DESERIALIZE.
+PROCEDURE DIVISION USING WS-JSON.
+END METHOD DESERIALIZE.
+END INTERFACE SERIALIZABLE.
+"#;
+    let program = parse(src).expect("parse failed");
+    let result = vybe_compiler_cobol::compile_component(&program, "serializable");
+    assert!(result.is_ok(), "component compile failed: {:?}", result.err());
+}
+
+// ═══════════════════════════════════════════════════════════
+// OO COBOL PARSE TESTS (verify parsing succeeds)
+// ═══════════════════════════════════════════════════════════
+#[test]
+fn parse_multiple_implements() {
+    assert!(parse_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. MY-OBJ IMPLEMENTS PRINTABLE, COMPARABLE.
+OBJECT.
+METHOD-ID. TO-STRING.
+PROCEDURE DIVISION.
+    DISPLAY "Object".
+END METHOD TO-STRING.
+END OBJECT.
+END CLASS MY-OBJ.
+"#));
+}
+
+#[test]
+fn parse_factory_and_object() {
+    assert!(parse_ok(r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. MY-FACTORY.
+FACTORY.
+METHOD-ID. CREATE.
+PROCEDURE DIVISION RETURNING WS-OBJ.
+    DISPLAY "Creating".
+END METHOD CREATE.
+END FACTORY.
+OBJECT.
+METHOD-ID. PROCESS.
+PROCEDURE DIVISION.
+    DISPLAY "Processing".
+END METHOD PROCESS.
+END OBJECT.
+END CLASS MY-FACTORY.
+"#));
+}
+
+#[test]
+fn parse_interface_inherits() {
+    assert!(parse_ok(r#"
+IDENTIFICATION DIVISION.
+INTERFACE-ID. SORTABLE INHERITS FROM COMPARABLE.
+METHOD-ID. SORT-KEY.
+PROCEDURE DIVISION RETURNING WS-KEY.
+END METHOD SORT-KEY.
+END INTERFACE SORTABLE.
+"#));
+}

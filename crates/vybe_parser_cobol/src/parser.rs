@@ -20,13 +20,70 @@ impl Parser {
         let mut data_items = Vec::new();
         let mut paragraphs = Vec::new();
         let mut main_body = Vec::new();
+        let mut classes = Vec::new();
+        let mut interfaces = Vec::new();
 
         // Parse IDENTIFICATION DIVISION
         self.expect(&TokenKind::Identification)?;
         self.expect(&TokenKind::Division)?;
         self.expect(&TokenKind::Period)?;
 
-        // PROGRAM-ID
+        // PROGRAM-ID or CLASS-ID or INTERFACE-ID
+        if *self.current() == TokenKind::ClassId {
+            self.advance();
+            self.expect(&TokenKind::Period)?;
+            let class_name = self.expect_ident()?;
+            program_id = class_name.clone();
+            // Parse INHERITS / IMPLEMENTS
+            let mut inherits = None;
+            let mut implements_list = Vec::new();
+            while !matches!(self.current(), TokenKind::Period | TokenKind::Eof) {
+                if self.match_token(&TokenKind::Inherits) {
+                    self.match_token(&TokenKind::From);
+                    inherits = Some(self.expect_ident()?);
+                } else if self.match_token(&TokenKind::Implements) {
+                    implements_list.push(self.expect_ident()?);
+                    while self.match_token(&TokenKind::Comma) {
+                        implements_list.push(self.expect_ident()?);
+                    }
+                } else {
+                    self.advance();
+                }
+            }
+            self.expect(&TokenKind::Period)?;
+            // Skip to data/object/factory/procedure
+            while matches!(self.current(), TokenKind::Author | TokenKind::DateWritten) {
+                self.advance(); self.expect(&TokenKind::Period)?;
+                while *self.current() != TokenKind::Period && !self.at_end() { self.advance(); }
+                self.match_token(&TokenKind::Period);
+            }
+            // Parse class body
+            let class = self.parse_class_body(class_name, inherits, implements_list)?;
+            classes.push(class);
+            return Ok(Program { program_id, author, data_items, paragraphs, main_body, classes, interfaces });
+        }
+
+        if *self.current() == TokenKind::InterfaceId {
+            self.advance();
+            self.expect(&TokenKind::Period)?;
+            let iface_name = self.expect_ident()?;
+            program_id = iface_name.clone();
+            let mut inherits_list = Vec::new();
+            while !matches!(self.current(), TokenKind::Period | TokenKind::Eof) {
+                if self.match_token(&TokenKind::Inherits) {
+                    self.match_token(&TokenKind::From);
+                    inherits_list.push(self.expect_ident()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.expect(&TokenKind::Period)?;
+            let iface = self.parse_interface_body(iface_name, inherits_list)?;
+            interfaces.push(iface);
+            return Ok(Program { program_id, author, data_items, paragraphs, main_body, classes, interfaces });
+        }
+
+        // PROGRAM-ID (normal program)
         self.expect(&TokenKind::ProgramId)?;
         self.expect(&TokenKind::Period)?;
         program_id = self.expect_ident()?;
@@ -69,7 +126,7 @@ impl Parser {
             paragraphs = paras;
         }
 
-        Ok(Program { program_id, author, data_items, paragraphs, main_body })
+        Ok(Program { program_id, author, data_items, paragraphs, main_body, classes, interfaces })
     }
 
     // ------------------------------------------------------------------
@@ -126,6 +183,227 @@ impl Parser {
 
     fn skip_periods(&mut self) {
         while *self.current() == TokenKind::Period { self.advance(); }
+    }
+
+    // ------------------------------------------------------------------
+    // DATA DIVISION
+    // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // OO COBOL: CLASS-ID and INTERFACE-ID parsing
+    // ------------------------------------------------------------------
+
+    fn parse_class_body(&mut self, name: String, inherits: Option<String>, implements: Vec<String>) -> Result<ClassDef, String> {
+        let mut data_items = Vec::new();
+        let mut factory_methods = Vec::new();
+        let mut instance_methods = Vec::new();
+
+        // Skip ENVIRONMENT DIVISION if present
+        if *self.current() == TokenKind::Environment {
+            self.advance(); self.expect(&TokenKind::Division)?; self.expect(&TokenKind::Period)?;
+            while !matches!(self.current(), TokenKind::Data | TokenKind::Factory | TokenKind::Object_ | TokenKind::Procedure | TokenKind::EndClass | TokenKind::Eof) {
+                self.advance();
+            }
+        }
+
+        // DATA DIVISION
+        if *self.current() == TokenKind::Data {
+            self.advance();
+            self.expect(&TokenKind::Division)?;
+            self.expect(&TokenKind::Period)?;
+            data_items = self.parse_data_division()?;
+        }
+
+        // FACTORY paragraph (class/static methods)
+        if self.match_token(&TokenKind::Factory) {
+            self.expect(&TokenKind::Period)?;
+            while *self.current() == TokenKind::MethodId {
+                factory_methods.push(self.parse_method_def()?);
+            }
+            self.match_token(&TokenKind::EndFactory);
+            self.match_token(&TokenKind::Period);
+        }
+
+        // OBJECT paragraph (instance methods)
+        if self.match_token(&TokenKind::Object_) {
+            self.expect(&TokenKind::Period)?;
+            // Object may have its own DATA DIVISION
+            if *self.current() == TokenKind::Data {
+                self.advance();
+                self.expect(&TokenKind::Division)?;
+                self.expect(&TokenKind::Period)?;
+                let obj_data = self.parse_data_division()?;
+                data_items.extend(obj_data);
+            }
+            while *self.current() == TokenKind::MethodId {
+                instance_methods.push(self.parse_method_def()?);
+            }
+            self.match_token(&TokenKind::EndObject);
+            self.match_token(&TokenKind::Period);
+        }
+
+        // PROCEDURE DIVISION can also contain methods directly (simplified form)
+        if *self.current() == TokenKind::Procedure {
+            self.advance();
+            self.expect(&TokenKind::Division)?;
+            self.expect(&TokenKind::Period)?;
+            while *self.current() == TokenKind::MethodId {
+                instance_methods.push(self.parse_method_def()?);
+            }
+        }
+
+        // Methods directly at top level (COBOL 2023 simplified form)
+        while *self.current() == TokenKind::MethodId {
+            instance_methods.push(self.parse_method_def()?);
+        }
+
+        self.match_token(&TokenKind::EndClass);
+        self.match_token(&TokenKind::Period);
+        // Skip trailing class name
+        if let TokenKind::Ident(_) = self.current() { self.advance(); }
+        self.match_token(&TokenKind::Period);
+
+        Ok(ClassDef { name, inherits, implements, data_items, factory_methods, instance_methods })
+    }
+
+    fn parse_method_def(&mut self) -> Result<MethodDef, String> {
+        self.expect(&TokenKind::MethodId)?;
+        self.expect(&TokenKind::Period)?;
+        let name = self.expect_ident()?;
+        let mut is_property_get = false;
+        let mut is_property_set = false;
+        // Check for OVERRIDE, PROPERTY GET/SET
+        while !matches!(self.current(), TokenKind::Period | TokenKind::Eof) {
+            if self.match_token(&TokenKind::Override) { continue; }
+            if self.match_token(&TokenKind::Property) {
+                if self.match_token(&TokenKind::Get) { is_property_get = true; }
+                else if self.match_token(&TokenKind::Set2) { is_property_set = true; }
+                continue;
+            }
+            self.advance();
+        }
+        self.expect(&TokenKind::Period)?;
+
+        // Parse method DATA DIVISION
+        let mut params = Vec::new();
+        let mut returning = None;
+        if *self.current() == TokenKind::Data {
+            self.advance();
+            self.expect(&TokenKind::Division)?;
+            self.expect(&TokenKind::Period)?;
+            // LINKAGE SECTION for params
+            if *self.current() == TokenKind::Linkage {
+                self.advance();
+                self.expect(&TokenKind::Section)?;
+                self.expect(&TokenKind::Period)?;
+                params = self.parse_data_items()?;
+            }
+            // WORKING-STORAGE SECTION
+            if *self.current() == TokenKind::WorkingStorage {
+                self.advance();
+                self.expect(&TokenKind::Section)?;
+                self.expect(&TokenKind::Period)?;
+                let _ = self.parse_data_items()?; // local storage
+            }
+        }
+
+        // Parse PROCEDURE DIVISION [USING params] [RETURNING ret]
+        let mut body = Vec::new();
+        if *self.current() == TokenKind::Procedure {
+            self.advance();
+            self.expect(&TokenKind::Division)?;
+            if self.match_token(&TokenKind::Using) {
+                while !matches!(self.current(), TokenKind::Returning | TokenKind::Period | TokenKind::Eof) {
+                    self.advance();
+                }
+            }
+            if self.match_token(&TokenKind::Returning) {
+                if let TokenKind::Ident(_) = self.current() {
+                    // returning var
+                    let ret_name = self.expect_ident()?;
+                    returning = Some(DataItem {
+                        level: 1, name: ret_name, pic: None, value: None,
+                        occurs: None, redefines: None, usage: None,
+                        children: Vec::new(), conditions: Vec::new(),
+                    });
+                }
+            }
+            self.expect(&TokenKind::Period)?;
+
+            // Parse body statements
+            while !matches!(self.current(), TokenKind::EndMethod | TokenKind::Eof) {
+                if let Some(stmt) = self.parse_statement()? {
+                    body.push(stmt);
+                }
+                self.skip_periods();
+            }
+        }
+
+        self.match_token(&TokenKind::EndMethod);
+        self.match_token(&TokenKind::Period);
+        // Skip trailing method name
+        if let TokenKind::Ident(_) = self.current() { self.advance(); }
+        self.match_token(&TokenKind::Period);
+
+        Ok(MethodDef { name, params, returning, body, is_property_get, is_property_set })
+    }
+
+    fn parse_interface_body(&mut self, name: String, inherits: Vec<String>) -> Result<InterfaceDef, String> {
+        let mut methods = Vec::new();
+
+        // Parse method signatures
+        while *self.current() == TokenKind::MethodId {
+            self.expect(&TokenKind::MethodId)?;
+            self.expect(&TokenKind::Period)?;
+            let method_name = self.expect_ident()?;
+            self.skip_to_period();
+
+            let mut params = Vec::new();
+            let mut returning = None;
+
+            // PROCEDURE DIVISION header with USING/RETURNING
+            if *self.current() == TokenKind::Procedure {
+                self.advance();
+                self.expect(&TokenKind::Division)?;
+                if self.match_token(&TokenKind::Using) {
+                    while !matches!(self.current(), TokenKind::Returning | TokenKind::Period | TokenKind::Eof) {
+                        if let TokenKind::Ident(name) = self.current().clone() {
+                            self.advance();
+                            params.push(DataItem {
+                                level: 1, name, pic: None, value: None,
+                                occurs: None, redefines: None, usage: None,
+                                children: Vec::new(), conditions: Vec::new(),
+                            });
+                        } else { self.advance(); }
+                    }
+                }
+                if self.match_token(&TokenKind::Returning) {
+                    if let TokenKind::Ident(name) = self.current().clone() {
+                        self.advance();
+                        returning = Some(DataItem {
+                            level: 1, name, pic: None, value: None,
+                            occurs: None, redefines: None, usage: None,
+                            children: Vec::new(), conditions: Vec::new(),
+                        });
+                    }
+                }
+                self.match_token(&TokenKind::Period);
+            }
+
+            self.match_token(&TokenKind::EndMethod);
+            self.match_token(&TokenKind::Period);
+            if let TokenKind::Ident(_) = self.current() { self.advance(); }
+            self.match_token(&TokenKind::Period);
+
+            methods.push(MethodSignature { name: method_name, params, returning });
+        }
+
+        self.match_token(&TokenKind::EndInterface);
+        self.match_token(&TokenKind::Period);
+        if let TokenKind::Ident(_) = self.current() { self.advance(); }
+        self.match_token(&TokenKind::Period);
+
+        Ok(InterfaceDef { name, inherits, methods })
     }
 
     // ------------------------------------------------------------------
@@ -1084,6 +1362,24 @@ impl Parser {
             TokenKind::Zeros => { self.advance(); Ok(Expr::Lit(Literal::Zeros)) }
             TokenKind::True => { self.advance(); Ok(Expr::Bool(true)) }
             TokenKind::False => { self.advance(); Ok(Expr::Bool(false)) }
+            TokenKind::Self_ => {
+                self.advance();
+                Ok(Expr::Ident("SELF".to_string()))
+            }
+            TokenKind::New => {
+                self.advance();
+                let class_name = self.expect_ident()?;
+                // NEW ClassName(args...)
+                let mut args = Vec::new();
+                if self.match_token(&TokenKind::LParen) {
+                    while *self.current() != TokenKind::RParen && !self.at_end() {
+                        args.push(self.parse_expr()?);
+                        self.match_token(&TokenKind::Comma);
+                    }
+                    self.expect(&TokenKind::RParen)?;
+                }
+                Ok(Expr::FunctionCall { name: format!("__new_{}", class_name), args })
+            }
             TokenKind::LParen => {
                 self.advance();
                 let expr = self.parse_expr()?;

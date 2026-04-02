@@ -6,6 +6,46 @@ pub struct Program {
     pub data_items: Vec<DataItem>,
     pub paragraphs: Vec<Paragraph>,
     pub main_body: Vec<Statement>,
+    pub classes: Vec<ClassDef>,
+    pub interfaces: Vec<InterfaceDef>,
+}
+
+/// COBOL 2023 Class definition (CLASS-ID ... END CLASS)
+#[derive(Debug, Clone)]
+pub struct ClassDef {
+    pub name: String,
+    pub inherits: Option<String>,
+    pub implements: Vec<String>,
+    pub data_items: Vec<DataItem>,
+    pub factory_methods: Vec<MethodDef>,
+    pub instance_methods: Vec<MethodDef>,
+}
+
+/// COBOL 2023 Method definition (METHOD-ID ... END METHOD)
+#[derive(Debug, Clone)]
+pub struct MethodDef {
+    pub name: String,
+    pub params: Vec<DataItem>,
+    pub returning: Option<DataItem>,
+    pub body: Vec<Statement>,
+    pub is_property_get: bool,
+    pub is_property_set: bool,
+}
+
+/// COBOL 2023 Interface definition (INTERFACE-ID ... END INTERFACE)
+#[derive(Debug, Clone)]
+pub struct InterfaceDef {
+    pub name: String,
+    pub inherits: Vec<String>,
+    pub methods: Vec<MethodSignature>,
+}
+
+/// Method signature for interfaces
+#[derive(Debug, Clone)]
+pub struct MethodSignature {
+    pub name: String,
+    pub params: Vec<DataItem>,
+    pub returning: Option<DataItem>,
 }
 
 /// A data item declaration (WORKING-STORAGE, LOCAL-STORAGE, LINKAGE)
