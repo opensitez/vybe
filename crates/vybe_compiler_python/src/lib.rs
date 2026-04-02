@@ -1676,8 +1676,10 @@ impl Compiler {
                             return self.compile_host_call("vybe:convert", "toString", args, chunk_idx);
                         }
                         "open" => {
-                            // open(filename) → readFile for now
-                            return self.compile_host_call("wasi:filesystem", "readFile", args, chunk_idx);
+                            // open(filename, mode) → file handle via wasi:filesystem
+                            // Same host as VB Open/PHP fopen
+                            for a in args { self.compile_expr(a, chunk_idx)?; }
+                            return self.compile_host_call("wasi:filesystem", "openFile", args, chunk_idx);
                         }
                         "hasattr" => {
                             if args.len() >= 2 {
@@ -2442,20 +2444,97 @@ impl Compiler {
             },
             "os" => match method {
                 "getcwd" => {
-                    let imp = self.chunk(chunk_idx).add_import("wasi:cli", "getCwd");
-                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
-                    self.chunk(chunk_idx).emit(0, 0);
+                    self.compile_host_call("wasi:cli", "getCwd", &[], chunk_idx)?;
                     return Ok(Some(()));
                 }
                 "listdir" => {
-                    if args.len() <= 1 {
-                        for a in args { self.compile_expr(a, chunk_idx)?; }
-                        let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "readDir");
-                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
-                        self.chunk(chunk_idx).emit(args.len() as u8, 0);
-                        return Ok(Some(()));
-                    }
-                    return Ok(None);
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "listDir", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "mkdir" | "makedirs" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "mkdir", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "remove" | "unlink" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "remove", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "rmdir" | "removedirs" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "remove", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "rename" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "rename", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "path" => return Ok(None),
+                "getenv" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:cli", "getEnv", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "system" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("vybe:types", "processStart", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "_exit" | "abort" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:cli", "exit", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            "os.path" | "path" => match method {
+                "exists" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "exists", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "isfile" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "isFile", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "isdir" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "isDir", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "join" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "pathCombine", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "dirname" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "pathGetDirectory", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "basename" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "pathGetFileName", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "abspath" | "realpath" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "pathGetFullPath", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "splitext" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "pathGetExtension", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "getsize" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:filesystem", "fileSize", args, chunk_idx)?;
+                    return Ok(Some(()));
                 }
                 _ => return Ok(None),
             },
@@ -2478,6 +2557,124 @@ impl Compiler {
                     let alloc_fn = self.chunk(chunk_idx).add_import("wasi:thread", "allocLock");
                     self.chunk(chunk_idx).emit_op_u16(Op::call_import, alloc_fn, 0);
                     self.chunk(chunk_idx).emit(0, 0);
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            // ── socket module (vybe:net — same as VB TcpClient/UdpClient) ──
+            "socket" => match method {
+                "socket" | "create_connection" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("vybe:net", "tcpConnect", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "gethostbyname" | "getaddrinfo" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("vybe:net", "dnsResolve", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            // ── sqlite3 module (vybe:database — same as VB SqlConnection) ──
+            "sqlite3" => match method {
+                "connect" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("vybe:database", "connect", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            // ── hashlib module (vybe:crypto — same as VB/PHP) ──
+            "hashlib" => match method {
+                "md5" | "sha1" | "sha256" | "sha512" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    let func = if method == "md5" { "md5" } else { "sha256" };
+                    self.compile_host_call("vybe:crypto", func, args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            // ── datetime module (vybe:types + wasi:clocks — same as VB DateTime) ──
+            "datetime" => match method {
+                "now" | "today" | "utcnow" => {
+                    self.compile_host_call("vybe:types", "dateTimeNow", &[], chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "datetime" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("vybe:types", "dateTimeNew", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "strptime" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("vybe:types", "dateTimeParse", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            "time" => match method {
+                "time" => {
+                    self.compile_host_call("wasi:clocks", "now", &[], chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "sleep" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:clocks", "sleep", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "perf_counter" | "monotonic" => {
+                    self.compile_host_call("wasi:clocks", "hrtime", &[], chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            // ── http / urllib module (wasi:http — same as VB/PHP) ──
+            "requests" => match method {
+                "get" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:http", "get", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "post" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:http", "post", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            "urllib" | "http" => match method {
+                "urlopen" | "request" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("wasi:http", "get", args, chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            // ── collections module (vybe:types — same as VB) ──
+            "collections" => match method {
+                "deque" => {
+                    self.compile_host_call("vybe:types", "queueNew", &[], chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "OrderedDict" => {
+                    self.compile_host_call("vybe:types", "dictNew", &[], chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "defaultdict" => {
+                    self.compile_host_call("vybe:types", "dictNew", &[], chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                "Counter" => {
+                    self.compile_host_call("vybe:types", "dictNew", &[], chunk_idx)?;
+                    return Ok(Some(()));
+                }
+                _ => return Ok(None),
+            },
+            // ── xml module (vybe:xml — same as VB/PHP) ──
+            "xml" | "ET" | "ElementTree" => match method {
+                "parse" | "fromstring" => {
+                    for a in args { self.compile_expr(a, chunk_idx)?; }
+                    self.compile_host_call("vybe:xml", "parse", args, chunk_idx)?;
                     return Ok(Some(()));
                 }
                 _ => return Ok(None),
@@ -2777,6 +2974,124 @@ impl Compiler {
                 // thread.join() — wait for thread to complete
                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
                 common::threading::emit_thread_join(self.chunk(chunk_idx), 0);
+            }
+            // ── File object methods (same host as VB/PHP fopen/fwrite) ──
+            "read" => {
+                // f.read() → readFile (whole file) or lineInput
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "readFile");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "readline" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "lineInput");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "readlines" => {
+                // f.readlines() → readFile then split by \n
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "readFile");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+                let nl = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("\n")));
+                self.chunk(chunk_idx).emit_op_u16(Op::r#const, nl, 0);
+                self.chunk(chunk_idx).emit_op(Op::str_split, 0);
+            }
+            "write" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                for a in args { self.compile_expr(a, chunk_idx)?; }
+                let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "printFile");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
+            }
+            "writelines" => {
+                // f.writelines(lines) — join and write
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                for a in args { self.compile_expr(a, chunk_idx)?; }
+                let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "printFile");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
+            }
+            "close" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "closeFile");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "flush" => {
+                self.chunk(chunk_idx).emit_op(Op::null, 0); // no-op
+            }
+            // ── Socket object methods (same host as VB/PHP) ──
+            "connect" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                for a in args { self.compile_expr(a, chunk_idx)?; }
+                let imp = self.chunk(chunk_idx).add_import("vybe:net", "tcpConnect");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
+            }
+            "send" | "sendall" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                for a in args { self.compile_expr(a, chunk_idx)?; }
+                let imp = self.chunk(chunk_idx).add_import("vybe:net", "streamWriterWriteLine");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
+            }
+            "recv" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                for a in args { self.compile_expr(a, chunk_idx)?; }
+                let imp = self.chunk(chunk_idx).add_import("vybe:net", "streamReaderReadLine");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
+            }
+            "bind" | "listen" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                let imp = self.chunk(chunk_idx).add_import("vybe:net", "tcpListenerStart");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(0, 0);
+            }
+            "accept" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                let imp = self.chunk(chunk_idx).add_import("vybe:net", "tcpListenerAccept");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            // ── Database cursor methods (same host as VB/PHP) ──
+            "execute" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                for a in args { self.compile_expr(a, chunk_idx)?; }
+                let imp = self.chunk(chunk_idx).add_import("vybe:database", "execute");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
+            }
+            "fetchone" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                let imp = self.chunk(chunk_idx).add_import("vybe:database", "scalar");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "fetchall" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                let imp = self.chunk(chunk_idx).add_import("vybe:database", "query");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(1, 0);
+            }
+            "cursor" => {
+                // conn.cursor() → return conn itself (cursor IS the connection in our model)
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+            }
+            // ── DateTime object methods ──
+            "strftime" | "isoformat" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                for a in args { self.compile_expr(a, chunk_idx)?; }
+                let imp = self.chunk(chunk_idx).add_import("vybe:types", "dateTimeToString");
+                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
+            }
+            "timestamp" => {
+                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                // DateTime stores timestamp internally
             }
             // Cross-language compat: Dart/C# .contains(), JS .includes()
             "contains" | "includes" => {

@@ -639,9 +639,10 @@ impl Compiler {
                         self.emit_u16(Op::struct_get, idx);
                     }
                     _ => {
-                        // dynamic property: obj[expr] via array_get
+                        // dynamic property: obj[expr] via common::dict
                         self.compile_expression(name)?;
-                        self.emit(Op::array_get);
+                        let line = self.line;
+                        common::dict::emit_get_dynamic(&mut self.chunks[self.current_chunk_idx], line);
                     }
                 }
             }
@@ -665,7 +666,8 @@ impl Compiler {
             Expression::ArrayAccess { array, index } => {
                 self.compile_expression(array)?;
                 self.compile_expression(index)?;
-                self.emit(Op::array_get);
+                let line = self.line;
+                common::dict::emit_get_dynamic(&mut self.chunks[self.current_chunk_idx], line);
             }
             Expression::Isset(vars) => {
                 for (i, var) in vars.iter().enumerate() {
@@ -892,8 +894,8 @@ impl Compiler {
                 self.compile_expression(array)?;
                 self.compile_expression(index)?;
                 self.emit_u16(Op::local_get, tmp);
-                self.emit(Op::array_set);
-                self.emit(Op::drop);
+                let line = self.line;
+                common::dict::emit_set_dynamic(&mut self.chunks[self.current_chunk_idx], line);
             }
             Expression::List(targets) => {
                 // list($a, $b) = [1, 2]
@@ -1119,6 +1121,91 @@ impl Compiler {
                     self.compile_expression(object)?;
                     let val_key = self.add_string_constant("__cont_value");
                     self.emit_u16(Op::struct_get, val_key);
+                    return Ok(());
+                }
+                // ── StringBuilder methods (same as VB/C#) ──────────
+                "append" => {
+                    self.compile_expression(object)?;
+                    for arg in args { self.compile_expression(&arg.value)?; }
+                    let i = self.import("vybe:types", "sbAppend");
+                    self.emit_host_call(i, (args.len() + 1) as u8);
+                    return Ok(());
+                }
+                "appendLine" | "appendline" => {
+                    self.compile_expression(object)?;
+                    for arg in args { self.compile_expression(&arg.value)?; }
+                    let i = self.import("vybe:types", "sbAppendLine");
+                    self.emit_host_call(i, (args.len() + 1) as u8);
+                    return Ok(());
+                }
+                // toString for StringBuilder (and general cross-language compat)
+                "toString" | "tostring" | "__toString" | "__tostring" => {
+                    self.compile_expression(object)?;
+                    let i = self.import("vybe:types", "sbToString");
+                    self.emit_host_call(i, 1);
+                    return Ok(());
+                }
+                "clear" => {
+                    self.compile_expression(object)?;
+                    let i = self.import("vybe:types", "sbClear");
+                    self.emit_host_call(i, 1);
+                    return Ok(());
+                }
+                "insert" => {
+                    self.compile_expression(object)?;
+                    for arg in args { self.compile_expression(&arg.value)?; }
+                    let i = self.import("vybe:types", "sbInsert");
+                    self.emit_host_call(i, (args.len() + 1) as u8);
+                    return Ok(());
+                }
+                "replace" => {
+                    self.compile_expression(object)?;
+                    for arg in args { self.compile_expression(&arg.value)?; }
+                    let i = self.import("vybe:types", "sbReplace");
+                    self.emit_host_call(i, (args.len() + 1) as u8);
+                    return Ok(());
+                }
+                // ── HashSet methods (same as VB/C#) ─────────────────
+                "add" => {
+                    self.compile_expression(object)?;
+                    for arg in args { self.compile_expression(&arg.value)?; }
+                    let i = self.import("vybe:types", "hashSetAdd");
+                    self.emit_host_call(i, (args.len() + 1) as u8);
+                    return Ok(());
+                }
+                "has" | "contains" => {
+                    self.compile_expression(object)?;
+                    for arg in args { self.compile_expression(&arg.value)?; }
+                    let i = self.import("vybe:types", "hashSetContains");
+                    self.emit_host_call(i, (args.len() + 1) as u8);
+                    return Ok(());
+                }
+                "delete" | "remove" => {
+                    self.compile_expression(object)?;
+                    for arg in args { self.compile_expression(&arg.value)?; }
+                    let i = self.import("vybe:types", "hashSetRemove");
+                    self.emit_host_call(i, (args.len() + 1) as u8);
+                    return Ok(());
+                }
+                // ── Random methods (same as VB/C#) ──────────────────
+                "nextInt" | "next" => {
+                    self.compile_expression(object)?;
+                    for arg in args { self.compile_expression(&arg.value)?; }
+                    let i = self.import("vybe:threading", "randomNext");
+                    self.emit_host_call(i, (args.len() + 1) as u8);
+                    return Ok(());
+                }
+                "nextFloat" | "nextDouble" => {
+                    self.compile_expression(object)?;
+                    let i = self.import("vybe:threading", "randomNextDouble");
+                    self.emit_host_call(i, 1);
+                    return Ok(());
+                }
+                // ── Stopwatch methods ────────────────────────────────
+                "elapsed" | "getElapsed" => {
+                    self.compile_expression(object)?;
+                    let i = self.import("vybe:threading", "stopwatchElapsed");
+                    self.emit_host_call(i, 1);
                     return Ok(());
                 }
                 // ── DateTime methods ─────────────────────────────
@@ -1995,6 +2082,14 @@ impl Compiler {
             // ── GUID (existing vybe:types host) ──
             "uuid_create" | "com_create_guid" => { let i = self.import("wasi:random", "uuid"); self.emit_host_call(i, 0); return Ok(Some(())); }
 
+            // ── Async (common::functions — same as JS await) ──
+            "await" => {
+                // await($promise) → suspend until resolved
+                compile_args!();
+                common::functions::emit_await(&mut self.chunks[c], line);
+                return Ok(Some(()));
+            }
+
             // ── Convert (existing vybe:convert host) ──
             "dechex" | "bin2hex" => { compile_args!(); let i = self.import("vybe:convert", "hex"); self.emit_host_call(i, 1); return Ok(Some(())); }
             "decoct" => { compile_args!(); let i = self.import("vybe:convert", "oct"); self.emit_host_call(i, 1); return Ok(Some(())); }
@@ -2035,6 +2130,13 @@ impl Compiler {
             "trigger_error" => { compile_args!(); let i = self.import("wasi:cli", "warn"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
             "php_info" => { self.emit_constant(Value::String(Rc::from("Vybe PHP 8.3 on WASM VM"))); let line = self.line; common::io::emit_print(&mut self.chunks[c], 1, line); return Ok(Some(())); }
             "get_current_user" => { let i = self.import("wasi:cli", "userName"); self.emit_host_call(i, 0); return Ok(Some(())); }
+
+            // ── File handles (same host as VB Open/Print/Input/Close) ──
+            "fopen" => { compile_args!(); let i = self.import("wasi:filesystem", "openFile"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
+            "fwrite" | "fputs" => { compile_args!(); let i = self.import("wasi:filesystem", "printFile"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
+            "fgets" | "fread" => { compile_args!(); let i = self.import("wasi:filesystem", "lineInput"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
+            "fclose" => { compile_args!(); let i = self.import("wasi:filesystem", "closeFile"); self.emit_host_call(i, 1); return Ok(Some(())); }
+            "feof" => { compile_args!(); self.emit(Op::ref_is_null); return Ok(Some(())); }
 
             // ── Filesystem (more) ──
             "file_append_contents" | "fopen_append" => { compile_args!(); let i = self.import("wasi:filesystem", "appendFile"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
@@ -2161,6 +2263,73 @@ impl Compiler {
             if name == "Fiber" && args.len() >= 1 {
                 self.compile_expression(&args[0].value)?;
                 self.emit(Op::cont_new);
+                return Ok(());
+            }
+            // Special: new Exception/RuntimeException/etc → cross-language exception object
+            if name == "Exception" || name == "RuntimeException" || name == "TypeError"
+                || name == "ValueError" || name == "InvalidArgumentException"
+                || name == "LogicException" || name == "OutOfRangeException"
+                || name == "OverflowException" || name == "UnderflowException"
+                || name == "BadMethodCallException" || name == "DomainException"
+                || name == "LengthException" || name == "RangeException" {
+                let canonical = common::errors::canonical_exception_name(name);
+                let this_slot = self.define_local("__exc_this");
+                let msg_slot = self.define_local("__exc_msg");
+                // Push message arg (or empty string)
+                if !args.is_empty() {
+                    self.compile_expression(&args[0].value)?;
+                } else {
+                    self.emit_constant(Value::String(Rc::from("")));
+                }
+                self.emit_u16(Op::local_set, msg_slot);
+                let line = self.line;
+                let c = self.current_chunk_idx;
+                common::errors::emit_exception_constructor(
+                    &mut self.chunks[c], this_slot, canonical, msg_slot, line,
+                );
+                self.emit_u16(Op::local_get, this_slot);
+                return Ok(());
+            }
+            // Special: SPL/collections → same host types as VB/C# (cross-language compatible)
+            if name == "SplDoublyLinkedList" || name == "ArrayObject" || name == "SplFixedArray" {
+                let i = self.import("vybe:types", "listNew");
+                self.emit_host_call(i, 0);
+                return Ok(());
+            }
+            if name == "SplPriorityQueue" {
+                let i = self.import("vybe:types", "queueNew");
+                self.emit_host_call(i, 0);
+                return Ok(());
+            }
+            // new Dictionary / new Map → same as VB Dictionary(Of K,V)
+            if name == "Dictionary" || name == "Map" || name == "SplObjectStorage" {
+                let i = self.import("vybe:types", "dictNew");
+                self.emit_host_call(i, 0);
+                return Ok(());
+            }
+            // new HashSet / new Set
+            if name == "HashSet" || name == "Set" {
+                let i = self.import("vybe:types", "hashSetNew");
+                self.emit_host_call(i, 0);
+                return Ok(());
+            }
+            // new StringBuilder → same as VB/C# StringBuilder
+            if name == "StringBuilder" {
+                if !args.is_empty() { self.compile_expression(&args[0].value)?; } else { self.emit_constant(Value::String(Rc::from(""))); }
+                let i = self.import("vybe:types", "stringBuilderNew");
+                self.emit_host_call(i, 1);
+                return Ok(());
+            }
+            // new Random → same as VB/C# Random
+            if name == "Random" {
+                let i = self.import("vybe:threading", "randomNew");
+                self.emit_host_call(i, 0);
+                return Ok(());
+            }
+            // new Stopwatch → same as VB/C# Stopwatch
+            if name == "Stopwatch" {
+                let i = self.import("vybe:threading", "stopwatchNew");
+                self.emit_host_call(i, 0);
                 return Ok(());
             }
             // Special: new DateTime() → vybe:types dateTimeNow/dateTimeParse
