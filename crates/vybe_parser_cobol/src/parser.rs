@@ -741,6 +741,43 @@ impl Parser {
                 let var = self.expect_ident()?;
                 Ok(Some(Statement::AllocateStmt(var)))
             }
+            TokenKind::Wait => {
+                self.advance();
+                self.match_token(&TokenKind::For);
+                let handle = self.expect_ident()?;
+                Ok(Some(Statement::Wait(handle)))
+            }
+            TokenKind::RunUnit => {
+                self.advance();
+                let name = if let TokenKind::Str(s) = self.current().clone() {
+                    self.advance(); s
+                } else { self.expect_ident()? };
+                let mut args = Vec::new();
+                if self.match_token(&TokenKind::Using) {
+                    while !matches!(self.current(), TokenKind::Period | TokenKind::Eof) {
+                        args.push(self.expect_ident()?);
+                    }
+                }
+                Ok(Some(Statement::RunUnit { name, args }))
+            }
+            TokenKind::Lock => {
+                self.advance();
+                let name = self.expect_ident()?;
+                Ok(Some(Statement::LockMonitor(name)))
+            }
+            TokenKind::Unlock => {
+                self.advance();
+                let name = self.expect_ident()?;
+                Ok(Some(Statement::UnlockMonitor(name)))
+            }
+            TokenKind::Yield_ => {
+                self.advance();
+                Ok(Some(Statement::YieldStmt))
+            }
+            TokenKind::Suspend => {
+                self.advance();
+                Ok(Some(Statement::SuspendStmt))
+            }
             TokenKind::Ident(ref s) if s == "STOP" => {
                 self.advance();
                 if let TokenKind::Ident(s) = self.current() {
@@ -974,6 +1011,12 @@ impl Parser {
             return Ok(Some(Statement::PerformTimes { count, body }));
         }
 
+        // Check for PERFORM ASYNC paragraph
+        if self.match_token(&TokenKind::Async) {
+            let name = self.expect_ident()?;
+            return Ok(Some(Statement::PerformAsync(name)));
+        }
+
         // PERFORM paragraph-name [THRU paragraph-name]
         if let TokenKind::Ident(name) = self.current().clone() {
             self.advance();
@@ -1082,14 +1125,26 @@ impl Parser {
         let name = if let TokenKind::Str(s) = self.current().clone() {
             self.advance(); s
         } else { self.expect_ident()? };
+
+        // Check for ASYNC
+        let is_async = self.match_token(&TokenKind::Async);
+
         let mut args = Vec::new();
         if self.match_token(&TokenKind::Using) {
-            while !matches!(self.current(), TokenKind::EndCall | TokenKind::Period | TokenKind::Eof) {
+            while !matches!(self.current(), TokenKind::EndCall | TokenKind::Returning | TokenKind::Period | TokenKind::Eof) {
                 args.push(self.expect_ident()?);
             }
         }
+        let handle = if self.match_token(&TokenKind::Returning) {
+            Some(self.expect_ident()?)
+        } else { None };
         self.match_token(&TokenKind::EndCall);
-        Ok(Some(Statement::Call { name, args }))
+
+        if is_async {
+            Ok(Some(Statement::CallAsync { name, args, handle }))
+        } else {
+            Ok(Some(Statement::Call { name, args }))
+        }
     }
 
     fn parse_initialize(&mut self) -> Result<Option<Statement>, String> {

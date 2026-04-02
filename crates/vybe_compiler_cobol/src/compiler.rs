@@ -868,6 +868,101 @@ impl Compiler {
                 let idx = self.add_string_constant(var);
                 self.emit_u16(Op::global_set, idx);
             }
+
+            // ── Async / Threading ──────────────────────────────
+            Statement::CallAsync { name, args, handle } => {
+                // CALL "program" ASYNC → spawn thread running the program
+                // Compile the callee reference
+                let ni = self.add_string_constant(name);
+                self.emit_u16(Op::global_get, ni);
+                // Push args
+                for arg in args {
+                    let ai = self.add_string_constant(arg);
+                    self.emit_u16(Op::global_get, ai);
+                }
+                // If callee is a function ref, wrap in a closure that calls it with args
+                // For now: spawn thread with the function
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::threading::emit_thread_spawn(&mut self.chunks[c], line);
+                // Store handle
+                if let Some(h) = handle {
+                    let hi = self.add_string_constant(h);
+                    self.emit_u16(Op::global_set, hi);
+                } else {
+                    self.emit(Op::drop);
+                }
+            }
+
+            Statement::Wait(handle) => {
+                // WAIT FOR handle → join thread, get result
+                let hi = self.add_string_constant(handle);
+                self.emit_u16(Op::global_get, hi);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::threading::emit_thread_join(&mut self.chunks[c], line);
+                self.emit(Op::drop);
+            }
+
+            Statement::RunUnit { name, args } => {
+                // RUN UNIT → spawn separate thread for program
+                let ni = self.add_string_constant(name);
+                self.emit_u16(Op::global_get, ni);
+                for arg in args {
+                    let ai = self.add_string_constant(arg);
+                    self.emit_u16(Op::global_get, ai);
+                }
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::threading::emit_thread_spawn(&mut self.chunks[c], line);
+                self.emit(Op::drop);
+            }
+
+            Statement::LockMonitor(name) => {
+                // LOCK monitor → acquire spinlock
+                let ni = self.add_string_constant(name);
+                self.emit_u16(Op::global_get, ni);
+                let lock_slot = self.next_local; self.next_local += 1;
+                self.emit_u16(Op::local_set, lock_slot);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::threading::emit_lock_acquire(&mut self.chunks[c], lock_slot, line);
+            }
+
+            Statement::UnlockMonitor(name) => {
+                // UNLOCK monitor → release spinlock
+                let ni = self.add_string_constant(name);
+                self.emit_u16(Op::global_get, ni);
+                let lock_slot = self.next_local; self.next_local += 1;
+                self.emit_u16(Op::local_set, lock_slot);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::threading::emit_lock_release(&mut self.chunks[c], lock_slot, line);
+            }
+
+            Statement::PerformAsync(para_name) => {
+                // PERFORM paragraph ASYNC → create fiber (continuation)
+                if let Some(&ci) = self.para_chunks.get(para_name) {
+                    let line = self.line;
+                    common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
+                    self.emit(Op::cont_new); // create continuation from function
+                    self.emit(Op::null);     // initial value
+                    self.emit_u16(Op::resume, 0); // start the fiber
+                    self.emit(Op::drop);
+                }
+            }
+
+            Statement::YieldStmt => {
+                // YIELD → suspend current fiber, return control to caller
+                self.emit(Op::null);
+                self.emit_u16(Op::suspend, 0);
+            }
+
+            Statement::SuspendStmt => {
+                // SUSPEND → pause execution (same as yield for fibers)
+                self.emit(Op::null);
+                self.emit_u16(Op::suspend, 0);
+            }
         }
         Ok(())
     }

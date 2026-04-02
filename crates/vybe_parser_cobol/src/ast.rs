@@ -193,6 +193,22 @@ pub enum Statement {
     FreeStmt(String),
     /// ALLOCATE var
     AllocateStmt(String),
+    /// CALL "program" ASYNC [USING args] → spawn thread
+    CallAsync { name: String, args: Vec<String>, handle: Option<String> },
+    /// WAIT FOR handle → join thread
+    Wait(String),
+    /// RUN UNIT "program" → run as separate thread
+    RunUnit { name: String, args: Vec<String> },
+    /// LOCK monitor-name → acquire lock
+    LockMonitor(String),
+    /// UNLOCK monitor-name → release lock
+    UnlockMonitor(String),
+    /// PERFORM paragraph ASYNC → run paragraph as fiber
+    PerformAsync(String),
+    /// YIELD → suspend current fiber
+    YieldStmt,
+    /// SUSPEND → pause execution
+    SuspendStmt,
 }
 
 #[derive(Debug, Clone)]

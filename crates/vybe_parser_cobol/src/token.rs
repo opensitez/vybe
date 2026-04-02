@@ -78,6 +78,11 @@ pub enum TokenKind {
     New, Self_,
     Override,
 
+    // Async / Threading (COBOL 2023)
+    Async, Wait, RunUnit, Monitor,
+    Lock, Unlock,
+    Yield_, Suspend,
+
     // Intrinsic functions
     Function,
     Length, UpperCase, LowerCase, Trim, Reverse,
