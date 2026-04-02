@@ -226,9 +226,9 @@ impl Parser {
                 let decl = self.parse_function_decl(Visibility::None, false)?;
                 Ok(Some(Statement::FunctionDeclaration(decl)))
             }
-            TokenKind::Class | TokenKind::Abstract | TokenKind::Final => {
-                // Consume modifiers
-                while matches!(self.peek(), TokenKind::Abstract | TokenKind::Final) {
+            TokenKind::Class | TokenKind::Abstract | TokenKind::Final | TokenKind::Readonly => {
+                // Consume modifiers: abstract, final, readonly
+                while matches!(self.peek(), TokenKind::Abstract | TokenKind::Final | TokenKind::Readonly) {
                     self.advance();
                 }
                 self.expect(&TokenKind::Class)?;
@@ -520,28 +520,28 @@ impl Parser {
             }
             let variadic = self.eat(&TokenKind::Ellipsis);
             let by_ref = self.eat(&TokenKind::Amp);
-            // optional type hint before $var — handle ?Type, Type|Type, \Namespace\Type
+            // optional type hint before $var — handle ?Type, Type|Type, (A&B)|C, etc.
             let type_hint = if self.has_type_hint_ahead() {
-                let mut th = String::new();
-                if self.eat(&TokenKind::Question) { th.push('?'); }
-                loop {
-                    match self.peek() {
-                        TokenKind::Identifier(_) | TokenKind::Static | TokenKind::Null => {
-                            if let TokenKind::Identifier(s) = self.peek().clone() { th.push_str(&s); }
-                            else if matches!(self.peek(), TokenKind::Null) { th.push_str("null"); }
-                            else { th.push_str("static"); }
-                            self.advance();
-                        }
-                        TokenKind::Backslash => { th.push('\\'); self.advance(); }
-                        _ => break,
+                let start = self.pos;
+                self.skip_type_hint();
+                // Reconstruct type name from consumed tokens (approximation for AST)
+                let end = self.pos;
+                let th: String = (start..end).map(|i| {
+                    match &self.tokens[i].kind {
+                        TokenKind::Identifier(s) => s.clone(),
+                        TokenKind::Question => "?".into(),
+                        TokenKind::Pipe => "|".into(),
+                        TokenKind::Amp => "&".into(),
+                        TokenKind::Backslash => "\\".into(),
+                        TokenKind::LParen => "(".into(),
+                        TokenKind::RParen => ")".into(),
+                        TokenKind::Null => "null".into(),
+                        TokenKind::True => "true".into(),
+                        TokenKind::False => "false".into(),
+                        TokenKind::Static => "static".into(),
+                        _ => String::new(),
                     }
-                    if matches!(self.peek(), TokenKind::Pipe | TokenKind::Amp) {
-                        th.push(if matches!(self.peek(), TokenKind::Pipe) { '|' } else { '&' });
-                        self.advance();
-                    } else {
-                        break;
-                    }
-                }
+                }).collect();
                 if th.is_empty() { None } else { Some(th) }
             } else { None };
             let name = self.expect_var()?;
@@ -556,11 +556,51 @@ impl Parser {
     }
 
     /// Check if the current position has a type hint followed by a $variable
+    /// Check if current position is `( ... )` — first-class callable syntax
+    fn is_first_class_callable(&self) -> bool {
+        self.pos + 2 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::LParen
+            && self.tokens[self.pos + 1].kind == TokenKind::Ellipsis
+            && self.tokens[self.pos + 2].kind == TokenKind::RParen
+    }
+
     fn has_type_hint_ahead(&self) -> bool {
         // Look ahead: if we see Identifier/? followed eventually by Variable, it's a type hint
         let mut i = self.pos;
         // skip ?
         if i < self.tokens.len() && self.tokens[i].kind == TokenKind::Question { i += 1; }
+        // Handle DNF parenthesized groups: (A&B)|C
+        if i < self.tokens.len() && self.tokens[i].kind == TokenKind::LParen {
+            let mut depth = 1;
+            i += 1;
+            while i < self.tokens.len() && depth > 0 {
+                match &self.tokens[i].kind {
+                    TokenKind::LParen => depth += 1,
+                    TokenKind::RParen => depth -= 1,
+                    _ => {}
+                }
+                i += 1;
+            }
+            // After closing ), skip |Type chains
+            while i < self.tokens.len() {
+                match &self.tokens[i].kind {
+                    TokenKind::Pipe | TokenKind::Amp => { i += 1; }
+                    TokenKind::Identifier(_) | TokenKind::Static | TokenKind::Null => { i += 1; }
+                    TokenKind::LParen => {
+                        let mut d2 = 1; i += 1;
+                        while i < self.tokens.len() && d2 > 0 {
+                            match &self.tokens[i].kind { TokenKind::LParen => d2 += 1, TokenKind::RParen => d2 -= 1, _ => {} }
+                            i += 1;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            if i < self.tokens.len() {
+                return matches!(&self.tokens[i].kind, TokenKind::Variable(_) | TokenKind::Amp | TokenKind::Ellipsis);
+            }
+            return false;
+        }
         // need at least one identifier
         if i >= self.tokens.len() { return false; }
         match &self.tokens[i].kind {
@@ -568,11 +608,18 @@ impl Parser {
             _ => return false,
         }
         i += 1;
-        // skip |Type, &Type, \Namespace chains
+        // skip |Type, &Type, \Namespace chains, (groups)
         while i < self.tokens.len() {
             match &self.tokens[i].kind {
                 TokenKind::Pipe | TokenKind::Amp | TokenKind::Backslash => { i += 1; }
                 TokenKind::Identifier(_) | TokenKind::Static | TokenKind::Null => { i += 1; }
+                TokenKind::LParen => {
+                    let mut d2 = 1; i += 1;
+                    while i < self.tokens.len() && d2 > 0 {
+                        match &self.tokens[i].kind { TokenKind::LParen => d2 += 1, TokenKind::RParen => d2 -= 1, _ => {} }
+                        i += 1;
+                    }
+                }
                 _ => break,
             }
         }
@@ -585,7 +632,7 @@ impl Parser {
     fn skip_type_hint(&mut self) {
         // consume nullable marker
         self.eat(&TokenKind::Question);
-        // consume type names and | separators
+        // consume type names, | separators, & separators, and (group) for DNF types
         loop {
             match self.peek() {
                 TokenKind::Identifier(_) | TokenKind::Static | TokenKind::Null | TokenKind::True | TokenKind::False => {
@@ -593,6 +640,12 @@ impl Parser {
                 }
                 TokenKind::Backslash => { self.advance(); }
                 TokenKind::Pipe | TokenKind::Amp => { self.advance(); }
+                TokenKind::LParen => {
+                    // DNF type group: (A&B)|C
+                    self.advance();
+                    self.skip_type_hint(); // recurse for inner type
+                    self.eat(&TokenKind::RParen);
+                }
                 _ => break,
             }
         }
@@ -653,6 +706,7 @@ impl Parser {
     }
 
     fn parse_class_member(&mut self) -> Result<Option<ClassMember>, String> {
+        // Attributes (#[...]) are skipped at the lexer level
         // Consume modifiers
         let mut visibility = Visibility::None;
         let mut is_static = false;
@@ -662,7 +716,7 @@ impl Parser {
                 TokenKind::Private => { visibility = Visibility::Private; self.advance(); }
                 TokenKind::Protected => { visibility = Visibility::Protected; self.advance(); }
                 TokenKind::Static => { is_static = true; self.advance(); }
-                TokenKind::Abstract | TokenKind::Final => { self.advance(); }
+                TokenKind::Abstract | TokenKind::Final | TokenKind::Readonly => { self.advance(); }
                 _ => break,
             }
         }
@@ -674,6 +728,11 @@ impl Parser {
             }
             TokenKind::Const => {
                 self.advance();
+                // PHP 8.3: optional type hint before constant name: const string NAME = 'val'
+                // Peek: if next is Identifier and next-next is also Identifier or Eq, skip type
+                if matches!(self.peek(), TokenKind::Identifier(_)) && matches!(self.peek2(), TokenKind::Identifier(_)) {
+                    self.advance(); // skip type hint
+                }
                 let name = self.expect_ident()?;
                 self.expect(&TokenKind::Eq)?;
                 let value = self.parse_expression()?;
@@ -999,8 +1058,15 @@ impl Parser {
                     self.advance();
                     let prop = self.parse_member_name()?;
                     if matches!(self.peek(), TokenKind::LParen) {
-                        let args = self.parse_args()?;
-                        expr = Expression::MethodCall { object: Box::new(expr), method: Box::new(prop), args, nullsafe };
+                        // First-class callable: $obj->method(...)
+                        if self.is_first_class_callable() {
+                            self.advance(); self.advance(); self.advance(); // ( ... )
+                            // Return property access — the method ref itself
+                            expr = Expression::Property { object: Box::new(expr), name: Box::new(prop), nullsafe };
+                        } else {
+                            let args = self.parse_args()?;
+                            expr = Expression::MethodCall { object: Box::new(expr), method: Box::new(prop), args, nullsafe };
+                        }
                     } else {
                         expr = Expression::Property { object: Box::new(expr), name: Box::new(prop), nullsafe };
                     }
@@ -1009,8 +1075,13 @@ impl Parser {
                     self.advance();
                     let member = self.parse_member_name()?;
                     if matches!(self.peek(), TokenKind::LParen) {
-                        let args = self.parse_args()?;
-                        expr = Expression::StaticCall { class: Box::new(expr), method: Box::new(member), args };
+                        if self.is_first_class_callable() {
+                            self.advance(); self.advance(); self.advance();
+                            expr = Expression::StaticAccess { class: Box::new(expr), member: Box::new(member) };
+                        } else {
+                            let args = self.parse_args()?;
+                            expr = Expression::StaticCall { class: Box::new(expr), method: Box::new(member), args };
+                        }
                     } else {
                         expr = Expression::StaticAccess { class: Box::new(expr), member: Box::new(member) };
                     }
@@ -1030,14 +1101,8 @@ impl Parser {
                 }
                 TokenKind::LParen => {
                     // First-class callable: strlen(...) → just the function reference
-                    if self.pos + 2 < self.tokens.len()
-                        && self.tokens[self.pos + 1].kind == TokenKind::Ellipsis
-                        && self.tokens[self.pos + 2].kind == TokenKind::RParen
-                    {
-                        self.advance(); // (
-                        self.advance(); // ...
-                        self.advance(); // )
-                        // expr is already the function identifier — return as-is
+                    if self.is_first_class_callable() {
+                        self.advance(); self.advance(); self.advance(); // ( ... )
                     } else {
                         let args = self.parse_args()?;
                         expr = Expression::Call { callee: Box::new(expr), args };
@@ -1105,6 +1170,17 @@ impl Parser {
                 }
                 self.advance();
                 Ok(Expression::Variable(name))
+            }
+            // throw as expression (PHP 8.0): $x = $val ?? throw new Exception(...)
+            TokenKind::Throw => {
+                self.advance();
+                let expr = self.parse_expression()?;
+                // Wrap as a call to a throw-expression helper — at runtime this throws
+                // Compile as: throw expr (same as statement, but returns never)
+                Ok(Expression::Call {
+                    callee: Box::new(Expression::Identifier("__throw".to_string())),
+                    args: vec![Argument { value: expr, by_ref: false, spread: false, name: None }],
+                })
             }
             TokenKind::New => {
                 self.advance();

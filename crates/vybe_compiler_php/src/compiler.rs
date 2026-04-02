@@ -932,6 +932,25 @@ impl Compiler {
                     }
                 }
             }
+            Expression::StaticAccess { class, member } => {
+                // ClassName::$prop = val — set property on class constructor object
+                let tmp = self.define_local("__static_tmp");
+                self.emit_u16(Op::local_set, tmp);
+                self.compile_expression(class)?;
+                self.emit_u16(Op::local_get, tmp);
+                match member.as_ref() {
+                    Expression::Identifier(s) | Expression::Variable(s) => {
+                        let idx = self.add_string_constant(s);
+                        self.emit_u16(Op::struct_set, idx);
+                        self.emit(Op::drop);
+                    }
+                    _ => {
+                        self.compile_expression(member)?;
+                        self.emit(Op::array_set);
+                        self.emit(Op::drop);
+                    }
+                }
+            }
             _ => {
                 return Err("invalid assignment target".to_string());
             }
@@ -1188,6 +1207,13 @@ impl Compiler {
                     self.emit(Op::drop);
                 }
                 self.emit(Op::halt);
+                return Ok(Some(()));
+            }
+            "__throw" => {
+                // throw as expression — compile arg and emit throw opcode
+                compile_args!();
+                self.emit(Op::throw);
+                self.emit(Op::null); // unreachable, but keeps stack balanced
                 return Ok(Some(()));
             }
 

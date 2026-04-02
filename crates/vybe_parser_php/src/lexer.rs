@@ -66,8 +66,8 @@ impl Lexer {
                 self.pos += 1;
             } else if ch.is_whitespace() {
                 self.pos += 1;
-            } else if self.peek_str("//") || self.peek_str("#") {
-                // single-line comment
+            } else if self.peek_str("//") || (self.peek_str("#") && !self.peek_str("#[")) {
+                // single-line comment (but NOT #[ which is an attribute)
                 while self.pos < self.src.len() && self.src[self.pos] != '\n' {
                     self.pos += 1;
                 }
@@ -317,6 +317,27 @@ impl Lexer {
             ':' => {
                 if self.pos < self.src.len() && self.src[self.pos] == ':' { self.pos += 1; TokenKind::ColonColon }
                 else { TokenKind::Colon }
+            }
+            '#' if self.pos < self.src.len() && self.src[self.pos] == '[' => {
+                // PHP 8 attribute: #[Attr], #[Attr('arg')], #[Attr(key: 'val')]
+                // Skip everything until matching ]
+                self.pos += 1; // skip [
+                let mut depth = 1;
+                while self.pos < self.src.len() && depth > 0 {
+                    match self.src[self.pos] {
+                        '[' => depth += 1,
+                        ']' => depth -= 1,
+                        '\n' => self.line += 1,
+                        _ => {}
+                    }
+                    self.pos += 1;
+                }
+                // Skip whitespace/comments before returning next real token
+                self.skip_whitespace_and_comments();
+                if self.pos >= self.src.len() {
+                    return Ok(Token { kind: TokenKind::Eof, line: self.line });
+                }
+                return self.next_token();
             }
             _ => return Err(format!("Unexpected character {:?} at line {}", ch, self.line)),
         };
