@@ -60,6 +60,8 @@ pub enum TokenKind {
     Yield,
     List,
     Global,
+    Enum,
+    Readonly,
 
     // Arithmetic / concat
     Plus,        // +

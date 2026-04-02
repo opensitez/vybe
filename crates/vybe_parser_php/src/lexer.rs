@@ -553,6 +553,8 @@ impl Lexer {
             "yield" => TokenKind::Yield,
             "list" => TokenKind::List,
             "global" => TokenKind::Global,
+            "enum" => TokenKind::Enum,
+            "readonly" => TokenKind::Readonly,
             "and" => TokenKind::AmpAmp,
             "or" => TokenKind::PipePipe,
             "not" => TokenKind::Bang,

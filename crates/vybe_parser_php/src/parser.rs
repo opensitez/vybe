@@ -262,6 +262,46 @@ impl Parser {
                     members: Vec::new(),
                 })))
             }
+            TokenKind::Enum => {
+                // enum Color { case Red; case Green; }
+                // enum Suit: string { case Hearts = 'H'; }
+                // Compiled as a class with static constants
+                self.advance();
+                let name = self.expect_ident()?;
+                // Optional backing type: enum Suit: string
+                if self.eat(&TokenKind::Colon) {
+                    let _ = self.expect_ident()?; // skip type name (string, int)
+                }
+                // Optional implements
+                let mut interfaces = Vec::new();
+                if self.eat(&TokenKind::Implements) {
+                    interfaces.push(self.expect_ident()?);
+                    while self.eat(&TokenKind::Comma) { interfaces.push(self.expect_ident()?); }
+                }
+                self.expect(&TokenKind::LBrace)?;
+                let mut members = Vec::new();
+                while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
+                    if self.eat(&TokenKind::Semicolon) { continue; }
+                    if matches!(self.peek(), TokenKind::Case) {
+                        self.advance();
+                        let case_name = self.expect_ident()?;
+                        let value = if self.eat(&TokenKind::Eq) {
+                            Some(self.parse_expression()?)
+                        } else {
+                            // Auto-assign: use case name as string value
+                            Some(Expression::Str(case_name.clone()))
+                        };
+                        self.eat(&TokenKind::Semicolon);
+                        members.push(ClassMember::Constant { name: case_name, value: value.unwrap() });
+                    } else if let Some(m) = self.parse_class_member()? {
+                        members.push(m);
+                    }
+                }
+                self.expect(&TokenKind::RBrace)?;
+                Ok(Some(Statement::ClassDeclaration(ClassDecl {
+                    name, parent: None, interfaces, traits: Vec::new(), members,
+                })))
+            }
             TokenKind::Trait => {
                 // Parse trait as a class — same structure (methods + properties)
                 // Compiled as a regular class; `use TraitName` in another class
@@ -461,6 +501,10 @@ impl Parser {
         if self.eat(&TokenKind::Colon) {
             self.skip_type_hint();
         }
+        // Abstract methods have no body — just a semicolon
+        if self.eat(&TokenKind::Semicolon) {
+            return Ok(FunctionDecl { name, params, body: Vec::new(), is_static, visibility, return_by_ref });
+        }
         self.expect(&TokenKind::LBrace)?;
         let body = self.parse_block_body()?;
         Ok(FunctionDecl { name, params, body, is_static, visibility, return_by_ref })
@@ -470,13 +514,35 @@ impl Parser {
         self.expect(&TokenKind::LParen)?;
         let mut params = Vec::new();
         while !matches!(self.peek(), TokenKind::RParen | TokenKind::Eof) {
+            // Skip constructor promotion modifiers: public/protected/private/readonly
+            while matches!(self.peek(), TokenKind::Public | TokenKind::Protected | TokenKind::Private | TokenKind::Readonly) {
+                self.advance();
+            }
             let variadic = self.eat(&TokenKind::Ellipsis);
             let by_ref = self.eat(&TokenKind::Amp);
-            // optional type hint before $var
-            let type_hint = if matches!(self.peek(), TokenKind::Identifier(_) | TokenKind::Static) {
-                if matches!(self.peek2(), TokenKind::Variable(_) | TokenKind::Ellipsis | TokenKind::Amp) {
-                    Some(self.expect_ident()?)
-                } else { None }
+            // optional type hint before $var — handle ?Type, Type|Type, \Namespace\Type
+            let type_hint = if self.has_type_hint_ahead() {
+                let mut th = String::new();
+                if self.eat(&TokenKind::Question) { th.push('?'); }
+                loop {
+                    match self.peek() {
+                        TokenKind::Identifier(_) | TokenKind::Static | TokenKind::Null => {
+                            if let TokenKind::Identifier(s) = self.peek().clone() { th.push_str(&s); }
+                            else if matches!(self.peek(), TokenKind::Null) { th.push_str("null"); }
+                            else { th.push_str("static"); }
+                            self.advance();
+                        }
+                        TokenKind::Backslash => { th.push('\\'); self.advance(); }
+                        _ => break,
+                    }
+                    if matches!(self.peek(), TokenKind::Pipe | TokenKind::Amp) {
+                        th.push(if matches!(self.peek(), TokenKind::Pipe) { '|' } else { '&' });
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                if th.is_empty() { None } else { Some(th) }
             } else { None };
             let name = self.expect_var()?;
             let default = if self.eat(&TokenKind::Eq) {
@@ -487,6 +553,33 @@ impl Parser {
         }
         self.expect(&TokenKind::RParen)?;
         Ok(params)
+    }
+
+    /// Check if the current position has a type hint followed by a $variable
+    fn has_type_hint_ahead(&self) -> bool {
+        // Look ahead: if we see Identifier/? followed eventually by Variable, it's a type hint
+        let mut i = self.pos;
+        // skip ?
+        if i < self.tokens.len() && self.tokens[i].kind == TokenKind::Question { i += 1; }
+        // need at least one identifier
+        if i >= self.tokens.len() { return false; }
+        match &self.tokens[i].kind {
+            TokenKind::Identifier(_) | TokenKind::Static | TokenKind::Null => {}
+            _ => return false,
+        }
+        i += 1;
+        // skip |Type, &Type, \Namespace chains
+        while i < self.tokens.len() {
+            match &self.tokens[i].kind {
+                TokenKind::Pipe | TokenKind::Amp | TokenKind::Backslash => { i += 1; }
+                TokenKind::Identifier(_) | TokenKind::Static | TokenKind::Null => { i += 1; }
+                _ => break,
+            }
+        }
+        // Must be followed by $var, &$var, or ...$var
+        if i < self.tokens.len() {
+            matches!(&self.tokens[i].kind, TokenKind::Variable(_) | TokenKind::Amp | TokenKind::Ellipsis)
+        } else { false }
     }
 
     fn skip_type_hint(&mut self) {
@@ -936,8 +1029,19 @@ impl Parser {
                     expr = Expression::ArrayAccess { array: Box::new(expr), index: Box::new(idx) };
                 }
                 TokenKind::LParen => {
-                    let args = self.parse_args()?;
-                    expr = Expression::Call { callee: Box::new(expr), args };
+                    // First-class callable: strlen(...) → just the function reference
+                    if self.pos + 2 < self.tokens.len()
+                        && self.tokens[self.pos + 1].kind == TokenKind::Ellipsis
+                        && self.tokens[self.pos + 2].kind == TokenKind::RParen
+                    {
+                        self.advance(); // (
+                        self.advance(); // ...
+                        self.advance(); // )
+                        // expr is already the function identifier — return as-is
+                    } else {
+                        let args = self.parse_args()?;
+                        expr = Expression::Call { callee: Box::new(expr), args };
+                    }
                 }
                 TokenKind::PlusPlus => { self.advance(); expr = Expression::PostUpdate { op: UpdateOp::Inc, expr: Box::new(expr) }; }
                 TokenKind::MinusMinus => { self.advance(); expr = Expression::PostUpdate { op: UpdateOp::Dec, expr: Box::new(expr) }; }
