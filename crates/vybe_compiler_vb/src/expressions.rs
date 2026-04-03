@@ -1,8 +1,10 @@
 use std::rc::Rc;
 use vybe_bytecode::{Value, Op};
 use vybe_compiler_common::collections as common_collections;
+use vybe_compiler_common::convert as common_convert;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
+use vybe_compiler_common::strings as common_strings;
 use vybe_parser_basic::ast::*;
 
 use crate::compiler::{Compiler, VarResolution};
@@ -128,9 +130,9 @@ impl Compiler {
             Expression::Divide(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::f64_div); }
             Expression::IntegerDivide(a, b) => {
                 self.compile_expression(a)?;
-                self.emit(Op::i32_from_f64);
+                common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.compile_expression(b)?;
-                self.emit(Op::i32_from_f64);
+                common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::i32_div_s);
             }
             Expression::Modulo(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::f64_mod); }
@@ -140,7 +142,7 @@ impl Compiler {
                 self.emit_host_call(idx, 2);
             }
             Expression::Concatenate(a, b) => {
-                self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::str_concat);
+                self.compile_expression(a)?; self.compile_expression(b)?; common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line);
             }
             Expression::Negate(a) => { self.compile_expression(a)?; self.emit(Op::dyn_neg); }
             Expression::Not(a) => { self.compile_expression(a)?; self.emit(Op::dyn_not); }

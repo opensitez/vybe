@@ -1,6 +1,8 @@
 use std::rc::Rc;
 use vybe_bytecode::{Value, Op};
 use vybe_compiler_common::collections as common_collections;
+use vybe_compiler_common::convert as common_convert;
+use vybe_compiler_common::strings as common_strings;
 use vybe_parser_basic::ast::*;
 
 use crate::compiler::{Compiler, VarResolution};
@@ -156,8 +158,10 @@ impl Compiler {
         }
 
         // Map VB function name → (host_module, host_name)
-        // These are fallbacks for cases not covered by namespace resolution.
-        let mapping: Option<(&str, &str)> = match fname {
+        // Check cross-language common imports first, then VB-specific mappings.
+        let mapping: Option<(&str, &str)> = if let Some(common) = vybe_compiler_common::imports::resolve_common_import(fname) {
+            Some(common)
+        } else { match fname {
             // Console — uses call_import so tests can override wasi:cli log
             "console.writeline" | "console.write" => Some(("wasi:cli", "log")),
             "console.error.writeline" | "console.error" => Some(("wasi:cli", "error")),
@@ -338,7 +342,7 @@ impl Compiler {
             "clipboard"      => Some(("vybe:convert", "toString")),   // simplified
             "forms"          => Some(("vybe:convert", "toString")),   // simplified
             _ => None,
-        };
+        } };
 
         if let Some((module, name)) = mapping {
             for arg in args { self.compile_expression(arg)?; }
@@ -371,7 +375,7 @@ impl Compiler {
                 // Special case: String.IsNullOrEmpty
                 if full_name == "string.isnullorempty" {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_length);
+                    common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::i32_const_0);
                     self.emit(Op::dyn_eq);
                     return Ok(Some(()));
@@ -408,7 +412,7 @@ impl Compiler {
             "len" => {
                 if args.len() == 1 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_length);
+                    common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -416,7 +420,7 @@ impl Compiler {
             "ucase" | "ucase$" => {
                 if args.len() == 1 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_to_upper);
+                    common_strings::emit_to_upper(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -424,7 +428,7 @@ impl Compiler {
             "lcase" | "lcase$" => {
                 if args.len() == 1 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_to_lower);
+                    common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -432,21 +436,21 @@ impl Compiler {
             "trim" | "trim$" => {
                 if args.len() == 1 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_trim);
+                    common_strings::emit_trim(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
             "ltrim" | "ltrim$" => {
                 if args.len() == 1 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_trim_start);
+                    common_strings::emit_trim_start(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
             "rtrim" | "rtrim$" => {
                 if args.len() == 1 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_trim_end);
+                    common_strings::emit_trim_end(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -480,7 +484,7 @@ impl Compiler {
                 if args.len() == 2 {
                     self.compile_expression(&args[1])?; // char/string
                     self.compile_expression(&args[0])?; // count
-                    self.emit(Op::str_repeat);
+                    common_strings::emit_repeat(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -489,7 +493,7 @@ impl Compiler {
                 if args.len() == 2 {
                     self.compile_expression(&args[0])?;
                     self.compile_expression(&args[1])?;
-                    self.emit(Op::str_index_of);
+                    common_strings::emit_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -498,7 +502,7 @@ impl Compiler {
                 if args.len() == 2 {
                     self.compile_expression(&args[0])?;
                     self.compile_expression(&args[1])?;
-                    self.emit(Op::str_last_index_of);
+                    common_strings::emit_last_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -508,7 +512,7 @@ impl Compiler {
                     self.compile_expression(&args[0])?;
                     self.compile_expression(&args[1])?;
                     self.compile_expression(&args[2])?;
-                    self.emit(Op::str_replace);
+                    common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -521,7 +525,7 @@ impl Compiler {
                     } else {
                         self.emit_constant(Value::String(Rc::from(" ")));
                     }
-                    self.emit(Op::str_split);
+                    common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -531,7 +535,7 @@ impl Compiler {
                     self.compile_expression(&args[0])?;
                     self.emit(Op::i32_const_0);
                     self.compile_expression(&args[1])?;
-                    self.emit(Op::str_substring);
+                    common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -553,7 +557,7 @@ impl Compiler {
                         // No length — go to end (use large number)
                         self.emit_constant(Value::I32(i32::MAX));
                     }
-                    self.emit(Op::str_substring);
+                    common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -562,7 +566,7 @@ impl Compiler {
                 if args.len() == 1 {
                     self.emit_constant(Value::String(Rc::from(" ")));
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_repeat);
+                    common_strings::emit_repeat(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -646,7 +650,7 @@ impl Compiler {
                 // CByte: truncate to 0-255
                 "cbyte" => {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::i32_from_f64);
+                    common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(0xFF));
                     self.emit(Op::i32_and);
                     return Ok(Some(()));
@@ -670,8 +674,8 @@ impl Compiler {
                 "space" | "space$" | "spc" => {
                     self.emit_constant(Value::String(Rc::from(" ")));
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::i32_from_f64);
-                    self.emit(Op::str_repeat);
+                    common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
+                    common_strings::emit_repeat(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
                 // String.IsNullOrEmpty(s) → ref_is_null OR str_length == 0
@@ -680,7 +684,7 @@ impl Compiler {
                     self.emit(Op::dup);
                     self.emit(Op::ref_is_null);
                     let done = self.emit_jump(Op::br_if_true);
-                    self.emit(Op::str_length);
+                    common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::i32_const_0);
                     self.emit(Op::dyn_eq);
                     self.patch_jump(done);
@@ -714,7 +718,7 @@ impl Compiler {
                 "instrrev" => {
                     self.compile_expression(&args[0])?;
                     self.compile_expression(&args[1])?;
-                    self.emit(Op::str_last_index_of);
+                    common_strings::emit_last_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
                     self.emit(Op::i32_add);
                     return Ok(Some(()));
@@ -723,7 +727,7 @@ impl Compiler {
                 "instr" => {
                     self.compile_expression(&args[0])?;
                     self.compile_expression(&args[1])?;
-                    self.emit(Op::str_index_of);
+                    common_strings::emit_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
                     self.emit(Op::i32_add); // -1→0, 0→1, 5→6
                     return Ok(Some(()));
@@ -733,18 +737,18 @@ impl Compiler {
                     self.compile_expression(&args[0])?;
                     self.emit(Op::i32_const_0);
                     self.compile_expression(&args[1])?;
-                    self.emit(Op::i32_from_f64);
-                    self.emit(Op::str_substring);
+                    common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
+                    common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
                 // Right(s, n) → str_substring(s, len-n, len)
                 "right" | "right$" => {
                     self.compile_expression(&args[0])?;
                     self.emit(Op::dup);
-                    self.emit(Op::str_length);        // [s, len]
+                    common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);        // [s, len]
                     self.emit(Op::dup);               // [s, len, len]
                     self.compile_expression(&args[1])?;
-                    self.emit(Op::i32_from_f64);
+                    common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::i32_sub);           // [s, len, len-n]
                     // need: [s, len-n, len] — swap top two
                     // No swap opcode, so recompute: use the stack
@@ -763,12 +767,12 @@ impl Compiler {
             self.compile_expression(&args[0])?;
             // start0 = start - 1
             self.compile_expression(&args[1])?;
-            self.emit(Op::i32_from_f64);
+            common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
             self.emit_constant(Value::I32(1));
             self.emit(Op::i32_sub);
             // end = large number (rest of string)
             self.emit_constant(Value::I32(0x7FFF_FFFF));
-            self.emit(Op::str_substring);
+            common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
             return Ok(Some(()));
         }
 
@@ -781,14 +785,14 @@ impl Compiler {
                     // Simpler: use str_substring to get tail, then str_index_of, adjust
                     self.compile_expression(&args[1])?; // string
                     self.compile_expression(&args[0])?; // startPos
-                    self.emit(Op::i32_from_f64);
+                    common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
                     self.emit(Op::i32_sub);             // start0
                     self.emit(Op::dup);                 // [s, start0, start0]
                     self.emit_constant(Value::I32(0x7FFF_FFFF));
-                    self.emit(Op::str_substring);       // [start0, tail]
+                    common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);       // [start0, tail]
                     self.compile_expression(&args[2])?; // needle
-                    self.emit(Op::str_index_of);        // [start0, pos_in_tail]
+                    common_strings::emit_index_of(&mut self.chunks[self.current_chunk_idx], self.line);        // [start0, pos_in_tail]
                     // if pos_in_tail == -1, result = 0; else result = pos_in_tail + start0 + 1
                     self.emit(Op::dup);                 // [start0, pos, pos]
                     self.emit_constant(Value::I32(-1));
@@ -811,7 +815,7 @@ impl Compiler {
                     self.compile_expression(&args[0])?;
                     self.compile_expression(&args[1])?;
                     self.compile_expression(&args[2])?;
-                    self.emit(Op::str_replace);
+                    common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
                 // Mid(s, start, length) → str_substring(s, start-1, start-1+length)
@@ -819,14 +823,14 @@ impl Compiler {
                     self.compile_expression(&args[0])?;
                     // Convert 1-based start to 0-based
                     self.compile_expression(&args[1])?;
-                    self.emit(Op::i32_from_f64);
+                    common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
                     self.emit(Op::i32_sub);           // start0 = start - 1
                     self.emit(Op::dup);               // [s, start0, start0]
                     self.compile_expression(&args[2])?;
-                    self.emit(Op::i32_from_f64);
+                    common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::i32_add);           // [s, start0, start0+length]
-                    self.emit(Op::str_substring);
+                    common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
                 _ => {}

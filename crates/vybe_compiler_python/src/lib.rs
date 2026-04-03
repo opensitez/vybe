@@ -1282,7 +1282,7 @@ impl Compiler {
                     BinOp::Div => self.chunk(chunk_idx).emit_op(Op::f64_div, 0),
                     BinOp::FloorDiv => {
                         self.chunk(chunk_idx).emit_op(Op::f64_div, 0);
-                        self.chunk(chunk_idx).emit_op(Op::f64_floor, 0);
+                        common::math::emit_floor(self.chunk(chunk_idx), 0);
                     }
                     BinOp::Mod => self.chunk(chunk_idx).emit_op(Op::i32_rem_s, 0),
                     BinOp::Pow => {
@@ -1422,7 +1422,7 @@ impl Compiler {
                         "abs" => {
                             if args.len() == 1 {
                                 self.compile_expr(&args[0], chunk_idx)?;
-                                self.chunk(chunk_idx).emit_op(Op::f64_abs, 0);
+                                common::math::emit_abs(self.chunk(chunk_idx), 0);
                                 return Ok(());
                             }
                         }
@@ -1636,7 +1636,7 @@ impl Compiler {
                         "round" => {
                             if args.len() >= 1 {
                                 self.compile_expr(&args[0], chunk_idx)?;
-                                self.chunk(chunk_idx).emit_op(Op::f64_nearest, 0);
+                                common::math::emit_round(self.chunk(chunk_idx), 0);
                                 return Ok(());
                             }
                         }
@@ -1728,7 +1728,7 @@ impl Compiler {
                                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
                                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, b_slot, 0);
                                 self.chunk(chunk_idx).emit_op(Op::f64_div, 0);
-                                self.chunk(chunk_idx).emit_op(Op::f64_floor, 0);
+                                common::math::emit_floor(self.chunk(chunk_idx), 0);
                                 // a % b
                                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
                                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, b_slot, 0);
@@ -1908,7 +1908,12 @@ impl Compiler {
                                 return Ok(());
                             }
                         }
-                        _ => {}
+                        _ => {
+                            // Check cross-language common imports as fallback
+                            if let Some((module, func_name)) = vybe_compiler_common::imports::resolve_common_import(name) {
+                                return self.compile_host_call(module, func_name, args, chunk_idx);
+                            }
+                        }
                     }
                 }
                 // Method calls: obj.method(args)
@@ -2278,7 +2283,22 @@ impl Compiler {
     fn try_compile_module_call(&mut self, module: &str, method: &str, args: &[Expression], chunk_idx: usize) -> Result<Option<()>, String> {
         let (host_module, host_func) = match module {
             "math" => match method {
-                "sqrt" => ("vybe:math", "sqrt"),
+                // Direct WASM opcodes (no host call needed)
+                "sqrt" | "ceil" | "floor" | "trunc" | "fabs" | "abs" => {
+                    if args.len() == 1 {
+                        self.compile_expr(&args[0], chunk_idx)?;
+                        match method {
+                            "sqrt"  => common::math::emit_sqrt(self.chunk(chunk_idx), 0),
+                            "ceil"  => common::math::emit_ceil(self.chunk(chunk_idx), 0),
+                            "floor" => common::math::emit_floor(self.chunk(chunk_idx), 0),
+                            "trunc" => common::math::emit_trunc(self.chunk(chunk_idx), 0),
+                            "fabs" | "abs" => common::math::emit_abs(self.chunk(chunk_idx), 0),
+                            _ => unreachable!(),
+                        }
+                        return Ok(Some(()));
+                    }
+                    return Ok(None);
+                }
                 "sin" => ("vybe:math", "sin"),
                 "cos" => ("vybe:math", "cos"),
                 "tan" => ("vybe:math", "tan"),
@@ -2291,11 +2311,7 @@ impl Compiler {
                 "log2" => ("vybe:math", "log2"),
                 "log10" => ("vybe:math", "log10"),
                 "pow" => ("vybe:math", "pow"),
-                "ceil" => ("vybe:math", "ceil"),
-                "floor" => ("vybe:math", "floor"),
-                "trunc" => ("vybe:math", "trunc"),
                 "hypot" => ("vybe:math", "hypot"),
-                "fabs" | "abs" => ("vybe:math", "abs"),
                 "copysign" | "sign" => ("vybe:math", "sign"),
                 "isnan" | "isinf" | "isfinite" => {
                     // math.isnan(x) → x != x (NaN is the only value not equal to itself)
@@ -2308,7 +2324,7 @@ impl Compiler {
                     // math.isinf/isfinite — approximate with large value check
                     if args.len() == 1 {
                         self.compile_expr(&args[0], chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::f64_abs, 0);
+                        common::math::emit_abs(self.chunk(chunk_idx), 0);
                         let inf_c = self.chunk(chunk_idx).add_constant(Value::F64(f64::MAX));
                         self.chunk(chunk_idx).emit_op_u16(Op::r#const, inf_c, 0);
                         if method == "isinf" {
@@ -2364,7 +2380,7 @@ impl Compiler {
                         self.chunk(chunk_idx).emit_op_u16(Op::r#const, one_c, 0);
                         self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
                         self.chunk(chunk_idx).emit_op(Op::f64_mul, 0);
-                        self.chunk(chunk_idx).emit_op(Op::f64_floor, 0);
+                        common::math::emit_floor(self.chunk(chunk_idx), 0);
                         self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
                         return Ok(Some(()));
                     }
@@ -2394,7 +2410,7 @@ impl Compiler {
                         self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
                         common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
                         self.chunk(chunk_idx).emit_op(Op::f64_mul, 0);
-                        self.chunk(chunk_idx).emit_op(Op::f64_floor, 0);
+                        common::math::emit_floor(self.chunk(chunk_idx), 0);
                         // arr[index]
                         self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
                         // Stack: [index, arr]. array_get needs [arr, index] → swap needed
@@ -3487,7 +3503,7 @@ impl Compiler {
                 common::bundle::emit_call_invoke(self.chunk(chunk_idx), 2, 0);
             }
             AugOp::Div => self.chunk(chunk_idx).emit_op(Op::f64_div, 0),
-            AugOp::FloorDiv => { self.chunk(chunk_idx).emit_op(Op::f64_div, 0); self.chunk(chunk_idx).emit_op(Op::f64_floor, 0); }
+            AugOp::FloorDiv => { self.chunk(chunk_idx).emit_op(Op::f64_div, 0); common::math::emit_floor(self.chunk(chunk_idx), 0); }
             AugOp::Mod => self.chunk(chunk_idx).emit_op(Op::i32_rem_s, 0),
             AugOp::Pow => {
                 let pow_idx = self.chunk(chunk_idx).add_import("vybe:math", "pow");

@@ -3,6 +3,7 @@ use vybe_bytecode::{Chunk, Value, Op};
 use vybe_parser_ruby::ast::*;
 use vybe_compiler_common as common;
 use vybe_compiler_common::collections as common_collections;
+use vybe_compiler_common::strings as common_strings;
 use crate::scope::Scope;
 
 struct LoopContext {
@@ -1320,7 +1321,7 @@ impl Compiler {
                     // Pop the f64_mul args (already compiled), emit str_repeat instead
                     // Actually we already compiled both sides. Since left is string,
                     // str_repeat expects [string, count] which is what we have.
-                    self.emit(Op::str_repeat);
+                    common_strings::emit_repeat(&mut self.chunks[self.current_chunk_idx], self.line);
                 } else {
                     self.emit(Op::f64_mul);
                 }
@@ -1407,32 +1408,32 @@ impl Compiler {
                 // ── String methods ──────────────────────────────
                 "length" | "size" => {
                     self.compile_expression(recv)?;
-                    self.emit(Op::str_length);
+                    common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "upcase" => {
                     self.compile_expression(recv)?;
-                    self.emit(Op::str_to_upper);
+                    common_strings::emit_to_upper(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "downcase" => {
                     self.compile_expression(recv)?;
-                    self.emit(Op::str_to_lower);
+                    common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "strip" => {
                     self.compile_expression(recv)?;
-                    self.emit(Op::str_trim);
+                    common_strings::emit_trim(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "lstrip" => {
                     self.compile_expression(recv)?;
-                    self.emit(Op::str_trim_start);
+                    common_strings::emit_trim_start(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "rstrip" => {
                     self.compile_expression(recv)?;
-                    self.emit(Op::str_trim_end);
+                    common_strings::emit_trim_end(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "include?" => {
@@ -1456,20 +1457,20 @@ impl Compiler {
                 "index" => {
                     self.compile_expression(recv)?;
                     for a in args { self.compile_expression(a)?; }
-                    self.emit(Op::str_index_of);
+                    common_strings::emit_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "replace" | "gsub" => {
                     self.compile_expression(recv)?;
                     for a in args { self.compile_expression(a)?; }
-                    self.emit(Op::str_replace);
+                    common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "sub" => {
                     // sub replaces first occurrence — same opcode for now
                     self.compile_expression(recv)?;
                     for a in args { self.compile_expression(a)?; }
-                    self.emit(Op::str_replace);
+                    common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "split" => {
@@ -1479,7 +1480,7 @@ impl Compiler {
                     } else {
                         self.compile_expression(&args[0])?;
                     }
-                    self.emit(Op::str_split);
+                    common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "join" => {
@@ -1504,7 +1505,7 @@ impl Compiler {
                 "chars" => {
                     self.compile_expression(recv)?;
                     self.emit_constant(Value::String(Rc::from("")));
-                    self.emit(Op::str_split);
+                    common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "to_s" => {
@@ -2262,7 +2263,7 @@ impl Compiler {
                 "tr" => {
                     self.compile_expression(recv)?;
                     for a in args { self.compile_expression(a)?; }
-                    self.emit(Op::str_replace);
+                    common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "squeeze" => {
@@ -2294,14 +2295,14 @@ impl Compiler {
                 "bytes" => {
                     self.compile_expression(recv)?;
                     self.emit_constant(Value::String(Rc::from("")));
-                    self.emit(Op::str_split);
+                    common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "casecmp" => {
                     self.compile_expression(recv)?;
-                    self.emit(Op::str_to_lower);
+                    common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line);
                     for a in args { self.compile_expression(a)?; }
-                    self.emit(Op::str_to_lower);
+                    common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::dyn_eq);
                     return Ok(());
                 }
@@ -2755,7 +2756,7 @@ impl Compiler {
                     let i = self.import("wasi:filesystem", "readFile");
                     self.emit_host_call(i, 1);
                     self.emit_constant(Value::String(Rc::from("\n")));
-                    self.emit(Op::str_split);
+                    common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
 
@@ -3334,7 +3335,16 @@ impl Compiler {
             // ── File class methods (bare) ──────────────────────
             // File.read etc. handled via receiver method call
 
-            _ => return Ok(None),
+            _ => {
+                // Check cross-language common imports as fallback
+                if let Some((module, func)) = vybe_compiler_common::imports::resolve_common_import(name) {
+                    compile_args!();
+                    let i = self.import(module, func);
+                    self.emit_host_call(i, args.len() as u8);
+                    return Ok(Some(()));
+                }
+                return Ok(None);
+            }
         }
     }
 

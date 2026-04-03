@@ -16,6 +16,7 @@ use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
 use vybe_compiler_common::io as common_io;
 use vybe_compiler_common::collections as common_collections;
+use vybe_compiler_common::convert as common_convert;
 use vybe_compiler_common::strings as common_strings;
 use vybe_compiler_common::threading as common_thread;
 use vybe_parser_csharp::ast::*;
@@ -1133,7 +1134,7 @@ impl Compiler {
 
             Statement::If { condition, then_body, else_if, else_body } => {
                 self.compile_expression(condition)?;
-                self.emit(Op::dyn_to_bool);
+                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                 let else_j = self.emit_jump(Op::br_if_false);
 
                 for s in then_body { self.compile_statement(s)?; }
@@ -1150,7 +1151,7 @@ impl Compiler {
 
                     for (cond, body) in else_if {
                         self.compile_expression(cond)?;
-                        self.emit(Op::dyn_to_bool);
+                        common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                         let next_j = self.emit_jump(Op::br_if_false);
                         for s in body { self.compile_statement(s)?; }
                         // Jump from this branch to end
@@ -1183,7 +1184,7 @@ impl Compiler {
 
                 let exit_j = if let Some(ref cond) = condition {
                     self.compile_expression(cond)?;
-                    self.emit(Op::dyn_to_bool);
+                    common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                     Some(self.emit_jump(Op::br_if_false))
                 } else {
                     None
@@ -1236,7 +1237,7 @@ impl Compiler {
                 // i < arr.length
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::dyn_lt);
                 let exit_j = self.emit_jump(Op::br_if_false);
 
@@ -1278,7 +1279,7 @@ impl Compiler {
                 });
 
                 self.compile_expression(condition)?;
-                self.emit(Op::dyn_to_bool);
+                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                 let exit_j = self.emit_jump(Op::br_if_false);
 
                 for s in body { self.compile_statement(s)?; }
@@ -1309,7 +1310,7 @@ impl Compiler {
                 for j in &continue_jumps { self.patch_jump(*j); }
 
                 self.compile_expression(condition)?;
-                self.emit(Op::dyn_to_bool);
+                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                 let exit = self.emit_jump(Op::br_if_false);
                 self.emit_loop(loop_start);
                 self.patch_jump(exit);
@@ -2110,7 +2111,7 @@ impl Compiler {
         match member_lower.as_str() {
             "length" => {
                 self.compile_expression(obj)?;
-                self.emit(Op::str_length);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             _ => {}
@@ -2348,6 +2349,11 @@ impl Compiler {
                         self.emit_u16(Op::global_get, idx);
                         for arg in args { self.compile_expression(arg)?; }
                         self.emit_u8(Op::call, args.len() as u8);
+                    } else if let Some((module, func)) = vybe_compiler_common::imports::resolve_common_import(&lower) {
+                        // Cross-language common import
+                        let idx = self.import(module, func);
+                        for arg in args { self.compile_expression(arg)?; }
+                        self.emit_host_call(idx, args.len() as u8);
                     } else {
                         // Unresolved → WASM import
                         let idx = self.import("*", &lower);
@@ -2402,27 +2408,27 @@ impl Compiler {
             }
             "toupper" => {
                 self.compile_expression(obj)?;
-                self.emit(Op::str_to_upper);
+                common_strings::emit_to_upper(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "tolower" => {
                 self.compile_expression(obj)?;
-                self.emit(Op::str_to_lower);
+                common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "trim" => {
                 self.compile_expression(obj)?;
-                self.emit(Op::str_trim);
+                common_strings::emit_trim(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "trimstart" => {
                 self.compile_expression(obj)?;
-                self.emit(Op::str_trim_start);
+                common_strings::emit_trim_start(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "trimend" => {
                 self.compile_expression(obj)?;
-                self.emit(Op::str_trim_end);
+                common_strings::emit_trim_end(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "startswith" => {
@@ -2448,31 +2454,31 @@ impl Compiler {
             "replace" => {
                 self.compile_expression(obj)?;
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit(Op::str_replace);
+                common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "split" => {
                 self.compile_expression(obj)?;
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit(Op::str_split);
+                common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "substring" => {
                 self.compile_expression(obj)?;
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit(Op::str_substring);
+                common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "indexof" => {
                 self.compile_expression(obj)?;
                 if let Some(arg) = args.first() { self.compile_expression(arg)?; }
-                self.emit(Op::str_index_of);
+                common_strings::emit_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "lastindexof" => {
                 self.compile_expression(obj)?;
                 if let Some(arg) = args.first() { self.compile_expression(arg)?; }
-                self.emit(Op::str_last_index_of);
+                common_strings::emit_last_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "padleft" => {
@@ -2655,7 +2661,7 @@ impl Compiler {
                     self.emit_u16(Op::local_get, fn_slot);
                     self.emit_u16(Op::local_get, elem_slot);
                     self.emit_u8(Op::call_ref, 1);
-                    self.emit(Op::dyn_to_bool);
+                    common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                     let skip = self.emit_jump(Op::br_if_true);
                     self.emit(Op::r#false);
                     self.emit_u16(Op::local_set, res_slot);

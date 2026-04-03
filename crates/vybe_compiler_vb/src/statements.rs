@@ -1,8 +1,10 @@
 use std::rc::Rc;
 use vybe_bytecode::{Value, Op};
 use vybe_compiler_common::collections as common_collections;
+use vybe_compiler_common::convert as common_convert;
 use vybe_compiler_common::threading as common_thread;
 use vybe_compiler_common::errors as common_errors;
+use vybe_compiler_common::strings as common_strings;
 use vybe_parser_basic::ast::*;
 
 use crate::compiler::{Compiler, VarResolution, LoopContext};
@@ -113,7 +115,7 @@ impl Compiler {
             }
             Statement::If { condition, then_branch, elseif_branches, else_branch } => {
                 self.compile_expression(condition)?;
-                self.emit(Op::dyn_to_bool);
+                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                 let else_jump = self.emit_jump(Op::br_if_false);
                 for s in then_branch { self.compile_statement(s)?; }
                 let mut end_jumps = vec![];
@@ -123,7 +125,7 @@ impl Compiler {
                 self.patch_jump(else_jump);
                 for (cond, body) in elseif_branches {
                     self.compile_expression(cond)?;
-                    self.emit(Op::dyn_to_bool);
+                    common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                     let next = self.emit_jump(Op::br_if_false);
                     for s in body { self.compile_statement(s)?; }
                     end_jumps.push(self.emit_jump(Op::br));
@@ -145,7 +147,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, i_slot);
                 self.compile_expression(end)?;
                 self.emit(Op::dyn_le);
-                self.emit(Op::dyn_to_bool);
+                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                 let exit = self.emit_jump(Op::br_if_false);
                 self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
@@ -178,8 +180,8 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length); // works for both arrays and strings
-                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line); // works for both arrays and strings
+                self.emit(Op::dyn_lt); common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                 let exit = self.emit_jump(Op::br_if_false);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
@@ -203,7 +205,7 @@ impl Compiler {
             Statement::While { condition, body } => {
                 let loop_start = self.current_offset();
                 self.compile_expression(condition)?;
-                self.emit(Op::dyn_to_bool);
+                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                 let exit = self.emit_jump(Op::br_if_false);
                 self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
@@ -218,7 +220,7 @@ impl Compiler {
                 let mut exit_jump = None;
                 if let Some((cond_type, cond_expr)) = pre_condition {
                     self.compile_expression(cond_expr)?;
-                    self.emit(Op::dyn_to_bool);
+                    common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                     exit_jump = Some(match cond_type {
                         LoopConditionType::While => self.emit_jump(Op::br_if_false),
                         LoopConditionType::Until => self.emit_jump(Op::br_if_true),
@@ -230,7 +232,7 @@ impl Compiler {
                 for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
                 if let Some((cond_type, cond_expr)) = post_condition {
                     self.compile_expression(cond_expr)?;
-                    self.emit(Op::dyn_to_bool);
+                    common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                     match cond_type {
                         LoopConditionType::While => {
                             let ex = self.emit_jump(Op::br_if_false);
@@ -392,7 +394,7 @@ impl Compiler {
                         let idx = self.import("vybe:math", "floor");
                         self.emit_host_call(idx, 1);
                     }
-                    CompoundOp::ConcatAssign => self.emit(Op::str_concat),
+                    CompoundOp::ConcatAssign => common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line),
                     CompoundOp::ExponentAssign => {
                         let idx = self.import("vybe:math", "pow");
                         self.emit_host_call(idx, 2);
@@ -628,7 +630,7 @@ impl Compiler {
                                 self.emit_u16(Op::local_get, test_slot);
                                 self.compile_expression(expr)?;
                                 self.emit(Op::dyn_eq);
-                                self.emit(Op::dyn_to_bool);
+                                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                                 if ci < case.conditions.len() - 1 {
                                     case_true_jump = Some(self.emit_jump(Op::br_if_true));
                                 } else {
@@ -639,12 +641,12 @@ impl Compiler {
                                 self.emit_u16(Op::local_get, test_slot);
                                 self.compile_expression(from)?;
                                 self.emit(Op::dyn_ge);
-                                self.emit(Op::dyn_to_bool);
+                                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                                 let not_in_range = self.emit_jump(Op::br_if_false);
                                 self.emit_u16(Op::local_get, test_slot);
                                 self.compile_expression(to)?;
                                 self.emit(Op::dyn_le);
-                                self.emit(Op::dyn_to_bool);
+                                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                                 if ci < case.conditions.len() - 1 {
                                     case_true_jump = Some(self.emit_jump(Op::br_if_true));
                                     self.patch_jump(not_in_range);
@@ -665,7 +667,7 @@ impl Compiler {
                                     CompOp::GreaterThan => self.emit(Op::dyn_gt),
                                     CompOp::GreaterThanOrEqual => self.emit(Op::dyn_ge),
                                 }
-                                self.emit(Op::dyn_to_bool);
+                                common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                                 if ci < case.conditions.len() - 1 {
                                     case_true_jump = Some(self.emit_jump(Op::br_if_true));
                                 } else {
@@ -731,7 +733,7 @@ impl Compiler {
                         self.emit(Op::dup);
                         self.emit(Op::null);
                         self.emit(Op::dyn_eq);
-                        self.emit(Op::dyn_to_bool);
+                        common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                         let skip = self.emit_jump(Op::br_if_true);
                         // Call handler with args
                         for arg in arguments { self.compile_expression(arg)?; }

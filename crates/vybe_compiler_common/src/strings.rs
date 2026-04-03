@@ -58,3 +58,45 @@ pub fn emit_literal_part(chunk: &mut Chunk, text: &str, line: u32) {
     let c = chunk.add_constant(Value::String(Rc::from(text)));
     chunk.emit_op_u16(Op::r#const, c, line);
 }
+
+// ── String operations ──────────────────────────────────────────────────
+// Single-opcode wrappers for consistency across all compilers.
+
+/// String length. Stack: [string] → [i32]
+pub fn emit_length(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_length, line); }
+
+/// Substring. Stack: [string, start, length] → [string]
+pub fn emit_substring(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_substring, line); }
+
+/// Index of substring. Stack: [haystack, needle] → [i32]
+pub fn emit_index_of(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_index_of, line); }
+
+/// Last index of substring. Stack: [haystack, needle] → [i32]
+pub fn emit_last_index_of(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_last_index_of, line); }
+
+/// Replace. Stack: [string, search, replace] → [string]
+pub fn emit_replace(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_replace, line); }
+
+/// Split. Stack: [string, delimiter] → [array]
+pub fn emit_split(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_split, line); }
+
+/// To lowercase. Stack: [string] → [string]
+pub fn emit_to_lower(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_to_lower, line); }
+
+/// To uppercase. Stack: [string] → [string]
+pub fn emit_to_upper(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_to_upper, line); }
+
+/// Trim whitespace. Stack: [string] → [string]
+pub fn emit_trim(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_trim, line); }
+
+/// Trim start. Stack: [string] → [string]
+pub fn emit_trim_start(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_trim_start, line); }
+
+/// Trim end. Stack: [string] → [string]
+pub fn emit_trim_end(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_trim_end, line); }
+
+/// Repeat string. Stack: [string, count] → [string]
+pub fn emit_repeat(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_repeat, line); }
+
+/// Pairwise concatenation. Stack: [a, b] → [ab]
+pub fn emit_str_concat(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::str_concat, line); }

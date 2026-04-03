@@ -10,6 +10,8 @@ use vybe_compiler_common::io as common_io;
 use vybe_compiler_common::strings as common_strings;
 use vybe_compiler_common::errors as common_errors;
 use vybe_compiler_common::collections as common_collections;
+use vybe_compiler_common::math as common_math;
+use vybe_compiler_common::convert as common_convert;
 use vybe_parser_js::ast::*;
 
 use crate::scope::Scope;
@@ -156,7 +158,8 @@ impl Compiler {
 
     /// Emit truthy check: value → Bool (inline VM op, no host call)
     fn emit_to_bool(&mut self) {
-        self.emit(Op::dyn_to_bool);
+        let line = self.line;
+        common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], line);
     }
 
     /// Emit JS add: string concat or numeric add (inline VM op, no host call)
@@ -285,6 +288,10 @@ impl Compiler {
     }
 
     fn resolve_bare_import(&mut self, name: &str) -> Option<u16> {
+        // Check cross-language common imports first
+        if let Some((module, func)) = vybe_compiler_common::imports::resolve_common_import(name) {
+            return Some(self.import(module, func));
+        }
         match name {
             // JS standard globals — encoding/decoding
             // setTimeout is handled specially in compile_call
@@ -739,9 +746,9 @@ impl Compiler {
 
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::dyn_lt);
-                self.emit(Op::dyn_to_bool);
+                self.emit_to_bool();
                 let exit = self.emit_jump(Op::br_if_false);
 
                 // let x = __arr[__i]
@@ -799,9 +806,9 @@ impl Compiler {
 
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, keys_slot);
-                self.emit(Op::str_length);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::dyn_lt);
-                self.emit(Op::dyn_to_bool);
+                self.emit_to_bool();
                 let exit = self.emit_jump(Op::br_if_false);
 
                 // let k = __keys[__i]
@@ -1171,7 +1178,7 @@ impl Compiler {
                     // null was already on stack from dup+branch, just leave it
                     self.patch_jump(end);
                 } else if property == "length" {
-                    self.emit(Op::str_length);
+                    common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                 } else {
                     let idx = self.add_string_constant(property);
                     self.emit_u16(Op::struct_get, idx);
@@ -2014,9 +2021,9 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::dyn_lt);
-                self.emit(Op::dyn_to_bool);
+                self.emit_to_bool();
                 let exit = self.emit_jump(Op::br_if_false);
                 // val = fn(arr[i], i, arr) — use call (WASM call_indirect)
                 self.emit_u16(Op::local_get, fn_slot);   // push callback
@@ -2064,8 +2071,8 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length);
-                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
+                self.emit(Op::dyn_lt); self.emit_to_bool();
                 let exit = self.emit_jump(Op::br_if_false);
                 // elem = arr[i]
                 self.emit_u16(Op::local_get, arr_slot);
@@ -2079,7 +2086,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u8(Op::call, 3);
-                self.emit(Op::dyn_to_bool);
+                self.emit_to_bool();
                 let skip = self.emit_jump(Op::br_if_false);
                 self.emit_u16(Op::local_get, result_slot);
                 self.emit_u16(Op::local_get, elem_slot);
@@ -2111,8 +2118,8 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length);
-                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
+                self.emit(Op::dyn_lt); self.emit_to_bool();
                 let exit = self.emit_jump(Op::br_if_false);
                 self.emit_u16(Op::local_get, fn_slot);
                 self.emit_u16(Op::local_get, arr_slot);
@@ -2150,8 +2157,8 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length);
-                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
+                self.emit(Op::dyn_lt); self.emit_to_bool();
                 let exit = self.emit_jump(Op::br_if_false);
                 // elem = arr[i]
                 self.emit_u16(Op::local_get, arr_slot);
@@ -2164,7 +2171,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u8(Op::call, 3);
-                self.emit(Op::dyn_to_bool);
+                self.emit_to_bool();
                 let skip = self.emit_jump(Op::br_if_false);
                 // found — store and break
                 self.emit_u16(Op::local_get, elem_slot);
@@ -2205,8 +2212,8 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length);
-                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
+                self.emit(Op::dyn_lt); self.emit_to_bool();
                 let exit = self.emit_jump(Op::br_if_false);
                 // acc = fn(acc, arr[i], i, arr)
                 self.emit_u16(Op::local_get, fn_slot);
@@ -2245,7 +2252,7 @@ impl Compiler {
                 } else { 0 };
                 // len
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::str_length);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                 let len_slot = self.define_local("__cb_len");
                 self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
                 // outer loop: i
@@ -2255,7 +2262,7 @@ impl Compiler {
                 let outer_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, len_slot);
-                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                self.emit(Op::dyn_lt); self.emit_to_bool();
                 let outer_exit = self.emit_jump(Op::br_if_false);
                 // inner loop: j
                 self.emit(Op::i32_const_0);
@@ -2276,7 +2283,7 @@ impl Compiler {
                 self.emit(Op::f64_sub);
                 self.emit(Op::i32_const_1);
                 self.emit(Op::f64_sub);
-                self.emit(Op::dyn_lt); self.emit(Op::dyn_to_bool);
+                self.emit(Op::dyn_lt); self.emit_to_bool();
                 let inner_exit = self.emit_jump(Op::br_if_false);
                 // compare arr[j] vs arr[j+1]
                 self.emit_u16(Op::local_get, arr_slot);
@@ -2306,7 +2313,7 @@ impl Compiler {
                     self.emit_u16(Op::local_get, b_slot);
                     self.emit(Op::dyn_gt);
                 }
-                self.emit(Op::dyn_to_bool);
+                self.emit_to_bool();
                 let no_swap = self.emit_jump(Op::br_if_false);
                 // swap: arr[j] = b, arr[j+1] = a
                 self.emit_u16(Op::local_get, arr_slot);
@@ -2360,7 +2367,7 @@ impl Compiler {
                 self.compile_expression(object)?;
                 self.emit(Op::dup);
                 self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
-                self.emit(Op::str_length); // array length
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line); // array length
                 self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
                 self.emit(Op::i32_const_0);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
@@ -2377,7 +2384,7 @@ impl Compiler {
                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u8(Op::call, 1);
                 // if truthy, return true
-                self.emit(Op::dyn_to_bool);
+                self.emit_to_bool();
                 let found = self.emit_jump(Op::br_if_true);
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
@@ -2406,7 +2413,7 @@ impl Compiler {
                 self.compile_expression(object)?;
                 self.emit(Op::dup);
                 self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
-                self.emit(Op::str_length);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
                 self.emit(Op::i32_const_0);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
@@ -2420,7 +2427,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, i_slot);
                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u8(Op::call, 1);
-                self.emit(Op::dyn_to_bool);
+                self.emit_to_bool();
                 self.emit(Op::dyn_not);
                 let failed = self.emit_jump(Op::br_if_true);
                 self.emit_u16(Op::local_get, i_slot);
@@ -2449,7 +2456,7 @@ impl Compiler {
                 self.compile_expression(object)?;
                 self.emit(Op::dup);
                 self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
-                self.emit(Op::str_length);
+                common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::local_set, len_slot); self.emit(Op::drop);
                 self.emit(Op::i32_const_0);
                 self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
@@ -2463,7 +2470,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, i_slot);
                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u8(Op::call, 1);
-                self.emit(Op::dyn_to_bool);
+                self.emit_to_bool();
                 let found = self.emit_jump(Op::br_if_true);
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit(Op::i32_const_1);
@@ -3051,35 +3058,39 @@ impl Compiler {
 
     /// Emit direct WASM opcodes for Math.* functions instead of host calls.
     fn try_math_intrinsic(&mut self, method: &str, args: &[Expression]) -> Result<Option<()>, String> {
-        // Single-argument Math functions
+        // Single-argument Math functions — use common::math helpers
         if args.len() == 1 {
-            let op = match method {
-                "abs"   => Some(Op::f64_abs),
-                "floor" => Some(Op::f64_floor),
-                "ceil"  => Some(Op::f64_ceil),
-                "sqrt"  => Some(Op::f64_sqrt),
-                "trunc" => Some(Op::f64_trunc),
-                "round" => Some(Op::f64_nearest),
+            type EmitFn = fn(&mut vybe_bytecode::Chunk, u32);
+            let emit_fn: Option<EmitFn> = match method {
+                "abs"   => Some(common_math::emit_abs),
+                "floor" => Some(common_math::emit_floor),
+                "ceil"  => Some(common_math::emit_ceil),
+                "sqrt"  => Some(common_math::emit_sqrt),
+                "trunc" => Some(common_math::emit_trunc),
+                "round" => Some(common_math::emit_round),
                 "sign"  => None, // multi-opcode, fall through to host
                 _ => None,
             };
-            if let Some(op) = op {
+            if let Some(f) = emit_fn {
                 self.compile_expression(&args[0])?;
-                self.emit(op);
+                let line = self.line;
+                f(&mut self.chunks[self.current_chunk_idx], line);
                 return Ok(Some(()));
             }
         }
-        // Two-argument Math functions
+        // Two-argument Math functions — use common::math helpers
         if args.len() == 2 {
-            let op = match method {
-                "min" => Some(Op::f64_min),
-                "max" => Some(Op::f64_max),
+            type EmitFn = fn(&mut vybe_bytecode::Chunk, u32);
+            let emit_fn: Option<EmitFn> = match method {
+                "min" => Some(common_math::emit_min),
+                "max" => Some(common_math::emit_max),
                 _ => None,
             };
-            if let Some(op) = op {
+            if let Some(f) = emit_fn {
                 self.compile_expression(&args[0])?;
                 self.compile_expression(&args[1])?;
-                self.emit(op);
+                let line = self.line;
+                f(&mut self.chunks[self.current_chunk_idx], line);
                 return Ok(Some(()));
             }
         }
@@ -3104,7 +3115,7 @@ impl Compiler {
             // String.fromCharCode(n) → str_from_char_code
             ("String", "fromCharCode", 1) => {
                 self.compile_expression(&args[0])?;
-                self.emit(Op::i32_from_f64);
+                common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::str_from_char_code);
                 Ok(Some(()))
             }
@@ -3156,7 +3167,7 @@ impl Compiler {
             ("Array", "isArray", 1) => { self.compile_expression(&args[0])?; self.emit(Op::ref_is_array); Ok(Some(())) }
             ("Array", "from", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:array", "from"); self.emit_host_call(idx, 1); Ok(Some(())) }
             ("Number", "isNaN", 1) => { self.compile_expression(&args[0])?; self.emit(Op::dup); self.emit(Op::dyn_ne); Ok(Some(())) }
-            ("Number", "isFinite", 1) => { self.compile_expression(&args[0])?; self.emit(Op::f64_abs); self.emit_constant(Value::F64(f64::MAX)); self.emit(Op::dyn_le); Ok(Some(())) }
+            ("Number", "isFinite", 1) => { self.compile_expression(&args[0])?; common_math::emit_abs(&mut self.chunks[self.current_chunk_idx], self.line); self.emit_constant(Value::F64(f64::MAX)); self.emit(Op::dyn_le); Ok(Some(())) }
             ("Number", "parseInt", _) => {
                 for a in args { self.compile_expression(a)?; }
                 let idx = self.import("vybe:convert", "cint");

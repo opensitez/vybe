@@ -3,6 +3,7 @@ use vybe_bytecode::{Chunk, Value, Op};
 use vybe_parser_cobol::ast::*;
 use vybe_compiler_common as common;
 use vybe_compiler_common::collections as common_collections;
+use vybe_compiler_common::strings as common_strings;
 
 pub struct Compiler {
     chunks: Vec<Chunk>,
@@ -423,7 +424,7 @@ impl Compiler {
                 self.next_local += 1;
                 self.emit_u16(Op::local_set, by_tmp);
                 self.emit(Op::f64_div);
-                self.emit(Op::f64_trunc);
+                { let c = self.current_chunk_idx; let line = self.line; common::math::emit_trunc(&mut self.chunks[c], line); }
                 self.emit(Op::dup);
                 let gi = self.add_string_constant(giving);
                 self.emit_u16(Op::global_set, gi);
@@ -608,7 +609,7 @@ impl Compiler {
                 let mut first = true;
                 for source in sources {
                     self.compile_expr(&source.value)?;
-                    if !first { self.emit(Op::str_concat); }
+                    if !first { common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line); }
                     first = false;
                 }
                 if first { self.emit_constant(Value::String(Rc::from(""))); }
@@ -624,7 +625,7 @@ impl Compiler {
                 } else {
                     self.emit_constant(Value::String(Rc::from(" ")));
                 }
-                self.emit(Op::str_split);
+                common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 // Assign each part to the target variables
                 let arr_slot = self.next_local; self.next_local += 1;
                 self.emit_u16(Op::local_set, arr_slot);
@@ -642,7 +643,7 @@ impl Compiler {
                 let var_idx = self.add_string_constant(var);
                 self.emit_u16(Op::global_get, var_idx);
                 self.emit_constant(Value::String(Rc::from(target.as_str())));
-                self.emit(Op::str_split);
+                common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(1));
                 self.emit(Op::f64_sub);
@@ -655,7 +656,7 @@ impl Compiler {
                 self.emit_u16(Op::global_get, var_idx);
                 self.emit_constant(Value::String(Rc::from(old.as_str())));
                 self.emit_constant(Value::String(Rc::from(new.as_str())));
-                self.emit(Op::str_replace);
+                common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::global_set, var_idx);
             }
 
@@ -664,7 +665,12 @@ impl Compiler {
                     let ai = self.add_string_constant(arg);
                     self.emit_u16(Op::global_get, ai);
                 }
-                let i = self.import("*", name);
+                // Check cross-language common imports first, then fall back to wildcard
+                let i = if let Some((module, func)) = vybe_compiler_common::imports::resolve_common_import(name) {
+                    self.import(module, func)
+                } else {
+                    self.import("*", name)
+                };
                 self.emit_host_call(i, args.len() as u8);
                 self.emit(Op::drop);
             }
@@ -895,7 +901,7 @@ impl Compiler {
                 self.emit_u16(Op::global_get, var_idx);
                 self.emit_constant(Value::String(Rc::from(from.as_str())));
                 self.emit_constant(Value::String(Rc::from(to.as_str())));
-                self.emit(Op::str_replace);
+                common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::global_set, var_idx);
             }
 
@@ -1931,7 +1937,7 @@ impl Compiler {
                 } else {
                     self.emit_constant(Value::I32(i32::MAX));
                 }
-                self.emit(Op::str_substring);
+                common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(())
             }
             Expr::ClassTest { var, class } => {
@@ -1944,7 +1950,7 @@ impl Compiler {
                     }
                     ClassCondition::Alphabetic | ClassCondition::AlphabeticLower | ClassCondition::AlphabeticUpper => {
                         // Simplified: check string length > 0
-                        self.emit(Op::str_length);
+                        common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.emit_constant(Value::I32(0));
                         self.emit(Op::dyn_gt);
                     }
@@ -2104,10 +2110,10 @@ impl Compiler {
         for arg in args { self.compile_expr(arg)?; }
 
         match name {
-            "LENGTH" => { self.emit(Op::str_length); }
-            "UPPER-CASE" => { self.emit(Op::str_to_upper); }
-            "LOWER-CASE" => { self.emit(Op::str_to_lower); }
-            "TRIM" => { self.emit(Op::str_trim); }
+            "LENGTH" => { common_strings::emit_length(&mut self.chunks[c], line); }
+            "UPPER-CASE" => { common_strings::emit_to_upper(&mut self.chunks[c], line); }
+            "LOWER-CASE" => { common_strings::emit_to_lower(&mut self.chunks[c], line); }
+            "TRIM" => { common_strings::emit_trim(&mut self.chunks[c], line); }
             "REVERSE" => { common::collections::emit_reverse(&mut self.chunks[c], line); }
             "CURRENT-DATE" => {
                 let i = self.import("wasi:clocks", "toISOString");
@@ -2124,7 +2130,7 @@ impl Compiler {
             }
             "SUBSTITUTE" => {
                 // SUBSTITUTE(str, old, new) → str_replace
-                self.emit(Op::str_replace);
+                common_strings::emit_replace(&mut self.chunks[c], line);
             }
             "SQRT" => { common::math::emit_sqrt(&mut self.chunks[c], line); }
             "ABS" => { common::math::emit_abs(&mut self.chunks[c], line); }
@@ -2133,7 +2139,9 @@ impl Compiler {
                 for _ in 1..args.len() { self.emit(Op::dyn_add); }
             }
             "INTEGER" => {
-                self.emit(Op::f64_trunc);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::math::emit_trunc(&mut self.chunks[c], line);
             }
             "ORD" => {
                 let i = self.import("vybe:string", "charCodeAt");
@@ -2211,7 +2219,7 @@ impl Compiler {
             }
             // String functions
             "CONCATENATE" => {
-                for _ in 1..args.len() { self.emit(Op::str_concat); }
+                for _ in 1..args.len() { common_strings::emit_str_concat(&mut self.chunks[c], line); }
             }
             "TEST-NUMVAL" => {
                 common::convert::emit_is_numeric(&mut self.chunks[c], line);

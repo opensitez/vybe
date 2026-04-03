@@ -9,6 +9,7 @@ use vybe_compiler_common::io as common_io;
 use vybe_compiler_common::loops as common_loops;
 use vybe_compiler_common::strings as common_strings;
 use vybe_compiler_common::threading as common_thread;
+use vybe_compiler_common::convert as common_convert;
 use vybe_compiler_common::errors as common_errors;
 use vybe_parser_dart::*;
 
@@ -225,6 +226,10 @@ impl Compiler {
     }
 
     fn resolve_bare_import(&mut self, name: &str) -> Option<u16> {
+        // Check cross-language common imports first
+        if let Some((module, func)) = vybe_compiler_common::imports::resolve_common_import(name) {
+            return Some(self.import(module, func));
+        }
         match name {
             "print" => Some(self.import("wasi:cli", "log")),
             "int" | "double" => Some(self.import("vybe:convert", "cint")),
@@ -235,11 +240,11 @@ impl Compiler {
     /// Compile string/array methods as direct WASM opcodes (same as Python/JS/VB/C#).
     fn try_compile_opcode_method(&mut self, object: &Expression, method: &str, args: &[Argument]) -> Result<Option<()>, String> {
         match method {
-            "toUpperCase" => { self.compile_expression(object)?; self.emit(Op::str_to_upper); Ok(Some(())) }
-            "toLowerCase" => { self.compile_expression(object)?; self.emit(Op::str_to_lower); Ok(Some(())) }
-            "trim" => { self.compile_expression(object)?; self.emit(Op::str_trim); Ok(Some(())) }
-            "trimLeft" => { self.compile_expression(object)?; self.emit(Op::str_trim_start); Ok(Some(())) }
-            "trimRight" => { self.compile_expression(object)?; self.emit(Op::str_trim_end); Ok(Some(())) }
+            "toUpperCase" => { self.compile_expression(object)?; common_strings::emit_to_upper(&mut self.chunks[self.current_chunk_idx], self.line); Ok(Some(())) }
+            "toLowerCase" => { self.compile_expression(object)?; common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line); Ok(Some(())) }
+            "trim" => { self.compile_expression(object)?; common_strings::emit_trim(&mut self.chunks[self.current_chunk_idx], self.line); Ok(Some(())) }
+            "trimLeft" => { self.compile_expression(object)?; common_strings::emit_trim_start(&mut self.chunks[self.current_chunk_idx], self.line); Ok(Some(())) }
+            "trimRight" => { self.compile_expression(object)?; common_strings::emit_trim_end(&mut self.chunks[self.current_chunk_idx], self.line); Ok(Some(())) }
             "startsWith" => {
                 self.compile_expression(object)?;
                 if let Some(a) = args.first() { self.compile_expression(&a.value)?; }
@@ -261,31 +266,31 @@ impl Compiler {
             "indexOf" => {
                 self.compile_expression(object)?;
                 if let Some(a) = args.first() { self.compile_expression(&a.value)?; }
-                self.emit(Op::str_index_of);
+                common_strings::emit_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
             "lastIndexOf" => {
                 self.compile_expression(object)?;
                 if let Some(a) = args.first() { self.compile_expression(&a.value)?; }
-                self.emit(Op::str_last_index_of);
+                common_strings::emit_last_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
             "replaceAll" => {
                 self.compile_expression(object)?;
                 for a in args { self.compile_expression(&a.value)?; }
-                self.emit(Op::str_replace);
+                common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
             "split" => {
                 self.compile_expression(object)?;
                 for a in args { self.compile_expression(&a.value)?; }
-                self.emit(Op::str_split);
+                common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
             "substring" => {
                 self.compile_expression(object)?;
                 for a in args { self.compile_expression(&a.value)?; }
-                self.emit(Op::str_substring);
+                common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
             "padLeft" => {
@@ -590,7 +595,7 @@ impl Compiler {
             }
             Statement::If { condition, then_branch, else_branch } => {
                 self.compile_expression(condition)?;
-                self.emit(Op::dyn_to_bool);
+                { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
                 let else_j = self.emit_jump(Op::br_if_false);
                 self.compile_statement(then_branch)?;
                 if let Some(alt) = else_branch {
@@ -606,7 +611,7 @@ impl Compiler {
                 let start = self.current_offset();
                 self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![] });
                 self.compile_expression(condition)?;
-                self.emit(Op::dyn_to_bool);
+                { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
                 let exit = self.emit_jump(Op::br_if_false);
                 self.compile_statement(body)?;
                 for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
@@ -621,7 +626,7 @@ impl Compiler {
                 self.compile_statement(body)?;
                 for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
                 self.compile_expression(condition)?;
-                self.emit(Op::dyn_to_bool);
+                { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
                 let exit = self.emit_jump(Op::br_if_false);
                 self.emit_loop(start);
                 self.patch_jump(exit);
@@ -640,7 +645,7 @@ impl Compiler {
                 self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![] });
                 let exit = if let Some(cond) = &for_stmt.condition {
                     self.compile_expression(cond)?;
-                    self.emit(Op::dyn_to_bool);
+                    { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
                     Some(self.emit_jump(Op::br_if_false))
                 } else { None };
                 self.compile_statement(&for_stmt.body)?;
@@ -872,7 +877,7 @@ impl Compiler {
             }
             Statement::Assert(cond, msg) => {
                 self.compile_expression(cond)?;
-                self.emit(Op::dyn_to_bool);
+                { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
                 let ok = self.emit_jump(Op::br_if_true);
                 if let Some(m) = msg {
                     self.compile_expression(m)?;
@@ -2206,7 +2211,7 @@ impl Compiler {
             // Check guard if present
             if let Some(guard) = &case.guard {
                 self.compile_expression(guard)?;
-                self.emit(Op::dyn_to_bool);
+                { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
                 let skip_guard = self.emit_jump(Op::br_if_false);
                 
                 // Pattern matched AND guard passed

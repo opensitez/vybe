@@ -2,6 +2,7 @@ use std::rc::Rc;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_parser_php::ast::*;
 use vybe_compiler_common as common;
+use vybe_compiler_common::strings as common_strings;
 use crate::scope::Scope;
 
 struct LoopContext {
@@ -547,7 +548,7 @@ impl Compiler {
                         let idx = self.add_string_constant("__type");
                         self.emit_u16(Op::struct_get, idx);
                         // type name is a string, get the constructor from globals
-                        self.emit(Op::str_to_lower);
+                        common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line);
                         // Can't do dynamic global_get — use the class name from context
                         // Fallback: just push $this for self:: method calls
                         self.emit(Op::drop);
@@ -839,7 +840,7 @@ impl Compiler {
                 let line = self.line;
                 common::math::emit_pow(&mut self.chunks[c], line);
             }
-            AssignOp::ConcatAssign => { self.emit(Op::str_concat); }
+            AssignOp::ConcatAssign => { common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line); }
             AssignOp::AndAssign => { self.emit(Op::i32_and); }
             AssignOp::OrAssign => { self.emit(Op::i32_or); }
             AssignOp::XorAssign => { self.emit(Op::i32_xor); }
@@ -1001,7 +1002,7 @@ impl Compiler {
             BinaryOp::Pow => {
                 common::math::emit_pow(&mut self.chunks[c], line);
             }
-            BinaryOp::Concat => { self.emit(Op::str_concat); }
+            BinaryOp::Concat => { common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line); }
             BinaryOp::Eq => { self.emit(Op::dyn_eq); }
             BinaryOp::Ne => { self.emit(Op::dyn_ne); }
             BinaryOp::SEq => { self.emit(Op::eq); }
@@ -1495,13 +1496,13 @@ impl Compiler {
             }
 
             // ── String opcodes (direct VM ops) ──────────────────────
-            "strlen"       => { compile_args!(); self.emit(Op::str_length); return Ok(Some(())); }
-            "strtolower"   => { compile_args!(); self.emit(Op::str_to_lower); return Ok(Some(())); }
-            "strtoupper"   => { compile_args!(); self.emit(Op::str_to_upper); return Ok(Some(())); }
-            "trim"         => { compile_args!(); self.emit(Op::str_trim); return Ok(Some(())); }
-            "ltrim"        => { compile_args!(); self.emit(Op::str_trim_start); return Ok(Some(())); }
-            "rtrim"        => { compile_args!(); self.emit(Op::str_trim_end); return Ok(Some(())); }
-            "strpos" | "stripos"   => { compile_args!(); self.emit(Op::str_index_of); return Ok(Some(())); }
+            "strlen"       => { compile_args!(); common_strings::emit_length(&mut self.chunks[c], line); return Ok(Some(())); }
+            "strtolower"   => { compile_args!(); common_strings::emit_to_lower(&mut self.chunks[c], line); return Ok(Some(())); }
+            "strtoupper"   => { compile_args!(); common_strings::emit_to_upper(&mut self.chunks[c], line); return Ok(Some(())); }
+            "trim"         => { compile_args!(); common_strings::emit_trim(&mut self.chunks[c], line); return Ok(Some(())); }
+            "ltrim"        => { compile_args!(); common_strings::emit_trim_start(&mut self.chunks[c], line); return Ok(Some(())); }
+            "rtrim"        => { compile_args!(); common_strings::emit_trim_end(&mut self.chunks[c], line); return Ok(Some(())); }
+            "strpos" | "stripos"   => { compile_args!(); common_strings::emit_index_of(&mut self.chunks[c], line); return Ok(Some(())); }
             "str_contains" => { compile_args!(); self.emit(Op::str_contains); return Ok(Some(())); }
             "str_starts_with" => { compile_args!(); self.emit(Op::str_starts_with); return Ok(Some(())); }
             "str_ends_with"   => { compile_args!(); self.emit(Op::str_ends_with); return Ok(Some(())); }
@@ -1513,7 +1514,7 @@ impl Compiler {
                     self.compile_expression(&args[0].value)?; // search
                     self.compile_expression(&args[1].value)?; // replace
                 } else { compile_args!(); }
-                self.emit(Op::str_replace);
+                common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
             "substr" => {
@@ -1523,11 +1524,11 @@ impl Compiler {
                     else { self.emit_constant(Value::I32(0)); }
                 if args.len() >= 3 { self.compile_expression(&args[2].value)?; }
                     else { self.emit_constant(Value::I32(i32::MAX)); }
-                self.emit(Op::str_substring);
+                common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
-            "explode" | "str_split" => { compile_args!(); self.emit(Op::str_split); return Ok(Some(())); }
-            "str_repeat"   => { compile_args!(); self.emit(Op::str_repeat); return Ok(Some(())); }
+            "explode" | "str_split" => { compile_args!(); common_strings::emit_split(&mut self.chunks[c], line); return Ok(Some(())); }
+            "str_repeat"   => { compile_args!(); common_strings::emit_repeat(&mut self.chunks[c], line); return Ok(Some(())); }
             "str_pad"      => { compile_args!(); self.emit(Op::str_pad_start); return Ok(Some(())); }
             "chr"          => { compile_args!(); self.emit(Op::str_from_char_code); return Ok(Some(())); }
             "ord"          => {
@@ -1551,7 +1552,7 @@ impl Compiler {
                 compile_args!(); // subject on stack
                 self.emit_constant(Value::String(Rc::from("\n")));
                 self.emit_constant(Value::String(Rc::from("<br />\n")));
-                self.emit(Op::str_replace);
+                common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
             "htmlspecialchars" | "htmlentities" => {
@@ -1560,7 +1561,7 @@ impl Compiler {
                 for (from, to) in &[("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("\"", "&quot;")] {
                     self.emit_constant(Value::String(Rc::from(*from)));
                     self.emit_constant(Value::String(Rc::from(*to)));
-                    self.emit(Op::str_replace);
+                    common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 }
                 return Ok(Some(()));
             }
@@ -1570,14 +1571,14 @@ impl Compiler {
                 self.emit(Op::dup);
                 self.emit_constant(Value::I32(0));
                 self.emit_constant(Value::I32(1));
-                self.emit(Op::str_substring);
-                self.emit(Op::str_to_upper);
+                common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
+                common_strings::emit_to_upper(&mut self.chunks[self.current_chunk_idx], self.line);
                 // swap: [orig, upper_first]
                 let tmp = self.define_local("__ucf_tmp");
                 self.emit_u16(Op::local_set, tmp);
                 self.emit_constant(Value::I32(1));
                 self.emit_constant(Value::I32(i32::MAX));
-                self.emit(Op::str_substring);
+                common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::local_get, tmp);
                 // swap order for concat: [upper_first, rest]
                 let tmp2 = self.define_local("__ucf_tmp2");
@@ -1587,7 +1588,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, tmp3);
                 self.emit_u16(Op::local_get, tmp2);
                 self.emit_u16(Op::local_get, tmp3);
-                self.emit(Op::str_concat);
+                common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
             "lcfirst" => {
@@ -1595,13 +1596,13 @@ impl Compiler {
                 self.emit(Op::dup);
                 self.emit_constant(Value::I32(0));
                 self.emit_constant(Value::I32(1));
-                self.emit(Op::str_substring);
-                self.emit(Op::str_to_lower);
+                common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
+                common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line);
                 let tmp = self.define_local("__lcf_tmp");
                 self.emit_u16(Op::local_set, tmp);
                 self.emit_constant(Value::I32(1));
                 self.emit_constant(Value::I32(i32::MAX));
-                self.emit(Op::str_substring);
+                common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::local_get, tmp);
                 let tmp2 = self.define_local("__lcf_tmp2");
                 self.emit_u16(Op::local_set, tmp2);
@@ -1609,7 +1610,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, tmp3);
                 self.emit_u16(Op::local_get, tmp2);
                 self.emit_u16(Op::local_get, tmp3);
-                self.emit(Op::str_concat);
+                common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
 
@@ -2048,7 +2049,7 @@ impl Compiler {
                 self.emit_host_call(i, 1);
                 // Split by newline
                 self.emit_constant(Value::String(Rc::from("\n")));
-                self.emit(Op::str_split);
+                common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
             "file_get_contents" => { compile_args!(); let i = self.import("wasi:filesystem", "readFile"); self.emit_host_call(i, 1); return Ok(Some(())); }
@@ -2244,7 +2245,16 @@ impl Compiler {
                 return Ok(Some(()));
             }
 
-            _ => return Ok(None),
+            _ => {
+                // Check cross-language common imports as fallback
+                if let Some((module, func)) = vybe_compiler_common::imports::resolve_common_import(name) {
+                    compile_args!();
+                    let i = self.import(module, func);
+                    self.emit_host_call(i, args.len() as u8);
+                    return Ok(Some(()));
+                }
+                return Ok(None);
+            }
         }
     }
 
