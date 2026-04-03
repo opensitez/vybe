@@ -5,6 +5,8 @@ members = [
     "crates/vybe_forms",
     "crates/code_editor",
     "crates/vybe_ide",
+    "crates/legacy_ide",
+    "crates/legacy_editor",
     "crates/vybe_project",
     "crates/vybe_cli",
     "crates/vybe_bytecode",
@@ -15,11 +17,21 @@ members = [
     "crates/vybe_parser_csharp",
     "crates/vybe_compiler_csharp",
     "crates/vybe_widgets",
+    "crates/vybe_designer",
     "crates/vybe_parser_dart",
     "crates/vybe_compiler_dart",
+    "crates/vybe_parser_pascal",
+    "crates/vybe_compiler_pascal",
     "crates/vybe_parser_python",
     "crates/vybe_compiler_python",
+    "crates/vybe_compiler_common",
     "crates/htmlbox",
+    "crates/vybe_parser_php",
+    "crates/vybe_compiler_php",
+    "crates/vybe_parser_ruby",
+    "crates/vybe_compiler_ruby",
+    "crates/vybe_parser_cobol",
+    "crates/vybe_compiler_cobol",
 ]
 
 [workspace.package]
@@ -54,6 +66,8 @@ vybe_parser_basic = { path = "crates/vybe_parser_basic" }
 vybe_forms = { path = "crates/vybe_forms" }
 vybe_project = { path = "crates/vybe_project" }
 vybe_bytecode = { path = "crates/vybe_bytecode" }
+vybe_parser_php = { path = "crates/vybe_parser_php" }
+vybe_compiler_php = { path = "crates/vybe_compiler_php" }
 vybe_parser_js = { path = "crates/vybe_parser_js" }
 vybe_compiler_js = { path = "crates/vybe_compiler_js" }
 vybe_compiler_vb = { path = "crates/vybe_compiler_vb" }
@@ -63,8 +77,16 @@ vybe_host = { path = "crates/vybe_host" }
 vybe_cli = { path = "crates/vybe_cli" }
 vybe_parser_dart = { path = "crates/vybe_parser_dart" }
 vybe_compiler_dart = { path = "crates/vybe_compiler_dart" }
+vybe_parser_pascal = { path = "crates/vybe_parser_pascal" }
+vybe_compiler_pascal = { path = "crates/vybe_compiler_pascal" }
 vybe_parser_python = { path = "crates/vybe_parser_python" }
 vybe_compiler_python = { path = "crates/vybe_compiler_python" }
+vybe_compiler_common = { path = "crates/vybe_compiler_common" }
+vybe_parser_ruby = { path = "crates/vybe_parser_ruby" }
+vybe_compiler_ruby = { path = "crates/vybe_compiler_ruby" }
+vybe_parser_cobol = { path = "crates/vybe_parser_cobol" }
+vybe_compiler_cobol = { path = "crates/vybe_compiler_cobol" }
 rhtmledit = { path = "crates/htmlbox" }
+vybe_widgets = { path = "crates/vybe_widgets" }
 
  
