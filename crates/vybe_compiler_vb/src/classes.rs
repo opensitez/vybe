@@ -1,6 +1,5 @@
 use std::rc::Rc;
 use vybe_bytecode::{Value, Op};
-use vybe_bytecode::chunk::TypeEntry;
 use vybe_parser_basic::ast::*;
 use vybe_compiler_common as common;
 use vybe_compiler_common::functions as common_fn;
@@ -257,20 +256,44 @@ impl Compiler {
             if let Some(ref getter_body) = prop.getter {
                 self.emit_u16(Op::local_get, this_slot);
                 self.compile_property_accessor(&format!("get_{}", prop_name), 1, getter_body, true, Some(&prop_name))?;
+                let getter_chunk_idx = self.chunks.len() - 1;
                 let get_name = format!("__get_{}", prop_name);
                 let prop_idx = self.add_string_constant(&get_name);
                 self.emit_u16(Op::struct_set, prop_idx);
                 self.emit(Op::drop);
+                // Emit cross-language aliases for getter (e.g. __get_tostring for Python/JS interop)
+                let line = self.line;
+                for alias in common::classes::cross_language_aliases(&prop_name) {
+                    if *alias != prop_name {
+                        let alias_get = format!("__get_{}", alias);
+                        common::classes::emit_bind_method(
+                            &mut self.chunks[self.current_chunk_idx],
+                            this_slot, &alias_get, getter_chunk_idx, line,
+                        );
+                    }
+                }
             }
 
             if let Some((ref value_param, ref setter_body)) = prop.setter {
                 self.emit_u16(Op::local_get, this_slot);
                 let param_name = value_param.name.as_str().to_lowercase();
                 self.compile_property_accessor_with_param(&format!("set_{}", prop_name), &param_name, setter_body)?;
+                let setter_chunk_idx = self.chunks.len() - 1;
                 let set_name = format!("__set_{}", prop_name);
                 let prop_idx = self.add_string_constant(&set_name);
                 self.emit_u16(Op::struct_set, prop_idx);
                 self.emit(Op::drop);
+                // Emit cross-language aliases for setter
+                let line = self.line;
+                for alias in common::classes::cross_language_aliases(&prop_name) {
+                    if *alias != prop_name {
+                        let alias_set = format!("__set_{}", alias);
+                        common::classes::emit_bind_method(
+                            &mut self.chunks[self.current_chunk_idx],
+                            this_slot, &alias_set, setter_chunk_idx, line,
+                        );
+                    }
+                }
             }
         }
 
@@ -324,16 +347,17 @@ impl Compiler {
             VBType::Custom(n) => n.to_lowercase(),
             _ => String::new(),
         }).filter(|s| !s.is_empty()).collect();
-        let type_entry_idx = self.type_entries.len();
-        self.type_entries.push(TypeEntry {
-            name: name.to_lowercase(),
-            parent: parent_name,
-            fields: field_names,
-            methods: method_entries,
-            is_interface: false,
+        let type_entry_idx = self.chunks[0].types.len();
+        common::classes::register_type(
+            &mut self.chunks,
+            name,
+            &parent_name,
+            field_names,
+            method_entries,
+            false,
             implements,
-            constructor_chunk: Some(idx),
-        });
+            Some(idx),
+        );
         self.class_type_ids.insert(name.to_lowercase(), type_entry_idx);
 
         self.emit_ref_func(idx, &upvalues);

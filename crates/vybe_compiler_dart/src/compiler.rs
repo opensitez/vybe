@@ -32,7 +32,6 @@ pub struct Compiler {
     enums: std::collections::HashMap<String, EnumDecl>,
     extensions: Vec<ExtensionDecl>,
     current_class: Option<String>,
-    type_entries: Vec<vybe_bytecode::chunk::TypeEntry>,
 }
 
 impl Compiler {
@@ -49,7 +48,6 @@ impl Compiler {
             enums: std::collections::HashMap::new(),
             extensions: Vec::new(),
             current_class: None,
-            type_entries: Vec::new(),
         }
     }
 
@@ -78,8 +76,6 @@ impl Compiler {
         self.emit(Op::halt);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
-        // Attach type entries to script chunk
-        self.chunks[0].types = self.type_entries;
         vybe_compiler_common::bundle::finalize_with_stdlib(&mut self.chunks);
         Ok(self.chunks)
     }
@@ -1264,6 +1260,11 @@ impl Compiler {
                                     let m_idx = self.add_string_constant(&set_name);
                                     self.emit_u16(Op::struct_set, m_idx);
                                     self.emit(Op::drop);
+                                    // Cross-language aliases for setter
+                                    let method_ci = self.chunks.len() - 1;
+                                    common_classes::emit_cross_language_aliases(
+                                        &mut self.chunks[idx], this_slot, &set_name, method_ci, self.line,
+                                    );
                                 }
                                 _ => {
                                     // Regular instance method (or operator overload)
@@ -1375,15 +1376,12 @@ impl Compiler {
             } else { None }
         }).collect();
         let first_ctor_chunk = self.chunks.iter().position(|c| c.name == *class_name || c.name.starts_with(&format!("{}.", class_name)));
-        self.type_entries.push(vybe_bytecode::chunk::TypeEntry {
-            name: class_name.to_lowercase(),
-            parent: class.extends.as_ref().map(|s| s.to_lowercase()).unwrap_or_default(),
-            fields: field_names,
-            methods: method_names,
-            is_interface: class.is_abstract,
-            implements: class.implements.iter().map(|s| s.to_lowercase()).collect(),
-            constructor_chunk: first_ctor_chunk,
-        });
+        let parent_str = class.extends.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+        let implements_list: Vec<String> = class.implements.iter().map(|s| s.to_lowercase()).collect();
+        common_classes::register_type(
+            &mut self.chunks, class_name, &parent_str,
+            field_names, method_names, class.is_abstract, implements_list, first_ctor_chunk,
+        );
 
         Ok(())
     }

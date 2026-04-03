@@ -11,7 +11,6 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use vybe_bytecode::{Chunk, Op, Value};
-use vybe_bytecode::chunk::TypeEntry;
 use vybe_compiler_common as common;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
@@ -134,8 +133,6 @@ pub struct Compiler {
     class_method_map: HashMap<String, HashSet<String>>,
     interface_imports: Vec<String>,
     _known_types: HashMap<String, (&'static str, &'static str)>,
-    type_entries: Vec<TypeEntry>,
-    class_type_ids: HashMap<String, usize>,
     /// Track current class's base type name (for base() calls in constructors).
     current_class_base: Option<String>,
 }
@@ -157,8 +154,6 @@ impl Compiler {
             class_field_map: HashMap::new(),
             class_method_map: HashMap::new(),
             _known_types: Self::init_known_types(),
-            type_entries: Vec::new(),
-            class_type_ids: HashMap::new(),
             current_class_base: None,
             interface_imports: vec![
                 "system".into(),
@@ -231,8 +226,6 @@ impl Compiler {
         self.emit(Op::halt);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
-        // Attach WASM GC type table to script chunk
-        self.chunks[0].types = self.type_entries;
         vybe_compiler_common::bundle::finalize_with_stdlib(&mut self.chunks);
         Ok(self.chunks)
     }
@@ -516,22 +509,19 @@ impl Compiler {
 
     fn compile_interface(&mut self, iface: &InterfaceDecl) -> Result<(), String> {
         // Register interface in the type table for cross-language sharing.
-        let method_entries: Vec<(String, usize)> = iface.members.iter().filter_map(|m| {
+        let method_names: Vec<String> = iface.members.iter().filter_map(|m| {
             match m {
-                MemberDecl::Method(md) => Some((md.name.to_lowercase(), 0usize)),
-                MemberDecl::Property(pd) => Some((pd.name.to_lowercase(), 0usize)),
+                MemberDecl::Method(md) => Some(md.name.to_lowercase()),
+                MemberDecl::Property(pd) => Some(pd.name.to_lowercase()),
                 _ => None,
             }
         }).collect();
-        self.type_entries.push(TypeEntry {
-            name: iface.name.to_lowercase(),
-            parent: String::new(),
-            fields: Vec::new(),
-            methods: method_entries,
-            is_interface: true,
-            implements: Vec::new(),
-            constructor_chunk: None,
-        });
+        vybe_compiler_common::classes::register_interface(
+            &mut self.chunks,
+            &iface.name,
+            method_names,
+            Vec::new(),
+        );
         self.defined_interfaces.insert(iface.name.to_lowercase());
 
         // Also emit a marker global for runtime reference
@@ -777,18 +767,26 @@ impl Compiler {
             if let Some(ref getter_body) = prop.getter {
                 self.emit_u16(Op::local_get, this_slot);
                 self.compile_property_getter(&prop_name, getter_body)?;
+                let getter_chunk_idx = self.chunks.len() - 1;
                 let get_name = format!("__get_{}", prop_name);
                 let pidx = self.add_string_constant(&get_name);
                 self.emit_u16(Op::struct_set, pidx);
                 self.emit(Op::drop);
+                vybe_compiler_common::classes::emit_cross_language_aliases(
+                    &mut self.chunks[idx], this_slot, &get_name, getter_chunk_idx, self.line,
+                );
             }
             if let Some((ref value_param, ref setter_body)) = prop.setter {
                 self.emit_u16(Op::local_get, this_slot);
                 self.compile_property_setter(&prop_name, value_param, setter_body)?;
+                let setter_chunk_idx = self.chunks.len() - 1;
                 let set_name = format!("__set_{}", prop_name);
                 let pidx = self.add_string_constant(&set_name);
                 self.emit_u16(Op::struct_set, pidx);
                 self.emit(Op::drop);
+                vybe_compiler_common::classes::emit_cross_language_aliases(
+                    &mut self.chunks[idx], this_slot, &set_name, setter_chunk_idx, self.line,
+                );
             }
         }
 
@@ -838,17 +836,15 @@ impl Compiler {
         let implements: Vec<String> = class.interfaces.iter()
             .map(|i| i.to_lowercase())
             .collect();
-        let type_entry_idx = self.type_entries.len();
-        self.type_entries.push(TypeEntry {
-            name: name.to_lowercase(),
-            parent: parent_name,
-            fields: field_names,
-            methods: method_entries,
-            is_interface: false,
+        vybe_compiler_common::classes::register_class_with_interfaces(
+            &mut self.chunks,
+            &name,
+            &parent_name,
+            field_names,
+            method_entries,
             implements,
-            constructor_chunk: Some(idx),
-        });
-        self.class_type_ids.insert(name.to_lowercase(), type_entry_idx);
+            Some(idx),
+        );
 
         self.emit_ref_func(idx, &upvalues);
 

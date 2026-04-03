@@ -2,7 +2,7 @@ use std::rc::Rc;
 use std::collections::HashSet;
 
 use vybe_bytecode::{Chunk, Value, Op};
-use vybe_bytecode::chunk::TypeEntry;
+use vybe_compiler_common as common;
 use vybe_compiler_common::functions as common_fn;
 use vybe_parser_basic::ast::*;
 
@@ -31,10 +31,7 @@ pub struct Compiler {
     pub(crate) func_signatures: std::collections::HashMap<String, Vec<bool>>,
     /// Names known to hold arrays (from Dim arr(N) declarations)
     pub(crate) known_arrays: HashSet<String>,
-    /// WASM GC type table: compile-time type definitions for classes.
-    /// Loaded into VM's TypeRegistry before execution.
-    pub(crate) type_entries: Vec<TypeEntry>,
-    /// Class name → index into type_entries (for set_type_id at construction sites).
+    /// Class name → index into chunks[0].types (for set_type_id at construction sites).
     pub(crate) class_type_ids: std::collections::HashMap<String, usize>,
     /// Track current class's parent name (for MyBase.New() calls in constructors).
     pub(crate) current_class_parent: Option<String>,
@@ -67,7 +64,6 @@ impl Compiler {
             known_types: Self::init_known_types(),
             func_signatures: std::collections::HashMap::new(),
             known_arrays: HashSet::new(),
-            type_entries: Vec::new(),
             class_type_ids: std::collections::HashMap::new(),
             current_class_parent: None,
             interface_imports: vec![
@@ -113,8 +109,7 @@ impl Compiler {
         self.emit(Op::halt);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
-        // Attach WASM GC type table to script chunk
-        self.chunks[0].types = self.type_entries;
+        // Type entries are registered directly in chunks[0].types via common::classes::register_type
         vybe_compiler_common::bundle::finalize_with_stdlib(&mut self.chunks);
         Ok(self.chunks)
     }
@@ -579,24 +574,20 @@ impl Compiler {
             }
             Declaration::Interface(iface) => {
                 // Register interface as a type entry in the type table.
-                let method_entries: Vec<(String, usize)> = iface.methods.iter().map(|m| {
-                    let name = match m {
+                let method_names: Vec<String> = iface.methods.iter().map(|m| {
+                    match m {
                         vybe_parser_basic::ast::InterfaceMember::Sub { name, .. } => name.as_str().to_lowercase(),
                         vybe_parser_basic::ast::InterfaceMember::Function { name, .. } => name.as_str().to_lowercase(),
                         vybe_parser_basic::ast::InterfaceMember::Property { name, .. } => name.as_str().to_lowercase(),
                         vybe_parser_basic::ast::InterfaceMember::Event { name, .. } => name.as_str().to_lowercase(),
-                    };
-                    (name, 0usize) // chunk index 0 = placeholder for interface methods
+                    }
                 }).collect();
-                self.type_entries.push(TypeEntry {
-                    name: iface.name.as_str().to_lowercase(),
-                    parent: String::new(),
-                    fields: Vec::new(),
-                    methods: method_entries,
-                    is_interface: true,
-                    implements: Vec::new(),
-                    constructor_chunk: None,
-                });
+                common::classes::register_interface(
+                    &mut self.chunks,
+                    iface.name.as_str(),
+                    method_names,
+                    Vec::new(),
+                );
             }
             Declaration::Delegate(_) | Declaration::Event(_) => {
                 // Type declarations — no bytecode needed
