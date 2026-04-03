@@ -10,6 +10,7 @@ pub struct NumericUpDown {
     pub max: f64,
     pub increment: f64,
     pub focused: bool,
+    pub hovered: bool,
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
@@ -26,6 +27,7 @@ impl NumericUpDown {
             max: 100.0,
             increment: 1.0,
             focused: false,
+            hovered: false,
             width: 80.0,
             height: 24.0,
             colors: WidgetColors::default(),
@@ -160,6 +162,8 @@ impl NumericUpDown {
 impl PanelWidget for NumericUpDown {
     fn name(&self) -> &str { &self.name }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn hovered(&self) -> bool { self.hovered }
+    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
 

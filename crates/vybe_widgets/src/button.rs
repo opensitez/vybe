@@ -10,6 +10,7 @@ pub struct Button {
     pub disabled: bool,
     pub pressed: bool,
     pub focused: bool,
+    pub hovered: bool,
     pub colors: WidgetColors,
     pub width: f32,
     pub height: f32,
@@ -25,6 +26,7 @@ impl Button {
             disabled: false,
             pressed: false,
             focused: false,
+            hovered: false,
             colors: WidgetColors {
                 background: (239, 239, 239, 255),
                 border: (118, 118, 118, 255),
@@ -82,6 +84,8 @@ impl Button {
 impl PanelWidget for Button {
     fn name(&self) -> &str { &self.name }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn hovered(&self) -> bool { self.hovered }
+    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.width = rect.w;

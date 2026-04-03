@@ -79,6 +79,8 @@ impl LinkLabel {
 
 impl PanelWidget for LinkLabel {
     fn name(&self) -> &str { &self.name }
+    fn hovered(&self) -> bool { self.hovered }
+    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
 

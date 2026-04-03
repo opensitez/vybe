@@ -10,6 +10,7 @@ pub struct Slider {
     pub max: f32,
     pub disabled: bool,
     pub focused: bool,
+    pub hovered: bool,
     pub dragging: bool,
     pub colors: WidgetColors,
     pub width: f32,
@@ -30,6 +31,7 @@ impl Slider {
             max,
             disabled: false,
             focused: false,
+            hovered: false,
             dragging: false,
             colors: WidgetColors::default(),
             width: 200.0,
@@ -123,6 +125,8 @@ impl Slider {
 impl PanelWidget for Slider {
     fn name(&self) -> &str { &self.name }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn hovered(&self) -> bool { self.hovered }
+    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
 

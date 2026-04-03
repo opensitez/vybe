@@ -10,6 +10,7 @@ pub struct ListBox {
     pub item_height: f32,
     pub scroll_offset: f32,
     pub focused: bool,
+    pub hovered: bool,
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
@@ -26,6 +27,7 @@ impl ListBox {
             item_height: 18.0,
             scroll_offset: 0.0,
             focused: false,
+            hovered: false,
             width: 120.0,
             height: 120.0,
             colors: WidgetColors::default(),
@@ -148,6 +150,8 @@ impl ListBox {
 impl PanelWidget for ListBox {
     fn name(&self) -> &str { &self.name }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn hovered(&self) -> bool { self.hovered }
+    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
 

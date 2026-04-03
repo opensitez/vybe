@@ -10,6 +10,7 @@ pub struct Checkbox {
     pub label: String,
     pub disabled: bool,
     pub focused: bool,
+    pub hovered: bool,
     pub colors: WidgetColors,
     pub size: f32,
     pub name: String,
@@ -24,6 +25,7 @@ impl Checkbox {
             label: label.to_string(),
             disabled: false,
             focused: false,
+            hovered: false,
             colors: WidgetColors::default(),
             size: 16.0,
             name: label.to_string(),
@@ -102,6 +104,8 @@ impl Checkbox {
 impl PanelWidget for Checkbox {
     fn name(&self) -> &str { &self.name }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn hovered(&self) -> bool { self.hovered }
+    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
     }

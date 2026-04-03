@@ -265,6 +265,10 @@ pub enum WidgetEvent {
     TabControlChanged(String, usize),
     /// Generic named action (for custom widgets).
     Action(String),
+    /// Mouse entered a widget. Payload: widget name.
+    MouseEnter(String),
+    /// Mouse left a widget. Payload: widget name.
+    MouseLeave(String),
 }
 
 // ── PanelWidget Trait ──────────────────────────────────────────────────
@@ -307,6 +311,12 @@ pub trait PanelWidget {
 
     /// Notify the widget that it gained or lost focus.
     fn set_focused(&mut self, _focused: bool) {}
+
+    /// Whether the mouse is currently hovering over this widget.
+    fn hovered(&self) -> bool { false }
+
+    /// Notify the widget that the mouse entered or left it.
+    fn set_hovered(&mut self, _hovered: bool) {}
 }
 
 // ── NullWidget ─────────────────────────────────────────────────────────
@@ -337,11 +347,13 @@ impl PanelWidget for NullWidget {
 pub struct FocusManager {
     /// Index of the currently focused widget (into the caller's widget list).
     focused: Option<usize>,
+    /// Index of the widget the mouse is currently hovering over.
+    hovered: Option<usize>,
 }
 
 impl FocusManager {
     pub fn new() -> Self {
-        Self { focused: None }
+        Self { focused: None, hovered: None }
     }
 
     /// The currently focused widget index.
@@ -415,12 +427,14 @@ impl FocusManager {
         false
     }
 
-    /// Handle a mouse event: update focus on click, then delegate.
+    /// Handle a mouse event: update focus on click, update hover, then delegate.
     /// Returns `true` if the event was consumed.
     pub fn handle_mouse(&mut self, widgets: &mut [Box<dyn PanelWidget>], event: &MouseEvent) -> bool {
         if matches!(event.kind, MouseEventKind::Press(_)) {
             self.focus_at(widgets, event.x, event.y);
         }
+        // Update hover tracking on every mouse event
+        self.update_hover(widgets, event.x, event.y);
         // Delegate to all widgets (not just focused — for hover etc.)
         let mut consumed = false;
         for w in widgets.iter_mut() {
@@ -429,6 +443,32 @@ impl FocusManager {
             }
         }
         consumed
+    }
+
+    /// Update hover state: fire MouseEnter/MouseLeave when the hovered widget changes.
+    pub fn update_hover(&mut self, widgets: &mut [Box<dyn PanelWidget>], x: f32, y: f32) {
+        let mut new_hover: Option<usize> = None;
+        // Find topmost widget under cursor (last in list = topmost)
+        for (i, w) in widgets.iter().enumerate().rev() {
+            if w.rect().contains(x, y) {
+                new_hover = Some(i);
+                break;
+            }
+        }
+        if new_hover == self.hovered { return; }
+        // Leave old
+        if let Some(old) = self.hovered {
+            if old < widgets.len() {
+                widgets[old].set_hovered(false);
+            }
+        }
+        // Enter new
+        if let Some(idx) = new_hover {
+            if idx < widgets.len() {
+                widgets[idx].set_hovered(true);
+            }
+        }
+        self.hovered = new_hover;
     }
 
     /// Render all widgets, drawing a focus ring on the focused one.

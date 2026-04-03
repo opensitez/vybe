@@ -11,6 +11,7 @@ pub struct TextInput {
     pub password: bool,
     pub disabled: bool,
     pub focused: bool,
+    pub hovered: bool,
     pub colors: WidgetColors,
     pub font_size: f32,
     pub width: f32,
@@ -29,6 +30,7 @@ impl TextInput {
             password: false,
             disabled: false,
             focused: false,
+            hovered: false,
             colors: WidgetColors::default(),
             font_size: 14.0,
             width: 200.0,
@@ -139,6 +141,8 @@ impl TextInput {
 impl PanelWidget for TextInput {
     fn name(&self) -> &str { &self.name }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn hovered(&self) -> bool { self.hovered }
+    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.width = rect.w;

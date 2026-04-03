@@ -9,6 +9,7 @@ pub struct MaskedTextBox {
     pub value: String,
     pub cursor: usize,
     pub focused: bool,
+    pub hovered: bool,
     pub disabled: bool,
     pub width: f32,
     pub height: f32,
@@ -25,6 +26,7 @@ impl MaskedTextBox {
             value: String::new(),
             cursor: 0,
             focused: false,
+            hovered: false,
             disabled: false,
             width: 140.0,
             height: 24.0,
@@ -93,6 +95,8 @@ impl MaskedTextBox {
 impl PanelWidget for MaskedTextBox {
     fn name(&self) -> &str { &self.name }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn hovered(&self) -> bool { self.hovered }
+    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
 
