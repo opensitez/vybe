@@ -8,6 +8,7 @@
 
 use cosmic_text::{FontSystem, SwashCache};
 use tiny_skia::Pixmap;
+use winit::window::CursorIcon;
 
 // ── LayoutRect ─────────────────────────────────────────────────────────
 
@@ -135,6 +136,30 @@ pub enum Dock {
     Fill,
 }
 
+// ── Widget Events ──────────────────────────────────────────────────────
+
+/// Events emitted by widgets back to the host application.
+///
+/// Containers collect these; the host matches on them to handle callbacks
+/// without knowing widget layout details.
+#[derive(Clone, Debug)]
+pub enum WidgetEvent {
+    /// A tab was selected. Payload: tab index.
+    TabChanged(usize),
+    /// A tab close button was clicked. Payload: tab index.
+    TabCloseRequested(usize),
+    /// A status-bar section was clicked. Payload: section click_id.
+    StatusBarClick(String),
+    /// A tree-view item was opened. Payload: file path.
+    TreeItemOpened(String),
+    /// A dropdown item was selected. Payload: dropdown id, item index.
+    DropdownSelected(String, usize),
+    /// A menu action was selected. Payload: action id string.
+    MenuAction(String),
+    /// Generic named action (for custom widgets).
+    Action(String),
+}
+
 // ── PanelWidget Trait ──────────────────────────────────────────────────
 
 /// Core trait for widgets in the toolkit layout system.
@@ -157,6 +182,35 @@ pub trait PanelWidget {
     /// Handle a key event. Returns `true` if the event was consumed.
     fn handle_key(&mut self, event: &KeyEvent) -> bool;
 
+    /// Handle a scroll event at (x, y) with the given delta.
+    /// Returns `true` if the event was consumed.
+    fn handle_scroll(&mut self, _delta: f32, _x: f32, _y: f32) -> bool { false }
+
+    /// Return the desired cursor icon for the given position.
+    fn cursor_at(&self, _x: f32, _y: f32) -> CursorIcon { CursorIcon::Default }
+
+    /// Drain any pending events from this widget (and its children).
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { Vec::new() }
+
     /// Whether this widget wants keyboard focus.
     fn focusable(&self) -> bool { false }
+}
+
+// ── NullWidget ─────────────────────────────────────────────────────────
+
+/// A no-op widget used as a placeholder in containers.
+pub struct NullWidget {
+    rect: LayoutRect,
+}
+
+impl NullWidget {
+    pub fn new() -> Self { Self { rect: LayoutRect::zero() } }
+}
+
+impl PanelWidget for NullWidget {
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
+    fn rect(&self) -> LayoutRect { self.rect }
+    fn render(&mut self, _ctx: &mut RenderContext) {}
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
 }

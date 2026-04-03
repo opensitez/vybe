@@ -3,6 +3,8 @@
 
 use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
 use tiny_skia::{Paint, Pixmap, Transform, PathBuilder, Stroke};
+use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent};
+use winit::window::CursorIcon;
 
 const HEADER_H: f32 = 28.0;
 const TAB_H: f32 = 26.0;
@@ -101,6 +103,9 @@ pub struct ResourceEditor {
     pub add_cursor: usize,
     /// Whether the resource editor has been modified since last sync
     pub dirty: bool,
+    // Layout (PanelWidget)
+    pub layout_rect: LayoutRect,
+    pub pending_events: Vec<WidgetEvent>,
 }
 
 impl ResourceEditor {
@@ -117,6 +122,8 @@ impl ResourceEditor {
             add_editing: None,
             add_cursor: 0,
             dirty: false,
+            layout_rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
 
@@ -172,7 +179,7 @@ impl ResourceEditor {
         }
     }
 
-    pub fn render(
+    pub fn render_at(
         &self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache,
         x: f32, y: f32, w: f32, h: f32, scale: f32,
     ) {
@@ -840,4 +847,52 @@ fn stroke_rect(pix: &mut Pixmap, paint: &Paint, x: f32, y: f32, w: f32, h: f32, 
         let mut st = Stroke::default(); st.width = 1.0 * s;
         pix.stroke_path(&path, paint, &st, Transform::identity(), None);
     }
+}
+
+// ── PanelWidget impl ───────────────────────────────────────────────────
+
+impl PanelWidget for ResourceEditor {
+    fn set_rect(&mut self, rect: LayoutRect) { self.layout_rect = rect; }
+    fn rect(&self) -> LayoutRect { self.layout_rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.layout_rect;
+        self.render_at(ctx.pixmap, ctx.font_system, ctx.swash_cache, r.x, r.y, r.w, r.h, ctx.scale);
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        if !self.layout_rect.contains(event.x, event.y) { return false; }
+        true
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+
+    fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
+        if self.layout_rect.contains(x, y) {
+            let visible_h = self.layout_rect.h;
+            self.scroll(delta, visible_h);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cursor_at(&self, x: f32, y: f32) -> CursorIcon {
+        if self.layout_rect.contains(x, y) {
+            let r = self.layout_rect;
+            if self.is_resizing() || self.is_near_separator(x, r.x, r.y, r.w, y, r.h) {
+                CursorIcon::ColResize
+            } else {
+                CursorIcon::Default
+            }
+        } else {
+            CursorIcon::Default
+        }
+    }
+
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
+
+    fn focusable(&self) -> bool { true }
 }

@@ -8,6 +8,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use super::{App, Tab, TabContent, EditAction, SidebarTab, BottomPanelTab, SCALE, TAB_BAR_HEIGHT, FOOTER_HEIGHT, SPLITTER_WIDTH, MINIMAP_WIDTH, SIDEBAR_TAB_H};
 use crate::editor::Editor as MyEditor;
 use crate::language::load_language;
+use vybe_widgets::PanelWidget;
 use crate::lsp_client::LspRequest;
 use vybe_widgets::{TreeEvent, Dropdown, DropdownEvent};
 use vybe_widgets::code_editor_widget::CodeEditorWidget;
@@ -30,7 +31,8 @@ impl App {
             return;
         }
         if self.mouse_pos.1 / SCALE < tch + TAB_BAR_HEIGHT && self.mouse_pos.1 / SCALE >= tch {
-            self.tab_scroll_x -= a;
+            // Tab bar scroll is now handled by the toolkit (TabPanel.scroll_tab_bar)
+            return;
         } else if self.active_tab < self.tabs.len() {
             match &mut self.tabs[self.active_tab].content {
                 TabContent::Code(w) => w.scroll_y -= a,
@@ -118,21 +120,13 @@ impl App {
             
         }
 
-        // 2. Tab Close Hover
-        let last_tab_hover = self.hovering_tab_close;
-        self.hovering_tab_close = None;
-        let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
+        // 2. Tab bar hover — delegated to TabPanel
         let tch = self.top_chrome_h();
+        let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
         if my >= tch && my < tch + TAB_BAR_HEIGHT && mx > ed_start_x {
-            let mut tx = ed_start_x;
-            for i in 0..self.tabs.len() {
-                let tw = 160.0;
-                if mx >= tx + tw - 30.0 && mx <= tx + tw - 5.0 {
-                    self.hovering_tab_close = Some(i);
-                    break;
-                }
-                tx += tw;
-            }
+            use vybe_widgets::layout::{MouseEvent as WMouseEvent, MouseEventKind as WMEKind};
+            let move_event = WMouseEvent { x: mx, y: my, kind: WMEKind::Move, cmd: self.cmd_held, shift: self.shift_held, alt: self.alt_held };
+            self.tab_panel.handle_mouse(&move_event);
         }
 
         // 3. Menu hover for form designer
@@ -160,7 +154,7 @@ impl App {
             let ed_top = (tch + TAB_BAR_HEIGHT) * SCALE;
             let r = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.win_width * SCALE - ed_start_x * SCALE, self.win_height * SCALE - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
             match &mut self.tabs[self.active_tab].content {
-                TabContent::Code(cw) => { cw.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); },
+                TabContent::Code(cw) => { cw.handle_mouse_pixels(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); },
                 TabContent::Form(f) => f.handle_mouse_move(self.mouse_pos.0 / SCALE, self.mouse_pos.1 / SCALE, crate::form_designer_tab::Rect { x: ed_start_x, y: ed_top / SCALE, w: r.width() / SCALE, h: r.height() / SCALE }),
                 TabContent::Resources(_) => {}
             }
@@ -222,7 +216,6 @@ impl App {
 
         // Smart Redraw: Only if interaction state changed or dragging
         if was_hovering_splitter != self.hovering_splitter ||
-           last_tab_hover != self.hovering_tab_close ||
            self.is_dragging_splitter ||
            self.lang_dropdown.is_some() ||
            form_menu_open ||
@@ -913,7 +906,7 @@ impl App {
                     let mut start_drag = true;
                     match &mut self.tabs[self.active_tab].content {
                         TabContent::Code(cw) => {
-                            let consumed = cw.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.shift_held)), &mut self.clipboard);
+                            let consumed = cw.handle_mouse_pixels(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.shift_held)), &mut self.clipboard);
                             if consumed { start_drag = false; }
                         }
                         TabContent::Form(f) => {

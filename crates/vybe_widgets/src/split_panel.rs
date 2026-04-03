@@ -203,4 +203,47 @@ impl PanelWidget for SplitPanel {
         }
         false
     }
+
+    fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
+        if let Some(p1) = &mut self.panel1 {
+            if p1.rect().contains(x, y) && p1.handle_scroll(delta, x, y) {
+                return true;
+            }
+        }
+        if let Some(p2) = &mut self.panel2 {
+            if p2.rect().contains(x, y) && p2.handle_scroll(delta, x, y) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {
+        let sr = self.splitter_rect();
+        if sr.contains(x, y) || self.dragging {
+            return if self.horizontal {
+                winit::window::CursorIcon::ColResize
+            } else {
+                winit::window::CursorIcon::RowResize
+            };
+        }
+        if let Some(p1) = &self.panel1 {
+            if p1.rect().contains(x, y) { return p1.cursor_at(x, y); }
+        }
+        if let Some(p2) = &self.panel2 {
+            if p2.rect().contains(x, y) { return p2.cursor_at(x, y); }
+        }
+        winit::window::CursorIcon::Default
+    }
+
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        let mut events = Vec::new();
+        if let Some(p1) = &mut self.panel1 {
+            events.extend(p1.drain_events());
+        }
+        if let Some(p2) = &mut self.panel2 {
+            events.extend(p2.drain_events());
+        }
+        events
+    }
 }

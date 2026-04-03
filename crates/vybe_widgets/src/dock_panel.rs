@@ -163,4 +163,34 @@ impl PanelWidget for DockPanel {
         }
         false
     }
+
+    fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
+        for child in self.children.iter_mut().rev() {
+            if child.visible && child.widget.rect().contains(x, y) {
+                if child.widget.handle_scroll(delta, x, y) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {
+        for child in self.children.iter().rev() {
+            if child.visible && child.widget.rect().contains(x, y) {
+                return child.widget.cursor_at(x, y);
+            }
+        }
+        winit::window::CursorIcon::Default
+    }
+
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        let mut events = Vec::new();
+        for child in &mut self.children {
+            if child.visible {
+                events.extend(child.widget.drain_events());
+            }
+        }
+        events
+    }
 }

@@ -28,6 +28,9 @@ pub struct TabPanel {
     tab_text: (u8, u8, u8, u8),
     tab_active_text: (u8, u8, u8, u8),
     accent_color: (u8, u8, u8, u8),
+    pending_events: Vec<WidgetEvent>,
+    hovering_close: Option<usize>,
+    scroll_x: f32,
 }
 
 impl TabPanel {
@@ -43,6 +46,9 @@ impl TabPanel {
             tab_text: (150, 150, 150, 255),
             tab_active_text: (255, 255, 255, 255),
             accent_color: (0, 122, 204, 255),
+            pending_events: Vec::new(),
+            hovering_close: None,
+            scroll_x: 0.0,
         }
     }
 
@@ -72,6 +78,26 @@ impl TabPanel {
             closable,
         });
         self.relayout();
+    }
+
+    /// Add a tab header with no content widget (uses NullWidget).
+    /// The host app manages content rendering separately.
+    pub fn add_tab_header(&mut self, name: &str, closable: bool) {
+        self.tabs.push(TabEntry {
+            name: name.to_string(),
+            widget: Box::new(NullWidget::new()),
+            closable,
+        });
+    }
+
+    /// Insert a tab header at a specific position.
+    pub fn insert_tab_header(&mut self, index: usize, name: &str, closable: bool) {
+        let idx = index.min(self.tabs.len());
+        self.tabs.insert(idx, TabEntry {
+            name: name.to_string(),
+            widget: Box::new(NullWidget::new()),
+            closable,
+        });
     }
 
     pub fn active_index(&self) -> usize { self.active }
@@ -143,6 +169,13 @@ impl TabPanel {
     }
 
     fn tab_width(&self) -> f32 { 120.0 }
+
+    /// Scroll the tab bar (e.g. from mouse wheel over tab bar).
+    pub fn scroll_tab_bar(&mut self, delta: f32) {
+        self.scroll_x = (self.scroll_x - delta).max(0.0);
+        let max_scroll = (self.tabs.len() as f32 * self.tab_width() - self.rect.w).max(0.0);
+        self.scroll_x = self.scroll_x.min(max_scroll);
+    }
 }
 
 impl PanelWidget for TabPanel {
@@ -170,7 +203,9 @@ impl PanelWidget for TabPanel {
         // Tab headers
         let tw = self.tab_width();
         for (i, tab) in self.tabs.iter().enumerate() {
-            let tx = self.rect.x + i as f32 * tw;
+            let tx = self.rect.x + i as f32 * tw - self.scroll_x;
+            // Skip tabs that are scrolled out of view
+            if tx + tw < self.rect.x || tx > self.rect.right() { continue; }
             let is_active = i == self.active;
 
             // Tab bg
@@ -191,6 +226,23 @@ impl PanelWidget for TabPanel {
                 CosmicColor::rgba(tr, tg, tb, ta),
                 ctx.scale,
             );
+
+            // Close button (×) for closable tabs
+            if tab.closable {
+                let close_x = tx + tw - 20.0;
+                let close_y = self.rect.y + (self.tab_height - 12.0) / 2.0;
+                let hover = self.hovering_close == Some(i);
+                let close_col = if hover {
+                    CosmicColor::rgba(255, 100, 100, 255)
+                } else {
+                    CosmicColor::rgba(160, 160, 160, 255)
+                };
+                ide_text::draw_text(
+                    ctx.pixmap, ctx.font_system, ctx.swash_cache,
+                    "×",
+                    close_x, close_y, 12.0, close_col, ctx.scale,
+                );
+            }
 
             // Active indicator line
             if is_active {
@@ -220,19 +272,43 @@ impl PanelWidget for TabPanel {
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        // Tab bar click
+        // Tab bar region
         let tab_bar = LayoutRect::new(self.rect.x, self.rect.y, self.rect.w, self.tab_height);
         if tab_bar.contains(event.x, event.y) {
-            if let MouseEventKind::Press(MouseButton::Left) = event.kind {
-                let tw = self.tab_width();
-                let rel_x = event.x - self.rect.x;
-                let idx = (rel_x / tw) as usize;
-                if idx < self.tabs.len() && idx != self.active {
-                    self.active = idx;
-                    self.relayout();
+            let tw = self.tab_width();
+            let rel_x = event.x - self.rect.x + self.scroll_x;
+            let idx = (rel_x / tw) as usize;
+
+            match event.kind {
+                MouseEventKind::Press(MouseButton::Left) => {
+                    if idx < self.tabs.len() {
+                        // Check close button hit (last 20px of tab)
+                        let tab_local_x = rel_x - idx as f32 * tw;
+                        if self.tabs[idx].closable && tab_local_x >= tw - 22.0 {
+                            self.pending_events.push(WidgetEvent::TabCloseRequested(idx));
+                        } else if idx != self.active {
+                            self.active = idx;
+                            self.relayout();
+                            self.pending_events.push(WidgetEvent::TabChanged(idx));
+                        }
+                    }
+                    return true;
                 }
-                return true;
+                MouseEventKind::Move => {
+                    // Update close button hover
+                    let old = self.hovering_close;
+                    self.hovering_close = None;
+                    if idx < self.tabs.len() && self.tabs[idx].closable {
+                        let tab_local_x = rel_x - idx as f32 * tw;
+                        if tab_local_x >= tw - 22.0 {
+                            self.hovering_close = Some(idx);
+                        }
+                    }
+                    return self.hovering_close != old;
+                }
+                _ => {}
             }
+            return false;
         }
 
         // Route to active content
@@ -249,5 +325,32 @@ impl PanelWidget for TabPanel {
             return tab.widget.handle_key(event);
         }
         false
+    }
+
+    fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            if tab.widget.rect().contains(x, y) {
+                return tab.widget.handle_scroll(delta, x, y);
+            }
+        }
+        false
+    }
+
+    fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {
+        if let Some(tab) = self.tabs.get(self.active) {
+            if tab.widget.rect().contains(x, y) {
+                return tab.widget.cursor_at(x, y);
+            }
+        }
+        winit::window::CursorIcon::Default
+    }
+
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        let mut events = Vec::new();
+        events.extend(self.pending_events.drain(..));
+        for tab in &mut self.tabs {
+            events.extend(tab.widget.drain_events());
+        }
+        events
     }
 }

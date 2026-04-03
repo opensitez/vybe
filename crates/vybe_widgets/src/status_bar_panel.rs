@@ -23,6 +23,7 @@ pub struct StatusBarPanel {
     sections: Vec<StatusSection>,
     height: f32,
     bg_color: (u8, u8, u8, u8),
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl StatusBarPanel {
@@ -32,6 +33,7 @@ impl StatusBarPanel {
             sections: Vec::new(),
             height: 24.0,
             bg_color: (0, 122, 204, 255),
+            pending_events: Vec::new(),
         }
     }
 
@@ -159,7 +161,17 @@ impl PanelWidget for StatusBarPanel {
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
         if !self.rect.contains(event.x, event.y) { return false; }
-        matches!(event.kind, MouseEventKind::Press(_))
+        if let MouseEventKind::Press(_) = &event.kind {
+            if let Some(id) = self.hit_test_section(event.x, event.y) {
+                self.pending_events.push(WidgetEvent::StatusBarClick(id.to_string()));
+            }
+            return true;
+        }
+        false
+    }
+
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
     }
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }

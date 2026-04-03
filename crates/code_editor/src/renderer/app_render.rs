@@ -6,9 +6,15 @@ use tiny_skia::{Color as SkiaColor, Paint, Pixmap, PixmapPaint, Rect, Transform,
 use cosmic_text::Edit;
 use super::{App, TabContent, SidebarTab, BottomPanelTab, SCALE, TAB_BAR_HEIGHT, MINIMAP_WIDTH, UI_BAR_HEIGHT, FOOTER_HEIGHT, GUTTER_WIDTH, SPLITTER_WIDTH, SIDEBAR_TAB_H};
 use crate::lsp_client::{LspRequest, LspEvent};
+use vybe_widgets::layout::RenderContext;
+use vybe_widgets::PanelWidget;
 
 impl App {
     pub(super) fn render_internal(&mut self, pix: &mut Pixmap) {
+        // Process pending widget events
+        self.process_widget_events();
+        self.relayout();
+
         // Debounce LSP Update
         if self.pending_lsp_update && self.last_lsp_update.elapsed().as_millis() > 300 {
             let mut lsp_text = None;
@@ -123,69 +129,27 @@ impl App {
         let mut lp = Paint::default(); lp.set_color_rgba8(theme.splitter_bg.r().saturating_add(20), theme.splitter_bg.g().saturating_add(20), theme.splitter_bg.b().saturating_add(20), 255);
         pix.fill_rect(Rect::from_xywh((self.explorer_width + SPLITTER_WIDTH) * SCALE, top_chrome_px, 1.0 * SCALE, pix.height() as f32 - top_chrome_px).unwrap(), &lp, Transform::identity(), None);
 
-        // 2. Tab Bar
+        // 2. Tab Bar — rendered by toolkit TabPanel
         let ed_start_x = (self.explorer_width + SPLITTER_WIDTH + 1.0) * SCALE;
-        let mut tp = Paint::default(); tp.set_color_rgba8(theme.tab_bar_bg.r(), theme.tab_bar_bg.g(), theme.tab_bar_bg.b(), theme.tab_bar_bg.a());
-        pix.fill_rect(Rect::from_xywh(ed_start_x, top_chrome_px, pix.width() as f32 - ed_start_x, TAB_BAR_HEIGHT * SCALE).unwrap(), &tp, Transform::identity(), None);
-
-            let mut tx_off = ed_start_x + self.tab_scroll_x;
-            for i in 0..self.tabs.len() {
-                if tx_off + 160.0 * SCALE < ed_start_x { tx_off += 160.0 * SCALE; continue; }
-                if tx_off > pix.width() as f32 { break; }
-                
-                let active = i == self.active_tab;
-                let tw = 160.0 * SCALE;
-                
-                if active {
-                    let mut ap = Paint::default(); ap.set_color_rgba8(theme.active_tab_bg.r(), theme.active_tab_bg.g(), theme.active_tab_bg.b(), theme.active_tab_bg.a());
-                    pix.fill_rect(Rect::from_xywh(tx_off, top_chrome_px, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ap, Transform::identity(), None);
-                    let mut up = Paint::default(); up.set_color_rgba8(theme.kw.r(), theme.kw.g(), theme.kw.b(), 255);
-                    pix.fill_rect(Rect::from_xywh(tx_off, top_chrome_px + (TAB_BAR_HEIGHT - 2.0) * SCALE, tw, 2.0 * SCALE).unwrap(), &up, Transform::identity(), None);
-                } else {
-                    let mut ip = Paint::default(); ip.set_color_rgba8(theme.inactive_tab_bg.r(), theme.inactive_tab_bg.g(), theme.inactive_tab_bg.b(), theme.inactive_tab_bg.a());
-                    pix.fill_rect(Rect::from_xywh(tx_off, top_chrome_px, tw, TAB_BAR_HEIGHT * SCALE).unwrap(), &ip, Transform::identity(), None);
-                }
-
-                let (is_sticky, name, is_modified) = {
-                    let t = &self.tabs[i];
-                    (t.is_sticky, t.name.clone(), t.is_modified)
-                };
-                let name_str = if is_sticky { name } else { format!("{} [P]", name) };
-                let col = if active { theme.active_tab_text } else { theme.inactive_tab_text };
-
-                let tab_mut = &mut self.tabs[i];
-                if tab_mut.buffer.is_none() {
-                    let mut lab = Buffer::new(&mut self.font_system, Metrics::new(14.0,20.0).scale(SCALE));
-                    lab.set_text(&mut self.font_system, &name_str, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None);
-                    lab.shape_until_scroll(&mut self.font_system, false);
-                    tab_mut.buffer = Some(lab);
-                }
-                if let Some(lab) = &tab_mut.buffer {
-                    for r in lab.layout_runs() {
-                        for g in r.glyphs {
-                            let pg = g.physical((tx_off + 10.0 * SCALE, top_chrome_px + 10.0 * SCALE + r.line_y), 1.0);
-                            if let Some(im) = self.swash_cache.get_image(&mut self.font_system, pg.cache_key) {
-                                let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap();
-                                let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
-                                for (idx, &al) in im.data.iter().enumerate() {
-                                    let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
-                                    p.pixels_mut()[idx] = ColorU8::from_rgba((cr as f32 * af) as u8, (cg as f32 * af) as u8, (cb as f32 * af) as u8, (255.0 * af) as u8).premultiply();
-                                }
-                                pix.draw_pixmap(pg.x + im.placement.left, pg.y - im.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
-                            }
-                        }
-                    }
-                }
-                
-                if is_modified {
-                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "•", tx_off + tw - 24.0 * SCALE, top_chrome_px + 10.0 * SCALE, Color::rgb(180, 180, 180));
-                } else {
-                    let is_close_hover = self.hovering_tab_close == Some(i);
-                    App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "×", tx_off + tw - 24.0 * SCALE, top_chrome_px + 10.0 * SCALE, if is_close_hover { Color::rgb(255, 100, 100) } else { Color::rgb(120,120,120) });
-                }
-
-                tx_off += tw;
-            }
+        {
+            // Update tab panel theme colors
+            self.tab_panel.set_colors(
+                (theme.bg.r(), theme.bg.g(), theme.bg.b(), theme.bg.a()),
+                (theme.tab_bar_bg.r(), theme.tab_bar_bg.g(), theme.tab_bar_bg.b(), theme.tab_bar_bg.a()),
+                (theme.active_tab_bg.r(), theme.active_tab_bg.g(), theme.active_tab_bg.b(), theme.active_tab_bg.a()),
+                (theme.inactive_tab_text.r(), theme.inactive_tab_text.g(), theme.inactive_tab_text.b(), theme.inactive_tab_text.a()),
+                (theme.active_tab_text.r(), theme.active_tab_text.g(), theme.active_tab_text.b(), theme.active_tab_text.a()),
+                (theme.kw.r(), theme.kw.g(), theme.kw.b(), 255),
+            );
+            self.sync_tab_headers();
+            let mut ctx = RenderContext {
+                pixmap: pix,
+                font_system: &mut self.font_system,
+                swash_cache: &mut self.swash_cache,
+                scale: SCALE,
+            };
+            self.tab_panel.render(&mut ctx);
+        }
 
         // 3. Active Editor or Designer
         let output_h = if self.output_visible { self.output_panel_height } else { 0.0 };
@@ -307,10 +271,10 @@ impl App {
                          }
                      });
                      w.needs_reshape = true;
-                     w.render(pix, &mut self.font_system, &mut self.swash_cache, rect);
+                     w.render_pixels(pix, &mut self.font_system, &mut self.swash_cache, rect);
                  }
                  TabContent::Resources(r) => {
-                     r.render(pix, &mut self.font_system, &mut self.swash_cache, rect.left() / SCALE, rect.top() / SCALE, rect.width() / SCALE, rect.height() / SCALE, SCALE);
+                     r.render_at(pix, &mut self.font_system, &mut self.swash_cache, rect.left() / SCALE, rect.top() / SCALE, rect.width() / SCALE, rect.height() / SCALE, SCALE);
                  }
              }
         }
@@ -424,56 +388,56 @@ impl App {
             }
         }
 
-        // 4. Footer
-        let mut fp = Paint::default(); fp.set_color_rgba8(theme.footer_bg.r(), theme.footer_bg.g(), theme.footer_bg.b(), theme.footer_bg.a());
-        pix.fill_rect(Rect::from_xywh(0.0, pix.height() as f32 - FOOTER_HEIGHT * SCALE, pix.width() as f32, FOOTER_HEIGHT * SCALE).unwrap(), &fp, Transform::identity(), None);
-        
-        if let Some(tab) = self.tabs.get(self.active_tab) {
-            let path_str = tab.path.clone().unwrap_or_else(|| tab.name.clone());
-            let segments: Vec<&str> = path_str.split(|c| c == '/' || c == '\\').filter(|s| !s.is_empty()).collect();
-            
-            let status_prefix = match &tab.content {
-                TabContent::Code(cw) => {
-                    let cursor = cw.editor.cursor();
-                    let text = cw.my_editor.rope.to_string();
-                    let line_endings = if text.contains("\r\n") { "CRLF" } else { "LF" };
-                    let zoom_pct = (cw.font_size / 14.0 * 100.0) as i32;
-                    format!("Ln {}, Col {} | {}% | {} | UTF-8 | ", cursor.line + 1, cursor.index + 1, zoom_pct, line_endings)
-                }
-                TabContent::Form(f) => {
-                    let sels = f.selected_controls.len();
-                    format!("{} Selected | Form Designer | ", sels)
-                }
-                TabContent::Resources(r) => {
-                    format!("{} resources | {} | ", r.entries.len(), r.active_tab.label())
-                }
-            };
-            
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &status_prefix, 10.0 * SCALE, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
-            
-            let mut current_x = 10.0 * SCALE + (status_prefix.len() as f32 * 8.4 * SCALE);
-            self.breadcrumb_rects.clear();
-            for (i, seg) in segments.iter().enumerate() {
-                let seg_text = if i == segments.len() - 1 { seg.to_string() } else { format!("{} > ", seg) };
-                let seg_width = seg_text.len() as f32 * 8.4 * SCALE;
-                let rect = Rect::from_xywh(current_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE, seg_width, FOOTER_HEIGHT * SCALE).unwrap();
-                let partial_path = segments[0..=i].join("/");
-                self.breadcrumb_rects.push((rect, partial_path));
-                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &seg_text, current_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
-                current_x += seg_width;
-            }
+        // 4. Footer — rendered by toolkit StatusBarPanel
+        {
+            // Update status bar sections based on current state
+            self.status_bar.sections_mut().clear();
+            self.status_bar.set_background(theme.footer_bg.r(), theme.footer_bg.g(), theme.footer_bg.b(), theme.footer_bg.a());
 
+            // Left section: cursor info
+            let status_text = if let Some(tab) = self.tabs.get(self.active_tab) {
+                match &tab.content {
+                    TabContent::Code(cw) => {
+                        let cursor = cw.editor.cursor();
+                        let text = cw.my_editor.rope.to_string();
+                        let line_endings = if text.contains("\r\n") { "CRLF" } else { "LF" };
+                        let zoom_pct = (cw.font_size / 14.0 * 100.0) as i32;
+                        format!("Ln {}, Col {} | {}% | {} | UTF-8", cursor.line + 1, cursor.index + 1, zoom_pct, line_endings)
+                    }
+                    TabContent::Form(f) => {
+                        format!("{} Selected | Form Designer", f.selected_controls.len())
+                    }
+                    TabContent::Resources(r) => {
+                        format!("{} resources | {}", r.entries.len(), r.active_tab.label())
+                    }
+                }
+            } else { String::new() };
+            self.status_bar.add_section(&status_text, status_text.len() as f32 * 7.5, false);
+
+            // Right sections (right to left)
             let lang_label = format!("Language: {}", self.current_lang);
+            self.status_bar.add_section_with_id(&lang_label, lang_label.len() as f32 * 7.5, true, "lang");
             let theme_label = format!("Theme: {}", theme_name);
-            let config_label = match self.build_config { super::BuildConfig::Debug => "Debug", super::BuildConfig::Release => "Release" };
-            let label_x = pix.width() as f32 - (lang_label.len() as f32 * 9.0 + 20.0) * SCALE;
-            let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0) * SCALE;
-            let config_x = theme_x - ((config_label.len() + 2) as f32 * 9.0 + 20.0) * SCALE;
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &lang_label, label_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &theme_label, theme_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
-            // Build config indicator
-            let config_col = match self.build_config { super::BuildConfig::Debug => Color::rgb(255, 180, 50), super::BuildConfig::Release => Color::rgb(100, 200, 100) };
-            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("[{}]", config_label), config_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, config_col);
+            self.status_bar.add_section_with_id(&theme_label, theme_label.len() as f32 * 7.5, true, "theme");
+            let config_label = match self.build_config { super::BuildConfig::Debug => "[Debug]", super::BuildConfig::Release => "[Release]" };
+            self.status_bar.add_section_with_id(config_label, config_label.len() as f32 * 7.5, true, "config");
+
+            let mut ctx = RenderContext {
+                pixmap: pix,
+                font_system: &mut self.font_system,
+                swash_cache: &mut self.swash_cache,
+                scale: SCALE,
+            };
+            self.status_bar.render(&mut ctx);
+        }
+
+        // Dropdown overlays (floating above everything)
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            let _dummy = &tab.content; // keep borrow checker happy
+            let lang_label = format!("Language: {}", self.current_lang);
+            let label_x = pix.width() as f32 / SCALE - (lang_label.len() as f32 * 9.0 + 20.0);
+            let theme_label = format!("Theme: {}", theme_name);
+            let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0);
 
             if let Some(dropdown) = &self.lang_dropdown {
                 let (w, h) = dropdown.get_size();

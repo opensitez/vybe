@@ -9,6 +9,8 @@ use arboard::Clipboard;
 
 use crate::text_editor::TextEditor;
 use crate::language::LanguageDef;
+use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent};
+use winit::window::CursorIcon;
 pub use crate::text_editor::TokenKind;
 
 /// Default layout constants. Can be overridden per-widget via the config fields.
@@ -608,6 +610,11 @@ pub struct CodeEditorWidget {
     // Hover tooltip
     pub hover_text: Option<String>,
     pub hover_pos: (f32, f32), // pixel position where hover was triggered
+    // Layout (PanelWidget)
+    pub layout_rect: LayoutRect,
+    pub clipboard: Option<Clipboard>,
+    /// Pending events (for drain_events)
+    pub pending_events: Vec<WidgetEvent>,
 }
 
 impl CodeEditorWidget {
@@ -623,7 +630,7 @@ impl CodeEditorWidget {
         let text = my_editor.rope.to_string();
         buffer.set_text(font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
 
-        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false, diagnostics: Vec::new(), matching_bracket: None, autocomplete_items: Vec::new(), autocomplete_selected: 0, autocomplete_visible: false, hover_text: None, hover_pos: (0.0, 0.0) };
+        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false, diagnostics: Vec::new(), matching_bracket: None, autocomplete_items: Vec::new(), autocomplete_selected: 0, autocomplete_visible: false, hover_text: None, hover_pos: (0.0, 0.0), layout_rect: LayoutRect::zero(), clipboard: Clipboard::new().ok(), pending_events: Vec::new() };
         widget.update_digit_cache(font_system);
         widget
     }
@@ -779,7 +786,7 @@ impl CodeEditorWidget {
         }
     }
 
-    pub fn render(&mut self, pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, rect: Rect) {
+    pub fn render_pixels(&mut self, pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, rect: Rect) {
         if self.needs_reshape { apply_highlighting(&mut self.editor, &self.my_editor, &Attrs::new().family(Family::Monospace), &self.lang_def, &self.theme); self.editor.shape_as_needed(fs, false); self.needs_reshape = false; }
         let (x_off, y_off) = self.get_offsets(rect);
         let mut sp = Paint::default(); sp.set_color_rgba8(self.theme.sidebar_bg.r(), self.theme.sidebar_bg.g(), self.theme.sidebar_bg.b(), self.theme.sidebar_bg.a());
@@ -1246,7 +1253,7 @@ impl CodeEditorWidget {
         }
     }
 
-    pub fn handle_mouse(&mut self, fs: &mut FontSystem, x: f32, y: f32, rect: Rect, click: Option<(u32, MouseButton, bool)>, clipboard: &mut Option<Clipboard>) -> bool {
+    pub fn handle_mouse_pixels(&mut self, fs: &mut FontSystem, x: f32, y: f32, rect: Rect, click: Option<(u32, MouseButton, bool)>, clipboard: &mut Option<Clipboard>) -> bool {
         if x < rect.left() || x > rect.right() || y < rect.top() || y > rect.bottom() { return false; }
         if let Some((_, MouseButton::Right, _)) = click { self.context_menu = Some(((x, y), vec!["Copy".to_string(), "Paste".to_string(), "Cut".to_string(), "Select All".to_string(), "Find".to_string(), "Replace".to_string()])); return false; }
         if let Some((pos, _)) = self.context_menu {
@@ -1327,6 +1334,75 @@ impl CodeEditorWidget {
 }
 
 /// Draw monospace UI text at physical pixel coordinates (used for gutter, overlays, etc.)
+// ── PanelWidget impl ───────────────────────────────────────────────────
+
+impl PanelWidget for CodeEditorWidget {
+    fn set_rect(&mut self, rect: LayoutRect) { self.layout_rect = rect; }
+    fn rect(&self) -> LayoutRect { self.layout_rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let s = ctx.scale;
+        let r = self.layout_rect;
+        if let Some(pixel_rect) = Rect::from_xywh(r.x * s, r.y * s, r.w * s, r.h * s) {
+            // Update buffer size for wrap
+            let wrap_lines = self.wrap_lines;
+            self.editor.with_buffer_mut(|b| {
+                let wrap = if wrap_lines { cosmic_text::Wrap::Word } else { cosmic_text::Wrap::None };
+                if b.wrap() != wrap { b.set_wrap(ctx.font_system, wrap); }
+                if wrap_lines {
+                    b.set_size(ctx.font_system, Some(pixel_rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * s), Some(pixel_rect.height()));
+                } else {
+                    b.set_size(ctx.font_system, Some(999999.0), Some(999999.0));
+                }
+            });
+            self.needs_reshape = true;
+            self.render_pixels(ctx.pixmap, ctx.font_system, ctx.swash_cache, pixel_rect);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.layout_rect;
+        if !r.contains(event.x, event.y) { return false; }
+        // Actual mouse handling is done by the IDE which has the shared FontSystem.
+        // This just claims the event so containers route it correctly.
+        match &event.kind {
+            MouseEventKind::Scroll(delta) => {
+                self.scroll_y -= delta;
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        // Keyboard is handled by the IDE layer which has full context
+        false
+    }
+
+    fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
+        if self.layout_rect.contains(x, y) {
+            self.scroll_y -= delta;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cursor_at(&self, x: f32, y: f32) -> CursorIcon {
+        if self.layout_rect.contains(x, y) {
+            CursorIcon::Text
+        } else {
+            CursorIcon::Default
+        }
+    }
+
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
+
+    fn focusable(&self) -> bool { true }
+}
+
 fn draw_ui_text(pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, text: &str, x: f32, y: f32, col: Color) {
     let mut lab = Buffer::new(fs, Metrics::new(14.0, 20.0).scale(SCALE));
     lab.set_text(fs, text, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None);

@@ -19,6 +19,8 @@ use crate::language::load_language;
 use crate::lsp_client::{LspClient, LspRequest};
 use vybe_widgets::{TreeView, Dropdown};
 use vybe_widgets::code_editor_widget::{Theme, CodeEditorWidget};
+use vybe_widgets::{SplitPanel, TabPanel, StatusBarPanel, LayoutRect, PanelWidget};
+use vybe_widgets::layout::{RenderContext, WidgetEvent};
 
 use dialogs::ProjectPropsDialog;
 
@@ -146,6 +148,10 @@ pub(crate) struct App {
     pub(crate) goto_line_query: String,
     // Build configuration
     pub(crate) build_config: BuildConfig,
+    // ── Toolkit Containers ──────────────────────────────────────────
+    pub(crate) split_panel: SplitPanel,   // sidebar | editor area
+    pub(crate) tab_panel: TabPanel,       // editor tab bar
+    pub(crate) status_bar: StatusBarPanel, // footer status bar
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -256,6 +262,21 @@ impl App {
             goto_line_open: false,
             goto_line_query: String::new(),
             build_config: BuildConfig::Debug,
+            split_panel: {
+                let mut sp = SplitPanel::new(true); // horizontal split
+                sp.set_split_pos(EXPLORER_WIDTH);
+                sp
+            },
+            tab_panel: {
+                let mut tp = TabPanel::new();
+                tp.set_tab_height(TAB_BAR_HEIGHT);
+                tp
+            },
+            status_bar: {
+                let mut sb = StatusBarPanel::new();
+                sb.set_height(FOOTER_HEIGHT);
+                sb
+            },
         }
     }
 
@@ -265,6 +286,106 @@ impl App {
             28.0 + 36.0
         } else {
             0.0
+        }
+    }
+
+    /// Sync toolkit containers with current window dimensions.
+    pub(crate) fn relayout(&mut self) {
+        let w = self.win_width;
+        let h = self.win_height;
+        let tch = self.top_chrome_h();
+
+        // Status bar at bottom
+        self.status_bar.set_rect(LayoutRect::new(0.0, h - FOOTER_HEIGHT, w, FOOTER_HEIGHT));
+
+        // Split panel fills area between top chrome and status bar
+        let main_h = h - tch - FOOTER_HEIGHT;
+        self.split_panel.set_rect(LayoutRect::new(0.0, tch, w, main_h));
+        self.split_panel.set_split_pos(self.explorer_width);
+
+        // Tab panel occupies the right side of the split (panel2 area)
+        let tab_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
+        let tab_w = (w - tab_x).max(0.0);
+        let output_h = if self.output_visible { self.output_panel_height } else { 0.0 };
+        self.tab_panel.set_rect(LayoutRect::new(tab_x, tch, tab_w, TAB_BAR_HEIGHT));
+    }
+
+    /// Sync tab_panel headers with the IDE tab list.
+    pub(crate) fn sync_tab_headers(&mut self) {
+        // Remove extra tabs from panel
+        while self.tab_panel.tab_count() > self.tabs.len() {
+            self.tab_panel.remove_tab(self.tab_panel.tab_count() - 1);
+        }
+        // Add missing tabs
+        while self.tab_panel.tab_count() < self.tabs.len() {
+            let i = self.tab_panel.tab_count();
+            let closable = !self.tabs[i].is_sticky;
+            self.tab_panel.add_tab_header(&self.tabs[i].name, closable);
+        }
+        // Update names and active index
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let display_name = if tab.is_modified {
+                format!("{}  \u{2022}", tab.name)
+            } else {
+                tab.name.clone()
+            };
+            self.tab_panel.set_tab_name(i, &display_name);
+        }
+        self.tab_panel.set_active(self.active_tab);
+    }
+
+    /// Process WidgetEvents from containers.
+    pub(crate) fn process_widget_events(&mut self) {
+        let tab_events = self.tab_panel.drain_events();
+        for event in tab_events {
+            match event {
+                WidgetEvent::TabChanged(idx) => {
+                    if idx < self.tabs.len() {
+                        self.active_tab = idx;
+                    }
+                }
+                WidgetEvent::TabCloseRequested(idx) => {
+                    if idx < self.tabs.len() && !self.tabs[idx].is_sticky {
+                        self.tabs.remove(idx);
+                        if self.active_tab >= self.tabs.len() && self.active_tab > 0 {
+                            self.active_tab -= 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let status_events = self.status_bar.drain_events();
+        for event in status_events {
+            match event {
+                WidgetEvent::StatusBarClick(id) => {
+                    match id.as_str() {
+                        "lang" => {
+                            let active_idx = self.all_languages.iter().position(|l| l == &self.current_lang).unwrap_or(0);
+                            self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, SCALE, None));
+                        }
+                        "theme" => {
+                            let theme_names = vec![
+                                "Silicon Green".into(), "Cloud Blue".into(), "Coffee Cream".into(), "Sakura Pink".into(),
+                                "One Dark".into(), "Monokai".into(), "GitHub Light".into(), "Solarized Light".into(),
+                                "Midnight".into(), "Aura".into(), "Veridian".into(), "Rose".into(),
+                                "Cyber".into(), "Titanium".into(), "Indigo Night".into()
+                            ];
+                            let mut d = Dropdown::new(theme_names, self.current_theme_idx, SCALE, None);
+                            d.num_cols = 2; d.col_w = 160.0;
+                            self.theme_dropdown = Some(d);
+                        }
+                        "config" => {
+                            self.build_config = match self.build_config {
+                                BuildConfig::Debug => BuildConfig::Release,
+                                BuildConfig::Release => BuildConfig::Debug,
+                            };
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -330,11 +451,14 @@ impl vybe_widgets::Application for App {
             self.tabs.push(Tab { name: "Form Designer".to_string(), path: None, content: TabContent::Form(designer_state), is_sticky: true, buffer: None, is_modified: false });
         }
         self.active_tab = self.tabs.len().saturating_sub(1);
+        self.sync_tab_headers();
+        self.relayout();
     }
 
     fn on_resize(&mut self, width: f32, height: f32) {
         self.win_width = width;
         self.win_height = height;
+        self.relayout();
     }
 
     fn render(&mut self, pix: &mut Pixmap, _scale: f32) {
@@ -342,20 +466,38 @@ impl vybe_widgets::Application for App {
     }
 
     fn handle_mouse(&mut self, event: vybe_widgets::MouseEvent) -> bool {
-        use vybe_widgets::layout::{MouseEventKind, MouseButton};
+        use vybe_widgets::layout::{MouseEventKind, MouseButton as WMouseButton};
         self.cmd_held = event.cmd;
         self.shift_held = event.shift;
         self.alt_held = event.alt;
         self.mouse_pos = (event.x * SCALE, event.y * SCALE);
+
+        // Route tab bar events through the TabPanel
+        if self.tab_panel.rect().contains(event.x, event.y) {
+            if self.tab_panel.handle_mouse(&event) {
+                self.process_widget_events();
+                return true;
+            }
+        }
+
+        // Route status bar events through StatusBarPanel
+        if self.status_bar.rect().contains(event.x, event.y) {
+            if self.status_bar.handle_mouse(&event) {
+                self.process_widget_events();
+                return true;
+            }
+        }
+
+        // Fall through to legacy handlers
         match event.kind {
             MouseEventKind::Move => {
                 self.handle_cursor_moved();
             }
             MouseEventKind::Press(btn) | MouseEventKind::Release(btn) => {
                 let winit_btn = match btn {
-                    MouseButton::Left => winit::event::MouseButton::Left,
-                    MouseButton::Right => winit::event::MouseButton::Right,
-                    MouseButton::Middle => winit::event::MouseButton::Middle,
+                    WMouseButton::Left => winit::event::MouseButton::Left,
+                    WMouseButton::Right => winit::event::MouseButton::Right,
+                    WMouseButton::Middle => winit::event::MouseButton::Middle,
                 };
                 let winit_state = if matches!(event.kind, MouseEventKind::Press(_)) {
                     ElementState::Pressed
@@ -377,8 +519,15 @@ impl vybe_widgets::Application for App {
         true
     }
 
-    fn handle_scroll(&mut self, delta: f32, _x: f32, _y: f32) -> bool {
-        // Convert to winit-style delta and reuse existing handler
+    fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
+        // Tab bar scrolling via toolkit
+        let tab_rect = self.tab_panel.rect();
+        if tab_rect.contains(x, y) {
+            self.tab_panel.scroll_tab_bar(delta);
+            return true;
+        }
+
+        // Fall through to legacy scroll handler
         let winit_delta = winit::event::MouseScrollDelta::PixelDelta(
             winit::dpi::PhysicalPosition::new(0.0, delta as f64 / 2.0)
         );
