@@ -1928,6 +1928,18 @@ impl Compiler {
                     return self.compile_method_call(value, attr, args, chunk_idx);
                 }
                 // General function call
+                // Check if func is an unresolved name → emit call_import("*", name)
+                if let Expression::Name(name) = func.as_ref() {
+                    if matches!(self.resolve_variable(name, chunk_idx), VarResolution::Global) {
+                        // Unresolved global name: route through host import
+                        for a in args { self.compile_expr(a, chunk_idx)?; }
+                        let import_idx = self.chunk(chunk_idx).add_import("*", name);
+                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, import_idx, 0);
+                        self.chunk(chunk_idx).emit(args.len() as u8, 0);
+                        return Ok(());
+                    }
+                }
+                // Locally resolved func (local/upvalue) or non-Name expression
                 self.compile_expr(func, chunk_idx)?;
                 let mut argc = 0u8;
                 for a in args {
@@ -1935,12 +1947,6 @@ impl Compiler {
                         // *args: spread the iterable onto the stack
                         self.compile_expr(inner, chunk_idx)?;
                         self.chunk(chunk_idx).emit_op(Op::spread, 0);
-                        // We don't know the spread count at compile time.
-                        // The VM's spread pushes N elements. call_ref will use
-                        // whatever argc we give it — extra args are ignored,
-                        // missing args are padded with Null. This is imprecise
-                        // but handles the common case f(*[1,2,3]) where the
-                        // list length matches the function arity.
                     } else {
                         self.compile_expr(a, chunk_idx)?;
                         argc += 1;

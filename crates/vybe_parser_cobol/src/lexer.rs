@@ -90,8 +90,36 @@ impl Lexer {
             '"' => self.read_string('"', line),
             '\'' => self.read_string('\'', line),
 
-            // Numbers
-            '0'..='9' => self.read_number(ch, line),
+            // Numbers — but check for COBOL level numbers first (01-49, 66, 77, 88)
+            '0'..='9' => {
+                // Peek ahead: if this is a 1-2 digit number followed by space/newline,
+                // it could be a COBOL level number
+                if ch.is_ascii_digit() {
+                    let start = self.pos - 1; // we already advanced past ch
+                    let mut digits = String::new();
+                    digits.push(ch);
+                    // Read remaining digits (level numbers are 1-2 digits)
+                    while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+                        digits.push(self.src[self.pos]);
+                        self.pos += 1;
+                    }
+                    // Check if followed by whitespace (level number) or . (regular number)
+                    let next = self.peek();
+                    // Level numbers must be exactly 2 digits (01, 05, 10, 15, 49, 66, 77, 88)
+                    // Single digits (1, 5, etc.) are always regular numbers.
+                    if digits.len() == 2 && matches!(next, Some(' ') | Some('\t') | Some('\n') | Some('\r') | None) {
+                        if let Ok(level) = digits.parse::<u8>() {
+                            if matches!(level, 1..=49 | 66 | 77 | 88) {
+                                return Ok(Token { kind: TokenKind::Level(level), line });
+                            }
+                        }
+                    }
+                    // Not a level number — parse as regular number
+                    // Reset pos to after first digit and use read_number
+                    self.pos = start + 1;
+                }
+                self.read_number(ch, line)
+            }
 
             // Operators
             '+' => Ok(Token { kind: TokenKind::Plus, line }),

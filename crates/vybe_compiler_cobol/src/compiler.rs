@@ -598,10 +598,9 @@ impl Compiler {
                     self.emit_u8(Op::call_ref, 0);
                     self.emit(Op::drop);
                 } else {
-                    // Paragraph not yet compiled — emit as global call
-                    let idx = self.add_string_constant(name);
-                    self.emit_u16(Op::global_get, idx);
-                    self.emit_u8(Op::call_ref, 0);
+                    // Paragraph not found locally — emit as import call
+                    let i = self.import("*", name);
+                    self.emit_host_call(i, 0);
                     self.emit(Op::drop);
                 }
             }
@@ -662,13 +661,12 @@ impl Compiler {
             }
 
             Statement::Call { name, args } => {
-                let idx = self.add_string_constant(name);
-                self.emit_u16(Op::global_get, idx);
                 for arg in args {
                     let ai = self.add_string_constant(arg);
                     self.emit_u16(Op::global_get, ai);
                 }
-                self.emit_u8(Op::call_ref, args.len() as u8);
+                let i = self.import("*", name);
+                self.emit_host_call(i, args.len() as u8);
                 self.emit(Op::drop);
             }
 
@@ -978,20 +976,14 @@ impl Compiler {
 
             // ── Async / Threading ──────────────────────────────
             Statement::CallAsync { name, args, handle } => {
-                // CALL "program" ASYNC → spawn thread running the program
-                // Compile the callee reference
-                let ni = self.add_string_constant(name);
-                self.emit_u16(Op::global_get, ni);
+                // CALL "program" ASYNC → call_import then spawn thread
                 // Push args
                 for arg in args {
                     let ai = self.add_string_constant(arg);
                     self.emit_u16(Op::global_get, ai);
                 }
-                // If callee is a function ref, wrap in a closure that calls it with args
-                // For now: spawn thread with the function
-                let c = self.current_chunk_idx;
-                let line = self.line;
-                common::threading::emit_thread_spawn(&mut self.chunks[c], line);
+                let i = self.import("*", name);
+                self.emit_host_call(i, args.len() as u8);
                 // Store handle
                 if let Some(h) = handle {
                     let hi = self.add_string_constant(h);
@@ -1012,16 +1004,13 @@ impl Compiler {
             }
 
             Statement::RunUnit { name, args } => {
-                // RUN UNIT → spawn separate thread for program
-                let ni = self.add_string_constant(name);
-                self.emit_u16(Op::global_get, ni);
+                // RUN UNIT → call external program via import
                 for arg in args {
                     let ai = self.add_string_constant(arg);
                     self.emit_u16(Op::global_get, ai);
                 }
-                let c = self.current_chunk_idx;
-                let line = self.line;
-                common::threading::emit_thread_spawn(&mut self.chunks[c], line);
+                let i = self.import("*", name);
+                self.emit_host_call(i, args.len() as u8);
                 self.emit(Op::drop);
             }
 
@@ -2233,9 +2222,10 @@ impl Compiler {
                 for _ in 1..args.len() { self.emit(Op::drop); }
             }
             _ => {
-                // Unknown function — return null
-                for _ in args { self.emit(Op::drop); }
-                self.emit(Op::null);
+                // Unknown function — call as import
+                // args already on stack from the loop above
+                let i = self.import("*", name);
+                self.emit_host_call(i, args.len() as u8);
             }
         }
         Ok(())

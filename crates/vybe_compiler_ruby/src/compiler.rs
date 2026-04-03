@@ -444,6 +444,7 @@ impl Compiler {
                 common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], chunk_idx, 0, line);
                 let idx = self.add_string_constant(&decl.name);
                 self.emit_u16(Op::global_set, idx);
+                self.emit(Op::drop);
                 self.defined_globals.insert(decl.name.clone());
             }
 
@@ -3121,23 +3122,49 @@ impl Compiler {
             }
         } else {
             // Bare function call
-            self.emit_var_get(method);
-            for a in args { self.compile_expression(a)?; }
-            if let Some(blk) = block {
-                let blk_decl = MethodDecl {
-                    name: "<block>".to_string(),
-                    params: blk.params.iter().map(|n| Param {
-                        name: n.clone(), default: None, splat: false, double_splat: false, block: false, keyword: false,
-                    }).collect(),
-                    body: blk.body.clone(),
-                    is_self: false,
-                };
-                let ci = self.compile_method_def(&blk_decl)?;
-                let line = self.line;
-                common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
-                self.emit_u8(Op::call_ref, (args.len() + 1) as u8);
+            let is_resolved = self.resolve_var(method).is_some()
+                || (self.scopes.len() > 1 && self.resolve_upvalue(self.scopes.len() - 1, method).is_some())
+                || self.defined_globals.contains(method);
+            if is_resolved {
+                self.emit_var_get(method);
+                for a in args { self.compile_expression(a)?; }
+                if let Some(blk) = block {
+                    let blk_decl = MethodDecl {
+                        name: "<block>".to_string(),
+                        params: blk.params.iter().map(|n| Param {
+                            name: n.clone(), default: None, splat: false, double_splat: false, block: false, keyword: false,
+                        }).collect(),
+                        body: blk.body.clone(),
+                        is_self: false,
+                    };
+                    let ci = self.compile_method_def(&blk_decl)?;
+                    let line = self.line;
+                    common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
+                    self.emit_u8(Op::call_ref, (args.len() + 1) as u8);
+                } else {
+                    self.emit_u8(Op::call_ref, args.len() as u8);
+                }
             } else {
-                self.emit_u8(Op::call_ref, args.len() as u8);
+                // Unresolved name — emit as host import call
+                for a in args { self.compile_expression(a)?; }
+                if let Some(blk) = block {
+                    let blk_decl = MethodDecl {
+                        name: "<block>".to_string(),
+                        params: blk.params.iter().map(|n| Param {
+                            name: n.clone(), default: None, splat: false, double_splat: false, block: false, keyword: false,
+                        }).collect(),
+                        body: blk.body.clone(),
+                        is_self: false,
+                    };
+                    let ci = self.compile_method_def(&blk_decl)?;
+                    let line = self.line;
+                    common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
+                    let idx = self.import("*", method);
+                    self.emit_host_call(idx, (args.len() + 1) as u8);
+                } else {
+                    let idx = self.import("*", method);
+                    self.emit_host_call(idx, args.len() as u8);
+                }
             }
         }
         Ok(())
@@ -3425,9 +3452,22 @@ impl Compiler {
         }
 
         // User-defined class: get constructor from global, call it
-        self.compile_expression(class_expr)?;
-        for a in args { self.compile_expression(a)?; }
-        self.emit_u8(Op::call_ref, args.len() as u8);
+        if let Expression::ConstantRef(name) = class_expr {
+            if self.defined_classes.contains(name) || self.defined_globals.contains(name) {
+                self.compile_expression(class_expr)?;
+                for a in args { self.compile_expression(a)?; }
+                self.emit_u8(Op::call_ref, args.len() as u8);
+            } else {
+                // Unresolved class — emit as host import call
+                for a in args { self.compile_expression(a)?; }
+                let idx = self.import("*", name);
+                self.emit_host_call(idx, args.len() as u8);
+            }
+        } else {
+            self.compile_expression(class_expr)?;
+            for a in args { self.compile_expression(a)?; }
+            self.emit_u8(Op::call_ref, args.len() as u8);
+        }
         Ok(())
     }
 
@@ -3465,11 +3505,27 @@ impl Compiler {
             }
         }
 
-        for stmt in &decl.body {
+        // Compile body. For the last statement, if it's an expression, compile
+        // it WITHOUT drop — Ruby methods implicitly return the last expression.
+        let body_len = decl.body.len();
+        for (i, stmt) in decl.body.iter().enumerate() {
+            if i == body_len - 1 {
+                if let Statement::Expression(expr) = stmt {
+                    self.compile_expression(expr)?;
+                    // Don't drop — this is the return value. Emit return directly.
+                    self.emit(Op::r#return);
+                    // Skip epilogue since we already returned
+                    let local_count = self.current_scope().next_slot;
+                    self.chunks[chunk_idx].local_count = local_count;
+                    self.scopes.pop();
+                    self.current_chunk_idx = saved_chunk;
+                    return Ok(chunk_idx);
+                }
+            }
             self.compile_statement(stmt)?;
         }
 
-        // Ruby methods return the last expression; add nil + return safety net
+        // Safety net: if body is empty or last statement wasn't an expression
         let line = self.line;
         common::functions::emit_function_epilogue(&mut self.chunks[self.current_chunk_idx], line);
 
@@ -3482,7 +3538,66 @@ impl Compiler {
     }
 
     fn compile_method_for_class(&mut self, decl: &MethodDecl, _class_name: &str) -> Result<usize, String> {
-        self.compile_method_def(decl)
+        // Class methods receive `self` as first arg (same convention as VB/JS/C#).
+        // Arity = 1 (self) + user params.
+        let chunk_idx = self.chunks.len();
+        let chunk = common::functions::create_function_chunk(
+            &decl.name, (decl.params.len() + 1) as u8,
+        );
+        self.chunks.push(chunk);
+
+        self.scopes.push(Scope::new_function());
+        let saved_chunk = self.current_chunk_idx;
+        self.current_chunk_idx = chunk_idx;
+
+        // self is the first param (slot 1 after callee at slot 0)
+        self.define_local("self");
+        for param in &decl.params {
+            self.define_local(&param.name);
+        }
+
+        // Default parameter values
+        for param in &decl.params {
+            if let Some(default) = &param.default {
+                if let Some(slot) = self.current_scope().resolve_local(&param.name) {
+                    let line = self.line;
+                    let skip = common::functions::emit_default_param_start(
+                        &mut self.chunks[self.current_chunk_idx], slot, line,
+                    );
+                    self.compile_expression(default)?;
+                    let line = self.line;
+                    common::functions::emit_default_param_end(
+                        &mut self.chunks[self.current_chunk_idx], slot, skip, line,
+                    );
+                }
+            }
+        }
+
+        // Compile body — last expression is implicit return value
+        let body_len = decl.body.len();
+        for (i, stmt) in decl.body.iter().enumerate() {
+            if i == body_len - 1 {
+                if let Statement::Expression(expr) = stmt {
+                    self.compile_expression(expr)?;
+                    self.emit(Op::r#return);
+                    let local_count = self.current_scope().next_slot;
+                    self.chunks[chunk_idx].local_count = local_count;
+                    self.scopes.pop();
+                    self.current_chunk_idx = saved_chunk;
+                    return Ok(chunk_idx);
+                }
+            }
+            self.compile_statement(stmt)?;
+        }
+
+        let line = self.line;
+        common::functions::emit_function_epilogue(&mut self.chunks[self.current_chunk_idx], line);
+
+        let local_count = self.current_scope().next_slot;
+        self.chunks[chunk_idx].local_count = local_count;
+        self.scopes.pop();
+        self.current_chunk_idx = saved_chunk;
+        Ok(chunk_idx)
     }
 
     // ------------------------------------------------------------------
@@ -3569,9 +3684,9 @@ impl Compiler {
             let line = self.line;
 
             // Create new object via common::classes
-            let this_idx = 1u16; // local slot 1 for 'this'
+            // Params occupy slots 1..N, this goes in slot N+1
+            let this_idx = (ctor_arity as u16) + 1;
             common::classes::emit_new_typed_object(&mut self.chunks[c], this_idx, class_name, line);
-            self.chunks[c].emit_op_u16(Op::local_set, this_idx, line);
             self.chunks[c].local_count = (ctor_arity as u16) + 2;
 
             // Bind methods
@@ -3588,9 +3703,9 @@ impl Compiler {
                 // ref_func for init method
                 common::functions::emit_ref_func(&mut self.chunks[c], init_ci, 0, line);
                 self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);
-                // Push constructor params (slots 1+1..1+N)
+                // Push constructor params (slots 1..N)
                 for i in 0..ctor_arity {
-                    self.chunks[c].emit_op_u16(Op::local_get, (i as u16) + 2, line);
+                    self.chunks[c].emit_op_u16(Op::local_get, (i as u16) + 1, line);
                 }
                 self.chunks[c].emit_op_u8(Op::call_ref, (ctor_arity + 1) as u8, line);
                 self.chunks[c].emit_op(Op::drop, line);

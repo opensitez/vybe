@@ -100,7 +100,7 @@ impl Parser {
         }
         match self.peek() {
             Token::Import => { self.advance(); Ok(TopLevel::Import(self.parse_import()?)) }
-            Token::Class | Token::Abstract => Ok(TopLevel::Class(self.parse_class()?)),
+            Token::Class | Token::Abstract | Token::Mixin => Ok(TopLevel::Class(self.parse_class()?)),
             Token::Extension => Ok(TopLevel::Extension(self.parse_extension()?)),
             Token::Enum => { self.advance(); Ok(TopLevel::Enum(self.parse_enum()?)) }
             Token::Typedef => { self.advance(); Ok(TopLevel::Typedef(self.parse_typedef()?)) }
@@ -166,7 +166,8 @@ impl Parser {
 
     fn parse_class(&mut self) -> Result<ClassDecl, String> {
         let is_abstract = self.eat(&Token::Abstract);
-        self.expect(Token::Class)?;
+        // Accept both `class` and `mixin` (mixin compiles like a class)
+        if !self.eat(&Token::Class) { self.eat(&Token::Mixin); }
         let name = self.expect_ident()?;
         let type_params = self.parse_type_params()?;
         let mut extends = None;
@@ -1294,7 +1295,7 @@ impl Parser {
                 let name = format!("{:?}", self.advance()).to_lowercase();
                 Some(TypeAnnotation { name, args: vec![], nullable: false })
             }
-            Token::Identifier(_) if matches!(self.peek2(), Token::Identifier(_) | Token::Less) => {
+            Token::Identifier(_) if matches!(self.peek2(), Token::Identifier(_) | Token::Less | Token::Question) => {
                 let saved = self.pos;
                 if let Ok(t) = self.parse_type_annotation() { Some(t) } else { self.pos = saved; None }
             }

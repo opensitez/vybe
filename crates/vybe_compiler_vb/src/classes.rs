@@ -44,16 +44,27 @@ impl Compiler {
             }
         }
 
+        // Track parent name for MyBase.New() calls
+        let saved_parent = self.current_class_parent.take();
+        if let Some(ref parent_type) = class.inherits {
+            if let VBType::Custom(parent_name) = parent_type {
+                self.current_class_parent = Some(parent_name.to_lowercase());
+            }
+        }
+
         // --- Compile the constructor chunk ---
-        let chunk = common_fn::create_function_chunk(name, (1 + ctor_params.len()) as u8); // Me + ctor params
+        // Constructor creates its own object — arity is user params only (no Me).
+        // This makes cross-language `new X()` work uniformly.
+        let chunk = common_fn::create_function_chunk(name, ctor_params.len() as u8);
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
         let mut scope = Scope::new_function();
-        scope.define_local("me");
+        // Params first (VM places them in slots 1..N), then "me" as extra local
         for param in &ctor_params {
             scope.define_local(&param.name.as_str().to_lowercase());
         }
+        scope.define_local("me"); // slot after all params
 
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;
@@ -94,34 +105,42 @@ impl Compiler {
             }
         }
 
-        // If Inherits, always call parent constructor to attach parent methods/fields.
-        // Also store __super for explicit MyBase.New() calls.
+        // Determine if this class has a real (non-framework) base class
         let has_explicit_ctor = class.methods.iter().any(|m| matches!(m, MethodDecl::Sub(s) if s.name.as_str().eq_ignore_ascii_case("New")));
-        if let Some(ref parent_type) = class.inherits {
+        let has_user_base = if let Some(ref parent_type) = class.inherits {
             let parent_name = match parent_type {
-                VBType::Custom(name) => name.to_lowercase(),
+                VBType::Custom(n) => n.to_lowercase(),
                 _ => String::new(),
             };
-            // Skip WinForms/framework base types — they don't exist as user classes
-            let is_framework_type = parent_name.starts_with("system.")
+            let is_framework = parent_name.starts_with("system.")
                 || parent_name.contains("windows.forms");
-            if !parent_name.is_empty() && !is_framework_type {
-                // Store __super on this
-                let line = self.line;
-                common::classes::emit_store_super(
-                    &mut self.chunks[self.current_chunk_idx],
-                    this_slot, &parent_name, line,
-                );
+            !parent_name.is_empty() && !is_framework
+        } else {
+            false
+        };
 
-                // Auto-call parent constructor if no explicit Sub New
-                if !has_explicit_ctor {
-                    let parent_idx = self.add_string_constant(&parent_name);
-                    self.emit_u16(Op::global_get, parent_idx);
-                    self.emit_u16(Op::local_get, this_slot);
-                    self.emit_u8(Op::call, 1);
-                    self.emit(Op::drop);
-                }
+        if has_user_base {
+            // ── Child class: call parent constructor (creates the object) ──
+            let parent_name = match class.inherits.as_ref().unwrap() {
+                VBType::Custom(n) => n.to_lowercase(),
+                _ => String::new(),
+            };
+            if !has_explicit_ctor {
+                let parent_idx = self.add_string_constant(&parent_name);
+                self.emit_u16(Op::global_get, parent_idx);
+                self.emit_u8(Op::call, 0);
+                // Store returned object as me
+                self.emit_u16(Op::local_set, this_slot);
+                self.emit(Op::drop);
             }
+            // If explicit ctor: MyBase.New() in the body will handle it
+        } else {
+            // ── Base class (or framework-derived): create object here ──
+            let line = self.line;
+            common::classes::emit_new_typed_object(
+                &mut self.chunks[self.current_chunk_idx],
+                this_slot, name, line,
+            );
         }
 
         // Initialize fields
@@ -255,16 +274,21 @@ impl Compiler {
             }
         }
 
-        // Stamp type_id on this (WASM GC).
-        // The type_id is resolved at VM load time from the type table.
-        // We emit a placeholder constant — the VM's load_type_table sets globals
-        // that map class names to type_ids.
-        {
+        // Stamp/re-stamp type info on this.
+        // For base class: emit_new_typed_object already stamped.
+        // For child class: re-stamp with child type (parent's stamps are from super).
+        if has_user_base {
             let tid_name = format!("__tid_{}", name.to_lowercase());
             let tid_idx = self.add_string_constant(&tid_name);
             self.emit_u16(Op::local_get, this_slot);
             self.emit_u16(Op::global_get, tid_idx);
             self.emit(Op::set_type_id);
+            // Update __type string
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_constant(Value::String(Rc::from(name)));
+            let type_key = self.add_string_constant("__type");
+            self.emit_u16(Op::struct_set, type_key);
+            self.emit(Op::drop);
         }
 
         // Return this
@@ -281,6 +305,7 @@ impl Compiler {
         let upvalues = self.current_scope().upvalues.clone();
         self.scopes.pop();
         self.current_chunk_idx = saved;
+        self.current_class_parent = saved_parent;
         // Store this class's full field/method sets (own + inherited) for future derived classes
         self.class_field_map.insert(name.to_lowercase(), self.class_fields.clone());
         self.class_method_map.insert(name.to_lowercase(), self.class_methods.clone());

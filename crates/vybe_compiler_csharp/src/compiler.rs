@@ -136,6 +136,8 @@ pub struct Compiler {
     _known_types: HashMap<String, (&'static str, &'static str)>,
     type_entries: Vec<TypeEntry>,
     class_type_ids: HashMap<String, usize>,
+    /// Track current class's base type name (for base() calls in constructors).
+    current_class_base: Option<String>,
 }
 
 impl Compiler {
@@ -157,6 +159,7 @@ impl Compiler {
             _known_types: Self::init_known_types(),
             type_entries: Vec::new(),
             class_type_ids: HashMap::new(),
+            current_class_base: None,
             interface_imports: vec![
                 "system".into(),
                 "system.console".into(),
@@ -603,15 +606,18 @@ impl Compiler {
         let base_args: Option<&Vec<Expression>> = ctor.and_then(|c| c.base_args.as_ref());
 
         let mut chunk = Chunk::new(name.as_str());
-        chunk.arity = (1 + ctor_params.len()) as u8; // this + params
+        // Constructor creates its own object — arity is user params only (no this).
+        // This makes cross-language `new X()` work uniformly.
+        chunk.arity = ctor_params.len() as u8;
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
         let mut scope = Scope::new_function();
-        scope.define_local("this");
+        // Params first (VM places them in slots 1..N), then "this" as extra local
         for param in &ctor_params {
             scope.define_local(&param.name);
         }
+        scope.define_local("this"); // slot after all params
 
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;
@@ -619,19 +625,23 @@ impl Compiler {
 
         let this_slot = self.current_scope().resolve_local("this").unwrap();
 
+        // Track current class base for base() calls
+        let saved_class_base = self.current_class_base.take();
+        if let Some(ref parent) = class.base_type {
+            self.current_class_base = Some(parent.to_lowercase());
+        }
+
         // Track class fields/methods
         let saved_fields = std::mem::take(&mut self.class_fields);
         let saved_methods = std::mem::take(&mut self.class_methods);
         for (fname, _, _, _) in &fields {
             self.class_fields.insert(fname.to_lowercase());
         }
-        // Auto-properties are treated as fields (direct struct_get/struct_set)
         for p in &properties {
             if p.is_auto {
                 self.class_fields.insert(p.name.to_lowercase());
             }
         }
-        // Inherit parent fields/methods
         if let Some(ref parent) = class.base_type {
             let parent_lower = parent.to_lowercase();
             if let Some(pf) = self.class_field_map.get(&parent_lower) {
@@ -648,55 +658,62 @@ impl Compiler {
             self.class_methods.insert(m.name.to_lowercase());
         }
 
-        // Call base constructor if Inherits
-        if let Some(ref parent) = class.base_type {
+        // Determine if this class has a real (non-framework) base class
+        let has_user_base = class.base_type.as_ref().map(|parent| {
             let parent_lower = parent.to_lowercase();
-            let is_form_type = matches!(parent_lower.as_str(),
-                "form" | "usercontrol" | "panel");
             let is_framework = parent_lower.starts_with("system.")
                 || parent_lower.contains("windows.forms")
                 || matches!(parent_lower.as_str(),
                     "form" | "control" | "usercontrol" | "panel" | "component"
                     | "object" | "eventargs" | "exception"
                 );
-            // For Form/Control base types, call the host constructor to set up
-            // __control_name, __control_type, and other GUI properties.
-            if is_form_type {
-                self.emit_u16(Op::local_get, this_slot);
-                self.emit_constant(Value::String(Rc::from(name.to_lowercase().as_str())));
-                let name_idx = self.add_string_constant("__control_name");
-                self.emit_u16(Op::struct_set, name_idx);
-                self.emit(Op::drop);
-                self.emit_u16(Op::local_get, this_slot);
-                self.emit_constant(Value::String(Rc::from("Form")));
-                let type_idx = self.add_string_constant("__control_type");
-                self.emit_u16(Op::struct_set, type_idx);
-                self.emit(Op::drop);
-                self.emit_u16(Op::local_get, this_slot);
-                self.emit_constant(Value::String(Rc::from(name.as_str())));
-                let text_idx = self.add_string_constant("name");
-                self.emit_u16(Op::struct_set, text_idx);
-                self.emit(Op::drop);
-            }
             let is_interface = self.defined_interfaces.contains(&parent_lower);
-            if !parent_lower.is_empty() && !is_framework && !is_interface {
-                // Store __super
-                vybe_compiler_common::classes::emit_store_super(
-                    &mut self.chunks[idx], this_slot, &parent_lower, self.line,
-                );
+            !parent_lower.is_empty() && !is_framework && !is_interface
+        }).unwrap_or(false);
 
-                // Call base constructor with args
-                let parent_idx = self.add_string_constant(&parent_lower);
-                self.emit_u16(Op::global_get, parent_idx);
-                self.emit_u16(Op::local_get, this_slot);
-                if let Some(args) = base_args {
-                    for arg in args { self.compile_expression(arg)?; }
-                    self.emit_u8(Op::call, (args.len() + 1) as u8);
-                } else {
-                    self.emit_u8(Op::call, 1);
-                }
-                self.emit(Op::drop);
+        let is_form_type = class.base_type.as_ref().map(|p|
+            matches!(p.to_lowercase().as_str(), "form" | "usercontrol" | "panel")
+        ).unwrap_or(false);
+
+        if has_user_base {
+            // ── Child class: call parent constructor which creates the object ──
+            let parent_lower = class.base_type.as_ref().unwrap().to_lowercase();
+            let parent_idx = self.add_string_constant(&parent_lower);
+            self.emit_u16(Op::global_get, parent_idx);
+            if let Some(args) = base_args {
+                for arg in args { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, args.len() as u8);
+            } else {
+                self.emit_u8(Op::call, 0);
             }
+            // Store returned object as this
+            self.emit_u16(Op::local_set, this_slot);
+            self.emit(Op::drop);
+        } else {
+            // ── Base class (or framework-derived): create object here ──
+            let line = self.line;
+            vybe_compiler_common::classes::emit_new_typed_object(
+                &mut self.chunks[self.current_chunk_idx], this_slot, name, line,
+            );
+        }
+
+        // For Form types, set up GUI properties on this
+        if is_form_type {
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_constant(Value::String(Rc::from(name.to_lowercase().as_str())));
+            let name_idx = self.add_string_constant("__control_name");
+            self.emit_u16(Op::struct_set, name_idx);
+            self.emit(Op::drop);
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_constant(Value::String(Rc::from("Form")));
+            let type_idx = self.add_string_constant("__control_type");
+            self.emit_u16(Op::struct_set, type_idx);
+            self.emit(Op::drop);
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_constant(Value::String(Rc::from(name.as_str())));
+            let text_idx = self.add_string_constant("name");
+            self.emit_u16(Op::struct_set, text_idx);
+            self.emit(Op::drop);
         }
 
         // Initialize instance fields
@@ -714,8 +731,7 @@ impl Compiler {
         }
 
         // Save base methods for override (skip for interface implementations)
-        let base_is_class = class.base_type.as_ref().map(|b| !self.defined_interfaces.contains(&b.to_lowercase())).unwrap_or(false);
-        if base_is_class {
+        if has_user_base {
             for method in &instance_methods {
                 vybe_compiler_common::classes::emit_save_base_method(
                     &mut self.chunks[idx], this_slot, &method.name.to_lowercase(), self.line,
@@ -732,20 +748,16 @@ impl Compiler {
             }
         }
 
-        // Attach instance methods BEFORE constructor body
-        // Also track chunk indices for WASM GC type table
+        // Attach instance methods
         let mut method_entries: Vec<(String, usize)> = Vec::new();
         for method in &instance_methods {
             self.emit_u16(Op::local_get, this_slot);
             self.compile_instance_method(method)?;
-            // Record chunk index for type table (the chunk was just added)
             let method_chunk_idx = self.chunks.len() - 1;
             method_entries.push((method.name.to_lowercase(), method_chunk_idx));
-            // Attach to instance (backward compat)
             let prop_idx = self.add_string_constant(&method.name.to_lowercase());
             self.emit_u16(Op::struct_set, prop_idx);
             self.emit(Op::drop);
-            // Cross-language aliases (Python __str__ ↔ JS toString ↔ C# ToString etc.)
             vybe_compiler_common::classes::emit_cross_language_aliases(
                 &mut self.chunks[idx], this_slot, &method.name.to_lowercase(), method_chunk_idx, self.line,
             );
@@ -780,19 +792,28 @@ impl Compiler {
             }
         }
 
-        // Stamp type_id on this (WASM GC).
-        {
+        // Re-stamp type as this class (parent may have stamped differently)
+        if has_user_base {
             let tid_name = format!("__tid_{}", name.to_lowercase());
             let tid_idx = self.add_string_constant(&tid_name);
             self.emit_u16(Op::local_get, this_slot);
             self.emit_u16(Op::global_get, tid_idx);
             self.emit(Op::set_type_id);
+            // Update __type string
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_constant(Value::String(Rc::from(name.as_str())));
+            let type_key = self.add_string_constant("__type");
+            self.emit_u16(Op::struct_set, type_key);
+            self.emit(Op::drop);
         }
+        // For base class, emit_new_typed_object already stamped both.
 
         // Return this
         vybe_compiler_common::classes::emit_constructor_return(
             &mut self.chunks[idx], this_slot, self.line,
         );
+
+        self.current_class_base = saved_class_base;
 
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;
@@ -885,6 +906,11 @@ impl Compiler {
             let pidx = self.add_string_constant(&fname.to_lowercase());
             self.emit_u16(Op::struct_set, pidx);
             self.emit(Op::drop);
+        }
+
+        // Pre-register all static method names so recursive and mutual calls resolve locally
+        for method in static_methods {
+            self.defined_globals.insert(method.name.to_lowercase());
         }
 
         // Static methods — attach to class object AND register as globals for bare calls
@@ -1906,6 +1932,16 @@ impl Compiler {
     fn compile_identifier(&mut self, name: &str) -> Result<(), String> {
         let lower = name.to_lowercase();
 
+        // Local/parameter takes priority over class field (C# shadowing rule:
+        // `int x` param shadows `int X` field — use `this.X` to access the field).
+        if let VarResolution::Local(slot) = self.resolve_variable(&lower) {
+            // Don't shadow if it's "this" itself
+            if lower != "this" {
+                self.emit_u16(Op::local_get, slot);
+                return Ok(());
+            }
+        }
+
         // Check if it's a class field (this.field) — inside class methods
         if self.class_fields.contains(&lower) {
             match self.resolve_variable("this") {
@@ -2316,7 +2352,7 @@ impl Compiler {
                 }
             }
 
-            // Check if it's a known global function
+            // Check if it's a known local or defined global
             match self.resolve_variable(name) {
                 VarResolution::Local(slot) => {
                     self.emit_u16(Op::local_get, slot);
@@ -2325,10 +2361,17 @@ impl Compiler {
                     return Ok(());
                 }
                 VarResolution::Global => {
-                    let idx = self.add_string_constant(&lower);
-                    self.emit_u16(Op::global_get, idx);
-                    for arg in args { self.compile_expression(arg)?; }
-                    self.emit_u8(Op::call, args.len() as u8);
+                    if self.defined_globals.contains(&lower) || self.defined_classes.contains(&lower) {
+                        let idx = self.add_string_constant(&lower);
+                        self.emit_u16(Op::global_get, idx);
+                        for arg in args { self.compile_expression(arg)?; }
+                        self.emit_u8(Op::call, args.len() as u8);
+                    } else {
+                        // Unresolved → WASM import
+                        let idx = self.import("*", &lower);
+                        for arg in args { self.compile_expression(arg)?; }
+                        self.emit_host_call(idx, args.len() as u8);
+                    }
                     return Ok(());
                 }
             }
@@ -2876,29 +2919,18 @@ impl Compiler {
             return Ok(());
         }
 
-        // Unified new: look up constructor from globals.
-        // - User-defined classes: global is a Function → struct_new + call(args+1)
-        // - Host types (Button, Point, List): global is a HostFunction → call(args)
-        // - Both resolve via the same global_get.
-        let idx = self.add_string_constant(&bare);
-        self.emit_u16(Op::global_get, idx);
-
-        if self.defined_classes.contains(&bare) {
-            // User class defined in THIS module: create empty object, call constructor with it
-            self.emit_u16(Op::struct_new, 0);
-            self.emit(Op::dup);
-            self.emit_constant(Value::String(Rc::from(bare.as_str())));
-            let type_idx = self.add_string_constant("__type");
-            self.emit_u16(Op::struct_set, type_idx);
-            self.emit(Op::drop);
-            for arg in args { self.compile_expression(arg)?; }
-            self.emit_u8(Op::call, (args.len() + 1) as u8);
-        } else {
-            // Could be a host constructor OR a cross-language class.
-            // Host: call(argc) — host function creates and returns the object.
-            // Cross-language: the global is a function ref — call(argc) dispatches via call_value.
+        // Constructor creates its own object (cross-language compatible).
+        if self.defined_classes.contains(&bare) || self.defined_globals.contains(&bare) {
+            // Locally defined → global_get + call
+            let idx = self.add_string_constant(&bare);
+            self.emit_u16(Op::global_get, idx);
             for arg in args { self.compile_expression(arg)?; }
             self.emit_u8(Op::call, args.len() as u8);
+        } else {
+            // Unresolved → WASM import
+            let idx = self.import("*", &bare);
+            for arg in args { self.compile_expression(arg)?; }
+            self.emit_host_call(idx, args.len() as u8);
         }
         Ok(())
     }

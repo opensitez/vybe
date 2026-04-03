@@ -149,14 +149,27 @@ impl Linker {
             }
         }
 
-        // 3. Resolve imports for each component
-        let mut unresolved: Vec<(String, String, String)> = Vec::new(); // (component, iface, func)
+        // 3. Validate imports — each component's imports should be resolvable
+        // from either component exports or host functions.
+        // "*" module imports are resolved against all component exports.
+        // Host imports (non-"*") are resolved at runtime by the VM.
+        let mut unresolved: Vec<(String, String, String)> = Vec::new();
 
         for comp in &self.components {
             for (iface, func) in &comp.imports {
-                if !all_exports.contains_key(&(iface.clone(), func.clone())) {
-                    unresolved.push((comp.name.clone(), iface.clone(), func.clone()));
+                if all_exports.contains_key(&(iface.clone(), func.clone())) {
+                    continue; // resolved from component exports
                 }
+                if self.host_exports.contains_key(&(iface.clone(), func.clone())) {
+                    continue; // resolved from host
+                }
+                // Non-"*" imports (e.g. "wasi:cli", "vybe:math") are host imports
+                // resolved at runtime — don't flag as unresolved
+                if iface != "*" {
+                    continue;
+                }
+                // "*" import not found in any component export
+                unresolved.push((comp.name.clone(), iface.clone(), func.clone()));
             }
         }
 
@@ -250,14 +263,138 @@ impl Linker {
             }
         }
 
-        // 6. Build resolved import table for the merged chunks
-        let resolved_imports: HashMap<(String, String), ExportImpl> = all_exports;
+        // 6. Import unification — build unified import table and remap call_import indices.
+        // Each component's script chunk (chunk 0) has its own imports. When merged,
+        // call_import indices must refer to the unified table.
+        {
+            let mut unified_imports: Vec<crate::chunk::Import> = Vec::new();
+
+            // For each component, build a mapping: old_import_idx → new_import_idx
+            let mut remap_tables: Vec<Vec<u16>> = Vec::new();
+
+            for comp in &self.components {
+                let mut remap: Vec<u16> = Vec::new();
+                // Component imports are on the script chunk (chunk 0)
+                let comp_imports = if comp.chunks.is_empty() {
+                    &[][..]
+                } else {
+                    &comp.chunks[0].imports[..]
+                };
+                for imp in comp_imports {
+                    // Find or insert in unified table
+                    let existing = unified_imports.iter().position(|u| u.module == imp.module && u.name == imp.name);
+                    let new_idx = if let Some(idx) = existing {
+                        idx as u16
+                    } else {
+                        let idx = unified_imports.len() as u16;
+                        unified_imports.push(imp.clone());
+                        idx
+                    };
+                    remap.push(new_idx);
+                }
+                remap_tables.push(remap);
+            }
+
+            // Remap call_import operands in all merged chunks
+            for (comp_idx, comp) in self.components.iter().enumerate() {
+                let offset = component_offsets[comp_idx];
+                let remap = &remap_tables[comp_idx];
+                for ci in 0..comp.chunks.len() {
+                    let merged_ci = offset + ci;
+                    let code = &mut all_chunks[merged_ci].code;
+                    let mut ip = 0;
+                    while ip < code.len() {
+                        if let Some(op) = crate::opcode::Op::from_byte(code[ip]) {
+                            match op {
+                                crate::opcode::Op::call_import => {
+                                    // [op, u16 import_idx, u8 argc]
+                                    if ip + 2 < code.len() {
+                                        let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
+                                        if (old_idx as usize) < remap.len() {
+                                            let new_idx = remap[old_idx as usize];
+                                            code[ip + 1] = (new_idx >> 8) as u8;
+                                            code[ip + 2] = (new_idx & 0xff) as u8;
+                                        }
+                                    }
+                                    ip += 4; // op + u16 + u8
+                                }
+                                // Skip other opcodes by their size
+                                crate::opcode::Op::ref_func => {
+                                    ip += 3; // op + u16
+                                    if ip < code.len() {
+                                        let uv = code[ip] as usize;
+                                        ip += 1 + uv * 2;
+                                    }
+                                }
+                                crate::opcode::Op::r#const
+                                | crate::opcode::Op::local_get | crate::opcode::Op::local_set
+                                | crate::opcode::Op::global_get | crate::opcode::Op::global_set
+                                | crate::opcode::Op::struct_get | crate::opcode::Op::struct_set
+                                | crate::opcode::Op::array_new
+                                | crate::opcode::Op::br | crate::opcode::Op::br_if_true
+                                | crate::opcode::Op::br_if_false
+                                | crate::opcode::Op::r#loop => { ip += 3; }
+                                crate::opcode::Op::call | crate::opcode::Op::call_ref
+                                | crate::opcode::Op::upvalue_get | crate::opcode::Op::upvalue_set => { ip += 2; }
+                                _ => { ip += 1; }
+                            }
+                        } else {
+                            ip += 1;
+                        }
+                    }
+                }
+            }
+
+            // Store unified imports on the first merged chunk (script chunk 0)
+            if !all_chunks.is_empty() {
+                all_chunks[0].imports = unified_imports;
+            }
+        }
+
+        let resolved_exports: HashMap<(String, String), ExportImpl> = all_exports;
+
+        // 7. Pre-resolve unified import table → ImportTarget for the VM.
+        // This lets the VM skip runtime resolution for linked components.
+        let mut resolved_imports = Vec::new();
+        if !all_chunks.is_empty() {
+            for imp in &all_chunks[0].imports {
+                let key = (imp.module.clone(), imp.name.clone());
+                if let Some(export) = resolved_exports.get(&key) {
+                    match export {
+                        ExportImpl::ChunkFn(ci) => {
+                            let arity = if *ci < all_chunks.len() { all_chunks[*ci].arity } else { 0 };
+                            resolved_imports.push(crate::vm::ImportTarget::ChunkFn {
+                                chunk_index: *ci,
+                                arity,
+                            });
+                        }
+                        ExportImpl::HostFn(idx) => {
+                            resolved_imports.push(crate::vm::ImportTarget::Host(*idx));
+                        }
+                    }
+                } else if let Some(host_export) = self.host_exports.get(&key) {
+                    match host_export {
+                        ExportImpl::HostFn(idx) => {
+                            resolved_imports.push(crate::vm::ImportTarget::Host(*idx));
+                        }
+                        _ => {
+                            // Unresolved — will be resolved at runtime by the VM
+                            resolved_imports.push(crate::vm::ImportTarget::StdlibRedirect(imp.name.clone()));
+                        }
+                    }
+                } else {
+                    // Not resolved at link time — VM will resolve at runtime
+                    resolved_imports.push(crate::vm::ImportTarget::StdlibRedirect(imp.name.clone()));
+                }
+            }
+        }
 
         Ok(LinkResult {
             chunks: all_chunks,
-            exports: resolved_imports,
+            exports: resolved_exports,
             component_offsets,
             type_exports: all_type_exports,
+            resolved_imports,
         })
     }
 }
@@ -272,6 +409,10 @@ pub struct LinkResult {
     pub component_offsets: Vec<usize>,
     /// Resolved type exports: (interface, type_name) → TypeDef
     pub type_exports: HashMap<(String, String), crate::TypeDef>,
+    /// Pre-resolved import table for the unified import list on chunks[0].
+    /// Maps import index → ImportTarget. The VM can load this directly instead
+    /// of resolving at runtime.
+    pub resolved_imports: Vec<crate::vm::ImportTarget>,
 }
 
 // ============================================================

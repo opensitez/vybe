@@ -1062,6 +1062,26 @@ impl Compiler {
             if let Some(result) = self.try_compile_builtin(name, args)? {
                 return Ok(result);
             }
+            let lower = name.to_lowercase();
+            // Check if this name resolves to a local, upvalue, or known global/class
+            let is_local = self.resolve_var(&lower).is_some();
+            let is_upvalue = self.scopes.len() > 1
+                && self.resolve_upvalue(self.scopes.len() - 1, &lower).is_some();
+            let is_defined = is_local || is_upvalue
+                || self.defined_globals.contains(&lower)
+                || self.defined_classes.contains(&lower);
+            if is_defined {
+                // Known local/global — use global_get + call_ref
+                self.compile_expression(callee)?;
+                for arg in args { self.compile_expression(&arg.value)?; }
+                self.emit_u8(Op::call_ref, args.len() as u8);
+            } else {
+                // Unresolved → WASM import
+                let idx = self.import("*", &lower);
+                for arg in args { self.compile_expression(&arg.value)?; }
+                self.emit_host_call(idx, args.len() as u8);
+            }
+            return Ok(());
         }
         self.compile_expression(callee)?;
         for arg in args { self.compile_expression(&arg.value)?; }
@@ -2365,9 +2385,29 @@ impl Compiler {
                 return Ok(());
             }
         }
-        // Get the class constructor (stored as a global)
+        if let Expression::Identifier(name) = class {
+            let lower = name.to_lowercase();
+            let is_local = self.resolve_var(&lower).is_some();
+            let is_upvalue = self.scopes.len() > 1
+                && self.resolve_upvalue(self.scopes.len() - 1, &lower).is_some();
+            let is_defined = is_local || is_upvalue
+                || self.defined_globals.contains(&lower)
+                || self.defined_classes.contains(&lower);
+            if is_defined {
+                // Known class — use global_get + call_ref
+                self.compile_expression(class)?;
+                for arg in args { self.compile_expression(&arg.value)?; }
+                self.emit_u8(Op::call_ref, args.len() as u8);
+            } else {
+                // Unresolved class → WASM import
+                let idx = self.import("*", &lower);
+                for arg in args { self.compile_expression(&arg.value)?; }
+                self.emit_host_call(idx, args.len() as u8);
+            }
+            return Ok(());
+        }
+        // Dynamic expression (e.g. new $className()) — keep global_get + call_ref
         self.compile_expression(class)?;
-        // Call it — the constructor function (from emit_store_constructor) is a ref_func
         for arg in args { self.compile_expression(&arg.value)?; }
         self.emit_u8(Op::call_ref, args.len() as u8);
         Ok(())

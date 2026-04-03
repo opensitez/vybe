@@ -1704,19 +1704,33 @@ impl Compiler {
                         self.emit_host_call(idx, count);
                     }
                     _ => {
-                        // User-defined class constructor
-                        let idx = self.add_string_constant(class);
-                        self.emit_u16(Op::global_get, idx);
-                        let count = self.emit_args(args)?;
-                        self.emit_u8(Op::call, count);
+                        if self.defined_classes.contains(class) || self.classes.contains_key(class) {
+                            // User-defined class constructor
+                            let idx = self.add_string_constant(class);
+                            self.emit_u16(Op::global_get, idx);
+                            let count = self.emit_args(args)?;
+                            self.emit_u8(Op::call, count);
+                        } else {
+                            // Unresolved class → host call_import("*", name)
+                            let count = self.emit_args(args)?;
+                            let imp = self.import("*", class);
+                            self.emit_host_call(imp, count);
+                        }
                     }
                 }
             }
             Expression::Const { class, args, .. } => {
-                let idx = self.add_string_constant(class);
-                self.emit_u16(Op::global_get, idx);
-                let count = self.emit_args(args)?;
-                self.emit_u8(Op::call, count);
+                if self.defined_classes.contains(class) || self.classes.contains_key(class) {
+                    let idx = self.add_string_constant(class);
+                    self.emit_u16(Op::global_get, idx);
+                    let count = self.emit_args(args)?;
+                    self.emit_u8(Op::call, count);
+                } else {
+                    // Unresolved class → host call_import("*", name)
+                    let count = self.emit_args(args)?;
+                    let imp = self.import("*", class);
+                    self.emit_host_call(imp, count);
+                }
             }
             Expression::Cascade { object, ops, null_safe } => {
                 self.compile_expression(object)?;
@@ -1954,6 +1968,13 @@ impl Compiler {
             // Other bare imports
             if let Some(imp) = self.resolve_bare_import(name) {
                 let count = self.emit_args(args)?;
+                self.emit_host_call(imp, count);
+                return Ok(());
+            }
+            // Unresolved name → host call_import("*", name)
+            if !self.is_known_variable(name) && !self.defined_classes.contains(name) {
+                let count = self.emit_args(args)?;
+                let imp = self.import("*", name);
                 self.emit_host_call(imp, count);
                 return Ok(());
             }

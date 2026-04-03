@@ -58,6 +58,20 @@ impl<'a> HostContext<'a> {
 /// Host function signature. Receives restricted context + args, returns a value.
 pub type HostFn = Box<dyn Fn(&mut HostContext, &[Value]) -> Value>;
 
+/// WASM import resolution target. An import can resolve to:
+/// - A host function (provided by the embedder)
+/// - A component-exported function (another module's code)
+/// - A stdlib redirect (global function registered at runtime)
+#[derive(Clone)]
+pub enum ImportTarget {
+    /// Index into VM::host_fns
+    Host(usize),
+    /// Chunk index + arity — calls a function defined in another component
+    ChunkFn { chunk_index: usize, arity: u8 },
+    /// Runtime global lookup (stdlib functions registered via globals)
+    StdlibRedirect(String),
+}
+
 #[derive(Debug, Clone)]
 struct CallFrame {
     chunk_index: usize,
@@ -96,8 +110,9 @@ pub struct VM {
     host_fns: Vec<HostFn>,
     /// Registry: (module, name) → index into host_fns.
     pub host_registry: HashMap<(String, String), usize>,
-    /// Import resolution table: import_index → host_fn_index.
-    import_table: Vec<usize>,
+    /// Import resolution table: import_index → resolved target.
+    /// WASM-aligned: imports can resolve to host functions OR component-exported functions.
+    import_table: Vec<ImportTarget>,
     /// Exception handler stack (WASM exception proposal).
     exception_handlers: Vec<ExceptionHandler>,
     /// Event loop for async operations (shared with host functions).
@@ -164,7 +179,7 @@ impl VM {
             open_upvalues: Vec::new(),
             host_fns: Vec::new(),
             host_registry: HashMap::new(),
-            import_table: Vec::new(),
+            import_table: Vec::<ImportTarget>::new(),
             exception_handlers: Vec::new(),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             type_registry: crate::typedef::TypeRegistry::new(),
@@ -515,6 +530,120 @@ impl VM {
         Ok(Value::Null)
     }
 
+    /// Run linked chunks with a pre-resolved import table from the Linker.
+    /// Used for bootstrap: Linker resolves imports at link time, VM just loads them.
+    pub fn run_linked(&mut self, chunks: Vec<Chunk>, resolved_imports: Vec<ImportTarget>) -> Result<Value, VMError> {
+        if chunks.is_empty() {
+            return Ok(Value::Null);
+        }
+        let script_idx = self.chunks.len();
+        // Offset ref_func indices
+        let mut adjusted = chunks;
+        if script_idx > 0 {
+            for chunk in &mut adjusted {
+                let code = &mut chunk.code;
+                let mut ip = 0;
+                while ip < code.len() {
+                    let op_byte = code[ip];
+                    if let Some(op) = Op::from_byte(op_byte) {
+                        match op {
+                            Op::ref_func => {
+                                if ip + 2 < code.len() {
+                                    let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
+                                    let new_idx = old_idx + script_idx as u16;
+                                    code[ip + 1] = (new_idx >> 8) as u8;
+                                    code[ip + 2] = (new_idx & 0xff) as u8;
+                                }
+                                ip += 3 + 1;
+                                if ip - 1 < code.len() {
+                                    let uv_count = code[ip - 1] as usize;
+                                    ip += uv_count * 2;
+                                }
+                                continue;
+                            }
+                            _ => {}
+                        }
+                        ip += op.encoded_len();
+                        match op {
+                            Op::call_import => { ip += 3; }
+                            Op::br | Op::br_if_true | Op::br_if_false | Op::br_if_null
+                            | Op::r#loop => { ip += 2; }
+                            Op::try_start => { ip += 4; }
+                            _ => {}
+                        }
+                    } else if op_byte == 0xFE && ip + 1 < code.len() {
+                        ip += 2;
+                    } else {
+                        ip += 1;
+                    }
+                }
+            }
+        }
+        self.chunks.extend(adjusted);
+
+        // Use pre-resolved import table, adjusting ChunkFn indices by offset
+        self.import_table.clear();
+        for target in resolved_imports {
+            match target {
+                ImportTarget::ChunkFn { chunk_index, arity } => {
+                    self.import_table.push(ImportTarget::ChunkFn {
+                        chunk_index: chunk_index + script_idx,
+                        arity,
+                    });
+                }
+                ImportTarget::Host(idx) => {
+                    self.import_table.push(ImportTarget::Host(idx));
+                }
+                ImportTarget::StdlibRedirect(name) => {
+                    // Try to resolve against host registry first
+                    let key_candidates = [
+                        ("wasi:cli".to_string(), name.clone()),
+                        ("vybe:console".to_string(), name.clone()),
+                    ];
+                    let mut resolved = false;
+                    for key in &key_candidates {
+                        if let Some(&idx) = self.host_registry.get(key) {
+                            self.import_table.push(ImportTarget::Host(idx));
+                            resolved = true;
+                            break;
+                        }
+                    }
+                    if !resolved {
+                        self.import_table.push(ImportTarget::StdlibRedirect(name));
+                    }
+                }
+            }
+        }
+
+        // Load type table
+        {
+            let types = self.chunks[script_idx].types.clone();
+            if !types.is_empty() {
+                let adjusted_types: Vec<_> = types.iter().map(|t| {
+                    let mut entry = t.clone();
+                    entry.methods = t.methods.iter().map(|(name, idx)| {
+                        (name.clone(), idx + script_idx)
+                    }).collect();
+                    if let Some(ci) = entry.constructor_chunk {
+                        entry.constructor_chunk = Some(ci + script_idx);
+                    }
+                    entry
+                }).collect();
+                self.type_registry.load_type_table(&adjusted_types);
+            }
+        }
+
+        // Execute
+        self.frames.push(CallFrame {
+            chunk_index: script_idx,
+            ip: 0,
+            base: self.stack.len(),
+            upvalues: Vec::new(),
+        });
+        self.stack.resize(self.stack.len() + self.chunks[script_idx].local_count as usize, Value::Null);
+        self.execute()
+    }
+
     pub fn run(&mut self, chunks: Vec<Chunk>) -> Result<Value, VMError> {
         if chunks.is_empty() {
             return Ok(Value::Null);
@@ -572,38 +701,46 @@ impl VM {
         }
         self.chunks.extend(adjusted);
 
-        // Resolve imports. If host function not found, check for a __vybe_* stdlib global.
-        // If the global exists (set by finalize_with_stdlib), use the stdlib chunk.
+        // Resolve imports for ALL new chunks (not just script chunk).
+        // Each chunk has its own import list. We build one unified import table
+        // by scanning all chunks and mapping their import indices to host functions.
+        // The trick: all chunks compiled by the same compiler share the same import list
+        // (imports are added to chunks[0] by all compilers). For multi-module programs,
+        // different modules may have different imports. We resolve the union.
         self.import_table.clear();
-        let mut stdlib_redirects: Vec<(usize, String)> = Vec::new();
-        for (i, import) in self.chunks[script_idx].imports.iter().enumerate() {
+        for (_i, import) in self.chunks[script_idx].imports.iter().enumerate() {
+            // 1. Try host function registry (exact module:name match)
             let key = (import.module.clone(), import.name.clone());
             if let Some(&idx) = self.host_registry.get(&key) {
-                self.import_table.push(idx);
-            } else {
-                // Check for stdlib global: try __vybe_<name>, __vybe_<lowercase>,
-                // and known aliases.
+                self.import_table.push(ImportTarget::Host(idx));
+                continue;
+            }
+            // 2. Wildcard module "*" — resolve from globals (cross-language or same-language)
+            if import.module == "*" {
+                // Check lowercase and original case
                 let candidates = [
-                    format!("__vybe_{}", import.name),
-                    format!("__vybe_{}", import.name.to_lowercase()),
+                    import.name.clone(),
+                    import.name.to_lowercase(),
                 ];
                 let found = candidates.iter().find(|g| self.globals.contains_key(g.as_str()));
                 if let Some(global_name) = found {
-                    stdlib_redirects.push((i, global_name.clone()));
-                    self.import_table.push(usize::MAX);
-                } else {
-                    return Err(VMError::new(format!(
-                        "Unresolved import: \"{}\" \"{}\"", import.module, import.name
-                    )));
+                    self.import_table.push(ImportTarget::StdlibRedirect(global_name.clone()));
+                    continue;
                 }
             }
-        }
-        // Store redirect info for call_import
-        for (import_idx, global_name) in &stdlib_redirects {
-            self.globals.insert(
-                format!("__import_redirect_{}", import_idx),
-                Value::String(Rc::from(global_name.as_str())),
-            );
+            // 3. Check for stdlib global
+            let candidates = [
+                format!("__vybe_{}", import.name),
+                format!("__vybe_{}", import.name.to_lowercase()),
+            ];
+            let found = candidates.iter().find(|g| self.globals.contains_key(g.as_str()));
+            if let Some(global_name) = found {
+                self.import_table.push(ImportTarget::StdlibRedirect(global_name.clone()));
+            } else {
+                return Err(VMError::new(format!(
+                    "Unresolved import: \"{}\" \"{}\"", import.module, import.name
+                )));
+            }
         }
 
         // Load type table from the script chunk (WASM GC type section).
@@ -1077,8 +1214,19 @@ impl VM {
 
             match op {
                 Op::halt => {
-                    self.close_upvalues(0);
-                    return Ok(if self.stack.is_empty() { Value::Null } else { self.pop() });
+                    if self.frames.len() <= 1 {
+                        // Top-level halt: terminate execution
+                        self.close_upvalues(0);
+                        return Ok(if self.stack.is_empty() { Value::Null } else { self.pop() });
+                    } else {
+                        // Nested halt (e.g. script chunk called via bootstrap):
+                        // act like return — pop frame and return null
+                        let base = self.frame().base;
+                        self.close_upvalues(base);
+                        self.frames.pop();
+                        self.stack.truncate(base);
+                        self.push(Value::Null)?;
+                    }
                 }
                 Op::unreachable => {
                     return Err(VMError::new("trap: unreachable executed"));
@@ -1559,61 +1707,72 @@ impl VM {
                     let import_idx = self.read_u16() as usize;
                     let argc = self.read_byte() as usize;
 
-                    // Check for stdlib redirect (sentinel usize::MAX)
-                    if import_idx < self.import_table.len() && self.import_table[import_idx] == usize::MAX {
-                        let redirect_key = format!("__import_redirect_{}", import_idx);
-                        if let Some(Value::String(global_name)) = self.globals.get(&redirect_key).cloned() {
-                            if let Some(func_val) = self.globals.get(global_name.as_ref()).cloned() {
-                                // Insert func ref below args (same as call_ref convention)
+                    if import_idx >= self.import_table.len() {
+                        return Err(VMError::new(format!("Unresolved import index: {}", import_idx)));
+                    }
+
+                    match self.import_table[import_idx].clone() {
+                        ImportTarget::Host(host_idx) => {
+                            let base = self.stack.len() - argc;
+                            let args: Vec<Value> = self.stack[base..].to_vec();
+                            self.stack.truncate(base);
+
+                            let placeholder: HostFn = Box::new(|_, _| Value::Null);
+                            let host_fn = std::mem::replace(&mut self.host_fns[host_idx], placeholder);
+                            let result = {
+                                let mut ctx = self.make_host_context();
+                                host_fn(&mut ctx, &args)
+                            };
+                            self.host_fns[host_idx] = host_fn;
+
+                            // JSPI: transparent async suspension
+                            if let Value::Object(ref obj) = result {
+                                let o = obj.borrow();
+                                let is_pending = o.properties.get("__type")
+                                    .map(|v| format!("{}", v) == "Promise")
+                                    .unwrap_or(false)
+                                    && o.properties.get("__state")
+                                        .map(|v| format!("{}", v) == "pending")
+                                        .unwrap_or(false);
+                                if is_pending {
+                                    let promise_id = o.properties.get("__id")
+                                        .map(|v| v.as_f64() as u64)
+                                        .unwrap_or(0);
+                                    drop(o);
+                                    let fiber = self.save_fiber();
+                                    self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
+                                    return Err(VMError::new(format!("__jspi__:{}", promise_id)));
+                                }
+                            }
+
+                            self.push(result)?;
+                        }
+                        ImportTarget::ChunkFn { chunk_index, arity } => {
+                            // Component-exported function: build Function value, push below args, call.
+                            let func = crate::value::Function {
+                                name: None,
+                                arity,
+                                chunk_index,
+                                upvalues: Vec::new(),
+                            };
+                            let mut obj = crate::value::Object::new();
+                            obj.kind = crate::value::ObjectKind::Function(func);
+                            let func_val = Value::Object(Rc::new(RefCell::new(obj)));
+                            let args_start = self.stack.len() - argc;
+                            self.stack.insert(args_start, func_val);
+                            self.call_value(argc)?;
+                        }
+                        ImportTarget::StdlibRedirect(ref global_name) => {
+                            if let Some(func_val) = self.globals.get(global_name).cloned() {
                                 let args_start = self.stack.len() - argc;
                                 self.stack.insert(args_start, func_val);
                                 self.call_value(argc)?;
-                                continue;
+                            } else {
+                                return Err(VMError::new(format!(
+                                    "Stdlib redirect not found: {}", global_name
+                                )));
                             }
                         }
-                    }
-
-                    let base = self.stack.len() - argc;
-                    let args: Vec<Value> = self.stack[base..].to_vec();
-                    self.stack.truncate(base);
-
-                    if import_idx < self.import_table.len() {
-                        let host_idx = self.import_table[import_idx];
-                        // Take host fn temporarily to release borrow, create HostContext
-                        let placeholder: HostFn = Box::new(|_, _| Value::Null);
-                        let host_fn = std::mem::replace(&mut self.host_fns[host_idx], placeholder);
-                        let result = {
-                            let mut ctx = self.make_host_context();
-                            host_fn(&mut ctx, &args)
-                        };
-                        self.host_fns[host_idx] = host_fn;
-
-                        // JSPI: if host function returned a pending Promise,
-                        // transparently suspend and resume when resolved.
-                        // The calling code doesn't need `await` — it looks synchronous.
-                        if let Value::Object(ref obj) = result {
-                            let o = obj.borrow();
-                            let is_pending = o.properties.get("__type")
-                                .map(|v| format!("{}", v) == "Promise")
-                                .unwrap_or(false)
-                                && o.properties.get("__state")
-                                    .map(|v| format!("{}", v) == "pending")
-                                    .unwrap_or(false);
-                            if is_pending {
-                                let promise_id = o.properties.get("__id")
-                                    .map(|v| v.as_f64() as u64)
-                                    .unwrap_or(0);
-                                drop(o);
-                                // JSPI suspend: save entire VM state as a fiber
-                                let fiber = self.save_fiber();
-                                self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
-                                return Err(VMError::new(format!("__jspi__:{}", promise_id)));
-                            }
-                        }
-
-                        self.push(result)?;
-                    } else {
-                        return Err(VMError::new(format!("Unresolved import index: {}", import_idx)));
                     }
                 }
 

@@ -38,7 +38,7 @@ fn main() {
     let file_path = match file_arg {
         Some(f) => f,
         None => {
-            eprintln!("Usage: vybec [--dump] [--sandbox] [--portable] <file.vb|file.js|file.dart|file.py|file.php>");
+            eprintln!("Usage: vybec [--dump] [--sandbox] [--portable] <file.vb|file.js|file.dart|file.py|file.php|file.rb>");
             std::process::exit(1);
         }
     };
@@ -60,6 +60,8 @@ fn main() {
         "dart" => run_dart(path, dump, emit_wasm, sandbox, portable),
         "py" | "py3" => run_python(path, dump, emit_wasm, sandbox, portable),
         "php" => run_php(path, dump, emit_wasm, sandbox, portable),
+        "rb" => run_ruby(path, dump, emit_wasm, sandbox, portable),
+        "cob" | "cbl" | "cobol" => run_cobol(path, dump, emit_wasm, sandbox, portable),
         "wasm" => run_wasm(path),
         "vybe" => run_project(path, dump),
         "vbp" | "vbproj" => vybe_cli::runner::run(path, &[]),
@@ -70,7 +72,7 @@ fn main() {
             if vybe_path.exists() {
                 run_project(&vybe_path, dump);
             } else {
-                eprintln!("Error: unsupported file type '.{}'. Expected .vb, .js, .dart, .cs, .vbp, .vbproj, or .vybe", ext);
+                eprintln!("Error: unsupported file type '.{}'. Expected .vb, .js, .dart, .py, .php, .rb, .cs, .vbp, .vbproj, or .vybe", ext);
                 std::process::exit(1);
             }
         }
@@ -86,7 +88,7 @@ fn run_project(path: &Path, dump: bool) {
 
     let project_dir = path.parent().unwrap_or(Path::new("."));
 
-    // Set up VM + linker
+    // ── Phase 1: Set up VM with host functions ─────────────────
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
     if config.host.gui {
@@ -96,28 +98,31 @@ fn run_project(path: &Path, dump: bool) {
     }
     vybe_host::setup_namespaces(&mut vm);
 
-    // Create linker and register host exports
-    let mut linker = vybe_bytecode::Linker::new();
-    linker.register_host_from_vm(&vm);
-
-    // Compile and run each source file.
-    // Library files run first (set up globals/exports), entry file runs last.
-    let mut file_chunks: Vec<(String, Vec<vybe_bytecode::Chunk>)> = Vec::new();
+    // ── Phase 2: Compile ALL files into Components ─────────────
+    // Each source file becomes a Component with exports/imports.
+    // No vm.run() calls here — just compilation.
+    let mut components: Vec<vybe_bytecode::Component> = Vec::new();
+    let mut entry_idx: Option<usize> = None;
 
     for file in &config.files {
         let file_path = project_dir.join(file);
         let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let module_name = file_path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("module")
+            .to_string();
 
-        let chunks = match ext.as_str() {
+        let (language, chunks) = match ext.as_str() {
             "wasm" => {
                 let data = match std::fs::read(&file_path) {
                     Ok(d) => d,
                     Err(e) => { eprintln!("Error reading {}: {e}", file); std::process::exit(1); }
                 };
-                match vybe_bytecode::wasm::read_wasm(&data) {
+                let c = match vybe_bytecode::wasm::read_wasm(&data) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("WASM error in {}: {e}", file); std::process::exit(1); }
-                }
+                };
+                (vybe_bytecode::Language::Wasm, c)
             }
             "vb" => {
                 let source = read_file(&file_path);
@@ -125,22 +130,36 @@ fn run_project(path: &Path, dump: bool) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e:?}", file); std::process::exit(1); }
                 };
-                match vybe_compiler_vb::Compiler::new().compile(&program) {
+                let c = match vybe_compiler_vb::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
-                }
+                };
+                (vybe_bytecode::Language::VB, c)
             }
             "js" => {
-                let source = read_file(&file_path);
                 vybe_compiler_js::register_js_coercion(&mut vm);
+                let source = read_file(&file_path);
                 let program = match vybe_parser_js::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                match vybe_compiler_js::Compiler::new().compile(&program) {
+                let c = match vybe_compiler_js::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
-                }
+                };
+                (vybe_bytecode::Language::JS, c)
+            }
+            "cs" => {
+                let source = read_file(&file_path);
+                let program = match vybe_parser_csharp::parse(&source) {
+                    Ok(p) => p,
+                    Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
+                };
+                let c = match vybe_compiler_csharp::Compiler::new().compile(&program) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
+                };
+                (vybe_bytecode::Language::CSharp, c)
             }
             "dart" => {
                 let source = read_file(&file_path);
@@ -148,87 +167,90 @@ fn run_project(path: &Path, dump: bool) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                match vybe_compiler_dart::Compiler::new().compile(&program) {
+                let c = match vybe_compiler_dart::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
-                }
+                };
+                (vybe_bytecode::Language::Dart, c)
+            }
+            "py" | "py3" => {
+                let source = read_file(&file_path);
+                let module = match vybe_parser_python::parse(&source) {
+                    Ok(p) => p,
+                    Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
+                };
+                let c = match vybe_compiler_python::Compiler::new().compile(&module) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
+                };
+                (vybe_bytecode::Language::Python, c)
+            }
+            "php" => {
+                let source = read_file(&file_path);
+                let program = match vybe_parser_php::parse(&source) {
+                    Ok(p) => p,
+                    Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
+                };
+                let c = match vybe_compiler_php::Compiler::new().compile(&program) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
+                };
+                (vybe_bytecode::Language::Php, c)
+            }
+            "rb" => {
+                let source = read_file(&file_path);
+                let program = match vybe_parser_ruby::parse(&source) {
+                    Ok(p) => p,
+                    Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
+                };
+                let c = match vybe_compiler_ruby::Compiler::new().compile(&program) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
+                };
+                (vybe_bytecode::Language::Ruby, c)
+            }
+            "cob" | "cbl" | "cobol" => {
+                let source = read_file(&file_path);
+                let program = match vybe_parser_cobol::parse(&source) {
+                    Ok(p) => p,
+                    Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
+                };
+                let c = match vybe_compiler_cobol::Compiler::new().compile(&program) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
+                };
+                (vybe_bytecode::Language::Cobol, c)
             }
             _ => { eprintln!("Unknown file type: {}", file); continue; }
         };
-        file_chunks.push((file.clone(), chunks));
-    }
 
-    // Run library files first, entry file last
-    for (file, chunks) in &file_chunks {
-        if *file != config.entry {
-            let ext = std::path::Path::new(file).extension()
-                .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        // Build Component with exports
+        let component = vybe_compiler_common::components::build_component(
+            &module_name, language, chunks,
+        );
 
-            if ext == "wasm" {
-                // WASM library: register exported functions as VM globals
-                // so VB/JS can call them by name
-                let chunk_offset = vm.chunks.len();
-                vm.chunks.extend(chunks.clone());
-                for chunk in chunks {
-                    if chunk.name != "<script>" && !chunk.name.starts_with("func_") {
-                        // Create a closure value for this function
-                        let func_idx = chunk_offset + chunks.iter().position(|c| c.name == chunk.name).unwrap_or(0);
-                        let func = vybe_bytecode::value::Function {
-                            name: Some(chunk.name.clone()),
-                            arity: chunk.arity,
-                            chunk_index: func_idx,
-                            upvalues: Vec::new(),
-                        };
-                        let obj = vybe_bytecode::value::Object {
-                            properties: std::collections::HashMap::new(),
-                            kind: vybe_bytecode::value::ObjectKind::Function(func),
-                            type_id: 0, fields: Vec::new(),
-                        };
-                        let val = vybe_bytecode::Value::Object(
-                            Rc::new(RefCell::new(obj))
-                        );
-                        vm.globals.insert(chunk.name.to_lowercase(), val);
-                        eprintln!("  Registered WASM function: {}", chunk.name);
-                    }
-                }
-            } else {
-                if let Err(e) = vm.run(chunks.clone()) {
-                    eprintln!("Runtime error in {}: {e}", file);
-                }
-            }
+        if *file == config.entry {
+            entry_idx = Some(components.len());
         }
+        components.push(component);
     }
 
-    // Collect entry file chunks + append any WASM library chunks
-    // so chunk_index references remain valid
-    let mut all_chunks: Vec<vybe_bytecode::Chunk> = file_chunks.into_iter()
-        .find(|(f, _)| *f == config.entry)
-        .map(|(_, c)| c)
-        .unwrap_or_default();
-
-    // Append WASM library chunks that were registered as globals
-    // Their chunk_index was set relative to vm.chunks, so we need
-    // to adjust or just ensure vm.chunks includes them after run()
-    // Actually: append them to all_chunks and update the global Function's chunk_index
-    let wasm_chunk_offset = all_chunks.len();
-    let wasm_chunks: Vec<vybe_bytecode::Chunk> = vm.chunks.drain(..).collect();
-    all_chunks.extend(wasm_chunks);
-
-    // Update globals that reference WASM chunks
-    let globals_to_fix: Vec<String> = vm.globals.keys().cloned().collect();
-    for key in globals_to_fix {
-        if let Some(vybe_bytecode::Value::Object(obj)) = vm.globals.get(&key) {
-            let mut o = obj.borrow_mut();
-            if let vybe_bytecode::value::ObjectKind::Function(ref mut func) = o.kind {
-                if func.chunk_index > 0 && func.chunk_index < wasm_chunk_offset + 100 {
-                    func.chunk_index += wasm_chunk_offset;
-                }
-            }
-        }
+    // ── Phase 3: Link all components via Linker ────────────────
+    // The Linker merges chunks, adjusts ref_func indices,
+    // resolves imports/exports, and applies CLS case resolution.
+    let mut linker = vybe_bytecode::Linker::new();
+    linker.register_host_from_vm(&vm);
+    for comp in &components {
+        linker.add_component(comp.clone());
     }
+
+    let link_result = match linker.link() {
+        Ok(r) => r,
+        Err(e) => { eprintln!("Link error: {e}"); std::process::exit(1); }
+    };
 
     if dump {
-        for (i, chunk) in all_chunks.iter().enumerate() {
+        for (i, chunk) in link_result.chunks.iter().enumerate() {
             println!("=== Chunk {} ({}) ===", i, chunk.name);
             println!("  arity: {}, locals: {}", chunk.arity, chunk.local_count);
             println!("  bytecode: {} bytes", chunk.code.len());
@@ -237,12 +259,115 @@ fn run_project(path: &Path, dump: bool) {
         return;
     }
 
-    if all_chunks.is_empty() {
-        eprintln!("No entry file compiled");
-        std::process::exit(1);
+    // ── Phase 4: Build bootstrap + run ───────────────────────────
+    // The Linker merged all chunks. Each component's script chunk (chunk 0)
+    // is at its component_offset. We create a bootstrap chunk that calls
+    // each script chunk in order: libraries first, entry last.
+    //
+    // Bootstrap bytecode:
+    //   ref_func comp1_script_idx; call_ref 0; drop;
+    //   ref_func comp2_script_idx; call_ref 0; drop;
+    //   ...
+    //   ref_func entry_script_idx; call_ref 0; drop;
+    //   halt;
+    let mut bootstrap = vybe_bytecode::Chunk::new("<bootstrap>");
+    let line = 0u32;
+
+    // Call library script chunks first (non-entry)
+    for (i, _comp) in components.iter().enumerate() {
+        if Some(i) == entry_idx { continue; }
+        let script_idx = link_result.component_offsets[i];
+        // ref_func + call_ref 0 + drop
+        bootstrap.emit_op_u16(vybe_bytecode::Op::ref_func, script_idx as u16, line);
+        bootstrap.emit(0, line); // 0 upvalues
+        bootstrap.emit_op_u8(vybe_bytecode::Op::call_ref, 0, line);
+        bootstrap.emit_op(vybe_bytecode::Op::drop, line);
     }
 
-    // Run entry file
+    // Call entry script chunk last
+    if let Some(ei) = entry_idx {
+        let script_idx = link_result.component_offsets[ei];
+        bootstrap.emit_op_u16(vybe_bytecode::Op::ref_func, script_idx as u16, line);
+        bootstrap.emit(0, line);
+        bootstrap.emit_op_u8(vybe_bytecode::Op::call_ref, 0, line);
+        bootstrap.emit_op(vybe_bytecode::Op::drop, line);
+    }
+
+    bootstrap.emit_op(vybe_bytecode::Op::halt, line);
+    bootstrap.local_count = 16;
+
+    // Prepend bootstrap chunk — all other chunk indices shift by 1
+    // (The Linker already adjusted ref_func indices relative to its own offsets,
+    //  but now we're prepending a chunk, so we need to shift everything by 1)
+    let mut all_chunks = vec![bootstrap];
+    for mut chunk in link_result.chunks {
+        // Adjust ref_func indices in each chunk: +1 for the prepended bootstrap
+        let code = &mut chunk.code;
+        let mut ip = 0;
+        while ip < code.len() {
+            let op_byte = code[ip];
+            if let Some(op) = vybe_bytecode::Op::from_byte(op_byte) {
+                match op {
+                    vybe_bytecode::Op::ref_func => {
+                        if ip + 2 < code.len() {
+                            let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
+                            let new_idx = old_idx + 1; // shift by 1 for bootstrap
+                            code[ip + 1] = (new_idx >> 8) as u8;
+                            code[ip + 2] = (new_idx & 0xff) as u8;
+                        }
+                        ip += 3 + 1;
+                        if ip - 1 < code.len() {
+                            let uv_count = code[ip - 1] as usize;
+                            ip += uv_count * 2;
+                        }
+                        continue;
+                    }
+                    vybe_bytecode::Op::call_import => { ip += 4; continue; }
+                    vybe_bytecode::Op::call | vybe_bytecode::Op::call_ref => { ip += 2; continue; }
+                    vybe_bytecode::Op::r#const | vybe_bytecode::Op::local_get | vybe_bytecode::Op::local_set
+                    | vybe_bytecode::Op::global_get | vybe_bytecode::Op::global_set
+                    | vybe_bytecode::Op::struct_get | vybe_bytecode::Op::struct_set
+                    | vybe_bytecode::Op::array_new
+                    | vybe_bytecode::Op::br | vybe_bytecode::Op::br_if_true | vybe_bytecode::Op::br_if_false
+                    | vybe_bytecode::Op::r#loop => { ip += 3; continue; }
+                    _ => { ip += 1; continue; }
+                }
+            } else {
+                ip += 1;
+            }
+        }
+        all_chunks.push(chunk);
+    }
+
+    // Also adjust the bootstrap's ref_func indices by +1 (they pointed to Linker offsets)
+    {
+        let code = &mut all_chunks[0].code;
+        let mut ip = 0;
+        while ip < code.len() {
+            let op_byte = code[ip];
+            if let Some(op) = vybe_bytecode::Op::from_byte(op_byte) {
+                match op {
+                    vybe_bytecode::Op::ref_func => {
+                        if ip + 2 < code.len() {
+                            let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
+                            let new_idx = old_idx + 1;
+                            code[ip + 1] = (new_idx >> 8) as u8;
+                            code[ip + 2] = (new_idx & 0xff) as u8;
+                        }
+                        ip += 3 + 1;
+                        if ip - 1 < code.len() {
+                            let uv_count = code[ip - 1] as usize;
+                            ip += uv_count * 2;
+                        }
+                        continue;
+                    }
+                    vybe_bytecode::Op::call_ref => { ip += 2; continue; }
+                    _ => { ip += 1; continue; }
+                }
+            } else { ip += 1; }
+        }
+    }
+
     match vm.run(all_chunks) {
         Ok(_) => {}
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
@@ -401,12 +526,12 @@ fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable:
     } else {
         eprintln!("[portable] Running with WASM stdlib only — no Vybe host optimizations");
         // Register minimal WASI imports for I/O
-        vm.register_host_fn("wasi:cli", "log", Box::new(|args: &[vybe_bytecode::Value]| {
+        vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
             for a in args { print!("{}", a); }
             println!();
             vybe_bytecode::Value::Null
         }));
-        vm.register_host_fn("wasi:cli", "readLine", Box::new(|_| {
+        vm.register_host_fn("wasi:cli", "readLine", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _| {
             let mut line = String::new();
             std::io::stdin().read_line(&mut line).ok();
             vybe_bytecode::Value::String(std::rc::Rc::from(line.trim()))
@@ -455,6 +580,88 @@ fn run_php(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: b
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_php::Compiler::new().compile(&program) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+    };
+
+    if dump { dump_chunks(&chunks); return; }
+    if emit_wasm {
+        let wasm_bytes = vybe_bytecode::wasm::write_wasm(&chunks);
+        let out_path = path.with_extension("wasm");
+        std::fs::write(&out_path, &wasm_bytes).unwrap();
+        eprintln!("Wrote {} bytes to {}", wasm_bytes.len(), out_path.display());
+        return;
+    }
+
+    match vm.run(chunks) {
+        Ok(_) => {}
+        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+    }
+
+    vybe_cli::runner::launch_vm_form(vm, queue, None);
+}
+
+fn run_cobol(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
+    let source = read_file(path);
+    let program = match vybe_parser_cobol::parse(&source) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
+    };
+
+    let mut vm = VM::new();
+    let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
+    if sandbox {
+        eprintln!("[sandbox] Restricted mode");
+        vybe_host::register_with_capabilities_and_gui(
+            &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
+        );
+    } else {
+        vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    }
+    vybe_host::setup_namespaces(&mut vm);
+
+    let chunks = match vybe_compiler_cobol::Compiler::new().compile(&program) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+    };
+
+    if dump { dump_chunks(&chunks); return; }
+    if emit_wasm {
+        let wasm_bytes = vybe_bytecode::wasm::write_wasm(&chunks);
+        let out_path = path.with_extension("wasm");
+        std::fs::write(&out_path, &wasm_bytes).unwrap();
+        eprintln!("Wrote {} bytes to {}", wasm_bytes.len(), out_path.display());
+        return;
+    }
+
+    match vm.run(chunks) {
+        Ok(_) => {}
+        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+    }
+
+    vybe_cli::runner::launch_vm_form(vm, queue, None);
+}
+
+fn run_ruby(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
+    let source = read_file(path);
+    let program = match vybe_parser_ruby::parse(&source) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
+    };
+
+    let mut vm = VM::new();
+    let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
+    if sandbox {
+        eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
+        vybe_host::register_with_capabilities_and_gui(
+            &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
+        );
+    } else {
+        vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    }
+    vybe_host::setup_namespaces(&mut vm);
+
+    let chunks = match vybe_compiler_ruby::Compiler::new().compile(&program) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };

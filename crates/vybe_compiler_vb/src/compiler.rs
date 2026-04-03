@@ -36,6 +36,8 @@ pub struct Compiler {
     pub(crate) type_entries: Vec<TypeEntry>,
     /// Class name → index into type_entries (for set_type_id at construction sites).
     pub(crate) class_type_ids: std::collections::HashMap<String, usize>,
+    /// Track current class's parent name (for MyBase.New() calls in constructors).
+    pub(crate) current_class_parent: Option<String>,
 }
 
 pub(crate) struct LoopContext {
@@ -67,6 +69,7 @@ impl Compiler {
             known_arrays: HashSet::new(),
             type_entries: Vec::new(),
             class_type_ids: std::collections::HashMap::new(),
+            current_class_parent: None,
             interface_imports: vec![
                 // Default imports — always available
                 "system".into(),

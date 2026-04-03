@@ -956,7 +956,7 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
     use vybe_bytecode::value::{Object, ObjectKind};
 
     // ShowDialog on dialog objects — returns DialogResult.OK (1) or Cancel (0)
-    vm.register_host_fn("vybe:gui", "__dlg_show", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "__dlg_show", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let dialog_type = if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             o.properties.get("__control_type").map(|v| format!("{}", v)).unwrap_or_default()
@@ -1015,7 +1015,7 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
     }));
 
     // MessageBox.Show — native dialog
-    vm.register_host_fn("vybe:gui", "msgBox", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "msgBox", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let text = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         let title = args.get(1).map(|v| format!("{}", v)).unwrap_or_else(|| "Message".into());
         rfd::MessageDialog::new()
@@ -1027,7 +1027,7 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
     }));
 
     // InputBox — native text input (rfd doesn't have this, use a simple stub)
-    vm.register_host_fn("vybe:gui", "inputBox", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "inputBox", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let _prompt = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         let _title = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         let default = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();

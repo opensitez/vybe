@@ -731,9 +731,11 @@ impl Parser {
                 }
                 TokenKind::Occurs => {
                     self.advance();
-                    if let TokenKind::Number(n) = self.current().clone() {
-                        self.advance();
-                        occurs = Some(n as u32);
+                    // OCCURS count — accept both Number and Level tokens
+                    match self.current().clone() {
+                        TokenKind::Number(n) => { self.advance(); occurs = Some(n as u32); }
+                        TokenKind::Level(n) => { self.advance(); occurs = Some(n as u32); }
+                        _ => {}
                     }
                     self.match_token(&TokenKind::Times);
                     // DEPENDING ON var
@@ -817,6 +819,7 @@ impl Parser {
     fn parse_literal(&mut self) -> Result<Literal, String> {
         match self.current().clone() {
             TokenKind::Number(n) => { self.advance(); Ok(Literal::Num(n)) }
+            TokenKind::Level(n) => { self.advance(); Ok(Literal::Num(n as f64)) }
             TokenKind::Str(s) => { self.advance(); Ok(Literal::Str(s)) }
             TokenKind::Spaces => { self.advance(); Ok(Literal::Spaces) }
             TokenKind::Zeros => { self.advance(); Ok(Literal::Zeros) }
@@ -1108,7 +1111,19 @@ impl Parser {
     fn parse_display(&mut self) -> Result<Option<Statement>, String> {
         self.advance(); // DISPLAY
         let mut exprs = Vec::new();
-        while !matches!(self.current(), TokenKind::Period | TokenKind::Eof | TokenKind::EndIf | TokenKind::Else | TokenKind::EndPerform | TokenKind::EndEvaluate | TokenKind::When | TokenKind::Other) {
+        while !matches!(self.current(), TokenKind::Period | TokenKind::Eof |
+            TokenKind::EndIf | TokenKind::Else | TokenKind::EndPerform | TokenKind::EndEvaluate |
+            TokenKind::When | TokenKind::Other |
+            // Stop at statement-starting keywords (so DISPLAY doesn't eat next statement)
+            TokenKind::DisplayKw | TokenKind::Add | TokenKind::Subtract | TokenKind::Multiply | TokenKind::Divide |
+            TokenKind::Compute | TokenKind::Move | TokenKind::If | TokenKind::Perform |
+            TokenKind::Evaluate | TokenKind::Call | TokenKind::Go | TokenKind::Initialize |
+            TokenKind::Set | TokenKind::Inspect | TokenKind::String_ | TokenKind::Unstring |
+            TokenKind::Open | TokenKind::Close | TokenKind::Read | TokenKind::Write |
+            TokenKind::Accept | TokenKind::Raise | TokenKind::Continue | TokenKind::Goback |
+            TokenKind::Search | TokenKind::Sort | TokenKind::Merge |
+            TokenKind::Exit | TokenKind::Lock | TokenKind::Unlock
+        ) {
             exprs.push(self.parse_expr()?);
         }
         Ok(Some(Statement::Display(exprs)))
@@ -1162,6 +1177,12 @@ impl Parser {
         let mut srcs = vec![self.parse_expr()?];
         while !matches!(self.current(), TokenKind::To | TokenKind::Giving | TokenKind::Period | TokenKind::Eof) {
             srcs.push(self.parse_expr()?);
+        }
+        // ADD a TO b [GIVING c]  OR  ADD a b GIVING c (no TO)
+        if self.match_token(&TokenKind::Giving) {
+            // ADD a b GIVING c form (no TO)
+            let giving = self.expect_ident()?;
+            return Ok(Some(Statement::Add { srcs, to: giving.clone(), giving: Some(giving) }));
         }
         self.expect(&TokenKind::To)?;
         let to = self.expect_ident()?;
@@ -1785,6 +1806,8 @@ impl Parser {
     fn parse_atom(&mut self) -> Result<Expr, String> {
         match self.current().clone() {
             TokenKind::Number(n) => { self.advance(); Ok(Expr::Lit(Literal::Num(n))) }
+            // Level numbers in expression context are just numbers
+            TokenKind::Level(n) => { self.advance(); Ok(Expr::Lit(Literal::Num(n as f64))) }
             TokenKind::Str(s) => { self.advance(); Ok(Expr::Lit(Literal::Str(s))) }
             TokenKind::Spaces => { self.advance(); Ok(Expr::Lit(Literal::Spaces)) }
             TokenKind::Zeros => { self.advance(); Ok(Expr::Lit(Literal::Zeros)) }
@@ -1877,6 +1900,26 @@ impl Parser {
             TokenKind::Abs => { self.advance(); "ABS".to_string() }
             TokenKind::Ord => { self.advance(); "ORD".to_string() }
             TokenKind::Char => { self.advance(); "CHAR".to_string() }
+            TokenKind::Floor => { self.advance(); "FLOOR".to_string() }
+            TokenKind::Ceiling => { self.advance(); "CEILING".to_string() }
+            TokenKind::Sign => { self.advance(); "SIGN".to_string() }
+            TokenKind::Power => { self.advance(); "POWER".to_string() }
+            TokenKind::Log => { self.advance(); "LOG".to_string() }
+            TokenKind::Log10 => { self.advance(); "LOG10".to_string() }
+            TokenKind::Exp => { self.advance(); "EXP".to_string() }
+            TokenKind::Sin => { self.advance(); "SIN".to_string() }
+            TokenKind::Cos => { self.advance(); "COS".to_string() }
+            TokenKind::Tan => { self.advance(); "TAN".to_string() }
+            TokenKind::Asin => { self.advance(); "ASIN".to_string() }
+            TokenKind::Acos => { self.advance(); "ACOS".to_string() }
+            TokenKind::Atan => { self.advance(); "ATAN".to_string() }
+            TokenKind::Random => { self.advance(); "RANDOM".to_string() }
+            TokenKind::Mean => { self.advance(); "MEAN".to_string() }
+            TokenKind::Median => { self.advance(); "MEDIAN".to_string() }
+            TokenKind::Variance => { self.advance(); "VARIANCE".to_string() }
+            TokenKind::Concatenate => { self.advance(); "CONCATENATE".to_string() }
+            TokenKind::WhenCompiled => { self.advance(); "WHEN-COMPILED".to_string() }
+            TokenKind::TestNumval => { self.advance(); "TEST-NUMVAL".to_string() }
             TokenKind::Ident(name) => { self.advance(); name }
             _ => { return Err(format!("Expected function name at line {}", self.current_line())); }
         };

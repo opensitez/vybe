@@ -28,20 +28,56 @@ pub fn build_component(name: &str, language: Language, chunks: Vec<Chunk>) -> Co
         if fname.is_empty() || fname.starts_with("__") || fname.starts_with("<") {
             continue; // skip internal/anonymous chunks
         }
-        // Export as (module_name, function_name) → ChunkFn(i)
+        // Export under both the module-specific key AND the wildcard key.
+        // Module-specific: ("mod_name", "square") — for explicit module imports
+        // Wildcard: ("*", "square") — for cross-language resolution
         exports.insert(
             (name.to_string(), fname.to_string()),
             ExportImpl::ChunkFn(i),
         );
+        exports.insert(
+            ("*".to_string(), fname.to_string()),
+            ExportImpl::ChunkFn(i),
+        );
+        // Also export lowercase for case-insensitive languages
+        let lower = fname.to_lowercase();
+        if lower != *fname {
+            exports.insert(("*".to_string(), lower.clone()), ExportImpl::ChunkFn(i));
+            exports.insert((name.to_string(), lower), ExportImpl::ChunkFn(i));
+        }
     }
 
-    // Also export type entries (classes/interfaces)
-    let type_exports = HashMap::new(); // TODO: scan chunk[0].types
+    // Export class constructors from the type table
+    if !chunks.is_empty() {
+        for entry in &chunks[0].types {
+            if let Some(ctor_idx) = entry.constructor_chunk {
+                exports.insert(
+                    ("*".to_string(), entry.name.clone()),
+                    ExportImpl::ChunkFn(ctor_idx),
+                );
+                exports.insert(
+                    (name.to_string(), entry.name.clone()),
+                    ExportImpl::ChunkFn(ctor_idx),
+                );
+            }
+        }
+    }
+
+    // Collect imports from the script chunk's import table
+    // (compilers emit call_import("*", name) for unresolved references)
+    let mut imports = Vec::new();
+    if !chunks.is_empty() {
+        for imp in &chunks[0].imports {
+            imports.push((imp.module.clone(), imp.name.clone()));
+        }
+    }
+
+    let type_exports = HashMap::new();
 
     Component {
         name: name.to_string(),
         language,
-        imports: Vec::new(), // TODO: scan for unresolved global_gets
+        imports,
         exports,
         chunks,
         type_exports,

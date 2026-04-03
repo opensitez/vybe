@@ -26,6 +26,8 @@ pub struct Compiler {
     loop_stack: Vec<LoopContext>,
     line: u32,
     in_method: bool,
+    /// Track the current class's parent name (for super() calls in constructors).
+    current_class_parent: Option<String>,
     /// Track names that have been set as globals (class declarations, function declarations, var).
     defined_globals: std::collections::HashSet<String>,
     /// Track names that are class constructors (for static method dispatch).
@@ -54,6 +56,7 @@ impl Compiler {
             line: 1,
             pending_label: None,
             in_method: false,
+            current_class_parent: None,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
             class_instances: std::collections::HashSet::new(),
@@ -356,6 +359,12 @@ impl Compiler {
                 }
             }
             Statement::FunctionDeclaration(func) => {
+                // Pre-register name so recursive calls resolve locally (not as imports)
+                if let Some(name) = &func.name {
+                    if self.scopes.len() == 1 && self.current_scope().depth == 0 {
+                        self.defined_globals.insert(name.clone());
+                    }
+                }
                 self.compile_function(func)?;
                 if let Some(name) = &func.name {
                     if self.scopes.len() == 1 && self.current_scope().depth == 0 {
@@ -1203,19 +1212,21 @@ impl Compiler {
                         return Ok(());
                     }
                 }
-                // User class: push constructor, create empty obj with __type, call
-                self.compile_expression(callee)?;
-                self.emit_u16(Op::struct_new, 0);
-                // Set __type on the new object for instanceof support
-                if let Expression::Identifier(class_name) = callee.as_ref() {
-                    self.emit(Op::dup);
-                    self.emit_constant(Value::String(Rc::from(class_name.as_str())));
-                    let type_idx = self.add_string_constant("__type");
-                    self.emit_u16(Op::struct_set, type_idx);
-                    self.emit(Op::drop);
+                // Constructor creates its own object (cross-language compatible).
+                // If callee is an unresolved identifier, use call_import (WASM import).
+                if let Expression::Identifier(name) = callee.as_ref() {
+                    if !self.defined_classes.contains(name)
+                        && !self.defined_globals.contains(name)
+                    {
+                        let idx = self.import("*", name);
+                        for arg in arguments { self.compile_expression(arg)?; }
+                        self.emit_host_call(idx, arguments.len() as u8);
+                        return Ok(());
+                    }
                 }
+                self.compile_expression(callee)?;
                 for arg in arguments { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, (arguments.len() + 1) as u8);
+                self.emit_u8(Op::call, arguments.len() as u8);
             }
             Expression::Array(elements) => {
                 for e in elements { self.compile_expression(e)?; }
@@ -1422,10 +1433,11 @@ impl Compiler {
         if let Expression::Member { object, property, .. } = callee {
             if matches!(object.as_ref(), Expression::Super) {
                 let base_name = format!("__base_{}", property);
-                self.emit_u16(Op::local_get, 1); // this
+                let this_slot = self.current_scope().resolve_local("this").unwrap_or(1);
+                self.emit_u16(Op::local_get, this_slot);
                 let prop_idx = self.add_string_constant(&base_name);
                 self.emit_u16(Op::struct_get, prop_idx);
-                self.emit_u16(Op::local_get, 1); // this as first arg
+                self.emit_u16(Op::local_get, this_slot); // this as first arg
                 for arg in arguments { self.compile_expression(arg)?; }
                 self.emit_u8(Op::call, (arguments.len() + 1) as u8);
                 return Ok(());
@@ -1724,20 +1736,24 @@ impl Compiler {
             }
         }
 
-        // super() — call parent constructor with this + args
+        // super() — call parent constructor (which creates and returns an object).
+        // Result replaces `this` in the child constructor.
         if matches!(callee, Expression::Super) {
             if self.in_method {
-                // Get this.__super (set during class compilation)
-                self.emit_u16(Op::local_get, 1); // this
-                let super_idx = self.add_string_constant("__super");
-                self.emit_u16(Op::struct_get, super_idx);
-                // Push this as first arg, then user args
-                self.emit_u16(Op::local_get, 1); // this
-                for arg in arguments { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, (arguments.len() + 1) as u8);
-                return Ok(());
+                if let Some(ref parent) = self.current_class_parent.clone() {
+                    let parent_idx = self.add_string_constant(parent);
+                    self.emit_u16(Op::global_get, parent_idx);
+                    for arg in arguments { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call, arguments.len() as u8);
+                    // Store returned object as `this`
+                    if let Some(this_slot) = self.current_scope().resolve_local("this") {
+                        self.emit_u16(Op::local_set, this_slot);
+                        // local_set doesn't pop — value stays on stack for caller to drop
+                    }
+                    return Ok(());
+                }
             }
-            // Outside method — just push null
+            // Outside method or no parent — just push null
             self.emit(Op::null);
             return Ok(());
         }
@@ -1768,7 +1784,24 @@ impl Compiler {
             }
         }
 
-        // Regular function call — check for spread
+        // Regular function call — check for spread.
+        // If callee is an unresolved identifier, emit call_import (WASM import path)
+        // instead of global_get + call. This enables proper cross-component resolution.
+        if let Expression::Identifier(name) = callee {
+            let is_local = self.current_scope().resolve_local(name).is_some();
+            let is_upvalue = !is_local && self.scopes.len() > 1
+                && self.resolve_upvalue(self.scopes.len() - 1, name).is_some();
+            let is_defined = is_local || is_upvalue
+                || self.defined_globals.contains(name)
+                || self.defined_classes.contains(name);
+            if !is_defined {
+                // Unresolved reference → WASM import
+                let idx = self.import("*", name);
+                for arg in arguments { self.compile_expression(arg)?; }
+                self.emit_host_call(idx, arguments.len() as u8);
+                return Ok(());
+            }
+        }
         self.compile_expression(callee)?;
         let argc = self.compile_args_with_spread(arguments)?;
         self.emit_u8(Op::call, argc);
@@ -2698,7 +2731,18 @@ impl Compiler {
         }
         let ctor = FunctionDecl { name: Some(name.into()), params: ctor_params, body: ctor_body, is_async: false };
 
+        // Track parent class name for super() compilation inside the constructor.
+        // JS is case-sensitive — keep original case.
+        let saved_parent = self.current_class_parent.take();
+        if let Some(ref super_expr) = class.super_class {
+            if let Expression::Identifier(parent_name) = super_expr.as_ref() {
+                self.current_class_parent = Some(parent_name.clone());
+            }
+        }
+
         self.compile_class_constructor_full(&ctor, &regular_methods, &getters, &setters, &class.super_class)?;
+
+        self.current_class_parent = saved_parent;
         // Constructor closure is now on the stack.
         // If extends, copy parent's static methods to this constructor via Object.assign
         if let Some(ref super_expr) = class.super_class {
@@ -2749,17 +2793,22 @@ impl Compiler {
 
         let name = ctor.name.clone().unwrap_or_else(|| "<class>".into());
         let mut chunk = Chunk::new(&name);
-        chunk.arity = (ctor.params.len() + 1) as u8;
+        // Constructor creates its own object — arity is user params only (no this).
+        // This makes cross-language `new X()` work uniformly: call(argc) with no pre-created object.
+        chunk.arity = ctor.params.len() as u8;
         let idx = self.chunks.len();
         self.chunks.push(chunk);
 
         let mut scope = Scope::new_function();
-        scope.define_local("this");
+        // Params first (VM places them in slots 1..N), then "this" as extra local
         for param in &ctor.params { scope.define_local(&param.name); }
+        scope.define_local("this"); // slot after all params
 
         let saved = self.current_chunk_idx;
         self.current_chunk_idx = idx;
         self.scopes.push(scope);
+
+        let this_slot = self.current_scope().resolve_local("this").unwrap();
 
         // Default parameter initialization
         for param in &ctor.params {
@@ -2783,170 +2832,164 @@ impl Compiler {
             }
         }
 
-        // If extends: set this.__super = parent constructor
-        if let Some(super_expr) = super_class {
-            self.emit_u16(Op::local_get, 1); // this
-            self.compile_expression(super_expr)?; // parent class (constructor fn)
-            let super_idx = self.add_string_constant("__super");
-            self.emit_u16(Op::struct_set, super_idx);
-            self.emit(Op::drop);
-        }
-
-        // Split constructor body at super() call: emit super() first, then attach
-        // methods (so parent methods are overridden by child), then rest of constructor.
-        // If no super(), methods are attached before the entire body.
-        let mut super_stmts: Vec<&Statement> = Vec::new();
-        let mut rest_stmts: Vec<&Statement> = Vec::new();
-        let mut found_super = false;
-        for stmt in &ctor.body {
-            if !found_super {
-                let is_super = matches!(stmt,
-                    Statement::Expression(Expression::Call { callee, .. })
-                    if matches!(callee.as_ref(), Expression::Super)
-                );
-                super_stmts.push(stmt);
-                if is_super { found_super = true; }
-            } else {
-                rest_stmts.push(stmt);
-            }
-        }
-        // If no super() found, all statements go to rest (methods attached first)
-        if !found_super {
-            rest_stmts = super_stmts;
-            super_stmts = Vec::new();
-        }
-        // Emit super() and pre-super statements
-        for stmt in &super_stmts { self.compile_statement(stmt)?; }
-
-        // Save parent methods as __base_name before child overrides them
-        if super_class.is_some() {
-            let line = self.line;
-            for (method_name, _) in methods.iter() {
-                common_classes::emit_save_base_method(
-                    &mut self.chunks[self.current_chunk_idx], 1, method_name, line,
-                );
-            }
-        }
-
-        // Attach child methods (overwrite parent's)
+        let has_super = super_class.is_some();
         let mut method_entries: Vec<(String, usize)> = Vec::new();
-        for (method_name, method_fn) in methods {
-            self.emit_u16(Op::local_get, 1); // this
-            self.compile_method(method_fn)?;
-            let method_chunk_idx = self.chunks.len() - 1;
-            method_entries.push((method_name.clone(), method_chunk_idx));
-            let prop_idx = self.add_string_constant(method_name);
-            self.emit_u16(Op::struct_set, prop_idx);
-            self.emit(Op::drop);
-            // Cross-language aliases so JS classes are callable from Python/VB/C#
+
+        if !has_super {
+            // ── Base class: create object here ────────────────────────────
             let line = self.line;
-            common_classes::emit_cross_language_aliases(
-                &mut self.chunks[self.current_chunk_idx], 1, method_name, method_chunk_idx, line,
+            common_classes::emit_new_typed_object(
+                &mut self.chunks[self.current_chunk_idx], this_slot, &name, line,
             );
+            for (method_name, method_fn) in methods {
+                self.emit_u16(Op::local_get, this_slot);
+                self.compile_method(method_fn)?;
+                let method_chunk_idx = self.chunks.len() - 1;
+                method_entries.push((method_name.clone(), method_chunk_idx));
+                let prop_idx = self.add_string_constant(method_name);
+                self.emit_u16(Op::struct_set, prop_idx);
+                self.emit(Op::drop);
+                let line = self.line;
+                common_classes::emit_cross_language_aliases(
+                    &mut self.chunks[self.current_chunk_idx], this_slot, method_name, method_chunk_idx, line,
+                );
+            }
+
+            // Bind getters
+            for (getter_name, getter_fn) in getters {
+                self.emit_u16(Op::local_get, this_slot);
+                self.compile_method(getter_fn)?;
+                let getter_chunk_idx = self.chunks.len() - 1;
+                let prop_name = format!("__get_{}", getter_name);
+                method_entries.push((prop_name.clone(), getter_chunk_idx));
+                let prop_idx = self.add_string_constant(&prop_name);
+                self.emit_u16(Op::struct_set, prop_idx);
+                self.emit(Op::drop);
+                let line = self.line;
+                common_classes::emit_cross_language_aliases(
+                    &mut self.chunks[self.current_chunk_idx], this_slot, &prop_name, getter_chunk_idx, line,
+                );
+            }
+
+            // Bind setters
+            for (setter_name, setter_fn) in setters {
+                self.emit_u16(Op::local_get, this_slot);
+                self.compile_method(setter_fn)?;
+                let setter_chunk_idx = self.chunks.len() - 1;
+                let prop_name = format!("__set_{}", setter_name);
+                method_entries.push((prop_name.clone(), setter_chunk_idx));
+                let prop_idx = self.add_string_constant(&prop_name);
+                self.emit_u16(Op::struct_set, prop_idx);
+                self.emit(Op::drop);
+                let line = self.line;
+                common_classes::emit_cross_language_aliases(
+                    &mut self.chunks[self.current_chunk_idx], this_slot, &prop_name, setter_chunk_idx, line,
+                );
+            }
+
+            // Compile full constructor body
+            for stmt in &ctor.body { self.compile_statement(stmt)?; }
+
+            self.emit_class_finalize_bytecodes(&name, this_slot, false);
+        } else {
+            // ── Child class: super() in body creates the object ───────────
+            // Split body at super() call
+            let mut super_stmts: Vec<&Statement> = Vec::new();
+            let mut rest_stmts: Vec<&Statement> = Vec::new();
+            let mut found_super = false;
+            for stmt in &ctor.body {
+                if !found_super {
+                    let is_super = matches!(stmt,
+                        Statement::Expression(Expression::Call { callee, .. })
+                        if matches!(callee.as_ref(), Expression::Super)
+                    );
+                    super_stmts.push(stmt);
+                    if is_super { found_super = true; }
+                } else {
+                    rest_stmts.push(stmt);
+                }
+            }
+            if !found_super {
+                rest_stmts = super_stmts;
+                super_stmts = Vec::new();
+            }
+
+            // Emit super() and any pre-super statements.
+            // super() calls parent constructor → result stored in this_slot.
+            for stmt in &super_stmts { self.compile_statement(stmt)?; }
+
+            // Save parent methods as __base_name before child overrides
+            // (must happen after super() sets this)
+            {
+                let line = self.line;
+                for (method_name, _) in methods.iter() {
+                    common_classes::emit_save_base_method(
+                        &mut self.chunks[self.current_chunk_idx], this_slot, method_name, line,
+                    );
+                }
+            }
+
+            // Bind child methods (overwrite parent's)
+            for (method_name, method_fn) in methods {
+                self.emit_u16(Op::local_get, this_slot);
+                self.compile_method(method_fn)?;
+                let method_chunk_idx = self.chunks.len() - 1;
+                method_entries.push((method_name.clone(), method_chunk_idx));
+                let prop_idx = self.add_string_constant(method_name);
+                self.emit_u16(Op::struct_set, prop_idx);
+                self.emit(Op::drop);
+                let line = self.line;
+                common_classes::emit_cross_language_aliases(
+                    &mut self.chunks[self.current_chunk_idx], this_slot, method_name, method_chunk_idx, line,
+                );
+            }
+
+            // Bind getters
+            for (getter_name, getter_fn) in getters {
+                self.emit_u16(Op::local_get, this_slot);
+                self.compile_method(getter_fn)?;
+                let getter_chunk_idx = self.chunks.len() - 1;
+                let prop_name = format!("__get_{}", getter_name);
+                method_entries.push((prop_name.clone(), getter_chunk_idx));
+                let prop_idx = self.add_string_constant(&prop_name);
+                self.emit_u16(Op::struct_set, prop_idx);
+                self.emit(Op::drop);
+                let line = self.line;
+                common_classes::emit_cross_language_aliases(
+                    &mut self.chunks[self.current_chunk_idx], this_slot, &prop_name, getter_chunk_idx, line,
+                );
+            }
+
+            // Bind setters
+            for (setter_name, setter_fn) in setters {
+                self.emit_u16(Op::local_get, this_slot);
+                self.compile_method(setter_fn)?;
+                let setter_chunk_idx = self.chunks.len() - 1;
+                let prop_name = format!("__set_{}", setter_name);
+                method_entries.push((prop_name.clone(), setter_chunk_idx));
+                let prop_idx = self.add_string_constant(&prop_name);
+                self.emit_u16(Op::struct_set, prop_idx);
+                self.emit(Op::drop);
+                let line = self.line;
+                common_classes::emit_cross_language_aliases(
+                    &mut self.chunks[self.current_chunk_idx], this_slot, &prop_name, setter_chunk_idx, line,
+                );
+            }
+
+            // Compile remaining constructor body
+            for stmt in &rest_stmts { self.compile_statement(stmt)?; }
+
+            self.emit_class_finalize_bytecodes(&name, this_slot, true);
         }
 
-        // Attach getters as __get_name methods
-        for (getter_name, getter_fn) in getters {
-            self.emit_u16(Op::local_get, 1);
-            self.compile_method(getter_fn)?;
-            let getter_chunk_idx = self.chunks.len() - 1;
-            let prop_name = format!("__get_{}", getter_name);
-            method_entries.push((prop_name.clone(), getter_chunk_idx));
-            let prop_idx = self.add_string_constant(&prop_name);
-            self.emit_u16(Op::struct_set, prop_idx);
-            self.emit(Op::drop);
-            // Cross-language aliases for getters (e.g. __get_length → __len__)
-            let line = self.line;
-            common_classes::emit_cross_language_aliases(
-                &mut self.chunks[self.current_chunk_idx], 1, &prop_name, getter_chunk_idx, line,
-            );
-        }
-
-        // Attach setters as __set_name methods
-        for (setter_name, setter_fn) in setters {
-            self.emit_u16(Op::local_get, 1);
-            self.compile_method(setter_fn)?;
-            let setter_chunk_idx = self.chunks.len() - 1;
-            let prop_name = format!("__set_{}", setter_name);
-            method_entries.push((prop_name.clone(), setter_chunk_idx));
-            let prop_idx = self.add_string_constant(&prop_name);
-            self.emit_u16(Op::struct_set, prop_idx);
-            self.emit(Op::drop);
-            // Cross-language aliases for setters
-            let line = self.line;
-            common_classes::emit_cross_language_aliases(
-                &mut self.chunks[self.current_chunk_idx], 1, &prop_name, setter_chunk_idx, line,
-            );
-        }
-
-        // Compile remaining constructor body after methods are attached
-        for stmt in &rest_stmts { self.compile_statement(stmt)?; }
-
-        // Push class name to this.__types array for instanceof chain support
-        // After super() + constructor body, this.__types has parent types. Append ours.
-        {
-            let types_idx = self.add_string_constant("__types");
-            self.emit_u16(Op::local_get, 1); // this
-            self.emit_u16(Op::struct_get, types_idx); // this.__types (array or null)
-            // If null/undefined, create empty array
-            self.emit(Op::dup);
-            self.emit(Op::ref_is_null);
-            let has_types = self.emit_jump(Op::br_if_false);
-            self.emit(Op::drop); // drop null
-            self.emit_u16(Op::array_new, 0); // create []
-            self.patch_jump(has_types);
-            // Push class name
-            self.emit_constant(Value::String(Rc::from(ctor.name.as_deref().unwrap_or("<class>"))));
-            self.emit(Op::array_push);
-            // Store back
-            self.emit_u16(Op::local_get, 1);
-            // swap: [array, this] → need [this, array] for struct_set
-            let tmp = self.define_local("__types_tmp");
-            self.emit_u16(Op::local_set, tmp); self.emit(Op::drop); // save this
-            // stack: [array], need [this, array]
-            // Actually array is top, this is in tmp
-            self.emit_u16(Op::local_get, tmp); // push this
-            // swap positions: emit as struct_set expects [obj, val]
-            // But array is below this now... Let me restructure
-            // stack after local_get tmp: [array, this]
-            // struct_set pops val then obj: val=this, obj=array — WRONG
-            // Need: [this, array] for struct_set("__types")
-            // Use another temp
-            let arr_tmp = self.define_local("__arr_tmp");
-            self.emit(Op::drop); // drop this that we just pushed
-            // stack: [array]
-            self.emit_u16(Op::local_set, arr_tmp); self.emit(Op::drop); // save array
-            self.emit_u16(Op::local_get, 1); // this
-            self.emit_u16(Op::local_get, arr_tmp); // array
-            self.emit_u16(Op::struct_set, types_idx);
-            self.emit(Op::drop);
-        }
-
-        // Stamp type_id on this (WASM GC).
-        // The type_id is resolved at VM load time from the type table.
-        {
-            let tid_name = format!("__tid_{}", name.to_lowercase());
-            let tid_idx = self.add_string_constant(&tid_name);
-            self.emit_u16(Op::local_get, 1); // this
-            self.emit_u16(Op::global_get, tid_idx);
-            self.emit(Op::set_type_id);
-        }
-
-        // Return `this` from constructor
-        {
-            let line = self.line;
-            common_classes::emit_constructor_return(
-                &mut self.chunks[self.current_chunk_idx], 1, line,
-            );
-        }
-
+        // ── Scope cleanup + type registration + ref_func ─────────────────
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;
         let upvalues = self.current_scope().upvalues.clone();
         self.scopes.pop();
         self.current_chunk_idx = saved;
 
-        // --- WASM GC: Register type entry in compile-time type table ---
+        // Register type entry in compile-time type table
         let parent_name = if super_class.is_some() {
             match super_class.as_ref().unwrap().as_ref() {
                 Expression::Identifier(n) => n.to_lowercase(),
@@ -2955,12 +2998,11 @@ impl Compiler {
         } else {
             String::new()
         };
-        let field_names: Vec<String> = Vec::new(); // JS classes don't declare fields statically
         let type_entry_idx = self.type_entries.len();
         self.type_entries.push(TypeEntry {
             name: name.to_lowercase(),
             parent: parent_name,
-            fields: field_names,
+            fields: Vec::new(),
             methods: method_entries,
             is_interface: false,
             implements: Vec::new(),
@@ -2968,6 +3010,7 @@ impl Compiler {
         });
         self.class_type_ids.insert(name.to_lowercase(), type_entry_idx);
 
+        // Emit ref_func in the calling chunk to put constructor ref on stack
         let line = self.line;
         self.chunks[self.current_chunk_idx].emit_op_u16(Op::ref_func, idx as u16, line);
         self.chunks[self.current_chunk_idx].emit(upvalues.len() as u8, line);
@@ -2978,6 +3021,53 @@ impl Compiler {
 
         self.in_method = saved_method;
         Ok(())
+    }
+
+    /// Emit __types array management, type_id stamp, and constructor_return bytecodes.
+    /// Called at the end of the constructor chunk before scope cleanup.
+    fn emit_class_finalize_bytecodes(&mut self, name: &str, this_slot: u16, is_child: bool) {
+        // Push class name to this.__types array for instanceof chain support
+        {
+            let types_idx = self.add_string_constant("__types");
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_u16(Op::struct_get, types_idx);
+            self.emit(Op::dup);
+            self.emit(Op::ref_is_null);
+            let has_types = self.emit_jump(Op::br_if_false);
+            self.emit(Op::drop);
+            self.emit_u16(Op::array_new, 0);
+            self.patch_jump(has_types);
+            self.emit_constant(Value::String(Rc::from(name)));
+            self.emit(Op::array_push);
+            let arr_tmp = self.define_local("__arr_tmp");
+            self.emit_u16(Op::local_set, arr_tmp); self.emit(Op::drop);
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_u16(Op::local_get, arr_tmp);
+            self.emit_u16(Op::struct_set, types_idx);
+            self.emit(Op::drop);
+        }
+
+        if is_child {
+            // Re-stamp type as child class (parent's stamp was set by super())
+            let tid_name = format!("__tid_{}", name.to_lowercase());
+            let tid_idx = self.add_string_constant(&tid_name);
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_u16(Op::global_get, tid_idx);
+            self.emit(Op::set_type_id);
+            // Update __type string
+            self.emit_u16(Op::local_get, this_slot);
+            self.emit_constant(Value::String(Rc::from(name)));
+            let type_key = self.add_string_constant("__type");
+            self.emit_u16(Op::struct_set, type_key);
+            self.emit(Op::drop);
+        }
+        // For base class, emit_new_typed_object already stamped both.
+
+        // Return this
+        let line = self.line;
+        common_classes::emit_constructor_return(
+            &mut self.chunks[self.current_chunk_idx], this_slot, line,
+        );
     }
 
     /// Emit direct WASM opcodes for Math.* functions instead of host calls.

@@ -345,23 +345,19 @@ impl Compiler {
             }
         }
 
-        // MyBase.New(args) — call parent constructor with Me
+        // MyBase.New(args) — call parent constructor (which creates and returns an object).
+        // Result replaces Me in the child constructor.
         if matches!(obj, Expression::MyBase) && method.as_str().eq_ignore_ascii_case("New") {
-            // The parent constructor is stored as __super on Me (set by Inherits compilation)
-            // Or we look it up from the class's inherits info
-            // For now: MyBase.New(args) → get parent from __super, call with Me + args
-            match self.resolve_variable("me") {
-                VarResolution::Local(slot) => {
-                    self.emit_u16(Op::local_get, slot);
-                    let super_idx = self.add_string_constant("__super");
-                    self.emit_u16(Op::struct_get, super_idx);
-                    // Push Me as first arg
-                    self.emit_u16(Op::local_get, slot);
-                    for arg in args { self.compile_expression(arg)?; }
-                    self.emit_u8(Op::call, (args.len() + 1) as u8);
+            if let Some(parent) = self.current_class_parent.clone() {
+                let parent_idx = self.add_string_constant(&parent);
+                self.emit_u16(Op::global_get, parent_idx);
+                for arg in args { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, args.len() as u8);
+                // Store returned object as Me
+                if let Some(me_slot) = self.current_scope().resolve_local("me") {
+                    self.emit_u16(Op::local_set, me_slot);
                     self.emit(Op::drop);
                 }
-                _ => {}
             }
             return Ok(());
         }
@@ -525,13 +521,13 @@ impl Compiler {
             return Ok(());
         }
 
-        // User-defined class takes priority over built-in types
+        // User-defined class takes priority over built-in types.
+        // Constructor creates its own object — just call(argc) with no pre-created this.
         if self.defined_classes.contains(&name) {
             let idx = self.add_string_constant(&name);
             self.emit_u16(Op::global_get, idx);
-            self.emit_u16(Op::struct_new, 0);
             for arg in args { self.compile_expression(arg)?; }
-            self.emit_u8(Op::call, (args.len() + 1) as u8);
+            self.emit_u8(Op::call, args.len() as u8);
             return Ok(());
         }
 
@@ -571,12 +567,10 @@ impl Compiler {
             return Ok(());
         }
 
-        // 3. User-defined class: look up constructor from globals
-        let idx = self.add_string_constant(&name);
-        self.emit_u16(Op::global_get, idx);
-        self.emit_u16(Op::struct_new, 0);
+        // 3. Cross-language class: WASM import
+        let idx = self.import("*", &name);
         for arg in args { self.compile_expression(arg)?; }
-        self.emit_u8(Op::call, (args.len() + 1) as u8);
+        self.emit_host_call(idx, args.len() as u8);
         Ok(())
     }
 
