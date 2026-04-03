@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use vybe_bytecode::{Value, Op};
+use vybe_compiler_common::collections as common_collections;
 use vybe_parser_basic::ast::*;
 
 use crate::compiler::{Compiler, VarResolution};
@@ -55,7 +56,7 @@ impl Compiler {
             }
             if let Some(index) = args.first() {
                 self.compile_expression(index)?;
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
             }
             return Ok(());
         }
@@ -68,7 +69,7 @@ impl Compiler {
                     self.emit_u16(Op::local_get, slot);
                     if let Some(index) = args.first() {
                         self.compile_expression(index)?;
-                        self.emit(Op::array_get);
+                        common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     }
                     return Ok(());
                 }
@@ -88,7 +89,7 @@ impl Compiler {
                 if let Expression::Variable(var) = arg {
                     let var_name = var.as_str().to_lowercase();
                     self.compile_expression(arg)?;
-                    self.emit_u16(Op::array_new, 1);
+                    common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 1, self.line);
                     let box_local = self.define_local(&format!("__box_{}", i));
                     self.emit(Op::dup);
                     self.emit_u16(Op::local_set, box_local);
@@ -98,7 +99,7 @@ impl Compiler {
                     }
                 } else {
                     self.compile_expression(arg)?;
-                    self.emit_u16(Op::array_new, 1);
+                    common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 1, self.line);
                 }
             } else {
                 self.compile_expression(arg)?;
@@ -110,7 +111,7 @@ impl Compiler {
         for (box_local, var_local) in &byref_info {
             self.emit_u16(Op::local_get, *box_local);
             self.emit(Op::i32_const_0);
-            self.emit(Op::array_get);
+            common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
             self.emit_u16(Op::local_set, *var_local);
             self.emit(Op::drop);
         }
@@ -574,7 +575,7 @@ impl Compiler {
                     } else {
                         self.emit_constant(Value::String(Rc::from(" ")));
                     }
-                    self.emit(Op::array_join);
+                    common_collections::emit_join(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }
@@ -653,7 +654,7 @@ impl Compiler {
                 // UBound: array length - 1
                 "ubound" => {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::array_length);
+                    common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
                     self.emit(Op::i32_sub);
                     return Ok(Some(()));

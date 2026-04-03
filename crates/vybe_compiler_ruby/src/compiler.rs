@@ -2,6 +2,7 @@ use std::rc::Rc;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_parser_ruby::ast::*;
 use vybe_compiler_common as common;
+use vybe_compiler_common::collections as common_collections;
 use crate::scope::Scope;
 
 struct LoopContext {
@@ -318,7 +319,7 @@ impl Compiler {
                 let arr_slot = self.define_local("__for_arr");
                 self.emit_u16(Op::local_set, arr_slot);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 let len_slot = self.define_local("__for_len");
                 self.emit_u16(Op::local_set, len_slot);
                 self.emit_constant(Value::I32(0));
@@ -336,7 +337,7 @@ impl Compiler {
                 // var = arr[idx]
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, idx_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let var_slot = self.define_local_or_get(var);
                 self.emit_u16(Op::local_set, var_slot);
 
@@ -470,7 +471,7 @@ impl Compiler {
                     for (i, target) in targets.iter().enumerate() {
                         self.emit_u16(Op::local_get, arr_slot);
                         self.emit_constant(Value::I32(i as i32));
-                        self.emit(Op::array_get);
+                        common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.compile_assign_target(target)?;
                     }
                 } else {
@@ -685,20 +686,20 @@ impl Compiler {
                 if let Expression::Unary { op: UnaryOp::Neg, .. } = index.as_ref() {
                     // Negative index — convert to: obj.length + index
                     self.emit(Op::dup); // keep obj on stack
-                    self.emit(Op::array_length);
+                    common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.compile_expression(index)?;
                     self.emit(Op::dyn_add); // length + (-n)
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 } else if let Expression::Number(n) = index.as_ref() {
                     if *n < 0.0 {
                         self.emit(Op::dup);
-                        self.emit(Op::array_length);
+                        common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.emit_constant(Value::F64(*n));
                         self.emit(Op::dyn_add);
-                        self.emit(Op::array_get);
+                        common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     } else {
                         self.compile_expression(index)?;
-                        self.emit(Op::array_get);
+                        common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     }
                 } else if let Expression::Range { start, end, exclusive } = index.as_ref() {
                     // Item 3: String#[] with range — arr[1..3] → slice
@@ -714,7 +715,7 @@ impl Compiler {
                     common::collections::emit_slice(&mut self.chunks[c], line);
                 } else {
                     self.compile_expression(index)?;
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 }
             }
 
@@ -976,7 +977,7 @@ impl Compiler {
                 // obj.send(:method, args) → dynamic dispatch
                 self.compile_expression(object)?;
                 self.compile_expression(method)?;
-                self.emit(Op::array_get); // get method from object by name
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line); // get method from object by name
                 self.compile_expression(object)?; // self
                 for a in args { self.compile_expression(a)?; }
                 self.emit_u8(Op::call_ref, (args.len() + 1) as u8);
@@ -1265,7 +1266,7 @@ impl Compiler {
                 self.compile_expression(object)?;
                 self.compile_expression(index)?;
                 self.emit_u16(Op::local_get, tmp);
-                self.emit(Op::array_set);
+                common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::drop);
             }
             Expression::MethodCall { receiver: Some(obj), method, args: _, block: _ } => {
@@ -1579,16 +1580,16 @@ impl Compiler {
                 "first" => {
                     self.compile_expression(recv)?;
                     self.emit_constant(Value::I32(0));
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "last" => {
                     self.compile_expression(recv)?;
                     self.emit(Op::dup);
-                    self.emit(Op::array_length);
+                    common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
                     self.emit(Op::f64_sub);
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "flatten" => {
@@ -1609,7 +1610,7 @@ impl Compiler {
                     // Simplified: just push element directly (single-level flatten would need type check)
                     self.emit_u16(Op::local_get, res_slot);
                     self.emit_u16(Op::local_get, elem_slot);
-                    self.emit(Op::array_push);
+                    common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
                     self.emit_u16(Op::local_get, res_slot);
@@ -1634,7 +1635,7 @@ impl Compiler {
                     let skip = self.emit_jump(Op::br_if_true);
                     self.emit_u16(Op::local_get, res_slot);
                     self.emit_u16(Op::local_get, elem_slot);
-                    self.emit(Op::array_push);
+                    common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     self.patch_jump(skip);
                     common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
@@ -1663,7 +1664,7 @@ impl Compiler {
                     let skip = self.emit_jump(Op::br_if_true);
                     self.emit_u16(Op::local_get, res_slot);
                     self.emit_u16(Op::local_get, elem_slot);
-                    self.emit(Op::array_push);
+                    common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     self.patch_jump(skip);
                     common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
@@ -1672,12 +1673,12 @@ impl Compiler {
                 }
                 "count" => {
                     self.compile_expression(recv)?;
-                    self.emit(Op::array_length);
+                    common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "empty?" => {
                     self.compile_expression(recv)?;
-                    self.emit(Op::array_length);
+                    common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(0));
                     self.emit(Op::dyn_eq);
                     return Ok(());
@@ -1828,14 +1829,14 @@ impl Compiler {
                             let loop_start = self.current_offset();
                             self.emit_u16(Op::local_get, i_slot);
                             self.emit_u16(Op::local_get, arr_slot);
-                            self.emit(Op::array_length);
+                            common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                             self.emit(Op::dyn_lt);
                             let exit = self.emit_jump(Op::br_if_false);
                             self.emit_u16(Op::local_get, fn_slot);
                             self.emit_u16(Op::local_get, acc_slot);
                             self.emit_u16(Op::local_get, arr_slot);
                             self.emit_u16(Op::local_get, i_slot);
-                            self.emit(Op::array_get);
+                            common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                             self.emit_u8(Op::call_ref, 2);
                             self.emit_u16(Op::local_set, acc_slot);
                             common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
@@ -1933,7 +1934,7 @@ impl Compiler {
                 "fetch" => {
                     self.compile_expression(recv)?;
                     for a in args { self.compile_expression(a)?; }
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
 
@@ -2458,7 +2459,7 @@ impl Compiler {
                         // hash[key] ||= []; hash[key].push(elem)
                         self.emit_u16(Op::local_get, hash_slot);
                         self.emit_u16(Op::local_get, key_slot);
-                        self.emit(Op::array_get);
+                        common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.emit(Op::dup);
                         self.emit(Op::ref_is_null);
                         let exists = self.emit_jump(Op::br_if_false);
@@ -2467,7 +2468,7 @@ impl Compiler {
                         self.patch_jump(exists);
                         // Push element
                         self.emit_u16(Op::local_get, elem_slot);
-                        self.emit(Op::array_push);
+                        common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.emit(Op::drop);
                         // Store back
                         let grp_slot = self.define_local("__gb_grp");
@@ -2475,7 +2476,7 @@ impl Compiler {
                         self.emit_u16(Op::local_get, hash_slot);
                         self.emit_u16(Op::local_get, key_slot);
                         self.emit_u16(Op::local_get, grp_slot);
-                        self.emit(Op::array_set);
+                        common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.emit(Op::drop);
                         common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
                         self.emit_u16(Op::local_get, hash_slot);
@@ -2503,13 +2504,13 @@ impl Compiler {
                 "sample" => {
                     self.compile_expression(recv)?;
                     self.emit(Op::dup);
-                    self.emit(Op::array_length);
+                    common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     let c = self.current_chunk_idx;
                     let line = self.line;
                     common::math::emit_random(&mut self.chunks[c], line);
                     self.emit(Op::f64_mul);
                     self.emit(Op::f64_trunc);
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "shuffle" => {
@@ -2537,7 +2538,7 @@ impl Compiler {
                         return Ok(());
                     } else {
                         self.compile_expression(recv)?;
-                        self.emit(Op::array_length);
+                        common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.emit_constant(Value::I32(0));
                         self.emit(Op::dyn_eq);
                         return Ok(());
@@ -2660,7 +2661,7 @@ impl Compiler {
                     // First arg is method name
                     if !args.is_empty() {
                         self.compile_expression(&args[0])?;
-                        self.emit(Op::array_get);
+                        common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.compile_expression(recv)?; // self
                         for a in &args[1..] { self.compile_expression(a)?; }
                         self.emit_u8(Op::call_ref, (args.len()) as u8);
@@ -2782,7 +2783,7 @@ impl Compiler {
                     self.compile_expression(recv)?;
                     for a in args {
                         self.compile_expression(a)?;
-                        self.emit(Op::array_get);
+                        common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     }
                     return Ok(());
                 }
@@ -2828,7 +2829,7 @@ impl Compiler {
                         self.emit_u16(Op::local_set, val_slot);
                         self.emit_u16(Op::local_get, res_slot);
                         self.emit_u16(Op::local_get, val_slot);
-                        self.emit(Op::array_push);
+                        common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.emit(Op::drop);
                         let end = self.emit_jump(Op::br);
                         self.patch_jump(skip);
@@ -2863,7 +2864,7 @@ impl Compiler {
                     // hash[elem] = (hash[elem] || 0) + 1
                     self.emit_u16(Op::local_get, hash_slot);
                     self.emit_u16(Op::local_get, elem_slot);
-                    self.emit(Op::array_get); // current count or null
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line); // current count or null
                     // If null, use 0
                     self.emit(Op::dup);
                     self.emit(Op::ref_is_null);
@@ -2880,7 +2881,7 @@ impl Compiler {
                     self.emit_u16(Op::local_get, hash_slot);
                     self.emit_u16(Op::local_get, elem_slot);
                     self.emit_u16(Op::local_get, count_slot);
-                    self.emit(Op::array_set);
+                    common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
                     self.emit_u16(Op::local_get, hash_slot);
@@ -3017,7 +3018,7 @@ impl Compiler {
                     if !args.is_empty() {
                         self.compile_expression(&args[0])?;
                     }
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 "instance_variable_set" => {
@@ -3026,7 +3027,7 @@ impl Compiler {
                         self.compile_expression(&args[0])?;
                         self.compile_expression(&args[1])?;
                     }
-                    self.emit(Op::array_set);
+                    common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     self.emit(Op::null);
                     return Ok(());

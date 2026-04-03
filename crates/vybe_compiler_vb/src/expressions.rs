@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use vybe_bytecode::{Value, Op};
+use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
 use vybe_parser_basic::ast::*;
@@ -61,7 +62,7 @@ impl Compiler {
                         // ByRef params are boxes — dereference with array_get 0
                         if self.current_scope().is_byref(&name) {
                             self.emit(Op::i32_const_0);
-                            self.emit(Op::array_get);
+                            common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                         }
                     }
                     VarResolution::Global => {
@@ -112,12 +113,12 @@ impl Compiler {
                 }
                 if let Some(index) = indices.first() {
                     self.compile_expression(index)?;
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 }
             }
             Expression::ArrayLiteral(elems) => {
                 for e in elems { self.compile_expression(e)?; }
-                self.emit_u16(Op::array_new, elems.len() as u16);
+                common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], elems.len() as u16, self.line);
             }
 
             // Arithmetic
@@ -254,7 +255,7 @@ impl Compiler {
                     self.compile_expression(item)?;
                 }
                 if !items.is_empty() {
-                    self.emit_u16(Op::array_new, items.len() as u16);
+                    common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], items.len() as u16, self.line);
                 }
             }
 

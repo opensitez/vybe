@@ -25,6 +25,7 @@ pub mod components;
 pub mod target;
 pub mod stdlib;
 pub mod bundle;
+pub mod imports;
 
 pub use target::Target;
 pub use stdlib::StdLib;

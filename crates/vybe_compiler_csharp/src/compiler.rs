@@ -15,6 +15,7 @@ use vybe_compiler_common as common;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
 use vybe_compiler_common::io as common_io;
+use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::strings as common_strings;
 use vybe_compiler_common::threading as common_thread;
 use vybe_parser_csharp::ast::*;
@@ -1242,7 +1243,7 @@ impl Compiler {
                 // var x = arr[i]
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::local_set, var_slot);
                 self.emit(Op::drop);
 
@@ -1346,7 +1347,7 @@ impl Compiler {
 
             Statement::Throw(expr) => {
                 self.compile_expression(expr)?;
-                self.emit(Op::throw);
+                common::errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
             }
 
             Statement::TryCatchFinally { try_body, catches, finally_body } => {
@@ -1477,7 +1478,7 @@ impl Compiler {
                 self.compile_expression(obj)?;
                 self.compile_expression(index)?;
                 self.compile_expression(value)?;
-                self.emit(Op::array_set);
+                common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::drop);
             }
             Expression::This => {
@@ -1557,7 +1558,7 @@ impl Compiler {
                 self.compile_expression(target)?;
                 self.compile_expression(value)?;
                 self.emit_compound_op(op);
-                self.emit(Op::array_set);
+                common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::drop);
             }
             _ => {
@@ -1641,29 +1642,17 @@ impl Compiler {
         catches: &[CatchClause],
         finally_body: &Option<Vec<Statement>>,
     ) -> Result<(), String> {
-        // Emit try_start with placeholder offsets
-        let try_start_offset = self.current_offset();
-        let catch_offset = if !catches.is_empty() { 0xFFFF_u16 } else { 0 };
-        let finally_offset = if finally_body.is_some() { 0xFFFF_u16 } else { 0 };
-        self.emit_u16(Op::try_start, catch_offset);
-        // Emit finally offset
         let line = self.line;
-        self.chunks[self.current_chunk_idx].emit((finally_offset >> 8) as u8, line);
-        self.chunks[self.current_chunk_idx].emit((finally_offset & 0xff) as u8, line);
+        let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current_chunk_idx], line);
 
         // Try body
         for s in try_body { self.compile_statement(s)?; }
-        self.emit(Op::try_end);
+        common::errors::emit_try_end(&mut self.chunks[self.current_chunk_idx], self.line);
         let end_j = self.emit_jump(Op::br);
 
-        // Patch catch offset (relative to IP after try_start's 4 operand bytes)
+        // Patch catch offset
         if !catches.is_empty() {
-            let catch_pos = self.current_offset();
-            let ip_after_try_start = try_start_offset + 5; // 1 op byte + 4 operand bytes
-            let relative_offset = catch_pos as i16 - ip_after_try_start as i16;
-            let c = &mut self.chunks[self.current_chunk_idx];
-            c.code[try_start_offset + 1] = (relative_offset >> 8) as u8;
-            c.code[try_start_offset + 2] = (relative_offset & 0xff) as u8;
+            common::errors::patch_catch(&mut self.chunks[self.current_chunk_idx], catch_jump);
 
             for catch_clause in catches {
                 self.current_scope_mut().begin_scope();
@@ -1684,13 +1673,6 @@ impl Compiler {
 
         // Finally
         if let Some(ref fb) = finally_body {
-            let finally_pos = self.current_offset();
-            // Patch finally offset
-            let try_start_code_pos = try_start_offset + 4; // after op bytes + catch offset
-            let c = &mut self.chunks[self.current_chunk_idx];
-            c.code[try_start_code_pos] = (finally_pos >> 8) as u8;
-            c.code[try_start_code_pos + 1] = (finally_pos & 0xff) as u8;
-
             for s in fb { self.compile_statement(s)?; }
         }
 
@@ -1818,7 +1800,7 @@ impl Compiler {
                 } else {
                     self.compile_expression(obj)?;
                     self.compile_expression(index)?;
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 }
             }
 
@@ -1838,7 +1820,7 @@ impl Compiler {
             }
             Expression::ArrayInit(elements) => {
                 for e in elements { self.compile_expression(e)?; }
-                self.emit_u16(Op::array_new, elements.len() as u16);
+                common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], elements.len() as u16, self.line);
             }
             Expression::ObjectInit(base_expr, inits) => {
                 self.compile_expression(base_expr)?;
@@ -2217,7 +2199,7 @@ impl Compiler {
                     // array_join expects [array, delimiter] on stack
                     self.compile_expression(&args[1])?; // array
                     self.compile_expression(&args[0])?; // delimiter
-                    self.emit(Op::array_join);
+                    common_collections::emit_join(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
                 // Other namespaces — resolve via global namespace objects
@@ -2460,7 +2442,7 @@ impl Compiler {
                 // C# calls: haystack.Contains(needle) — compile needle first, then haystack
                 if let Some(arg) = args.first() { self.compile_expression(arg)?; }
                 self.compile_expression(obj)?;
-                self.emit(Op::array_contains);
+                common_collections::emit_contains(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "replace" => {
@@ -2578,7 +2560,7 @@ impl Compiler {
                 self.compile_expression(obj)?;
                 // Check if array has elements
                 self.emit(Op::dup);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(0));
                 self.emit(Op::dyn_gt);
                 let has_items = self.emit_jump(Op::br_if_true);
@@ -2587,14 +2569,14 @@ impl Compiler {
                 let end = self.emit_jump(Op::br);
                 self.patch_jump(has_items);
                 self.emit_constant(Value::I32(0));
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.patch_jump(end);
                 return Ok(());
             }
             "lastordefault" => {
                 self.compile_expression(obj)?;
                 self.emit(Op::dup);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(0));
                 self.emit(Op::dyn_gt);
                 let has_items = self.emit_jump(Op::br_if_true);
@@ -2603,33 +2585,33 @@ impl Compiler {
                 let end = self.emit_jump(Op::br);
                 self.patch_jump(has_items);
                 self.emit(Op::dup);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(1));
                 self.emit(Op::f64_sub);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.patch_jump(end);
                 return Ok(());
             }
             "first" => {
                 self.compile_expression(obj)?;
                 self.emit_constant(Value::I32(0));
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "last" => {
                 self.compile_expression(obj)?;
                 self.emit(Op::dup);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(1));
                 self.emit(Op::f64_sub);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "any" => {
                 if args.is_empty() {
                     // collection.Any() → length > 0
                     self.compile_expression(obj)?;
-                    self.emit(Op::array_length);
+                    common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(0));
                     self.emit(Op::dyn_gt);
                 } else {
@@ -2646,7 +2628,7 @@ impl Compiler {
                     let c = self.current_chunk_idx;
                     let line = self.line;
                     common::loops::emit_filter(&mut self.chunks[c], fn_slot, arr_slot, res_slot, i_slot, elem_slot, line);
-                    self.emit(Op::array_length);
+                    common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(0));
                     self.emit(Op::dyn_gt);
                 }
@@ -2711,7 +2693,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, tmp);
                 common::bundle::emit_call_invoke(&mut self.chunks[c], 1, line);
                 self.emit_u16(Op::local_get, arr_slot);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::f64_div);
                 return Ok(());
             }

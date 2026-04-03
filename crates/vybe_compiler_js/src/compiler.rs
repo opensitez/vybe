@@ -8,6 +8,8 @@ use vybe_compiler_common::functions as common_fn;
 use vybe_compiler_common::threading as common_thread;
 use vybe_compiler_common::io as common_io;
 use vybe_compiler_common::strings as common_strings;
+use vybe_compiler_common::errors as common_errors;
+use vybe_compiler_common::collections as common_collections;
 use vybe_parser_js::ast::*;
 
 use crate::scope::Scope;
@@ -532,7 +534,7 @@ impl Compiler {
                         for (i, (_, outer_slot)) in loop_var_slots.iter().enumerate() {
                             self.emit(Op::dup);
                             self.emit_constant(Value::I32(i as i32));
-                            self.emit(Op::array_get);
+                            common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                             self.emit_u16(Op::local_set, *outer_slot);
                             self.emit(Op::drop);
                         }
@@ -582,29 +584,21 @@ impl Compiler {
                     ctx.continue_patches.push(p);
                 }
             }
-            Statement::Throw(expr) => { self.compile_expression(expr)?; self.emit(Op::throw); }
+            Statement::Throw(expr) => {
+                self.compile_expression(expr)?;
+                common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
+            }
             Statement::Try { block, handler, finalizer } => {
-                // Emit try_start with placeholder catch offset
-                let try_start_pos = self.current_offset();
                 let line = self.line;
-                let c = &mut self.chunks[self.current_chunk_idx];
-                c.emit_op(Op::try_start, line);
-                c.emit(0, line); c.emit(0, line); // catch offset placeholder
-                c.emit(0, line); c.emit(0, line); // finally offset placeholder
+                let catch_jump = common_errors::emit_try_start(&mut self.chunks[self.current_chunk_idx], line);
 
                 // Compile try block
                 for s in block { self.compile_statement(s)?; }
-                self.emit(Op::try_end);
+                common_errors::emit_try_end(&mut self.chunks[self.current_chunk_idx], self.line);
                 let skip_catch = self.emit_jump(Op::br); // jump over catch block
 
-                // Patch catch offset: relative from IP after try_start reads its operands
-                // IP after try_start = try_start_pos + 5 (1 opcode + 2 catch + 2 finally)
-                let catch_pos = self.current_offset();
-                let ip_after_try_start = try_start_pos + 5;
-                let catch_offset = catch_pos as i16 - ip_after_try_start as i16;
-                let c = &mut self.chunks[self.current_chunk_idx];
-                c.code[try_start_pos + 1] = (catch_offset >> 8) as u8;
-                c.code[try_start_pos + 2] = (catch_offset & 0xff) as u8;
+                // Patch catch offset
+                common_errors::patch_catch(&mut self.chunks[self.current_chunk_idx], catch_jump);
 
                 // Catch block — exception value is on stack
                 if let Some(h) = handler {
@@ -753,7 +747,7 @@ impl Compiler {
                 // let x = __arr[__i]
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let var_name = match left {
                     ForInTarget::VarDecl(_, name) => name.clone(),
                     ForInTarget::Identifier(name) => name.clone(),
@@ -813,7 +807,7 @@ impl Compiler {
                 // let k = __keys[__i]
                 self.emit_u16(Op::local_get, keys_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let var_name = match left {
                     ForInTarget::VarDecl(_, name) => name.clone(),
                     ForInTarget::Identifier(name) => name.clone(),
@@ -1131,7 +1125,7 @@ impl Compiler {
                         self.compile_expression(property)?;
                         if *op == AssignOp::Assign { self.compile_expression(right)?; }
                         else { self.compile_expression(right)?; }
-                        self.emit(Op::array_set);
+                        common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                     }
                     _ => {
                         if *op == AssignOp::Assign { self.compile_expression(right)?; }
@@ -1186,7 +1180,7 @@ impl Compiler {
             Expression::ComputedMember { object, property } => {
                 self.compile_expression(object)?;
                 self.compile_expression(property)?;
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
             }
             Expression::Call { callee, arguments, .. } => {
                 self.compile_call(callee, arguments)?;
@@ -1578,20 +1572,20 @@ impl Compiler {
                 "get" if arguments.len() == 1 => {
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.compile_expression(&arguments[0])?;
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 }
                 "set" if arguments.len() == 2 => {
                     // Check if key exists
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.compile_expression(&arguments[0])?;
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::ref_is_null);
                     let is_new = self.emit_jump(Op::br_if_true);
                     // Existing: just update
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.compile_expression(&arguments[0])?;
                     self.compile_expression(&arguments[1])?;
-                    self.emit(Op::array_set);
+                    common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     self.emit_u16(Op::local_get, obj_tmp);
                     let done_s = self.emit_jump(Op::br);
@@ -1600,13 +1594,13 @@ impl Compiler {
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.compile_expression(&arguments[0])?;
                     self.compile_expression(&arguments[1])?;
-                    self.emit(Op::array_set);
+                    common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     self.emit_u16(Op::local_get, obj_tmp);
                     let ki = self.add_string_constant("__keys");
                     self.emit_u16(Op::struct_get, ki);
                     self.compile_expression(&arguments[0])?;
-                    self.emit(Op::array_push);
+                    common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.emit_u16(Op::local_get, obj_tmp);
@@ -1623,7 +1617,7 @@ impl Compiler {
                 "has" if arguments.len() == 1 => {
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.compile_expression(&arguments[0])?;
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::ref_is_null);
                     self.emit(Op::dyn_not);
                 }
@@ -1631,7 +1625,7 @@ impl Compiler {
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.compile_expression(&arguments[0])?;
                     self.emit(Op::null);
-                    self.emit(Op::array_set);
+                    common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.emit_u16(Op::local_get, obj_tmp);
@@ -1648,7 +1642,7 @@ impl Compiler {
                     // Set.add — check duplicate
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.compile_expression(&arguments[0])?;
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::ref_is_null);
                     let is_new_a = self.emit_jump(Op::br_if_true);
                     self.emit_u16(Op::local_get, obj_tmp);
@@ -1657,13 +1651,13 @@ impl Compiler {
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.compile_expression(&arguments[0])?;
                     self.emit(Op::r#true);
-                    self.emit(Op::array_set);
+                    common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     self.emit_u16(Op::local_get, obj_tmp);
                     let ki = self.add_string_constant("__keys");
                     self.emit_u16(Op::struct_get, ki);
                     self.compile_expression(&arguments[0])?;
-                    self.emit(Op::array_push);
+                    common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                     self.emit_u16(Op::local_get, obj_tmp);
                     self.emit_u16(Op::local_get, obj_tmp);
@@ -1949,7 +1943,7 @@ impl Compiler {
                         ArrayPatternElem::Pattern(pat, default) => {
                             self.emit(Op::dup);
                             self.emit_constant(Value::F64(i as f64));
-                            self.emit(Op::array_get);
+                            common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                             if let Some(default_expr) = default {
                                 self.emit(Op::dup);
                                 self.emit(Op::ref_is_null);
@@ -2028,7 +2022,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, fn_slot);   // push callback
                 self.emit_u16(Op::local_get, arr_slot);   // arr
                 self.emit_u16(Op::local_get, i_slot);     // i
-                self.emit(Op::array_get);                  // arr[i]
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);                  // arr[i]
                 self.emit_u16(Op::local_get, i_slot);     // i
                 self.emit_u16(Op::local_get, arr_slot);   // arr
                 self.emit_u8(Op::call, 3);                // fn(arr[i], i, arr) → val on stack
@@ -2038,7 +2032,7 @@ impl Compiler {
                 self.emit(Op::drop);                        // pop val from stack
                 self.emit_u16(Op::local_get, result_slot); // push result_arr
                 self.emit_u16(Op::local_get, val_slot);    // push val
-                self.emit(Op::array_push);                  // direct opcode
+                common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);                  // direct opcode
                 self.emit(Op::drop);                        // discard push return
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
@@ -2076,7 +2070,7 @@ impl Compiler {
                 // elem = arr[i]
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let elem_slot = self.define_local("__cb_elem");
                 self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
                 // if fn(elem, i, arr) → push elem
@@ -2089,7 +2083,7 @@ impl Compiler {
                 let skip = self.emit_jump(Op::br_if_false);
                 self.emit_u16(Op::local_get, result_slot);
                 self.emit_u16(Op::local_get, elem_slot);
-                self.emit(Op::array_push);
+                common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::drop);
                 self.patch_jump(skip);
                 // i++
@@ -2123,7 +2117,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, fn_slot);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u8(Op::call, 3);
@@ -2162,7 +2156,7 @@ impl Compiler {
                 // elem = arr[i]
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let elem_slot = self.define_local("__cb_elem");
                 self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
                 self.emit_u16(Op::local_get, fn_slot);
@@ -2219,7 +2213,7 @@ impl Compiler {
                 self.emit_u16(Op::local_get, acc_slot);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::local_get, i_slot);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u8(Op::call, 4);
@@ -2287,14 +2281,14 @@ impl Compiler {
                 // compare arr[j] vs arr[j+1]
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, j_slot);
-                self.emit(Op::array_get); // arr[j]
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line); // arr[j]
                 let a_slot = self.define_local("__sort_a");
                 self.emit_u16(Op::local_set, a_slot); self.emit(Op::drop);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, j_slot);
                 self.emit(Op::i32_const_1);
                 self.emit(Op::dyn_add);
-                self.emit(Op::array_get); // arr[j+1]
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line); // arr[j+1]
                 let b_slot = self.define_local("__sort_b");
                 self.emit_u16(Op::local_set, b_slot); self.emit(Op::drop);
                 // cmp
@@ -2380,7 +2374,7 @@ impl Compiler {
                 self.compile_expression(cb)?;
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u8(Op::call, 1);
                 // if truthy, return true
                 self.emit(Op::dyn_to_bool);
@@ -2424,7 +2418,7 @@ impl Compiler {
                 self.compile_expression(cb)?;
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u8(Op::call, 1);
                 self.emit(Op::dyn_to_bool);
                 self.emit(Op::dyn_not);
@@ -2467,7 +2461,7 @@ impl Compiler {
                 self.compile_expression(cb)?;
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u8(Op::call, 1);
                 self.emit(Op::dyn_to_bool);
                 let found = self.emit_jump(Op::br_if_true);
@@ -2545,7 +2539,7 @@ impl Compiler {
                 self.compile_expression(object)?;
                 self.compile_expression(property)?;
                 self.emit_u16(Op::local_get, tmp);
-                self.emit(Op::array_set);
+                common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
             }
             _ => { self.emit(Op::drop); }
         }
@@ -3376,7 +3370,7 @@ impl Compiler {
                 "join" if !is_class_instance => {
                     self.compile_expression(object)?;
                     self.emit_constant(Value::String(Rc::from(",")));
-                    self.emit(Op::array_join);
+                    common_collections::emit_join(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
                 "size" if !is_class_instance => {
@@ -3384,7 +3378,7 @@ impl Compiler {
                     self.compile_expression(object)?;
                     let line = self.line;
                     vybe_compiler_common::dict::emit_keys(&mut self.chunks[self.current_chunk_idx], line);
-                    self.emit(Op::array_length);
+                    common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
                 // Array methods — only safe on non-identifier objects (member accesses, etc.)
@@ -3468,7 +3462,7 @@ impl Compiler {
                     self.compile_expression(object)?;
                     self.compile_expression(&args[0])?;
                     // Negative index: handled by array_get in VM (already supports negative)
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
             }

@@ -2,6 +2,7 @@ use std::rc::Rc;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_parser_cobol::ast::*;
 use vybe_compiler_common as common;
+use vybe_compiler_common::collections as common_collections;
 
 pub struct Compiler {
     chunks: Vec<Chunk>,
@@ -183,9 +184,7 @@ impl Compiler {
 
         // Handle OCCURS → create array
         if let Some(count) = item.occurs {
-            let line = self.line;
-            let c = self.current_chunk_idx;
-            self.emit_u16(Op::array_new, count as u16);
+            common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], count as u16, self.line);
             self.emit_global_set_with_cls(&name);
         }
 
@@ -326,7 +325,7 @@ impl Compiler {
                 self.emit_u16(Op::local_set, keys_slot);
                 // Iterate keys
                 self.emit_u16(Op::local_get, keys_slot);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 let len_slot = self.next_local; self.next_local += 1;
                 self.emit_u16(Op::local_set, len_slot);
                 self.emit_constant(Value::I32(0));
@@ -340,17 +339,17 @@ impl Compiler {
                 // key = keys[i]
                 self.emit_u16(Op::local_get, keys_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let key_slot = self.next_local; self.next_local += 1;
                 self.emit_u16(Op::local_set, key_slot);
                 // dst[key] = src[key]
                 self.emit_u16(Op::global_get, dst_idx);
                 self.emit_u16(Op::global_get, src_idx);
                 self.emit_u16(Op::local_get, key_slot);
-                self.emit(Op::array_get); // src[key]
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line); // src[key]
                 self.emit_u16(Op::local_get, key_slot);
                 // struct_set expects [obj, val] with key as constant — use array_set instead
-                self.emit(Op::array_set);
+                common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::drop);
                 // i++
                 self.emit_u16(Op::local_get, i_slot);
@@ -632,7 +631,7 @@ impl Compiler {
                 for (i, target) in into.iter().enumerate() {
                     self.emit_u16(Op::local_get, arr_slot);
                     self.emit_constant(Value::I32(i as i32));
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     let idx = self.add_string_constant(&target.name);
                     self.emit_u16(Op::global_set, idx);
                 }
@@ -644,7 +643,7 @@ impl Compiler {
                 self.emit_u16(Op::global_get, var_idx);
                 self.emit_constant(Value::String(Rc::from(target.as_str())));
                 self.emit(Op::str_split);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(1));
                 self.emit(Op::f64_sub);
                 let cnt_idx = self.add_string_constant(counter);
@@ -1233,7 +1232,7 @@ impl Compiler {
                             self.emit(Op::ref_is_null);
                             let exists = self.emit_jump(Op::br_if_false);
                             self.emit(Op::drop);
-                            self.emit_u16(Op::array_new, 0);
+                            common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 0, self.line);
                             self.patch_jump(exists);
                             // Push data to queue
                             if !from_var.is_empty() {
@@ -1242,7 +1241,7 @@ impl Compiler {
                             } else {
                                 self.emit_constant(Value::String(Rc::from("")));
                             }
-                            self.emit(Op::array_push);
+                            common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                             self.emit(Op::drop);
                             // Save queue back
                             self.emit_u16(Op::global_set, qk);
@@ -1273,7 +1272,7 @@ impl Compiler {
                                 self.emit_u16(Op::global_get, ii);
                                 self.emit_constant(Value::I32(1));
                                 self.emit(Op::f64_sub); // CICS is 1-indexed
-                                self.emit(Op::array_get);
+                                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                             } else {
                                 // Read next = shift from front
                                 let c = self.current_chunk_idx;
@@ -1682,10 +1681,10 @@ impl Compiler {
                     self.emit_u16(Op::local_get, result_slot);
                     // First row: result[0]
                     self.emit_constant(Value::I32(0));
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     // Column: row[col]
                     self.emit_constant(Value::I32(col as i32));
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     let vi = self.add_string_constant(var);
                     self.emit_u16(Op::global_set, vi);
                 }
@@ -1773,14 +1772,14 @@ impl Compiler {
                 // Check if index < result set length
                 self.emit_u16(Op::global_get, idx_key);
                 self.emit_u16(Op::global_get, rs_key);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::dyn_lt);
                 let no_more = self.emit_jump(Op::br_if_false);
 
                 // Get current row
                 self.emit_u16(Op::global_get, rs_key);
                 self.emit_u16(Op::global_get, idx_key);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let row_slot = self.next_local; self.next_local += 1;
                 self.emit_u16(Op::local_set, row_slot);
 
@@ -1788,7 +1787,7 @@ impl Compiler {
                 for (col, var) in into_vars.iter().enumerate() {
                     self.emit_u16(Op::local_get, row_slot);
                     self.emit_constant(Value::I32(col as i32));
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     let vi = self.add_string_constant(var);
                     self.emit_u16(Op::global_set, vi);
                 }
@@ -1847,7 +1846,7 @@ impl Compiler {
                 // COBOL is 1-indexed, VM is 0-indexed
                 self.emit_constant(Value::I32(1));
                 self.emit(Op::f64_sub);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(())
             }
             Expr::Qualified(field, parent) => {

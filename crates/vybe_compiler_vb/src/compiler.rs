@@ -3,6 +3,7 @@ use std::collections::HashSet;
 
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_compiler_common as common;
+use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::functions as common_fn;
 use vybe_compiler_common::io as common_io;
 use vybe_parser_basic::ast::*;
@@ -487,7 +488,7 @@ impl Compiler {
                             self.emit(Op::dyn_add);
                             self.emit(Op::array_new_default);
                         } else {
-                            self.emit_u16(Op::array_new, 0);
+                            common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 0, self.line);
                         }
                     } else if let Some(ref init) = var.initializer {
                         self.compile_expression(init)?;
@@ -621,7 +622,7 @@ impl Compiler {
                     self.emit_u16(Op::local_get, slot); // box
                     self.emit(Op::i32_const_0);           // index 0
                     self.emit_u16(Op::local_get, tmp);    // value
-                    self.emit(Op::array_set);
+                    common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit(Op::drop);
                 } else {
                     self.emit_u16(Op::local_set, slot);

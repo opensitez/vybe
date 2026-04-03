@@ -1905,6 +1905,11 @@ impl VM {
                         (Value::String(_), _) | (_, Value::String(_)) => {
                             Value::String(Rc::from(format!("{}{}", a, b).as_str()))
                         }
+                        // Object with __add__ dunder → cross-language operator overloading
+                        (Value::Object(obj), _) => {
+                            self.try_dunder_binary(obj, &b, "__add__")
+                                .unwrap_or_else(|| Value::F64(a.as_f64() + b.as_f64()))
+                        }
                         _ => Value::F64(a.as_f64() + b.as_f64()),
                     };
                     self.push(result)?;
@@ -1961,6 +1966,8 @@ impl VM {
                     let b = self.pop(); let a = self.pop();
                     let r = match (&a, &b) {
                         (Value::String(x), Value::String(y)) => *x < *y,
+                        (Value::Object(obj), _) => self.try_dunder_binary(obj, &b, "__lt__")
+                            .map(|v| v.as_bool()).unwrap_or(a.as_f64() < b.as_f64()),
                         _ => a.as_f64() < b.as_f64(),
                     };
                     self.push(Value::Bool(r))?;
@@ -1969,6 +1976,8 @@ impl VM {
                     let b = self.pop(); let a = self.pop();
                     let r = match (&a, &b) {
                         (Value::String(x), Value::String(y)) => *x > *y,
+                        (Value::Object(obj), _) => self.try_dunder_binary(obj, &b, "__gt__")
+                            .map(|v| v.as_bool()).unwrap_or(a.as_f64() > b.as_f64()),
                         _ => a.as_f64() > b.as_f64(),
                     };
                     self.push(Value::Bool(r))?;
@@ -1977,6 +1986,8 @@ impl VM {
                     let b = self.pop(); let a = self.pop();
                     let r = match (&a, &b) {
                         (Value::String(x), Value::String(y)) => *x <= *y,
+                        (Value::Object(obj), _) => self.try_dunder_binary(obj, &b, "__le__")
+                            .map(|v| v.as_bool()).unwrap_or(a.as_f64() <= b.as_f64()),
                         _ => a.as_f64() <= b.as_f64(),
                     };
                     self.push(Value::Bool(r))?;
@@ -1985,6 +1996,8 @@ impl VM {
                     let b = self.pop(); let a = self.pop();
                     let r = match (&a, &b) {
                         (Value::String(x), Value::String(y)) => *x >= *y,
+                        (Value::Object(obj), _) => self.try_dunder_binary(obj, &b, "__ge__")
+                            .map(|v| v.as_bool()).unwrap_or(a.as_f64() >= b.as_f64()),
                         _ => a.as_f64() >= b.as_f64(),
                     };
                     self.push(Value::Bool(r))?;
@@ -3717,6 +3730,28 @@ impl VM {
                 Op::method_def => { let _ = self.read_u16(); }
                 Op::inherit => { self.pop(); }
             }
+        }
+    }
+
+    /// Try to call a dunder method (__add__, __lt__, etc.) on an object.
+    /// Returns Some(result) if the method exists, None otherwise.
+    fn try_dunder_binary(&mut self, obj: &Rc<RefCell<crate::value::Object>>, arg: &Value, dunder: &str) -> Option<Value> {
+        let method = {
+            let o = obj.borrow();
+            o.properties.get(dunder).cloned()
+        };
+        if let Some(func_val) = method {
+            // Call dunder(self, arg) — push func, self, arg, call(2)
+            let self_val = Value::Object(obj.clone());
+            self.push(func_val).ok()?;
+            self.push(self_val).ok()?;
+            self.push(arg.clone()).ok()?;
+            self.call_value(2).ok()?;
+            // Execute until the function returns
+            self.execute_until(self.frames.len()).ok()?;
+            Some(self.pop())
+        } else {
+            None
         }
     }
 

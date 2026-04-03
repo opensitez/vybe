@@ -74,10 +74,12 @@ pub fn canonical_exception_name(name: &str) -> &str {
 }
 
 /// Emit the start of a try block. Returns the catch_jump offset to patch later.
+/// Layout: [try_start, u16 catch_offset, u16 finally_offset]
 /// Stack: unchanged
 pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
     let catch_jump = chunk.emit_jump(Op::try_start, line);
-    chunk.emit(0u8, line); // reserved for finally offset
+    chunk.emit(0u8, line); // finally offset high byte (reserved)
+    chunk.emit(0u8, line); // finally offset low byte (reserved)
     catch_jump
 }
 
@@ -87,8 +89,15 @@ pub fn emit_try_end(chunk: &mut Chunk, line: u32) {
 }
 
 /// Patch the catch handler offset after the handler code has been emitted.
+///
+/// The VM reads `catch_offset` then `finally_offset` (2+2 bytes) before computing
+/// `catch_ip = ip + catch_offset`, where ip is *after* all 4 operand bytes.
+/// `chunk.patch_jump` assumes ip is right after the 2 patched bytes, so we
+/// subtract 2 to account for the extra finally-offset bytes the VM skips.
 pub fn patch_catch(chunk: &mut Chunk, catch_jump: usize) {
-    chunk.patch_jump(catch_jump);
+    let jump = chunk.current_offset() as i32 - (catch_jump as i32 + 2) - 2;
+    chunk.code[catch_jump] = (jump >> 8) as u8;
+    chunk.code[catch_jump + 1] = (jump & 0xff) as u8;
 }
 
 /// Emit a throw — takes the exception value from TOS.

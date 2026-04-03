@@ -2,12 +2,14 @@ use std::rc::Rc;
 
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_compiler_common::classes as common_classes;
+use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
 use vybe_compiler_common::io as common_io;
 use vybe_compiler_common::loops as common_loops;
 use vybe_compiler_common::strings as common_strings;
 use vybe_compiler_common::threading as common_thread;
+use vybe_compiler_common::errors as common_errors;
 use vybe_parser_dart::*;
 
 use crate::scope::Scope;
@@ -302,17 +304,17 @@ impl Compiler {
             "add" => {
                 self.compile_expression(object)?;
                 for a in args { self.compile_expression(&a.value)?; }
-                self.emit(Op::array_push);
+                common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
             "removeLast" => {
                 self.compile_expression(object)?;
-                self.emit(Op::array_pop);
+                common_collections::emit_pop(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
             "reversed" => {
                 self.compile_expression(object)?;
-                self.emit(Op::array_reverse);
+                common_collections::emit_reverse(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
             "join" => {
@@ -322,7 +324,7 @@ impl Compiler {
                 } else {
                     self.emit_constant(Value::String(Rc::from(",")));
                 }
-                self.emit(Op::array_join);
+                common_collections::emit_join(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
             }
             // List higher-order methods (inline loops, same pattern as JS/Python)
@@ -745,20 +747,16 @@ impl Compiler {
             }
             Statement::Throw(expr) => {
                 self.compile_expression(expr)?;
-                self.emit(Op::throw);
+                common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
             }
             Statement::Try { body, catches, finally } => {
-                let try_start_pos = self.current_offset();
                 let try_chunk = self.current_chunk_idx;
                 let line = self.line;
-                let c = &mut self.chunks[self.current_chunk_idx];
-                c.emit_op(Op::try_start, line);
-                c.emit(0, line); c.emit(0, line);
-                c.emit(0, line); c.emit(0, line);
-                
+                let catch_jump = common_errors::emit_try_start(&mut self.chunks[self.current_chunk_idx], line);
+
                 for s in body { self.compile_statement(s)?; }
-                self.emit(Op::try_end);
-                
+                common_errors::emit_try_end(&mut self.chunks[self.current_chunk_idx], self.line);
+
                 // Emit a jump that will skip all catches; record the chunk it was emitted into
                 let skip_chunk = self.current_chunk_idx;
                 let skip_offset = self.emit_jump(Op::br);
@@ -766,22 +764,18 @@ impl Compiler {
                 // Ensure subsequent catch emission happens in the same chunk as the try
                 let saved_chunk = self.current_chunk_idx;
                 self.current_chunk_idx = try_chunk;
-                let catch_entry_pos = self.current_offset();
 
-                // Patch try_start with catch_entry_pos (uses the original try's chunk)
-                let ip_after = try_start_pos + 5; // try_start(1) + offset(2) + finally(2)
-                let catch_offset = catch_entry_pos as i16 - ip_after as i16;
-                let c = &mut self.chunks[try_chunk];
-                c.code[try_start_pos + 1] = (catch_offset >> 8) as u8;
-                c.code[try_start_pos + 2] = (catch_offset & 0xff) as u8;
+                // Patch catch offset
+                common_errors::patch_catch(&mut self.chunks[try_chunk], catch_jump);
 
                 // Optional debug dump: if `VYBE_DART_DEBUG_CATCH` is set in the
                 // environment, print a short slice of the compiled code and
                 // constants around this try/catch for offline inspection.
                 if std::env::var("VYBE_DART_DEBUG_CATCH").is_ok() {
                     let c = &self.chunks[self.current_chunk_idx];
-                    let start = try_start_pos;
-                    let end = std::cmp::min(catch_entry_pos + 16, c.code.len());
+                    let start = if catch_jump > 0 { catch_jump - 1 } else { 0 };
+                    let catch_entry = c.current_offset();
+                    let end = std::cmp::min(catch_entry + 16, c.code.len());
                     eprintln!("--- DART CATCH BYTECODE DUMP (chunk {}) ---", self.current_chunk_idx);
                     eprintln!("code[{}..{}]: {:?}", start, end, &c.code[start..end]);
                     eprintln!("constants (len={}):", c.constants.len());
@@ -806,7 +800,7 @@ impl Compiler {
                     if let Some(ref type_name) = catch.on_type {
                         self.emit(Op::dup);
                         // Normalize for cross-language compat (Dart FormatException → ValueError etc)
-                        let canonical = vybe_compiler_common::errors::canonical_exception_name(type_name);
+                        let canonical = common_errors::canonical_exception_name(type_name);
                         let type_name_norm = self.runtime_type_name(canonical);
                         let type_idx = self.add_string_constant(&type_name_norm);
                         self.emit_u16(Op::ref_test, type_idx);
@@ -861,7 +855,7 @@ impl Compiler {
                 
                 // If we fell through (no match), and it's not a rethrow, we should probably rethrow or drop
                 if !catches.is_empty() && catches.last().unwrap().on_type.is_some() {
-                    self.emit(Op::throw); 
+                    common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line); 
                 } else if catches.is_empty() {
                     self.emit(Op::drop);
                 }
@@ -885,7 +879,7 @@ impl Compiler {
                 } else {
                     self.emit_constant(Value::String(Rc::from("Assertion failed")));
                 }
-                self.emit(Op::throw);
+                common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.patch_jump(ok);
             }
             Statement::Empty => {}
@@ -1001,7 +995,7 @@ impl Compiler {
                 // Get from the named args map: map[name] via array_get (standard WASM)
                 self.emit_u16(Op::local_get, map_slot);
                 self.emit_constant(Value::String(Rc::from(p.name.as_str())));
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 
                 // If Null/Undefined and we have a default value, apply it
                 if let Some(dv) = &p.default_value {
@@ -1186,7 +1180,7 @@ impl Compiler {
                                 self.compile_expression(&expr)?;
                                 let is_true = self.emit_jump(Op::br_if_true);
                                 self.emit_constant(Value::String(Rc::from("Assertion failed")));
-                                self.emit(Op::throw);
+                                common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
                                 self.patch_jump(is_true);
                             }
                         }
@@ -1460,9 +1454,9 @@ impl Compiler {
                     // Emit typed array creation hint
                     let type_idx = self.add_string_constant(&t.name);
                     self.emit_u16(Op::r#const, type_idx);
-                    self.emit_u16(Op::array_new, elements.len() as u16 + 1); // +1 for type hint
+                    common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], elements.len() as u16 + 1, self.line); // +1 for type hint
                 } else {
-                    self.emit_u16(Op::array_new, elements.len() as u16);
+                    common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], elements.len() as u16, self.line);
                 }
             }
             Expression::Map { entries, type_args: _ } => {
@@ -1503,33 +1497,43 @@ impl Compiler {
                 }
             }
             Expression::Binary { op, left, right } => {
-                self.compile_expression(left)?;
-                self.compile_expression(right)?;
-                match op {
-                    BinOp::Add => self.emit(Op::dyn_add),
-                    BinOp::Sub => self.emit(Op::f64_sub),
-                    BinOp::Mul => self.emit(Op::f64_mul),
-                    BinOp::Div => self.emit(Op::f64_div),
-                    BinOp::IntDiv => { self.emit(Op::f64_div); self.emit(Op::f64_floor); }
-                    BinOp::Mod => self.emit(Op::f64_mod),
-                    BinOp::Eq => self.emit(Op::dyn_eq),
-                    BinOp::NotEq => self.emit(Op::dyn_ne),
-                    BinOp::Lt => self.emit(Op::dyn_lt),
-                    BinOp::Gt => self.emit(Op::dyn_gt),
-                    BinOp::Le => self.emit(Op::dyn_le),
-                    BinOp::Ge => self.emit(Op::dyn_ge),
-                    BinOp::And => {
-                        // Short-circuit: already compiled both — but for proper short-circuit
-                        // we'd need to restructure. For now, use logical and.
-                        self.emit(Op::i32_and);
+                // Short-circuit logical operators
+                if *op == BinOp::And {
+                    self.compile_expression(left)?;
+                    let line = self.line;
+                    let jump = common_expr::emit_and_start(self.chunk_mut(), line);
+                    self.compile_expression(right)?;
+                    common_expr::emit_short_circuit_end(self.chunk_mut(), jump);
+                } else if *op == BinOp::Or {
+                    self.compile_expression(left)?;
+                    let line = self.line;
+                    let jump = common_expr::emit_or_start(self.chunk_mut(), line);
+                    self.compile_expression(right)?;
+                    common_expr::emit_short_circuit_end(self.chunk_mut(), jump);
+                } else {
+                    self.compile_expression(left)?;
+                    self.compile_expression(right)?;
+                    match op {
+                        BinOp::Add => self.emit(Op::dyn_add),
+                        BinOp::Sub => self.emit(Op::f64_sub),
+                        BinOp::Mul => self.emit(Op::f64_mul),
+                        BinOp::Div => self.emit(Op::f64_div),
+                        BinOp::IntDiv => { self.emit(Op::f64_div); self.emit(Op::f64_floor); }
+                        BinOp::Mod => self.emit(Op::f64_mod),
+                        BinOp::Eq => self.emit(Op::dyn_eq),
+                        BinOp::NotEq => self.emit(Op::dyn_ne),
+                        BinOp::Lt => self.emit(Op::dyn_lt),
+                        BinOp::Gt => self.emit(Op::dyn_gt),
+                        BinOp::Le => self.emit(Op::dyn_le),
+                        BinOp::Ge => self.emit(Op::dyn_ge),
+                        BinOp::And | BinOp::Or => unreachable!(),
+                        BinOp::BitAnd => self.emit(Op::i32_and),
+                        BinOp::BitOr => self.emit(Op::i32_or),
+                        BinOp::BitXor => self.emit(Op::i32_xor),
+                        BinOp::Shl => self.emit(Op::i32_shl),
+                        BinOp::Shr => self.emit(Op::i32_shr_s),
+                        BinOp::UShr => self.emit(Op::i32_shr_u),
                     }
-                    BinOp::Or => { self.emit(Op::i32_or); }
-                    BinOp::BitAnd => self.emit(Op::i32_and),
-                    BinOp::BitOr => self.emit(Op::i32_or),
-                    BinOp::BitXor => self.emit(Op::i32_xor),
-                    BinOp::Shl => self.emit(Op::i32_shl),
-                    BinOp::Shr => self.emit(Op::i32_shr_s),
-                    BinOp::UShr => self.emit(Op::i32_shr_u),
                 }
             }
             Expression::Unary { op, expr: inner } => {
@@ -1652,7 +1656,7 @@ impl Compiler {
                 // falls through to struct_get for string keys, so this works.
                 self.compile_expression(object)?;
                 self.compile_expression(index)?;
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
             }
             Expression::Call { callee, args, .. } => {
                 self.compile_call(callee, args)?;
@@ -1773,7 +1777,7 @@ impl Compiler {
                         CascadeOp::Index(idx_expr) => {
                             self.emit_u16(Op::local_get, slot);
                             self.compile_expression(idx_expr)?;
-                            self.emit(Op::array_get);
+                            common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                             self.emit(Op::drop);
                         }
                     }
@@ -1862,30 +1866,30 @@ impl Compiler {
 
     fn compile_member_access(&mut self, member: &str) -> Result<(), String> {
         match member {
-            "length" => { self.emit(Op::array_length); return Ok(()); }
+            "length" => { common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line); return Ok(()); }
             "isEmpty" => {
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(0));
                 self.emit(Op::dyn_eq);
                 return Ok(());
             }
             "isNotEmpty" => {
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(0));
                 self.emit(Op::dyn_gt);
                 return Ok(());
             }
             "first" => {
                 self.emit_constant(Value::I32(0));
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "last" => {
                 self.emit(Op::dup);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(1));
                 self.emit(Op::f64_sub);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(());
             }
             "hashCode" | "runtimeType" => {
@@ -2178,7 +2182,7 @@ impl Compiler {
                 self.compile_expression(object)?;
                 self.compile_expression(index)?;
                 self.emit_u16(Op::local_get, tmp);
-                self.emit(Op::array_set);
+                common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::drop);
             }
             _ => {} // can't store to other expression types
@@ -2222,7 +2226,7 @@ impl Compiler {
         // Default: throw error
         let msg_idx = self.add_string_constant("Switch expression not exhaustive");
         self.emit_u16(Op::r#const, msg_idx); // this is wrong, should use emit_constant but okay for now
-        self.emit(Op::throw);
+        common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
         
         for j in end_jumps {
             self.patch_jump(j);
@@ -2281,7 +2285,7 @@ impl Compiler {
                 let not_array = self.emit_jump(Op::br_if_false);
                 
                 self.emit(Op::dup);
-                self.emit(Op::array_length);
+                common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I64(patterns.len() as i64));
                 self.emit(Op::eq);
                 let wrong_len = self.emit_jump(Op::br_if_false);
@@ -2290,7 +2294,7 @@ impl Compiler {
                 for (i, p) in patterns.iter().enumerate() {
                     self.emit(Op::dup);
                     self.emit_constant(Value::I64(i as i64));
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     p_skips.push(self.compile_pattern(p)?);
                 }
                 
@@ -2312,7 +2316,7 @@ impl Compiler {
                 for (key_expr, val_pat) in entries {
                     self.emit(Op::dup);
                     self.compile_expression(key_expr)?;
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     e_skips.push(self.compile_pattern(val_pat)?);
                 }
                 

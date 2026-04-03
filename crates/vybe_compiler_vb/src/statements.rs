@@ -1,6 +1,8 @@
 use std::rc::Rc;
 use vybe_bytecode::{Value, Op};
+use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::threading as common_thread;
+use vybe_compiler_common::errors as common_errors;
 use vybe_parser_basic::ast::*;
 
 use crate::compiler::{Compiler, VarResolution, LoopContext};
@@ -20,7 +22,7 @@ impl Compiler {
                             self.emit(Op::array_new_default);
                         } else {
                             // Dim arr() — empty array
-                            self.emit_u16(Op::array_new, 0);
+                            common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 0, self.line);
                         }
                     } else if let Some(ref init) = var.initializer {
                         self.compile_expression(init)?;
@@ -106,7 +108,7 @@ impl Compiler {
                     self.compile_expression(index)?;
                 }
                 self.compile_expression(value)?;
-                self.emit(Op::array_set);
+                common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::drop);
             }
             Statement::If { condition, then_branch, elseif_branches, else_branch } => {
@@ -181,7 +183,7 @@ impl Compiler {
                 let exit = self.emit_jump(Op::br_if_false);
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, i_slot);
-                self.emit(Op::array_get);
+                common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let var_name = variable.as_str().to_lowercase();
                 let elem_slot = self.define_local(&var_name);
                 self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
@@ -312,7 +314,7 @@ impl Compiler {
                             if let Expression::Variable(var) = arg {
                                 let var_name = var.as_str().to_lowercase();
                                 self.compile_expression(arg)?;
-                                self.emit_u16(Op::array_new, 1);
+                                common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 1, self.line);
                                 let box_local = self.define_local(&format!("__box_{}", i));
                                 self.emit(Op::dup);
                                 self.emit_u16(Op::local_set, box_local);
@@ -322,7 +324,7 @@ impl Compiler {
                                 }
                             } else {
                                 self.compile_expression(arg)?;
-                                self.emit_u16(Op::array_new, 1);
+                                common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 1, self.line);
                             }
                         } else {
                             self.compile_expression(arg)?;
@@ -335,7 +337,7 @@ impl Compiler {
                     for (box_local, var_local) in &byref_info {
                         self.emit_u16(Op::local_get, *box_local);
                         self.emit(Op::i32_const_0);
-                        self.emit(Op::array_get);
+                        common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.emit_u16(Op::local_set, *var_local);
                         self.emit(Op::drop);
                     }
@@ -477,22 +479,18 @@ impl Compiler {
                 let lbl_name = label.as_str().to_lowercase();
                 if lbl_name == "0" {
                     // On Error GoTo 0 — disable error handler (emit try_end)
-                    self.emit(Op::try_end);
+                    common_errors::emit_try_end(&mut self.chunks[self.current_chunk_idx], self.line);
                 } else {
                     // On Error GoTo label — start a try block
                     // The catch will jump to the label (via host "goto" call)
                     let line = self.line;
-                    let c = &mut self.chunks[self.current_chunk_idx];
-                    c.emit_op(Op::try_start, line);
-                    c.emit(0, line); c.emit(0, line); c.emit(0, line); c.emit(0, line);
+                    common_errors::emit_try_start(&mut self.chunks[self.current_chunk_idx], line);
                 }
             }
             // On Error Resume Next — wrap in try/catch that swallows errors
             Statement::OnErrorResumeNext => {
                 let line = self.line;
-                let c = &mut self.chunks[self.current_chunk_idx];
-                c.emit_op(Op::try_start, line);
-                c.emit(0, line); c.emit(0, line); c.emit(0, line); c.emit(0, line);
+                common_errors::emit_try_start(&mut self.chunks[self.current_chunk_idx], line);
             }
             Statement::Resume(_) => {
                 // Resume — VB6 style: continue execution after error
@@ -562,7 +560,7 @@ impl Compiler {
                 for (i, var) in variables.iter().enumerate() {
                     self.emit(Op::dup);
                     self.emit_constant(Value::F64(i as f64));
-                    self.emit(Op::array_get);
+                    common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.compile_store_ident(var)?;
                 }
                 self.emit(Op::drop);
@@ -574,20 +572,12 @@ impl Compiler {
                 self.compile_store_ident(variable)?;
             }
             Statement::Try { body, catches, finally: finally_block } => {
-                let try_start_pos = self.current_offset();
                 let line = self.line;
-                let c = &mut self.chunks[self.current_chunk_idx];
-                c.emit_op(Op::try_start, line);
-                c.emit(0, line); c.emit(0, line); c.emit(0, line); c.emit(0, line);
+                let catch_jump = common_errors::emit_try_start(&mut self.chunks[self.current_chunk_idx], line);
                 for s in body { self.compile_statement(s)?; }
-                self.emit(Op::try_end);
+                common_errors::emit_try_end(&mut self.chunks[self.current_chunk_idx], self.line);
                 let skip = self.emit_jump(Op::br);
-                let catch_pos = self.current_offset();
-                let ip_after = try_start_pos + 5;
-                let catch_offset = catch_pos as i16 - ip_after as i16;
-                let c = &mut self.chunks[self.current_chunk_idx];
-                c.code[try_start_pos + 1] = (catch_offset >> 8) as u8;
-                c.code[try_start_pos + 2] = (catch_offset & 0xff) as u8;
+                common_errors::patch_catch(&mut self.chunks[self.current_chunk_idx], catch_jump);
                 if let Some(catch) = catches.first() {
                     self.current_scope_mut().begin_scope();
                     if let Some((ref var_name, _)) = catch.variable {
@@ -613,7 +603,7 @@ impl Compiler {
                 } else {
                     self.emit(Op::null);
                 }
-                self.emit(Op::throw);
+                common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
             }
             Statement::Const(c) => {
                 self.compile_expression(&c.value)?;
