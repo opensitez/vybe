@@ -2,11 +2,14 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue, SelectionMode};
 
 pub struct ListBox {
     pub items: Vec<String>,
     pub selected_index: Option<usize>,
+    /// All selected indices (used for multi-select modes; always includes selected_index).
+    pub selected_indices: Vec<usize>,
+    pub selection_mode: SelectionMode,
     pub item_height: f32,
     pub scroll_offset: f32,
     pub focused: bool,
@@ -18,6 +21,8 @@ pub struct ListBox {
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
+    /// Anchor index for Shift+click range selection.
+    range_anchor: Option<usize>,
 }
 
 impl ListBox {
@@ -25,6 +30,8 @@ impl ListBox {
         Self {
             items: Vec::new(),
             selected_index: None,
+            selected_indices: Vec::new(),
+            selection_mode: SelectionMode::Single,
             item_height: 18.0,
             scroll_offset: 0.0,
             focused: false,
@@ -36,10 +43,20 @@ impl ListBox {
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
+            range_anchor: None,
         }
     }
 
     pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_selection_mode(mut self, mode: SelectionMode) -> Self { self.selection_mode = mode; self }
+
+    /// Is the given index currently selected?
+    pub fn is_selected(&self, idx: usize) -> bool {
+        match self.selection_mode {
+            SelectionMode::Single => self.selected_index == Some(idx),
+            _ => self.selected_indices.contains(&idx),
+        }
+    }
 
     /// Paint the listbox — white background, inset border, selection highlight.
     /// Item text is drawn by caller.
@@ -54,19 +71,18 @@ impl ListBox {
             pixmap.fill_path(&path, &paint, FillRule::Winding, ts, None);
         }
 
-        // Selection highlight bar
-        if let Some(idx) = self.selected_index {
-            let item_y = y + 1.0 + (idx as f32 * self.item_height) - self.scroll_offset;
+        // Selection highlight bars
+        for i in 0..self.items.len() {
+            if !self.is_selected(i) { continue; }
+            let item_y = y + 1.0 + (i as f32 * self.item_height) - self.scroll_offset;
             let bar_top = item_y.max(y + 1.0);
             let bar_bottom = (item_y + self.item_height).min(y + self.height - 1.0);
             if bar_top < bar_bottom {
-                // Accent blue highlight
                 let (r, g, b, _) = self.colors.accent;
                 paint.set_color_rgba8(r, g, b, 60);
                 if let Some(rect) = Rect::from_xywh(x + 1.0, bar_top, self.width - 2.0, bar_bottom - bar_top) {
                     pixmap.fill_rect(rect, &paint, ts, None);
                 }
-                // Highlight border
                 paint.set_color_rgba8(r, g, b, 160);
                 let mut stroke = Stroke::default();
                 stroke.width = 1.0;
@@ -125,8 +141,8 @@ impl ListBox {
         (self.width, self.height)
     }
 
-    /// Handle click at (x, y) relative to widget origin. Returns item index if hit.
-    pub fn click(&mut self, x: f32, y: f32) -> Option<usize> {
+    /// Hit-test: given local coordinates, return item index if within bounds.
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<usize> {
         if x < 0.0 || y < 0.0 || x > self.width || y > self.height {
             return None;
         }
@@ -136,11 +152,47 @@ impl ListBox {
         }
         let idx = (adjusted_y / self.item_height) as usize;
         if idx < self.items.len() {
-            self.selected_index = Some(idx);
             Some(idx)
         } else {
             None
         }
+    }
+
+    /// Handle click at (x, y) relative to widget origin. Returns item index if hit.
+    pub fn click(&mut self, x: f32, y: f32) -> Option<usize> {
+        if let Some(idx) = self.hit_test(x, y) {
+            self.select_single(idx);
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    /// Select a single index (Single mode logic).
+    fn select_single(&mut self, idx: usize) {
+        self.selected_index = Some(idx);
+        self.selected_indices = vec![idx];
+        self.range_anchor = Some(idx);
+    }
+
+    /// Toggle selection of an index (for MultiSimple / Ctrl+click in MultiExtended).
+    fn toggle_index(&mut self, idx: usize) {
+        if let Some(pos) = self.selected_indices.iter().position(|&i| i == idx) {
+            self.selected_indices.remove(pos);
+        } else {
+            self.selected_indices.push(idx);
+        }
+        self.selected_indices.sort();
+        self.selected_index = self.selected_indices.first().copied();
+        self.range_anchor = Some(idx);
+    }
+
+    /// Select a contiguous range from the anchor to idx (for Shift+click in MultiExtended).
+    fn select_range_to(&mut self, idx: usize) {
+        let anchor = self.range_anchor.unwrap_or(0);
+        let (start, end) = if anchor <= idx { (anchor, idx) } else { (idx, anchor) };
+        self.selected_indices = (start..=end).collect();
+        self.selected_index = Some(idx);
     }
 
     /// Y position of an item relative to widget origin (for text placement).
@@ -178,7 +230,24 @@ impl PanelWidget for ListBox {
         let lx = event.x - r.x;
         let ly = event.y - r.y;
         if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
-            if let Some(idx) = self.click(lx, ly) {
+            if let Some(idx) = self.hit_test(lx, ly) {
+                match self.selection_mode {
+                    SelectionMode::Single => {
+                        self.select_single(idx);
+                    }
+                    SelectionMode::MultiSimple => {
+                        self.toggle_index(idx);
+                    }
+                    SelectionMode::MultiExtended => {
+                        if event.shift && self.range_anchor.is_some() {
+                            self.select_range_to(idx);
+                        } else if event.cmd {
+                            self.toggle_index(idx);
+                        } else {
+                            self.select_single(idx);
+                        }
+                    }
+                }
                 self.pending_events.push(WidgetEvent::ListBoxSelected(self.name.clone(), idx));
                 return true;
             }
@@ -189,11 +258,26 @@ impl PanelWidget for ListBox {
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
         if !self.focused { return false; }
         use winit::keyboard::{Key, NamedKey};
+        use winit::event::ElementState;
+        if event.state != ElementState::Pressed { return false; }
         match &event.logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 let next = self.selected_index.map(|i| (i + 1).min(self.items.len().saturating_sub(1))).unwrap_or(0);
                 if next < self.items.len() {
-                    self.selected_index = Some(next);
+                    match self.selection_mode {
+                        SelectionMode::Single => self.select_single(next),
+                        SelectionMode::MultiSimple => self.select_single(next),
+                        SelectionMode::MultiExtended => {
+                            if event.shift {
+                                if self.range_anchor.is_none() {
+                                    self.range_anchor = self.selected_index;
+                                }
+                                self.select_range_to(next);
+                            } else {
+                                self.select_single(next);
+                            }
+                        }
+                    }
                     self.pending_events.push(WidgetEvent::ListBoxSelected(self.name.clone(), next));
                 }
                 true
@@ -201,7 +285,20 @@ impl PanelWidget for ListBox {
             Key::Named(NamedKey::ArrowUp) => {
                 let prev = self.selected_index.map(|i| i.saturating_sub(1)).unwrap_or(0);
                 if prev < self.items.len() {
-                    self.selected_index = Some(prev);
+                    match self.selection_mode {
+                        SelectionMode::Single => self.select_single(prev),
+                        SelectionMode::MultiSimple => self.select_single(prev),
+                        SelectionMode::MultiExtended => {
+                            if event.shift {
+                                if self.range_anchor.is_none() {
+                                    self.range_anchor = self.selected_index;
+                                }
+                                self.select_range_to(prev);
+                            } else {
+                                self.select_single(prev);
+                            }
+                        }
+                    }
                     self.pending_events.push(WidgetEvent::ListBoxSelected(self.name.clone(), prev));
                 }
                 true
@@ -220,14 +317,47 @@ impl PanelWidget for ListBox {
     fn focusable(&self) -> bool { true }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetSelectedIndex(i) => { self.selected_index = Some(*i); CommandValue::None }
+            WidgetCommand::SetSelectedIndex(i) => {
+                self.select_single(*i);
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Index(self.selected_index.unwrap_or(0)),
             WidgetCommand::AddItem(s) => { self.items.push(s.clone()); CommandValue::None }
-            WidgetCommand::RemoveItem(i) => { if *i < self.items.len() { self.items.remove(*i); } CommandValue::None }
-            WidgetCommand::ClearItems => { self.items.clear(); self.selected_index = None; CommandValue::None }
+            WidgetCommand::RemoveItem(i) => {
+                if *i < self.items.len() {
+                    self.items.remove(*i);
+                    self.selected_indices.retain(|&idx| idx != *i);
+                    // Adjust indices above the removed item
+                    for idx in &mut self.selected_indices {
+                        if *idx > *i { *idx -= 1; }
+                    }
+                    if self.selected_index == Some(*i) {
+                        self.selected_index = self.selected_indices.first().copied();
+                    } else if let Some(ref mut si) = self.selected_index {
+                        if *si > *i { *si -= 1; }
+                    }
+                }
+                CommandValue::None
+            }
+            WidgetCommand::ClearItems => {
+                self.items.clear();
+                self.selected_index = None;
+                self.selected_indices.clear();
+                self.range_anchor = None;
+                CommandValue::None
+            }
             WidgetCommand::GetText => {
                 let t = self.selected_index.and_then(|i| self.items.get(i)).cloned().unwrap_or_default();
                 CommandValue::Text(t)
+            }
+            WidgetCommand::Custom(key, _val) => {
+                match key.as_str() {
+                    "GetSelectedIndices" => {
+                        let s = self.selected_indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+                        CommandValue::Text(s)
+                    }
+                    _ => CommandValue::None,
+                }
             }
             _ => CommandValue::None,
         }

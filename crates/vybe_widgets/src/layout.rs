@@ -255,6 +255,49 @@ pub enum CommandValue {
     Color(u8, u8, u8, u8),
 }
 
+/// Tri-state check state for checkboxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckState {
+    Unchecked,
+    Checked,
+    Indeterminate,
+}
+
+impl CheckState {
+    /// Cycle to the next state on toggle: Unchecked -> Checked -> Unchecked.
+    /// Indeterminate is only set programmatically and cycles to Checked on toggle.
+    pub fn toggle(self) -> Self {
+        match self {
+            CheckState::Unchecked => CheckState::Checked,
+            CheckState::Checked => CheckState::Unchecked,
+            CheckState::Indeterminate => CheckState::Checked,
+        }
+    }
+
+    pub fn is_checked(self) -> bool {
+        self == CheckState::Checked
+    }
+}
+
+/// Selection mode for list-based controls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionMode {
+    /// Only one item can be selected at a time (default).
+    Single,
+    /// Multiple items can be toggled independently with simple clicks.
+    MultiSimple,
+    /// Extended multi-select: Ctrl+click toggles, Shift+click selects range.
+    MultiExtended,
+}
+
+/// Text alignment for labels and similar widgets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
+}
+
 /// Commands sent from the host application **to** a widget.
 #[derive(Clone, Debug)]
 pub enum WidgetCommand {
@@ -401,6 +444,12 @@ pub trait PanelWidget {
     /// Handle a command sent from the host application.
     /// Returns a `CommandValue` for queries (`GetText`, `GetValue`), or `CommandValue::None`.
     fn handle_command(&mut self, _cmd: &WidgetCommand) -> CommandValue { CommandValue::None }
+
+    /// Get the tooltip text for this widget. Empty string means no tooltip.
+    fn tooltip(&self) -> &str { "" }
+
+    /// Set the tooltip text for this widget.
+    fn set_tooltip(&mut self, _tooltip: &str) {}
 }
 
 // ── NullWidget ─────────────────────────────────────────────────────────
@@ -433,11 +482,17 @@ pub struct FocusManager {
     focused: Option<usize>,
     /// Index of the widget the mouse is currently hovering over.
     hovered: Option<usize>,
+    /// Tooltip display state: (hover_start_frame, mouse_x, mouse_y).
+    tooltip_state: Option<(u64, f32, f32)>,
+    /// Frame counter incremented each time hover is updated.
+    frame_counter: u64,
+    /// Number of frames to wait before showing a tooltip (approx ~60fps → 45 frames ≈ 750ms).
+    tooltip_delay_frames: u64,
 }
 
 impl FocusManager {
     pub fn new() -> Self {
-        Self { focused: None, hovered: None }
+        Self { focused: None, hovered: None, tooltip_state: None, frame_counter: 0, tooltip_delay_frames: 45 }
     }
 
     /// The currently focused widget index.
@@ -531,6 +586,7 @@ impl FocusManager {
 
     /// Update hover state: fire MouseEnter/MouseLeave when the hovered widget changes.
     pub fn update_hover(&mut self, widgets: &mut [Box<dyn PanelWidget>], x: f32, y: f32) {
+        self.frame_counter += 1;
         let mut new_hover: Option<usize> = None;
         // Find topmost widget under cursor (last in list = topmost)
         for (i, w) in widgets.iter().enumerate().rev() {
@@ -539,20 +595,23 @@ impl FocusManager {
                 break;
             }
         }
-        if new_hover == self.hovered { return; }
-        // Leave old
-        if let Some(old) = self.hovered {
-            if old < widgets.len() {
-                widgets[old].set_hovered(false);
+        if new_hover != self.hovered {
+            // Leave old
+            if let Some(old) = self.hovered {
+                if old < widgets.len() {
+                    widgets[old].set_hovered(false);
+                }
             }
-        }
-        // Enter new
-        if let Some(idx) = new_hover {
-            if idx < widgets.len() {
-                widgets[idx].set_hovered(true);
+            // Enter new
+            if let Some(idx) = new_hover {
+                if idx < widgets.len() {
+                    widgets[idx].set_hovered(true);
+                }
             }
+            self.hovered = new_hover;
+            // Reset tooltip timer on hover change
+            self.tooltip_state = new_hover.map(|_| (self.frame_counter, x, y));
         }
-        self.hovered = new_hover;
     }
 
     /// Render all widgets, drawing a focus ring on the focused one.
@@ -563,13 +622,88 @@ impl FocusManager {
                 Self::draw_focus_ring(ctx, w.rect());
             }
         }
+        // Render tooltip overlay if applicable
+        self.render_tooltip(widgets, ctx);
+    }
+
+    /// Render the tooltip for the currently hovered widget after the delay has elapsed.
+    fn render_tooltip(&self, widgets: &[Box<dyn PanelWidget>], ctx: &mut RenderContext) {
+        let Some(idx) = self.hovered else { return; };
+        let Some((start_frame, mx, my)) = self.tooltip_state else { return; };
+        if self.frame_counter.saturating_sub(start_frame) < self.tooltip_delay_frames { return; }
+        if idx >= widgets.len() { return; }
+        let tip = widgets[idx].tooltip();
+        if tip.is_empty() { return; }
+
+        let font_size = 12.0_f32;
+        let padding = 4.0_f32;
+        let text_w = super::ide_text::measure_text(ctx.font_system, tip, font_size, ctx.scale);
+        let tip_w = text_w + padding * 2.0;
+        let tip_h = font_size + padding * 2.0;
+        let tx = mx + 12.0;
+        let ty = my + 18.0;
+
+        let scale = ctx.scale;
+        let ts = tiny_skia::Transform::from_scale(scale, scale);
+
+        // Background
+        if let Some(rect) = tiny_skia::Rect::from_xywh(tx * scale, ty * scale, tip_w * scale, tip_h * scale) {
+            let mut bg = tiny_skia::Paint::default();
+            bg.set_color_rgba8(255, 255, 225, 240); // light yellow tooltip bg
+            ctx.pixmap.fill_rect(rect, &bg, tiny_skia::Transform::identity(), None);
+            // Border
+            let mut border = tiny_skia::Paint::default();
+            border.set_color_rgba8(100, 100, 100, 200);
+            let mut stroke = tiny_skia::Stroke::default();
+            stroke.width = 1.0;
+            if let Some(path) = super::rounded_rect_path(tx, ty, tip_w, tip_h, 2.0) {
+                ctx.pixmap.stroke_path(&path, &border, &stroke, ts, None);
+            }
+        }
+
+        // Text
+        super::ide_text::draw_text(
+            ctx.pixmap, ctx.font_system, ctx.swash_cache,
+            tip, tx + padding, ty + padding - 1.0, font_size,
+            cosmic_text::Color::rgba(20, 20, 20, 255), scale,
+        );
     }
 
     /// Drain events from all widgets into a single vec.
+    /// Also enforces radio-group mutual exclusion: when a `RadioSelected` event
+    /// is seen, other radios in the same group are deselected via commands.
     pub fn drain_all_events(&mut self, widgets: &mut [Box<dyn PanelWidget>]) -> Vec<WidgetEvent> {
         let mut all = Vec::new();
         for w in widgets.iter_mut() {
             all.append(&mut w.drain_events());
+        }
+        // Enforce radio group mutual exclusion
+        for ev in &all {
+            if let WidgetEvent::RadioSelected(selected_name, true) = ev {
+                // Find the group of the selected radio
+                let get_group = WidgetCommand::Custom("GetGroup".into(), CommandValue::None);
+                let mut group = String::new();
+                for w in widgets.iter_mut() {
+                    if w.name() == selected_name.as_str() {
+                        if let CommandValue::Text(g) = w.handle_command(&get_group) {
+                            group = g;
+                        }
+                        break;
+                    }
+                }
+                if !group.is_empty() {
+                    // Deselect all other radios in the same group
+                    for w in widgets.iter_mut() {
+                        if w.name() != selected_name.as_str() {
+                            if let CommandValue::Text(g) = w.handle_command(&get_group) {
+                                if g == group {
+                                    w.handle_command(&WidgetCommand::SetChecked(false));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         all
     }

@@ -8,6 +8,7 @@ use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as Layou
 pub struct Radio {
     pub selected: bool,
     pub label: String,
+    pub group: String,
     pub disabled: bool,
     pub focused: bool,
     pub hovered: bool,
@@ -24,6 +25,7 @@ impl Radio {
         Self {
             selected: false,
             label: label.to_string(),
+            group: String::new(),
             disabled: false,
             focused: false,
             hovered: false,
@@ -37,6 +39,9 @@ impl Radio {
     }
 
     pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+
+    /// Set the radio group name. Radios with the same group are mutually exclusive.
+    pub fn with_group(mut self, group: &str) -> Self { self.group = group.to_string(); self }
 
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
         let ts = Transform::from_scale(scale, scale);
@@ -145,6 +150,12 @@ impl PanelWidget for Radio {
             WidgetCommand::SetChecked(c) => { self.selected = *c; CommandValue::None }
             WidgetCommand::GetValue => CommandValue::Bool(self.selected),
             WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            WidgetCommand::Custom(key, CommandValue::Text(g)) if key == "SetGroup" => {
+                self.group = g.clone(); CommandValue::None
+            }
+            WidgetCommand::Custom(key, _) if key == "GetGroup" => {
+                CommandValue::Text(self.group.clone())
+            }
             _ => CommandValue::None,
         }
     }

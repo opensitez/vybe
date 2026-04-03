@@ -3,10 +3,10 @@
 use tiny_skia::*;
 use cosmic_text::Color as CosmicColor;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue, CheckState};
 
 pub struct Checkbox {
-    pub checked: bool,
+    pub check_state: CheckState,
     pub label: String,
     pub disabled: bool,
     pub focused: bool,
@@ -22,7 +22,7 @@ pub struct Checkbox {
 impl Checkbox {
     pub fn new(label: &str) -> Self {
         Self {
-            checked: false,
+            check_state: CheckState::Unchecked,
             label: label.to_string(),
             disabled: false,
             focused: false,
@@ -37,6 +37,10 @@ impl Checkbox {
     }
 
     pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_check_state(mut self, state: CheckState) -> Self { self.check_state = state; self }
+
+    /// Convenience: is the checkbox in the checked state?
+    pub fn checked(&self) -> bool { self.check_state.is_checked() }
 
     /// Paint the checkbox at (x, y) into the pixmap.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -61,21 +65,38 @@ impl Checkbox {
             pixmap.stroke_path(&path, &paint, &stroke, ts, None);
         }
 
-        // Check mark
-        if self.checked {
-            let cx = x + sz / 2.0;
-            let cy = y + sz / 2.0;
-            let s = sz * 0.3;
-            let (r, g, b, a) = self.colors.foreground;
-            paint.set_color_rgba8(r, g, b, a);
-            stroke.width = 2.0;
-            let mut pb = PathBuilder::new();
-            pb.move_to(cx - s, cy);
-            pb.line_to(cx - s * 0.3, cy + s * 0.7);
-            pb.line_to(cx + s, cy - s * 0.6);
-            if let Some(path) = pb.finish() {
-                pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+        // Check mark or indeterminate dash
+        match self.check_state {
+            CheckState::Checked => {
+                let cx = x + sz / 2.0;
+                let cy = y + sz / 2.0;
+                let s = sz * 0.3;
+                let (r, g, b, a) = self.colors.foreground;
+                paint.set_color_rgba8(r, g, b, a);
+                stroke.width = 2.0;
+                let mut pb = PathBuilder::new();
+                pb.move_to(cx - s, cy);
+                pb.line_to(cx - s * 0.3, cy + s * 0.7);
+                pb.line_to(cx + s, cy - s * 0.6);
+                if let Some(path) = pb.finish() {
+                    pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+                }
             }
+            CheckState::Indeterminate => {
+                let cx = x + sz / 2.0;
+                let cy = y + sz / 2.0;
+                let s = sz * 0.3;
+                let (r, g, b, a) = self.colors.foreground;
+                paint.set_color_rgba8(r, g, b, a);
+                stroke.width = 2.0;
+                let mut pb = PathBuilder::new();
+                pb.move_to(cx - s, cy);
+                pb.line_to(cx + s, cy);
+                if let Some(path) = pb.finish() {
+                    pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+                }
+            }
+            CheckState::Unchecked => {}
         }
     }
 
@@ -89,7 +110,7 @@ impl Checkbox {
     pub fn click(&mut self, x: f32, y: f32) -> bool {
         if self.disabled { return false; }
         if x >= 0.0 && y >= 0.0 && x <= self.size && y <= self.size {
-            self.checked = !self.checked;
+            self.check_state = self.check_state.toggle();
             return true;
         }
         false
@@ -97,7 +118,7 @@ impl Checkbox {
 
     /// Toggle the checked state.
     pub fn toggle(&mut self) {
-        if !self.disabled { self.checked = !self.checked; }
+        if !self.disabled { self.check_state = self.check_state.toggle(); }
     }
 }
 
@@ -141,8 +162,8 @@ impl PanelWidget for Checkbox {
         if !self.rect.contains(event.x, event.y) { return false; }
         if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
             if !self.disabled {
-                self.checked = !self.checked;
-                self.pending_events.push(WidgetEvent::CheckboxToggled(self.name.clone(), self.checked));
+                self.check_state = self.check_state.toggle();
+                self.pending_events.push(WidgetEvent::CheckboxToggled(self.name.clone(), self.check_state.is_checked()));
             }
             return true;
         }
@@ -156,8 +177,8 @@ impl PanelWidget for Checkbox {
         if event.state == ElementState::Pressed {
             if let Key::Named(NamedKey::Space) = &event.key_without_modifiers {
                 if !self.disabled {
-                    self.checked = !self.checked;
-                    self.pending_events.push(WidgetEvent::CheckboxToggled(self.name.clone(), self.checked));
+                    self.check_state = self.check_state.toggle();
+                    self.pending_events.push(WidgetEvent::CheckboxToggled(self.name.clone(), self.check_state.is_checked()));
                 }
                 return true;
             }
@@ -169,9 +190,35 @@ impl PanelWidget for Checkbox {
         match cmd {
             WidgetCommand::SetText(t) => { self.label = t.clone(); CommandValue::None }
             WidgetCommand::GetText => CommandValue::Text(self.label.clone()),
-            WidgetCommand::SetChecked(c) => { self.checked = *c; CommandValue::None }
-            WidgetCommand::GetValue => CommandValue::Bool(self.checked),
+            WidgetCommand::SetChecked(c) => {
+                self.check_state = if *c { CheckState::Checked } else { CheckState::Unchecked };
+                CommandValue::None
+            }
+            WidgetCommand::GetValue => CommandValue::Bool(self.check_state.is_checked()),
             WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            WidgetCommand::Custom(key, val) => {
+                match key.as_str() {
+                    "SetCheckState" => {
+                        if let CommandValue::Text(s) = val {
+                            self.check_state = match s.as_str() {
+                                "checked" => CheckState::Checked,
+                                "indeterminate" => CheckState::Indeterminate,
+                                _ => CheckState::Unchecked,
+                            };
+                        }
+                        CommandValue::None
+                    }
+                    "GetCheckState" => {
+                        let s = match self.check_state {
+                            CheckState::Checked => "checked",
+                            CheckState::Unchecked => "unchecked",
+                            CheckState::Indeterminate => "indeterminate",
+                        };
+                        CommandValue::Text(s.to_string())
+                    }
+                    _ => CommandValue::None,
+                }
+            }
             _ => CommandValue::None,
         }
     }

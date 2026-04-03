@@ -19,7 +19,7 @@ fn main() {
 
     // Checkbox
     let mut checkbox = Checkbox::new("Accept terms");
-    checkbox.checked = true;
+    checkbox.check_state = vybe_widgets::CheckState::Checked;
     checkbox.paint(&mut pixmap, 20.0, 20.0, 1.0);
     TreeView::draw_text_static_internal(&mut pixmap, &mut fs, &mut sc, "Accept terms", 46.0, 18.0, CColor::rgb(51,51,51), 1.0);
 
