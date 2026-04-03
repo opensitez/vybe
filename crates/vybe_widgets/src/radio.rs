@@ -1,7 +1,9 @@
 //! Radio button widget — standalone tiny-skia rendered radio button.
 
 use tiny_skia::*;
+use cosmic_text::Color as CosmicColor;
 use super::{WidgetColors, circle_path};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct Radio {
     pub selected: bool,
@@ -10,6 +12,9 @@ pub struct Radio {
     pub focused: bool,
     pub colors: WidgetColors,
     pub size: f32,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl Radio {
@@ -21,8 +26,13 @@ impl Radio {
             focused: false,
             colors: WidgetColors::default(),
             size: 16.0,
+            name: label.to_string(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
         let ts = Transform::from_scale(scale, scale);
@@ -72,4 +82,55 @@ impl Radio {
         }
         false
     }
+}
+
+impl PanelWidget for Radio {
+    fn name(&self) -> &str { &self.name }
+    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        let box_y = r.y + (r.h - self.size) / 2.0;
+        self.paint(ctx.pixmap, r.x, box_y, ctx.scale);
+        if !self.label.is_empty() {
+            let (fr, fg, fb, _) = self.colors.foreground;
+            let tx = r.x + self.size + 6.0;
+            let ty = r.y + (r.h - 13.0) / 2.0 - 1.0;
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &self.label, tx, ty, 13.0, CosmicColor::rgba(fr, fg, fb, 255), ctx.scale);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        if !self.rect.contains(event.x, event.y) { return false; }
+        if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
+            if !self.disabled {
+                self.selected = true;
+                self.pending_events.push(WidgetEvent::RadioSelected(self.name.clone(), true));
+            }
+            return true;
+        }
+        false
+    }
+
+    fn handle_key(&mut self, event: &KeyEvent) -> bool {
+        if !self.focused { return false; }
+        use winit::keyboard::{Key, NamedKey};
+        use winit::event::ElementState;
+        if event.state == ElementState::Pressed {
+            if let Key::Named(NamedKey::Space) = &event.key_without_modifiers {
+                if !self.disabled {
+                    self.selected = true;
+                    self.pending_events.push(WidgetEvent::RadioSelected(self.name.clone(), true));
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn focusable(&self) -> bool { !self.disabled }
 }

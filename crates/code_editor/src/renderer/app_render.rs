@@ -105,7 +105,7 @@ impl App {
                         self.tree_view.reveal_path(path);
                     }
                 }
-                self.tree_view.render(pix, &mut self.font_system, &mut self.swash_cache, sidebar_x, sidebar_content_y, sidebar_w, theme.sidebar_text, (theme.selection.r(), theme.selection.g(), theme.selection.b(), theme.selection.a()));
+                self.tree_view.render_tree(pix, &mut self.font_system, &mut self.swash_cache, sidebar_x, sidebar_content_y, sidebar_w, theme.sidebar_text, (theme.selection.r(), theme.selection.g(), theme.selection.b(), theme.selection.a()));
             }
             SidebarTab::Project => {
                 self.render_project_explorer(pix, sidebar_x, sidebar_content_y, sidebar_w, sidebar_h - stab_h, &theme);
@@ -347,7 +347,7 @@ impl App {
                 let (w, h) = dropdown.get_size();
                 let menu_x = (pix.width() as f32 / SCALE - w - 20.0).max(10.0);
                 let menu_y = (pix.height() as f32 / SCALE - FOOTER_HEIGHT - h - 10.0).max(10.0);
-                dropdown.render(pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y,
+                dropdown.render_list(pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y,
                     (theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), 255),
                     (theme.gutter_divider.r(), theme.gutter_divider.g(), theme.gutter_divider.b(), 255),
                     (theme.selection.r(), theme.selection.g(), theme.selection.b(), 100),
@@ -359,7 +359,7 @@ impl App {
                 let menu_x = (theme_x / SCALE - 10.0).max(10.0);
                 let menu_x = menu_x.min(pix.width() as f32 / SCALE - w - 10.0).max(10.0);
                 let menu_y = (pix.height() as f32 / SCALE - FOOTER_HEIGHT - h - 10.0).max(10.0);
-                dropdown.render(pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y,
+                dropdown.render_list(pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y,
                     (theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), 255),
                     (theme.gutter_divider.r(), theme.gutter_divider.g(), theme.gutter_divider.b(), 255),
                     (theme.selection.r(), theme.selection.g(), theme.selection.b(), 100),

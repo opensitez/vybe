@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::WidgetColors;
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct Select {
     pub options: Vec<String>,
@@ -12,6 +13,9 @@ pub struct Select {
     pub colors: WidgetColors,
     pub width: f32,
     pub height: f32,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl Select {
@@ -25,8 +29,13 @@ impl Select {
             colors: WidgetColors::default(),
             width: 200.0,
             height: 24.0,
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     pub fn selected_text(&self) -> &str {
         self.options.get(self.selected_index).map(|s| s.as_str()).unwrap_or("")
@@ -86,4 +95,58 @@ impl Select {
             self.open = false;
         }
     }
+}
+
+impl PanelWidget for Select {
+    fn name(&self) -> &str { &self.name }
+    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw selected text
+        let txt = self.selected_text();
+        if !txt.is_empty() {
+            let (fr, fg, fb, _) = self.colors.foreground;
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, txt, r.x + 6.0, r.y + 4.0, 12.0, cosmic_text::Color::rgba(fr, fg, fb, 255), ctx.scale);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        if !self.rect.contains(event.x, event.y) { return false; }
+        if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
+            self.click(event.x - self.rect.x, event.y - self.rect.y);
+            self.pending_events.push(WidgetEvent::SelectChanged(self.name.clone(), self.selected_index));
+            return true;
+        }
+        false
+    }
+
+    fn handle_key(&mut self, event: &KeyEvent) -> bool {
+        if !self.focused { return false; }
+        use winit::keyboard::{Key, NamedKey};
+        match &event.logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                if self.selected_index + 1 < self.options.len() {
+                    self.selected_index += 1;
+                    self.pending_events.push(WidgetEvent::SelectChanged(self.name.clone(), self.selected_index));
+                }
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                if self.selected_index > 0 {
+                    self.selected_index -= 1;
+                    self.pending_events.push(WidgetEvent::SelectChanged(self.name.clone(), self.selected_index));
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn focusable(&self) -> bool { !self.disabled }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

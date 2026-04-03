@@ -137,6 +137,8 @@ impl TextInput {
 // ── PanelWidget impl ───────────────────────────────────────────────────
 
 impl PanelWidget for TextInput {
+    fn name(&self) -> &str { &self.name }
+    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.width = rect.w;

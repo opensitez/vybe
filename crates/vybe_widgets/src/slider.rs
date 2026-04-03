@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path, circle_path};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct Slider {
     pub value: f32,     // 0.0..1.0
@@ -15,6 +16,9 @@ pub struct Slider {
     pub height: f32,
     pub track_height: f32,
     pub thumb_radius: f32,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl Slider {
@@ -32,8 +36,13 @@ impl Slider {
             height: 20.0,
             track_height: 4.0,
             thumb_radius: 8.0,
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Get the actual value (mapped from 0..1 to min..max).
     pub fn actual_value(&self) -> f32 {
@@ -108,5 +117,73 @@ impl Slider {
         let usable = self.width - self.thumb_radius * 2.0;
         let pct = (x - self.thumb_radius) / usable;
         self.value = pct.clamp(0.0, 1.0);
+    }
+}
+
+impl PanelWidget for Slider {
+    fn name(&self) -> &str { &self.name }
+    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        let lx = event.x - r.x;
+        let ly = event.y - r.y;
+        match event.kind {
+            MouseEventKind::Press(LayoutMouseButton::Left) => {
+                if r.contains(event.x, event.y) {
+                    self.mouse_down(lx, ly);
+                    self.pending_events.push(WidgetEvent::SliderChanged(self.name.clone(), self.actual_value()));
+                    return true;
+                }
+            }
+            MouseEventKind::Move => {
+                if self.dragging {
+                    self.mouse_move(lx);
+                    self.pending_events.push(WidgetEvent::SliderChanged(self.name.clone(), self.actual_value()));
+                    return true;
+                }
+            }
+            MouseEventKind::Release(LayoutMouseButton::Left) => {
+                if self.dragging {
+                    self.mouse_up();
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key(&mut self, event: &KeyEvent) -> bool {
+        if !self.focused { return false; }
+        use winit::keyboard::{Key, NamedKey};
+        match &event.logical_key {
+            Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowUp) => {
+                self.value = (self.value + 0.05).clamp(0.0, 1.0);
+                self.pending_events.push(WidgetEvent::SliderChanged(self.name.clone(), self.actual_value()));
+                true
+            }
+            Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowDown) => {
+                self.value = (self.value - 0.05).clamp(0.0, 1.0);
+                self.pending_events.push(WidgetEvent::SliderChanged(self.name.clone(), self.actual_value()));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn focusable(&self) -> bool { !self.disabled }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+
+    fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {
+        if self.rect.contains(x, y) { winit::window::CursorIcon::Pointer } else { winit::window::CursorIcon::Default }
     }
 }

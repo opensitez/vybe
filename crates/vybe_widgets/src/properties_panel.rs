@@ -343,7 +343,7 @@ impl PropertiesPanel {
         // Dropdown popup overlay
         if let Some(ref dropdown) = self.dropdown {
             let (px, py) = self.dropdown_pos.unwrap_or((rect.x + 10.0, rect.y + HEADER_H + TAB_H + 40.0));
-            dropdown.render(
+            dropdown.render_list(
                 pix, fs, sc, px, py,
                 (252, 252, 252, 255), (180, 180, 180, 255),
                 (0, 120, 212, 40), (0, 120, 212, 25),
@@ -910,7 +910,7 @@ impl PropertiesPanel {
         // Dropdown popup overlay routing
         if let Some(ref mut dropdown) = self.dropdown {
             let (px, py) = self.dropdown_pos.unwrap_or((rect.x + 10.0, rect.y + HEADER_H + TAB_H + 40.0));
-            match dropdown.handle_mouse(mx, my, px, py, true) {
+            match dropdown.handle_mouse_at(mx, my, px, py, true) {
                 DropdownEvent::Selected(idx) => {
                     if let Some(ref prop_name) = self.dropdown_prop {
                         self.editing = Some(EditingProp {

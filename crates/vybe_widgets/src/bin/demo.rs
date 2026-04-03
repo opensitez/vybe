@@ -49,7 +49,7 @@ fn main() {
     // Dropdown
     let items = vec!["First".to_string(), "Second".to_string(), "Third".to_string(), "Fourth".to_string()];
     let dd = Dropdown::new(items, 1, 1.0, None);
-    dd.render(&mut pixmap, &mut fs, &mut sc, 20.0, 250.0, (255,255,255,255), (180,180,180,255), (220,220,220,255), (240,240,240,255), CColor::rgb(0,0,0), CColor::rgb(120,120,120));
+    dd.render_list(&mut pixmap, &mut fs, &mut sc, 20.0, 250.0, (255,255,255,255), (180,180,180,255), (220,220,220,255), (240,240,240,255), CColor::rgb(0,0,0), CColor::rgb(120,120,120));
 
     // Save output image
     pixmap.save_png("widgets_demo.png").expect("save png");

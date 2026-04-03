@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 #[derive(Clone, Debug)]
 pub enum ToolStripItem {
@@ -18,6 +19,9 @@ pub struct ToolStrip {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl ToolStrip {
@@ -34,8 +38,13 @@ impl ToolStrip {
                 background: (245, 246, 247, 255),
                 ..WidgetColors::default()
             },
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// X position of each item (returns (x, width) pairs).
     pub fn item_positions(&self) -> Vec<(f32, f32)> {
@@ -154,4 +163,56 @@ impl ToolStrip {
     pub fn mouse_move(&mut self, mx: f32, my: f32) {
         self.hover_index = self.hit_test(mx, my);
     }
+}
+
+impl PanelWidget for ToolStrip {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw button labels
+        let (fr, fg, fb, _) = self.colors.foreground;
+        let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
+        let positions = self.item_positions();
+        for (i, item) in self.items.iter().enumerate() {
+            if i >= positions.len() { break; }
+            if let ToolStripItem::Button(label) = item {
+                let (ix, iw) = positions[i];
+                super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, label, r.x + ix + 4.0, r.y + 6.0, 11.0, col, ctx.scale);
+            }
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        if !r.contains(event.x, event.y) {
+            self.hover_index = None;
+            self.pressed_index = None;
+            return false;
+        }
+        let lx = event.x - r.x;
+        let ly = event.y - r.y;
+        match event.kind {
+            MouseEventKind::Move => { self.mouse_move(lx, ly); }
+            MouseEventKind::Press(LayoutMouseButton::Left) => {
+                if let Some(idx) = self.hit_test(lx, ly) {
+                    self.pressed_index = Some(idx);
+                    self.pending_events.push(WidgetEvent::ToolStripItemClicked(self.name.clone(), idx));
+                    return true;
+                }
+            }
+            MouseEventKind::Release(LayoutMouseButton::Left) => {
+                self.pressed_index = None;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

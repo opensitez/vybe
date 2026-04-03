@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct DataGrid {
     pub columns: Vec<String>,
@@ -11,6 +12,8 @@ pub struct DataGrid {
     pub row_height: f32,
     pub header_height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
 }
 
 impl DataGrid {
@@ -23,8 +26,12 @@ impl DataGrid {
             row_height: 20.0,
             header_height: 24.0,
             colors: WidgetColors::default(),
+            name: String::new(),
+            rect: LayoutRect::zero(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
         let ts = Transform::from_scale(scale, scale);
@@ -70,4 +77,33 @@ impl DataGrid {
     }
 
     pub fn measure(&self) -> (f32, f32) { (self.width, self.height) }
+}
+
+impl PanelWidget for DataGrid {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw column headers and row data
+        let (fr, fg, fb, _) = self.colors.foreground;
+        let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
+        let cw = if self.columns.is_empty() { self.width } else { self.width / self.columns.len() as f32 };
+        for (i, header) in self.columns.iter().enumerate() {
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, header, r.x + i as f32 * cw + 4.0, r.y + 4.0, 12.0, col, ctx.scale);
+        }
+        for (ri, row) in self.rows.iter().enumerate() {
+            let ry = r.y + self.header_height + ri as f32 * self.row_height;
+            if ry > r.y + r.h { break; }
+            for (ci, cell) in row.iter().enumerate() {
+                super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, cell, r.x + ci as f32 * cw + 4.0, ry + 2.0, 12.0, col, ctx.scale);
+            }
+        }
+    }
+
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
 }

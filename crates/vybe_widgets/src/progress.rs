@@ -2,18 +2,23 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct ProgressBar {
     pub value: f32, // 0.0..1.0
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
 }
 
 impl ProgressBar {
     pub fn new() -> Self {
-        Self { value: 0.0, width: 200.0, height: 16.0, colors: WidgetColors::default() }
+        Self { value: 0.0, width: 200.0, height: 16.0, colors: WidgetColors::default(), name: String::new(), rect: LayoutRect::zero() }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
         let ts = Transform::from_scale(scale, scale);
@@ -48,4 +53,17 @@ impl ProgressBar {
     }
 
     pub fn measure(&self) -> (f32, f32) { (self.width, self.height) }
+}
+
+impl PanelWidget for ProgressBar {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+    }
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
 }

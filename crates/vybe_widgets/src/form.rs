@@ -18,8 +18,7 @@
 
 use tiny_skia::*;
 use super::layout::{
-    LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton,
-    KeyEvent, RenderContext, PanelWidget, WidgetEvent,
+    LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, FocusManager,
 };
 
 /// A form holds a collection of controls laid out at absolute positions.
@@ -31,7 +30,7 @@ pub struct Form {
     pub background: (u8, u8, u8, u8),
     rect: LayoutRect,
     controls: Vec<Box<dyn PanelWidget>>,
-    focused_index: Option<usize>,
+    focus: FocusManager,
     pending_events: Vec<WidgetEvent>,
 }
 
@@ -42,7 +41,7 @@ impl Form {
             background: (240, 240, 240, 255),
             rect: LayoutRect::zero(),
             controls: Vec::new(),
-            focused_index: None,
+            focus: FocusManager::new(),
             pending_events: Vec::new(),
         }
     }
@@ -85,30 +84,12 @@ impl Form {
 
     /// Move focus to the next focusable control (Tab key).
     pub fn focus_next(&mut self) {
-        let count = self.controls.len();
-        if count == 0 { return; }
-        let start = self.focused_index.map(|i| i + 1).unwrap_or(0);
-        for offset in 0..count {
-            let idx = (start + offset) % count;
-            if self.controls[idx].focusable() {
-                self.focused_index = Some(idx);
-                return;
-            }
-        }
+        self.focus.focus_next(&mut self.controls);
     }
 
     /// Move focus to the previous focusable control (Shift+Tab).
     pub fn focus_prev(&mut self) {
-        let count = self.controls.len();
-        if count == 0 { return; }
-        let start = self.focused_index.unwrap_or(0);
-        for offset in 1..=count {
-            let idx = (start + count - offset) % count;
-            if self.controls[idx].focusable() {
-                self.focused_index = Some(idx);
-                return;
-            }
-        }
+        self.focus.focus_prev(&mut self.controls);
     }
 
     /// Recalculate control positions when the form's rect changes.
@@ -149,57 +130,18 @@ impl PanelWidget for Form {
             ctx.pixmap.fill_rect(rect, &paint, ts, None);
         }
 
-        // Render all controls
-        for ctrl in &mut self.controls {
-            ctrl.render(ctx);
-        }
+        // Render all controls (with focus ring on focused one)
+        self.focus.render_all(&mut self.controls, ctx);
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
         if !self.rect.contains(event.x, event.y) { return false; }
-
-        // On click, update focus to the clicked control
-        if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
-            let mut new_focus = None;
-            for (i, ctrl) in self.controls.iter().enumerate() {
-                if ctrl.rect().contains(event.x, event.y) && ctrl.focusable() {
-                    new_focus = Some(i);
-                    break;
-                }
-            }
-            self.focused_index = new_focus;
-        }
-
-        // Route to controls (topmost / last added wins)
-        for ctrl in self.controls.iter_mut().rev() {
-            if ctrl.handle_mouse(event) {
-                return true;
-            }
-        }
+        self.focus.handle_mouse(&mut self.controls, event);
         true // Consume to prevent fall-through
     }
 
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
-        use winit::keyboard::{Key, NamedKey};
-        use winit::event::ElementState;
-
-        // Tab / Shift+Tab for focus navigation
-        if event.state == ElementState::Pressed {
-            if let Key::Named(NamedKey::Tab) = &event.key_without_modifiers {
-                if event.shift { self.focus_prev(); } else { self.focus_next(); }
-                return true;
-            }
-        }
-
-        // Route to focused control
-        if let Some(idx) = self.focused_index {
-            if let Some(ctrl) = self.controls.get_mut(idx) {
-                if ctrl.handle_key(event) {
-                    return true;
-                }
-            }
-        }
-        false
+        self.focus.handle_key(&mut self.controls, event)
     }
 
     fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
@@ -228,9 +170,7 @@ impl PanelWidget for Form {
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {
         let mut events = std::mem::take(&mut self.pending_events);
-        for ctrl in &mut self.controls {
-            events.extend(ctrl.drain_events());
-        }
+        events.extend(self.focus.drain_all_events(&mut self.controls));
         events
     }
 }

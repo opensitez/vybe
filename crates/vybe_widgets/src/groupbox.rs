@@ -1,21 +1,26 @@
 //! GroupBox widget — border with title gap at top.
 
 use tiny_skia::*;
+use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct GroupBox {
     pub title: String,
-    /// Estimated width of title text in pixels (caller should set this after measuring text).
     pub title_width: f32,
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
 }
 
 impl GroupBox {
     pub fn new<S: Into<String>>(title: S) -> Self {
+        let t: String = title.into();
         Self {
-            title: title.into(),
+            name: t.clone(),
+            title: t,
             title_width: 60.0,
             width: 200.0,
             height: 120.0,
@@ -23,8 +28,11 @@ impl GroupBox {
                 border: (160, 160, 160, 255),
                 ..WidgetColors::default()
             },
+            rect: LayoutRect::zero(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Paint the groupbox — border with gap at top for title. Title text drawn by caller.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -91,4 +99,22 @@ impl GroupBox {
     pub fn content_rect(&self) -> (f32, f32, f32, f32) {
         (4.0, 18.0, self.width - 8.0, self.height - 22.0)
     }
+}
+
+impl PanelWidget for GroupBox {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        // Measure title for gap
+        self.title_width = super::ide_text::measure_text(ctx.font_system, &self.title, 12.0, ctx.scale);
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw title text
+        let (fr, fg, fb, _) = self.colors.foreground;
+        super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &self.title, r.x + 12.0, r.y, 12.0, CosmicColor::rgba(fr, fg, fb, 255), ctx.scale);
+    }
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
 }

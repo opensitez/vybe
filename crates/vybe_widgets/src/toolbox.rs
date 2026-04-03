@@ -1,13 +1,19 @@
 use tiny_skia::{Pixmap, Paint, PathBuilder, Transform, Stroke};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct Toolbox {
     pub items: Vec<String>,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl Toolbox {
     pub fn new(items: Vec<&str>) -> Self {
-        Self { items: items.into_iter().map(|s| s.to_string()).collect() }
+        Self { items: items.into_iter().map(|s| s.to_string()).collect(), name: String::new(), rect: LayoutRect::zero(), pending_events: Vec::new() }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
         let mut p = Paint::default(); p.set_color_rgba8(40, 40, 40, 220);
@@ -44,4 +50,31 @@ impl Toolbox {
         }
         None
     }
+}
+
+impl PanelWidget for Toolbox {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        if !r.contains(event.x, event.y) { return false; }
+        if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
+            if let Some(idx) = self.hit_test(event.x, event.y, r.x, r.y, 1.0) {
+                self.pending_events.push(WidgetEvent::Action(format!("toolbox:{}:{}", self.name, idx)));
+                return true;
+            }
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

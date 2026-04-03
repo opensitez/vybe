@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct ContextMenu {
     pub items: Vec<String>,
@@ -10,6 +11,9 @@ pub struct ContextMenu {
     pub item_height: f32,
     pub width: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl ContextMenu {
@@ -21,8 +25,13 @@ impl ContextMenu {
             item_height: 24.0,
             width: 160.0,
             colors: WidgetColors::default(),
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Computed height based on item count.
     pub fn height(&self) -> f32 {
@@ -108,4 +117,49 @@ impl ContextMenu {
     pub fn item_y(&self, index: usize) -> f32 {
         2.0 + index as f32 * self.item_height
     }
+}
+
+impl PanelWidget for ContextMenu {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        if !self.visible { return; }
+        let r = self.rect;
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw item text
+        let (fr, fg, fb, _) = self.colors.foreground;
+        let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
+        for (i, item) in self.items.iter().enumerate() {
+            let iy = r.y + self.item_y(i) + 4.0;
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, item, r.x + 8.0, iy, 12.0, col, ctx.scale);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        if !self.visible { return false; }
+        let r = self.rect;
+        let lx = event.x - r.x;
+        let ly = event.y - r.y;
+        match event.kind {
+            MouseEventKind::Move => {
+                self.mouse_move(lx, ly);
+            }
+            MouseEventKind::Press(LayoutMouseButton::Left) => {
+                if let Some(idx) = self.hit_test(lx, ly) {
+                    self.visible = false;
+                    self.pending_events.push(WidgetEvent::ContextMenuItemClicked(self.name.clone(), idx));
+                    return true;
+                } else {
+                    self.visible = false;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

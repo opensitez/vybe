@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path, circle_path};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct MonthCalendar {
     pub year: u32,
@@ -11,6 +12,9 @@ pub struct MonthCalendar {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl MonthCalendar {
@@ -23,8 +27,13 @@ impl MonthCalendar {
             width: 240.0,
             height: 200.0,
             colors: WidgetColors::default(),
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Header height for month/year and nav arrows.
     fn header_height(&self) -> f32 {
@@ -241,4 +250,67 @@ impl MonthCalendar {
         }
         self.selected_day = self.selected_day.min(self.days_in_month());
     }
+}
+
+impl PanelWidget for MonthCalendar {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw month/year header text
+        let months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+        let header = format!("{} {}", months.get(self.month.saturating_sub(1) as usize).unwrap_or(&"?"), self.year);
+        let white = cosmic_text::Color::rgba(255, 255, 255, 255);
+        super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &header, r.x + r.w / 2.0 - 40.0, r.y + 6.0, 13.0, white, ctx.scale);
+        // Day-of-week labels
+        let dow = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+        let (cw, _ch) = self.cell_size();
+        let gray = cosmic_text::Color::rgba(80, 80, 80, 255);
+        for (i, d) in dow.iter().enumerate() {
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, d, r.x + i as f32 * cw + cw / 2.0 - 6.0, r.y + self.header_height() + 2.0, 11.0, gray, ctx.scale);
+        }
+        // Day numbers
+        let dark = cosmic_text::Color::rgba(30, 30, 30, 255);
+        for day in 1..=self.days_in_month() {
+            let (cx, cy, dw, dh) = self.day_cell(day);
+            let col = if day == self.selected_day { white } else { dark };
+            let txt = format!("{}", day);
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &txt, r.x + cx + dw / 2.0 - 5.0, r.y + cy + dh / 2.0 - 6.0, 12.0, col, ctx.scale);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        if !r.contains(event.x, event.y) { return false; }
+        let lx = event.x - r.x;
+        let ly = event.y - r.y;
+        match event.kind {
+            MouseEventKind::Press(LayoutMouseButton::Left) => {
+                // Check nav arrows
+                if ly < self.header_height() {
+                    if lx < 24.0 { self.prev_month(); return true; }
+                    if lx > self.width - 24.0 { self.next_month(); return true; }
+                    return false;
+                }
+                if let Some(day) = self.hit_test(lx, ly) {
+                    self.selected_day = day;
+                    self.pending_events.push(WidgetEvent::CalendarDateSelected(self.name.clone(), day));
+                    return true;
+                }
+            }
+            MouseEventKind::Move => {
+                self.hover_day = self.hit_test(lx, ly);
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn focusable(&self) -> bool { true }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

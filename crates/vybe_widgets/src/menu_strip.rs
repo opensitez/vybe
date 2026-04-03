@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::WidgetColors;
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct MenuStrip {
     pub items: Vec<String>,
@@ -12,6 +13,9 @@ pub struct MenuStrip {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl MenuStrip {
@@ -27,8 +31,13 @@ impl MenuStrip {
                 background: (240, 240, 240, 255),
                 ..WidgetColors::default()
             },
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Default item width when item_widths is not set.
     fn default_item_width(&self) -> f32 {
@@ -124,4 +133,50 @@ impl MenuStrip {
     pub fn mouse_move(&mut self, mx: f32, my: f32) {
         self.hover_index = self.hit_test(mx, my);
     }
+}
+
+impl PanelWidget for MenuStrip {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw item text
+        let (fr, fg, fb, _) = self.colors.foreground;
+        let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
+        for (i, item) in self.items.iter().enumerate() {
+            let ix = r.x + self.item_x(i) + 8.0;
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, item, ix, r.y + 4.0, 12.0, col, ctx.scale);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        if !r.contains(event.x, event.y) {
+            self.hover_index = None;
+            return false;
+        }
+        let lx = event.x - r.x;
+        let ly = event.y - r.y;
+        match event.kind {
+            MouseEventKind::Move => {
+                self.mouse_move(lx, ly);
+            }
+            MouseEventKind::Press(LayoutMouseButton::Left) => {
+                if let Some(idx) = self.hit_test(lx, ly) {
+                    self.active_index = Some(idx);
+                    self.pending_events.push(WidgetEvent::MenuItemClicked(self.name.clone(), idx));
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

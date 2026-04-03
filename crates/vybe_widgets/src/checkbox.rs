@@ -100,6 +100,8 @@ impl Checkbox {
 // ── PanelWidget impl ───────────────────────────────────────────────────
 
 impl PanelWidget for Checkbox {
+    fn name(&self) -> &str { &self.name }
+    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
     }

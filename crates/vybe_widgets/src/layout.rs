@@ -235,6 +235,34 @@ pub enum WidgetEvent {
     TextChanged(String, String),
     /// A color was picked. Payload: widget name, hex string (e.g. "#FF0000").
     ColorChanged(String, String),
+    /// A radio button was selected. Payload: name, selected state.
+    RadioSelected(String, bool),
+    /// A slider value changed. Payload: name, new value (0.0..1.0).
+    SliderChanged(String, f32),
+    /// A list box item was selected. Payload: name, selected index.
+    ListBoxSelected(String, usize),
+    /// A list view item was selected. Payload: name, selected index.
+    ListViewSelected(String, usize),
+    /// A numeric up-down value changed. Payload: name, new value.
+    NumericChanged(String, f64),
+    /// A scroll bar position changed. Payload: name, position (0.0..1.0).
+    ScrollChanged(String, f32),
+    /// A calendar date was selected. Payload: name, day of month.
+    CalendarDateSelected(String, u32),
+    /// A menu strip item was clicked. Payload: name, item index.
+    MenuItemClicked(String, usize),
+    /// A context menu item was clicked. Payload: name, item index.
+    ContextMenuItemClicked(String, usize),
+    /// A tool strip button was clicked. Payload: name, item index.
+    ToolStripItemClicked(String, usize),
+    /// A split container divider was moved. Payload: name, new position (0.0..1.0).
+    SplitMoved(String, f32),
+    /// A link label was clicked. Payload: name.
+    LinkClicked(String),
+    /// A select/combobox item was chosen. Payload: name, selected index.
+    SelectChanged(String, usize),
+    /// A tab control tab was selected. Payload: name, tab index.
+    TabControlChanged(String, usize),
     /// Generic named action (for custom widgets).
     Action(String),
 }
@@ -273,6 +301,12 @@ pub trait PanelWidget {
 
     /// Whether this widget wants keyboard focus.
     fn focusable(&self) -> bool { false }
+
+    /// Widget name (used by FocusManager for identification).
+    fn name(&self) -> &str { "" }
+
+    /// Notify the widget that it gained or lost focus.
+    fn set_focused(&mut self, _focused: bool) {}
 }
 
 // ── NullWidget ─────────────────────────────────────────────────────────
@@ -292,4 +326,197 @@ impl PanelWidget for NullWidget {
     fn render(&mut self, _ctx: &mut RenderContext) {}
     fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+}
+
+// ── FocusManager ───────────────────────────────────────────────────────
+
+/// Manages keyboard focus across a collection of `PanelWidget`s.
+///
+/// Tracks which widget index is focused, supports Tab/Shift+Tab cycling,
+/// and routes key events to the focused widget.
+pub struct FocusManager {
+    /// Index of the currently focused widget (into the caller's widget list).
+    focused: Option<usize>,
+}
+
+impl FocusManager {
+    pub fn new() -> Self {
+        Self { focused: None }
+    }
+
+    /// The currently focused widget index.
+    pub fn focused(&self) -> Option<usize> { self.focused }
+
+    /// Set the focused widget index directly.
+    pub fn set_focused(&mut self, idx: Option<usize>) { self.focused = idx; }
+
+    /// Focus the next focusable widget (Tab key).
+    /// `count` is the total number of widgets.
+    pub fn focus_next(&mut self, widgets: &mut [Box<dyn PanelWidget>]) {
+        let len = widgets.len();
+        if len == 0 { return; }
+        let start = self.focused.map(|i| i + 1).unwrap_or(0);
+        for offset in 0..len {
+            let idx = (start + offset) % len;
+            if widgets[idx].focusable() {
+                self.apply_focus(widgets, Some(idx));
+                return;
+            }
+        }
+    }
+
+    /// Focus the previous focusable widget (Shift+Tab key).
+    pub fn focus_prev(&mut self, widgets: &mut [Box<dyn PanelWidget>]) {
+        let len = widgets.len();
+        if len == 0 { return; }
+        let start = self.focused.unwrap_or(0).wrapping_sub(1);
+        for offset in 0..len {
+            let idx = (start.wrapping_sub(offset)) % len;
+            if idx < len && widgets[idx].focusable() {
+                self.apply_focus(widgets, Some(idx));
+                return;
+            }
+        }
+    }
+
+    /// Focus the widget at the given position (e.g. on mouse click).
+    pub fn focus_at(&mut self, widgets: &mut [Box<dyn PanelWidget>], x: f32, y: f32) {
+        for (i, w) in widgets.iter().enumerate() {
+            if w.focusable() && w.rect().contains(x, y) {
+                self.apply_focus(widgets, Some(i));
+                return;
+            }
+        }
+        // Click on non-focusable area clears focus
+        self.apply_focus(widgets, None);
+    }
+
+    /// Handle a key event: Tab/Shift+Tab for cycling, otherwise route to focused widget.
+    /// Returns `true` if the event was consumed.
+    pub fn handle_key(&mut self, widgets: &mut [Box<dyn PanelWidget>], event: &KeyEvent) -> bool {
+        use winit::keyboard::Key::Named;
+        use winit::keyboard::NamedKey;
+        if event.state == winit::event::ElementState::Pressed {
+            if let Named(NamedKey::Tab) = &event.logical_key {
+                if event.shift {
+                    self.focus_prev(widgets);
+                } else {
+                    self.focus_next(widgets);
+                }
+                return true;
+            }
+        }
+        // Route to focused widget
+        if let Some(idx) = self.focused {
+            if idx < widgets.len() {
+                return widgets[idx].handle_key(event);
+            }
+        }
+        false
+    }
+
+    /// Handle a mouse event: update focus on click, then delegate.
+    /// Returns `true` if the event was consumed.
+    pub fn handle_mouse(&mut self, widgets: &mut [Box<dyn PanelWidget>], event: &MouseEvent) -> bool {
+        if matches!(event.kind, MouseEventKind::Press(_)) {
+            self.focus_at(widgets, event.x, event.y);
+        }
+        // Delegate to all widgets (not just focused — for hover etc.)
+        let mut consumed = false;
+        for w in widgets.iter_mut() {
+            if w.handle_mouse(event) {
+                consumed = true;
+            }
+        }
+        consumed
+    }
+
+    /// Render all widgets, drawing a focus ring on the focused one.
+    pub fn render_all(&self, widgets: &mut [Box<dyn PanelWidget>], ctx: &mut RenderContext) {
+        for (i, w) in widgets.iter_mut().enumerate() {
+            w.render(ctx);
+            if self.focused == Some(i) {
+                Self::draw_focus_ring(ctx, w.rect());
+            }
+        }
+    }
+
+    /// Drain events from all widgets into a single vec.
+    pub fn drain_all_events(&mut self, widgets: &mut [Box<dyn PanelWidget>]) -> Vec<WidgetEvent> {
+        let mut all = Vec::new();
+        for w in widgets.iter_mut() {
+            all.append(&mut w.drain_events());
+        }
+        all
+    }
+
+    // ── internal ──
+
+    fn apply_focus(&mut self, widgets: &mut [Box<dyn PanelWidget>], new: Option<usize>) {
+        if self.focused == new { return; }
+        if let Some(old) = self.focused {
+            if old < widgets.len() {
+                widgets[old].set_focused(false);
+            }
+        }
+        self.focused = new;
+        if let Some(idx) = new {
+            if idx < widgets.len() {
+                widgets[idx].set_focused(true);
+            }
+        }
+    }
+
+    fn draw_focus_ring(ctx: &mut RenderContext, r: LayoutRect) {
+        let scale = ctx.scale;
+        let px = (r.x * scale) as i32;
+        let py = (r.y * scale) as i32;
+        let pw = (r.w * scale) as i32;
+        let ph = (r.h * scale) as i32;
+        let color = ColorU8::from_rgba(0, 120, 215, 200).premultiply();
+        let thickness = (2.0 * scale) as i32;
+        let pix = &mut *ctx.pixmap;
+        let w = pix.width() as i32;
+        let h = pix.height() as i32;
+        // top edge
+        for dy in 0..thickness {
+            let y = py + dy;
+            if y < 0 || y >= h { continue; }
+            for x in px..(px + pw).min(w) {
+                if x >= 0 {
+                    pix.pixels_mut()[(y * w + x) as usize] = color;
+                }
+            }
+        }
+        // bottom edge
+        for dy in 0..thickness {
+            let y = py + ph - 1 - dy;
+            if y < 0 || y >= h { continue; }
+            for x in px..(px + pw).min(w) {
+                if x >= 0 {
+                    pix.pixels_mut()[(y * w + x) as usize] = color;
+                }
+            }
+        }
+        // left edge
+        for dx in 0..thickness {
+            let x = px + dx;
+            if x < 0 || x >= w { continue; }
+            for y in py..(py + ph).min(h) {
+                if y >= 0 {
+                    pix.pixels_mut()[(y * w + x) as usize] = color;
+                }
+            }
+        }
+        // right edge
+        for dx in 0..thickness {
+            let x = px + pw - 1 - dx;
+            if x < 0 || x >= w { continue; }
+            for y in py..(py + ph).min(h) {
+                if y >= 0 {
+                    pix.pixels_mut()[(y * w + x) as usize] = color;
+                }
+            }
+        }
+    }
 }

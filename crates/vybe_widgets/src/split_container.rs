@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::WidgetColors;
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct SplitContainer {
     pub horizontal: bool,
@@ -11,6 +12,9 @@ pub struct SplitContainer {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl SplitContainer {
@@ -26,8 +30,13 @@ impl SplitContainer {
                 background: (240, 240, 240, 255),
                 ..WidgetColors::default()
             },
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Pixel position of the splitter center.
     fn splitter_pos(&self) -> f32 {
@@ -201,6 +210,60 @@ impl SplitContainer {
                 (0.0, 0.0, self.width, sp - sw / 2.0),
                 (0.0, sp + sw / 2.0, self.width, self.height - sp - sw / 2.0),
             )
+        }
+    }
+}
+
+impl PanelWidget for SplitContainer {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        let lx = event.x - r.x;
+        let ly = event.y - r.y;
+        match event.kind {
+            MouseEventKind::Press(LayoutMouseButton::Left) => {
+                if r.contains(event.x, event.y) && self.mouse_down(lx, ly) {
+                    return true;
+                }
+            }
+            MouseEventKind::Move => {
+                if self.dragging {
+                    self.mouse_move(lx, ly);
+                    self.pending_events.push(WidgetEvent::SplitMoved(self.name.clone(), self.split_position));
+                    return true;
+                }
+            }
+            MouseEventKind::Release(LayoutMouseButton::Left) => {
+                if self.dragging {
+                    self.mouse_up();
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+
+    fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {
+        let r = self.rect;
+        let lx = x - r.x;
+        let ly = y - r.y;
+        if self.hit_splitter(lx, ly) || self.dragging {
+            if self.horizontal { winit::window::CursorIcon::EwResize } else { winit::window::CursorIcon::NsResize }
+        } else {
+            winit::window::CursorIcon::Default
         }
     }
 }

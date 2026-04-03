@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct ListView {
     pub items: Vec<String>,
@@ -14,6 +15,9 @@ pub struct ListView {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl ListView {
@@ -29,8 +33,13 @@ impl ListView {
             width: 200.0,
             height: 150.0,
             colors: WidgetColors::default(),
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Paint the list view — white background, header, column dividers, selection.
     /// Text drawn by caller.
@@ -150,4 +159,69 @@ impl ListView {
             self.width / self.columns.len() as f32
         }
     }
+}
+
+impl PanelWidget for ListView {
+    fn name(&self) -> &str { &self.name }
+    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw column headers
+        let (fr, fg, fb, _) = self.colors.foreground;
+        let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
+        let cw = self.column_width();
+        for (i, header) in self.columns.iter().enumerate() {
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, header, r.x + i as f32 * cw + 4.0, r.y + 4.0, 12.0, col, ctx.scale);
+        }
+        // Draw items
+        for (i, item) in self.items.iter().enumerate() {
+            let iy = r.y + self.header_height + 1.0 + i as f32 * self.item_height - self.scroll_offset;
+            if iy + self.item_height < r.y + self.header_height || iy > r.y + r.h { continue; }
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, item, r.x + 4.0, iy + 2.0, 12.0, col, ctx.scale);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        if !r.contains(event.x, event.y) { return false; }
+        if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
+            if let Some(idx) = self.click(event.x - r.x, event.y - r.y) {
+                self.pending_events.push(WidgetEvent::ListViewSelected(self.name.clone(), idx));
+                return true;
+            }
+        }
+        false
+    }
+
+    fn handle_key(&mut self, event: &KeyEvent) -> bool {
+        if !self.focused { return false; }
+        use winit::keyboard::{Key, NamedKey};
+        match &event.logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let next = self.selected_index.map(|i| (i + 1).min(self.items.len().saturating_sub(1))).unwrap_or(0);
+                if next < self.items.len() {
+                    self.selected_index = Some(next);
+                    self.pending_events.push(WidgetEvent::ListViewSelected(self.name.clone(), next));
+                }
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let prev = self.selected_index.map(|i| i.saturating_sub(1)).unwrap_or(0);
+                if prev < self.items.len() {
+                    self.selected_index = Some(prev);
+                    self.pending_events.push(WidgetEvent::ListViewSelected(self.name.clone(), prev));
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn focusable(&self) -> bool { true }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

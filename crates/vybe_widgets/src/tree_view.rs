@@ -1,6 +1,7 @@
 use std::fs;
 use tiny_skia::{Paint, Pixmap, Transform, PathBuilder};
 use cosmic_text::{FontSystem, SwashCache, Buffer, Metrics, Attrs, Family, Color as CosmicColor};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 #[derive(Clone)]
 pub struct FileEntry {
@@ -23,6 +24,9 @@ pub struct TreeView {
     pub indent: f32,
     pub scale: f32,
     pub selected_path: Option<String>,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 fn scan_dir(path: &str) -> Vec<FileEntry> {
@@ -42,10 +46,12 @@ fn scan_dir(path: &str) -> Vec<FileEntry> {
 
 impl TreeView {
     pub fn new(root_path: &str, scale: f32) -> Self {
-        let mut tree = Self { entries: Vec::new(), item_height: 26.0 * scale, indent: 20.0 * scale, scale, selected_path: None };
+        let mut tree = Self { entries: Vec::new(), item_height: 26.0 * scale, indent: 20.0 * scale, scale, selected_path: None, name: String::new(), rect: LayoutRect::zero(), pending_events: Vec::new() };
         tree.entries = scan_dir(root_path);
         tree
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Update scale factor (e.g. when moving to a different DPI monitor).
     /// Invalidates cached text buffers.
@@ -91,7 +97,7 @@ impl TreeView {
         false
     }
 
-    pub fn render(&mut self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, x: f32, y: f32, width: f32, text_color: CosmicColor, selection_color: (u8, u8, u8, u8)) {
+    pub fn render_tree(&mut self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, x: f32, y: f32, width: f32, text_color: CosmicColor, selection_color: (u8, u8, u8, u8)) {
         let mut current_y = y;
         let scale = self.scale;
         let item_height = self.item_height;
@@ -192,7 +198,7 @@ impl TreeView {
         }
     }
 
-    pub fn handle_mouse(&mut self, mx: f32, my: f32, x: f32, y: f32) -> TreeEvent {
+    pub fn handle_mouse_at(&mut self, mx: f32, my: f32, x: f32, y: f32) -> TreeEvent {
         let mut current_y = y;
         let mut result = TreeEvent::None;
         let item_height = self.item_height;
@@ -249,4 +255,38 @@ impl TreeView {
             }
         }
     }
+}
+
+impl PanelWidget for TreeView {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.set_scale(ctx.scale);
+        let text_color = CosmicColor::rgba(200, 200, 200, 255);
+        let selection_color: (u8, u8, u8, u8) = (0, 120, 215, 80);
+        self.render_tree(ctx.pixmap, ctx.font_system, ctx.swash_cache, r.x, r.y, r.w, text_color, selection_color);
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        if !r.contains(event.x, event.y) { return false; }
+        if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
+            match self.handle_mouse_at(event.x, event.y, r.x, r.y) {
+                TreeEvent::Open(path) => {
+                    self.selected_path = Some(path.clone());
+                    self.pending_events.push(WidgetEvent::TreeItemOpened(path));
+                    return true;
+                }
+                TreeEvent::None => { return true; }
+            }
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

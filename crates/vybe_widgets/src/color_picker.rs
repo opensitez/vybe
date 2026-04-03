@@ -464,6 +464,7 @@ impl ColorPicker {
 // ── PanelWidget impl ───────────────────────────────────────────────────
 
 impl PanelWidget for ColorPicker {
+    fn name(&self) -> &str { &self.name }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
     }

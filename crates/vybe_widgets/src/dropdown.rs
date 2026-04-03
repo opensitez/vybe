@@ -1,5 +1,6 @@
 use tiny_skia::{Paint, Pixmap, Transform, PathBuilder, Rect};
 use cosmic_text::{FontSystem, SwashCache, Color as CosmicColor};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub enum DropdownEvent {
     Selected(usize),
@@ -15,6 +16,9 @@ pub struct Dropdown {
     pub num_cols: usize,
     pub col_w: f32,
     pub row_h: f32,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl Dropdown {
@@ -30,10 +34,15 @@ impl Dropdown {
             hover_idx: None,
             scale,
             num_cols: actual_cols,
-            col_w: 0.0,  // 0.0 triggers actual_col_w auto-calculation
+            col_w: 0.0,
             row_h: 25.0,
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     fn actual_col_w(&self) -> f32 {
         if self.col_w == 0.0 {
@@ -52,7 +61,7 @@ impl Dropdown {
         (w, h)
     }
 
-    pub fn render(&self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, x: f32, y: f32, bg: (u8, u8, u8, u8), border: (u8, u8, u8, u8), selection: (u8, u8, u8, u8), hover: (u8, u8, u8, u8), active_text: CosmicColor, inactive_text: CosmicColor) {
+    pub fn render_list(&self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, x: f32, y: f32, bg: (u8, u8, u8, u8), border: (u8, u8, u8, u8), selection: (u8, u8, u8, u8), hover: (u8, u8, u8, u8), active_text: CosmicColor, inactive_text: CosmicColor) {
         let (w, h) = self.get_size();
         let scale = self.scale;
         
@@ -101,7 +110,7 @@ impl Dropdown {
         }
     }
 
-    pub fn handle_mouse(&mut self, mx: f32, my: f32, x: f32, y: f32, is_click: bool) -> DropdownEvent {
+    pub fn handle_mouse_at(&mut self, mx: f32, my: f32, x: f32, y: f32, is_click: bool) -> DropdownEvent {
         let (w, h) = self.get_size();
         let col_w = self.actual_col_w();
         if mx >= x && mx <= x + w && my >= y && my <= y + h {
@@ -124,4 +133,38 @@ impl Dropdown {
             if is_click { DropdownEvent::Closed } else { DropdownEvent::None }
         }
     }
+}
+
+impl PanelWidget for Dropdown {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        let bg = (50, 50, 55, 255);
+        let border = (80, 80, 85, 255);
+        let selection = (0, 120, 215, 255);
+        let hover = (65, 65, 70, 255);
+        let active_text = CosmicColor::rgba(255, 255, 255, 255);
+        let inactive_text = CosmicColor::rgba(200, 200, 200, 255);
+        self.render_list(ctx.pixmap, ctx.font_system, ctx.swash_cache, r.x, r.y, bg, border, selection, hover, active_text, inactive_text);
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        let is_click = matches!(event.kind, MouseEventKind::Press(LayoutMouseButton::Left));
+        match self.handle_mouse_at(event.x, event.y, r.x, r.y, is_click) {
+            DropdownEvent::Selected(idx) => {
+                self.pending_events.push(WidgetEvent::DropdownSelected(self.name.clone(), idx));
+                true
+            }
+            DropdownEvent::Closed => true,
+            DropdownEvent::None => false,
+        }
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

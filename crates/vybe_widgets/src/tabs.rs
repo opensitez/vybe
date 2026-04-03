@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct Tabs {
     pub tabs: Vec<String>,
@@ -9,6 +10,9 @@ pub struct Tabs {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl Tabs {
@@ -19,8 +23,13 @@ impl Tabs {
             width: 300.0,
             height: 200.0,
             colors: WidgetColors::default(),
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
         let ts = Transform::from_scale(scale, scale);
@@ -96,4 +105,40 @@ impl Tabs {
         }
         false
     }
+}
+
+impl PanelWidget for Tabs {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw tab labels
+        let tab_w = (r.w / self.tabs.len() as f32).max(60.0);
+        for (i, label) in self.tabs.iter().enumerate() {
+            let tx = r.x + i as f32 * tab_w + 8.0;
+            let is_sel = i == self.selected;
+            let col = if is_sel { cosmic_text::Color::rgba(255, 255, 255, 255) } else { cosmic_text::Color::rgba(60, 60, 60, 255) };
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, label, tx, r.y + 8.0, 12.0, col, ctx.scale);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        if !r.contains(event.x, event.y) { return false; }
+        if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
+            let old = self.selected;
+            if self.click(event.x, event.y, r.x, r.y) && self.selected != old {
+                self.pending_events.push(WidgetEvent::TabControlChanged(self.name.clone(), self.selected));
+                return true;
+            }
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

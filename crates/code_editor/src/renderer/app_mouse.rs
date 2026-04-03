@@ -100,7 +100,7 @@ impl App {
             let (w, h) = dropdown.get_size();
             let menu_x = (self.win_width * SCALE / SCALE - w - 20.0).max(10.0);
             let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
-            dropdown.handle_mouse(mx, my, menu_x, menu_y, false);
+            dropdown.handle_mouse_at(mx, my, menu_x, menu_y, false);
             self.lang_dropdown = Some(dropdown);
         }
         
@@ -112,7 +112,7 @@ impl App {
             let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0);
             let menu_x = theme_x.min(self.win_width * SCALE / SCALE - w - 10.0).max(10.0);
             let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
-            dropdown.handle_mouse(mx, my, menu_x, menu_y, false);
+            dropdown.handle_mouse_at(mx, my, menu_x, menu_y, false);
             self.theme_dropdown = Some(dropdown);
         }
 
@@ -318,7 +318,7 @@ impl App {
                 let menu_x = label_x.min(pw / SCALE - w - 10.0).max(10.0);
                 let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
                 
-                match dropdown.handle_mouse(mx, my, menu_x, menu_y, true) {
+                match dropdown.handle_mouse_at(mx, my, menu_x, menu_y, true) {
                     DropdownEvent::Selected(idx) => {
                         if let Some(new_lang) = self.all_languages.get(idx).cloned() {
                             self.current_lang = new_lang.clone();
@@ -346,7 +346,7 @@ impl App {
                 let menu_x = theme_x.min(pw / SCALE - w - 10.0).max(10.0);
                 let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
                 
-                match dropdown.handle_mouse(mx, my, menu_x, menu_y, true) {
+                match dropdown.handle_mouse_at(mx, my, menu_x, menu_y, true) {
                     DropdownEvent::Selected(idx) => {
                         self.current_theme_idx = idx;
                         let new_theme = self.active_theme();
@@ -707,7 +707,7 @@ impl App {
 
                 match self.sidebar_tab {
                     SidebarTab::Files => {
-                        match self.tree_view.handle_mouse(self.mouse_pos.0, self.mouse_pos.1, 0.0, (tch + SIDEBAR_TAB_H) * SCALE) {
+                        match self.tree_view.handle_mouse_at(self.mouse_pos.0, self.mouse_pos.1, 0.0, (tch + SIDEBAR_TAB_H) * SCALE) {
                              TreeEvent::Open(path) => {
                                  if let Some(idx) = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path)) {
                                      self.active_tab = idx; if is_double { self.tabs[idx].is_sticky = true; }

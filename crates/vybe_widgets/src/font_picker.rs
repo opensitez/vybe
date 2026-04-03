@@ -7,6 +7,7 @@
 use tiny_skia::*;
 use cosmic_text::{FontSystem, SwashCache, Color as CosmicColor};
 use super::rounded_rect_path;
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 /// The list of available font families (matches legacy editor).
 pub const FONT_FAMILIES: &[&str] = &[
@@ -48,6 +49,9 @@ pub struct FontPicker {
     hover_family: Option<usize>,
     /// Hover index for size list.
     hover_size: Option<usize>,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 const ROW_H: f32 = 22.0;
@@ -64,8 +68,13 @@ impl FontPicker {
             open: false,
             hover_family: None,
             hover_size: None,
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     pub fn set(&mut self, family: &str, size: u32) {
         self.family = family.to_string();
@@ -306,4 +315,56 @@ impl FontPicker {
             self.hover_size = None;
         }
     }
+}
+
+impl PanelWidget for FontPicker {
+    fn name(&self) -> &str { &self.name }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.render_compact(ctx.pixmap, ctx.font_system, ctx.swash_cache, r.x, r.y, r.w, r.h, ctx.scale);
+        if self.open {
+            self.render_popup(ctx.pixmap, ctx.font_system, ctx.swash_cache, r.x, r.y + r.h + 2.0, ctx.scale);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        let r = self.rect;
+        match event.kind {
+            MouseEventKind::Press(LayoutMouseButton::Left) => {
+                if r.contains(event.x, event.y) && !self.open {
+                    self.open = true;
+                    return true;
+                }
+                if self.open {
+                    let popup_x = r.x;
+                    let popup_y = r.y + r.h + 2.0;
+                    match self.handle_click(event.x, event.y, popup_x, popup_y) {
+                        FontPickerEvent::Changed { family, size } => {
+                            let val = format!("{}, {}px", family, size);
+                            self.pending_events.push(WidgetEvent::ColorChanged(self.name.clone(), val));
+                            return true;
+                        }
+                        FontPickerEvent::Closed => return true,
+                        FontPickerEvent::None => {}
+                    }
+                }
+            }
+            MouseEventKind::Move => {
+                if self.open {
+                    let popup_x = r.x;
+                    let popup_y = r.y + r.h + 2.0;
+                    self.handle_hover(event.x, event.y, popup_x, popup_y);
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

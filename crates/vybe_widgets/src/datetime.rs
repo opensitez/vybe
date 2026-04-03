@@ -2,6 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct DateTimePicker {
     pub value: String,
@@ -9,6 +10,8 @@ pub struct DateTimePicker {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub name: String,
+    rect: LayoutRect,
 }
 
 impl DateTimePicker {
@@ -19,8 +22,12 @@ impl DateTimePicker {
             width: 140.0,
             height: 24.0,
             colors: WidgetColors::default(),
+            name: String::new(),
+            rect: LayoutRect::zero(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Width of the dropdown button area.
     fn button_width(&self) -> f32 {
@@ -90,4 +97,33 @@ impl DateTimePicker {
     pub fn click_dropdown(&self, click_x: f32, _click_y: f32) -> bool {
         click_x >= self.width - self.button_width()
     }
+}
+
+impl PanelWidget for DateTimePicker {
+    fn name(&self) -> &str { &self.name }
+    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        if !self.value.is_empty() {
+            let (fr, fg, fb, _) = self.colors.foreground;
+            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &self.value, r.x + 4.0, r.y + 4.0, 12.0, cosmic_text::Color::rgba(fr, fg, fb, 255), ctx.scale);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        if !self.rect.contains(event.x, event.y) { return false; }
+        if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
+            self.focused = true;
+            return true;
+        }
+        false
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn focusable(&self) -> bool { true }
 }
