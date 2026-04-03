@@ -2,7 +2,7 @@
 
 use super::WidgetColors;
 use cosmic_text::Color as CosmicColor;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct TextInput {
     pub value: String,
@@ -254,6 +254,16 @@ impl PanelWidget for TextInput {
             winit::window::CursorIcon::Text
         } else {
             winit::window::CursorIcon::Default
+        }
+    }
+
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(t) => { self.value = t.clone(); CommandValue::None }
+            WidgetCommand::GetText => CommandValue::Text(self.value.clone()),
+            WidgetCommand::GetValue => CommandValue::Text(self.value.clone()),
+            WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            _ => CommandValue::None,
         }
     }
 

@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BorderStyle {

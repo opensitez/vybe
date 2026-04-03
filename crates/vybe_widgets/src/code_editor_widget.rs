@@ -9,7 +9,7 @@ use arboard::Clipboard;
 
 use crate::text_editor::TextEditor;
 use crate::language::LanguageDef;
-use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent, WidgetId};
+use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 use winit::window::CursorIcon;
 pub use crate::text_editor::TokenKind;
 

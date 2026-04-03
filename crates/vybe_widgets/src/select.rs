@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct Select {
     pub options: Vec<String>,
@@ -155,5 +155,21 @@ impl PanelWidget for Select {
     }
 
     fn focusable(&self) -> bool { !self.disabled }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetSelectedIndex(i) => { self.select_index(*i); CommandValue::None }
+            WidgetCommand::GetValue => CommandValue::Index(self.selected_index),
+            WidgetCommand::AddItem(s) => { self.options.push(s.clone()); CommandValue::None }
+            WidgetCommand::RemoveItem(i) => { if *i < self.options.len() { self.options.remove(*i); } CommandValue::None }
+            WidgetCommand::ClearItems => { self.options.clear(); self.selected_index = 0; CommandValue::None }
+            WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            WidgetCommand::GetText => {
+                let t = self.options.get(self.selected_index).cloned().unwrap_or_default();
+                CommandValue::Text(t)
+            }
+            _ => CommandValue::None,
+        }
+    }
+
     fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

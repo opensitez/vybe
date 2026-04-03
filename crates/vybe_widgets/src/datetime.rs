@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct DateTimePicker {
     pub value: String,
@@ -133,4 +133,12 @@ impl PanelWidget for DateTimePicker {
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
     fn focusable(&self) -> bool { true }
+
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(t) => { self.value = t.clone(); CommandValue::None }
+            WidgetCommand::GetText => CommandValue::Text(self.value.clone()),
+            _ => CommandValue::None,
+        }
+    }
 }

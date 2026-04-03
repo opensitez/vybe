@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors};
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct DataGrid {
     pub columns: Vec<String>,

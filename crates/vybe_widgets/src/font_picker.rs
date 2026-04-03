@@ -7,7 +7,7 @@
 use tiny_skia::*;
 use cosmic_text::{FontSystem, SwashCache, Color as CosmicColor};
 use super::rounded_rect_path;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 /// The list of available font families (matches legacy editor).
 pub const FONT_FAMILIES: &[&str] = &[
@@ -369,5 +369,13 @@ impl PanelWidget for FontPicker {
     }
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(t) => { self.set_from_string(t); CommandValue::None }
+            WidgetCommand::GetText => CommandValue::Text(format!("{}, {}pt", self.family, self.size)),
+            _ => CommandValue::None,
+        }
+    }
+
     fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

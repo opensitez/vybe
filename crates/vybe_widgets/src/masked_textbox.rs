@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct MaskedTextBox {
     pub mask: String,
@@ -149,5 +149,15 @@ impl PanelWidget for MaskedTextBox {
     }
 
     fn focusable(&self) -> bool { !self.disabled }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(t) => { self.value = t.clone(); CommandValue::None }
+            WidgetCommand::GetText => CommandValue::Text(self.value.clone()),
+            WidgetCommand::GetValue => CommandValue::Text(self.value.clone()),
+            WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            _ => CommandValue::None,
+        }
+    }
+
     fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

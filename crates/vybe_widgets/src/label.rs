@@ -3,7 +3,7 @@
 use tiny_skia::*;
 use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId, WidgetCommand, CommandValue};
 
 pub struct Label {
     pub id: WidgetId,
@@ -88,4 +88,12 @@ impl PanelWidget for Label {
 
     fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(t) => { self.text = t.clone(); CommandValue::None }
+            WidgetCommand::GetText => CommandValue::Text(self.text.clone()),
+            _ => CommandValue::None,
+        }
+    }
 }

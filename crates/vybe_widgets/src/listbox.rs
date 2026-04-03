@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct ListBox {
     pub items: Vec<String>,
@@ -218,5 +218,20 @@ impl PanelWidget for ListBox {
     }
 
     fn focusable(&self) -> bool { true }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetSelectedIndex(i) => { self.selected_index = Some(*i); CommandValue::None }
+            WidgetCommand::GetValue => CommandValue::Index(self.selected_index.unwrap_or(0)),
+            WidgetCommand::AddItem(s) => { self.items.push(s.clone()); CommandValue::None }
+            WidgetCommand::RemoveItem(i) => { if *i < self.items.len() { self.items.remove(*i); } CommandValue::None }
+            WidgetCommand::ClearItems => { self.items.clear(); self.selected_index = None; CommandValue::None }
+            WidgetCommand::GetText => {
+                let t = self.selected_index.and_then(|i| self.items.get(i)).cloned().unwrap_or_default();
+                CommandValue::Text(t)
+            }
+            _ => CommandValue::None,
+        }
+    }
+
     fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

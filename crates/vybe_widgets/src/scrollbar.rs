@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct ScrollBar {
     pub vertical: bool,
@@ -364,6 +364,14 @@ impl PanelWidget for ScrollBar {
     }
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetValue(v) => { self.pos = *v as f32; CommandValue::None }
+            WidgetCommand::GetValue => CommandValue::Number(self.pos as f64),
+            _ => CommandValue::None,
+        }
+    }
+
     fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 
     fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {

@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct ProgressBar {
     pub value: f32, // 0.0..1.0
@@ -68,4 +68,12 @@ impl PanelWidget for ProgressBar {
     }
     fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetValue(v) => { self.value = *v as f32; CommandValue::None }
+            WidgetCommand::GetValue => CommandValue::Number(self.value as f64),
+            _ => CommandValue::None,
+        }
+    }
 }

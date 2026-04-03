@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct Tabs {
     pub tabs: Vec<String>,
@@ -143,5 +143,16 @@ impl PanelWidget for Tabs {
     }
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetSelectedIndex(i) => { if *i < self.tabs.len() { self.selected = *i; } CommandValue::None }
+            WidgetCommand::GetValue => CommandValue::Index(self.selected),
+            WidgetCommand::AddItem(s) => { self.tabs.push(s.clone()); CommandValue::None }
+            WidgetCommand::RemoveItem(i) => { if *i < self.tabs.len() { self.tabs.remove(*i); } CommandValue::None }
+            WidgetCommand::ClearItems => { self.tabs.clear(); self.selected = 0; CommandValue::None }
+            _ => CommandValue::None,
+        }
+    }
+
     fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

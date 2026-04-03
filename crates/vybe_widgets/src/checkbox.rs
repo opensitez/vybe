@@ -3,7 +3,7 @@
 use tiny_skia::*;
 use cosmic_text::Color as CosmicColor;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct Checkbox {
     pub checked: bool,
@@ -163,6 +163,17 @@ impl PanelWidget for Checkbox {
             }
         }
         false
+    }
+
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(t) => { self.label = t.clone(); CommandValue::None }
+            WidgetCommand::GetText => CommandValue::Text(self.label.clone()),
+            WidgetCommand::SetChecked(c) => { self.checked = *c; CommandValue::None }
+            WidgetCommand::GetValue => CommandValue::Bool(self.checked),
+            WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

@@ -3,7 +3,7 @@
 use tiny_skia::*;
 use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct GroupBox {
     pub title: String,
@@ -120,4 +120,12 @@ impl PanelWidget for GroupBox {
     }
     fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(t) => { self.title = t.clone(); CommandValue::None }
+            WidgetCommand::GetText => CommandValue::Text(self.title.clone()),
+            _ => CommandValue::None,
+        }
+    }
 }

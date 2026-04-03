@@ -1,6 +1,6 @@
 use tiny_skia::{Paint, Pixmap, Transform, PathBuilder, Rect};
 use cosmic_text::{FontSystem, SwashCache, Color as CosmicColor};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub enum DropdownEvent {
     Selected(usize),
@@ -169,5 +169,20 @@ impl PanelWidget for Dropdown {
     }
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetSelectedIndex(i) => { if *i < self.items.len() { self.selected_idx = *i; } CommandValue::None }
+            WidgetCommand::GetValue => CommandValue::Index(self.selected_idx),
+            WidgetCommand::AddItem(s) => { self.items.push(s.clone()); CommandValue::None }
+            WidgetCommand::RemoveItem(i) => { if *i < self.items.len() { self.items.remove(*i); } CommandValue::None }
+            WidgetCommand::ClearItems => { self.items.clear(); self.selected_idx = 0; CommandValue::None }
+            WidgetCommand::GetText => {
+                let t = self.items.get(self.selected_idx).cloned().unwrap_or_default();
+                CommandValue::Text(t)
+            }
+            _ => CommandValue::None,
+        }
+    }
+
     fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }

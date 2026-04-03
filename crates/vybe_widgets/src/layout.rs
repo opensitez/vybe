@@ -238,6 +238,54 @@ pub enum Dock {
 
 // ── Widget Events ──────────────────────────────────────────────────────
 
+/// A dynamic value that can be exchanged via commands.
+#[derive(Clone, Debug)]
+pub enum CommandValue {
+    /// No value / not applicable.
+    None,
+    /// A string value (text, label, path, etc.).
+    Text(String),
+    /// A numeric value (slider position, counter value, etc.).
+    Number(f64),
+    /// A boolean value (checked, enabled, visible, etc.).
+    Bool(bool),
+    /// An index value (selected item, tab index, etc.).
+    Index(usize),
+    /// An RGBA colour.
+    Color(u8, u8, u8, u8),
+}
+
+/// Commands sent from the host application **to** a widget.
+#[derive(Clone, Debug)]
+pub enum WidgetCommand {
+    /// Set the widget's text / label content.
+    SetText(String),
+    /// Get the widget's current text.
+    GetText,
+    /// Set a numeric value (slider position, progress, numeric up-down, etc.).
+    SetValue(f64),
+    /// Get the widget's current value.
+    GetValue,
+    /// Enable or disable the widget.
+    SetEnabled(bool),
+    /// Show or hide the widget.
+    SetVisible(bool),
+    /// Request focus for this widget.
+    Focus,
+    /// Set the selected index (list, combo, tabs, etc.).
+    SetSelectedIndex(usize),
+    /// Set checked / selected state (checkbox, radio).
+    SetChecked(bool),
+    /// Append an item to the widget's list.
+    AddItem(String),
+    /// Remove item at index.
+    RemoveItem(usize),
+    /// Remove all items.
+    ClearItems,
+    /// Custom command with a string key and arbitrary payload.
+    Custom(String, CommandValue),
+}
+
 /// Events emitted by widgets back to the host application.
 ///
 /// Containers collect these; the host matches on them to handle callbacks
@@ -349,6 +397,10 @@ pub trait PanelWidget {
 
     /// Unique identifier for this widget instance.
     fn widget_id(&self) -> WidgetId { WidgetId::NONE }
+
+    /// Handle a command sent from the host application.
+    /// Returns a `CommandValue` for queries (`GetText`, `GetValue`), or `CommandValue::None`.
+    fn handle_command(&mut self, _cmd: &WidgetCommand) -> CommandValue { CommandValue::None }
 }
 
 // ── NullWidget ─────────────────────────────────────────────────────────
@@ -520,6 +572,41 @@ impl FocusManager {
             all.append(&mut w.drain_events());
         }
         all
+    }
+
+    /// Send a command to the first widget whose `name()` matches.
+    /// Returns the command result, or `CommandValue::None` if no widget matched.
+    pub fn send_command(&mut self, widgets: &mut [Box<dyn PanelWidget>], name: &str, cmd: &WidgetCommand) -> CommandValue {
+        for w in widgets.iter_mut() {
+            if w.name() == name {
+                return w.handle_command(cmd);
+            }
+        }
+        CommandValue::None
+    }
+
+    /// Send a command to the widget with the given `WidgetId`.
+    /// Returns the command result, or `CommandValue::None` if no widget matched.
+    pub fn send_command_by_id(&mut self, widgets: &mut [Box<dyn PanelWidget>], id: WidgetId, cmd: &WidgetCommand) -> CommandValue {
+        for w in widgets.iter_mut() {
+            if w.widget_id() == id {
+                return w.handle_command(cmd);
+            }
+        }
+        CommandValue::None
+    }
+
+    /// Broadcast a command to all widgets.
+    /// Returns a `Vec` of `(WidgetId, CommandValue)` from widgets that returned a non-None value.
+    pub fn broadcast_command(&mut self, widgets: &mut [Box<dyn PanelWidget>], cmd: &WidgetCommand) -> Vec<(WidgetId, CommandValue)> {
+        let mut results = Vec::new();
+        for w in widgets.iter_mut() {
+            let val = w.handle_command(cmd);
+            if !matches!(val, CommandValue::None) {
+                results.push((w.widget_id(), val));
+            }
+        }
+        results
     }
 
     // ── internal ──

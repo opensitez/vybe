@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path, circle_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct Slider {
     pub value: f32,     // 0.0..1.0
@@ -188,6 +188,15 @@ impl PanelWidget for Slider {
     }
 
     fn focusable(&self) -> bool { !self.disabled }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetValue(v) => { self.value = *v as f32; CommandValue::None }
+            WidgetCommand::GetValue => CommandValue::Number(self.value as f64),
+            WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            _ => CommandValue::None,
+        }
+    }
+
     fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 
     fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {

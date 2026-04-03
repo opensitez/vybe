@@ -12,6 +12,7 @@ use super::{WidgetColors, rounded_rect_path};
 use super::layout::{
     LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton,
     KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId,
+    WidgetCommand, CommandValue,
 };
 
 /// A picked color in RGBA.
@@ -546,6 +547,15 @@ impl PanelWidget for ColorPicker {
     }
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(hex) => { self.set_from_hex(hex); CommandValue::None }
+            WidgetCommand::GetText => CommandValue::Text(self.color.to_hex()),
+            WidgetCommand::GetValue => CommandValue::Color(self.color.r, self.color.g, self.color.b, self.color.a),
+            _ => CommandValue::None,
+        }
+    }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {
         std::mem::take(&mut self.pending_events)

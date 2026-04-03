@@ -19,6 +19,7 @@
 use tiny_skia::*;
 use super::layout::{
     LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, FocusManager, WidgetId,
+    WidgetCommand, CommandValue,
 };
 
 /// A form holds a collection of controls laid out at absolute positions.
@@ -100,6 +101,21 @@ impl Form {
         // When the form moves, we'd need stored offsets. For now,
         // controls are positioned absolutely via add_control.
     }
+
+    /// Send a command to a child control by name.
+    pub fn send_command(&mut self, name: &str, cmd: &WidgetCommand) -> CommandValue {
+        self.focus.send_command(&mut self.controls, name, cmd)
+    }
+
+    /// Send a command to a child control by WidgetId.
+    pub fn send_command_by_id(&mut self, id: WidgetId, cmd: &WidgetCommand) -> CommandValue {
+        self.focus.send_command_by_id(&mut self.controls, id, cmd)
+    }
+
+    /// Broadcast a command to all child controls.
+    pub fn broadcast_command(&mut self, cmd: &WidgetCommand) -> Vec<(WidgetId, CommandValue)> {
+        self.focus.broadcast_command(&mut self.controls, cmd)
+    }
 }
 
 impl PanelWidget for Form {
@@ -169,6 +185,14 @@ impl PanelWidget for Form {
             }
         }
         winit::window::CursorIcon::Default
+    }
+
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(t) => { self.title = t.clone(); CommandValue::None }
+            WidgetCommand::GetText => CommandValue::Text(self.title.clone()),
+            _ => CommandValue::None,
+        }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

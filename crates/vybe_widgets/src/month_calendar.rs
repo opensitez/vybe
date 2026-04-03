@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path, circle_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct MonthCalendar {
     pub year: u32,
@@ -315,5 +315,13 @@ impl PanelWidget for MonthCalendar {
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
     fn focusable(&self) -> bool { true }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetValue(v) => { self.selected_day = *v as u32; CommandValue::None }
+            WidgetCommand::GetValue => CommandValue::Number(self.selected_day as f64),
+            _ => CommandValue::None,
+        }
+    }
+
     fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
 }
