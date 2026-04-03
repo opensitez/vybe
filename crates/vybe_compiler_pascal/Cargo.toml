@@ -1,0 +1,14 @@
+[package]
+name = "vybe_compiler_pascal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_bytecode = { workspace = true }
+vybe_parser_pascal = { workspace = true }
+vybe_compiler_common = { workspace = true }
+
+[dev-dependencies]
+vybe_host = { workspace = true }

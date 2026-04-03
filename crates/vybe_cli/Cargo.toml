@@ -36,6 +36,8 @@ vybe_parser_ruby = { workspace = true }
 vybe_compiler_ruby = { workspace = true }
 vybe_parser_cobol = { workspace = true }
 vybe_compiler_cobol = { workspace = true }
+vybe_parser_pascal = { workspace = true }
+vybe_compiler_pascal = { workspace = true }
 vybe_compiler_common = { workspace = true }
 vybe_forms = { workspace = true }
 vybe_project = { workspace = true }
