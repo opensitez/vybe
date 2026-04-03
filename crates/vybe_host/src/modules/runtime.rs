@@ -9,7 +9,7 @@ use vybe_bytecode::value::{Object, ObjectKind};
 pub fn register(vm: &mut VM) {
     // callMethod(obj, methodName, ...args)
     // Routes to the right implementation based on obj's __type.
-    vm.register_host_fn("vybe:runtime", "callMethod", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "callMethod", Box::new(|vm: &mut VM, args: &[Value]| {
         let obj = args.first().cloned().unwrap_or(Value::Null);
         let method = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         let call_args = if args.len() > 2 { &args[2..] } else { &[] };
@@ -32,7 +32,7 @@ pub fn register(vm: &mut VM) {
 
             // List methods (includes LINQ)
             if type_str == "List" {
-                return dispatch_list(&obj, &method, call_args);
+                return dispatch_list(vm, &obj, &method, call_args);
             }
         }
 
@@ -42,7 +42,7 @@ pub fn register(vm: &mut VM) {
 
     // awaitPromise(value) — if value is a Promise, extract its resolved value
     // For synchronous promises (our model), this is immediate.
-    vm.register_host_fn("vybe:runtime", "awaitPromise", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "awaitPromise", Box::new(|_vm: &mut VM, args: &[Value]| {
         let val = args.first().cloned().unwrap_or(Value::Null);
         if let Value::Object(ref obj) = val {
             let o = obj.borrow();
@@ -63,19 +63,19 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Promise.resolve(value) → creates a fulfilled Promise
-    vm.register_host_fn("vybe:runtime", "promiseResolve", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "promiseResolve", Box::new(|_vm: &mut VM, args: &[Value]| {
         let val = args.first().cloned().unwrap_or(Value::Null);
         make_promise("fulfilled", val)
     }));
 
     // Promise.reject(reason) → creates a rejected Promise
-    vm.register_host_fn("vybe:runtime", "promiseReject", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "promiseReject", Box::new(|_vm: &mut VM, args: &[Value]| {
         let val = args.first().cloned().unwrap_or(Value::Null);
         make_promise("rejected", val)
     }));
 
     // Promise.all(array) → Promise that resolves with array of values
-    vm.register_host_fn("vybe:runtime", "promiseAll", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "promiseAll", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(arr)) = args.first() {
             let o = arr.borrow();
             if let ObjectKind::Array(ref elems) = o.kind {
@@ -97,21 +97,21 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Error constructor: new Error("message")
-    vm.register_host_fn("vybe:runtime", "Error", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "Error", Box::new(|_vm: &mut VM, args: &[Value]| {
         make_error("Error", args)
     }));
 
-    vm.register_host_fn("vybe:runtime", "TypeError", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "TypeError", Box::new(|_vm: &mut VM, args: &[Value]| {
         make_error("TypeError", args)
     }));
 
-    vm.register_host_fn("vybe:runtime", "RangeError", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "RangeError", Box::new(|_vm: &mut VM, args: &[Value]| {
         make_error("RangeError", args)
     }));
 
     // GoTo support — stores the target label. The caller checks this global
     // to implement VB6-style GoTo within a subroutine.
-    vm.register_host_fn("vybe:runtime", "goto", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "goto", Box::new(|_vm: &mut VM, args: &[Value]| {
         // In practice, GoTo within a Sub is rare in modern VB.NET.
         // This stores the label name so error handlers can dispatch.
         args.first().cloned().unwrap_or(Value::Null)
@@ -141,7 +141,7 @@ fn make_promise(state: &str, value: Value) -> Value {
     Value::Object(Rc::new(RefCell::new(obj)))
 }
 
-fn dispatch_list(obj: &Value, method: &str, args: &[Value]) -> Value {
+fn dispatch_list(vm: &mut VM, obj: &Value, method: &str, args: &[Value]) -> Value {
     let o = match obj { Value::Object(o) => o, _ => return Value::Null };
 
     match method {
@@ -258,14 +258,48 @@ fn dispatch_list(obj: &Value, method: &str, args: &[Value]) -> Value {
             }
             Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
         }
-        // LINQ methods — work on any List/Array
+        // LINQ methods — work on any List/Array with VM callback support
         "Where" | "where" => {
-            // Where(predicate) — can't call VM function from host, return filtered copy
-            // For now, return self (LINQ needs VM callback support)
-            Value::Null // fallback to compiler-desugared version
+            // Where(predicate) — filter using VM callback
+            if args.is_empty() { return Value::Null; }
+            let predicate = &args[0];
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                let elems_clone = elems.clone();
+                drop(ob);
+                let mut filtered = Vec::new();
+                for elem in &elems_clone {
+                    let result = vm.invoke_callback(predicate, &[elem.clone()]);
+                    if result.as_bool() {
+                        filtered.push(elem.clone());
+                    }
+                }
+                let mut result_obj = Object::new_array(filtered);
+                result_obj.properties.insert("__type".into(), Value::String(Rc::from("List")));
+                return Value::Object(Rc::new(RefCell::new(result_obj)));
+            }
+            drop(ob);
+            Value::Null
         }
         "Select" | "select" => {
-            Value::Null // fallback
+            // Select(mapper) — map using VM callback
+            if args.is_empty() { return Value::Null; }
+            let mapper = &args[0];
+            let ob = o.borrow();
+            if let ObjectKind::Array(ref elems) = ob.kind {
+                let elems_clone = elems.clone();
+                drop(ob);
+                let mut mapped = Vec::new();
+                for elem in &elems_clone {
+                    let result = vm.invoke_callback(mapper, &[elem.clone()]);
+                    mapped.push(result);
+                }
+                let mut result_obj = Object::new_array(mapped);
+                result_obj.properties.insert("__type".into(), Value::String(Rc::from("List")));
+                return Value::Object(Rc::new(RefCell::new(result_obj)));
+            }
+            drop(ob);
+            Value::Null
         }
         "First" | "first" => {
             let ob = o.borrow();
@@ -282,11 +316,91 @@ fn dispatch_list(obj: &Value, method: &str, args: &[Value]) -> Value {
             Value::Null
         }
         "Any" | "any" => {
+            if !args.is_empty() {
+                // Any(predicate) — check if any element matches
+                let predicate = &args[0];
+                let ob = o.borrow();
+                if let ObjectKind::Array(ref elems) = ob.kind {
+                    let elems_clone = elems.clone();
+                    drop(ob);
+                    for elem in &elems_clone {
+                        let result = vm.invoke_callback(predicate, &[elem.clone()]);
+                        if result.as_bool() { return Value::Bool(true); }
+                    }
+                    return Value::Bool(false);
+                }
+                drop(ob);
+                Value::Bool(false)
+            } else {
+                // Any() — check if non-empty
+                let ob = o.borrow();
+                if let ObjectKind::Array(ref elems) = ob.kind {
+                    return Value::Bool(!elems.is_empty());
+                }
+                Value::Bool(false)
+            }
+        }
+        "All" | "all" => {
+            if !args.is_empty() {
+                let predicate = &args[0];
+                let ob = o.borrow();
+                if let ObjectKind::Array(ref elems) = ob.kind {
+                    let elems_clone = elems.clone();
+                    drop(ob);
+                    for elem in &elems_clone {
+                        let result = vm.invoke_callback(predicate, &[elem.clone()]);
+                        if !result.as_bool() { return Value::Bool(false); }
+                    }
+                    return Value::Bool(true);
+                }
+                drop(ob);
+            }
+            Value::Bool(true)
+        }
+        "ForEach" | "forEach" | "foreach" => {
+            if !args.is_empty() {
+                let callback = &args[0];
+                let ob = o.borrow();
+                if let ObjectKind::Array(ref elems) = ob.kind {
+                    let elems_clone = elems.clone();
+                    drop(ob);
+                    for elem in &elems_clone {
+                        vm.invoke_callback(callback, &[elem.clone()]);
+                    }
+                    return Value::Null;
+                }
+                drop(ob);
+            }
+            Value::Null
+        }
+        "Aggregate" | "aggregate" | "Reduce" | "reduce" => {
+            if !args.is_empty() {
+                let reducer = &args[0];
+                let ob = o.borrow();
+                if let ObjectKind::Array(ref elems) = ob.kind {
+                    if elems.is_empty() { drop(ob); return Value::Null; }
+                    let elems_clone = elems.clone();
+                    drop(ob);
+                    let mut acc = elems_clone[0].clone();
+                    for elem in &elems_clone[1..] {
+                        acc = vm.invoke_callback(reducer, &[acc, elem.clone()]);
+                    }
+                    return acc;
+                }
+                drop(ob);
+            }
+            Value::Null
+        }
+        "OrderBy" | "orderBy" | "orderby" => {
             let ob = o.borrow();
             if let ObjectKind::Array(ref elems) = ob.kind {
-                return Value::Bool(!elems.is_empty());
+                let mut sorted = elems.clone();
+                sorted.sort_by(|a, b| a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+                let mut result_obj = Object::new_array(sorted);
+                result_obj.properties.insert("__type".into(), Value::String(Rc::from("List")));
+                return Value::Object(Rc::new(RefCell::new(result_obj)));
             }
-            Value::Bool(false)
+            Value::Null
         }
         "Sum" | "sum" => {
             let ob = o.borrow();

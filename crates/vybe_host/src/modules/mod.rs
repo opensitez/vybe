@@ -127,13 +127,13 @@ pub fn register_all(vm: &mut VM) {
     // Register no-op GUI stubs so compiled code that emits controlSetProperty/showForm/closeForm
     // doesn't fail with "Unresolved import" in non-GUI contexts.
     if vm.host_registry.get(&("vybe:gui".to_string(), "controlSetProperty".to_string())).is_none() {
-        vm.register_host_fn("vybe:gui", "controlSetProperty", Box::new(|_| Value::Null));
-        vm.register_host_fn("vybe:gui", "showForm", Box::new(|_| Value::Null));
-        vm.register_host_fn("vybe:gui", "closeForm", Box::new(|_| Value::Null));
-        vm.register_host_fn("vybe:gui", "noop", Box::new(|_| Value::Null));
-        vm.register_host_fn("vybe:gui", "runApplication", Box::new(|_| Value::Null));
-        vm.register_host_fn("vybe:gui", "onEvent", Box::new(|_| Value::Null));
-        vm.register_host_fn("vybe:gui", "controlsAdd", Box::new(|_| Value::Null));
+        vm.register_host_fn("vybe:gui", "controlSetProperty", Box::new(|_vm, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "showForm", Box::new(|_vm, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "closeForm", Box::new(|_vm, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "noop", Box::new(|_vm, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "runApplication", Box::new(|_vm, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "onEvent", Box::new(|_vm, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "controlsAdd", Box::new(|_vm, _| Value::Null));
     }
     // DO NOT call setup_namespaces here — tests override host fns after register_all.
     // setup_namespaces must be called AFTER all host fn registrations.

@@ -22,8 +22,10 @@ pub enum ExecResult {
     Suspended(u64),
 }
 
-/// Host function signature. Receives args, returns a value.
-pub type HostFn = Box<dyn Fn(&[Value]) -> Value>;
+/// Host function signature. Receives VM + args, returns a value.
+/// VM access allows host functions to call back into VM functions
+/// (WASM-compliant: host can invoke exported functions).
+pub type HostFn = Box<dyn Fn(&mut VM, &[Value]) -> Value>;
 
 #[derive(Debug, Clone)]
 struct CallFrame {
@@ -257,6 +259,39 @@ impl VM {
         let mut obj = Object::new();
         obj.kind = ObjectKind::HostFunction(idx);
         self.func_table[idx] = Value::Object(Rc::new(RefCell::new(obj)));
+    }
+
+    /// Invoke a VM function reference from host code.
+    /// This is the WASM-compliant callback mechanism: host functions
+    /// can call exported/internal VM functions during execution.
+    ///
+    /// Usage from a host function:
+    ///   let result = vm.invoke_callback(&predicate, &[element]);
+    pub fn invoke_callback(&mut self, func_ref: &Value, args: &[Value]) -> Value {
+        let saved_frame_depth = self.frames.len();
+
+        // Push function ref + args onto stack
+        self.stack.push(func_ref.clone());
+        for arg in args {
+            self.stack.push(arg.clone());
+        }
+
+        // Call the function (pushes a new frame)
+        if self.call_value(args.len()).is_err() {
+            return Value::Null;
+        }
+
+        // Execute until the callback frame returns
+        match self.execute_until(saved_frame_depth + 1) {
+            Ok(val) => val,
+            Err(_) => {
+                // On error, unwind
+                while self.frames.len() > saved_frame_depth {
+                    self.frames.pop();
+                }
+                Value::Null
+            }
+        }
     }
 
     /// Get a type_id by name from the TypeRegistry.
@@ -791,13 +826,20 @@ impl VM {
     }
 
     fn execute(&mut self) -> Result<Value, VMError> {
+        self.execute_until(0)
+    }
+
+    /// Execute bytecode until frame depth drops to `min_depth`.
+    /// `min_depth = 0` runs until halt (normal execution).
+    /// `min_depth > 0` runs until a callback returns (for invoke_callback).
+    fn execute_until(&mut self, min_depth: usize) -> Result<Value, VMError> {
         loop {
             let f = self.frame();
             let chunk = &self.chunks[f.chunk_index];
 
             if f.ip >= chunk.code.len() {
-                if self.frames.len() <= 1 {
-                    return Ok(Value::Null);
+                if self.frames.len() <= 1.max(min_depth + 1) {
+                    return Ok(self.stack.pop().unwrap_or(Value::Null));
                 }
                 let base = self.frame().base;
                 self.frames.pop();
@@ -1239,7 +1281,7 @@ impl VM {
                     let base = self.frame().base;
                     self.close_upvalues(base);
                     self.frames.pop();
-                    if self.frames.is_empty() {
+                    if self.frames.is_empty() || self.frames.len() < min_depth {
                         return Ok(result);
                     }
                     self.stack.truncate(base);
@@ -1301,7 +1343,12 @@ impl VM {
 
                     if import_idx < self.import_table.len() {
                         let host_idx = self.import_table[import_idx];
-                        let result = (self.host_fns[host_idx])(&args);
+                        // Temporarily take the host fn to release the borrow on self,
+                        // allowing the host fn to call back into the VM.
+                        let placeholder: HostFn = Box::new(|_, _| Value::Null);
+                        let host_fn = std::mem::replace(&mut self.host_fns[host_idx], placeholder);
+                        let result = host_fn(self, &args);
+                        self.host_fns[host_idx] = host_fn;  // put it back
 
                         // JSPI: if host function returned a pending Promise,
                         // transparently suspend and resume when resolved.
@@ -3292,7 +3339,10 @@ impl VM {
                         // Pop args + callee
                         for _ in 0..argc { self.stack.pop(); }
                         self.stack.pop(); // callee
-                        let result = (self.host_fns[idx])(&args);
+                        let placeholder: HostFn = Box::new(|_, _| Value::Null);
+                        let host_fn = std::mem::replace(&mut self.host_fns[idx], placeholder);
+                        let result = host_fn(self, &args);
+                        self.host_fns[idx] = host_fn;
                         self.push(result)?;
                     }
                     _other => {

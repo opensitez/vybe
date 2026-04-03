@@ -25,7 +25,7 @@ pub fn register(vm: &mut VM) {
             let type_str = type_name.to_string();
             vm.register_host_fn("vybe:gui", &hn, {
                 let type_str = type_str.clone();
-                Box::new(move |_args: &[Value]| {
+                Box::new(move |_vm: &mut VM, _args: &[Value]| {
                     use vybe_bytecode::value::Object;
                     let mut obj = Object::new();
                     obj.properties.insert("__control_type".into(), Value::String(Rc::from(type_str.as_str())));

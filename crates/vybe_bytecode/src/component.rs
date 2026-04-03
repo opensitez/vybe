@@ -77,6 +77,9 @@ pub enum Language {
     CSharp,
     Python,
     Dart,
+    Php,
+    Ruby,
+    Cobol,
     Wasm,
 }
 

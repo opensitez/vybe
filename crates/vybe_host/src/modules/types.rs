@@ -24,12 +24,12 @@ pub fn register(vm: &mut VM) {
 
 fn register_datetime(vm: &mut VM) {
     // DateTime.Now → creates a DateTime object from current time
-    vm.register_host_fn("vybe:types", "dateTimeNow", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeNow", Box::new(|_vm: &mut VM, _args: &[Value]| {
         make_datetime_from_epoch_secs(epoch_secs())
     }));
 
     // DateTime.Parse(str) → parse a date string
-    vm.register_host_fn("vybe:types", "dateTimeParse", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeParse", Box::new(|_vm: &mut VM, args: &[Value]| {
         // Simplified: just store the string, parse on demand
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         let mut obj = Object::new();
@@ -40,7 +40,7 @@ fn register_datetime(vm: &mut VM) {
     }));
 
     // New DateTime(year, month, day) or New DateTime(year, month, day, hour, min, sec)
-    vm.register_host_fn("vybe:types", "dateTimeNew", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeNew", Box::new(|_vm: &mut VM, args: &[Value]| {
         let _this = args.first(); // ignore this from New
         let year = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(2000);
         let month = args.get(2).map(|v| v.as_f64() as u64).unwrap_or(1);
@@ -65,19 +65,19 @@ fn register_datetime(vm: &mut VM) {
     }));
 
     // Instance methods called via vybe:runtime/callMethod or directly
-    vm.register_host_fn("vybe:types", "dateTimeAddDays", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeAddDays", Box::new(|_vm: &mut VM, args: &[Value]| {
         dt_add(args, 86400.0)
     }));
-    vm.register_host_fn("vybe:types", "dateTimeAddHours", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeAddHours", Box::new(|_vm: &mut VM, args: &[Value]| {
         dt_add(args, 3600.0)
     }));
-    vm.register_host_fn("vybe:types", "dateTimeAddMinutes", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeAddMinutes", Box::new(|_vm: &mut VM, args: &[Value]| {
         dt_add(args, 60.0)
     }));
-    vm.register_host_fn("vybe:types", "dateTimeAddSeconds", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeAddSeconds", Box::new(|_vm: &mut VM, args: &[Value]| {
         dt_add(args, 1.0)
     }));
-    vm.register_host_fn("vybe:types", "dateTimeAddMonths", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeAddMonths", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             let epoch = o.properties.get("__epoch").map(|v| v.as_f64()).unwrap_or(0.0) as u64;
@@ -91,7 +91,7 @@ fn register_datetime(vm: &mut VM) {
         }
         Value::Null
     }));
-    vm.register_host_fn("vybe:types", "dateTimeAddYears", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeAddYears", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             let epoch = o.properties.get("__epoch").map(|v| v.as_f64()).unwrap_or(0.0) as u64;
@@ -101,7 +101,7 @@ fn register_datetime(vm: &mut VM) {
         }
         Value::Null
     }));
-    vm.register_host_fn("vybe:types", "dateTimeToString", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeToString", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             let epoch = o.properties.get("__epoch").map(|v| v.as_f64()).unwrap_or(0.0) as u64;
@@ -110,7 +110,7 @@ fn register_datetime(vm: &mut VM) {
         }
         Value::String(Rc::from(""))
     }));
-    vm.register_host_fn("vybe:types", "dateTimeToShortDate", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dateTimeToShortDate", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             let epoch = o.properties.get("__epoch").map(|v| v.as_f64()).unwrap_or(0.0) as u64;
@@ -126,7 +126,7 @@ fn register_datetime(vm: &mut VM) {
 // ============================================================
 
 fn register_stringbuilder(vm: &mut VM) {
-    vm.register_host_fn("vybe:types", "stringBuilderNew", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "stringBuilderNew", Box::new(|_vm: &mut VM, args: &[Value]| {
         let _this = args.first();
         let initial = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         let mut obj = Object::new();
@@ -136,7 +136,7 @@ fn register_stringbuilder(vm: &mut VM) {
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
 
-    vm.register_host_fn("vybe:types", "sbAppend", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "sbAppend", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let text = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let mut o = obj.borrow_mut();
@@ -149,7 +149,7 @@ fn register_stringbuilder(vm: &mut VM) {
         args.first().cloned().unwrap_or(Value::Null) // return this for chaining
     }));
 
-    vm.register_host_fn("vybe:types", "sbAppendLine", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "sbAppendLine", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let text = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let mut o = obj.borrow_mut();
@@ -162,7 +162,7 @@ fn register_stringbuilder(vm: &mut VM) {
         args.first().cloned().unwrap_or(Value::Null)
     }));
 
-    vm.register_host_fn("vybe:types", "sbToString", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "sbToString", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             return o.properties.get("__buffer").cloned().unwrap_or(Value::String(Rc::from("")));
@@ -170,7 +170,7 @@ fn register_stringbuilder(vm: &mut VM) {
         Value::String(Rc::from(""))
     }));
 
-    vm.register_host_fn("vybe:types", "sbClear", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "sbClear", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             o.properties.insert("__buffer".into(), Value::String(Rc::from("")));
@@ -179,7 +179,7 @@ fn register_stringbuilder(vm: &mut VM) {
         args.first().cloned().unwrap_or(Value::Null)
     }));
 
-    vm.register_host_fn("vybe:types", "sbInsert", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "sbInsert", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
             let text = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
@@ -194,7 +194,7 @@ fn register_stringbuilder(vm: &mut VM) {
         args.first().cloned().unwrap_or(Value::Null)
     }));
 
-    vm.register_host_fn("vybe:types", "sbReplace", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "sbReplace", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let old = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let new = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
@@ -214,7 +214,7 @@ fn register_stringbuilder(vm: &mut VM) {
 // ============================================================
 
 fn register_list(vm: &mut VM) {
-    vm.register_host_fn("vybe:types", "listNew", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listNew", Box::new(|_vm: &mut VM, args: &[Value]| {
         let _this = args.first();
         let mut obj = Object::new_array(vec![]);
         obj.properties.insert("__type".into(), Value::String(Rc::from("List")));
@@ -222,7 +222,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.Add(item)
-    vm.register_host_fn("vybe:types", "listAdd", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listAdd", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let item = args.get(1).cloned().unwrap_or(Value::Null);
             let mut o = obj.borrow_mut();
@@ -237,7 +237,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.Remove(item) → bool
-    vm.register_host_fn("vybe:types", "listRemove", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listRemove", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let item_str = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let mut o = obj.borrow_mut();
@@ -255,7 +255,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.RemoveAt(index)
-    vm.register_host_fn("vybe:types", "listRemoveAt", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listRemoveAt", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
             let mut o = obj.borrow_mut();
@@ -270,7 +270,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.Contains(item) → bool
-    vm.register_host_fn("vybe:types", "listContains", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listContains", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let search = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -282,7 +282,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.Count → number
-    vm.register_host_fn("vybe:types", "listCount", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listCount", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(ref elems) = o.kind {
@@ -293,7 +293,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.Clear()
-    vm.register_host_fn("vybe:types", "listClear", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listClear", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {
@@ -306,7 +306,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.IndexOf(item) → index or -1
-    vm.register_host_fn("vybe:types", "listIndexOf", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listIndexOf", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let search = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -320,7 +320,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.Item(index) → element at index
-    vm.register_host_fn("vybe:types", "listItem", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listItem", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
             let o = obj.borrow();
@@ -332,7 +332,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.Insert(index, item)
-    vm.register_host_fn("vybe:types", "listInsert", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listInsert", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
             let item = args.get(2).cloned().unwrap_or(Value::Null);
@@ -349,7 +349,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.AddRange(collection)
-    vm.register_host_fn("vybe:types", "listAddRange", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listAddRange", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let (Some(Value::Object(dst)), Some(Value::Object(src))) = (args.first(), args.get(1)) {
             let s = src.borrow();
             if let ObjectKind::Array(ref src_elems) = s.kind {
@@ -368,7 +368,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.Sort() — simple sort
-    vm.register_host_fn("vybe:types", "listSort", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listSort", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {
@@ -379,7 +379,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.Reverse()
-    vm.register_host_fn("vybe:types", "listReverse", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listReverse", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {
@@ -390,7 +390,7 @@ fn register_list(vm: &mut VM) {
     }));
 
     // List.ToArray() → new array copy
-    vm.register_host_fn("vybe:types", "listToArray", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "listToArray", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(ref elems) = o.kind {
@@ -406,7 +406,7 @@ fn register_list(vm: &mut VM) {
 // ============================================================
 
 fn register_dictionary(vm: &mut VM) {
-    vm.register_host_fn("vybe:types", "dictNew", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dictNew", Box::new(|_vm: &mut VM, _args: &[Value]| {
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Rc::from("Dictionary")));
         obj.properties.insert("__data".into(), Value::Object(Rc::new(RefCell::new(Object::new()))));
@@ -415,7 +415,7 @@ fn register_dictionary(vm: &mut VM) {
     }));
 
     // Dict.Add(key, value) / Dict.Item(key) = value
-    vm.register_host_fn("vybe:types", "dictAdd", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dictAdd", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let value = args.get(2).cloned().unwrap_or(Value::Null);
@@ -431,7 +431,7 @@ fn register_dictionary(vm: &mut VM) {
     }));
 
     // Dict.Item(key) → value
-    vm.register_host_fn("vybe:types", "dictItem", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dictItem", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -447,7 +447,7 @@ fn register_dictionary(vm: &mut VM) {
     }));
 
     // Dict.ContainsKey(key) → bool
-    vm.register_host_fn("vybe:types", "dictContainsKey", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dictContainsKey", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -459,7 +459,7 @@ fn register_dictionary(vm: &mut VM) {
     }));
 
     // Dict.Remove(key) → bool
-    vm.register_host_fn("vybe:types", "dictRemove", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dictRemove", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -475,7 +475,7 @@ fn register_dictionary(vm: &mut VM) {
     }));
 
     // Dict.Keys → array
-    vm.register_host_fn("vybe:types", "dictKeys", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dictKeys", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             // Try __data first (old-style dicts), then enumerate properties directly
@@ -498,7 +498,7 @@ fn register_dictionary(vm: &mut VM) {
     }));
 
     // Dict.Values → array
-    vm.register_host_fn("vybe:types", "dictValues", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dictValues", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let Some(Value::Object(data)) = o.properties.get("__data") {
@@ -517,7 +517,7 @@ fn register_dictionary(vm: &mut VM) {
     }));
 
     // Dict.Clear()
-    vm.register_host_fn("vybe:types", "dictClear", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dictClear", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let Some(Value::Object(data)) = o.properties.get("__data") {
@@ -535,7 +535,7 @@ fn register_dictionary(vm: &mut VM) {
 // ============================================================
 
 fn register_process(vm: &mut VM) {
-    vm.register_host_fn("vybe:types", "processStart", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "processStart", Box::new(|_vm: &mut VM, args: &[Value]| {
         let cmd = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         let cmd_args = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         match std::process::Command::new(&cmd).args(cmd_args.split_whitespace()).output() {
@@ -629,12 +629,12 @@ fn date_to_epoch(year: i64, month: u64, day: u64, hour: u64, min: u64, sec: u64)
 
 fn register_queue_stack(vm: &mut VM) {
     // Queue — backed by array, FIFO
-    vm.register_host_fn("vybe:types", "queueNew", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("vybe:types", "queueNew", Box::new(|_vm: &mut VM, _args: &[Value]| {
         let mut obj = Object::new_array(vec![]);
         obj.properties.insert("__type".into(), Value::String(Rc::from("Queue")));
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
-    vm.register_host_fn("vybe:types", "queueEnqueue", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "queueEnqueue", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let item = args.get(1).cloned().unwrap_or(Value::Null);
             let mut o = obj.borrow_mut();
@@ -646,7 +646,7 @@ fn register_queue_stack(vm: &mut VM) {
         }
         Value::Null
     }));
-    vm.register_host_fn("vybe:types", "queueDequeue", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "queueDequeue", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {
@@ -660,7 +660,7 @@ fn register_queue_stack(vm: &mut VM) {
         }
         Value::Null
     }));
-    vm.register_host_fn("vybe:types", "queuePeek", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "queuePeek", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(ref elems) = o.kind {
@@ -671,12 +671,12 @@ fn register_queue_stack(vm: &mut VM) {
     }));
 
     // Stack — backed by array, LIFO
-    vm.register_host_fn("vybe:types", "stackNew", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("vybe:types", "stackNew", Box::new(|_vm: &mut VM, _args: &[Value]| {
         let mut obj = Object::new_array(vec![]);
         obj.properties.insert("__type".into(), Value::String(Rc::from("Stack")));
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
-    vm.register_host_fn("vybe:types", "stackPush", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "stackPush", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let item = args.get(1).cloned().unwrap_or(Value::Null);
             let mut o = obj.borrow_mut();
@@ -688,7 +688,7 @@ fn register_queue_stack(vm: &mut VM) {
         }
         Value::Null
     }));
-    vm.register_host_fn("vybe:types", "stackPop", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "stackPop", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {
@@ -700,7 +700,7 @@ fn register_queue_stack(vm: &mut VM) {
         }
         Value::Null
     }));
-    vm.register_host_fn("vybe:types", "stackPeek", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "stackPeek", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(ref elems) = o.kind {
@@ -711,12 +711,12 @@ fn register_queue_stack(vm: &mut VM) {
     }));
 
     // HashSet — backed by array with uniqueness
-    vm.register_host_fn("vybe:types", "hashSetNew", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("vybe:types", "hashSetNew", Box::new(|_vm: &mut VM, _args: &[Value]| {
         let mut obj = Object::new_array(vec![]);
         obj.properties.insert("__type".into(), Value::String(Rc::from("HashSet")));
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
-    vm.register_host_fn("vybe:types", "hashSetAdd", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "hashSetAdd", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let item = args.get(1).cloned().unwrap_or(Value::Null);
             let item_str = format!("{}", item);
@@ -732,7 +732,7 @@ fn register_queue_stack(vm: &mut VM) {
         }
         Value::Bool(false)
     }));
-    vm.register_host_fn("vybe:types", "hashSetContains", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "hashSetContains", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let search = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -742,7 +742,7 @@ fn register_queue_stack(vm: &mut VM) {
         }
         Value::Bool(false)
     }));
-    vm.register_host_fn("vybe:types", "hashSetRemove", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "hashSetRemove", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let search = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let mut o = obj.borrow_mut();
@@ -772,7 +772,7 @@ fn register_timespan(vm: &mut VM) {
         ("fromMilliseconds", 0.001),
     ] {
         let m = *mult;
-        vm.register_host_fn("vybe:types", &format!("timeSpan{}", name), Box::new(move |args: &[Value]| {
+        vm.register_host_fn("vybe:types", &format!("timeSpan{}", name), Box::new(move |_vm: &mut VM, args: &[Value]| {
             let val = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
             let total_secs = val * m;
             let mut obj = Object::new();
@@ -790,7 +790,7 @@ fn register_timespan(vm: &mut VM) {
             Value::Object(Rc::new(RefCell::new(obj)))
         }));
     }
-    vm.register_host_fn("vybe:types", "timeSpanZero", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("vybe:types", "timeSpanZero", Box::new(|_vm: &mut VM, _args: &[Value]| {
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Rc::from("TimeSpan")));
         obj.properties.insert("totalseconds".into(), Value::F64(0.0));
@@ -807,7 +807,7 @@ fn register_timespan(vm: &mut VM) {
 // ============================================================
 
 fn register_guid(vm: &mut VM) {
-    vm.register_host_fn("vybe:types", "guidNewGuid", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("vybe:types", "guidNewGuid", Box::new(|_vm: &mut VM, _args: &[Value]| {
         // Simple UUID v4 using random bytes
         let mut bytes = [0u8; 16];
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
@@ -829,10 +829,10 @@ fn register_guid(vm: &mut VM) {
         );
         Value::String(Rc::from(guid.as_str()))
     }));
-    vm.register_host_fn("vybe:types", "guidEmpty", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("vybe:types", "guidEmpty", Box::new(|_vm: &mut VM, _args: &[Value]| {
         Value::String(Rc::from("00000000-0000-0000-0000-000000000000"))
     }));
-    vm.register_host_fn("vybe:types", "guidParse", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "guidParse", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         Value::String(Rc::from(s.as_str()))
     }));
@@ -844,23 +844,23 @@ fn register_guid(vm: &mut VM) {
 
 fn register_primitives(vm: &mut VM) {
     // Double
-    vm.register_host_fn("vybe:types", "doubleParse", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "doubleParse", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         Value::F64(s.trim().parse::<f64>().unwrap_or(f64::NAN))
     }));
-    vm.register_host_fn("vybe:types", "doubleTryParse", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "doubleTryParse", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         Value::Bool(s.trim().parse::<f64>().is_ok())
     }));
 
     // Boolean
-    vm.register_host_fn("vybe:types", "booleanParse", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "booleanParse", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default().to_lowercase();
         Value::Bool(s == "true" || s == "1" || s == "yes")
     }));
 
     // Array static methods
-    vm.register_host_fn("vybe:types", "arrayClear", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "arrayClear", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {
@@ -869,7 +869,7 @@ fn register_primitives(vm: &mut VM) {
         }
         Value::Null
     }));
-    vm.register_host_fn("vybe:types", "arrayCopy", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "arrayCopy", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let (Some(Value::Object(src)), Some(Value::Object(dst))) = (args.first(), args.get(1)) {
             let s = src.borrow();
             let mut d = dst.borrow_mut();
@@ -882,7 +882,7 @@ fn register_primitives(vm: &mut VM) {
         }
         Value::Null
     }));
-    vm.register_host_fn("vybe:types", "arrayResize", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "arrayResize", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let new_size = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
             let mut o = obj.borrow_mut();
@@ -893,7 +893,7 @@ fn register_primitives(vm: &mut VM) {
         }
         Value::Null
     }));
-    vm.register_host_fn("vybe:types", "arraySort", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:types", "arraySort", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(elems) = &mut o.kind {

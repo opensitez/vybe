@@ -41,7 +41,7 @@ pub fn compile_and_run(source: &str) -> Result<Vec<String>, String> {
     vybe_host::register_all(&mut vm);
 
     // Override console.log to capture output
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_vm: &mut VM, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
         out.borrow_mut().push(parts.join(" "));
         Value::Null

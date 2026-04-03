@@ -7,26 +7,26 @@ thread_local! {
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("wasi:cli", "log", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(|_vm: &mut VM, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
         println!("{}", parts.join(" "));
         Value::Null
     }));
 
-    vm.register_host_fn("wasi:cli", "error", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "error", Box::new(|_vm: &mut VM, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
         eprintln!("{}", parts.join(" "));
         Value::Null
     }));
 
-    vm.register_host_fn("wasi:cli", "warn", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "warn", Box::new(|_vm: &mut VM, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
         eprintln!("[warn] {}", parts.join(" "));
         Value::Null
     }));
 
     // stdin — read a line from standard input (blocking)
-    vm.register_host_fn("wasi:cli", "readLine", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "readLine", Box::new(|_vm: &mut VM, args: &[Value]| {
         // Optional prompt
         if let Some(prompt) = args.first() {
             let p = format!("{}", prompt);
@@ -44,7 +44,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // console.time / console.timeEnd — simple profiling
-    vm.register_host_fn("wasi:cli", "time", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "time", Box::new(|_vm: &mut VM, args: &[Value]| {
         let label = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "default".into());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -55,7 +55,7 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
-    vm.register_host_fn("wasi:cli", "timeEnd", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "timeEnd", Box::new(|_vm: &mut VM, args: &[Value]| {
         let label = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "default".into());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -70,7 +70,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // exit — terminate with exit code
-    vm.register_host_fn("wasi:cli", "exit", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "exit", Box::new(|_vm: &mut VM, args: &[Value]| {
         let code = args.first().map(|v| v.as_f64() as i32).unwrap_or(0);
         std::process::exit(code);
     }));

@@ -6,7 +6,7 @@ use vybe_bytecode::value::{Object, ObjectKind};
 pub fn register(vm: &mut VM) {
     // -- Map constructor: new Map() --
     // Called with (this) from `new Map()`. Sets up methods on this.
-    vm.register_host_fn("vybe:collections", "Map", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "Map", Box::new(|_vm: &mut VM, args: &[Value]| {
         let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
             .unwrap_or_else(|| Value::Object(Rc::new(RefCell::new(Object::new()))));
         if let Value::Object(obj) = &this {
@@ -19,7 +19,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Map.prototype.set(key, value)
-    vm.register_host_fn("vybe:collections", "mapSet", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "mapSet", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let value = args.get(2).cloned().unwrap_or(Value::Null);
@@ -35,7 +35,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Map.prototype.get(key)
-    vm.register_host_fn("vybe:collections", "mapGet", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "mapGet", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -47,7 +47,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Map.prototype.has(key)
-    vm.register_host_fn("vybe:collections", "mapHas", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "mapHas", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -59,7 +59,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Map.prototype.delete(key)
-    vm.register_host_fn("vybe:collections", "mapDelete", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "mapDelete", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -75,7 +75,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Map.prototype.keys()
-    vm.register_host_fn("vybe:collections", "mapKeys", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "mapKeys", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let Some(Value::Object(data)) = o.properties.get("__data") {
@@ -89,7 +89,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // -- Set constructor: new Set() --
-    vm.register_host_fn("vybe:collections", "Set", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "Set", Box::new(|_vm: &mut VM, args: &[Value]| {
         let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
             .unwrap_or_else(|| Value::Object(Rc::new(RefCell::new(Object::new()))));
         if let Value::Object(obj) = &this {
@@ -102,7 +102,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Set.prototype.add(value)
-    vm.register_host_fn("vybe:collections", "setAdd", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "setAdd", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let value = args.get(1).cloned().unwrap_or(Value::Null);
             let value_str = format!("{}", value);
@@ -125,7 +125,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Set.prototype.has(value)
-    vm.register_host_fn("vybe:collections", "setHas", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "setHas", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let value_str = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -140,7 +140,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Set.prototype.delete(value)
-    vm.register_host_fn("vybe:collections", "setDelete", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "setDelete", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let value_str = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let o = obj.borrow();
@@ -162,7 +162,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Set.prototype.values()
-    vm.register_host_fn("vybe:collections", "setValues", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "setValues", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let Some(Value::Object(items)) = o.properties.get("__items") {
@@ -177,7 +177,7 @@ pub fn register(vm: &mut VM) {
 
     // -- Generic has/delete — dispatch by __type --
 
-    vm.register_host_fn("vybe:collections", "collHas", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "collHas", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             let type_str = o.properties.get("__type").map(|v| format!("{}", v)).unwrap_or_default();
@@ -199,7 +199,7 @@ pub fn register(vm: &mut VM) {
         Value::Bool(false)
     }));
 
-    vm.register_host_fn("vybe:collections", "collDelete", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:collections", "collDelete", Box::new(|_vm: &mut VM, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let type_str = {
                 let o = obj.borrow();

@@ -7,7 +7,7 @@ use vybe_bytecode::value::Object;
 
 pub fn register(vm: &mut VM) {
     // New Point(x, y)
-    vm.register_host_fn("vybe:drawing", "pointNew", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:drawing", "pointNew", Box::new(|_vm: &mut VM, args: &[Value]| {
         let x = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
         let y = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
         let mut obj = Object::new();
@@ -18,7 +18,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // New Size(width, height)
-    vm.register_host_fn("vybe:drawing", "sizeNew", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:drawing", "sizeNew", Box::new(|_vm: &mut VM, args: &[Value]| {
         let w = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
         let h = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
         let mut obj = Object::new();
@@ -29,7 +29,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // New Font(name, size)
-    vm.register_host_fn("vybe:drawing", "fontNew", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:drawing", "fontNew", Box::new(|_vm: &mut VM, args: &[Value]| {
         let name = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "Arial".into());
         let size = args.get(1).map(|v| v.as_f64()).unwrap_or(12.0);
         let mut obj = Object::new();

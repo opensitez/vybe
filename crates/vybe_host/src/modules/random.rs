@@ -30,12 +30,12 @@ fn next_f64() -> f64 {
 
 pub fn register(vm: &mut VM) {
     // Random float in [0, 1)
-    vm.register_host_fn("wasi:random", "random", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("wasi:random", "random", Box::new(|_vm: &mut VM, _args: &[Value]| {
         Value::F64(next_f64())
     }));
 
     // Random integer in [min, max] inclusive
-    vm.register_host_fn("wasi:random", "randomInt", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:random", "randomInt", Box::new(|_vm: &mut VM, args: &[Value]| {
         let min = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
         let max = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(100);
         if max <= min { return Value::F64(min as f64); }
@@ -45,14 +45,14 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Seed the RNG
-    vm.register_host_fn("wasi:random", "seed", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:random", "seed", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| v.as_f64() as u64).unwrap_or(42);
         RNG_STATE.with(|state| *state.borrow_mut() = s);
         Value::Null
     }));
 
     // Random bytes (returns array of u8 values)
-    vm.register_host_fn("wasi:random", "randomBytes", Box::new(|args: &[Value]| {
+    vm.register_host_fn("wasi:random", "randomBytes", Box::new(|_vm: &mut VM, args: &[Value]| {
         let n = args.first().map(|v| v.as_f64() as usize).unwrap_or(16);
         let mut bytes = Vec::with_capacity(n);
         for _ in 0..n {
@@ -62,7 +62,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Random UUID v4
-    vm.register_host_fn("wasi:random", "uuid", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("wasi:random", "uuid", Box::new(|_vm: &mut VM, _args: &[Value]| {
         let a = next_u64();
         let b = next_u64();
         let s = format!(

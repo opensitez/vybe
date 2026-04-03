@@ -6,13 +6,13 @@ use vybe_bytecode::{VM, Value};
 
 pub fn register(vm: &mut VM) {
     // SHA256 hash
-    vm.register_host_fn("vybe:crypto", "sha256", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:crypto", "sha256", Box::new(|_vm: &mut VM, args: &[Value]| {
         let input = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         Value::String(Rc::from(sha256_hex(input.as_bytes()).as_str()))
     }));
 
     // MD5 hash
-    vm.register_host_fn("vybe:crypto", "md5", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:crypto", "md5", Box::new(|_vm: &mut VM, args: &[Value]| {
         let input = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         Value::String(Rc::from(md5_hex(input.as_bytes()).as_str()))
     }));

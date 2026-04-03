@@ -2,7 +2,7 @@ use std::rc::Rc;
 use vybe_bytecode::{VM, Value};
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:convert", "parseInt", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "parseInt", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         match s.trim().parse::<i64>() {
             Ok(n) => Value::F64(n as f64),
@@ -12,35 +12,35 @@ pub fn register(vm: &mut VM) {
             }
         }
     }));
-    vm.register_host_fn("vybe:convert", "parseFloat", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "parseFloat", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         Value::F64(s.trim().parse::<f64>().unwrap_or(f64::NAN))
     }));
-    vm.register_host_fn("vybe:convert", "toString", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "toString", Box::new(|_vm: &mut VM, args: &[Value]| {
         Value::String(std::rc::Rc::from(format!("{}", args.first().unwrap_or(&Value::Null)).as_str()))
     }));
-    vm.register_host_fn("vybe:convert", "isNaN", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "isNaN", Box::new(|_vm: &mut VM, args: &[Value]| {
         Value::Bool(args.first().map(|v| v.as_f64().is_nan()).unwrap_or(true))
     }));
-    vm.register_host_fn("vybe:convert", "isFinite", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "isFinite", Box::new(|_vm: &mut VM, args: &[Value]| {
         Value::Bool(args.first().map(|v| v.as_f64().is_finite()).unwrap_or(false))
     }));
 
     // Number.isInteger(n)
-    vm.register_host_fn("vybe:convert", "isInteger", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "isInteger", Box::new(|_vm: &mut VM, args: &[Value]| {
         let n = args.first().map(|v| v.as_f64()).unwrap_or(f64::NAN);
         Value::Bool(!n.is_nan() && !n.is_infinite() && n == n.trunc())
     }));
 
     // btoa(string) — base64 encode
-    vm.register_host_fn("vybe:convert", "btoa", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "btoa", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         use std::rc::Rc;
         Value::String(Rc::from(base64_encode(s.as_bytes()).as_str()))
     }));
 
     // atob(base64) — base64 decode
-    vm.register_host_fn("vybe:convert", "atob", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "atob", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         use std::rc::Rc;
         match base64_decode(&s) {
@@ -50,7 +50,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // encodeURIComponent
-    vm.register_host_fn("vybe:convert", "encodeURIComponent", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "encodeURIComponent", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         use std::rc::Rc;
         let encoded: String = s.chars().map(|c| {
@@ -66,7 +66,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // decodeURIComponent
-    vm.register_host_fn("vybe:convert", "decodeURIComponent", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "decodeURIComponent", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         use std::rc::Rc;
         let mut result = String::new();
@@ -89,13 +89,13 @@ pub fn register(vm: &mut VM) {
     // --- VB-compatible conversion functions ---
 
     // val(str) → parse as number, 0 on failure
-    vm.register_host_fn("vybe:convert", "val", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "val", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         Value::F64(s.trim().parse::<f64>().unwrap_or(0.0))
     }));
 
     // isNumeric(value) → true if can be parsed as number
-    vm.register_host_fn("vybe:convert", "isNumeric", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "isNumeric", Box::new(|_vm: &mut VM, args: &[Value]| {
         match args.first().unwrap_or(&Value::Null) {
             Value::F64(n) => Value::Bool(!n.is_nan()),
             Value::I32(_) | Value::I64(_) => Value::Bool(true),
@@ -105,12 +105,12 @@ pub fn register(vm: &mut VM) {
     }));
 
     // cint(value) → floor to integer
-    vm.register_host_fn("vybe:convert", "cint", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "cint", Box::new(|_vm: &mut VM, args: &[Value]| {
         Value::F64(args.first().map(|v| v.as_f64().floor()).unwrap_or(0.0))
     }));
 
     // cdbl(value) → to double (identity for numbers, parse for strings)
-    vm.register_host_fn("vybe:convert", "cdbl", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "cdbl", Box::new(|_vm: &mut VM, args: &[Value]| {
         match args.first().unwrap_or(&Value::Null) {
             Value::String(s) => Value::F64(s.trim().parse::<f64>().unwrap_or(0.0)),
             v => Value::F64(v.as_f64()),
@@ -118,17 +118,17 @@ pub fn register(vm: &mut VM) {
     }));
 
     // clng(value) → Long (same as cint for our VM)
-    vm.register_host_fn("vybe:convert", "clng", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "clng", Box::new(|_vm: &mut VM, args: &[Value]| {
         Value::F64(args.first().map(|v| v.as_f64().floor()).unwrap_or(0.0))
     }));
 
     // csng(value) → Single (just convert to float)
-    vm.register_host_fn("vybe:convert", "csng", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "csng", Box::new(|_vm: &mut VM, args: &[Value]| {
         Value::F64(args.first().map(|v| v.as_f64()).unwrap_or(0.0))
     }));
 
     // cchar(value) → first character
-    vm.register_host_fn("vybe:convert", "cchar", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "cchar", Box::new(|_vm: &mut VM, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         match s.chars().next() {
             Some(c) => Value::String(Rc::from(c.to_string().as_str())),
@@ -137,26 +137,26 @@ pub fn register(vm: &mut VM) {
     }));
 
     // hex(value) → hex string
-    vm.register_host_fn("vybe:convert", "hex", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "hex", Box::new(|_vm: &mut VM, args: &[Value]| {
         let n = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
         Value::String(Rc::from(format!("{:X}", n).as_str()))
     }));
 
     // oct(value) → octal string
-    vm.register_host_fn("vybe:convert", "oct", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "oct", Box::new(|_vm: &mut VM, args: &[Value]| {
         let n = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
         Value::String(Rc::from(format!("{:o}", n).as_str()))
     }));
 
     // str(value) → string with leading space for positive numbers (VB6 compat)
-    vm.register_host_fn("vybe:convert", "str", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "str", Box::new(|_vm: &mut VM, args: &[Value]| {
         let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
         let s = if n >= 0.0 { format!(" {}", n) } else { format!("{}", n) };
         Value::String(Rc::from(s.as_str()))
     }));
 
     // vartype(value) → VB VarType constant
-    vm.register_host_fn("vybe:convert", "varType", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "varType", Box::new(|_vm: &mut VM, args: &[Value]| {
         let vt = match args.first().unwrap_or(&Value::Null) {
             Value::Null | Value::Undefined => 1.0,     // vbNull
             Value::Bool(_) => 11.0, // vbBoolean
@@ -170,10 +170,10 @@ pub fn register(vm: &mut VM) {
     }));
 
     // isdate(value) → always false for now (we don't have a Date type in the VM)
-    vm.register_host_fn("vybe:convert", "isDate", Box::new(|_args: &[Value]| Value::Bool(false)));
+    vm.register_host_fn("vybe:convert", "isDate", Box::new(|_vm: &mut VM, _args: &[Value]| Value::Bool(false)));
 
     // isempty(value) → null or empty string
-    vm.register_host_fn("vybe:convert", "isEmpty", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "isEmpty", Box::new(|_vm: &mut VM, args: &[Value]| {
         match args.first().unwrap_or(&Value::Null) {
             Value::Null => Value::Bool(true),
             Value::String(s) => Value::Bool(s.is_empty()),
@@ -182,13 +182,13 @@ pub fn register(vm: &mut VM) {
     }));
 
     // isobject(value) → true if Object
-    vm.register_host_fn("vybe:convert", "isObject", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "isObject", Box::new(|_vm: &mut VM, args: &[Value]| {
         Value::Bool(matches!(args.first().unwrap_or(&Value::Null), Value::Object(_)))
     }));
 
     // isTypeOf(value, typeName) → check if value's type matches or inherits from typeName
     // Checks __type property and __class_name for user classes
-    vm.register_host_fn("vybe:convert", "isTypeOf", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "isTypeOf", Box::new(|_vm: &mut VM, args: &[Value]| {
         let target = args.get(1).map(|v| format!("{}", v).to_lowercase()).unwrap_or_default();
         match args.first() {
             Some(Value::Object(obj)) => {
@@ -223,7 +223,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // iif(condition, trueValue, falseValue) → ternary
-    vm.register_host_fn("vybe:convert", "iif", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "iif", Box::new(|_vm: &mut VM, args: &[Value]| {
         let cond = match args.first().unwrap_or(&Value::Null) {
             Value::Bool(b) => *b,
             Value::F64(n) => *n != 0.0,
@@ -238,7 +238,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // choose(index, val1, val2, ...) → value at index (1-based)
-    vm.register_host_fn("vybe:convert", "choose", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "choose", Box::new(|_vm: &mut VM, args: &[Value]| {
         let idx = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
         if idx >= 1 && idx < args.len() {
             args[idx].clone()
@@ -248,7 +248,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // rgb(r, g, b) → color as integer
-    vm.register_host_fn("vybe:convert", "rgb", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:convert", "rgb", Box::new(|_vm: &mut VM, args: &[Value]| {
         let r = args.first().map(|v| v.as_f64() as u32).unwrap_or(0) & 0xFF;
         let g = args.get(1).map(|v| v.as_f64() as u32).unwrap_or(0) & 0xFF;
         let b = args.get(2).map(|v| v.as_f64() as u32).unwrap_or(0) & 0xFF;

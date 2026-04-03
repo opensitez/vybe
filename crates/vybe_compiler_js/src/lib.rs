@@ -30,7 +30,7 @@ pub fn setup_and_compile_with_gui(
 
 /// Register JS-specific coercion host functions.
 pub fn register_js_coercion(vm: &mut VM) {
-    vm.register_host_fn("js:coerce", "typeof", Box::new(|args: &[Value]| {
+    vm.register_host_fn("js:coerce", "typeof", Box::new(|_vm: &mut vybe_bytecode::VM, args: &[Value]| {
         let v = args.first().unwrap_or(&Value::Null);
         let s = match v {
             Value::Null => "object",  // JS spec: typeof null === "object"
@@ -50,25 +50,25 @@ pub fn register_js_coercion(vm: &mut VM) {
         Value::String(Rc::from(s))
     }));
 
-    vm.register_host_fn("js:coerce", "toNumber", Box::new(|args: &[Value]| {
+    vm.register_host_fn("js:coerce", "toNumber", Box::new(|_vm: &mut vybe_bytecode::VM, args: &[Value]| {
         Value::F64(js_to_number(args.first().unwrap_or(&Value::Null)))
     }));
 
-    vm.register_host_fn("js:coerce", "toString", Box::new(|args: &[Value]| {
+    vm.register_host_fn("js:coerce", "toString", Box::new(|_vm: &mut vybe_bytecode::VM, args: &[Value]| {
         Value::String(Rc::from(format!("{}", args.first().unwrap_or(&Value::Null)).as_str()))
     }));
 
-    vm.register_host_fn("js:coerce", "toBoolean", Box::new(|args: &[Value]| {
+    vm.register_host_fn("js:coerce", "toBoolean", Box::new(|_vm: &mut vybe_bytecode::VM, args: &[Value]| {
         Value::Bool(js_truthy(args.first().unwrap_or(&Value::Null)))
     }));
 
-    vm.register_host_fn("js:coerce", "looseEq", Box::new(|args: &[Value]| {
+    vm.register_host_fn("js:coerce", "looseEq", Box::new(|_vm: &mut vybe_bytecode::VM, args: &[Value]| {
         let a = args.first().unwrap_or(&Value::Null);
         let b = args.get(1).unwrap_or(&Value::Null);
         Value::Bool(js_loose_eq(a, b))
     }));
 
-    vm.register_host_fn("js:coerce", "add", Box::new(|args: &[Value]| {
+    vm.register_host_fn("js:coerce", "add", Box::new(|_vm: &mut vybe_bytecode::VM, args: &[Value]| {
         let a = args.first().unwrap_or(&Value::Null);
         let b = args.get(1).unwrap_or(&Value::Null);
         if matches!(a, Value::String(_)) || matches!(b, Value::String(_)) {

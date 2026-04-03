@@ -7,7 +7,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     let q = queue.clone();
     vm.register_host_fn("vybe:gui", "createForm", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             let title = str_arg(args, 0, "Form1");
             let name = title.clone();
             q.borrow_mut().push(SideEffect::PropertyChange {
@@ -19,7 +19,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     });
     vm.register_host_fn("vybe:gui", "addControl", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             let form_name = str_arg(args, 0, "Form1");
             let control_type = str_arg(args, 1, "Button");
             let control_name = str_arg(args, 2, "control1");
@@ -36,7 +36,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     });
     vm.register_host_fn("vybe:gui", "setProperty", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             let control = str_arg(args, 0, "");
             let property = str_arg(args, 1, "");
             let value = vm_to_prop(args.get(2).cloned().unwrap_or(Value::Null));
@@ -44,10 +44,10 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
             Value::Null
         })
     });
-    vm.register_host_fn("vybe:gui", "getProperty", Box::new(|_| Value::Null));
+    vm.register_host_fn("vybe:gui", "getProperty", Box::new(|_vm, _| Value::Null));
     vm.register_host_fn("vybe:gui", "onEvent", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             let control = str_arg(args, 0, "");
             let event = str_arg(args, 1, "");
             let callback = args.get(2).cloned().unwrap_or(Value::Null);
@@ -57,7 +57,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     });
     vm.register_host_fn("vybe:gui", "showForm", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             let form_name = match args.first() {
                 Some(Value::Object(obj)) => {
                     let o = obj.borrow();
@@ -72,7 +72,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     });
     vm.register_host_fn("vybe:gui", "runApplication", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             // Accept either a string name or a form object
             let form_name = match args.first() {
                 Some(Value::Object(obj)) => {
@@ -90,14 +90,14 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     });
     vm.register_host_fn("vybe:gui", "msgBox", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             q.borrow_mut().push(SideEffect::MsgBox { text: str_arg(args, 0, ""), title: str_arg(args, 1, "") });
             Value::Null
         })
     });
     vm.register_host_fn("vybe:gui", "closeForm", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             let form_name = match args.first() {
                 Some(Value::Object(obj)) => {
                     let o = obj.borrow();
@@ -116,7 +116,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     // The object has __control_type, __control_name, and methods
     vm.register_host_fn("vybe:gui", "newControl", {
         let _q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             use vybe_bytecode::value::Object;
             static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
             let control_type = str_arg(args, 0, "Button");
@@ -139,7 +139,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     // Pushes a PropertyChange side effect using the control's __control_name
     vm.register_host_fn("vybe:gui", "controlSetProperty", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.borrow();
                 let control_name = o.properties.get("__control_name")
@@ -168,7 +168,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     // Reads __control_type, __control_name, and position from the object
     vm.register_host_fn("vybe:gui", "controlsAdd", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             // Accept either a string or a form object as first arg
             let form_name = match args.first() {
                 Some(Value::Object(obj)) => {
@@ -229,7 +229,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     // newForm(title?) → creates a form object
     vm.register_host_fn("vybe:gui", "newForm", {
         let q = q.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             use vybe_bytecode::value::Object;
             let title = str_arg(args, 0, "Form1");
             let name = title.clone();
@@ -249,7 +249,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     });
 
     // No-op function for layout methods (SuspendLayout, ResumeLayout, etc.)
-    vm.register_host_fn("vybe:gui", "noop", Box::new(|_args: &[Value]| Value::Null));
+    vm.register_host_fn("vybe:gui", "noop", Box::new(|_vm: &mut VM, _args: &[Value]| Value::Null));
 
     // Generic WinForms control constructor: new_Button(), new_Label(), etc.
     // Creates a simple object with __control_type set.
@@ -270,7 +270,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     ];
     // Register control methods as host functions (shared across all instances)
     let q_show = q.clone();
-    vm.register_host_fn("vybe:gui", "__ctrl_show", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "__ctrl_show", Box::new(move |_vm: &mut VM, args: &[Value]| {
         let name = if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             o.properties.get("name").or_else(|| o.properties.get("__control_name"))
@@ -280,7 +280,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
         Value::Null
     }));
     let q_close = q.clone();
-    vm.register_host_fn("vybe:gui", "__ctrl_close", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "__ctrl_close", Box::new(move |_vm: &mut VM, args: &[Value]| {
         let name = if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             o.properties.get("name").or_else(|| o.properties.get("__control_name"))
@@ -289,10 +289,10 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
         q_close.borrow_mut().push(SideEffect::FormClose { form_name: name });
         Value::Null
     }));
-    vm.register_host_fn("vybe:gui", "__ctrl_focus", Box::new(|_| Value::Null));
-    vm.register_host_fn("vybe:gui", "__ctrl_hide", Box::new(|_| Value::Null));
+    vm.register_host_fn("vybe:gui", "__ctrl_focus", Box::new(|_vm, _| Value::Null));
+    vm.register_host_fn("vybe:gui", "__ctrl_hide", Box::new(|_vm, _| Value::Null));
     // ShowDialog stub — returns DialogResult.OK (1). Overridden by skia_form with rfd.
-    vm.register_host_fn("vybe:gui", "__dlg_showdialog", Box::new(|_| Value::I32(1)));
+    vm.register_host_fn("vybe:gui", "__dlg_showdialog", Box::new(|_vm, _| Value::I32(1)));
 
     // Get method refs for attaching to control objects
     let show_ref = {
@@ -334,7 +334,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
         let focus = focus_ref.clone();
         let dlg_ref = dlg_ref.clone();
         let hide = hide_ref.clone();
-        vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_args: &[Value]| {
+        vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_vm: &mut VM, _args: &[Value]| {
             use std::sync::atomic::{AtomicU32, Ordering};
             static COUNTER: AtomicU32 = AtomicU32::new(1);
             let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -367,7 +367,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     // addHandler(controlName, eventName, callback) → registers an event handler
     vm.register_host_fn("vybe:gui", "addHandler", {
         let q = queue.clone();
-        Box::new(move |args: &[Value]| {
+        Box::new(move |_vm: &mut VM, args: &[Value]| {
             let ctrl = str_arg(args, 0, "");
             let event = str_arg(args, 1, "");
             if let Some(callback) = args.get(2) {
@@ -378,7 +378,7 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
     });
 
     // removeHandler(eventTarget, handlerName) → removes an event handler
-    vm.register_host_fn("vybe:gui", "removeHandler", Box::new(|args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "removeHandler", Box::new(|_vm: &mut VM, args: &[Value]| {
         let _target = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         let _handler = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         // In the side-effect model, event handlers are managed by the UI layer.

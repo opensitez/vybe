@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use vybe_bytecode::{Chunk, Op, Value};
 use vybe_bytecode::chunk::TypeEntry;
+use vybe_compiler_common as common;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
 use vybe_compiler_common::strings as common_strings;
@@ -2464,6 +2465,317 @@ impl Compiler {
             _ => {}
         }
 
+        // LINQ methods (Where, Select, Any, All, ForEach, Aggregate, OrderBy, etc.)
+        // are handled by the vybe:runtime callMethod host function which uses
+        // vm.invoke_callback() to call VM lambdas. No compiler desugaring needed.
+
+        // LINQ (Where, Select, Any, All, ForEach, Aggregate, OrderBy, etc.)
+        // handled by callMethod host with vm.invoke_callback(). Removed compiler desugaring.
+        // LINQ methods are handled by callMethod host + invoke_callback.
+        // No compiler-side desugaring needed.
+        match "__skip__" {
+            "where" => {
+                self.compile_expression(obj)?;
+                let arr_slot = self.define_local("__linq_arr");
+                self.emit_u16(Op::local_set, arr_slot);
+                if let Some(arg) = args.first() {
+                    self.compile_expression(arg)?;
+                    let fn_slot = self.define_local("__linq_fn");
+                    self.emit_u16(Op::local_set, fn_slot);
+                    let res_slot = self.define_local("__linq_res");
+                    let i_slot = self.define_local("__linq_i");
+                    let elem_slot = self.define_local("__linq_elem");
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::loops::emit_filter(&mut self.chunks[c], fn_slot, arr_slot, res_slot, i_slot, elem_slot, line);
+                } else {
+                    self.emit_u16(Op::local_get, arr_slot);
+                }
+                return Ok(());
+            }
+            "select" => {
+                // collection.Select(mapper) → map
+                self.compile_expression(obj)?;
+                let arr_slot = self.define_local("__linq_arr");
+                self.emit_u16(Op::local_set, arr_slot);
+                if let Some(arg) = args.first() {
+                    self.compile_expression(arg)?;
+                    let fn_slot = self.define_local("__linq_fn");
+                    self.emit_u16(Op::local_set, fn_slot);
+                    let res_slot = self.define_local("__linq_res");
+                    let i_slot = self.define_local("__linq_i");
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::loops::emit_map(&mut self.chunks[c], fn_slot, arr_slot, res_slot, i_slot, line);
+                } else {
+                    self.emit_u16(Op::local_get, arr_slot);
+                }
+                return Ok(());
+            }
+            "orderby" | "orderbydescending" => {
+                self.compile_expression(obj)?;
+                let tmp = self.define_local("__sort_tmp");
+                self.emit_u16(Op::local_set, tmp);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::bundle::emit_call_push_func(&mut self.chunks[c], "__vybe_sorted", line);
+                self.emit_u16(Op::local_get, tmp);
+                common::bundle::emit_call_invoke(&mut self.chunks[c], 1, line);
+                return Ok(());
+            }
+            "groupby" => {
+                // collection.GroupBy(keySelector) → dict of arrays
+                self.compile_expression(obj)?;
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::dict::emit_new(&mut self.chunks[c], line);
+                return Ok(());
+            }
+            "firstordefault" => {
+                self.compile_expression(obj)?;
+                // Check if array has elements
+                self.emit(Op::dup);
+                self.emit(Op::array_length);
+                self.emit_constant(Value::I32(0));
+                self.emit(Op::dyn_gt);
+                let has_items = self.emit_jump(Op::br_if_true);
+                self.emit(Op::drop);
+                self.emit(Op::null);
+                let end = self.emit_jump(Op::br);
+                self.patch_jump(has_items);
+                self.emit_constant(Value::I32(0));
+                self.emit(Op::array_get);
+                self.patch_jump(end);
+                return Ok(());
+            }
+            "lastordefault" => {
+                self.compile_expression(obj)?;
+                self.emit(Op::dup);
+                self.emit(Op::array_length);
+                self.emit_constant(Value::I32(0));
+                self.emit(Op::dyn_gt);
+                let has_items = self.emit_jump(Op::br_if_true);
+                self.emit(Op::drop);
+                self.emit(Op::null);
+                let end = self.emit_jump(Op::br);
+                self.patch_jump(has_items);
+                self.emit(Op::dup);
+                self.emit(Op::array_length);
+                self.emit_constant(Value::I32(1));
+                self.emit(Op::f64_sub);
+                self.emit(Op::array_get);
+                self.patch_jump(end);
+                return Ok(());
+            }
+            "first" => {
+                self.compile_expression(obj)?;
+                self.emit_constant(Value::I32(0));
+                self.emit(Op::array_get);
+                return Ok(());
+            }
+            "last" => {
+                self.compile_expression(obj)?;
+                self.emit(Op::dup);
+                self.emit(Op::array_length);
+                self.emit_constant(Value::I32(1));
+                self.emit(Op::f64_sub);
+                self.emit(Op::array_get);
+                return Ok(());
+            }
+            "any" => {
+                if args.is_empty() {
+                    // collection.Any() → length > 0
+                    self.compile_expression(obj)?;
+                    self.emit(Op::array_length);
+                    self.emit_constant(Value::I32(0));
+                    self.emit(Op::dyn_gt);
+                } else {
+                    // collection.Any(predicate) → filter then check length
+                    self.compile_expression(obj)?;
+                    let arr_slot = self.define_local("__any_arr");
+                    self.emit_u16(Op::local_set, arr_slot);
+                    self.compile_expression(&args[0])?;
+                    let fn_slot = self.define_local("__any_fn");
+                    self.emit_u16(Op::local_set, fn_slot);
+                    let res_slot = self.define_local("__any_res");
+                    let i_slot = self.define_local("__any_i");
+                    let elem_slot = self.define_local("__any_elem");
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::loops::emit_filter(&mut self.chunks[c], fn_slot, arr_slot, res_slot, i_slot, elem_slot, line);
+                    self.emit(Op::array_length);
+                    self.emit_constant(Value::I32(0));
+                    self.emit(Op::dyn_gt);
+                }
+                return Ok(());
+            }
+            "all" => {
+                if let Some(arg) = args.first() {
+                    self.compile_expression(obj)?;
+                    let arr_slot = self.define_local("__all_arr");
+                    self.emit_u16(Op::local_set, arr_slot);
+                    self.compile_expression(arg)?;
+                    let fn_slot = self.define_local("__all_fn");
+                    self.emit_u16(Op::local_set, fn_slot);
+                    // Filter for NOT matching → if result empty, all match
+                    self.emit(Op::r#true);
+                    let res_slot = self.define_local("__all_res");
+                    self.emit_u16(Op::local_set, res_slot);
+                    let i_slot = self.define_local("__all_i");
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    let (loop_start, exit) = common::loops::emit_for_in_start(&mut self.chunks[c], arr_slot, i_slot, line);
+                    let elem_slot = self.define_local("__all_elem");
+                    self.emit_u16(Op::local_set, elem_slot);
+                    self.emit_u16(Op::local_get, fn_slot);
+                    self.emit_u16(Op::local_get, elem_slot);
+                    self.emit_u8(Op::call_ref, 1);
+                    self.emit(Op::dyn_to_bool);
+                    let skip = self.emit_jump(Op::br_if_true);
+                    self.emit(Op::r#false);
+                    self.emit_u16(Op::local_set, res_slot);
+                    self.patch_jump(skip);
+                    common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
+                    self.emit_u16(Op::local_get, res_slot);
+                } else {
+                    self.emit(Op::r#true);
+                }
+                return Ok(());
+            }
+            // Note: "count" as property (list.Count) is handled by callMethod
+            // count() as LINQ method with predicate would need special handling
+            "sum" => {
+                self.compile_expression(obj)?;
+                let tmp = self.define_local("__sum_tmp");
+                self.emit_u16(Op::local_set, tmp);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::bundle::emit_call_push_func(&mut self.chunks[c], "__vybe_sum", line);
+                self.emit_u16(Op::local_get, tmp);
+                common::bundle::emit_call_invoke(&mut self.chunks[c], 1, line);
+                return Ok(());
+            }
+            "average" => {
+                self.compile_expression(obj)?;
+                self.emit(Op::dup);
+                let arr_slot = self.define_local("__avg_arr");
+                self.emit_u16(Op::local_set, arr_slot);
+                let tmp = self.define_local("__avg_tmp");
+                self.emit_u16(Op::local_set, tmp);
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::bundle::emit_call_push_func(&mut self.chunks[c], "__vybe_sum", line);
+                self.emit_u16(Op::local_get, tmp);
+                common::bundle::emit_call_invoke(&mut self.chunks[c], 1, line);
+                self.emit_u16(Op::local_get, arr_slot);
+                self.emit(Op::array_length);
+                self.emit(Op::f64_div);
+                return Ok(());
+            }
+            "min" => {
+                self.compile_expression(obj)?;
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::collections::emit_min(&mut self.chunks[c], 1, line);
+                return Ok(());
+            }
+            "max" => {
+                self.compile_expression(obj)?;
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::collections::emit_max(&mut self.chunks[c], 1, line);
+                return Ok(());
+            }
+            "aggregate" => {
+                if args.len() >= 1 {
+                    self.compile_expression(obj)?;
+                    let arr_slot = self.define_local("__agg_arr");
+                    self.emit_u16(Op::local_set, arr_slot);
+                    self.compile_expression(&args[0])?;
+                    let fn_slot = self.define_local("__agg_fn");
+                    self.emit_u16(Op::local_set, fn_slot);
+                    let acc_slot = self.define_local("__agg_acc");
+                    let i_slot = self.define_local("__agg_i");
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::loops::emit_reduce(&mut self.chunks[c], fn_slot, arr_slot, acc_slot, i_slot, line);
+                } else {
+                    self.compile_expression(obj)?;
+                }
+                return Ok(());
+            }
+            "selectmany" => {
+                // Flatten: collection.SelectMany(x => x) → flatten
+                self.compile_expression(obj)?;
+                // Simplified: return as-is (would need nested iteration for real flatten)
+                return Ok(());
+            }
+            "zip" => {
+                self.compile_expression(obj)?;
+                for arg in args { self.compile_expression(arg)?; }
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::collections::emit_zip(&mut self.chunks[c], line);
+                return Ok(());
+            }
+            "todictionary" => {
+                self.compile_expression(obj)?;
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::dict::emit_new(&mut self.chunks[c], line);
+                return Ok(());
+            }
+            "tolist" | "toarray" => {
+                self.compile_expression(obj)?;
+                return Ok(());
+            }
+            // "distinct" handled by callMethod host which does actual dedup
+            "take" => {
+                self.compile_expression(obj)?;
+                self.emit_constant(Value::I32(0));
+                for arg in args { self.compile_expression(arg)?; }
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::collections::emit_slice(&mut self.chunks[c], line);
+                return Ok(());
+            }
+            "skip" => {
+                self.compile_expression(obj)?;
+                for arg in args { self.compile_expression(arg)?; }
+                self.emit_constant(Value::I32(i32::MAX));
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::collections::emit_slice(&mut self.chunks[c], line);
+                return Ok(());
+            }
+            "reverse" => {
+                self.compile_expression(obj)?;
+                let c = self.current_chunk_idx;
+                let line = self.line;
+                common::collections::emit_reverse(&mut self.chunks[c], line);
+                return Ok(());
+            }
+            "foreach" => {
+                if let Some(arg) = args.first() {
+                    self.compile_expression(obj)?;
+                    let arr_slot = self.define_local("__fe_arr");
+                    self.emit_u16(Op::local_set, arr_slot);
+                    self.compile_expression(arg)?;
+                    let fn_slot = self.define_local("__fe_fn");
+                    self.emit_u16(Op::local_set, fn_slot);
+                    let i_slot = self.define_local("__fe_i");
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::loops::emit_foreach(&mut self.chunks[c], fn_slot, arr_slot, i_slot, line);
+                }
+                self.emit(Op::null);
+                return Ok(());
+            }
+            // Note: basic collection methods (Add, Remove, Sort, Clear, Count on List/Dict/etc)
+            // are handled by the vybe:runtime callMethod fallback below.
+            // Only LINQ-specific methods are intercepted here.
+            _ => {}
+        }
         // Convert methods
         match method_lower.as_str() {
             "toint32" | "parseint" if self.is_namespace_expr(obj) => {

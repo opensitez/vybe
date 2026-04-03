@@ -195,12 +195,33 @@ impl Compiler {
             "print" => "wasi:cli",
             "math" | "Math" => "vybe:math",
             "json" | "JSON" | "jsonDecode" | "jsonEncode" => "vybe:json",
-            "http" | "Http" => "wasi:http",
-            "File" | "Directory" => "wasi:filesystem",
+            "http" | "Http" | "HttpClient" => "wasi:http",
+            "File" | "Directory" | "FileSystemEntity" | "Path" => "wasi:filesystem",
             "Map" => "vybe:collections",
             "Set" => "vybe:collections",
             "gui" => "vybe:gui",
             "db" => "vybe:database",
+            // dart:io — sockets, networking (same as VB TcpClient, Python socket, JS net)
+            "Socket" | "ServerSocket" | "RawDatagramSocket" | "InternetAddress" => "vybe:net",
+            // dart:crypto (package:crypto) — same as VB SHA256, Python hashlib, JS crypto
+            "sha256" | "sha1" | "md5" | "Hmac" => "vybe:crypto",
+            // dart:core types — same as VB DateTime, StringBuilder
+            "DateTime" => "vybe:types",
+            "StringBuffer" | "StringBuilder" => "vybe:types",
+            "Duration" => "vybe:types",
+            "Stopwatch" => "vybe:threading",
+            "Random" => "vybe:threading",
+            "RegExp" => "vybe:regex",
+            // dart:async — same as JS Promise, Python asyncio
+            "Future" | "Stream" | "Completer" => "vybe:runtime",
+            // dart:convert
+            "utf8" | "base64" | "Encoding" => "vybe:convert",
+            // dart:isolate — threading (same as Python threading, JS Worker)
+            "Isolate" | "ReceivePort" | "SendPort" => "vybe:threading",
+            // xml
+            "XmlDocument" | "XmlElement" => "vybe:xml",
+            // Process
+            "Process" | "ProcessResult" => "vybe:types",
             _ => name,
         }
     }
@@ -1636,11 +1657,60 @@ impl Compiler {
                 self.compile_call(callee, args)?;
             }
             Expression::New { class, args, .. } => {
-                // Call class constructor
-                let idx = self.add_string_constant(class);
-                self.emit_u16(Op::global_get, idx);
-                let count = self.emit_args(args)?;
-                self.emit_u8(Op::call, count);
+                // Built-in type constructors → host calls (same as VB/Python/PHP)
+                match class.as_str() {
+                    "DateTime" | "DateTime.now" => {
+                        if args.is_empty() {
+                            let idx = self.import("vybe:types", "dateTimeNow");
+                            self.emit_host_call(idx, 0);
+                        } else {
+                            let count = self.emit_args(args)?;
+                            let idx = self.import("vybe:types", "dateTimeNew");
+                            self.emit_host_call(idx, count);
+                        }
+                    }
+                    "StringBuffer" => {
+                        if args.is_empty() { self.emit_constant(Value::String(Rc::from(""))); }
+                        else { let count = self.emit_args(args)?; let _ = count; }
+                        let idx = self.import("vybe:types", "stringBuilderNew");
+                        self.emit_host_call(idx, 1);
+                    }
+                    "Random" => {
+                        let idx = self.import("vybe:threading", "randomNew");
+                        self.emit_host_call(idx, 0);
+                    }
+                    "Stopwatch" => {
+                        let idx = self.import("vybe:threading", "stopwatchNew");
+                        self.emit_host_call(idx, 0);
+                    }
+                    "RegExp" => {
+                        let count = self.emit_args(args)?;
+                        let idx = self.import("vybe:regex", "test");
+                        self.emit_host_call(idx, count);
+                    }
+                    "Socket" => {
+                        let count = self.emit_args(args)?;
+                        let idx = self.import("vybe:net", "tcpConnect");
+                        self.emit_host_call(idx, count);
+                    }
+                    "ServerSocket" => {
+                        let count = self.emit_args(args)?;
+                        let idx = self.import("vybe:net", "tcpListenerNew");
+                        self.emit_host_call(idx, count);
+                    }
+                    "RawDatagramSocket" => {
+                        let count = self.emit_args(args)?;
+                        let idx = self.import("vybe:net", "udpNew");
+                        self.emit_host_call(idx, count);
+                    }
+                    _ => {
+                        // User-defined class constructor
+                        let idx = self.add_string_constant(class);
+                        self.emit_u16(Op::global_get, idx);
+                        let count = self.emit_args(args)?;
+                        self.emit_u8(Op::call, count);
+                    }
+                }
             }
             Expression::Const { class, args, .. } => {
                 let idx = self.add_string_constant(class);
