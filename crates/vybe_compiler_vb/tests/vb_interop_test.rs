@@ -22,7 +22,7 @@ fn run_vb(source: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
         out.borrow_mut().push(parts.join(" "));
         Value::Null
@@ -43,7 +43,7 @@ fn run_vb_vm(source: &str) -> (VM, Rc<RefCell<Vec<String>>>) {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
         out.borrow_mut().push(parts.join(" "));
         Value::Null
@@ -65,7 +65,7 @@ fn run_vb_gui(source: &str) -> (VM, Rc<RefCell<vybe_host::SideEffectQueue>>, Rc<
     let out = output.clone();
     vybe_host::register_all_with_gui(&mut vm, queue.clone());
     vybe_host::setup_namespaces(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
         out.borrow_mut().push(parts.join(" "));
         Value::Null

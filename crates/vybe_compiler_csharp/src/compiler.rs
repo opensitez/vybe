@@ -2884,9 +2884,8 @@ impl Compiler {
         self.emit_u16(Op::global_get, idx);
 
         if self.defined_classes.contains(&bare) {
-            // User class: create empty object, call constructor with it
+            // User class defined in THIS module: create empty object, call constructor with it
             self.emit_u16(Op::struct_new, 0);
-            // Set __type for instanceof
             self.emit(Op::dup);
             self.emit_constant(Value::String(Rc::from(bare.as_str())));
             let type_idx = self.add_string_constant("__type");
@@ -2895,7 +2894,9 @@ impl Compiler {
             for arg in args { self.compile_expression(arg)?; }
             self.emit_u8(Op::call, (args.len() + 1) as u8);
         } else {
-            // Host constructor (Button, Point, List, etc): just call it
+            // Could be a host constructor OR a cross-language class.
+            // Host: call(argc) — host function creates and returns the object.
+            // Cross-language: the global is a function ref — call(argc) dispatches via call_value.
             for arg in args { self.compile_expression(arg)?; }
             self.emit_u8(Op::call, args.len() as u8);
         }

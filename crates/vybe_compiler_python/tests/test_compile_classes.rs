@@ -24,7 +24,7 @@ fn run_prints(src: &str) -> Vec<String> {
     // Override log AFTER register_all to capture output
     let output = Rc::new(RefCell::new(Vec::<String>::new()));
     let out = output.clone();
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
         out.borrow_mut().push(s.join(" "));
         Value::Null

@@ -200,7 +200,8 @@ impl Linker {
 
             // Collect canonical casing from case-sensitive components
             for comp in &self.components {
-                if comp.language == Language::VB { continue; } // skip VB, it's the one we're fixing
+                // Skip case-insensitive languages — they're the ones we're fixing
+                if comp.language == Language::VB || comp.language == Language::Cobol { continue; }
                 for chunk in &comp.chunks {
                     for entry in &chunk.types {
                         // Type name
@@ -226,9 +227,9 @@ impl Linker {
                 }
             }
 
-            // Rewrite constant pools in VB component chunks
+            // Rewrite constant pools in case-insensitive component chunks (VB, COBOL)
             for (i, comp) in self.components.iter().enumerate() {
-                if comp.language != Language::VB { continue; }
+                if comp.language != Language::VB && comp.language != Language::Cobol { continue; }
                 let offset = component_offsets[i];
                 for (ci, _chunk) in comp.chunks.iter().enumerate() {
                     let merged_ci = offset + ci;

@@ -117,6 +117,31 @@ impl Compiler {
         c.emit(argc, line);
     }
 
+    /// CLS-compliant name normalization for cross-language access.
+    /// Converts COBOL names (uppercase, hyphens) to a form other languages can use.
+    /// "WS-CUSTOMER-NAME" → "ws_customer_name"
+    fn cls_normalize(name: &str) -> String {
+        name.to_lowercase().replace('-', "_")
+    }
+
+    /// Emit global_set with CLS alias.
+    /// Stores the value under both the original COBOL name AND the normalized CLS name.
+    /// COBOL code uses: global_get "WS-CUSTOMER-NAME" (original)
+    /// VB/C#/JS use:    global_get "ws_customer_name" (CLS alias)
+    fn emit_global_set_with_cls(&mut self, name: &str) {
+        // Store under original name (for COBOL internal use)
+        let idx = self.add_string_constant(name);
+        self.emit_u16(Op::global_set, idx);
+
+        // Also store CLS alias if different (for cross-language access)
+        // global_set peeks (doesn't pop), so value is still on stack
+        let cls_name = Self::cls_normalize(name);
+        if cls_name != name {
+            let cls_idx = self.add_string_constant(&cls_name);
+            self.emit_u16(Op::global_set, cls_idx);
+        }
+    }
+
     // ------------------------------------------------------------------
     // Data item compilation → globals
     // ------------------------------------------------------------------
@@ -142,15 +167,13 @@ impl Compiler {
                 // (for deeply nested groups, we'd need more work)
             }
 
-            let idx = self.add_string_constant(&name);
-            self.emit_u16(Op::global_set, idx);
+            self.emit_global_set_with_cls(&name);
         } else {
             // Elementary item → set global
             self.compile_initial_value(&item.pic, &item.value)?;
-            let idx = self.add_string_constant(&name);
-            self.emit_u16(Op::global_set, idx);
+            self.emit_global_set_with_cls(&name);
 
-            // Store PIC metadata for formatting
+            // Store PIC metadata for formatting (internal)
             if let Some(pic) = &item.pic {
                 self.emit_constant(Value::String(Rc::from(pic.as_str())));
                 let pk = self.add_string_constant(&format!("__PIC_{}", name));
@@ -163,8 +186,7 @@ impl Compiler {
             let line = self.line;
             let c = self.current_chunk_idx;
             self.emit_u16(Op::array_new, count as u16);
-            let idx = self.add_string_constant(&name);
-            self.emit_u16(Op::global_set, idx);
+            self.emit_global_set_with_cls(&name);
         }
 
         Ok(())
@@ -1986,8 +2008,7 @@ impl Compiler {
 
         // No PIC metadata — just store raw value
         self.emit(Op::drop); // drop null PIC
-        let idx = self.add_string_constant(dst);
-        self.emit_u16(Op::global_set, idx);
+        self.emit_global_set_with_cls(dst);
         let end = self.emit_jump(Op::br);
 
         // Has PIC metadata — apply padding
@@ -2004,8 +2025,7 @@ impl Compiler {
         self.emit_u16(Op::local_get, pic_slot);
         let i = self.import("vybe:string", "format");
         self.emit_host_call(i, 2);
-        let idx = self.add_string_constant(dst);
-        self.emit_u16(Op::global_set, idx);
+        self.emit_global_set_with_cls(dst);
 
         self.patch_jump(end);
         Ok(())

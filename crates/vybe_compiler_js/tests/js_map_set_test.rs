@@ -8,7 +8,7 @@ fn run_js(code: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vybe_compiler_js::register_js_coercion(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[vybe_bytecode::Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
         out.borrow_mut().push(parts.join(" "));
         vybe_bytecode::Value::Null

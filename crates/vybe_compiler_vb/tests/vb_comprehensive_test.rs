@@ -10,7 +10,7 @@ fn run_vb(source: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
         out.borrow_mut().push(parts.join(" "));
         Value::Null
@@ -615,8 +615,8 @@ End Module
     vybe_host::register_all(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
     // Stub the GUI onEvent host function
-    vm.register_host_fn("vybe:gui", "onEvent", Box::new(|_args: &[Value]| Value::Null));
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "onEvent", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| Value::Null));
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
         out.borrow_mut().push(parts.join(" "));
         Value::Null

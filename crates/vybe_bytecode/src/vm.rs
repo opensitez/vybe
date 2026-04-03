@@ -125,6 +125,11 @@ pub struct VM {
     pub strict_isolation: bool,
     /// Module prefix for current execution context (used when strict_isolation=true).
     pub module_prefix: Option<String>,
+    /// CLS case alias map: lowercase → canonical casing.
+    /// When a global_get fails, tries lowercase lookup in this map to find
+    /// the canonical-cased name. Enables cross-language name resolution
+    /// (VB lowercase → C# PascalCase, COBOL UPPERCASE → VB lowercase).
+    pub case_aliases: HashMap<String, String>,
     /// Finalizer registry: maps object identity to callback.
     /// When an object's strong count reaches the weak+finalizer threshold,
     /// the callback is queued for execution.
@@ -171,6 +176,7 @@ impl VM {
             callback_invoker: None,
             strict_isolation: false,
             module_prefix: None,
+            case_aliases: HashMap::new(),
             finalizers: Vec::new(),
         }
     }
