@@ -13,6 +13,27 @@ use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Condvar};
 use std::collections::HashMap;
 
+/// WASM trap on out-of-bounds memory access.
+#[derive(Debug, Clone)]
+pub enum MemoryTrap {
+    OutOfBounds { addr: usize, size: usize, limit: usize },
+}
+
+impl std::fmt::Display for MemoryTrap {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            MemoryTrap::OutOfBounds { addr, size, limit } =>
+                write!(f, "memory access out of bounds: addr={} size={} limit={}", addr, size, limit),
+        }
+    }
+}
+
+impl From<MemoryTrap> for crate::VMError {
+    fn from(trap: MemoryTrap) -> Self {
+        crate::VMError::new(format!("trap: {}", trap))
+    }
+}
+
 /// Thread-safe shared linear memory.
 ///
 /// The buffer is allocated once and shared via Arc.
@@ -83,52 +104,56 @@ impl SharedMemory {
     // These hold the mutex briefly. In a production VM, non-atomic access
     // wouldn't need a lock (memory is shared, races are UB per spec).
 
-    pub fn load_i32(&self, addr: usize) -> i32 {
+    pub fn load_i32(&self, addr: usize) -> Result<i32, MemoryTrap> {
         let buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return 0; }
-        i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap())
+        if addr + 4 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 4, limit: buf.len() }); }
+        Ok(i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap()))
     }
 
-    pub fn store_i32(&self, addr: usize, val: i32) {
+    pub fn store_i32(&self, addr: usize, val: i32) -> Result<(), MemoryTrap> {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return; }
+        if addr + 4 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 4, limit: buf.len() }); }
         buf[addr..addr+4].copy_from_slice(&val.to_le_bytes());
+        Ok(())
     }
 
-    pub fn load_i64(&self, addr: usize) -> i64 {
+    pub fn load_i64(&self, addr: usize) -> Result<i64, MemoryTrap> {
         let buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return 0; }
-        i64::from_le_bytes(buf[addr..addr+8].try_into().unwrap())
+        if addr + 8 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 8, limit: buf.len() }); }
+        Ok(i64::from_le_bytes(buf[addr..addr+8].try_into().unwrap()))
     }
 
-    pub fn store_i64(&self, addr: usize, val: i64) {
+    pub fn store_i64(&self, addr: usize, val: i64) -> Result<(), MemoryTrap> {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return; }
+        if addr + 8 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 8, limit: buf.len() }); }
         buf[addr..addr+8].copy_from_slice(&val.to_le_bytes());
+        Ok(())
     }
 
-    pub fn load_f64(&self, addr: usize) -> f64 {
+    pub fn load_f64(&self, addr: usize) -> Result<f64, MemoryTrap> {
         let buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return 0.0; }
-        f64::from_le_bytes(buf[addr..addr+8].try_into().unwrap())
+        if addr + 8 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 8, limit: buf.len() }); }
+        Ok(f64::from_le_bytes(buf[addr..addr+8].try_into().unwrap()))
     }
 
-    pub fn store_f64(&self, addr: usize, val: f64) {
+    pub fn store_f64(&self, addr: usize, val: f64) -> Result<(), MemoryTrap> {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return; }
+        if addr + 8 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 8, limit: buf.len() }); }
         buf[addr..addr+8].copy_from_slice(&val.to_le_bytes());
+        Ok(())
     }
 
-    pub fn load_u8(&self, addr: usize) -> u8 {
+    pub fn load_u8(&self, addr: usize) -> Result<u8, MemoryTrap> {
         let buf = self.buffer.lock().unwrap();
-        if addr >= buf.len() { return 0; }
-        buf[addr]
+        if addr >= buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 1, limit: buf.len() }); }
+        Ok(buf[addr])
     }
 
-    pub fn store_u8(&self, addr: usize, val: u8) {
+    pub fn store_u8(&self, addr: usize, val: u8) -> Result<(), MemoryTrap> {
         let mut buf = self.buffer.lock().unwrap();
-        if addr >= buf.len() { return; }
+        if addr >= buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 1, limit: buf.len() }); }
         buf[addr] = val;
+        Ok(())
     }
 
     /// Bulk read into a slice. Returns number of bytes read.

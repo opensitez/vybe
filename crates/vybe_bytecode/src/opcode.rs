@@ -422,6 +422,8 @@ pub enum Op {
 
     /// Terminate execution. MUST be in the first 256 opcodes (single-byte).
     halt,
+    /// WASM unreachable — always traps. Indicates code that should never be reached.
+    unreachable,
 
     // ================================================================
     // Extended opcodes (>= 256, encoded as 0xFE prefix + extension byte)

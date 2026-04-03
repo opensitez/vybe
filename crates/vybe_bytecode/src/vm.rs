@@ -118,6 +118,13 @@ pub struct VM {
     label_stack: Vec<LabelEntry>,
     /// Callback invoker for host functions (cached allocation).
     callback_invoker: Option<Box<dyn FnMut(&Value, &[Value]) -> Value>>,
+    /// When true, enforce strict WASM isolation:
+    /// - Module-scoped globals (prefixed by module name)
+    /// - Per-module memory (separate linear memory per component)
+    /// Default false for trusted code (shared globals for cross-language interop).
+    pub strict_isolation: bool,
+    /// Module prefix for current execution context (used when strict_isolation=true).
+    pub module_prefix: Option<String>,
     /// Finalizer registry: maps object identity to callback.
     /// When an object's strong count reaches the weak+finalizer threshold,
     /// the callback is queued for execution.
@@ -162,6 +169,8 @@ impl VM {
             func_table: Vec::new(),
             label_stack: Vec::new(),
             callback_invoker: None,
+            strict_isolation: false,
+            module_prefix: None,
             finalizers: Vec::new(),
         }
     }
@@ -930,9 +939,11 @@ impl VM {
 
             match op {
                 Op::halt => {
-                    // Close all open upvalues so closures retain captured values
                     self.close_upvalues(0);
                     return Ok(if self.stack.is_empty() { Value::Null } else { self.pop() });
+                }
+                Op::unreachable => {
+                    return Err(VMError::new("trap: unreachable executed"));
                 }
 
                 Op::r#const => {
@@ -962,14 +973,32 @@ impl VM {
                 Op::global_get => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
-                    let val = self.globals.get(&name).cloned().unwrap_or(Value::Undefined);
+                    // In strict isolation mode, prefix globals with module name
+                    // to prevent cross-module access
+                    let key = if self.strict_isolation {
+                        if let Some(ref prefix) = self.module_prefix {
+                            let prefixed = format!("{}::{}", prefix, name);
+                            // Try prefixed first, then unprefixed (for exports)
+                            if self.globals.contains_key(&prefixed) {
+                                prefixed
+                            } else {
+                                name
+                            }
+                        } else { name }
+                    } else { name };
+                    let val = self.globals.get(&key).cloned().unwrap_or(Value::Undefined);
                     self.push(val)?;
                 }
                 Op::global_set => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
+                    let key = if self.strict_isolation {
+                        if let Some(ref prefix) = self.module_prefix {
+                            format!("{}::{}", prefix, name)
+                        } else { name }
+                    } else { name };
                     let val = self.peek(0).clone();
-                    self.globals.insert(name, val);
+                    self.globals.insert(key, val);
                 }
                 Op::upvalue_get => {
                     let idx = self.read_byte() as usize;
@@ -1159,32 +1188,36 @@ impl VM {
                 Op::i32_div_s => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
-                    self.push(Value::I32(if b == 0 { 0 } else { a.wrapping_div(b) }))?;
+                    if b == 0 { return Err(VMError::new("trap: integer divide by zero")); }
+                    self.push(Value::I32(a.wrapping_div(b)))?;
                 }
                 Op::i32_div_u => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
-                    self.push(Value::I32(if b == 0 { 0 } else { (a / b) as i32 }))?;
+                    if b == 0 { return Err(VMError::new("trap: integer divide by zero")); }
+                    self.push(Value::I32((a / b) as i32))?;
                 }
                 Op::i32_rem_s => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
-                    self.push(Value::I32(if b == 0 { 0 } else { a.wrapping_rem(b) }))?;
+                    if b == 0 { return Err(VMError::new("trap: integer divide by zero")); }
+                    self.push(Value::I32(a.wrapping_rem(b)))?;
                 }
                 Op::i32_rem_u => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
-                    self.push(Value::I32(if b == 0 { 0 } else { (a % b) as i32 }))?;
+                    if b == 0 { return Err(VMError::new("trap: integer divide by zero")); }
+                    self.push(Value::I32((a % b) as i32))?;
                 }
 
                 // -- i64 arithmetic --
                 Op::i64_add => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_add(b)))?; }
                 Op::i64_sub => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_sub(b)))?; }
                 Op::i64_mul => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_mul(b)))?; }
-                Op::i64_div_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(if b == 0 { 0 } else { a.wrapping_div(b) }))?; }
-                Op::i64_div_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(if b == 0 { 0 } else { (a / b) as i64 }))?; }
-                Op::i64_rem_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(if b == 0 { 0 } else { a.wrapping_rem(b) }))?; }
-                Op::i64_rem_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(if b == 0 { 0 } else { (a % b) as i64 }))?; }
+                Op::i64_div_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64(a.wrapping_div(b)))?; }
+                Op::i64_div_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64((a / b) as i64))?; }
+                Op::i64_rem_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64(a.wrapping_rem(b)))?; }
+                Op::i64_rem_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64((a % b) as i64))?; }
                 Op::i64_and => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a & b))?; }
                 Op::i64_or  => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a | b))?; }
                 Op::i64_xor => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a ^ b))?; }
@@ -1878,39 +1911,39 @@ impl VM {
                 }
                 Op::i32_load => {
                     let addr = self.pop().as_f64() as usize;
-                    self.push(Value::I32(self.memory.load_i32(addr)))?;
+                    self.push(Value::I32(self.memory.load_i32(addr)?))?;
                 }
                 Op::i32_store => {
                     let val = self.pop().as_f64() as i32;
                     let addr = self.pop().as_f64() as usize;
-                    self.memory.store_i32(addr, val);
+                    self.memory.store_i32(addr, val)?;
                 }
                 Op::i64_load => {
                     let addr = self.pop().as_f64() as usize;
-                    self.push(Value::I64(self.memory.load_i64(addr)))?;
+                    self.push(Value::I64(self.memory.load_i64(addr)?))?;
                 }
                 Op::i64_store => {
                     let val = self.pop().as_f64() as i64;
                     let addr = self.pop().as_f64() as usize;
-                    self.memory.store_i64(addr, val);
+                    self.memory.store_i64(addr, val)?;
                 }
                 Op::f64_load => {
                     let addr = self.pop().as_f64() as usize;
-                    self.push(Value::F64(self.memory.load_f64(addr)))?;
+                    self.push(Value::F64(self.memory.load_f64(addr)?))?;
                 }
                 Op::f64_store => {
                     let val = self.pop().as_f64();
                     let addr = self.pop().as_f64() as usize;
-                    self.memory.store_f64(addr, val);
+                    self.memory.store_f64(addr, val)?;
                 }
                 Op::i32_load8_u => {
                     let addr = self.pop().as_f64() as usize;
-                    self.push(Value::I32(self.memory.load_u8(addr) as i32))?;
+                    self.push(Value::I32(self.memory.load_u8(addr)? as i32))?;
                 }
                 Op::i32_store8 => {
                     let val = self.pop().as_f64() as u8;
                     let addr = self.pop().as_f64() as usize;
-                    self.memory.store_u8(addr, val);
+                    self.memory.store_u8(addr, val)?;
                 }
                 Op::f32_load => {
                     let addr = self.pop().as_i32() as usize;
@@ -1932,7 +1965,7 @@ impl VM {
                 }
                 Op::i32_load8_s => {
                     let addr = self.pop().as_i32() as usize;
-                    self.push(Value::I32(self.memory.load_u8(addr) as i8 as i32))?;
+                    self.push(Value::I32(self.memory.load_u8(addr)? as i8 as i32))?;
                 }
                 Op::i32_load16_s => {
                     let addr = self.pop().as_i32() as usize;
@@ -1957,11 +1990,11 @@ impl VM {
                 }
                 Op::i64_load8_s => {
                     let addr = self.pop().as_i32() as usize;
-                    self.push(Value::I64(self.memory.load_u8(addr) as i8 as i64))?;
+                    self.push(Value::I64(self.memory.load_u8(addr)? as i8 as i64))?;
                 }
                 Op::i64_load8_u => {
                     let addr = self.pop().as_i32() as usize;
-                    self.push(Value::I64(self.memory.load_u8(addr) as i64))?;
+                    self.push(Value::I64(self.memory.load_u8(addr)? as i64))?;
                 }
                 Op::i64_load16_s => {
                     let addr = self.pop().as_i32() as usize;
@@ -1979,16 +2012,16 @@ impl VM {
                 }
                 Op::i64_load32_s => {
                     let addr = self.pop().as_i32() as usize;
-                    self.push(Value::I64(self.memory.load_i32(addr) as i64))?;
+                    self.push(Value::I64(self.memory.load_i32(addr)? as i64))?;
                 }
                 Op::i64_load32_u => {
                     let addr = self.pop().as_i32() as usize;
-                    self.push(Value::I64(self.memory.load_i32(addr) as u32 as i64))?;
+                    self.push(Value::I64(self.memory.load_i32(addr)? as u32 as i64))?;
                 }
                 Op::i64_store8 => {
                     let val = self.pop().as_i64() as u8;
                     let addr = self.pop().as_i32() as usize;
-                    self.memory.store_u8(addr, val);
+                    self.memory.store_u8(addr, val)?;
                 }
                 Op::i64_store16 => {
                     let val = self.pop().as_i64() as i16;
@@ -2000,7 +2033,7 @@ impl VM {
                 Op::i64_store32 => {
                     let val = self.pop().as_i64() as i32;
                     let addr = self.pop().as_i32() as usize;
-                    self.memory.store_i32(addr, val);
+                    self.memory.store_i32(addr, val)?;
                 }
 
                 // -- Conversions --
@@ -2102,9 +2135,12 @@ impl VM {
                 // -- call_indirect --
                 Op::call_indirect => {
                     let argc = self.read_byte() as usize;
-                    // Table index is on stack before args
                     let table_idx_pos = self.stack.len() - 1 - argc;
-                    let table_idx = self.stack[table_idx_pos].as_f64() as usize;
+                    let raw_idx = self.stack[table_idx_pos].as_f64();
+                    if raw_idx < 0.0 || raw_idx.is_nan() || raw_idx >= self.func_table.len() as f64 {
+                        return Err(VMError::new(format!("trap: call_indirect: invalid table index {}", raw_idx)));
+                    }
+                    let table_idx = raw_idx as usize;
                     if table_idx < self.func_table.len() {
                         self.stack[table_idx_pos] = self.func_table[table_idx].clone();
                         self.call_value(argc)?;
@@ -3135,10 +3171,10 @@ impl VM {
                 // -- Memory64 --
                 Op::i64_memory_size => { self.push(Value::I64((self.memory.len() / 65536) as i64))?; }
                 Op::i64_memory_grow => { let pages = self.pop().as_i64() as usize; let old = self.memory.grow(pages); self.push(Value::I64(old as i64))?; }
-                Op::i32_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I32(self.memory.load_i32(addr)))?; }
-                Op::i64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I64(self.memory.load_i64(addr)))?; }
-                Op::f64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::F64(self.memory.load_f64(addr)))?; }
-                Op::i32_store_64 => { let v = self.pop().as_i32(); let addr = self.pop().as_i64() as usize; self.memory.store_i32(addr, v); }
+                Op::i32_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I32(self.memory.load_i32(addr)?))?; }
+                Op::i64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I64(self.memory.load_i64(addr)?))?; }
+                Op::f64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::F64(self.memory.load_f64(addr)?))?; }
+                Op::i32_store_64 => { let v = self.pop().as_i32(); let addr = self.pop().as_i64() as usize; self.memory.store_i32(addr, v)?; }
                 Op::i64_store_64 => { let v = self.pop().as_i64(); let addr = self.pop().as_i64() as usize; self.memory.store_i64(addr, v); }
                 Op::f64_store_64 => { let v = self.pop().as_f64(); let addr = self.pop().as_i64() as usize; self.memory.store_f64(addr, v); }
 
@@ -3444,11 +3480,17 @@ impl VM {
         let arity = func.arity as usize;
         let base = self.stack.len() - argc - 1;
 
-        // Pad missing arguments with Null.
-        // Each language's compiler handles defaults:
-        //   JS: checks ref_is_null (covers both null and undefined)
-        //   Python: checks ref_is_null
-        //   VB: Nothing is Null
+        // Arity validation: warn on mismatch but don't trap.
+        // Dynamic languages (JS, Python, Ruby) rely on flexible arity.
+        // WASM strict mode would trap here; we pad missing args with Null
+        // and ignore excess args (they stay on caller's stack frame).
+        if argc > arity && arity > 0 {
+            // Excess arguments — truncate to expected arity.
+            // Pop the extras so they don't corrupt the callee's locals.
+            for _ in 0..(argc - arity) {
+                self.pop();
+            }
+        }
         for _ in argc..arity {
             self.push(Value::Null)?;
         }

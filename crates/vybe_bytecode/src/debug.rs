@@ -52,7 +52,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::dyn_add | Op::dyn_eq | Op::dyn_ne | Op::dyn_lt | Op::dyn_gt |
         Op::dyn_le | Op::dyn_ge | Op::dyn_neg | Op::dyn_not | Op::dyn_to_bool |
         Op::r#await | Op::set_timer |
-        Op::r#return | Op::halt |
+        Op::r#return | Op::halt | Op::unreachable |
         Op::shared_new | Op::shared_array_get | Op::shared_array_set |
         Op::ref_make_weak | Op::ref_deref_weak | Op::ref_is_alive | Op::ref_register_finalizer |
         Op::memory_init | Op::memory_copy_cross |
