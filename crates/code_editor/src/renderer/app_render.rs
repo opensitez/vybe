@@ -222,6 +222,38 @@ impl App {
                             }
                         }
                     }
+                    LspEvent::Completion(items) => {
+                        use lsp_types::CompletionItemKind;
+                        use vybe_widgets::code_editor_widget::AutocompleteItem;
+                        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                            if let TabContent::Code(cw) = &mut tab.content {
+                                cw.autocomplete_items = items.into_iter().map(|ci| {
+                                    let kind_icon = match ci.kind {
+                                        Some(CompletionItemKind::FUNCTION) | Some(CompletionItemKind::METHOD) => "fn",
+                                        Some(CompletionItemKind::STRUCT) | Some(CompletionItemKind::CLASS) | Some(CompletionItemKind::INTERFACE) => "ty",
+                                        Some(CompletionItemKind::KEYWORD) => "kw",
+                                        Some(CompletionItemKind::MODULE) => "md",
+                                        Some(CompletionItemKind::FIELD) | Some(CompletionItemKind::PROPERTY) => "fi",
+                                        Some(CompletionItemKind::VARIABLE) => "va",
+                                        Some(CompletionItemKind::CONSTANT) | Some(CompletionItemKind::ENUM_MEMBER) => "ct",
+                                        Some(CompletionItemKind::SNIPPET) => "sn",
+                                        Some(CompletionItemKind::ENUM) => "en",
+                                        Some(CompletionItemKind::TYPE_PARAMETER) => "tp",
+                                        _ => "  ",
+                                    };
+                                    AutocompleteItem {
+                                        label: ci.label,
+                                        detail: ci.detail,
+                                        insert_text: ci.insert_text,
+                                        kind_icon,
+                                    }
+                                }).collect();
+                                cw.autocomplete_selected = 0;
+                                cw.autocomplete_visible = !cw.autocomplete_items.is_empty();
+                                self.needs_redraw = true;
+                            }
+                        }
+                    }
                     _ => {}
                 }
              }

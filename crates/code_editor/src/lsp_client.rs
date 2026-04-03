@@ -1,15 +1,28 @@
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 use std::thread;
 use crossbeam_channel::{Sender, Receiver};
 use lsp_server::{Message, Notification};
 use lsp_types::{
     InitializedParams, ClientCapabilities, 
-    Diagnostic, PublishDiagnosticsParams, Position, Range, DiagnosticSeverity
+    Diagnostic, PublishDiagnosticsParams, Position, Range, DiagnosticSeverity,
+    CompletionResponse, CompletionItemKind,
 };
 // no direct Url/Uri import; use JSON strings for URIs to avoid type mismatches
 
+/// A simplified completion item for the UI layer.
+#[derive(Debug, Clone)]
+pub struct SimpleCompletion {
+    pub label: String,
+    pub detail: Option<String>,
+    pub insert_text: String,
+    pub kind: Option<CompletionItemKind>,
+}
+
 pub enum LspEvent {
     Diagnostics(String, Vec<Diagnostic>), // URI, Diagnostics
+    Completion(Vec<SimpleCompletion>),     // Completion items
     #[allow(dead_code)]
     Hover(String, String),               // URI, Hover text
     #[allow(dead_code)]
@@ -19,6 +32,7 @@ pub enum LspEvent {
 pub enum LspRequest {
     Init(String, String, String), // content, language_id, uri
     Change(String, String),        // content, uri
+    Completion(String, u32, u32),  // uri, line, col
     #[allow(dead_code)]
     Close(String),                 // uri
     #[allow(dead_code)]
@@ -41,6 +55,7 @@ impl LspClient {
             let mut child: Option<std::process::Child> = None;
             let mut child_in: Option<std::io::BufWriter<std::process::ChildStdin>> = None;
             let mut versions: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+            let next_id = Arc::new(AtomicI32::new(2)); // 1 is reserved for init
 
             loop {
                 crossbeam_channel::select! {
@@ -81,7 +96,27 @@ impl LspClient {
                                                                 }
                                                             }
                                                             Message::Response(res) if res.id == 1.into() => {
-                                                                // Initialized will be sent next
+                                                                // Init response — ignored
+                                                            }
+                                                            Message::Response(res) => {
+                                                                // Try to parse as completion response
+                                                                if let Some(result) = res.result {
+                                                                    if let Ok(cr) = serde_json::from_value::<CompletionResponse>(result) {
+                                                                        let items = match cr {
+                                                                            CompletionResponse::Array(arr) => arr,
+                                                                            CompletionResponse::List(list) => list.items,
+                                                                        };
+                                                                        let simple: Vec<SimpleCompletion> = items.into_iter().map(|ci| {
+                                                                            SimpleCompletion {
+                                                                                label: ci.label.clone(),
+                                                                                detail: ci.detail.clone(),
+                                                                                insert_text: ci.insert_text.unwrap_or(ci.label),
+                                                                                kind: ci.kind,
+                                                                            }
+                                                                        }).collect();
+                                                                        etx.send(LspEvent::Completion(simple)).ok();
+                                                                    }
+                                                                }
                                                             }
                                                             _ => {}
                                                         }
@@ -121,6 +156,20 @@ impl LspClient {
                                                 "contentChanges": [{ "text": content }] 
                                             }) 
                                         }).write(&mut stdin).ok();
+                                    }
+                                }
+                                LspRequest::Completion(uri, line, col) => {
+                                    if let Some(mut stdin) = child_in.as_mut() {
+                                        let id = next_id.fetch_add(1, Ordering::Relaxed);
+                                        let req = lsp_server::Request {
+                                            id: id.into(),
+                                            method: "textDocument/completion".to_string(),
+                                            params: serde_json::json!({
+                                                "textDocument": { "uri": uri },
+                                                "position": { "line": line, "character": col },
+                                            }),
+                                        };
+                                        Message::Request(req).write(&mut stdin).ok();
                                     }
                                 }
                                 _ => {}

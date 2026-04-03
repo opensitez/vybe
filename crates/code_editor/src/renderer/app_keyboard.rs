@@ -177,6 +177,39 @@ impl App {
         let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
         let alt = self.modifiers.state().alt_key(); let shift = self.modifiers.state().shift_key();
 
+        // === Autocomplete keyboard intercepts ===
+        if w.autocomplete_visible {
+            match event.logical_key {
+                Key::Named(NamedKey::ArrowUp) => {
+                    if w.autocomplete_selected > 0 { w.autocomplete_selected -= 1; }
+                    self.window.as_ref().unwrap().request_redraw();
+                    return;
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    if w.autocomplete_selected < w.autocomplete_items.len().saturating_sub(1) { w.autocomplete_selected += 1; }
+                    self.window.as_ref().unwrap().request_redraw();
+                    return;
+                }
+                Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Tab) => {
+                    w.accept_autocomplete(&mut self.font_system);
+                    w.sync();
+                    self.pending_lsp_update = true;
+                    self.last_lsp_update = Instant::now();
+                    tab.is_modified = true;
+                    self.window.as_ref().unwrap().request_redraw();
+                    return;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    w.dismiss_autocomplete();
+                    self.window.as_ref().unwrap().request_redraw();
+                    return;
+                }
+                _ => {
+                    w.dismiss_autocomplete();
+                }
+            }
+        }
+
         let key_str = match event.key_without_modifiers() {
             Key::Character(c) => c.to_lowercase(),
             Key::Named(nk) => format!("{:?}", nk),
@@ -351,6 +384,12 @@ impl App {
                 let last_col = w.editor.with_buffer(|b| b.lines[last_line].text().len());
                 w.editor.set_selection(Selection::Normal(Cursor::new(last_line, last_col)));
             }
+            Key::Named(NamedKey::Space) if cmd => {
+                // Ctrl+Space: trigger autocomplete
+                self.trigger_completion();
+                self.window.as_ref().unwrap().request_redraw();
+                return;
+            }
             _ => { if let Some(t) = event.text { if !cmd {
                 w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
                 
@@ -374,7 +413,22 @@ impl App {
                      if next_ch == Some(cl) { w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)); skip = true; } 
                  }
                 if !skip { w.editor.action(&mut self.font_system, Action::Insert(ch)); tab.is_modified = true; if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.editor.action(&mut self.font_system, Action::Insert(cl)); w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)); } }
-            } } } } else { acted = false; } } else { acted = false; } }
+            } } }
+                // Auto-trigger autocomplete after `.` or `::`
+                let trigger = t.chars().last();
+                if trigger == Some('.') { self.trigger_completion(); }
+                else if trigger == Some(':') {
+                    // Check if previous char was also `:` (i.e., `::`)
+                    let w2 = match &self.tabs[self.active_tab].content { TabContent::Code(cw) => cw, _ => unreachable!() };
+                    let is_double_colon = w2.editor.with_buffer(|b| {
+                        let cli = w2.editor.cursor().line;
+                        let cur = w2.editor.cursor().index;
+                        let text = b.lines[cli].text();
+                        cur >= 2 && text.get(cur-2..cur) == Some("::")
+                    });
+                    if is_double_colon { self.trigger_completion(); }
+                }
+            } else { acted = false; } } else { acted = false; } }
         }
         if acted { 
             if let TabContent::Code(w) = &mut self.tabs[self.active_tab].content {

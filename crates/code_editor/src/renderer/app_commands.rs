@@ -391,4 +391,17 @@ impl App {
             }
         }
     }
+
+    /// Send a completion request to the LSP for the current cursor position.
+    pub(super) fn trigger_completion(&self) {
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            if let TabContent::Code(w) = &tab.content {
+                let cursor = w.editor.cursor();
+                let uri = tab.path.as_deref()
+                    .map(|p| format!("file://{}", p))
+                    .unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
+                self.lsp.send(LspRequest::Completion(uri, cursor.line as u32, cursor.index as u32));
+            }
+        }
+    }
 }
