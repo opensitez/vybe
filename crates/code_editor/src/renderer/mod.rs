@@ -134,6 +134,8 @@ pub(crate) struct App {
     pub(crate) project_path: Option<String>,
     pub(crate) run_child: Option<std::process::Child>,
     pub(crate) pe_context_menu: Option<(f32, f32, String)>,
+    pub(crate) last_hover_pos: (f32, f32),
+    pub(crate) last_hover_time: Instant,
 }
 
 impl App {
@@ -229,6 +231,8 @@ impl App {
             project_path: None,
             run_child: None,
             pe_context_menu: None,
+            last_hover_pos: (-1.0, -1.0),
+            last_hover_time: Instant::now(),
         }
     }
 

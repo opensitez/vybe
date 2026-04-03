@@ -384,6 +384,17 @@ impl App {
                 let last_col = w.editor.with_buffer(|b| b.lines[last_line].text().len());
                 w.editor.set_selection(Selection::Normal(Cursor::new(last_line, last_col)));
             }
+            Key::Named(NamedKey::F12) => {
+                // Go to definition
+                if let Some(path) = &tab.path {
+                    let uri = format!("file://{}", path);
+                    let line = w.editor.cursor().line as u32;
+                    let col = w.editor.cursor().index as u32;
+                    let _ = self.lsp.send(crate::lsp_client::LspRequest::Definition(uri, line, col));
+                }
+                self.window.as_ref().unwrap().request_redraw();
+                return;
+            }
             Key::Named(NamedKey::Space) if cmd => {
                 // Ctrl+Space: trigger autocomplete
                 self.trigger_completion();
@@ -434,6 +445,7 @@ impl App {
             if let TabContent::Code(w) = &mut self.tabs[self.active_tab].content {
                 w.needs_reshape = true; 
                 w.sync(); 
+                w.hover_text = None;
                 self.pending_lsp_update = true;
                 self.last_lsp_update = Instant::now();
             }

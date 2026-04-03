@@ -1,13 +1,13 @@
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use crossbeam_channel::{Sender, Receiver};
 use lsp_server::{Message, Notification};
 use lsp_types::{
     InitializedParams, ClientCapabilities, 
     Diagnostic, PublishDiagnosticsParams, Position, Range, DiagnosticSeverity,
-    CompletionResponse, CompletionItemKind,
+    CompletionResponse, CompletionItemKind, Hover, GotoDefinitionResponse,
 };
 // no direct Url/Uri import; use JSON strings for URIs to avoid type mismatches
 
@@ -56,6 +56,7 @@ impl LspClient {
             let mut child_in: Option<std::io::BufWriter<std::process::ChildStdin>> = None;
             let mut versions: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
             let next_id = Arc::new(AtomicI32::new(2)); // 1 is reserved for init
+            let pending: Arc<Mutex<std::collections::HashMap<i32, String>>> = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
             loop {
                 crossbeam_channel::select! {
@@ -87,6 +88,7 @@ impl LspClient {
                                                 
                                                 // Reader thread for this child
                                                 let etx = evt_tx.clone();
+                                                let pending_clone = pending.clone();
                                                 thread::spawn(move || {
                                                     while let Ok(Some(msg)) = Message::read(&mut stdout) {
                                                         match msg {
@@ -99,22 +101,63 @@ impl LspClient {
                                                                 // Init response — ignored
                                                             }
                                                             Message::Response(res) => {
-                                                                // Try to parse as completion response
+                                                                let id_num = res.id.to_string().parse::<i32>().unwrap_or(0);
+                                                                let method = pending_clone.lock().ok()
+                                                                    .and_then(|mut m| m.remove(&id_num));
                                                                 if let Some(result) = res.result {
-                                                                    if let Ok(cr) = serde_json::from_value::<CompletionResponse>(result) {
-                                                                        let items = match cr {
-                                                                            CompletionResponse::Array(arr) => arr,
-                                                                            CompletionResponse::List(list) => list.items,
-                                                                        };
-                                                                        let simple: Vec<SimpleCompletion> = items.into_iter().map(|ci| {
-                                                                            SimpleCompletion {
-                                                                                label: ci.label.clone(),
-                                                                                detail: ci.detail.clone(),
-                                                                                insert_text: ci.insert_text.unwrap_or(ci.label),
-                                                                                kind: ci.kind,
+                                                                    match method.as_deref() {
+                                                                        Some("textDocument/completion") => {
+                                                                            if let Ok(cr) = serde_json::from_value::<CompletionResponse>(result) {
+                                                                                let items = match cr {
+                                                                                    CompletionResponse::Array(arr) => arr,
+                                                                                    CompletionResponse::List(list) => list.items,
+                                                                                };
+                                                                                let simple: Vec<SimpleCompletion> = items.into_iter().map(|ci| {
+                                                                                    SimpleCompletion {
+                                                                                        label: ci.label.clone(),
+                                                                                        detail: ci.detail.clone(),
+                                                                                        insert_text: ci.insert_text.unwrap_or(ci.label),
+                                                                                        kind: ci.kind,
+                                                                                    }
+                                                                                }).collect();
+                                                                                etx.send(LspEvent::Completion(simple)).ok();
                                                                             }
-                                                                        }).collect();
-                                                                        etx.send(LspEvent::Completion(simple)).ok();
+                                                                        }
+                                                                        Some("textDocument/hover") => {
+                                                                            if let Ok(hover) = serde_json::from_value::<Hover>(result) {
+                                                                                let text = match hover.contents {
+                                                                                    lsp_types::HoverContents::Scalar(mc) => match mc {
+                                                                                        lsp_types::MarkedString::String(s) => s,
+                                                                                        lsp_types::MarkedString::LanguageString(ls) => ls.value,
+                                                                                    },
+                                                                                    lsp_types::HoverContents::Array(arr) => arr.into_iter().map(|mc| match mc {
+                                                                                        lsp_types::MarkedString::String(s) => s,
+                                                                                        lsp_types::MarkedString::LanguageString(ls) => ls.value,
+                                                                                    }).collect::<Vec<_>>().join("\n"),
+                                                                                    lsp_types::HoverContents::Markup(mc) => mc.value,
+                                                                                };
+                                                                                if !text.is_empty() {
+                                                                                    etx.send(LspEvent::Hover(String::new(), text)).ok();
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        Some("textDocument/definition") => {
+                                                                            if let Ok(def) = serde_json::from_value::<GotoDefinitionResponse>(result) {
+                                                                                let (uri, pos) = match def {
+                                                                                    GotoDefinitionResponse::Scalar(loc) => (loc.uri.to_string(), loc.range.start),
+                                                                                    GotoDefinitionResponse::Array(locs) => {
+                                                                                        if let Some(loc) = locs.first() { (loc.uri.to_string(), loc.range.start) }
+                                                                                        else { return; }
+                                                                                    }
+                                                                                    GotoDefinitionResponse::Link(links) => {
+                                                                                        if let Some(link) = links.first() { (link.target_uri.to_string(), link.target_selection_range.start) }
+                                                                                        else { return; }
+                                                                                    }
+                                                                                };
+                                                                                etx.send(LspEvent::Definition(uri, pos)).ok();
+                                                                            }
+                                                                        }
+                                                                        _ => {}
                                                                     }
                                                                 }
                                                             }
@@ -159,18 +202,13 @@ impl LspClient {
                                     }
                                 }
                                 LspRequest::Completion(uri, line, col) => {
-                                    if let Some(mut stdin) = child_in.as_mut() {
-                                        let id = next_id.fetch_add(1, Ordering::Relaxed);
-                                        let req = lsp_server::Request {
-                                            id: id.into(),
-                                            method: "textDocument/completion".to_string(),
-                                            params: serde_json::json!({
-                                                "textDocument": { "uri": uri },
-                                                "position": { "line": line, "character": col },
-                                            }),
-                                        };
-                                        Message::Request(req).write(&mut stdin).ok();
-                                    }
+                                    send_lsp_request(&mut child_in, &next_id, &pending, "textDocument/completion", &uri, line, col);
+                                }
+                                LspRequest::Hover(uri, line, col) => {
+                                    send_lsp_request(&mut child_in, &next_id, &pending, "textDocument/hover", &uri, line, col);
+                                }
+                                LspRequest::Definition(uri, line, col) => {
+                                    send_lsp_request(&mut child_in, &next_id, &pending, "textDocument/definition", &uri, line, col);
                                 }
                                 _ => {}
                             }
@@ -249,4 +287,28 @@ fn run_internal_analysis(lang: &str, content: &str, uri: &str, tx: &Sender<LspEv
         _ => {}
     }
     tx.send(LspEvent::Diagnostics(uri.to_string(), diagnostics)).ok();
+}
+
+fn send_lsp_request(
+    child_in: &mut Option<std::io::BufWriter<std::process::ChildStdin>>,
+    next_id: &Arc<AtomicI32>,
+    pending: &Arc<Mutex<std::collections::HashMap<i32, String>>>,
+    method: &str,
+    uri: &str,
+    line: u32,
+    col: u32,
+) {
+    if let Some(stdin) = child_in.as_mut() {
+        let id = next_id.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut map) = pending.lock() { map.insert(id, method.to_string()); }
+        let req = lsp_server::Request {
+            id: id.into(),
+            method: method.to_string(),
+            params: serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": col },
+            }),
+        };
+        Message::Request(req).write(stdin).ok();
+    }
 }

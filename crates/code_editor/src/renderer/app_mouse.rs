@@ -160,6 +160,56 @@ impl App {
         // Form designer menu open needs continuous redraw for hover
         let form_menu_open = self.tabs.iter().any(|t| matches!(&t.content, TabContent::Form(f) if f.menu_bar.open_menu.is_some()));
 
+        // 6. LSP Hover Tooltip trigger (debounced)
+        if !self.is_dragging && self.active_tab < self.tabs.len() {
+            let ed_top_l = tch + TAB_BAR_HEIGHT;
+            let ed_bottom_l = height - FOOTER_HEIGHT;
+            if mx > ed_start_x && my > ed_top_l && my < ed_bottom_l {
+                let dx = (mx - self.last_hover_pos.0).abs();
+                let dy = (my - self.last_hover_pos.1).abs();
+                // Clear tooltip if mouse moved
+                if dx > 2.0 || dy > 2.0 {
+                    if let TabContent::Code(cw) = &mut self.tabs[self.active_tab].content {
+                        if cw.hover_text.is_some() {
+                            cw.hover_text = None;
+                            needs_editor_redraw = true;
+                        }
+                    }
+                    self.last_hover_pos = (mx, my);
+                    self.last_hover_time = Instant::now();
+                }
+                // Send hover request after 400ms dwell
+                if self.last_hover_time.elapsed() >= Duration::from_millis(400) {
+                    if let TabContent::Code(cw) = &self.tabs[self.active_tab].content {
+                        if cw.hover_text.is_none() {
+                            // Convert mouse position to buffer line/col
+                            let rel_x = mx - ed_start_x;
+                            let rel_y = my - ed_top_l + cw.scroll_y / SCALE;
+                            let line_h = cw.editor.with_buffer(|b| b.metrics().line_height);
+                            let line = (rel_y / line_h).max(0.0) as u32;
+                            // Approximate column from x position (monospace ~9px per char at default size)
+                            let gutter = 64.0; // GUTTER_WIDTH
+                            let col = ((rel_x - gutter).max(0.0) / 9.0) as u32;
+                            if let Some(path) = &self.tabs[self.active_tab].path {
+                                let uri = format!("file://{}", path);
+                                let _ = self.lsp.send(LspRequest::Hover(uri, line, col));
+                            }
+                            // Reset time so we don't spam requests
+                            self.last_hover_time = Instant::now() - Duration::from_millis(200);
+                        }
+                    }
+                }
+            } else {
+                // Mouse outside editor: clear hover
+                if let TabContent::Code(cw) = &mut self.tabs[self.active_tab].content {
+                    if cw.hover_text.is_some() {
+                        cw.hover_text = None;
+                        needs_editor_redraw = true;
+                    }
+                }
+            }
+        }
+
         // Smart Redraw: Only if interaction state changed or dragging
         if was_hovering_splitter != self.hovering_splitter ||
            last_tab_hover != self.hovering_tab_close ||

@@ -254,7 +254,38 @@ impl App {
                             }
                         }
                     }
-                    _ => {}
+                    LspEvent::Hover(_uri, text) => {
+                        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                            if let TabContent::Code(cw) = &mut tab.content {
+                                cw.hover_text = if text.is_empty() { None } else { Some(text) };
+                                cw.hover_pos = self.mouse_pos;
+                                self.needs_redraw = true;
+                            }
+                        }
+                    }
+                    LspEvent::Definition(uri, pos) => {
+                        // Navigate to definition: find or open the file, jump to position
+                        let target_path = uri.strip_prefix("file://").unwrap_or(&uri);
+                        let target_name = std::path::Path::new(target_path)
+                            .file_name().map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| target_path.to_string());
+                        // Check if tab already open
+                        let mut found = None;
+                        for (i, t) in self.tabs.iter().enumerate() {
+                            if t.name == target_name || t.path.as_deref() == Some(target_path) {
+                                found = Some(i);
+                                break;
+                            }
+                        }
+                        if let Some(idx) = found {
+                            self.active_tab = idx;
+                            if let TabContent::Code(cw) = &mut self.tabs[idx].content {
+                                cw.editor.set_cursor(cosmic_text::Cursor::new(pos.line as usize, pos.character as usize));
+                                cw.needs_reshape = true;
+                            }
+                        }
+                        self.needs_redraw = true;
+                    }
                 }
              }
 
