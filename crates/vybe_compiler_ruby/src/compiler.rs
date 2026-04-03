@@ -797,7 +797,7 @@ impl Compiler {
 
             Expression::Interpolated(parts) => {
                 // Concat all parts into a string
-                let mut first = true;
+                let mut count = 0usize;
                 for part in parts {
                     match part {
                         InterpolPart::Lit(s) => {
@@ -810,14 +810,12 @@ impl Compiler {
                             common::strings::emit_to_string(&mut self.chunks[c], line);
                         }
                     }
-                    if !first {
-                        self.emit(Op::str_concat);
-                    }
-                    first = false;
+                    count += 1;
                 }
-                if first {
-                    // Empty interpolated string
-                    self.emit_constant(Value::String(Rc::from("")));
+                {
+                    let c = self.current_chunk_idx;
+                    let line = self.line;
+                    common::strings::emit_concat(&mut self.chunks[c], count, line);
                 }
             }
 
@@ -3710,6 +3708,9 @@ impl Compiler {
                 self.chunks[c].emit_op_u8(Op::call_ref, (ctor_arity + 1) as u8, line);
                 self.chunks[c].emit_op(Op::drop, line);
             }
+
+            // Stamp __types array for instanceof support
+            common::classes::emit_instanceof_chain(&mut self.chunks[c], this_idx, class_name, line);
 
             // Return this
             self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);

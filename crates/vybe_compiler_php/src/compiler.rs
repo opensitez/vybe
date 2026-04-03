@@ -2590,6 +2590,12 @@ impl Compiler {
             self.emit(Op::drop);
         }
 
+        // Stamp __types array for instanceof support
+        {
+            let line = self.line;
+            common::classes::emit_instanceof_chain(&mut self.chunks[ctor_idx], this_slot, class_name, line);
+        }
+
         // Return this
         {
             let line = self.line;

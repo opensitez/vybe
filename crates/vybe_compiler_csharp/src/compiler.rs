@@ -14,6 +14,7 @@ use vybe_bytecode::{Chunk, Op, Value};
 use vybe_compiler_common as common;
 use vybe_compiler_common::expressions as common_expr;
 use vybe_compiler_common::functions as common_fn;
+use vybe_compiler_common::io as common_io;
 use vybe_compiler_common::strings as common_strings;
 use vybe_compiler_common::threading as common_thread;
 use vybe_parser_csharp::ast::*;
@@ -292,7 +293,7 @@ impl Compiler {
     /// Print N args on the stack via wasi:cli/log (import routed to chunk 0).
     fn emit_print(&mut self, arg_count: u8) {
         let idx = self.import("wasi:cli", "log");
-        self.emit_host_call(idx, arg_count);
+        common_io::emit_print_with_import(&mut self.chunks[self.current_chunk_idx], idx, arg_count, self.line);
     }
 
     /// Read a line from stdin via wasi:cli/readLine (import routed to chunk 0).
@@ -789,6 +790,9 @@ impl Compiler {
                 );
             }
         }
+
+        // Push class name to this.__types array for instanceof chain support
+        vybe_compiler_common::classes::emit_instanceof_chain(&mut self.chunks[idx], this_slot, &name, self.line);
 
         // Re-stamp type as this class (parent may have stamped differently)
         if has_user_base {

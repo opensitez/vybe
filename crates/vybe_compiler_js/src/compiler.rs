@@ -3028,23 +3028,8 @@ impl Compiler {
     fn emit_class_finalize_bytecodes(&mut self, name: &str, this_slot: u16, is_child: bool) {
         // Push class name to this.__types array for instanceof chain support
         {
-            let types_idx = self.add_string_constant("__types");
-            self.emit_u16(Op::local_get, this_slot);
-            self.emit_u16(Op::struct_get, types_idx);
-            self.emit(Op::dup);
-            self.emit(Op::ref_is_null);
-            let has_types = self.emit_jump(Op::br_if_false);
-            self.emit(Op::drop);
-            self.emit_u16(Op::array_new, 0);
-            self.patch_jump(has_types);
-            self.emit_constant(Value::String(Rc::from(name)));
-            self.emit(Op::array_push);
-            let arr_tmp = self.define_local("__arr_tmp");
-            self.emit_u16(Op::local_set, arr_tmp); self.emit(Op::drop);
-            self.emit_u16(Op::local_get, this_slot);
-            self.emit_u16(Op::local_get, arr_tmp);
-            self.emit_u16(Op::struct_set, types_idx);
-            self.emit(Op::drop);
+            let line = self.line;
+            common_classes::emit_instanceof_chain(&mut self.chunks[self.current_chunk_idx], this_slot, name, line);
         }
 
         if is_child {
@@ -3119,7 +3104,7 @@ impl Compiler {
             ("console", "log", _) => {
                 for a in args { self.compile_expression(a)?; }
                 let idx = self.import("wasi:cli", "log");
-                self.emit_host_call(idx, args.len() as u8);
+                common_io::emit_print_with_import(&mut self.chunks[self.current_chunk_idx], idx, args.len() as u8, self.line);
                 Ok(Some(()))
             }
             // String.fromCharCode(n) → str_from_char_code

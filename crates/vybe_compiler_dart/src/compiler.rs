@@ -1326,6 +1326,9 @@ impl Compiler {
                     }
                 }
 
+                // Stamp __types array for instanceof support
+                common_classes::emit_instanceof_chain(&mut self.chunks[idx], this_slot, class_name, self.line);
+
                 // Return this
                 common_classes::emit_constructor_return(&mut self.chunks[idx], this_slot, self.line);
                 let lc = self.current_scope().next_slot;

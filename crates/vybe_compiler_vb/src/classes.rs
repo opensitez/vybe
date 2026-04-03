@@ -297,6 +297,12 @@ impl Compiler {
             }
         }
 
+        // Push class name to this.__types array for instanceof chain support
+        {
+            let line = self.line;
+            common::classes::emit_instanceof_chain(&mut self.chunks[self.current_chunk_idx], this_slot, name, line);
+        }
+
         // Stamp/re-stamp type info on this.
         // For base class: emit_new_typed_object already stamped.
         // For child class: re-stamp with child type (parent's stamps are from super).

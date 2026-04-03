@@ -53,6 +53,65 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     chunk.emit_op(Op::drop, line);
 }
 
+/// Stamp `class_name` into `this.__types` array for cross-language instanceof.
+/// If `__types` is null/missing, creates an empty array first, then pushes the name.
+/// Called once per class in the inheritance chain (child calls after parent constructor).
+///
+/// Bytecode stack trace:
+/// ```text
+/// local_get this          // [this]
+/// dup                     // [this, this]
+/// struct_get "__types"    // [this, types_or_null]
+/// dup                     // [this, types_or_null, types_or_null]
+/// ref_is_null             // [this, types_or_null, bool]
+/// br_if_false skip        // [this, types_or_null]
+/// drop                    // [this]
+/// array_new 0             // [this, []]
+/// skip:                   // [this, array]
+/// const "class_name"      // [this, array, "class_name"]
+/// array_push              // [this, array_with_name]
+/// struct_set "__types"    // [] (stored on this)
+/// drop                    // []
+/// ```
+///
+/// Stack: unchanged
+pub fn emit_instanceof_chain(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
+    let types_key = chunk.add_constant(Value::String(Rc::from("__types")));
+
+    // [this]
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    // [this, this]
+    chunk.emit_op(Op::dup, line);
+    // [this, types_or_null]
+    chunk.emit_op_u16(Op::struct_get, types_key, line);
+    // [this, types_or_null, types_or_null]
+    chunk.emit_op(Op::dup, line);
+    // [this, types_or_null, bool]
+    chunk.emit_op(Op::ref_is_null, line);
+    // br_if_false → skip past array creation when __types already exists
+    let patch_pos = chunk.code.len();
+    chunk.emit_op_u16(Op::br_if_false, 0, line); // placeholder offset
+    // [this, null] — null path: drop null and create empty array
+    chunk.emit_op(Op::drop, line);
+    // [this, []]
+    chunk.emit_op_u16(Op::array_new, 0, line);
+    // Patch the forward jump to land here
+    let offset = (chunk.code.len() as i16) - (patch_pos as i16) - 3;
+    chunk.code[patch_pos + 1] = (offset >> 8) as u8;
+    chunk.code[patch_pos + 2] = (offset & 0xff) as u8;
+
+    // skip: [this, array]
+    let name_const = chunk.add_constant(Value::String(Rc::from(class_name)));
+    // [this, array, "class_name"]
+    chunk.emit_op_u16(Op::r#const, name_const, line);
+    // [this, array_with_name]
+    chunk.emit_op(Op::array_push, line);
+    // struct_set expects [obj, val] → stores this.__types = array_with_name
+    chunk.emit_op_u16(Op::struct_set, types_key, line);
+    // drop the result left by struct_set
+    chunk.emit_op(Op::drop, line);
+}
+
 // ── Method binding ──────────────────────────────────────────────────────
 
 /// Bind an instance method on the object: this.<method_name> = ref_func(chunk_idx).

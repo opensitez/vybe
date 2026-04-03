@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_compiler_common as common;
 use vybe_compiler_common::functions as common_fn;
+use vybe_compiler_common::io as common_io;
 use vybe_parser_basic::ast::*;
 
 use crate::scope::Scope;
@@ -163,7 +164,7 @@ impl Compiler {
     /// Print N args on the stack via wasi:cli/log (import routed to chunk 0).
     pub(crate) fn emit_print(&mut self, arg_count: u8) {
         let idx = self.import("wasi:cli", "log");
-        self.emit_host_call(idx, arg_count);
+        common_io::emit_print_with_import(&mut self.chunks[self.current_chunk_idx], idx, arg_count, self.line);
     }
 
     pub(crate) fn emit_global_set(&mut self, name: &str) {

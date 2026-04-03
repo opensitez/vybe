@@ -465,6 +465,9 @@ impl Compiler {
                     common::classes::emit_store_super(self.chunk(ctor_idx), this_local, &parent_name, 0);
                 }
 
+                // Stamp __types array for instanceof support
+                common::classes::emit_instanceof_chain(self.chunk(ctor_idx), this_local, name, 0);
+
                 common::classes::emit_constructor_return(self.chunk(ctor_idx), this_local, 0);
 
                 let scope = self.scopes.remove(scope_idx);
@@ -1176,13 +1179,7 @@ impl Compiler {
                     }
                 }
                 // Concatenate all parts
-                for _ in 1..count {
-                    self.chunk(chunk_idx).emit_op(Op::str_concat, 0);
-                }
-                if count == 0 {
-                    let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("")));
-                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
-                }
+                common::strings::emit_concat(self.chunk(chunk_idx), count, 0);
             }
             Expression::Bool(b) => {
                 let c = self.chunk(chunk_idx).add_constant(Value::Bool(*b));

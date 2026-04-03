@@ -2303,6 +2303,9 @@ impl Compiler {
             self.chunks[c].emit_op(Op::drop, line);
         }
 
+        // Stamp __types array for instanceof support
+        common::classes::emit_instanceof_chain(&mut self.chunks[c], this_idx, class_name, line);
+
         // Return this
         self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);
         self.chunks[c].emit_op(Op::r#return, line);
