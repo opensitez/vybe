@@ -1,8 +1,9 @@
 use tiny_skia::{Pixmap, Paint, PathBuilder, Transform, Stroke};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct Toolbox {
     pub items: Vec<String>,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -10,7 +11,7 @@ pub struct Toolbox {
 
 impl Toolbox {
     pub fn new(items: Vec<&str>) -> Self {
-        Self { items: items.into_iter().map(|s| s.to_string()).collect(), name: String::new(), rect: LayoutRect::zero(), pending_events: Vec::new() }
+        Self { items: items.into_iter().map(|s| s.to_string()).collect(), id: WidgetId::next(), name: String::new(), rect: LayoutRect::zero(), pending_events: Vec::new() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
@@ -54,6 +55,7 @@ impl Toolbox {
 
 impl PanelWidget for Toolbox {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
     fn rect(&self) -> LayoutRect { self.rect }
 

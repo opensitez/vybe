@@ -11,7 +11,7 @@ use cosmic_text::Color as CosmicColor;
 use super::{WidgetColors, rounded_rect_path};
 use super::layout::{
     LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton,
-    KeyEvent, RenderContext, PanelWidget, WidgetEvent,
+    KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId,
 };
 
 /// A picked color in RGBA.
@@ -120,6 +120,7 @@ impl Hsv {
 
 /// The color picker widget.
 pub struct ColorPicker {
+    pub id: WidgetId,
     /// Current HSV state.
     hsv: Hsv,
     /// Current picked color.
@@ -148,6 +149,7 @@ const PADDING: f32 = 8.0;
 impl ColorPicker {
     pub fn new() -> Self {
         Self {
+            id: WidgetId::next(),
             hsv: Hsv { h: 0.0, s: 1.0, v: 1.0 },
             color: PickedColor::default(),
             open: false,
@@ -465,6 +467,7 @@ impl ColorPicker {
 
 impl PanelWidget for ColorPicker {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
     }

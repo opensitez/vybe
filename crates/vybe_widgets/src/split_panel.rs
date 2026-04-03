@@ -8,6 +8,7 @@ use crate::layout::*;
 
 /// Two panels separated by a draggable splitter.
 pub struct SplitPanel {
+    pub id: WidgetId,
     rect: LayoutRect,
     horizontal: bool,
     split_pos: f32,
@@ -27,6 +28,7 @@ impl SplitPanel {
     /// `horizontal = true` means left | right, `false` means top / bottom.
     pub fn new(horizontal: bool) -> Self {
         Self {
+            id: WidgetId::next(),
             rect: LayoutRect::zero(),
             horizontal,
             split_pos: 200.0,
@@ -127,6 +129,7 @@ impl PanelWidget for SplitPanel {
     }
 
     fn rect(&self) -> LayoutRect { self.rect }
+    fn widget_id(&self) -> WidgetId { self.id }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         if let Some(p1) = &mut self.panel1 {

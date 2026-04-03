@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path, circle_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct Slider {
     pub value: f32,     // 0.0..1.0
@@ -17,6 +17,7 @@ pub struct Slider {
     pub height: f32,
     pub track_height: f32,
     pub thumb_radius: f32,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -38,6 +39,7 @@ impl Slider {
             height: 20.0,
             track_height: 4.0,
             thumb_radius: 8.0,
+            id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
@@ -124,6 +126,7 @@ impl Slider {
 
 impl PanelWidget for Slider {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
     fn hovered(&self) -> bool { self.hovered }
     fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }

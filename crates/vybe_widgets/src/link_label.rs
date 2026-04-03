@@ -3,7 +3,7 @@
 use tiny_skia::*;
 use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct LinkLabel {
     pub text: String,
@@ -12,6 +12,7 @@ pub struct LinkLabel {
     pub hovered: bool,
     pub visited: bool,
     pub colors: WidgetColors,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -21,6 +22,7 @@ impl LinkLabel {
     pub fn new<S: Into<String>>(text: S) -> Self {
         let t: String = text.into();
         Self {
+            id: WidgetId::next(),
             name: t.clone(),
             text: t,
             width: 100.0,
@@ -79,6 +81,7 @@ impl LinkLabel {
 
 impl PanelWidget for LinkLabel {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn hovered(&self) -> bool { self.hovered }
     fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }

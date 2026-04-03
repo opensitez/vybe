@@ -19,6 +19,7 @@ pub struct StatusSection {
 
 /// A bottom status bar with left- and right-aligned sections.
 pub struct StatusBarPanel {
+    pub id: WidgetId,
     rect: LayoutRect,
     sections: Vec<StatusSection>,
     height: f32,
@@ -29,6 +30,7 @@ pub struct StatusBarPanel {
 impl StatusBarPanel {
     pub fn new() -> Self {
         Self {
+            id: WidgetId::next(),
             rect: LayoutRect::zero(),
             sections: Vec::new(),
             height: 24.0,
@@ -114,6 +116,7 @@ impl PanelWidget for StatusBarPanel {
     }
 
     fn rect(&self) -> LayoutRect { self.rect }
+    fn widget_id(&self) -> WidgetId { self.id }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let s = ctx.scale;

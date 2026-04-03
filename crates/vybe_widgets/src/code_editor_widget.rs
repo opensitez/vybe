@@ -9,7 +9,7 @@ use arboard::Clipboard;
 
 use crate::text_editor::TextEditor;
 use crate::language::LanguageDef;
-use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent};
+use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent, WidgetId};
 use winit::window::CursorIcon;
 pub use crate::text_editor::TokenKind;
 
@@ -581,6 +581,7 @@ pub struct AutocompleteItem {
 }
 
 pub struct CodeEditorWidget {
+    pub id: WidgetId,
     pub editor: cosmic_text::Editor<'static>,
     pub my_editor: TextEditor,
     pub lang_def: LanguageDef,
@@ -630,7 +631,7 @@ impl CodeEditorWidget {
         let text = my_editor.rope.to_string();
         buffer.set_text(font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
 
-        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false, diagnostics: Vec::new(), matching_bracket: None, autocomplete_items: Vec::new(), autocomplete_selected: 0, autocomplete_visible: false, hover_text: None, hover_pos: (0.0, 0.0), layout_rect: LayoutRect::zero(), clipboard: Clipboard::new().ok(), pending_events: Vec::new() };
+        let mut widget = Self { id: WidgetId::next(), editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false, diagnostics: Vec::new(), matching_bracket: None, autocomplete_items: Vec::new(), autocomplete_selected: 0, autocomplete_visible: false, hover_text: None, hover_pos: (0.0, 0.0), layout_rect: LayoutRect::zero(), clipboard: Clipboard::new().ok(), pending_events: Vec::new() };
         widget.update_digit_cache(font_system);
         widget
     }
@@ -1530,6 +1531,7 @@ impl CodeEditorWidget {
 impl PanelWidget for CodeEditorWidget {
     fn set_rect(&mut self, rect: LayoutRect) { self.layout_rect = rect; }
     fn rect(&self) -> LayoutRect { self.layout_rect }
+    fn widget_id(&self) -> WidgetId { self.id }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let s = ctx.scale;

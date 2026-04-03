@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct TableLayoutPanel {
     pub cols: usize,
@@ -10,6 +10,7 @@ pub struct TableLayoutPanel {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
 }
@@ -26,6 +27,7 @@ impl TableLayoutPanel {
                 border: (200, 200, 200, 255),
                 ..WidgetColors::default()
             },
+            id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
         }
@@ -112,6 +114,7 @@ impl TableLayoutPanel {
 
 impl PanelWidget for TableLayoutPanel {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
     fn render(&mut self, ctx: &mut RenderContext) {

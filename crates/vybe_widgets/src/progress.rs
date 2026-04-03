@@ -2,20 +2,21 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct ProgressBar {
     pub value: f32, // 0.0..1.0
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
 }
 
 impl ProgressBar {
     pub fn new() -> Self {
-        Self { value: 0.0, width: 200.0, height: 16.0, colors: WidgetColors::default(), name: String::new(), rect: LayoutRect::zero() }
+        Self { value: 0.0, width: 200.0, height: 16.0, colors: WidgetColors::default(), id: WidgetId::next(), name: String::new(), rect: LayoutRect::zero() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
@@ -57,6 +58,7 @@ impl ProgressBar {
 
 impl PanelWidget for ProgressBar {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
     fn render(&mut self, ctx: &mut RenderContext) {

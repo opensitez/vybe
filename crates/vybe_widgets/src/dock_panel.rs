@@ -17,6 +17,7 @@ pub struct DockChild {
 
 /// Container that arranges children by dock position (like WPF DockPanel).
 pub struct DockPanel {
+    pub id: WidgetId,
     rect: LayoutRect,
     children: Vec<DockChild>,
     bg_color: (u8, u8, u8, u8),
@@ -25,6 +26,7 @@ pub struct DockPanel {
 impl DockPanel {
     pub fn new() -> Self {
         Self {
+            id: WidgetId::next(),
             rect: LayoutRect::zero(),
             children: Vec::new(),
             bg_color: (30, 30, 30, 255),
@@ -122,6 +124,8 @@ impl PanelWidget for DockPanel {
     fn rect(&self) -> LayoutRect {
         self.rect
     }
+
+    fn widget_id(&self) -> WidgetId { self.id }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         // Background

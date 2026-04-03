@@ -3,9 +3,10 @@
 use tiny_skia::*;
 use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId};
 
 pub struct Label {
+    pub id: WidgetId,
     pub text: String,
     pub width: f32,
     pub height: f32,
@@ -19,6 +20,7 @@ pub struct Label {
 impl Label {
     pub fn new<S: Into<String>>(text: S) -> Self {
         Self {
+            id: WidgetId::next(),
             text: text.into(),
             width: 100.0,
             height: 20.0,
@@ -65,6 +67,7 @@ impl PanelWidget for Label {
     }
 
     fn rect(&self) -> LayoutRect { self.rect }
+    fn widget_id(&self) -> WidgetId { self.id }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;

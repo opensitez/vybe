@@ -102,7 +102,7 @@ pub use code_editor_widget::{CodeEditorWidget, Theme};
 pub use resource_editor::{ResourceEditor, ResourceEditorEvent, ResourceEntry, ResourceTab};
 
 // ── GUI Toolkit ────────────────────────────────────────────────────────
-pub use layout::{LayoutRect, MouseButton, MouseEventKind, MouseEvent, KeyEvent, RenderContext, Dock, PanelWidget, WidgetEvent, NullWidget, CursorMotion};
+pub use layout::{LayoutRect, MouseButton, MouseEventKind, MouseEvent, KeyEvent, RenderContext, Dock, PanelWidget, WidgetEvent, NullWidget, CursorMotion, WidgetId, FocusManager};
 pub use dock_panel::DockPanel;
 pub use split_panel::SplitPanel;
 pub use tab_panel::TabPanel;

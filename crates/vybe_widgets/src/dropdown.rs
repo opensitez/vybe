@@ -1,6 +1,6 @@
 use tiny_skia::{Paint, Pixmap, Transform, PathBuilder, Rect};
 use cosmic_text::{FontSystem, SwashCache, Color as CosmicColor};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub enum DropdownEvent {
     Selected(usize),
@@ -16,6 +16,7 @@ pub struct Dropdown {
     pub num_cols: usize,
     pub col_w: f32,
     pub row_h: f32,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -36,6 +37,7 @@ impl Dropdown {
             num_cols: actual_cols,
             col_w: 0.0,
             row_h: 25.0,
+            id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
@@ -137,6 +139,7 @@ impl Dropdown {
 
 impl PanelWidget for Dropdown {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
     fn rect(&self) -> LayoutRect { self.rect }
 

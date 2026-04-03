@@ -1,7 +1,7 @@
 use std::fs;
 use tiny_skia::{Paint, Pixmap, Transform, PathBuilder};
 use cosmic_text::{FontSystem, SwashCache, Buffer, Metrics, Attrs, Family, Color as CosmicColor};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 #[derive(Clone)]
 pub struct FileEntry {
@@ -24,6 +24,7 @@ pub struct TreeView {
     pub indent: f32,
     pub scale: f32,
     pub selected_path: Option<String>,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -46,7 +47,7 @@ fn scan_dir(path: &str) -> Vec<FileEntry> {
 
 impl TreeView {
     pub fn new(root_path: &str, scale: f32) -> Self {
-        let mut tree = Self { entries: Vec::new(), item_height: 26.0 * scale, indent: 20.0 * scale, scale, selected_path: None, name: String::new(), rect: LayoutRect::zero(), pending_events: Vec::new() };
+        let mut tree = Self { entries: Vec::new(), item_height: 26.0 * scale, indent: 20.0 * scale, scale, selected_path: None, id: WidgetId::next(), name: String::new(), rect: LayoutRect::zero(), pending_events: Vec::new() };
         tree.entries = scan_dir(root_path);
         tree
     }
@@ -259,6 +260,7 @@ impl TreeView {
 
 impl PanelWidget for TreeView {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
     fn rect(&self) -> LayoutRect { self.rect }
 

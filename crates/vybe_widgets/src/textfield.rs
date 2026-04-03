@@ -2,7 +2,7 @@
 
 use super::WidgetColors;
 use cosmic_text::Color as CosmicColor;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct TextInput {
     pub value: String,
@@ -16,6 +16,7 @@ pub struct TextInput {
     pub font_size: f32,
     pub width: f32,
     pub height: f32,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -35,6 +36,7 @@ impl TextInput {
             font_size: 14.0,
             width: 200.0,
             height: 24.0,
+            id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
@@ -140,6 +142,7 @@ impl TextInput {
 
 impl PanelWidget for TextInput {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
     fn hovered(&self) -> bool { self.hovered }
     fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }

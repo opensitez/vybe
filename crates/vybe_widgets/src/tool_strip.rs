@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 #[derive(Clone, Debug)]
 pub enum ToolStripItem {
@@ -19,6 +19,7 @@ pub struct ToolStrip {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -38,6 +39,7 @@ impl ToolStrip {
                 background: (245, 246, 247, 255),
                 ..WidgetColors::default()
             },
+            id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
@@ -167,6 +169,7 @@ impl ToolStrip {
 
 impl PanelWidget for ToolStrip {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
 

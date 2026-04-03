@@ -47,6 +47,7 @@ pub enum OutputPanelEvent {
 }
 
 pub struct OutputPanel {
+    pub id: WidgetId,
     rect: LayoutRect,
     active_tab: OutputTab,
     output_lines: Vec<String>,
@@ -62,6 +63,7 @@ pub struct OutputPanel {
 impl OutputPanel {
     pub fn new() -> Self {
         Self {
+            id: WidgetId::next(),
             rect: LayoutRect::zero(),
             active_tab: OutputTab::Output,
             output_lines: Vec::new(),
@@ -134,6 +136,7 @@ impl OutputPanel {
 impl PanelWidget for OutputPanel {
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
     fn rect(&self) -> LayoutRect { self.rect }
+    fn widget_id(&self) -> WidgetId { self.id }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         if !self.visible { return; }

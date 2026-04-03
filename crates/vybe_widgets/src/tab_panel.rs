@@ -18,6 +18,7 @@ pub struct TabEntry {
 
 /// A tabbed panel container.
 pub struct TabPanel {
+    pub id: WidgetId,
     rect: LayoutRect,
     tabs: Vec<TabEntry>,
     active: usize,
@@ -37,6 +38,7 @@ pub struct TabPanel {
 impl TabPanel {
     pub fn new() -> Self {
         Self {
+            id: WidgetId::next(),
             rect: LayoutRect::zero(),
             tabs: Vec::new(),
             active: 0,
@@ -189,6 +191,7 @@ impl PanelWidget for TabPanel {
     }
 
     fn rect(&self) -> LayoutRect { self.rect }
+    fn widget_id(&self) -> WidgetId { self.id }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let s = ctx.scale;

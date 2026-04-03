@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct ContextMenu {
     pub items: Vec<String>,
@@ -11,6 +11,7 @@ pub struct ContextMenu {
     pub item_height: f32,
     pub width: f32,
     pub colors: WidgetColors,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -25,6 +26,7 @@ impl ContextMenu {
             item_height: 24.0,
             width: 160.0,
             colors: WidgetColors::default(),
+            id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
@@ -121,6 +123,7 @@ impl ContextMenu {
 
 impl PanelWidget for ContextMenu {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
     fn rect(&self) -> LayoutRect { self.rect }
 

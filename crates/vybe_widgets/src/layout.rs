@@ -9,6 +9,35 @@
 use cosmic_text::{FontSystem, SwashCache, Attrs, Buffer, Color, Family, Metrics, Shaping};
 use tiny_skia::{Pixmap, PixmapPaint, Transform, ColorU8};
 use winit::window::CursorIcon;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// ── WidgetId ───────────────────────────────────────────────────────────
+
+/// A unique, lightweight identifier for a widget instance.
+///
+/// Created via `WidgetId::next()` which returns a globally unique id.
+/// Zero is reserved as the "null" / uninitialized sentinel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WidgetId(pub u64);
+
+static NEXT_WIDGET_ID: AtomicU64 = AtomicU64::new(1);
+
+impl WidgetId {
+    /// The null / uninitialized id.
+    pub const NONE: WidgetId = WidgetId(0);
+
+    /// Allocate the next globally-unique widget id.
+    pub fn next() -> Self {
+        WidgetId(NEXT_WIDGET_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Whether this is the null id.
+    pub fn is_none(self) -> bool { self.0 == 0 }
+}
+
+impl Default for WidgetId {
+    fn default() -> Self { Self::NONE }
+}
 
 // ── LayoutRect ─────────────────────────────────────────────────────────
 
@@ -317,6 +346,9 @@ pub trait PanelWidget {
 
     /// Notify the widget that the mouse entered or left it.
     fn set_hovered(&mut self, _hovered: bool) {}
+
+    /// Unique identifier for this widget instance.
+    fn widget_id(&self) -> WidgetId { WidgetId::NONE }
 }
 
 // ── NullWidget ─────────────────────────────────────────────────────────

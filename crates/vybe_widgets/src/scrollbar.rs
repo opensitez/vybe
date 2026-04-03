@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct ScrollBar {
     pub vertical: bool,
@@ -14,6 +14,7 @@ pub struct ScrollBar {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -31,6 +32,7 @@ impl ScrollBar {
             width: if vertical { 16.0 } else { 160.0 },
             height: if vertical { 160.0 } else { 16.0 },
             colors: WidgetColors::default(),
+            id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
@@ -322,6 +324,7 @@ impl ScrollBar {
 
 impl PanelWidget for ScrollBar {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
 

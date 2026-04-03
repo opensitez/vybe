@@ -18,7 +18,7 @@
 
 use tiny_skia::*;
 use super::layout::{
-    LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, FocusManager,
+    LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, FocusManager, WidgetId,
 };
 
 /// A form holds a collection of controls laid out at absolute positions.
@@ -26,6 +26,7 @@ use super::layout::{
 /// It implements `PanelWidget` so it can be nested inside containers
 /// (DockPanel, SplitPanel, TabPanel, etc.).
 pub struct Form {
+    pub id: WidgetId,
     pub title: String,
     pub background: (u8, u8, u8, u8),
     rect: LayoutRect,
@@ -37,6 +38,7 @@ pub struct Form {
 impl Form {
     pub fn new(title: &str) -> Self {
         Self {
+            id: WidgetId::next(),
             title: title.to_string(),
             background: (240, 240, 240, 255),
             rect: LayoutRect::zero(),
@@ -115,6 +117,7 @@ impl PanelWidget for Form {
     }
 
     fn rect(&self) -> LayoutRect { self.rect }
+    fn widget_id(&self) -> WidgetId { self.id }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;

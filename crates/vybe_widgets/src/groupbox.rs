@@ -3,7 +3,7 @@
 use tiny_skia::*;
 use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct GroupBox {
     pub title: String,
@@ -11,6 +11,7 @@ pub struct GroupBox {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
 }
@@ -19,6 +20,7 @@ impl GroupBox {
     pub fn new<S: Into<String>>(title: S) -> Self {
         let t: String = title.into();
         Self {
+            id: WidgetId::next(),
             name: t.clone(),
             title: t,
             title_width: 60.0,
@@ -103,6 +105,7 @@ impl GroupBox {
 
 impl PanelWidget for GroupBox {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
     fn rect(&self) -> LayoutRect { self.rect }
     fn render(&mut self, ctx: &mut RenderContext) {

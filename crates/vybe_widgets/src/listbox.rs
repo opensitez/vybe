@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 pub struct ListBox {
     pub items: Vec<String>,
@@ -14,6 +14,7 @@ pub struct ListBox {
     pub width: f32,
     pub height: f32,
     pub colors: WidgetColors,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -31,6 +32,7 @@ impl ListBox {
             width: 120.0,
             height: 120.0,
             colors: WidgetColors::default(),
+            id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
@@ -149,6 +151,7 @@ impl ListBox {
 
 impl PanelWidget for ListBox {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_focused(&mut self, focused: bool) { self.focused = focused; }
     fn hovered(&self) -> bool { self.hovered }
     fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }

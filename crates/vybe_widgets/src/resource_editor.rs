@@ -3,7 +3,7 @@
 
 use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
 use tiny_skia::{Paint, Pixmap, Transform, PathBuilder, Stroke};
-use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent};
+use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent, WidgetId};
 use winit::window::CursorIcon;
 
 const HEADER_H: f32 = 28.0;
@@ -85,6 +85,7 @@ pub enum ResourceEditorEvent {
 }
 
 pub struct ResourceEditor {
+    pub id: WidgetId,
     pub entries: Vec<ResourceEntry>,
     pub active_tab: ResourceTab,
     pub scroll_y: f32,
@@ -111,6 +112,7 @@ pub struct ResourceEditor {
 impl ResourceEditor {
     pub fn new() -> Self {
         Self {
+            id: WidgetId::next(),
             entries: Vec::new(),
             active_tab: ResourceTab::Strings,
             scroll_y: 0.0,
@@ -854,6 +856,7 @@ fn stroke_rect(pix: &mut Pixmap, paint: &Paint, x: f32, y: f32, w: f32, h: f32, 
 impl PanelWidget for ResourceEditor {
     fn set_rect(&mut self, rect: LayoutRect) { self.layout_rect = rect; }
     fn rect(&self) -> LayoutRect { self.layout_rect }
+    fn widget_id(&self) -> WidgetId { self.id }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.layout_rect;

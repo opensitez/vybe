@@ -7,7 +7,7 @@
 use tiny_skia::*;
 use cosmic_text::{FontSystem, SwashCache, Color as CosmicColor};
 use super::rounded_rect_path;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 /// The list of available font families (matches legacy editor).
 pub const FONT_FAMILIES: &[&str] = &[
@@ -49,6 +49,7 @@ pub struct FontPicker {
     hover_family: Option<usize>,
     /// Hover index for size list.
     hover_size: Option<usize>,
+    pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
@@ -68,6 +69,7 @@ impl FontPicker {
             open: false,
             hover_family: None,
             hover_size: None,
+            id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
@@ -319,6 +321,7 @@ impl FontPicker {
 
 impl PanelWidget for FontPicker {
     fn name(&self) -> &str { &self.name }
+    fn widget_id(&self) -> WidgetId { self.id }
     fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
     fn rect(&self) -> LayoutRect { self.rect }
 
