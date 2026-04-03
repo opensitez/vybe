@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, TcpListener, UdpSocket};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -48,7 +48,7 @@ fn get_id(args: &[Value]) -> u64 {
 
 pub fn register(vm: &mut VM) {
     // New TcpListener(port)
-    vm.register_host_fn("vybe:net", "tcpListenerNew", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "tcpListenerNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         // args[0] = null (this from New), args[1] = port
         let port = args.get(1).or(args.first()).map(|v| v.as_f64() as u16).unwrap_or(8080);
         let addr = format!("127.0.0.1:{}", port);
@@ -70,19 +70,19 @@ pub fn register(vm: &mut VM) {
     }));
 
     // TcpListener.Start() — already bound, no-op
-    vm.register_host_fn("vybe:net", "tcpListenerStart", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("vybe:net", "tcpListenerStart", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         Value::Null
     }));
 
     // TcpListener.Stop()
-    vm.register_host_fn("vybe:net", "tcpListenerStop", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "tcpListenerStop", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let id = get_id(args);
         get_state().lock().unwrap().tcp_listeners.remove(&id);
         Value::Null
     }));
 
     // TcpListener.AcceptTcpClient() → TcpClient object
-    vm.register_host_fn("vybe:net", "tcpListenerAccept", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "tcpListenerAccept", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let id = get_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
@@ -101,7 +101,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // New TcpClient(host, port)
-    vm.register_host_fn("vybe:net", "tcpConnect", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "tcpConnect", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         // args might be [null, host, port] from New or [host, port] direct
         let (host, port) = if args.len() >= 3 {
             (format!("{}", args[1]), args[2].as_f64() as u16)
@@ -131,12 +131,12 @@ pub fn register(vm: &mut VM) {
     }));
 
     // TcpClient.GetStream() → returns self (the stream IS the client in our model)
-    vm.register_host_fn("vybe:net", "tcpGetStream", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "tcpGetStream", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         args.first().cloned().unwrap_or(Value::Null)
     }));
 
     // TcpClient.Close()
-    vm.register_host_fn("vybe:net", "tcpClose", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "tcpClose", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let id = get_id(args);
         get_state().lock().unwrap().tcp_streams.remove(&id);
         Value::Null
@@ -144,7 +144,7 @@ pub fn register(vm: &mut VM) {
 
     // StreamWriter wrapping a TCP stream
     // New StreamWriter(stream) — stream is a TcpClient object
-    vm.register_host_fn("vybe:net", "streamWriterNew", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "streamWriterNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         // args[0] = null (this), args[1] = stream/tcpclient object OR file path
         let inner = args.get(1).or(args.first()).cloned().unwrap_or(Value::Null);
         let mut obj = Object::new();
@@ -167,7 +167,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // StreamWriter.WriteLine(text)
-    vm.register_host_fn("vybe:net", "streamWriterWriteLine", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "streamWriterWriteLine", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let text = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         let id = get_id(args);
         if id > 0 {
@@ -188,7 +188,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // StreamWriter.Flush()
-    vm.register_host_fn("vybe:net", "streamWriterFlush", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "streamWriterFlush", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let id = get_id(args);
         if id > 0 {
             let state = get_state();
@@ -201,7 +201,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // StreamWriter.Close()
-    vm.register_host_fn("vybe:net", "streamWriterClose", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "streamWriterClose", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let Some(Value::String(path)) = o.properties.get("__path") {
@@ -213,7 +213,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // StreamReader wrapping a TCP stream
-    vm.register_host_fn("vybe:net", "streamReaderNew", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "streamReaderNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let inner = args.get(1).or(args.first()).cloned().unwrap_or(Value::Null);
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Rc::from("StreamReader")));
@@ -239,7 +239,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // StreamReader.ReadLine()
-    vm.register_host_fn("vybe:net", "streamReaderReadLine", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "streamReaderReadLine", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let id = get_id(args);
         if id > 0 {
             // TCP stream read — read byte by byte until \n
@@ -284,7 +284,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // New UdpClient(port)
-    vm.register_host_fn("vybe:net", "udpNew", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "udpNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let port = args.get(1).or(args.first()).map(|v| v.as_f64() as u16).unwrap_or(0);
         let addr = format!("127.0.0.1:{}", port);
         match UdpSocket::bind(&addr) {
@@ -305,7 +305,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // UdpClient.Send(data, length, host, port)
-    vm.register_host_fn("vybe:net", "udpSend", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "udpSend", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let id = get_id(args);
         let data = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         let host = args.get(3).map(|v| format!("{}", v)).unwrap_or_else(|| "127.0.0.1".into());
@@ -319,7 +319,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // UdpClient.Receive() → byte array (as string for now)
-    vm.register_host_fn("vybe:net", "udpReceive", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "udpReceive", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let id = get_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
@@ -336,14 +336,14 @@ pub fn register(vm: &mut VM) {
     }));
 
     // UdpClient.Close()
-    vm.register_host_fn("vybe:net", "udpClose", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "udpClose", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let id = get_id(args);
         get_state().lock().unwrap().udp_sockets.remove(&id);
         Value::Null
     }));
 
     // DNS resolve
-    vm.register_host_fn("vybe:net", "dnsResolve", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:net", "dnsResolve", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let host = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         match std::net::ToSocketAddrs::to_socket_addrs(&format!("{}:0", host)) {
             Ok(addrs) => {

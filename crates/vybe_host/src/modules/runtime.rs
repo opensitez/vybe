@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 /// Runtime dispatch — handles method calls that need type-aware routing.
@@ -9,7 +9,7 @@ use vybe_bytecode::value::{Object, ObjectKind};
 pub fn register(vm: &mut VM) {
     // callMethod(obj, methodName, ...args)
     // Routes to the right implementation based on obj's __type.
-    vm.register_host_fn("vybe:runtime", "callMethod", Box::new(|vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "callMethod", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let obj = args.first().cloned().unwrap_or(Value::Null);
         let method = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         let call_args = if args.len() > 2 { &args[2..] } else { &[] };
@@ -32,7 +32,7 @@ pub fn register(vm: &mut VM) {
 
             // List methods (includes LINQ)
             if type_str == "List" {
-                return dispatch_list(vm, &obj, &method, call_args);
+                return dispatch_list(ctx, &obj, &method, call_args);
             }
         }
 
@@ -42,7 +42,7 @@ pub fn register(vm: &mut VM) {
 
     // awaitPromise(value) — if value is a Promise, extract its resolved value
     // For synchronous promises (our model), this is immediate.
-    vm.register_host_fn("vybe:runtime", "awaitPromise", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "awaitPromise", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let val = args.first().cloned().unwrap_or(Value::Null);
         if let Value::Object(ref obj) = val {
             let o = obj.borrow();
@@ -63,19 +63,19 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Promise.resolve(value) → creates a fulfilled Promise
-    vm.register_host_fn("vybe:runtime", "promiseResolve", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "promiseResolve", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let val = args.first().cloned().unwrap_or(Value::Null);
         make_promise("fulfilled", val)
     }));
 
     // Promise.reject(reason) → creates a rejected Promise
-    vm.register_host_fn("vybe:runtime", "promiseReject", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "promiseReject", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let val = args.first().cloned().unwrap_or(Value::Null);
         make_promise("rejected", val)
     }));
 
     // Promise.all(array) → Promise that resolves with array of values
-    vm.register_host_fn("vybe:runtime", "promiseAll", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "promiseAll", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(arr)) = args.first() {
             let o = arr.borrow();
             if let ObjectKind::Array(ref elems) = o.kind {
@@ -97,21 +97,21 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Error constructor: new Error("message")
-    vm.register_host_fn("vybe:runtime", "Error", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "Error", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         make_error("Error", args)
     }));
 
-    vm.register_host_fn("vybe:runtime", "TypeError", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "TypeError", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         make_error("TypeError", args)
     }));
 
-    vm.register_host_fn("vybe:runtime", "RangeError", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "RangeError", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         make_error("RangeError", args)
     }));
 
     // GoTo support — stores the target label. The caller checks this global
     // to implement VB6-style GoTo within a subroutine.
-    vm.register_host_fn("vybe:runtime", "goto", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:runtime", "goto", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         // In practice, GoTo within a Sub is rare in modern VB.NET.
         // This stores the label name so error handlers can dispatch.
         args.first().cloned().unwrap_or(Value::Null)
@@ -141,7 +141,7 @@ fn make_promise(state: &str, value: Value) -> Value {
     Value::Object(Rc::new(RefCell::new(obj)))
 }
 
-fn dispatch_list(vm: &mut VM, obj: &Value, method: &str, args: &[Value]) -> Value {
+fn dispatch_list(ctx: &mut HostContext, obj: &Value, method: &str, args: &[Value]) -> Value {
     let o = match obj { Value::Object(o) => o, _ => return Value::Null };
 
     match method {
@@ -269,7 +269,7 @@ fn dispatch_list(vm: &mut VM, obj: &Value, method: &str, args: &[Value]) -> Valu
                 drop(ob);
                 let mut filtered = Vec::new();
                 for elem in &elems_clone {
-                    let result = vm.invoke_callback(predicate, &[elem.clone()]);
+                    let result = ctx.invoke(predicate, &[elem.clone()]);
                     if result.as_bool() {
                         filtered.push(elem.clone());
                     }
@@ -291,7 +291,7 @@ fn dispatch_list(vm: &mut VM, obj: &Value, method: &str, args: &[Value]) -> Valu
                 drop(ob);
                 let mut mapped = Vec::new();
                 for elem in &elems_clone {
-                    let result = vm.invoke_callback(mapper, &[elem.clone()]);
+                    let result = ctx.invoke(mapper, &[elem.clone()]);
                     mapped.push(result);
                 }
                 let mut result_obj = Object::new_array(mapped);
@@ -324,7 +324,7 @@ fn dispatch_list(vm: &mut VM, obj: &Value, method: &str, args: &[Value]) -> Valu
                     let elems_clone = elems.clone();
                     drop(ob);
                     for elem in &elems_clone {
-                        let result = vm.invoke_callback(predicate, &[elem.clone()]);
+                        let result = ctx.invoke(predicate, &[elem.clone()]);
                         if result.as_bool() { return Value::Bool(true); }
                     }
                     return Value::Bool(false);
@@ -348,7 +348,7 @@ fn dispatch_list(vm: &mut VM, obj: &Value, method: &str, args: &[Value]) -> Valu
                     let elems_clone = elems.clone();
                     drop(ob);
                     for elem in &elems_clone {
-                        let result = vm.invoke_callback(predicate, &[elem.clone()]);
+                        let result = ctx.invoke(predicate, &[elem.clone()]);
                         if !result.as_bool() { return Value::Bool(false); }
                     }
                     return Value::Bool(true);
@@ -365,7 +365,7 @@ fn dispatch_list(vm: &mut VM, obj: &Value, method: &str, args: &[Value]) -> Valu
                     let elems_clone = elems.clone();
                     drop(ob);
                     for elem in &elems_clone {
-                        vm.invoke_callback(callback, &[elem.clone()]);
+                        ctx.invoke(callback, &[elem.clone()]);
                     }
                     return Value::Null;
                 }
@@ -383,7 +383,7 @@ fn dispatch_list(vm: &mut VM, obj: &Value, method: &str, args: &[Value]) -> Valu
                     drop(ob);
                     let mut acc = elems_clone[0].clone();
                     for elem in &elems_clone[1..] {
-                        acc = vm.invoke_callback(reducer, &[acc, elem.clone()]);
+                        acc = ctx.invoke(reducer, &[acc, elem.clone()]);
                     }
                     return acc;
                 }

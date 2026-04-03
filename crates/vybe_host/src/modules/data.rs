@@ -2,12 +2,12 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
     // DataTable constructor
-    vm.register_host_fn("vybe:data", "dataTableNew", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:data", "dataTableNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let name = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "Table1".into());
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Rc::from("DataTable")));
@@ -18,7 +18,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // DataSet constructor
-    vm.register_host_fn("vybe:data", "dataSetNew", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:data", "dataSetNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let name = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "DataSet1".into());
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Rc::from("DataSet")));
@@ -28,14 +28,14 @@ pub fn register(vm: &mut VM) {
     }));
 
     // DataTable.NewRow()
-    vm.register_host_fn("vybe:data", "dataTableNewRow", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("vybe:data", "dataTableNewRow", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Rc::from("DataRow")));
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
 
     // DataTable.Rows.Add(row)
-    vm.register_host_fn("vybe:data", "dataTableAddRow", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:data", "dataTableAddRow", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(table)) = args.first() {
             let row = args.get(1).cloned().unwrap_or(Value::Null);
             let t = table.borrow();

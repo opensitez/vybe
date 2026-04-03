@@ -1,8 +1,8 @@
 use std::rc::Rc;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:string", "slice", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "slice", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let len = st.len() as i64;
         let start = norm(f(a, 1) as i64, len);
@@ -10,7 +10,7 @@ pub fn register(vm: &mut VM) {
         if start < end { Value::String(Rc::from(&st[start..end])) }
         else { Value::String(Rc::from("")) }
     }));
-    vm.register_host_fn("vybe:string", "indexOf", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "indexOf", Box::new(|_ctx, a| {
         match a.first() {
             Some(Value::String(st)) => {
                 match st.find(&s(a, 1)) {
@@ -31,21 +31,21 @@ pub fn register(vm: &mut VM) {
             _ => Value::F64(-1.0),
         }
     }));
-    vm.register_host_fn("vybe:string", "includes",    Box::new(|_vm, a| Value::Bool(s(a, 0).contains(&s(a, 1)))));
-    vm.register_host_fn("vybe:string", "split", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "includes",    Box::new(|_ctx, a| Value::Bool(s(a, 0).contains(&s(a, 1)))));
+    vm.register_host_fn("vybe:string", "split", Box::new(|_ctx, a| {
         let parts: Vec<Value> = s(a, 0).split(&s(a, 1)).map(|p| Value::String(Rc::from(p))).collect();
         Value::Object(Rc::new(std::cell::RefCell::new(vybe_bytecode::value::Object::new_array(parts))))
     }));
-    vm.register_host_fn("vybe:string", "replace",    Box::new(|_vm, a| Value::String(Rc::from(s(a, 0).replacen(&s(a, 1), &s(a, 2), 1).as_str()))));
-    vm.register_host_fn("vybe:string", "startsWith", Box::new(|_vm, a| Value::Bool(s(a, 0).starts_with(&s(a, 1)))));
-    vm.register_host_fn("vybe:string", "endsWith",   Box::new(|_vm, a| Value::Bool(s(a, 0).ends_with(&s(a, 1)))));
-    vm.register_host_fn("vybe:string", "charAt", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "replace",    Box::new(|_ctx, a| Value::String(Rc::from(s(a, 0).replacen(&s(a, 1), &s(a, 2), 1).as_str()))));
+    vm.register_host_fn("vybe:string", "startsWith", Box::new(|_ctx, a| Value::Bool(s(a, 0).starts_with(&s(a, 1)))));
+    vm.register_host_fn("vybe:string", "endsWith",   Box::new(|_ctx, a| Value::Bool(s(a, 0).ends_with(&s(a, 1)))));
+    vm.register_host_fn("vybe:string", "charAt", Box::new(|_ctx, a| {
         match s(a, 0).chars().nth(f(a, 1) as usize) {
             Some(c) => Value::String(Rc::from(c.to_string().as_str())),
             None => Value::String(Rc::from("")),
         }
     }));
-    vm.register_host_fn("vybe:string", "substring", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "substring", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let start = (f(a, 1) as usize).min(st.len());
         let end = if a.len() > 2 { (f(a, 2) as usize).min(st.len()) } else { st.len() };
@@ -54,7 +54,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // charCodeAt(str, index) → number
-    vm.register_host_fn("vybe:string", "charCodeAt", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "charCodeAt", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let idx = f(a, 1) as usize;
         match st.chars().nth(idx) {
@@ -64,7 +64,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // fromCharCode(code, code, ...) → string
-    vm.register_host_fn("vybe:string", "fromCharCode", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "fromCharCode", Box::new(|_ctx, a| {
         let result: String = a.iter()
             .map(|v| char::from_u32(v.as_f64() as u32).unwrap_or('\0'))
             .collect();
@@ -72,21 +72,21 @@ pub fn register(vm: &mut VM) {
     }));
 
     // repeat(str, count) → string
-    vm.register_host_fn("vybe:string", "repeat", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "repeat", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let count = f(a, 1) as usize;
         Value::String(Rc::from(st.repeat(count).as_str()))
     }));
 
     // replaceAll(str, search, replace) → string
-    vm.register_host_fn("vybe:string", "replaceAll", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "replaceAll", Box::new(|_ctx, a| {
         Value::String(Rc::from(s(a, 0).replace(&s(a, 1), &s(a, 2)).as_str()))
     }));
 
     // --- VB-compatible string functions (available to all languages) ---
 
     // left(str, n) → first n characters
-    vm.register_host_fn("vybe:string", "left", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "left", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let n = f(a, 1) as usize;
         let end = n.min(st.len());
@@ -94,7 +94,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // right(str, n) → last n characters
-    vm.register_host_fn("vybe:string", "right", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "right", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let n = f(a, 1) as usize;
         let start = st.len().saturating_sub(n);
@@ -102,7 +102,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // mid(str, start, length?) → substring (1-based start like VB)
-    vm.register_host_fn("vybe:string", "mid", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "mid", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let start = ((f(a, 1) as usize).saturating_sub(1)).min(st.len());
         let end = if a.len() > 2 {
@@ -115,7 +115,7 @@ pub fn register(vm: &mut VM) {
 
     // instr(str, search) → 1-based position, 0 if not found
     // instr(start, str, search) → 1-based position starting from start
-    vm.register_host_fn("vybe:string", "instr", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "instr", Box::new(|_ctx, a| {
         if a.len() >= 3 {
             // instr(start, str, search)
             let start = (f(a, 0) as usize).saturating_sub(1);
@@ -137,7 +137,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // string(n, char) → string of n copies of char
-    vm.register_host_fn("vybe:string", "stringRepeat", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "stringRepeat", Box::new(|_ctx, a| {
         let n = f(a, 0) as usize;
         let ch = s(a, 1);
         let c = ch.chars().next().unwrap_or(' ');
@@ -145,7 +145,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // instrrev(str, search) → 1-based position of LAST occurrence, 0 if not found
-    vm.register_host_fn("vybe:string", "instrrev", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "instrrev", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let search = s(a, 1);
         match st.rfind(&search) {
@@ -155,7 +155,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // format(value, formatStr) → formatted string
-    vm.register_host_fn("vybe:string", "format", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "format", Box::new(|_ctx, a| {
         let val = f(a, 0);
         let fmt = s(a, 1).to_lowercase();
         let result = match fmt.as_str() {
@@ -173,21 +173,21 @@ pub fn register(vm: &mut VM) {
     }));
 
     // lset(str, length) → left-align in field
-    vm.register_host_fn("vybe:string", "lset", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "lset", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let len = f(a, 1) as usize;
         Value::String(Rc::from(format!("{:<width$}", st, width = len).as_str()))
     }));
 
     // rset(str, length) → right-align in field
-    vm.register_host_fn("vybe:string", "rset", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "rset", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let len = f(a, 1) as usize;
         Value::String(Rc::from(format!("{:>width$}", st, width = len).as_str()))
     }));
 
     // filter(arr, match, include?) → filtered array
-    vm.register_host_fn("vybe:string", "filter", Box::new(|_vm, a| {
+    vm.register_host_fn("vybe:string", "filter", Box::new(|_ctx, a| {
         use std::cell::RefCell;
         use vybe_bytecode::value::{Object, ObjectKind};
         let match_str = s(a, 1);
@@ -209,7 +209,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // count(str, sub) → number of non-overlapping occurrences
-    vm.register_host_fn("vybe:string", "count", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:string", "count", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let haystack = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         let needle = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         if needle.is_empty() {
@@ -219,7 +219,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // padStart(str, width) — zero-fill / right-justify
-    vm.register_host_fn("vybe:string", "padStart", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:string", "padStart", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         let width = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
         let fill = args.get(2).map(|v| format!("{}", v)).unwrap_or_else(|| " ".to_string());

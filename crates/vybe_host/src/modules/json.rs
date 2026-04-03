@@ -1,12 +1,12 @@
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::ObjectKind;
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:json", "stringify", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:json", "stringify", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         Value::String(Rc::from(stringify(args.first().unwrap_or(&Value::Null)).as_str()))
     }));
 
-    vm.register_host_fn("vybe:json", "parse", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:json", "parse", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         parse_json(&s)
     }));

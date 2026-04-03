@@ -2,12 +2,12 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
 
 pub fn register(vm: &mut VM) {
     // Task.Run — simplified: just call the function synchronously
-    vm.register_host_fn("vybe:threading", "taskRun", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "taskRun", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         // In our synchronous VM, Task.Run just executes immediately
         // The callback is args[0], but we can't call it from a host fn
         // Return a "completed task" object
@@ -19,7 +19,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Task.Delay(ms) — sleep
-    vm.register_host_fn("vybe:threading", "taskDelay", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "taskDelay", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ms = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
         std::thread::sleep(std::time::Duration::from_millis(ms));
         let mut obj = Object::new();
@@ -29,7 +29,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Task.FromResult(value)
-    vm.register_host_fn("vybe:threading", "taskFromResult", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "taskFromResult", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let val = args.first().cloned().unwrap_or(Value::Null);
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Rc::from("Task")));
@@ -39,7 +39,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Task.CompletedTask
-    vm.register_host_fn("vybe:threading", "taskCompleted", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "taskCompleted", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Rc::from("Task")));
         obj.properties.insert("iscompleted".into(), Value::Bool(true));
@@ -47,7 +47,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Stopwatch
-    vm.register_host_fn("vybe:threading", "stopwatchNew", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "stopwatchNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -60,7 +60,7 @@ pub fn register(vm: &mut VM) {
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
 
-    vm.register_host_fn("vybe:threading", "stopwatchElapsed", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "stopwatchElapsed", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             let start = o.properties.get("__start").map(|v| v.as_f64()).unwrap_or(0.0);
@@ -74,7 +74,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // System.Random
-    vm.register_host_fn("vybe:threading", "randomNew", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "randomNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -85,7 +85,7 @@ pub fn register(vm: &mut VM) {
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
 
-    vm.register_host_fn("vybe:threading", "randomNext", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "randomNext", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let max = args.get(1).map(|v| v.as_f64() as u64).unwrap_or(i32::MAX as u64);
         let min = if args.len() > 2 {
             let a = args.get(1).map(|v| v.as_f64() as u64).unwrap_or(0);
@@ -102,7 +102,7 @@ pub fn register(vm: &mut VM) {
         Value::F64((min + t % max.max(1)) as f64)
     }));
 
-    vm.register_host_fn("vybe:threading", "randomNextDouble", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("vybe:threading", "randomNextDouble", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default().subsec_nanos();
         Value::F64((t as f64 % 1_000_000.0) / 1_000_000.0)

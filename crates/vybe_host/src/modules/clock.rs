@@ -1,9 +1,9 @@
 use std::rc::Rc;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 
 pub fn register(vm: &mut VM) {
     // Returns milliseconds since Unix epoch (like JS Date.now())
-    vm.register_host_fn("wasi:clocks", "now", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "now", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -12,7 +12,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Returns nanoseconds (high-resolution timer, like performance.now())
-    vm.register_host_fn("wasi:clocks", "hrtime", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "hrtime", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -21,14 +21,14 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Sleep for N milliseconds (blocking)
-    vm.register_host_fn("wasi:clocks", "sleep", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "sleep", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ms = args.first().map(|v| v.as_f64()).unwrap_or(0.0) as u64;
         std::thread::sleep(std::time::Duration::from_millis(ms));
         Value::Null
     }));
 
     // Format a timestamp as ISO 8601 string (simple implementation)
-    vm.register_host_fn("wasi:clocks", "toISOString", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "toISOString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ms = args.first().map(|v| v.as_f64()).unwrap_or(0.0) as u64;
         let total_secs = ms / 1000;
         let millis = ms % 1000;
@@ -70,7 +70,7 @@ pub fn register(vm: &mut VM) {
     // --- VB Date/Time functions ---
 
     // now() → current date/time as ISO string
-    vm.register_host_fn("wasi:clocks", "vbNow", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbNow", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -79,7 +79,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // date/today → current date as string
-    vm.register_host_fn("wasi:clocks", "vbDate", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbDate", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -89,7 +89,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // time → current time as string
-    vm.register_host_fn("wasi:clocks", "vbTime", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbTime", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -99,7 +99,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // timer → seconds since midnight
-    vm.register_host_fn("wasi:clocks", "vbTimer", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbTimer", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -109,42 +109,42 @@ pub fn register(vm: &mut VM) {
     }));
 
     // year(date) → year number
-    vm.register_host_fn("wasi:clocks", "vbYear", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbYear", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ts = parse_vb_date(args);
         let (y, _, _, _, _, _) = decompose_timestamp(ts);
         Value::F64(y as f64)
     }));
 
     // month(date) → month number
-    vm.register_host_fn("wasi:clocks", "vbMonth", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbMonth", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ts = parse_vb_date(args);
         let (_, m, _, _, _, _) = decompose_timestamp(ts);
         Value::F64(m as f64)
     }));
 
     // day(date) → day number
-    vm.register_host_fn("wasi:clocks", "vbDay", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbDay", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ts = parse_vb_date(args);
         let (_, _, d, _, _, _) = decompose_timestamp(ts);
         Value::F64(d as f64)
     }));
 
     // hour(date) → hour
-    vm.register_host_fn("wasi:clocks", "vbHour", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbHour", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ts = parse_vb_date(args);
         let (_, _, _, h, _, _) = decompose_timestamp(ts);
         Value::F64(h as f64)
     }));
 
     // minute(date) → minute
-    vm.register_host_fn("wasi:clocks", "vbMinute", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbMinute", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ts = parse_vb_date(args);
         let (_, _, _, _, min, _) = decompose_timestamp(ts);
         Value::F64(min as f64)
     }));
 
     // second(date) → second
-    vm.register_host_fn("wasi:clocks", "vbSecond", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("wasi:clocks", "vbSecond", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ts = parse_vb_date(args);
         let (_, _, _, _, _, s) = decompose_timestamp(ts);
         Value::F64(s as f64)

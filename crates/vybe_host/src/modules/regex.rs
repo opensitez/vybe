@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
 
 pub fn register(vm: &mut VM) {
     // regex.test(pattern, string) → bool
-    vm.register_host_fn("vybe:regex", "test", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:regex", "test", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let pattern = s(args, 0);
         let input = s(args, 1);
         match regex::Regex::new(&pattern) {
@@ -15,7 +15,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // regex.match(pattern, string) → array of matches or null
-    vm.register_host_fn("vybe:regex", "match", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:regex", "match", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let pattern = s(args, 0);
         let input = s(args, 1);
         match regex::Regex::new(&pattern) {
@@ -34,7 +34,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // regex.replace(pattern, string, replacement) → new string
-    vm.register_host_fn("vybe:regex", "replace", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:regex", "replace", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let pattern = s(args, 0);
         let input = s(args, 1);
         let replacement = s(args, 2);
@@ -45,7 +45,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // regex.replaceAll(pattern, string, replacement) → new string
-    vm.register_host_fn("vybe:regex", "replaceAll", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:regex", "replaceAll", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let pattern = s(args, 0);
         let input = s(args, 1);
         let replacement = s(args, 2);
@@ -56,7 +56,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // regex.split(pattern, string) → array of parts
-    vm.register_host_fn("vybe:regex", "split", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:regex", "split", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let pattern = s(args, 0);
         let input = s(args, 1);
         match regex::Regex::new(&pattern) {
@@ -73,7 +73,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // regex.matchGroups(pattern, string) → object with named groups or array of capture groups
-    vm.register_host_fn("vybe:regex", "matchGroups", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:regex", "matchGroups", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let pattern = s(args, 0);
         let input = s(args, 1);
         match regex::Regex::new(&pattern) {

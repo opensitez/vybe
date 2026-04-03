@@ -21,7 +21,7 @@ mod data;
 use std::cell::RefCell;
 use std::rc::Rc;
 use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 
 /// Register all namespace objects on the VM.
 /// Call this AFTER registering all host functions.

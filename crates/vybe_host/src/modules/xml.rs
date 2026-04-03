@@ -3,18 +3,18 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
 
 pub fn register(vm: &mut VM) {
     // XDocument.Parse(xmlString) → object tree
-    vm.register_host_fn("vybe:xml", "parse", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:xml", "parse", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let xml = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         parse_simple_xml(&xml)
     }));
 
     // XDocument.Load(path) → object tree
-    vm.register_host_fn("vybe:xml", "load", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:xml", "load", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let path = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         match std::fs::read_to_string(&path) {
             Ok(xml) => parse_simple_xml(&xml),
@@ -23,7 +23,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Save XML object to string
-    vm.register_host_fn("vybe:xml", "toString", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:xml", "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             return Value::String(Rc::from(xml_to_string(obj).as_str()));
         }

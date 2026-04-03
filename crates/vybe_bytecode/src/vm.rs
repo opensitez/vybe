@@ -22,10 +22,41 @@ pub enum ExecResult {
     Suspended(u64),
 }
 
-/// Host function signature. Receives VM + args, returns a value.
-/// VM access allows host functions to call back into VM functions
-/// (WASM-compliant: host can invoke exported functions).
-pub type HostFn = Box<dyn Fn(&mut VM, &[Value]) -> Value>;
+/// Restricted context passed to host functions.
+/// Provides only the capabilities a host function needs:
+/// - Invoke VM callbacks (for LINQ, event handlers, etc.)
+/// - Access linear memory (for WASI filesystem, network, etc.)
+/// - Access user-defined host state (GUI queue, side effects, etc.)
+///
+/// Does NOT expose: globals, stack, frames, bytecode, type registry.
+/// This matches the WASM security model (Wasmtime Caller<State>).
+pub struct HostContext<'a> {
+    /// Invoke a VM function reference with arguments.
+    /// This is the ONLY way host functions can call back into the VM.
+    invoker: Option<&'a mut dyn FnMut(&Value, &[Value]) -> Value>,
+    /// Linear memory access (WASM MVP memory[0]).
+    pub memory: Option<&'a mut [u8]>,
+}
+
+impl<'a> HostContext<'a> {
+    /// Call a VM function reference from host code.
+    /// Returns Value::Null if no invoker is available.
+    pub fn invoke(&mut self, func_ref: &Value, args: &[Value]) -> Value {
+        if let Some(ref mut invoker) = self.invoker {
+            invoker(func_ref, args)
+        } else {
+            Value::Null
+        }
+    }
+
+    /// Create an empty context (for host functions that don't need callbacks).
+    pub fn empty() -> Self {
+        HostContext { invoker: None, memory: None }
+    }
+}
+
+/// Host function signature. Receives restricted context + args, returns a value.
+pub type HostFn = Box<dyn Fn(&mut HostContext, &[Value]) -> Value>;
 
 #[derive(Debug, Clone)]
 struct CallFrame {
@@ -85,6 +116,8 @@ pub struct VM {
     pub func_table: Vec<Value>,
     /// Block label stack for structured control flow.
     label_stack: Vec<LabelEntry>,
+    /// Callback invoker for host functions (cached allocation).
+    callback_invoker: Option<Box<dyn FnMut(&Value, &[Value]) -> Value>>,
     /// Finalizer registry: maps object identity to callback.
     /// When an object's strong count reaches the weak+finalizer threshold,
     /// the callback is queued for execution.
@@ -128,6 +161,7 @@ impl VM {
             active_memory: 0,
             func_table: Vec::new(),
             label_stack: Vec::new(),
+            callback_invoker: None,
             finalizers: Vec::new(),
         }
     }
@@ -259,6 +293,37 @@ impl VM {
         let mut obj = Object::new();
         obj.kind = ObjectKind::HostFunction(idx);
         self.func_table[idx] = Value::Object(Rc::new(RefCell::new(obj)));
+    }
+
+    /// Create a HostContext with callback capability for host functions.
+    fn make_host_context(&mut self) -> HostContext {
+        // We can't pass &mut self into the closure directly due to borrow rules.
+        // Instead, we pass raw pointers — this is safe because the HostContext
+        // lifetime is strictly scoped within the host function call.
+        let vm_ptr = self as *mut VM;
+        HostContext {
+            invoker: Some(unsafe {
+                // SAFETY: vm_ptr is valid for the duration of the host function call.
+                // The host function cannot outlive the call_import/call_value scope.
+                let vm_ref: &mut VM = &mut *vm_ptr;
+                vm_ref.get_invoker()
+            }),
+            memory: None, // TODO: pass memory when needed
+        }
+    }
+
+    /// Get a mutable reference to the invoker closure.
+    fn get_invoker(&mut self) -> &mut dyn FnMut(&Value, &[Value]) -> Value {
+        // This is stored as a field to avoid repeated allocation
+        if self.callback_invoker.is_none() {
+            let vm_ptr = self as *mut VM;
+            self.callback_invoker = Some(Box::new(move |func_ref: &Value, args: &[Value]| {
+                // SAFETY: vm_ptr is valid during host function execution
+                let vm = unsafe { &mut *vm_ptr };
+                vm.invoke_callback(func_ref, args)
+            }));
+        }
+        self.callback_invoker.as_mut().unwrap().as_mut()
     }
 
     /// Invoke a VM function reference from host code.
@@ -1343,12 +1408,14 @@ impl VM {
 
                     if import_idx < self.import_table.len() {
                         let host_idx = self.import_table[import_idx];
-                        // Temporarily take the host fn to release the borrow on self,
-                        // allowing the host fn to call back into the VM.
+                        // Take host fn temporarily to release borrow, create HostContext
                         let placeholder: HostFn = Box::new(|_, _| Value::Null);
                         let host_fn = std::mem::replace(&mut self.host_fns[host_idx], placeholder);
-                        let result = host_fn(self, &args);
-                        self.host_fns[host_idx] = host_fn;  // put it back
+                        let result = {
+                            let mut ctx = self.make_host_context();
+                            host_fn(&mut ctx, &args)
+                        };
+                        self.host_fns[host_idx] = host_fn;
 
                         // JSPI: if host function returned a pending Promise,
                         // transparently suspend and resume when resolved.
@@ -3332,16 +3399,17 @@ impl VM {
                         self.call_function(func, argc)?;
                     }
                     ObjectKind::HostFunction(idx) => {
-                        // Call host function directly — same as call_import
                         let idx = *idx;
                         drop(o);
                         let args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
-                        // Pop args + callee
                         for _ in 0..argc { self.stack.pop(); }
-                        self.stack.pop(); // callee
+                        self.stack.pop();
                         let placeholder: HostFn = Box::new(|_, _| Value::Null);
                         let host_fn = std::mem::replace(&mut self.host_fns[idx], placeholder);
-                        let result = host_fn(self, &args);
+                        let result = {
+                            let mut ctx = self.make_host_context();
+                            host_fn(&mut ctx, &args)
+                        };
                         self.host_fns[idx] = host_fn;
                         self.push(result)?;
                     }

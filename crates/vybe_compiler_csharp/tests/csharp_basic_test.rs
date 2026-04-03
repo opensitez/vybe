@@ -9,7 +9,7 @@ fn run_cs(source: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_vm: &mut vybe_bytecode::VM, args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
         out.borrow_mut().push(parts.join(" "));
         Value::Null

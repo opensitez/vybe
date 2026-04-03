@@ -12,7 +12,7 @@ pub mod shared_memory;
 pub use opcode::Op;
 pub use value::Value;
 pub use chunk::{Chunk, Import};
-pub use vm::{VM, HostFn};
+pub use vm::{VM, HostFn, HostContext};
 pub use error::VMError;
 pub use event_loop::EventLoop;
 pub use typedef::{TypeDef, TypeRegistry, Method, FieldDef, ResourceTable};

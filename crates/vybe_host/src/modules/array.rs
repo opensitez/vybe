@@ -1,13 +1,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
     // push, pop, shift, length, join, reverse, concat — removed (now direct VM opcodes)
 
     // redim(array, newSize, preserve) → resized array
-    vm.register_host_fn("vybe:array", "redim", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "redim", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let new_size = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
         let preserve = matches!(args.get(2), Some(Value::Bool(true)));
         if let Some(Value::Object(obj)) = args.first() {
@@ -26,7 +26,7 @@ pub fn register(vm: &mut VM) {
         Value::Object(Rc::new(RefCell::new(Object::new_array(vec![Value::Null; new_size]))))
     }));
 
-    vm.register_host_fn("vybe:array", "indexOf", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "indexOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(ref elems) = o.kind {
@@ -40,7 +40,7 @@ pub fn register(vm: &mut VM) {
     }));
     // reverse, concat — removed (now array_reverse, array_concat opcodes)
 
-    vm.register_host_fn("vybe:array", "slice", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "slice", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         match args.first() {
             Some(Value::Object(obj)) => {
                 let o = obj.borrow();
@@ -64,7 +64,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
     // sliceStep(arr, start, end, step) — slice with step, handles negative step for reverse
-    vm.register_host_fn("vybe:array", "sliceStep", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "sliceStep", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         match args.first() {
             Some(Value::Object(obj)) => {
                 let o = obj.borrow();
@@ -114,7 +114,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // dynMul(a, b) — dynamic multiply: str*int → repeat, int*int → multiply
-    vm.register_host_fn("vybe:math", "dynMul", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:math", "dynMul", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let a = args.first().cloned().unwrap_or(Value::Null);
         let b = args.get(1).cloned().unwrap_or(Value::Null);
         match (&a, &b) {
@@ -132,7 +132,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // setAt(arr, index, value) — set element at index
-    vm.register_host_fn("vybe:array", "setAt", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "setAt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
             let value = args.get(2).cloned().unwrap_or(Value::Null);
@@ -147,7 +147,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // fill(arr, value, start?, end?) → arr
-    vm.register_host_fn("vybe:array", "fill", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "fill", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let value = args.get(1).cloned().unwrap_or(Value::Null);
             let mut o = obj.borrow_mut();
@@ -162,7 +162,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // flat(arr) → flattened array (one level)
-    vm.register_host_fn("vybe:array", "flat", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "flat", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let mut result = Vec::new();
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
@@ -183,7 +183,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // includes(arr, value) → bool
-    vm.register_host_fn("vybe:array", "includes", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "includes", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let search = args.get(1).cloned().unwrap_or(Value::Null);
             let search_str = format!("{}", search);
@@ -196,7 +196,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Array.isArray(value)
-    vm.register_host_fn("vybe:array", "isArray", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "isArray", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             return Value::Bool(matches!(o.kind, ObjectKind::Array(_)));
@@ -205,7 +205,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Array.from(arrayLike) — creates a new array from an iterable/array-like
-    vm.register_host_fn("vybe:array", "from", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "from", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(ref elems) = o.kind {
@@ -218,7 +218,7 @@ pub fn register(vm: &mut VM) {
     // --- VB-compatible array functions ---
 
     // ubound(arr) → last valid index (length - 1)
-    vm.register_host_fn("vybe:array", "ubound", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "ubound", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(ref elems) = o.kind {
@@ -229,10 +229,10 @@ pub fn register(vm: &mut VM) {
     }));
 
     // lbound(arr) → always 0
-    vm.register_host_fn("vybe:array", "lbound", Box::new(|_vm, _| Value::F64(0.0)));
+    vm.register_host_fn("vybe:array", "lbound", Box::new(|_ctx, _| Value::F64(0.0)));
 
     // unshift(arr, value) → prepend element, return new length
-    vm.register_host_fn("vybe:array", "unshift", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "unshift", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.borrow_mut();
             if let ObjectKind::Array(ref mut elems) = o.kind {
@@ -249,7 +249,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // splice(arr, start, deleteCount, ...items) → removed elements
-    vm.register_host_fn("vybe:array", "splice", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "splice", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let start = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
             let delete_count = args.get(2).map(|v| v.as_f64() as usize).unwrap_or(0);
@@ -274,7 +274,7 @@ pub fn register(vm: &mut VM) {
     // ── Python builtins ──────────────────────────────────────────
 
     // range(stop) or range(start, stop) or range(start, stop, step)
-    vm.register_host_fn("vybe:array", "range", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "range", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let (start, stop, step) = match args.len() {
             1 => (0i64, args[0].as_f64() as i64, 1i64),
             2 => (args[0].as_f64() as i64, args[1].as_f64() as i64, 1i64),
@@ -295,7 +295,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // enumerate(iterable) → array of [index, value] pairs
-    vm.register_host_fn("vybe:array", "enumerate", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "enumerate", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(elems) = &o.kind {
@@ -309,7 +309,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // zip(a, b) → array of [a[i], b[i]] pairs
-    vm.register_host_fn("vybe:array", "zip", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "zip", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let get_elems = |v: &Value| -> Vec<Value> {
             if let Value::Object(obj) = v {
                 let o = obj.borrow();
@@ -327,7 +327,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // sorted(iterable) → new sorted array
-    vm.register_host_fn("vybe:array", "sorted", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "sorted", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(elems) = &o.kind {
@@ -340,7 +340,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // reversed(iterable) → new reversed array
-    vm.register_host_fn("vybe:array", "reversed", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "reversed", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(elems) = &o.kind {
@@ -353,7 +353,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // sum(iterable)
-    vm.register_host_fn("vybe:array", "sum", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "sum", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(elems) = &o.kind {
@@ -365,7 +365,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // min(iterable) or min(a, b, ...)
-    vm.register_host_fn("vybe:array", "pymin", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "pymin", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if args.len() == 1 {
             if let Value::Object(obj) = &args[0] {
                 let o = obj.borrow();
@@ -378,7 +378,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // max(iterable) or max(a, b, ...)
-    vm.register_host_fn("vybe:array", "pymax", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "pymax", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if args.len() == 1 {
             if let Value::Object(obj) = &args[0] {
                 let o = obj.borrow();
@@ -391,7 +391,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // any(iterable) → bool
-    vm.register_host_fn("vybe:array", "any", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "any", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(elems) = &o.kind {
@@ -402,7 +402,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // all(iterable) → bool
-    vm.register_host_fn("vybe:array", "all", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "all", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(elems) = &o.kind {
@@ -413,7 +413,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // dict_items(dict) → array of [key, value] pairs
-    vm.register_host_fn("vybe:array", "dictItems", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "dictItems", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             let pairs: Vec<Value> = o.properties.iter()
@@ -429,14 +429,14 @@ pub fn register(vm: &mut VM) {
     }));
 
     // str_contains(haystack, needle) → bool (for "x in string")
-    vm.register_host_fn("vybe:array", "strContains", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "strContains", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let haystack = args.first().map(|v| v.to_string()).unwrap_or_default();
         let needle = args.get(1).map(|v| v.to_string()).unwrap_or_default();
         Value::Bool(haystack.contains(&needle))
     }));
 
     // dict_contains(dict, key) → bool (for "key in dict")
-    vm.register_host_fn("vybe:array", "dictContains", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "dictContains", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| v.to_string()).unwrap_or_default();
             let o = obj.borrow();
@@ -446,7 +446,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // isinstance(obj, type_name_str) — simplified
-    vm.register_host_fn("vybe:array", "isinstance", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "isinstance", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let type_name = args.get(1).map(|v| v.to_string()).unwrap_or_default().to_lowercase();
         let val = args.first().unwrap_or(&Value::Null);
         let result = match (val, type_name.as_str()) {
@@ -463,7 +463,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // type(obj) → string name
-    vm.register_host_fn("vybe:array", "pytype", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "pytype", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let val = args.first().unwrap_or(&Value::Null);
         let name = match val {
             Value::I32(_) | Value::I64(_) => "int",
@@ -485,7 +485,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // list(iterable) — convert to list (copy)
-    vm.register_host_fn("vybe:array", "list", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "list", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(elems) = &o.kind {
@@ -503,12 +503,12 @@ pub fn register(vm: &mut VM) {
     }));
 
     // dict() — create empty dict
-    vm.register_host_fn("vybe:array", "dict", Box::new(|_vm: &mut VM, _args: &[Value]| {
+    vm.register_host_fn("vybe:array", "dict", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         Value::Object(Rc::new(RefCell::new(Object::new())))
     }));
 
     // set() — create set as array (simplified)
-    vm.register_host_fn("vybe:array", "pyset", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "pyset", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(elems) = &o.kind {
@@ -525,7 +525,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // tuple() — same as list for our purposes
-    vm.register_host_fn("vybe:array", "tuple", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:array", "tuple", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             if let ObjectKind::Array(elems) = &o.kind {

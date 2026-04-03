@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
     // Object.keys(obj) → array of property name strings
-    vm.register_host_fn("vybe:object", "keys", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "keys", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             // If __keys array exists (dict with key tracking), use it directly
@@ -25,7 +25,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Object.values(obj) → array of property values
-    vm.register_host_fn("vybe:object", "values", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "values", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             // If __keys array exists, use it to get values in insertion order
@@ -48,7 +48,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Object.entries(obj) → array of [key, value] pairs
-    vm.register_host_fn("vybe:object", "entries", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "entries", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
             // If __keys array exists, use it for insertion-order entries
@@ -85,7 +85,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Object.assign(target, ...sources) → target with all source props copied
-    vm.register_host_fn("vybe:object", "assign", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "assign", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(target)) = args.first() {
             for source_arg in &args[1..] {
                 if let Value::Object(source) = source_arg {
@@ -101,7 +101,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // "key" in obj → hasProperty(key, obj)
-    vm.register_host_fn("vybe:object", "hasProperty", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "hasProperty", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         if let Some(Value::Object(obj)) = args.get(1) {
             let o = obj.borrow();
@@ -112,7 +112,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // delete obj.prop → deleteProperty(obj, key)
-    vm.register_host_fn("vybe:object", "deleteProperty", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "deleteProperty", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             obj.borrow_mut().properties.remove(&key);
@@ -123,12 +123,12 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Object.freeze(obj) — mark as frozen (simplified: no-op, returns obj)
-    vm.register_host_fn("vybe:object", "freeze", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "freeze", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         args.first().cloned().unwrap_or(Value::Null)
     }));
 
     // Object.fromEntries([[k,v], ...]) → obj
-    vm.register_host_fn("vybe:object", "fromEntries", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "fromEntries", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let mut obj = Object::new();
         if let Some(Value::Object(arr)) = args.first() {
             let a = arr.borrow();
@@ -150,7 +150,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Object.hasOwn(obj, key) — ES2022
-    vm.register_host_fn("vybe:object", "hasOwn", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "hasOwn", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             Value::Bool(obj.borrow().properties.contains_key(&key))
@@ -161,7 +161,7 @@ pub fn register(vm: &mut VM) {
 
     // a instanceof B → check via type registry first, then __types array fallback.
     // This supports cross-language instanceof: VB classes, JS classes, built-in types.
-    vm.register_host_fn("vybe:object", "instanceOf", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:object", "instanceOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         // Extract target type name from the constructor object (args[1])
         let target_name = if let Some(Value::Object(ctor)) = args.get(1) {
             ctor.borrow().properties.get("name").map(|v| format!("{}", v)).unwrap_or_default()

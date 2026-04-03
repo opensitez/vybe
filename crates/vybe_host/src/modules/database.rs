@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 use sqlx::{Column, Row};
 
@@ -230,7 +230,7 @@ fn scalar_from_value(v: Value) -> Value {
 // ── register ─────────────────────────────────────────────────────────────────
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:database", "connect", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "connect", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let raw = s(args, 0);
         if raw.is_empty() || raw == "null" {
             let mut obj = Object::new();
@@ -255,7 +255,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:database", "query", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "query", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let sql = get_sql(args);
         let params = extract_params(args, 2);
@@ -276,7 +276,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:database", "execute", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "execute", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let sql = get_sql(args);
         let params = extract_params(args, 2);
@@ -294,7 +294,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:database", "scalar", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "scalar", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let sql = get_sql(args);
         let params = extract_params(args, 2);
@@ -313,7 +313,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:database", "open", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "open", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let raw = {
                 let o = obj.borrow();
@@ -335,7 +335,7 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
-    vm.register_host_fn("vybe:database", "createCommand", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "createCommand", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Rc::from("SqlCommand")));
@@ -344,7 +344,7 @@ pub fn register(vm: &mut VM) {
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
 
-    vm.register_host_fn("vybe:database", "close", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "close", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let state = get_state();
         let mut guard = state.lock().unwrap();
@@ -354,7 +354,7 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
-    vm.register_host_fn("vybe:database", "tables", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "tables", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
@@ -376,7 +376,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:database", "columns", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "columns", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let table = s(args, 1);
         let state = get_state();
@@ -400,7 +400,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:database", "beginTransaction", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "beginTransaction", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
@@ -411,7 +411,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:database", "commit", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "commit", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
@@ -422,7 +422,7 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:database", "rollback", Box::new(|_vm: &mut VM, args: &[Value]| {
+    vm.register_host_fn("vybe:database", "rollback", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let state = get_state();
         let guard = state.lock().unwrap();
