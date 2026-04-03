@@ -1,7 +1,9 @@
 //! Button widget — standalone tiny-skia rendered button.
 
 use tiny_skia::*;
+use cosmic_text::Color as CosmicColor;
 use super::{WidgetColors, rounded_rect_path};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent};
 
 pub struct Button {
     pub label: String,
@@ -11,6 +13,9 @@ pub struct Button {
     pub colors: WidgetColors,
     pub width: f32,
     pub height: f32,
+    pub name: String,
+    rect: LayoutRect,
+    pending_events: Vec<WidgetEvent>,
 }
 
 impl Button {
@@ -27,8 +32,13 @@ impl Button {
             },
             width: 80.0,
             height: 28.0,
+            name: label.to_string(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     /// Paint the button (background + border). Text drawn by caller.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -65,4 +75,78 @@ impl Button {
         if self.disabled { return false; }
         x >= 0.0 && y >= 0.0 && x <= self.width && y <= self.height
     }
+}
+
+// ── PanelWidget impl ───────────────────────────────────────────────────
+
+impl PanelWidget for Button {
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+
+        // Render background + border via existing paint method
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+
+        // Render label text centered
+        let (fr, fg, fb, _) = self.colors.foreground;
+        let font_size = 13.0;
+        let text_w = super::ide_text::measure_text(ctx.font_system, &self.label, font_size, ctx.scale);
+        let tx = r.x + (r.w - text_w) / 2.0;
+        let ty = r.y + (r.h - font_size) / 2.0 - 1.0;
+        super::ide_text::draw_text(
+            ctx.pixmap, ctx.font_system, ctx.swash_cache,
+            &self.label, tx, ty, font_size,
+            CosmicColor::rgba(fr, fg, fb, 255), ctx.scale,
+        );
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        if !self.rect.contains(event.x, event.y) {
+            self.pressed = false;
+            return false;
+        }
+        match event.kind {
+            MouseEventKind::Press(LayoutMouseButton::Left) => {
+                self.pressed = true;
+                true
+            }
+            MouseEventKind::Release(LayoutMouseButton::Left) => {
+                if self.pressed && !self.disabled {
+                    self.pressed = false;
+                    self.pending_events.push(WidgetEvent::ButtonClicked(self.name.clone()));
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_key(&mut self, event: &KeyEvent) -> bool {
+        if !self.focused { return false; }
+        use winit::keyboard::Key;
+        use winit::event::ElementState;
+        if event.state == ElementState::Pressed {
+            if let Key::Named(winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space) = &event.key_without_modifiers {
+                if !self.disabled {
+                    self.pending_events.push(WidgetEvent::ButtonClicked(self.name.clone()));
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
+
+    fn focusable(&self) -> bool { !self.disabled }
 }

@@ -1,9 +1,9 @@
 use std::time::Instant;
-use cosmic_text::{Attrs, Action, Cursor, Edit, Family, Motion, Selection, Shaping};
 use winit::keyboard::{Key, NamedKey};
 
 use super::{App, TabContent};
 use vybe_widgets::code_editor_widget::CodeEditorWidget;
+use vybe_widgets::CursorMotion;
 
 impl App {
     pub(super) fn handle_key_press(&mut self, event: vybe_widgets::KeyEvent) {
@@ -218,40 +218,40 @@ impl App {
             if kb.key == key_str && kb.cmd == cmd && kb.shift == shift && kb.alt == alt {
                 match kb.action.as_str() {
                     "Undo" => {
-                        let (cl, ci) = { let c = w.editor.cursor(); (c.line, c.index) };
+                        let (cl, ci) = w.cursor_pos();
                         if let Some((text, line, col)) = w.my_editor.undo(cl, ci) {
-                            w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-                            w.editor.set_cursor(Cursor::new(line, col));
+                            w.set_buffer_text(&mut self.font_system, &text);
+                            w.set_cursor_pos(line, col);
                         }
                     }
                     "Redo" => {
-                        let (cl, ci) = { let c = w.editor.cursor(); (c.line, c.index) };
+                        let (cl, ci) = w.cursor_pos();
                         if let Some((text, line, col)) = w.my_editor.redo(cl, ci) {
-                            w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-                            w.editor.set_cursor(Cursor::new(line, col));
+                            w.set_buffer_text(&mut self.font_system, &text);
+                            w.set_cursor_pos(line, col);
                         }
                     }
                     "SelectAll" => {
-                        w.editor.set_cursor(Cursor::new(0, 0));
-                        let last_line = w.editor.with_buffer(|b| b.lines.len() - 1);
-                        let last_col = w.editor.with_buffer(|b| b.lines[last_line].text().len());
-                        w.editor.set_selection(Selection::Normal(Cursor::new(last_line, last_col)));
+                        w.select_all();
                     }
-                    "MoveBufferStart" => w.editor.action(&mut self.font_system, Action::Motion(Motion::BufferStart)),
-                    "MoveBufferEnd" => w.editor.action(&mut self.font_system, Action::Motion(Motion::BufferEnd)),
-                    "MoveLineStart" => w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)),
-                    "MoveLineEnd" => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
-                    "MoveWordLeft" => w.editor.action(&mut self.font_system, Action::Motion(Motion::LeftWord)),
-                    "MoveWordRight" => w.editor.action(&mut self.font_system, Action::Motion(Motion::RightWord)),
+                    "MoveBufferStart" => w.action_motion(&mut self.font_system, CursorMotion::BufferStart),
+                    "MoveBufferEnd" => w.action_motion(&mut self.font_system, CursorMotion::BufferEnd),
+                    "MoveLineStart" => w.action_motion(&mut self.font_system, CursorMotion::Home),
+                    "MoveLineEnd" => w.action_motion(&mut self.font_system, CursorMotion::End),
+                    "MoveWordLeft" => w.action_motion(&mut self.font_system, CursorMotion::LeftWord),
+                    "MoveWordRight" => w.action_motion(&mut self.font_system, CursorMotion::RightWord),
                     "Save" => {
                         let save_path = tab.path.clone();
                         let text = w.my_editor.rope.to_string();
                         tab.is_modified = false;
                         if let Some(path) = save_path {
-                            match std::fs::write(&path, &text) {
-                                Ok(_) => self.output_lines.push(format!("Saved: {}", path)),
-                                Err(e) => self.output_lines.push(format!("Save error: {}", e)),
-                            }
+                            let msg = match std::fs::write(&path, &text) {
+                                Ok(_) => format!("Saved: {}", path),
+                                Err(e) => format!("Save error: {}", e),
+                            };
+                            self.output_lines_buffer.push(msg);
+                            self.output_panel.set_output_lines(&self.output_lines_buffer);
+                            self.output_panel.set_visible(true);
                         } else if let Some(pp) = self.project_path.clone() {
                             // Sync current tab code to project before save
                             let tab_name = tab.name.clone();
@@ -263,13 +263,16 @@ impl App {
                             } else if let Some(cf) = self.project.code_files.iter_mut().find(|cf| cf.name == tab_name) {
                                 cf.code = code;
                             }
-                            match vybe_project::serialization::save_project_auto(&self.project, &pp) {
-                                Ok(_) => self.output_lines.push(format!("Saved: {}", pp)),
-                                Err(e) => self.output_lines.push(format!("Save error: {}", e)),
-                            }
+                            let msg = match vybe_project::serialization::save_project_auto(&self.project, &pp) {
+                                Ok(_) => format!("Saved: {}", pp),
+                                Err(e) => format!("Save error: {}", e),
+                            };
+                            self.output_lines_buffer.push(msg);
+                            self.output_panel.set_output_lines(&self.output_lines_buffer);
+                            self.output_panel.set_visible(true);
                         }
                     }
-                    "Find" => { w.is_search_open = true; if let Some(t) = w.editor.copy_selection() { if !t.is_empty() { w.search_query = t; } } else { w.search_query.clear(); } }
+                    "Find" => { w.is_search_open = true; if let Some(t) = w.copy_selection_text() { if !t.is_empty() { w.search_query = t; } } else { w.search_query.clear(); } }
                     "Replace" => { w.is_search_open = true; w.is_replace_open = !w.is_replace_open; }
                     _ => { acted = false; }
                 }
@@ -283,22 +286,22 @@ impl App {
             Key::Character(c) if cmd && c == "0" => { w.font_size = 14.0; w.set_zoom(&mut self.font_system, 0.0); }
             Key::Character(c) if cmd && (c == "w" || c == "W") => { w.show_whitespace = !w.show_whitespace; }
             Key::Character(c) if alt && (c == "z" || c == "Z") => { w.wrap_lines = !w.wrap_lines; w.needs_reshape = true; }
-            Key::Character(c) if cmd && (c == "m" || c == "M") => { if let Some(p) = w.my_editor.find_matching_bracket(w.editor.cursor().line, w.editor.cursor().index, &w.lang_def) { w.editor.set_cursor(Cursor::new(p.0, p.1)); } }
+            Key::Character(c) if cmd && (c == "m" || c == "M") => { let (cl, ci) = w.cursor_pos(); if let Some(p) = w.my_editor.find_matching_bracket(cl, ci, &w.lang_def) { w.set_cursor_pos(p.0, p.1); } }
             Key::Character(c) if cmd && (c == "p" || c == "P") => { self.is_quick_open = !self.is_quick_open; self.quick_open_query.clear(); }
             Key::Character(c) if cmd && (c == "g" || c == "G") => { self.goto_line_open = !self.goto_line_open; self.goto_line_query.clear(); }
-            Key::Character(c) if cmd && (c == "`") => { self.output_visible = !self.output_visible; }
+            Key::Character(c) if cmd && (c == "`") => { let v = self.output_panel.visible(); self.output_panel.set_visible(!v); }
             Key::Character(c) if cmd && shift && (c == "b" || c == "B") => {
                 self.build_config = match self.build_config { super::BuildConfig::Debug => super::BuildConfig::Release, super::BuildConfig::Release => super::BuildConfig::Debug };
             }
             // Fold/Unfold: Cmd+Shift+[ folds current, Cmd+Shift+] unfolds current
             Key::Character(c) if cmd && shift && c == "[" => {
-                let line = w.editor.cursor().line;
+                let line = w.cursor_pos().0;
                 if w.my_editor.folds.iter().any(|(s, _)| *s == line) && !w.my_editor.collapsed_starts.contains(&line) {
                     w.my_editor.toggle_fold(line);
                 }
             }
             Key::Character(c) if cmd && shift && c == "]" => {
-                let line = w.editor.cursor().line;
+                let line = w.cursor_pos().0;
                 if w.my_editor.collapsed_starts.contains(&line) {
                     w.my_editor.toggle_fold(line);
                 }
@@ -313,23 +316,23 @@ impl App {
                 w.my_editor.collapsed_starts.clear();
             }
              Key::Named(NamedKey::Home) => {
-                  let cli = w.editor.cursor().line; let cur = w.editor.cursor().index;
-                  let line_text = w.editor.with_buffer(|b| b.lines[cli].text().to_string());
+                  let (cli, cur) = w.cursor_pos();
+                  let line_text = w.line_text(cli);
                   let first_byte_idx = line_text.char_indices().find(|&(_, c)| !c.is_whitespace()).map(|(i, _)| i).unwrap_or(line_text.len());
-                  if cur == first_byte_idx { w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); }
-                  else { w.editor.set_cursor(Cursor::new(cli, first_byte_idx)); }
+                  if cur == first_byte_idx { w.action_motion(&mut self.font_system, CursorMotion::Home); }
+                  else { w.set_cursor_pos(cli, first_byte_idx); }
              }
-            Key::Named(NamedKey::End) => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
-            Key::Character(c) if cmd && shift && (c == "k" || c == "K") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::End)); w.editor.action(&mut self.font_system, Action::Backspace); w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); let len = w.editor.with_buffer(|b| b.lines[w.editor.cursor().line].text().len()); for _ in 0..len { w.editor.action(&mut self.font_system, Action::Delete); } w.editor.action(&mut self.font_system, Action::Delete); }
-            Key::Named(NamedKey::Backspace) => if self.goto_line_open { self.goto_line_query.pop(); } else if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); w.editor.action(&mut self.font_system, Action::Backspace); tab.is_modified = true; }
-            Key::Named(NamedKey::Delete) => { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); w.editor.action(&mut self.font_system, Action::Delete); tab.is_modified = true; }
+            Key::Named(NamedKey::End) => w.action_motion(&mut self.font_system, CursorMotion::End),
+            Key::Character(c) if cmd && shift && (c == "k" || c == "K") => { w.action_motion(&mut self.font_system, CursorMotion::End); w.action_backspace(&mut self.font_system); w.action_motion(&mut self.font_system, CursorMotion::Home); let len = w.line_text(w.cursor_pos().0).len(); for _ in 0..len { w.action_delete(&mut self.font_system); } w.action_delete(&mut self.font_system); }
+            Key::Named(NamedKey::Backspace) => if self.goto_line_open { self.goto_line_query.pop(); } else if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1); w.action_backspace(&mut self.font_system); tab.is_modified = true; }
+            Key::Named(NamedKey::Delete) => { w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1); w.action_delete(&mut self.font_system); tab.is_modified = true; }
             Key::Named(NamedKey::Enter) => {
                 if self.goto_line_open {
                     if let Ok(line_num) = self.goto_line_query.trim().parse::<usize>() {
                         let target = line_num.saturating_sub(1);
-                        let max_line = w.editor.with_buffer(|b| b.lines.len().saturating_sub(1));
+                        let max_line = w.line_count().saturating_sub(1);
                         let safe_line = target.min(max_line);
-                        w.editor.set_cursor(Cursor::new(safe_line, 0));
+                        w.set_cursor_pos(safe_line, 0);
                         w.needs_reshape = true;
                     }
                     self.goto_line_open = false;
@@ -338,119 +341,99 @@ impl App {
                     self.is_quick_open = false;
                 } else if w.is_search_open { w.find_next(&mut self.font_system); } 
                 else { 
-                    w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
-                    let line_idx = w.editor.cursor().line;
-                    let byte_off = w.editor.with_buffer(|b| {
-                        let mut total = 0;
-                        for i in 0..line_idx { total += b.lines[i].text().len() + 1; }
-                        total + w.editor.cursor().index
-                    });
+                    w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1);
+                    let line_idx = w.cursor_pos().0;
+                    let byte_off = w.compute_byte_offset(line_idx, w.cursor_pos().1);
                     w.my_editor.insert_newline(byte_off, &w.lang_def);
-                    w.editor.action(&mut self.font_system, Action::Enter);
+                    w.action_enter(&mut self.font_system);
                     w.needs_reshape = true; w.sync(); tab.is_modified = true;
                 }
             }
             Key::Named(NamedKey::Escape) => { self.is_quick_open = false; self.goto_line_open = false; w.is_search_open = false; w.context_menu = None; }
-            Key::Character(c) if cmd && (c == "c" || c == "C") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } } }
+            Key::Character(c) if cmd && (c == "c" || c == "C") => { if let Some(t) = w.copy_selection_text() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } } }
             Key::Character(c) if cmd && (c == "v" || c == "V") => { 
                  if let Some(cb) = &mut self.clipboard { 
                      if let Ok(t) = cb.get_text() { 
-                         w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
+                         w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1);
                          
                          // Handle selection replacement
-                         if let Some((start, end)) = w.editor.selection_bounds() {
-                             let b = |c: Cursor, ed: &CodeEditorWidget| ed.editor.with_buffer(|buf| {
-                                 let mut total = 0;
-                                 for i in 0..c.line { total += buf.lines[i].text().len() + 1; }
-                                 total + c.index
-                             });
-                             let s_off = b(start, w);
-                             let e_off = b(end, w);
+                         if let Some((start, end)) = w.selection_bounds() {
+                             let s_off = w.compute_byte_offset(start.0, start.1);
+                             let e_off = w.compute_byte_offset(end.0, end.1);
                              w.my_editor.delete_range(s_off.min(e_off), s_off.max(e_off), &w.lang_def);
-                             w.editor.action(&mut self.font_system, Action::Delete);
+                             w.action_delete(&mut self.font_system);
                          }
 
-                         let byte_off = w.editor.with_buffer(|b| {
-                             let cli = w.editor.cursor().line;
-                             let mut total = 0;
-                             for i in 0..cli { total += b.lines[i].text().len() + 1; }
-                             total + w.editor.cursor().index
-                         });
+                         let byte_off = w.compute_byte_offset(w.cursor_pos().0, w.cursor_pos().1);
                          
                          let (new_line, new_col) = w.my_editor.insert_string(byte_off, &t, &w.lang_def);
                          
                          // Sync cosmic-text
-                         w.editor.with_buffer_mut(|b| {
-                             b.set_text(&mut self.font_system, &w.my_editor.rope().to_string(), &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
-                         });
-                         w.editor.set_cursor(Cursor::new(new_line, new_col));
+                         w.set_buffer_text(&mut self.font_system, &w.my_editor.rope().to_string());
+                         w.set_cursor_pos(new_line, new_col);
                          tab.is_modified = true; 
                      } 
                  } 
             }
-            Key::Character(c) if cmd && (c == "x" || c == "X") => { if let Some(t) = w.editor.copy_selection() { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } w.editor.action(&mut self.font_system, Action::Delete); tab.is_modified = true; } }
+            Key::Character(c) if cmd && (c == "x" || c == "X") => { if let Some(t) = w.copy_selection_text() { w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1); if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } w.action_delete(&mut self.font_system); tab.is_modified = true; } }
             Key::Character(c) if cmd && (c == "d" || c == "D") => {
-                 w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
-                 if w.editor.selection_bounds().is_none() {
-                     let li = w.editor.cursor().line;
+                 w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1);
+                 if !w.has_selection() {
+                     let li = w.cursor_pos().0;
                      w.my_editor.duplicate_line(li);
-                 } else if let Some(_t) = w.editor.copy_selection() {
+                 } else if let Some(_t) = w.copy_selection_text() {
                      w.find_next(&mut self.font_system);
                  }
                  w.needs_reshape = true; tab.is_modified = true;
             }
-            Key::Named(NamedKey::ArrowUp) if alt => { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); let li = w.editor.cursor().line; w.my_editor.move_line_up(li); w.needs_reshape = true; tab.is_modified = true; }
-            Key::Named(NamedKey::ArrowDown) if alt => { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); let li = w.editor.cursor().line; if shift { w.my_editor.duplicate_line(li); } else { w.my_editor.move_line_down(li); } w.needs_reshape = true; tab.is_modified = true; }
+            Key::Named(NamedKey::ArrowUp) if alt => { w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1); let li = w.cursor_pos().0; w.my_editor.move_line_up(li); w.needs_reshape = true; tab.is_modified = true; }
+            Key::Named(NamedKey::ArrowDown) if alt => { w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1); let li = w.cursor_pos().0; if shift { w.my_editor.duplicate_line(li); } else { w.my_editor.move_line_down(li); } w.needs_reshape = true; tab.is_modified = true; }
             Key::Named(NamedKey::ArrowLeft) => {
-                if shift && w.editor.selection_bounds().is_none() { w.editor.set_selection(Selection::Normal(w.editor.cursor())); }
-                w.editor.action(&mut self.font_system, Action::Motion(Motion::Left));
-                if !shift { w.editor.set_selection(Selection::None); }
+                if shift { w.start_selection_if_none(); }
+                w.action_motion(&mut self.font_system, CursorMotion::Left);
+                if !shift { w.clear_selection(); }
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if shift && w.editor.selection_bounds().is_none() { w.editor.set_selection(Selection::Normal(w.editor.cursor())); }
-                w.editor.action(&mut self.font_system, Action::Motion(Motion::Right));
-                if !shift { w.editor.set_selection(Selection::None); }
+                if shift { w.start_selection_if_none(); }
+                w.action_motion(&mut self.font_system, CursorMotion::Right);
+                if !shift { w.clear_selection(); }
             }
             Key::Named(NamedKey::ArrowUp) => {
-                if shift && w.editor.selection_bounds().is_none() { w.editor.set_selection(Selection::Normal(w.editor.cursor())); }
-                w.editor.action(&mut self.font_system, Action::Motion(Motion::Up));
-                if !shift { w.editor.set_selection(Selection::None); }
+                if shift { w.start_selection_if_none(); }
+                w.action_motion(&mut self.font_system, CursorMotion::Up);
+                if !shift { w.clear_selection(); }
             }
             Key::Named(NamedKey::ArrowDown) => {
-                if shift && w.editor.selection_bounds().is_none() { w.editor.set_selection(Selection::Normal(w.editor.cursor())); }
-                w.editor.action(&mut self.font_system, Action::Motion(Motion::Down));
-                if !shift { w.editor.set_selection(Selection::None); }
+                if shift { w.start_selection_if_none(); }
+                w.action_motion(&mut self.font_system, CursorMotion::Down);
+                if !shift { w.clear_selection(); }
             }
             Key::Character(c) if cmd && c == "z" => { 
                 if shift {
-                    if let Some((text, line, col)) = w.my_editor.redo(w.editor.cursor().line, w.editor.cursor().index) {
-                        w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-                        let safe_line = line.min(w.editor.with_buffer(|b| b.lines.len().saturating_sub(1)));
-                        let safe_col = w.editor.with_buffer(|b| if safe_line < b.lines.len() { col.min(b.lines[safe_line].text().len()) } else { 0 });
-                        w.editor.set_cursor(Cursor::new(safe_line, safe_col));
+                    if let Some((text, line, col)) = w.my_editor.redo(w.cursor_pos().0, w.cursor_pos().1) {
+                        w.set_buffer_text(&mut self.font_system, &text);
+                        let safe_line = line.min(w.line_count().saturating_sub(1));
+                        let safe_col = if safe_line < w.line_count() { col.min(w.line_text(safe_line).len()) } else { 0 };
+                        w.set_cursor_pos(safe_line, safe_col);
                     }
                 } else {
-                    if let Some((text, line, col)) = w.my_editor.undo(w.editor.cursor().line, w.editor.cursor().index) {
-                        w.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-                        let safe_line = line.min(w.editor.with_buffer(|b| b.lines.len().saturating_sub(1)));
-                        let safe_col = w.editor.with_buffer(|b| if safe_line < b.lines.len() { col.min(b.lines[safe_line].text().len()) } else { 0 });
-                        w.editor.set_cursor(Cursor::new(safe_line, safe_col));
+                    if let Some((text, line, col)) = w.my_editor.undo(w.cursor_pos().0, w.cursor_pos().1) {
+                        w.set_buffer_text(&mut self.font_system, &text);
+                        let safe_line = line.min(w.line_count().saturating_sub(1));
+                        let safe_col = if safe_line < w.line_count() { col.min(w.line_text(safe_line).len()) } else { 0 };
+                        w.set_cursor_pos(safe_line, safe_col);
                     }
                 }
             }
             Key::Character(c) if cmd && c == "a" => {
-                w.editor.set_cursor(Cursor::new(0, 0));
-                let last_line = w.editor.with_buffer(|b| b.lines.len() - 1);
-                let last_col = w.editor.with_buffer(|b| b.lines[last_line].text().len());
-                w.editor.set_selection(Selection::Normal(Cursor::new(last_line, last_col)));
+                w.select_all();
             }
             Key::Named(NamedKey::F12) => {
                 // Go to definition
                 if let Some(path) = &tab.path {
                     let uri = format!("file://{}", path);
-                    let line = w.editor.cursor().line as u32;
-                    let col = w.editor.cursor().index as u32;
-                    let _ = self.lsp.send(crate::lsp_client::LspRequest::Definition(uri, line, col));
+                    let (line, col) = w.cursor_pos();
+                    let _ = self.lsp.send(crate::lsp_client::LspRequest::Definition(uri, line as u32, col as u32));
                 }
                 
                 return;
@@ -473,28 +456,23 @@ impl App {
                     
                     return;
                 }
-                w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
+                w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1);
                 
                 // Handling selection replacement on type
-                if let Some((start, end)) = w.editor.selection_bounds() {
-                     let b = |c: Cursor, ed: &CodeEditorWidget| ed.editor.with_buffer(|buf| {
-                        let mut total = 0;
-                        for i in 0..c.line { total += buf.lines[i].text().len() + 1; }
-                        total + c.index
-                    });
-                    let s_off = b(start, w);
-                    let e_off = b(end, w);
+                if let Some((start, end)) = w.selection_bounds() {
+                    let s_off = w.compute_byte_offset(start.0, start.1);
+                    let e_off = w.compute_byte_offset(end.0, end.1);
                     w.my_editor.delete_range(s_off.min(e_off), s_off.max(e_off), &w.lang_def);
                 }
 
                 for ch in t.chars() { if !ch.is_control() || ch == '\t' || ch == '\n' { if w.is_search_open { if w.is_replace_open && alt { w.replace_query.push(ch); } else { w.search_query.pop(); w.search_query.push(ch); } } else { 
                  let mut skip = false; if let Some(cl) = match ch { ')'=>Some(')'),'}'=>Some('}'),']'=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { 
-                     let cli = w.editor.cursor().line; let cur = w.editor.cursor().index; 
-                     let line_text = w.editor.with_buffer(|b| b.lines[cli].text().to_string());
+                     let (cli, cur) = w.cursor_pos(); 
+                     let line_text = w.line_text(cli);
                      let next_ch = line_text[cur..].chars().next();
-                     if next_ch == Some(cl) { w.editor.action(&mut self.font_system, Action::Motion(Motion::Right)); skip = true; } 
+                     if next_ch == Some(cl) { w.action_motion(&mut self.font_system, CursorMotion::Right); skip = true; } 
                  }
-                if !skip { w.editor.action(&mut self.font_system, Action::Insert(ch)); tab.is_modified = true; if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.editor.action(&mut self.font_system, Action::Insert(cl)); w.editor.action(&mut self.font_system, Action::Motion(Motion::Left)); } }
+                if !skip { w.action_insert(&mut self.font_system, ch); tab.is_modified = true; if let Some(cl) = match ch { '('=>Some(')'),'{'=>Some('}'),'['=>Some(']'),'"'=>Some('"'),'\''=>Some('\''),_=>None } { w.action_insert(&mut self.font_system, cl); w.action_motion(&mut self.font_system, CursorMotion::Left); } }
             } } }
                 // Auto-trigger autocomplete after `.` or `::`
                 let trigger = t.chars().last();
@@ -502,12 +480,9 @@ impl App {
                 else if trigger == Some(':') {
                     // Check if previous char was also `:` (i.e., `::`)
                     let w2 = match &self.tabs[self.active_tab].content { TabContent::Code(cw) => cw, _ => unreachable!() };
-                    let is_double_colon = w2.editor.with_buffer(|b| {
-                        let cli = w2.editor.cursor().line;
-                        let cur = w2.editor.cursor().index;
-                        let text = b.lines[cli].text();
-                        cur >= 2 && text.get(cur-2..cur) == Some("::")
-                    });
+                    let (cli, cur) = w2.cursor_pos();
+                    let text = w2.line_text(cli);
+                    let is_double_colon = cur >= 2 && text.get(cur-2..cur) == Some("::");
                     if is_double_colon { self.trigger_completion(); }
                 }
             } else { acted = false; } } else { acted = false; } }

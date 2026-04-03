@@ -57,6 +57,8 @@ pub mod dock_panel;
 pub mod split_panel;
 pub mod tab_panel;
 pub mod status_bar_panel;
+pub mod output_panel;
+pub mod form;
 pub mod app_window;
 
 pub use checkbox::Checkbox;
@@ -99,12 +101,17 @@ pub use code_editor_widget::{CodeEditorWidget, Theme};
 pub use resource_editor::{ResourceEditor, ResourceEditorEvent, ResourceEntry, ResourceTab};
 
 // ── GUI Toolkit ────────────────────────────────────────────────────────
-pub use layout::{LayoutRect, MouseButton, MouseEventKind, MouseEvent, KeyEvent, RenderContext, Dock, PanelWidget, WidgetEvent, NullWidget};
+pub use layout::{LayoutRect, MouseButton, MouseEventKind, MouseEvent, KeyEvent, RenderContext, Dock, PanelWidget, WidgetEvent, NullWidget, CursorMotion};
 pub use dock_panel::DockPanel;
 pub use split_panel::SplitPanel;
 pub use tab_panel::TabPanel;
 pub use status_bar_panel::StatusBarPanel;
+pub use output_panel::{OutputPanel, OutputPanelEvent, OutputTab, ProblemEntry, ProblemSeverity};
+pub use form::Form;
 pub use app_window::{Application, run_app};
+
+// ── Re-exports from cosmic-text (so consumers don't need cosmic_text directly) ──
+pub use cosmic_text::{FontSystem, SwashCache, Color as TextColor};
 
 use tiny_skia::PathBuilder;
 

@@ -7,7 +7,12 @@
 //! - Click to select color
 
 use tiny_skia::*;
+use cosmic_text::Color as CosmicColor;
 use super::{WidgetColors, rounded_rect_path};
+use super::layout::{
+    LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton,
+    KeyEvent, RenderContext, PanelWidget, WidgetEvent,
+};
 
 /// A picked color in RGBA.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -125,6 +130,12 @@ pub struct ColorPicker {
     dragging_sv: bool,
     /// Dragging in the hue bar.
     dragging_hue: bool,
+    /// Widget name for events.
+    pub name: String,
+    /// Layout rect for PanelWidget.
+    rect: LayoutRect,
+    /// Pending events.
+    pending_events: Vec<WidgetEvent>,
 }
 
 /// Layout constants (in logical pixels).
@@ -142,8 +153,13 @@ impl ColorPicker {
             open: false,
             dragging_sv: false,
             dragging_hue: false,
+            name: String::new(),
+            rect: LayoutRect::zero(),
+            pending_events: Vec::new(),
         }
     }
+
+    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
 
     pub fn set_color(&mut self, c: PickedColor) {
         self.color = c;
@@ -410,5 +426,124 @@ impl ColorPicker {
     pub fn handle_mouse_up(&mut self) {
         self.dragging_sv = false;
         self.dragging_hue = false;
+    }
+
+    /// Internal: compute SV square and hue bar positions relative to a given origin.
+    fn layout_regions(&self, ox: f32, oy: f32) -> (f32, f32, f32, f32) {
+        let sv_x = ox + PADDING;
+        let sv_y = oy + PADDING;
+        let hue_x = sv_x + SV_SIZE + GAP;
+        let hue_y = sv_y;
+        (sv_x, sv_y, hue_x, hue_y)
+    }
+
+    /// Internal: update HSV from an SV-square click and emit event.
+    fn pick_sv(&mut self, mx: f32, my: f32, sv_x: f32, sv_y: f32) {
+        self.hsv.s = ((mx - sv_x) / SV_SIZE).clamp(0.0, 1.0);
+        self.hsv.v = 1.0 - ((my - sv_y) / SV_SIZE).clamp(0.0, 1.0);
+        let (r, g, b) = self.hsv.to_rgb();
+        self.color = PickedColor::from_rgba(r, g, b, 255);
+        self.pending_events.push(WidgetEvent::ColorChanged(
+            self.name.clone(),
+            self.color.to_hex(),
+        ));
+    }
+
+    /// Internal: update hue from a hue-bar click and emit event.
+    fn pick_hue(&mut self, my: f32, hue_y: f32) {
+        self.hsv.h = (((my - hue_y) / SV_SIZE) * 360.0).clamp(0.0, 359.99);
+        let (r, g, b) = self.hsv.to_rgb();
+        self.color = PickedColor::from_rgba(r, g, b, 255);
+        self.pending_events.push(WidgetEvent::ColorChanged(
+            self.name.clone(),
+            self.color.to_hex(),
+        ));
+    }
+}
+
+// ── PanelWidget impl ───────────────────────────────────────────────────
+
+impl PanelWidget for ColorPicker {
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+    }
+
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+
+        // Render the full picker inline — temporarily set open so render_popup works
+        let was_open = self.open;
+        self.open = true;
+        self.render_popup(ctx.pixmap, r.x, r.y, ctx.scale);
+        self.open = was_open;
+
+        // Also draw hex text next to the swatch at the bottom
+        let sv_y = r.y + PADDING;
+        let swatch_y = sv_y + SV_SIZE + GAP;
+        let text_x = r.x + PADDING + SWATCH_H + 6.0;
+        let hex = self.color.to_hex();
+        super::ide_text::draw_text(
+            ctx.pixmap, ctx.font_system, ctx.swash_cache,
+            &hex, text_x, swatch_y + 4.0, 12.0,
+            CosmicColor::rgba(60, 60, 60, 255), ctx.scale,
+        );
+    }
+
+    fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
+        if !self.rect.contains(event.x, event.y) && !self.dragging_sv && !self.dragging_hue {
+            return false;
+        }
+
+        let (sv_x, sv_y, hue_x, hue_y) = self.layout_regions(self.rect.x, self.rect.y);
+
+        match event.kind {
+            MouseEventKind::Press(LayoutMouseButton::Left) => {
+                // SV square hit
+                if event.x >= sv_x && event.x <= sv_x + SV_SIZE
+                    && event.y >= sv_y && event.y <= sv_y + SV_SIZE
+                {
+                    self.dragging_sv = true;
+                    self.pick_sv(event.x, event.y, sv_x, sv_y);
+                    return true;
+                }
+                // Hue bar hit
+                if event.x >= hue_x && event.x <= hue_x + HUE_W
+                    && event.y >= hue_y && event.y <= hue_y + SV_SIZE
+                {
+                    self.dragging_hue = true;
+                    self.pick_hue(event.y, hue_y);
+                    return true;
+                }
+                // Clicked inside widget rect but not on a control area
+                true
+            }
+            MouseEventKind::Move => {
+                if self.dragging_sv {
+                    self.pick_sv(event.x, event.y, sv_x, sv_y);
+                    return true;
+                }
+                if self.dragging_hue {
+                    self.pick_hue(event.y, hue_y);
+                    return true;
+                }
+                false
+            }
+            MouseEventKind::Release(LayoutMouseButton::Left) => {
+                let was_dragging = self.dragging_sv || self.dragging_hue;
+                self.dragging_sv = false;
+                self.dragging_hue = false;
+                was_dragging
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
     }
 }

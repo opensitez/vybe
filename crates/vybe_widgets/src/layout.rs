@@ -6,8 +6,8 @@
 //! - `RenderContext` — bundle of rendering resources
 //! - `PanelWidget` trait — implemented by all toolkit panels and containers
 
-use cosmic_text::{FontSystem, SwashCache};
-use tiny_skia::Pixmap;
+use cosmic_text::{FontSystem, SwashCache, Attrs, Buffer, Color, Family, Metrics, Shaping};
+use tiny_skia::{Pixmap, PixmapPaint, Transform, ColorU8};
 use winit::window::CursorIcon;
 
 // ── LayoutRect ─────────────────────────────────────────────────────────
@@ -124,6 +124,77 @@ pub struct RenderContext<'a> {
     pub scale: f32,
 }
 
+impl<'a> RenderContext<'a> {
+    /// Draw monospace UI text at physical pixel coordinates.
+    pub fn draw_text(&mut self, text: &str, x: f32, y: f32, r: u8, g: u8, b: u8, a: u8) {
+        let col = Color::rgba(r, g, b, a);
+        let mut lab = Buffer::new(self.font_system, Metrics::new(14.0, 20.0).scale(self.scale));
+        lab.set_text(self.font_system, text, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None);
+        lab.shape_until_scroll(self.font_system, false);
+        for run in lab.layout_runs() {
+            for g in run.glyphs {
+                let pg = g.physical((x, y + run.line_y), 1.0);
+                if let Some(img) = self.swash_cache.get_image(self.font_system, pg.cache_key) {
+                    if let Some(mut p) = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)) {
+                        let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
+                        for (idx, &al) in img.data.iter().enumerate() {
+                            let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
+                            p.pixels_mut()[idx] = ColorU8::from_rgba(
+                                (cr as f32 * af) as u8, (cg as f32 * af) as u8,
+                                (cb as f32 * af) as u8, (255.0 * af) as u8,
+                            ).premultiply();
+                        }
+                        self.pixmap.draw_pixmap(pg.x + img.placement.left, pg.y - img.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draw monospace UI text with a custom font size at physical pixel coordinates.
+    pub fn draw_text_sized(&mut self, text: &str, x: f32, y: f32, font_size: f32, r: u8, g: u8, b: u8, a: u8) {
+        let col = Color::rgba(r, g, b, a);
+        let mut lab = Buffer::new(self.font_system, Metrics::new(font_size, font_size * 1.5).scale(self.scale));
+        lab.set_text(self.font_system, text, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None);
+        lab.shape_until_scroll(self.font_system, false);
+        for run in lab.layout_runs() {
+            for g in run.glyphs {
+                let pg = g.physical((x, y + run.line_y), 1.0);
+                if let Some(img) = self.swash_cache.get_image(self.font_system, pg.cache_key) {
+                    if let Some(mut p) = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)) {
+                        let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
+                        for (idx, &al) in img.data.iter().enumerate() {
+                            let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
+                            p.pixels_mut()[idx] = ColorU8::from_rgba(
+                                (cr as f32 * af) as u8, (cg as f32 * af) as u8,
+                                (cb as f32 * af) as u8, (255.0 * af) as u8,
+                            ).premultiply();
+                        }
+                        self.pixmap.draw_pixmap(pg.x + img.placement.left, pg.y - img.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Cursor Motion ──────────────────────────────────────────────────────
+
+/// Direction for cursor movement — abstracts cosmic_text::Motion.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CursorMotion {
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    BufferStart,
+    BufferEnd,
+    LeftWord,
+    RightWord,
+}
+
 // ── Dock ───────────────────────────────────────────────────────────────
 
 /// Dock position for children of a `DockPanel`.
@@ -156,6 +227,14 @@ pub enum WidgetEvent {
     DropdownSelected(String, usize),
     /// A menu action was selected. Payload: action id string.
     MenuAction(String),
+    /// A button was clicked. Payload: button name.
+    ButtonClicked(String),
+    /// A checkbox was toggled. Payload: checkbox name, new checked state.
+    CheckboxToggled(String, bool),
+    /// A text field value changed. Payload: field name, new text.
+    TextChanged(String, String),
+    /// A color was picked. Payload: widget name, hex string (e.g. "#FF0000").
+    ColorChanged(String, String),
     /// Generic named action (for custom widgets).
     Action(String),
 }

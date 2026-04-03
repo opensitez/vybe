@@ -1,5 +1,3 @@
-use cosmic_text::{Attrs, Action, Edit, Family, Cursor, Shaping};
-
 use super::{App, Tab, TabContent, EditAction};
 use crate::editor::Editor as MyEditor;
 use crate::language::load_language;
@@ -9,11 +7,13 @@ use vybe_widgets::code_editor_widget::CodeEditorWidget;
 impl App {
     /// Push a line to the output panel and auto-show it.
     pub(crate) fn output_push(&mut self, line: String) {
-        self.output_lines.push(line);
-        self.output_visible = true;
-        let total = self.output_lines.len() as f32 * 18.0;
-        let visible = self.output_panel_height - 24.0;
-        self.output_scroll_y = (total - visible).max(0.0);
+        // Get current lines, add the new one, and set back
+        let mut lines: Vec<String> = Vec::new();
+        // We need to rebuild from scratch since OutputPanel owns the lines
+        // Use a helper: store lines externally and sync
+        self.output_lines_buffer.push(line);
+        self.output_panel.set_output_lines(&self.output_lines_buffer);
+        self.output_panel.set_visible(true);
     }
 
     pub(super) fn flush_code_to_project(&mut self) {
@@ -241,52 +241,45 @@ impl App {
             TabContent::Code(cw) => {
                 match action {
                     EditAction::Undo => {
-                        let (cl, ci) = { let c = cw.editor.cursor(); (c.line, c.index) };
+                        let (cl, ci) = cw.cursor_pos();
                         if let Some((text, line, col)) = cw.my_editor.undo(cl, ci) {
-                            cw.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-                            cw.editor.set_cursor(Cursor::new(line, col));
+                            cw.set_buffer_text(&mut self.font_system, &text);
+                            cw.set_cursor_pos(line, col);
                         }
                     }
                     EditAction::Redo => {
-                        let (cl, ci) = { let c = cw.editor.cursor(); (c.line, c.index) };
+                        let (cl, ci) = cw.cursor_pos();
                         if let Some((text, line, col)) = cw.my_editor.redo(cl, ci) {
-                            cw.editor.with_buffer_mut(|b| b.set_text(&mut self.font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-                            cw.editor.set_cursor(Cursor::new(line, col));
+                            cw.set_buffer_text(&mut self.font_system, &text);
+                            cw.set_cursor_pos(line, col);
                         }
                     }
                     EditAction::Cut => {
-                        if let Some(t) = cw.editor.copy_selection() {
-                            cw.my_editor.save_snapshot(cw.editor.cursor().line, cw.editor.cursor().index);
+                        if let Some(t) = cw.copy_selection_text() {
+                            cw.my_editor.save_snapshot(cw.cursor_pos().0, cw.cursor_pos().1);
                             if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); }
-                            cw.editor.action(&mut self.font_system, Action::Delete);
+                            cw.action_delete(&mut self.font_system);
                         }
                     }
                     EditAction::Copy => {
-                        if let Some(t) = cw.editor.copy_selection() {
+                        if let Some(t) = cw.copy_selection_text() {
                             if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); }
                         }
                     }
                     EditAction::Paste => {
                         if let Some(cb) = &mut self.clipboard {
                             if let Ok(t) = cb.get_text() {
-                                cw.my_editor.save_snapshot(cw.editor.cursor().line, cw.editor.cursor().index);
-                                let byte_off = cw.editor.with_buffer(|b| {
-                                    let cli = cw.editor.cursor().line;
-                                    let mut total = 0;
-                                    for i in 0..cli { total += b.lines[i].text().len() + 1; }
-                                    total + cw.editor.cursor().index
-                                });
+                                cw.my_editor.save_snapshot(cw.cursor_pos().0, cw.cursor_pos().1);
+                                let byte_off = cw.compute_byte_offset(cw.cursor_pos().0, cw.cursor_pos().1);
                                 let (new_line, new_col) = cw.my_editor.insert_string(byte_off, &t, &cw.lang_def);
-                                cw.editor.with_buffer_mut(|b| {
-                                    b.set_text(&mut self.font_system, &cw.my_editor.rope().to_string(), &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
-                                });
-                                cw.editor.set_cursor(Cursor::new(new_line, new_col));
+                                cw.set_buffer_text(&mut self.font_system, &cw.my_editor.rope().to_string());
+                                cw.set_cursor_pos(new_line, new_col);
                             }
                         }
                     }
                     EditAction::Delete => {
-                        cw.my_editor.save_snapshot(cw.editor.cursor().line, cw.editor.cursor().index);
-                        cw.editor.action(&mut self.font_system, Action::Delete);
+                        cw.my_editor.save_snapshot(cw.cursor_pos().0, cw.cursor_pos().1);
+                        cw.action_delete(&mut self.font_system);
                     }
                 }
                 cw.needs_reshape = true;
@@ -430,11 +423,11 @@ impl App {
     pub(super) fn trigger_completion(&self) {
         if let Some(tab) = self.tabs.get(self.active_tab) {
             if let TabContent::Code(w) = &tab.content {
-                let cursor = w.editor.cursor();
+                let (line, col) = w.cursor_pos();
                 let uri = tab.path.as_deref()
                     .map(|p| format!("file://{}", p))
                     .unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
-                self.lsp.send(LspRequest::Completion(uri, cursor.line as u32, cursor.index as u32));
+                self.lsp.send(LspRequest::Completion(uri, line as u32, col as u32));
             }
         }
     }

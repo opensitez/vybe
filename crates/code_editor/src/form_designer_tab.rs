@@ -1,4 +1,4 @@
-use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
+use vybe_widgets::{FontSystem, SwashCache, TextColor as CosmicColor};
 use tiny_skia::{Paint, Pixmap, Transform, Stroke, PathBuilder};
 use uuid::Uuid;
 use vybe_forms::{Form, Control, ControlType};

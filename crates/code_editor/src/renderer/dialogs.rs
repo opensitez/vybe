@@ -1,4 +1,4 @@
-use cosmic_text::{Color, FontSystem, SwashCache};
+use vybe_widgets::{FontSystem, SwashCache, TextColor as Color};
 use tiny_skia::{Paint, Pixmap, Transform};
 
 pub(crate) struct ProjectPropsDialog {

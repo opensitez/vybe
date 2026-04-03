@@ -1,11 +1,10 @@
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use cosmic_text::Edit;
 use tiny_skia::Rect;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
-use super::{App, Tab, TabContent, EditAction, SidebarTab, BottomPanelTab, SCALE, TAB_BAR_HEIGHT, FOOTER_HEIGHT, SPLITTER_WIDTH, MINIMAP_WIDTH, SIDEBAR_TAB_H};
+use super::{App, Tab, TabContent, EditAction, SidebarTab, SCALE, TAB_BAR_HEIGHT, FOOTER_HEIGHT, SPLITTER_WIDTH, MINIMAP_WIDTH, SIDEBAR_TAB_H};
 use crate::editor::Editor as MyEditor;
 use crate::language::load_language;
 use vybe_widgets::PanelWidget;
@@ -20,15 +19,16 @@ impl App {
             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 2.0,
         };
         let tch = self.top_chrome_h();
+        let mx = self.mouse_pos.0 / SCALE;
         let my = self.mouse_pos.1 / SCALE;
         let ph = self.win_height * SCALE / SCALE;
         // Output panel scroll
-        if self.output_visible && my > ph - FOOTER_HEIGHT - self.output_panel_height && my < ph - FOOTER_HEIGHT {
-            self.output_scroll_y = (self.output_scroll_y - a / SCALE).max(0.0);
-            let max_scroll = (self.output_lines.len() as f32 * 18.0 - (self.output_panel_height - 24.0)).max(0.0);
-            self.output_scroll_y = self.output_scroll_y.min(max_scroll);
-            
-            return;
+        if self.output_panel.visible() {
+            let out_rect = self.output_panel.rect();
+            if out_rect.contains(mx, my) {
+                self.output_panel.handle_scroll(a / SCALE, mx, my);
+                return;
+            }
         }
         if self.mouse_pos.1 / SCALE < tch + TAB_BAR_HEIGHT && self.mouse_pos.1 / SCALE >= tch {
             // Tab bar scroll is now handled by the toolkit (TabPanel.scroll_tab_bar)
@@ -189,7 +189,7 @@ impl App {
                             // Convert mouse position to buffer line/col
                             let rel_x = mx - ed_start_x;
                             let rel_y = my - ed_top_l + cw.scroll_y / SCALE;
-                            let line_h = cw.editor.with_buffer(|b| b.metrics().line_height);
+                            let line_h = cw.line_height();
                             let line = (rel_y / line_h).max(0.0) as u32;
                             // Approximate column from x position (monospace ~9px per char at default size)
                             let gutter = 64.0; // GUTTER_WIDTH
@@ -232,62 +232,15 @@ impl App {
         let ph = self.win_height * SCALE / SCALE;
         let height = ph;
 
-        // Output / Problems panel clicks
-        if state == ElementState::Pressed && button == MouseButton::Left && self.output_visible {
-            let out_top = ph - FOOTER_HEIGHT - self.output_panel_height;
-            let out_bottom = ph - FOOTER_HEIGHT;
-            let ed_sx = self.explorer_width + SPLITTER_WIDTH + 1.0;
-            if my >= out_top && my < out_top + 24.0 && mx > ed_sx {
-                // Header area
-                let out_right = pw / SCALE;
-                // Close button
-                if mx > out_right - 24.0 { self.output_visible = false;  return; }
-                // Clear button (Output tab only)
-                if self.bottom_panel_tab == BottomPanelTab::Output && mx > out_right - 80.0 && mx < out_right - 30.0 {
-                    self.output_lines.clear(); self.output_scroll_y = 0.0;  return;
-                }
-                // Tab switching: "Output" tab area (ed_sx+10 .. ed_sx+70), "Problems" tab area (ed_sx+80 .. ed_sx+180)
-                if mx >= ed_sx + 10.0 && mx < ed_sx + 70.0 {
-                    self.bottom_panel_tab = BottomPanelTab::Output;
-                    self.output_scroll_y = 0.0;
-                     return;
-                }
-                if mx >= ed_sx + 80.0 && mx < ed_sx + 200.0 {
-                    self.bottom_panel_tab = BottomPanelTab::Problems;
-                    self.output_scroll_y = 0.0;
-                     return;
-                }
+        // Output / Problems panel clicks — delegated to OutputPanel widget
+        if state == ElementState::Pressed && button == MouseButton::Left && self.output_panel.visible() {
+            let out_rect = self.output_panel.rect();
+            if out_rect.contains(mx, my) {
+                use vybe_widgets::layout::{MouseEvent as WMouseEvent, MouseEventKind as WMEKind};
+                let click = WMouseEvent { x: mx, y: my, kind: WMEKind::Press(vybe_widgets::layout::MouseButton::Left), cmd: self.cmd_held, shift: self.shift_held, alt: self.alt_held };
+                self.output_panel.handle_mouse(&click);
+                return;
             }
-            // Click on a problem item → navigate to file:line
-            if self.bottom_panel_tab == BottomPanelTab::Problems && my >= out_top + 24.0 && my < out_bottom {
-                let content_y = out_top + 24.0;
-                let line_h = 18.0f32;
-                let skip = (self.output_scroll_y / 18.0).max(0.0) as usize;
-                let clicked_idx = skip + ((my - content_y + (self.output_scroll_y % 18.0)) / line_h) as usize;
-                // Build flat list of (tab_index, line) for all diagnostics
-                let mut diag_entries: Vec<(usize, usize)> = Vec::new();
-                for (ti, t) in self.tabs.iter().enumerate() {
-                    if let TabContent::Code(cw) = &t.content {
-                        for d in &cw.my_editor.diagnostics {
-                            diag_entries.push((ti, d.line));
-                        }
-                    }
-                }
-                if let Some(&(tab_idx, diag_line)) = diag_entries.get(clicked_idx) {
-                    self.active_tab = tab_idx;
-                    if let TabContent::Code(cw) = &mut self.tabs[tab_idx].content {
-                        let max_line = cw.editor.with_buffer(|b| b.lines.len().saturating_sub(1));
-                        let safe_line = diag_line.min(max_line);
-                        cw.editor.set_cursor(cosmic_text::Cursor::new(safe_line, 0));
-                        cw.needs_reshape = true;
-                        // Scroll to center the line
-                        let line_h_scroll = 20.0f32;
-                        cw.scroll_y = (safe_line as f32 * line_h_scroll).max(0.0);
-                    }
-                     return;
-                }
-            }
-            if my >= out_top && my < out_bottom {  return; }
         }
 
         if state == ElementState::Pressed && button == MouseButton::Right {
@@ -415,7 +368,7 @@ impl App {
             if mx > pw / SCALE - MINIMAP_WIDTH {
                 if self.active_tab < self.tabs.len() {
                     if let TabContent::Code(cw) = &mut self.tabs[self.active_tab].content {
-                        let mut th = 0.0; cw.editor.with_buffer(|b| { for r in b.layout_runs() { if !cw.is_line_hidden(r.line_i) { th += r.line_height; } } });
+                        let th = cw.visible_content_height();
                         let mry = (my - TAB_BAR_HEIGHT) / (height - TAB_BAR_HEIGHT - FOOTER_HEIGHT);
                         cw.scroll_y = (mry * th).max(0.0);
                         
@@ -741,13 +694,11 @@ impl App {
             if mx < self.explorer_width {
                 let stab_top = tch;
                 if my >= stab_top && my < stab_top + SIDEBAR_TAB_H {
-                    let half = self.explorer_width / 2.0;
-                    if mx < half {
-                        self.sidebar_tab = SidebarTab::Files;
-                    } else {
-                        self.sidebar_tab = SidebarTab::Project;
-                    }
-                     return;
+                    // Route to sidebar_tabs TabPanel
+                    use vybe_widgets::layout::{MouseEvent as WMouseEvent, MouseEventKind as WMEKind};
+                    let click = WMouseEvent { x: mx, y: my, kind: WMEKind::Press(vybe_widgets::layout::MouseButton::Left), cmd: self.cmd_held, shift: self.shift_held, alt: self.alt_held };
+                    self.sidebar_tabs.handle_mouse(&click);
+                    return;
                 }
 
                 let now = Instant::now();

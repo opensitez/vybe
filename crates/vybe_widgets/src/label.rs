@@ -1,7 +1,9 @@
 //! Label widget — standalone tiny-skia rendered label.
 
 use tiny_skia::*;
+use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget};
 
 pub struct Label {
     pub text: String,
@@ -10,6 +12,8 @@ pub struct Label {
     pub auto_size: bool,
     pub transparent: bool,
     pub colors: WidgetColors,
+    pub font_size: f32,
+    rect: LayoutRect,
 }
 
 impl Label {
@@ -24,6 +28,8 @@ impl Label {
                 background: (240, 240, 240, 255),
                 ..WidgetColors::default()
             },
+            font_size: 13.0,
+            rect: LayoutRect::zero(),
         }
     }
 
@@ -47,4 +53,36 @@ impl Label {
     pub fn measure(&self) -> (f32, f32) {
         (self.width, self.height)
     }
+}
+
+// ── PanelWidget impl ───────────────────────────────────────────────────
+
+impl PanelWidget for Label {
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+
+    fn rect(&self) -> LayoutRect { self.rect }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 { return; }
+
+        // Background (if not transparent)
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+
+        // Text
+        let (fr, fg, fb, _) = self.colors.foreground;
+        let ty = r.y + (r.h - self.font_size) / 2.0 - 1.0;
+        super::ide_text::draw_text(
+            ctx.pixmap, ctx.font_system, ctx.swash_cache,
+            &self.text, r.x + 2.0, ty, self.font_size,
+            CosmicColor::rgba(fr, fg, fb, 255), ctx.scale,
+        );
+    }
+
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
 }

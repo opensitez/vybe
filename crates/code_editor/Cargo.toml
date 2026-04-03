@@ -6,7 +6,6 @@ authors = ["you"]
 
 [dependencies]
 # Core crates for the pure-Rust prototype. Pin versions as needed.
-cosmic-text = "0.18.2"
 tiny-skia = "0.12.0"
 minifb = "0.28"
 winit = "0.30"

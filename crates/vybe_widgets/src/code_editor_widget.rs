@@ -1331,6 +1331,197 @@ impl CodeEditorWidget {
             self.minimap_needs_redraw = true;
         }
     }
+
+    // ── High-level API (hides cosmic_text internals) ───────────────────
+
+    /// Get cursor position as (line, byte_index).
+    pub fn cursor_pos(&self) -> (usize, usize) {
+        let c = self.editor.cursor();
+        (c.line, c.index)
+    }
+
+    /// Set cursor position by (line, byte_index).
+    pub fn set_cursor_pos(&mut self, line: usize, col: usize) {
+        self.editor.set_cursor(Cursor::new(line, col));
+    }
+
+    /// Get cursor position for rendering — returns Option<(x, y)> in pixels.
+    pub fn cursor_pixel_position(&self) -> Option<(i32, i32)> {
+        self.editor.cursor_position()
+    }
+
+    /// Check if there is an active selection.
+    pub fn has_selection(&self) -> bool {
+        self.editor.selection_bounds().is_some()
+    }
+
+    /// Get selection bounds as ((start_line, start_col), (end_line, end_col)).
+    pub fn selection_bounds(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.editor.selection_bounds().map(|(s, e)| ((s.line, s.index), (e.line, e.index)))
+    }
+
+    /// Set selection from start to end.
+    pub fn set_selection(&mut self, start_line: usize, start_col: usize, end_line: usize, end_col: usize) {
+        self.editor.set_cursor(Cursor::new(start_line, start_col));
+        self.editor.set_selection(Selection::Normal(Cursor::new(end_line, end_col)));
+    }
+
+    /// Clear the selection.
+    pub fn clear_selection(&mut self) {
+        self.editor.set_selection(Selection::None);
+    }
+
+    /// Copy the selected text (returns None if no selection).
+    pub fn copy_selection_text(&self) -> Option<String> {
+        self.editor.copy_selection()
+    }
+
+    /// Select all text.
+    pub fn select_all(&mut self) {
+        self.editor.set_cursor(Cursor::new(0, 0));
+        let last_line = self.editor.with_buffer(|b| b.lines.len().saturating_sub(1));
+        let last_col = self.editor.with_buffer(|b| b.lines[last_line].text().len());
+        self.editor.set_selection(Selection::Normal(Cursor::new(last_line, last_col)));
+    }
+
+    // ── Editing actions ────────────────────────────────────────────────
+
+    /// Insert a character at the cursor.
+    pub fn action_insert(&mut self, fs: &mut FontSystem, ch: char) {
+        self.editor.action(fs, Action::Insert(ch));
+    }
+
+    /// Delete character after cursor.
+    pub fn action_delete(&mut self, fs: &mut FontSystem) {
+        self.editor.action(fs, Action::Delete);
+    }
+
+    /// Delete character before cursor.
+    pub fn action_backspace(&mut self, fs: &mut FontSystem) {
+        self.editor.action(fs, Action::Backspace);
+    }
+
+    /// Insert a new line.
+    pub fn action_enter(&mut self, fs: &mut FontSystem) {
+        self.editor.action(fs, Action::Enter);
+    }
+
+    /// Cancel selection / escape.
+    pub fn action_escape(&mut self, fs: &mut FontSystem) {
+        self.editor.action(fs, Action::Escape);
+    }
+
+    /// Move cursor in a direction.
+    pub fn action_motion(&mut self, fs: &mut FontSystem, motion: crate::layout::CursorMotion) {
+        use crate::layout::CursorMotion as CM;
+        use cosmic_text::Motion;
+        let m = match motion {
+            CM::Left => Motion::Left,
+            CM::Right => Motion::Right,
+            CM::Up => Motion::Up,
+            CM::Down => Motion::Down,
+            CM::Home => Motion::Home,
+            CM::End => Motion::End,
+            CM::BufferStart => Motion::BufferStart,
+            CM::BufferEnd => Motion::BufferEnd,
+            CM::LeftWord => Motion::LeftWord,
+            CM::RightWord => Motion::RightWord,
+        };
+        self.editor.action(fs, Action::Motion(m));
+    }
+
+    /// Handle a click at pixel position.
+    pub fn action_click(&mut self, fs: &mut FontSystem, x: i32, y: i32) {
+        self.editor.action(fs, Action::Click { x, y });
+    }
+
+    /// Handle a double-click at pixel position.
+    pub fn action_double_click(&mut self, fs: &mut FontSystem, x: i32, y: i32) {
+        self.editor.action(fs, Action::DoubleClick { x, y });
+    }
+
+    /// Handle a triple-click at pixel position.
+    pub fn action_triple_click(&mut self, fs: &mut FontSystem, x: i32, y: i32) {
+        self.editor.action(fs, Action::TripleClick { x, y });
+    }
+
+    /// Handle a drag at pixel position.
+    pub fn action_drag(&mut self, fs: &mut FontSystem, x: i32, y: i32) {
+        self.editor.action(fs, Action::Drag { x, y });
+    }
+
+    // ── Buffer access ──────────────────────────────────────────────────
+
+    /// Get total number of lines in the buffer.
+    pub fn line_count(&self) -> usize {
+        self.editor.with_buffer(|b| b.lines.len())
+    }
+
+    /// Get the text of a specific line.
+    pub fn line_text(&self, line: usize) -> String {
+        self.editor.with_buffer(|b| {
+            if line < b.lines.len() { b.lines[line].text().to_string() } else { String::new() }
+        })
+    }
+
+    /// Set the entire buffer text, preserving monospace attrs.
+    pub fn set_buffer_text(&mut self, fs: &mut FontSystem, text: &str) {
+        self.editor.with_buffer_mut(|b| {
+            b.set_text(fs, text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
+        });
+    }
+
+    /// Compute byte offset from (line, col) into the full text.
+    pub fn compute_byte_offset(&self, line: usize, col: usize) -> usize {
+        self.editor.with_buffer(|b| {
+            let mut total = 0;
+            for i in 0..line.min(b.lines.len()) {
+                total += b.lines[i].text().len() + 1;
+            }
+            total + col
+        })
+    }
+
+    /// Start selection from current cursor position (for shift+arrow).
+    pub fn start_selection_if_none(&mut self) {
+        if self.editor.selection_bounds().is_none() {
+            self.editor.set_selection(Selection::Normal(self.editor.cursor()));
+        }
+    }
+
+    /// Apply wrap mode and buffer size before rendering.
+    /// `content_width` and `content_height` are in physical pixels.
+    pub fn sync_wrap_and_size(&mut self, fs: &mut FontSystem, content_width: f32, content_height: f32) {
+        let wrap_lines = self.wrap_lines;
+        self.editor.with_buffer_mut(|b| {
+            let wrap = if wrap_lines { cosmic_text::Wrap::Word } else { cosmic_text::Wrap::None };
+            if b.wrap() != wrap { b.set_wrap(fs, wrap); }
+            if wrap_lines {
+                b.set_size(fs, Some(content_width), Some(content_height));
+            } else {
+                b.set_size(fs, Some(999999.0), Some(999999.0));
+            }
+        });
+        self.needs_reshape = true;
+    }
+
+    /// Get the line height from the buffer metrics.
+    pub fn line_height(&self) -> f32 {
+        self.editor.with_buffer(|b| b.metrics().line_height)
+    }
+
+    /// Compute the total height of visible (non-hidden) layout runs.
+    pub fn visible_content_height(&self) -> f32 {
+        let mut h = 0.0;
+        self.editor.with_buffer(|b| {
+            for r in b.layout_runs() {
+                if !self.is_line_hidden(r.line_i) {
+                    h += r.line_height;
+                }
+            }
+        });
+        h
+    }
 }
 
 /// Draw monospace UI text at physical pixel coordinates (used for gutter, overlays, etc.)

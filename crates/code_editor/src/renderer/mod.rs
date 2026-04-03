@@ -7,8 +7,8 @@ mod app_mouse;
 use std::time::Instant;
 use std::sync::Arc;
 use std::fs;
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
-use tiny_skia::{Pixmap, PixmapPaint, Rect, Transform, ColorU8};
+use vybe_widgets::{FontSystem, SwashCache, TextColor};
+use tiny_skia::{Pixmap, Rect};
 use winit::event::ElementState;
 use arboard::Clipboard;
 
@@ -21,6 +21,7 @@ use vybe_widgets::{TreeView, Dropdown};
 use vybe_widgets::code_editor_widget::{Theme, CodeEditorWidget};
 use vybe_widgets::{SplitPanel, TabPanel, StatusBarPanel, LayoutRect, PanelWidget};
 use vybe_widgets::layout::{RenderContext, WidgetEvent};
+use vybe_widgets::output_panel::{OutputPanel, OutputPanelEvent, OutputTab, ProblemEntry, ProblemSeverity};
 
 use dialogs::ProjectPropsDialog;
 
@@ -85,7 +86,7 @@ pub struct Tab {
     pub path: Option<String>,
     pub content: TabContent,
     pub is_sticky: bool,
-    pub buffer: Option<Buffer>,
+    pub buffer: Option<()>,
     pub is_modified: bool,
 }
 
@@ -138,11 +139,9 @@ pub(crate) struct App {
     pub(crate) last_hover_pos: (f32, f32),
     pub(crate) last_hover_time: Instant,
     // Output panel
-    pub(crate) output_lines: Vec<String>,
-    pub(crate) output_visible: bool,
+    pub(crate) output_panel: OutputPanel,
     pub(crate) output_panel_height: f32,
-    pub(crate) output_scroll_y: f32,
-    pub(crate) bottom_panel_tab: BottomPanelTab,
+    pub(crate) output_lines_buffer: Vec<String>,
     // Go-to-line dialog
     pub(crate) goto_line_open: bool,
     pub(crate) goto_line_query: String,
@@ -152,6 +151,7 @@ pub(crate) struct App {
     pub(crate) split_panel: SplitPanel,   // sidebar | editor area
     pub(crate) tab_panel: TabPanel,       // editor tab bar
     pub(crate) status_bar: StatusBarPanel, // footer status bar
+    pub(crate) sidebar_tabs: TabPanel,    // sidebar Files|Project tabs
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -254,11 +254,9 @@ impl App {
             pe_context_menu: None,
             last_hover_pos: (-1.0, -1.0),
             last_hover_time: Instant::now(),
-            output_lines: Vec::new(),
-            output_visible: false,
+            output_panel: OutputPanel::new(),
             output_panel_height: 150.0,
-            output_scroll_y: 0.0,
-            bottom_panel_tab: BottomPanelTab::Output,
+            output_lines_buffer: Vec::new(),
             goto_line_open: false,
             goto_line_query: String::new(),
             build_config: BuildConfig::Debug,
@@ -276,6 +274,15 @@ impl App {
                 let mut sb = StatusBarPanel::new();
                 sb.set_height(FOOTER_HEIGHT);
                 sb
+            },
+            sidebar_tabs: {
+                let mut st = TabPanel::new();
+                st.set_tab_height(SIDEBAR_TAB_H);
+                st.set_tab_width(EXPLORER_WIDTH / 2.0);
+                st.add_tab_header("Files", false);
+                st.add_tab_header("Project", false);
+                st.set_active(1); // default to Project tab
+                st
             },
         }
     }
@@ -306,8 +313,15 @@ impl App {
         // Tab panel occupies the right side of the split (panel2 area)
         let tab_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
         let tab_w = (w - tab_x).max(0.0);
-        let output_h = if self.output_visible { self.output_panel_height } else { 0.0 };
+        let output_h = if self.output_panel.visible() { self.output_panel_height } else { 0.0 };
         self.tab_panel.set_rect(LayoutRect::new(tab_x, tch, tab_w, TAB_BAR_HEIGHT));
+
+        // Output panel (above footer, right of sidebar)
+        self.output_panel.set_rect(LayoutRect::new(tab_x, h - FOOTER_HEIGHT - output_h, tab_w, output_h));
+
+        // Sidebar tabs at top of sidebar
+        self.sidebar_tabs.set_rect(LayoutRect::new(0.0, tch, self.explorer_width, SIDEBAR_TAB_H));
+        self.sidebar_tabs.set_tab_width(self.explorer_width / 2.0);
     }
 
     /// Sync tab_panel headers with the IDE tab list.
@@ -387,6 +401,56 @@ impl App {
                 _ => {}
             }
         }
+        // Sidebar tabs events
+        let sidebar_events = self.sidebar_tabs.drain_events();
+        for event in sidebar_events {
+            match event {
+                WidgetEvent::TabChanged(idx) => {
+                    self.sidebar_tab = match idx {
+                        0 => SidebarTab::Files,
+                        _ => SidebarTab::Project,
+                    };
+                }
+                _ => {}
+            }
+        }
+        // Output panel events
+        let output_events = self.output_panel.drain_panel_events();
+        for event in output_events {
+            match event {
+                OutputPanelEvent::Close => {
+                    self.output_panel.set_visible(false);
+                }
+                OutputPanelEvent::ClearOutput => {
+                    self.output_panel.clear_output();
+                    self.output_lines_buffer.clear();
+                }
+                OutputPanelEvent::TabChanged(tab) => {
+                    self.output_panel.set_active_tab(tab);
+                }
+                OutputPanelEvent::ProblemClicked(idx) => {
+                    // Build flat list of (tab_index, line) for all diagnostics
+                    let mut diag_entries: Vec<(usize, usize)> = Vec::new();
+                    for (ti, t) in self.tabs.iter().enumerate() {
+                        if let TabContent::Code(cw) = &t.content {
+                            for d in &cw.my_editor.diagnostics {
+                                diag_entries.push((ti, d.line));
+                            }
+                        }
+                    }
+                    if let Some(&(tab_idx, diag_line)) = diag_entries.get(idx) {
+                        self.active_tab = tab_idx;
+                        if let TabContent::Code(cw) = &mut self.tabs[tab_idx].content {
+                            let max_line = cw.line_count().saturating_sub(1);
+                            let safe_line = diag_line.min(max_line);
+                            cw.set_cursor_pos(safe_line, 0);
+                            cw.needs_reshape = true;
+                            cw.scroll_y = (safe_line as f32 * 20.0).max(0.0);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn active_theme(&self) -> Theme {
@@ -419,9 +483,8 @@ impl App {
         }
     }
 
-    fn draw_ui_text(pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, text: &str, x: f32, y: f32, col: Color) {
-        let mut lab = Buffer::new(fs, Metrics::new(14.0,20.0).scale(SCALE)); lab.set_text(fs, text, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None); lab.shape_until_scroll(fs, false);
-        for r in lab.layout_runs() { for g in r.glyphs { let pg = g.physical((x, y + r.line_y), 1.0); if let Some(im) = sc.get_image(fs, pg.cache_key) { let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap(); let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a()); for (idx, &al) in im.data.iter().enumerate() { let af = (al as f32 / 255.0) * (ca as f32 / 255.0); p.pixels_mut()[idx] = ColorU8::from_rgba((cr as f32 * af) as u8, (cg as f32 * af) as u8, (cb as f32 * af) as u8, (255.0 * af) as u8).premultiply(); } pix.draw_pixmap(pg.x + im.placement.left, pg.y - im.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None); } } }
+    fn draw_ui_text(pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, text: &str, x: f32, y: f32, col: TextColor) {
+        crate::ide_text::draw_mono(pix, fs, sc, text, x / SCALE, y / SCALE, 14.0, col, SCALE);
     }
 }
 

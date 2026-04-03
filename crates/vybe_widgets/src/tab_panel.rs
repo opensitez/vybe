@@ -22,6 +22,7 @@ pub struct TabPanel {
     tabs: Vec<TabEntry>,
     active: usize,
     tab_height: f32,
+    custom_tab_width: Option<f32>,
     bg_color: (u8, u8, u8, u8),
     tab_bg: (u8, u8, u8, u8),
     tab_active_bg: (u8, u8, u8, u8),
@@ -40,6 +41,7 @@ impl TabPanel {
             tabs: Vec::new(),
             active: 0,
             tab_height: 28.0,
+            custom_tab_width: None,
             bg_color: (30, 30, 30, 255),
             tab_bg: (45, 45, 45, 255),
             tab_active_bg: (30, 30, 30, 255),
@@ -53,6 +55,8 @@ impl TabPanel {
     }
 
     pub fn set_tab_height(&mut self, h: f32) { self.tab_height = h; }
+
+    pub fn set_tab_width(&mut self, w: f32) { self.custom_tab_width = Some(w); }
 
     pub fn set_colors(
         &mut self,
@@ -168,7 +172,7 @@ impl TabPanel {
         }
     }
 
-    fn tab_width(&self) -> f32 { 120.0 }
+    fn tab_width(&self) -> f32 { self.custom_tab_width.unwrap_or(120.0) }
 
     /// Scroll the tab bar (e.g. from mouse wheel over tab bar).
     pub fn scroll_tab_bar(&mut self, delta: f32) {
