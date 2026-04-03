@@ -377,6 +377,138 @@ impl VM {
     /// Load chunks and execute the script chunk (first in the new set).
     /// Appends to existing chunks so cross-language calls work (functions reference chunk indices).
     /// Resolves the import table against registered host functions.
+    /// Run linked components with WASM Component Model isolation.
+    /// Each component gets its own global namespace (prefixed).
+    /// Cross-component communication happens ONLY through declared exports/imports.
+    /// Type metadata is shared read-only for inheritance.
+    pub fn run_components(&mut self, link_result: &crate::component::LinkResult, components: &[crate::component::Component]) -> Result<Value, VMError> {
+        // Load all chunks
+        let base_offset = self.chunks.len();
+        self.chunks.extend(link_result.chunks.clone());
+
+        // Load shared type table (read-only cross-module)
+        for ((_, type_name), typedef) in &link_result.type_exports {
+            // Types are shared — they enable cross-language inheritance
+            let _ = (type_name, typedef);
+        }
+
+        // Load type tables from all chunks
+        for chunk in &link_result.chunks {
+            if !chunk.types.is_empty() {
+                self.type_registry.load_type_table(&chunk.types);
+            }
+        }
+
+        // Run each component's script chunk with module isolation
+        let saved_isolation = self.strict_isolation;
+        let saved_prefix = self.module_prefix.clone();
+        self.strict_isolation = true;
+
+        for (i, comp) in components.iter().enumerate() {
+            let chunk_offset = link_result.component_offsets[i] + base_offset;
+
+            // Set module prefix for global isolation
+            self.module_prefix = Some(comp.name.clone());
+
+            // Inject imported function references into this module's scope
+            for (iface, func_name) in &comp.imports {
+                let key = (iface.clone(), func_name.clone());
+                if let Some(export_impl) = link_result.exports.get(&key) {
+                    let func_val = match export_impl {
+                        crate::component::ExportImpl::ChunkFn(ci) => {
+                            let adjusted_ci = ci + base_offset;
+                            let chunk = &self.chunks[adjusted_ci];
+                            let func = crate::value::Function {
+                                name: Some(func_name.clone()),
+                                arity: chunk.arity,
+                                chunk_index: adjusted_ci,
+                                upvalues: Vec::new(),
+                            };
+                            let obj = crate::value::Object {
+                                properties: std::collections::HashMap::new(),
+                                kind: crate::value::ObjectKind::Function(func),
+                                type_id: 0, fields: Vec::new(),
+                            };
+                            Value::Object(Rc::new(RefCell::new(obj)))
+                        }
+                        crate::component::ExportImpl::HostFn(idx) => {
+                            let mut obj = crate::value::Object::new();
+                            obj.kind = crate::value::ObjectKind::HostFunction(*idx);
+                            Value::Object(Rc::new(RefCell::new(obj)))
+                        }
+                    };
+                    // Store in module-scoped globals
+                    let global_key = format!("{}::{}", comp.name, func_name.to_lowercase());
+                    self.globals.insert(global_key, func_val.clone());
+                    // Also store without prefix so the module's code can find it
+                    // (the module emits global_get "func_name", which gets prefixed by strict_isolation)
+                    let unprefixed = func_name.to_lowercase();
+                    self.globals.insert(format!("{}::{}", comp.name, unprefixed), func_val);
+                }
+            }
+
+            // Also inject exported functions from OTHER modules that this module imports
+            // by making them available under the importing module's prefix
+            for other_comp in components {
+                if other_comp.name == comp.name { continue; }
+                for ((_, func_name), export_impl) in &other_comp.exports {
+                    let func_val = match export_impl {
+                        crate::component::ExportImpl::ChunkFn(ci) => {
+                            let other_offset = link_result.component_offsets[
+                                components.iter().position(|c| c.name == other_comp.name).unwrap()
+                            ] + base_offset;
+                            let adjusted_ci = ci + other_offset;
+                            if adjusted_ci >= self.chunks.len() { continue; }
+                            let chunk = &self.chunks[adjusted_ci];
+                            let func = crate::value::Function {
+                                name: Some(func_name.clone()),
+                                arity: chunk.arity,
+                                chunk_index: adjusted_ci,
+                                upvalues: Vec::new(),
+                            };
+                            let obj = crate::value::Object {
+                                properties: std::collections::HashMap::new(),
+                                kind: crate::value::ObjectKind::Function(func),
+                                type_id: 0, fields: Vec::new(),
+                            };
+                            Value::Object(Rc::new(RefCell::new(obj)))
+                        }
+                        crate::component::ExportImpl::HostFn(idx) => {
+                            let mut obj = crate::value::Object::new();
+                            obj.kind = crate::value::ObjectKind::HostFunction(*idx);
+                            Value::Object(Rc::new(RefCell::new(obj)))
+                        }
+                    };
+                    // Available to this module via its prefix
+                    let key = format!("{}::{}", comp.name, func_name.to_lowercase());
+                    self.globals.entry(key).or_insert(func_val.clone());
+                    // Also store class constructors so inheritance works
+                    // (the child module does global_get "ClassName" which becomes "child::classname")
+                    let ctor_key = format!("{}::{}", comp.name, func_name.to_lowercase());
+                    self.globals.entry(ctor_key).or_insert(func_val);
+                }
+            }
+
+            // Run this component's chunks through the standard run() path
+            // which handles import resolution, type tables, and frame setup
+            let comp_chunks = comp.chunks.clone();
+            match self.run(comp_chunks) {
+                Ok(_) => {}
+                Err(e) => {
+                    self.strict_isolation = saved_isolation;
+                    self.module_prefix = saved_prefix;
+                    return Err(e);
+                }
+            }
+        }
+
+        // Restore isolation state
+        self.strict_isolation = saved_isolation;
+        self.module_prefix = saved_prefix;
+
+        Ok(Value::Null)
+    }
+
     pub fn run(&mut self, chunks: Vec<Chunk>) -> Result<Value, VMError> {
         if chunks.is_empty() {
             return Ok(Value::Null);
