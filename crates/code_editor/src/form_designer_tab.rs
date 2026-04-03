@@ -3,7 +3,7 @@ use tiny_skia::{Paint, Pixmap, Transform, Stroke, PathBuilder};
 use uuid::Uuid;
 use vybe_forms::{Form, Control, ControlType};
 
-use crate::ide_text::{draw_text, draw_text_with_font, measure_text, measure_text_with_font};
+use crate::ide_text::{draw_text, draw_text_with_font, measure_text_with_font};
 
 
 /// Rectangle in logical pixels.
@@ -1677,7 +1677,7 @@ impl FormDesignerState {
     }
 
     pub fn handle_mouse_move(&mut self, mx: f32, my: f32, rect: Rect) {
-        let content_rect = self.layout(rect).content;
+        let _content_rect = self.layout(rect).content;
 
         if self.lasso_start.is_some() {
             self.lasso_current = Some((mx, my));
