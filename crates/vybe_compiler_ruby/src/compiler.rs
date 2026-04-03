@@ -19,6 +19,7 @@ pub struct Compiler {
     line: u32,
     defined_globals: std::collections::HashSet<String>,
     defined_classes: std::collections::HashSet<String>,
+    current_class_parent: Option<String>,
 }
 
 impl Compiler {
@@ -31,6 +32,7 @@ impl Compiler {
             line: 1,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
+            current_class_parent: None,
         }
     }
 
@@ -778,13 +780,20 @@ impl Compiler {
             }
 
             Expression::Super(args) => {
-                // super → call parent's method via __super
-                self.emit_u16(Op::local_get, 1); // self
-                let idx = self.add_string_constant("__super");
-                self.emit_u16(Op::struct_get, idx);
-                self.emit_u16(Op::local_get, 1); // self as first arg
-                for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call_ref, (args.len() + 1) as u8);
+                // super(args) → call parent constructor: global_get(parent) + args + call_ref(argc)
+                if let Some(ref parent) = self.current_class_parent.clone() {
+                    let parent_idx = self.add_string_constant(parent);
+                    self.emit_u16(Op::global_get, parent_idx);
+                    for arg in args { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call_ref, args.len() as u8);
+                    // Result (parent object) is on stack.
+                    // Store copy in self slot so subsequent @name accesses work.
+                    self.emit(Op::dup);
+                    self.emit_u16(Op::local_set, 1);
+                } else {
+                    // No parent — push null
+                    self.emit(Op::null);
+                }
             }
 
             Expression::ScopeResolution { left, name } => {
@@ -3617,6 +3626,11 @@ impl Compiler {
         let class_name = &decl.name;
         let parent_name = decl.parent.as_deref().unwrap_or("").to_string();
 
+        let saved_parent = self.current_class_parent.clone();
+        if !parent_name.is_empty() {
+            self.current_class_parent = Some(parent_name.clone());
+        }
+
         let mut method_entries: Vec<(String, usize)> = Vec::new();
         let mut static_method_entries: Vec<(String, usize)> = Vec::new();
         let mut init_chunk: Option<usize> = None;
@@ -3769,6 +3783,7 @@ impl Compiler {
             common::classes::emit_store_super(&mut self.chunks[c], this_slot, &parent_name, line);
         }
 
+        self.current_class_parent = saved_parent;
         self.defined_classes.insert(class_name.clone());
         Ok(())
     }

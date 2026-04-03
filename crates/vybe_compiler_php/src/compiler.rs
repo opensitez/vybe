@@ -18,6 +18,8 @@ pub struct Compiler {
     line: u32,
     defined_globals: std::collections::HashSet<String>,
     defined_classes: std::collections::HashSet<String>,
+    /// Track current class parent for parent::__construct calls
+    current_class_parent: Option<String>,
 }
 
 impl Compiler {
@@ -30,6 +32,7 @@ impl Compiler {
             line: 1,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
+            current_class_parent: None,
         }
     }
 
@@ -536,10 +539,13 @@ impl Compiler {
             Expression::ClassKeyword(kw) => {
                 match kw.as_str() {
                     "parent" => {
-                        // parent:: resolves to $this->__super (the parent constructor)
-                        self.emit_u16(Op::local_get, 1); // $this
-                        let idx = self.add_string_constant("__super");
-                        self.emit_u16(Op::struct_get, idx);
+                        // parent:: resolves to the parent class constructor via global
+                        if let Some(ref parent) = self.current_class_parent.clone() {
+                            let idx = self.add_string_constant(parent);
+                            self.emit_u16(Op::global_get, idx);
+                        } else {
+                            self.emit(Op::null);
+                        }
                     }
                     "self" | "static" => {
                         // self:: resolves to the class constructor (stored as global)
@@ -1421,6 +1427,28 @@ impl Compiler {
                         }
                         self.emit_u16(Op::suspend, 0);
                         return Ok(());
+                    }
+                }
+            }
+        }
+
+        // parent::__construct(args) — call parent constructor, store result as $this
+        if let Expression::ClassKeyword(kw) = class {
+            if kw == "parent" {
+                if let Expression::Identifier(method_name) = method {
+                    if method_name == "__construct" {
+                        if let Some(ref parent) = self.current_class_parent.clone() {
+                            let idx = self.add_string_constant(parent);
+                            self.emit_u16(Op::global_get, idx);
+                            for arg in args { self.compile_expression(&arg.value)?; }
+                            self.emit_u8(Op::call, args.len() as u8);
+                            // Store returned object as $this
+                            if let Some(this_slot) = self.current_scope().resolve_local("this") {
+                                self.emit_u16(Op::local_set, this_slot);
+                                self.emit(Op::drop);
+                            }
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -2482,6 +2510,12 @@ impl Compiler {
         let class_name = &decl.name;
         let parent_name = decl.parent.as_deref().unwrap_or("").to_string();
 
+        // Track parent for parent::__construct calls
+        let saved_parent = self.current_class_parent.take();
+        if !parent_name.is_empty() {
+            self.current_class_parent = Some(parent_name.clone());
+        }
+
         // Collect methods and their chunk indices
         let mut method_entries: Vec<(String, usize)> = Vec::new();
         let mut static_method_entries: Vec<(String, usize)> = Vec::new();
@@ -2532,17 +2566,13 @@ impl Compiler {
         }
         let this_slot = self.define_local("__this");
 
-        // Create empty object, stamp __type + type_id
-        {
+        if parent_name.is_empty() {
+            // Base class: create object here
             let line = self.line;
             common::classes::emit_new_typed_object(&mut self.chunks[ctor_idx], this_slot, class_name, line);
         }
-
-        // If parent, inherit from parent constructor
-        if !parent_name.is_empty() {
-            let line = self.line;
-            common::classes::emit_store_super(&mut self.chunks[ctor_idx], this_slot, &parent_name, line);
-        }
+        // For child classes: parent::__construct in the body creates the object
+        // and stores it in $this via the compile_static_call handler.
 
         // Mix in trait methods — same pattern as Dart mixins:
         // Create a trait instance, then use __vybe_assign to copy its methods to this.
@@ -2566,26 +2596,30 @@ impl Compiler {
             self.chunks[ctor_idx].emit_op(Op::drop, line);
         }
 
-        // Bind instance methods + cross-language aliases
-        for (method_name, method_ci) in &method_entries {
-            if method_name == "__construct" { continue; }
-            let line = self.line;
-            common::classes::emit_bind_method_with_aliases(
-                &mut self.chunks[ctor_idx], this_slot, method_name, *method_ci, line,
-            );
+        if parent_name.is_empty() {
+            // Base class: bind methods first, then call __construct
+            for (method_name, method_ci) in &method_entries {
+                if method_name == "__construct" { continue; }
+                let line = self.line;
+                common::classes::emit_bind_method_with_aliases(
+                    &mut self.chunks[ctor_idx], this_slot, method_name, *method_ci, line,
+                );
+            }
         }
 
-        // Set field defaults on the instance
-        for (field_name, default) in &field_defaults {
-            self.emit_u16(Op::local_get, this_slot);
-            if let Some(val) = default {
-                self.compile_expression(val)?;
-            } else {
-                self.emit(Op::null);
+        // Set field defaults on the instance (only for base classes — child gets them from parent)
+        if parent_name.is_empty() {
+            for (field_name, default) in &field_defaults {
+                self.emit_u16(Op::local_get, this_slot);
+                if let Some(val) = default {
+                    self.compile_expression(val)?;
+                } else {
+                    self.emit(Op::null);
+                }
+                let key = self.add_string_constant(field_name);
+                self.emit_u16(Op::struct_set, key);
+                self.emit(Op::drop);
             }
-            let key = self.add_string_constant(field_name);
-            self.emit_u16(Op::struct_set, key);
-            self.emit(Op::drop);
         }
 
         // Call __construct(this, args...) if present
@@ -2597,7 +2631,37 @@ impl Compiler {
                 self.emit_u16(Op::local_get, (i + 1) as u16);
             }
             self.emit_u8(Op::call_ref, (user_params + 1) as u8);
-            self.emit(Op::drop);
+            if !parent_name.is_empty() {
+                // Child class: __construct called parent::__construct which created
+                // the object. __construct returns $this. Use it as our __this.
+                self.emit_u16(Op::local_set, this_slot);
+                self.emit(Op::drop);
+            } else {
+                self.emit(Op::drop);
+            }
+        }
+
+        if !parent_name.is_empty() {
+            // Child class: bind methods AFTER __construct (object now exists from parent)
+            for (method_name, method_ci) in &method_entries {
+                if method_name == "__construct" { continue; }
+                let line = self.line;
+                common::classes::emit_bind_method_with_aliases(
+                    &mut self.chunks[ctor_idx], this_slot, method_name, *method_ci, line,
+                );
+            }
+            // Set child field defaults
+            for (field_name, default) in &field_defaults {
+                self.emit_u16(Op::local_get, this_slot);
+                if let Some(val) = default {
+                    self.compile_expression(val)?;
+                } else {
+                    self.emit(Op::null);
+                }
+                let key = self.add_string_constant(field_name);
+                self.emit_u16(Op::struct_set, key);
+                self.emit(Op::drop);
+            }
         }
 
         // Stamp __types array for instanceof support
@@ -2686,6 +2750,7 @@ impl Compiler {
             fields, all_methods, false, Vec::new(), Some(ctor_idx),
         );
 
+        self.current_class_parent = saved_parent;
         Ok(())
     }
 
@@ -2726,6 +2791,11 @@ impl Compiler {
             self.compile_statement(stmt)?;
         }
 
+        // __construct returns $this so child class wrappers can capture the parent-created object
+        if decl.name == "__construct" {
+            self.emit_u16(Op::local_get, 1); // $this at slot 1
+            self.emit(Op::r#return);
+        }
         let line = self.line;
         common::functions::emit_function_epilogue(&mut self.chunks[self.current_chunk_idx], line);
 

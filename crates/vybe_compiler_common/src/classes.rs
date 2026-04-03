@@ -310,9 +310,18 @@ pub fn emit_store_constructor(chunk: &mut Chunk, class_name: &str, ctor_chunk_id
     chunk.emit_op_u16(Op::ref_func, ctor_chunk_idx as u16, line);
     chunk.emit(0, line);
     chunk.emit_op_u16(Op::local_set, local_slot, line);
-    let global_name = chunk.add_constant(Value::String(Rc::from(class_name.to_lowercase().as_str())));
+    // Store under original name (case-sensitive lookup)
+    let global_name = chunk.add_constant(Value::String(Rc::from(class_name)));
     chunk.emit_op_u16(Op::global_set, global_name, line);
     chunk.emit_op(Op::drop, line);
+    // Also store under lowercase alias for cross-language lookup (VB is case-insensitive)
+    let lower = class_name.to_lowercase();
+    if lower != class_name {
+        chunk.emit_op_u16(Op::local_get, local_slot, line);
+        let lower_name = chunk.add_constant(Value::String(Rc::from(lower.as_str())));
+        chunk.emit_op_u16(Op::global_set, lower_name, line);
+        chunk.emit_op(Op::drop, line);
+    }
 }
 
 // ── Field initialization ────────────────────────────────────────────────
