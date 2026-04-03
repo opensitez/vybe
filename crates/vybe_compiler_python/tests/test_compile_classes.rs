@@ -76,7 +76,7 @@ class Dog(Animal):
 "#);
     let types = &chunks[0].types;
     let dog = types.iter().find(|t| t.name == "dog").unwrap();
-    assert_eq!(dog.parent, "animal");
+    assert_eq!(dog.parent, "Animal");
 }
 
 #[test]

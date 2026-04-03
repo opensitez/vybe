@@ -3697,6 +3697,7 @@ impl Compiler {
         }
 
         // Constructor wrapper
+        let is_child = !parent_name.is_empty();
         let ctor_chunk_idx = {
             let ctor_arity = init_params.len() as u8;
             let ci = self.chunks.len();
@@ -3706,36 +3707,67 @@ impl Compiler {
             let c = ci;
             let line = self.line;
 
-            // Create new object via common::classes
             // Params occupy slots 1..N, this goes in slot N+1
             let this_idx = (ctor_arity as u16) + 1;
-            common::classes::emit_new_typed_object(&mut self.chunks[c], this_idx, class_name, line);
-            self.chunks[c].local_count = (ctor_arity as u16) + 2;
 
-            // Bind methods
-            for (mname, mci) in &method_entries {
-                let line = self.line;
-                common::classes::emit_bind_method_with_aliases(
-                    &mut self.chunks[c], this_idx, mname, *mci, line,
-                );
-            }
+            if is_child {
+                // Child class: call initialize which calls super() to create the object
+                // Initialize returns the parent-created object
+                self.chunks[c].local_count = (ctor_arity as u16) + 2;
 
-            // Call initialize if present
-            if let Some(init_ci) = init_chunk {
-                self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);
-                // ref_func for init method
-                common::functions::emit_ref_func(&mut self.chunks[c], init_ci, 0, line);
-                self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);
-                // Push constructor params (slots 1..N)
-                for i in 0..ctor_arity {
-                    self.chunks[c].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+                if let Some(init_ci) = init_chunk {
+                    // Create a temporary null in this_idx (initialize will set it via super)
+                    self.chunks[c].emit_op(Op::null, line);
+                    self.chunks[c].emit_op_u16(Op::local_set, this_idx, line);
+                    // ref_func for init method
+                    common::functions::emit_ref_func(&mut self.chunks[c], init_ci, 0, line);
+                    self.chunks[c].emit_op_u16(Op::local_get, this_idx, line); // self (null, will be set by super)
+                    for i in 0..ctor_arity {
+                        self.chunks[c].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+                    }
+                    self.chunks[c].emit_op_u8(Op::call_ref, (ctor_arity + 1) as u8, line);
+                    // initialize returns the object from super() — store as this
+                    self.chunks[c].emit_op_u16(Op::local_set, this_idx, line);
                 }
-                self.chunks[c].emit_op_u8(Op::call_ref, (ctor_arity + 1) as u8, line);
-                self.chunks[c].emit_op(Op::drop, line);
-            }
 
-            // Stamp __types array for instanceof support
-            common::classes::emit_instanceof_chain(&mut self.chunks[c], this_idx, class_name, line);
+                // Bind child methods on the object (overriding parent methods)
+                for (mname, mci) in &method_entries {
+                    let line = self.line;
+                    common::classes::emit_bind_method_with_aliases(
+                        &mut self.chunks[c], this_idx, mname, *mci, line,
+                    );
+                }
+
+                // Re-stamp __type for child class
+                common::classes::emit_instanceof_chain(&mut self.chunks[c], this_idx, class_name, line);
+            } else {
+                // Base class: create own object
+                common::classes::emit_new_typed_object(&mut self.chunks[c], this_idx, class_name, line);
+                self.chunks[c].local_count = (ctor_arity as u16) + 2;
+
+                // Bind methods
+                for (mname, mci) in &method_entries {
+                    let line = self.line;
+                    common::classes::emit_bind_method_with_aliases(
+                        &mut self.chunks[c], this_idx, mname, *mci, line,
+                    );
+                }
+
+                // Call initialize if present
+                if let Some(init_ci) = init_chunk {
+                    self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);
+                    common::functions::emit_ref_func(&mut self.chunks[c], init_ci, 0, line);
+                    self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);
+                    for i in 0..ctor_arity {
+                        self.chunks[c].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+                    }
+                    self.chunks[c].emit_op_u8(Op::call_ref, (ctor_arity + 1) as u8, line);
+                    self.chunks[c].emit_op(Op::drop, line);
+                }
+
+                // Stamp __types array for instanceof support
+                common::classes::emit_instanceof_chain(&mut self.chunks[c], this_idx, class_name, line);
+            }
 
             // Return this
             self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);

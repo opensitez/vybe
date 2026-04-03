@@ -12,6 +12,7 @@ pub struct Compiler {
     loop_stack: Vec<LoopCtx>,
     import_log: u16,
     last_upvalues: Vec<UpvalueDesc>,
+    current_class_parent: Option<String>,
 }
 
 struct Local {
@@ -90,6 +91,7 @@ impl Compiler {
             loop_stack: Vec::new(),
             import_log: 0,
             last_upvalues: Vec::new(),
+            current_class_parent: None,
         }
     }
 
@@ -330,9 +332,14 @@ impl Compiler {
                 // on the vtable, calls __init__, and returns the object.
 
                 let all_bases: Vec<String> = bases.iter().filter_map(|b| {
-                    if let Expression::Name(n) = b { Some(n.to_lowercase()) } else { None }
+                    if let Expression::Name(n) = b { Some(n.clone()) } else { None }
                 }).collect();
                 let parent_name = all_bases.first().cloned().unwrap_or_default();
+
+                let saved_parent = self.current_class_parent.clone();
+                if !parent_name.is_empty() {
+                    self.current_class_parent = Some(parent_name.clone());
+                }
 
                 // Compile all methods first (we need their chunk indices)
                 let mut method_entries = Vec::new();
@@ -420,50 +427,76 @@ impl Compiler {
                 self.scopes.push(ctor_scope);
                 let scope_idx = self.scopes.len() - 1;
 
-                // Create empty object, stamp __type + type_id
-                common::classes::emit_new_typed_object(self.chunk(ctor_idx), this_local, name, 0);
+                let is_child = !parent_name.is_empty();
 
-                // Bind instance methods + cross-language aliases
-                for (method_name, method_ci) in &method_entries {
-                    if method_name == "__init__" { continue; }
-                    common::classes::emit_bind_method_with_aliases(
-                        self.chunk(ctor_idx), this_local, method_name, *method_ci, 0,
-                    );
-                }
+                if is_child && init_chunk.is_some() {
+                    // Child class with __init__: call __init__ which calls super().__init__()
+                    // to create object via parent constructor. Then bind child methods on result.
+                    let init_ci = init_chunk.unwrap();
 
-                // Compile class-level statements (class attributes).
-                // These run in the constructor, setting attributes on the new object.
-                for s in &other_stmts {
-                    if let Statement::Assign { targets, value } = s {
-                        // class-level assignment: set on self
-                        for target in targets {
-                            if let Expression::Name(attr_name) = target {
-                                self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
-                                self.compile_expr(value, ctor_idx)?;
-                                let attr_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(attr_name.as_str())));
-                                self.chunk(ctor_idx).emit_op_u16(Op::struct_set, attr_key, 0);
-                                self.chunk(ctor_idx).emit_op(Op::drop, 0);
-                            }
-                        }
-                    }
-                }
+                    // Initialize this_local to null (super() will create the real object)
+                    self.chunk(ctor_idx).emit_op(Op::null, 0);
+                    self.chunk(ctor_idx).emit_op_u16(Op::local_set, this_local, 0);
 
-                // Call __init__(self, *args) if it exists.
-                // If this class has no __init__ but has a parent, call the parent constructor
-                // with all args (Python inheritance: child inherits parent's __init__).
-                if let Some(init_ci) = init_chunk {
+                    // Call __init__(self, *args)
                     self.chunk(ctor_idx).emit_op_u16(Op::ref_func, init_ci as u16, 0);
                     self.chunk(ctor_idx).emit(0, 0);
-                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0); // self
+                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0); // self (null, super will fix)
                     for i in 0..user_params {
                         self.chunk(ctor_idx).emit_op_u16(Op::local_get, (i + 1) as u16, 0);
                     }
                     self.chunk(ctor_idx).emit_op_u8(Op::call_ref, (user_params + 1) as u8, 0);
-                    self.chunk(ctor_idx).emit_op(Op::drop, 0);
-                // If no __init__ and has parent, store parent constructor as __super
-                // so super().__init__() can find it. Users must call super() explicitly.
-                } else if !parent_name.is_empty() {
-                    common::classes::emit_store_super(self.chunk(ctor_idx), this_local, &parent_name, 0);
+                    // __init__ returns value from super().__init__() — the parent object
+                    self.chunk(ctor_idx).emit_op_u16(Op::local_set, this_local, 0);
+
+                    // Bind child methods on the object (overriding parent methods)
+                    for (method_name, method_ci) in &method_entries {
+                        if method_name == "__init__" { continue; }
+                        common::classes::emit_bind_method_with_aliases(
+                            self.chunk(ctor_idx), this_local, method_name, *method_ci, 0,
+                        );
+                    }
+                } else {
+                    // Base class (or child without __init__): create own object
+                    common::classes::emit_new_typed_object(self.chunk(ctor_idx), this_local, name, 0);
+
+                    // Bind instance methods + cross-language aliases
+                    for (method_name, method_ci) in &method_entries {
+                        if method_name == "__init__" { continue; }
+                        common::classes::emit_bind_method_with_aliases(
+                            self.chunk(ctor_idx), this_local, method_name, *method_ci, 0,
+                        );
+                    }
+
+                    // Compile class-level statements (class attributes).
+                    for s in &other_stmts {
+                        if let Statement::Assign { targets, value } = s {
+                            for target in targets {
+                                if let Expression::Name(attr_name) = target {
+                                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                                    self.compile_expr(value, ctor_idx)?;
+                                    let attr_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(attr_name.as_str())));
+                                    self.chunk(ctor_idx).emit_op_u16(Op::struct_set, attr_key, 0);
+                                    self.chunk(ctor_idx).emit_op(Op::drop, 0);
+                                }
+                            }
+                        }
+                    }
+
+                    // Call __init__(self, *args) if it exists
+                    if let Some(init_ci) = init_chunk {
+                        self.chunk(ctor_idx).emit_op_u16(Op::ref_func, init_ci as u16, 0);
+                        self.chunk(ctor_idx).emit(0, 0);
+                        self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                        for i in 0..user_params {
+                            self.chunk(ctor_idx).emit_op_u16(Op::local_get, (i + 1) as u16, 0);
+                        }
+                        self.chunk(ctor_idx).emit_op_u8(Op::call_ref, (user_params + 1) as u8, 0);
+                        self.chunk(ctor_idx).emit_op(Op::drop, 0);
+                    } else if !parent_name.is_empty() {
+                        // No __init__ and has parent — call parent constructor with all args
+                        common::classes::emit_store_super(self.chunk(ctor_idx), this_local, &parent_name, 0);
+                    }
                 }
 
                 // Stamp __types array for instanceof support
@@ -490,6 +523,7 @@ impl Compiler {
                     &mut self.chunks, name, &parent_name,
                     Vec::new(), all_methods, false, implements, Some(ctor_idx),
                 );
+                self.current_class_parent = saved_parent;
             }
 
             Statement::Return(expr) => {
@@ -1030,7 +1064,13 @@ impl Compiler {
 
         for s in body { self.compile_stmt(s, func_chunk_idx)?; }
 
-        common::functions::emit_function_epilogue(&mut self.chunks[func_chunk_idx], 0);
+        if name == "__init__" {
+            // __init__ returns self (slot 1) so child class wrappers can capture the object
+            self.chunks[func_chunk_idx].emit_op_u16(Op::local_get, 1, 0);
+            self.chunks[func_chunk_idx].emit_op(Op::r#return, 0);
+        } else {
+            common::functions::emit_function_epilogue(&mut self.chunks[func_chunk_idx], 0);
+        }
 
         let scope = self.scopes.remove(scope_idx);
         self.chunks[func_chunk_idx].local_count = (scope.max_local + 1) as u16;
@@ -2262,6 +2302,27 @@ impl Compiler {
     }
 
     fn compile_method_call(&mut self, obj: &Expression, method: &str, args: &[Expression], chunk_idx: usize) -> Result<(), String> {
+        // ── super().__init__(args) → call parent constructor directly ──
+        if method == "__init__" {
+            if let Expression::Call { func, args: super_args, .. } = obj {
+                if let Expression::Name(n) = func.as_ref() {
+                    if n == "super" && super_args.is_empty() {
+                        if let Some(ref parent) = self.current_class_parent.clone() {
+                            let parent_c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(parent.as_str())));
+                            self.chunk(chunk_idx).emit_op_u16(Op::global_get, parent_c, 0);
+                            for a in args { self.compile_expr(a, chunk_idx)?; }
+                            self.chunk(chunk_idx).emit_op_u8(Op::call_ref, args.len() as u8, 0);
+                            // Parent constructor returns the created object.
+                            // Store it in self (slot 1) so subsequent self.x accesses work.
+                            self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::local_set, 1, 0);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Module calls: math.sqrt(x), json.loads(s), etc ──
         if let Expression::Name(module_name) = obj {
             if let Some(()) = self.try_compile_module_call(module_name, method, args, chunk_idx)? {

@@ -585,24 +585,39 @@ impl Compiler {
                 }
             }
             Expression::PreUpdate { op, expr } => {
+                // ++$x → compute new value, store it, result = new value
                 self.compile_expression(expr)?;
                 match op {
-                    UpdateOp::Inc => { self.emit_constant(Value::F64(1.0)); self.emit(Op::f64_add); }
+                    UpdateOp::Inc => { self.emit_constant(Value::F64(1.0)); self.emit(Op::dyn_add); }
                     UpdateOp::Dec => { self.emit_constant(Value::F64(1.0)); self.emit(Op::f64_sub); }
                 }
-                self.emit(Op::dup);
-                self.compile_assign_target(expr)?;
+                // Save new value
+                let new_tmp = self.define_local("__pre_new");
+                self.emit_u16(Op::local_set, new_tmp);
+                self.emit(Op::drop); // local_set peeks, need to pop
+                self.emit_u16(Op::local_get, new_tmp);
+                // Store back
+                self.compile_assign_lhs(expr)?;
+                // Push new value as result
+                self.emit_u16(Op::local_get, new_tmp);
             }
             Expression::PostUpdate { op, expr } => {
+                // $x++ → evaluate old value, compute new, store new, result = old value
+                // Save old value in temp
                 self.compile_expression(expr)?;
-                self.emit(Op::dup);
+                let old_tmp = self.define_local("__post_old");
+                self.emit_u16(Op::local_set, old_tmp);
+                self.emit(Op::drop); // local_set peeks, need to pop
+                // Compute new value
+                self.emit_u16(Op::local_get, old_tmp);
                 match op {
-                    UpdateOp::Inc => { self.emit_constant(Value::F64(1.0)); self.emit(Op::f64_add); }
+                    UpdateOp::Inc => { self.emit_constant(Value::F64(1.0)); self.emit(Op::dyn_add); }
                     UpdateOp::Dec => { self.emit_constant(Value::F64(1.0)); self.emit(Op::f64_sub); }
                 }
-                self.compile_assign_target(expr)?;
-                self.emit(Op::drop);
-                self.compile_expression(expr)?;
+                // Store new value back
+                self.compile_assign_lhs(expr)?;
+                // Push old value as result
+                self.emit_u16(Op::local_get, old_tmp);
             }
             Expression::Ternary { test, consequent, alternate } => {
                 let c = self.current_chunk_idx;
@@ -965,13 +980,6 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_assign_target(&mut self, target: &Expression) -> Result<(), String> {
-        match target {
-            Expression::Variable(name) => { self.emit_var_set(name); }
-            _ => {}
-        }
-        Ok(())
-    }
 
     // ------------------------------------------------------------------
     // Binary operators
@@ -1441,11 +1449,11 @@ impl Compiler {
                             let idx = self.add_string_constant(parent);
                             self.emit_u16(Op::global_get, idx);
                             for arg in args { self.compile_expression(&arg.value)?; }
-                            self.emit_u8(Op::call, args.len() as u8);
+                            self.emit_u8(Op::call_ref, args.len() as u8);
                             // Store returned object as $this
                             if let Some(this_slot) = self.current_scope().resolve_local("this") {
+                                self.emit(Op::dup);
                                 self.emit_u16(Op::local_set, this_slot);
-                                self.emit(Op::drop);
                             }
                             return Ok(());
                         }
@@ -2635,7 +2643,6 @@ impl Compiler {
                 // Child class: __construct called parent::__construct which created
                 // the object. __construct returns $this. Use it as our __this.
                 self.emit_u16(Op::local_set, this_slot);
-                self.emit(Op::drop);
             } else {
                 self.emit(Op::drop);
             }
@@ -2756,16 +2763,22 @@ impl Compiler {
 
     fn compile_method(&mut self, decl: &FunctionDecl, _class_name: &str) -> Result<usize, String> {
         let chunk_idx = self.chunks.len();
-        // arity includes $this as first arg
-        let chunk = common::functions::create_function_chunk(&decl.name, (decl.params.len() + 1) as u8);
+        let arity = if decl.is_static {
+            decl.params.len() as u8
+        } else {
+            (decl.params.len() + 1) as u8 // +1 for $this
+        };
+        let chunk = common::functions::create_function_chunk(&decl.name, arity);
         self.chunks.push(chunk);
 
         self.scopes.push(Scope::new_function());
         let saved_chunk = self.current_chunk_idx;
         self.current_chunk_idx = chunk_idx;
 
-        // Slot 0 = callee (implicit), slot 1 = $this
-        self.define_local("this");
+        if !decl.is_static {
+            // Slot 0 = callee (implicit), slot 1 = $this
+            self.define_local("this");
+        }
         for param in &decl.params {
             self.define_local(&param.name);
         }
