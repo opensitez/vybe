@@ -5,7 +5,7 @@ use cosmic_text::Edit;
 use tiny_skia::Rect;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
-use super::{App, Tab, TabContent, EditAction, SidebarTab, SCALE, TAB_BAR_HEIGHT, FOOTER_HEIGHT, SPLITTER_WIDTH, MINIMAP_WIDTH, SIDEBAR_TAB_H};
+use super::{App, Tab, TabContent, EditAction, SidebarTab, BottomPanelTab, SCALE, TAB_BAR_HEIGHT, FOOTER_HEIGHT, SPLITTER_WIDTH, MINIMAP_WIDTH, SIDEBAR_TAB_H};
 use crate::editor::Editor as MyEditor;
 use crate::language::load_language;
 use crate::lsp_client::LspRequest;
@@ -19,6 +19,16 @@ impl App {
             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 2.0,
         };
         let tch = self.top_chrome_h();
+        let my = self.mouse_pos.1 / SCALE;
+        let ph = self.win_height * SCALE / SCALE;
+        // Output panel scroll
+        if self.output_visible && my > ph - FOOTER_HEIGHT - self.output_panel_height && my < ph - FOOTER_HEIGHT {
+            self.output_scroll_y = (self.output_scroll_y - a / SCALE).max(0.0);
+            let max_scroll = (self.output_lines.len() as f32 * 18.0 - (self.output_panel_height - 24.0)).max(0.0);
+            self.output_scroll_y = self.output_scroll_y.min(max_scroll);
+            
+            return;
+        }
         if self.mouse_pos.1 / SCALE < tch + TAB_BAR_HEIGHT && self.mouse_pos.1 / SCALE >= tch {
             self.tab_scroll_x -= a;
         } else if self.active_tab < self.tabs.len() {
@@ -27,8 +37,8 @@ impl App {
                 TabContent::Form(f) => {
                     let ed_sx = self.explorer_width + SPLITTER_WIDTH + 1.0;
                     let ed_top = tch + TAB_BAR_HEIGHT;
-                    let ph = self.pixmap.as_ref().map(|p| p.height() as f32).unwrap_or(800.0) / SCALE;
-                    let pw = self.pixmap.as_ref().map(|p| p.width() as f32).unwrap_or(0.0) / SCALE;
+                    let ph = self.win_height * SCALE / SCALE;
+                    let pw = self.win_width * SCALE / SCALE;
                     let form_rect = crate::form_designer_tab::Rect { x: ed_sx, y: ed_top, w: pw - ed_sx, h: ph - ed_top - FOOTER_HEIGHT };
                     let lay = f.layout(form_rect);
                     let lmx = self.mouse_pos.0 / SCALE;
@@ -42,18 +52,18 @@ impl App {
                     }
                 }
                 TabContent::Resources(r) => {
-                    let ph = self.pixmap.as_ref().map(|p| p.height() as f32).unwrap_or(800.0) / SCALE;
+                    let ph = self.win_height * SCALE / SCALE;
                     r.scroll(a, ph - tch - TAB_BAR_HEIGHT - FOOTER_HEIGHT);
                 }
             }
         }
-        self.window.as_ref().unwrap().request_redraw();
+        
     }
 
     pub(super) fn handle_cursor_moved(&mut self) {
         let mx = self.mouse_pos.0 / SCALE;
         let my = self.mouse_pos.1 / SCALE;
-        let height = self.pixmap.as_ref().unwrap().height() as f32 / SCALE;
+        let height = self.win_height * SCALE / SCALE;
 
         // 1. Splitter Hover/Drag
         let split_start = self.explorer_width;
@@ -72,21 +82,21 @@ impl App {
                 let esx = self.explorer_width + SPLITTER_WIDTH + 1.0;
                 let tch_r = self.top_chrome_h();
                 let ed_top_log = tch_r + TAB_BAR_HEIGHT;
-                let rw = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE) - esx;
+                let rw = (self.win_width * SCALE / SCALE) - esx;
                 let rh = height - ed_top_log - FOOTER_HEIGHT;
                 res_col_hover = re.is_resizing() || re.is_near_separator(mx, esx, ed_top_log, rw, my, rh);
             }
         }
 
         if self.hovering_splitter || self.is_dragging_splitter || res_col_hover {
-            self.window.as_ref().unwrap().set_cursor(winit::window::CursorIcon::ColResize);
+            self.cursor = winit::window::CursorIcon::ColResize;
         } else {
-            self.window.as_ref().unwrap().set_cursor(winit::window::CursorIcon::Default);
+            self.cursor = winit::window::CursorIcon::Default;
         }
 
         if let Some(mut dropdown) = self.lang_dropdown.take() {
             let (w, h) = dropdown.get_size();
-            let menu_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE - w - 20.0).max(10.0);
+            let menu_x = (self.win_width * SCALE / SCALE - w - 20.0).max(10.0);
             let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
             dropdown.handle_mouse(mx, my, menu_x, menu_y, false);
             self.lang_dropdown = Some(dropdown);
@@ -96,16 +106,16 @@ impl App {
             let (w, h) = dropdown.get_size();
             let theme_label = format!("Theme: {}", self.get_theme_name());
             let lang_label = format!("Language: {}", self.current_lang);
-            let label_x = (self.pixmap.as_ref().unwrap().width() as f32 / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
+            let label_x = (self.win_width * SCALE / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
             let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0);
-            let menu_x = theme_x.min(self.pixmap.as_ref().unwrap().width() as f32 / SCALE - w - 10.0).max(10.0);
+            let menu_x = theme_x.min(self.win_width * SCALE / SCALE - w - 10.0).max(10.0);
             let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
             dropdown.handle_mouse(mx, my, menu_x, menu_y, false);
             self.theme_dropdown = Some(dropdown);
         }
 
         if self.lang_dropdown.is_some() || self.theme_dropdown.is_some() {
-            self.window.as_ref().unwrap().request_redraw();
+            
         }
 
         // 2. Tab Close Hover
@@ -128,7 +138,7 @@ impl App {
         // 3. Menu hover for form designer
         if let Some(form_tab) = self.tabs.iter_mut().find(|t| matches!(&t.content, TabContent::Form(_))) {
             if let TabContent::Form(f) = &mut form_tab.content {
-                let menu_rect = crate::form_designer_tab::Rect { x: 0.0, y: 0.0, w: self.pixmap.as_ref().unwrap().width() as f32 / SCALE, h: 28.0 };
+                let menu_rect = crate::form_designer_tab::Rect { x: 0.0, y: 0.0, w: self.win_width * SCALE / SCALE, h: 28.0 };
                 f.menu_bar.handle_hover(self.mouse_pos.0 / SCALE, self.mouse_pos.1 / SCALE, menu_rect);
             }
         }
@@ -138,7 +148,7 @@ impl App {
         if self.active_tab < self.tabs.len() {
             if let TabContent::Resources(re) = &mut self.tabs[self.active_tab].content {
                 if re.is_resizing() {
-                    let rw = (self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE) / SCALE;
+                    let rw = (self.win_width * SCALE - ed_start_x * SCALE) / SCALE;
                     re.handle_col_resize_move(mx, rw);
                     needs_editor_redraw = true;
                 }
@@ -148,9 +158,9 @@ impl App {
         // 5. Editor Drag
         if self.is_dragging && !self.is_dragging_splitter && self.active_tab < self.tabs.len() {
             let ed_top = (tch + TAB_BAR_HEIGHT) * SCALE;
-            let r = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, self.pixmap.as_ref().unwrap().height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
+            let r = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.win_width * SCALE - ed_start_x * SCALE, self.win_height * SCALE - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
             match &mut self.tabs[self.active_tab].content {
-                TabContent::Code(cw) => cw.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard),
+                TabContent::Code(cw) => { cw.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); },
                 TabContent::Form(f) => f.handle_mouse_move(self.mouse_pos.0 / SCALE, self.mouse_pos.1 / SCALE, crate::form_designer_tab::Rect { x: ed_start_x, y: ed_top / SCALE, w: r.width() / SCALE, h: r.height() / SCALE }),
                 TabContent::Resources(_) => {}
             }
@@ -218,16 +228,74 @@ impl App {
            form_menu_open ||
            res_col_hover ||
            needs_editor_redraw {
-            self.window.as_ref().unwrap().request_redraw();
+            
         }
     }
 
     pub(super) fn handle_mouse_input(&mut self, state: ElementState, button: MouseButton) {
         let mx = self.mouse_pos.0 / SCALE;
         let my = self.mouse_pos.1 / SCALE;
-        let pw = self.pixmap.as_ref().unwrap().width() as f32;
-        let ph = self.pixmap.as_ref().unwrap().height() as f32 / SCALE;
+        let pw = self.win_width * SCALE;
+        let ph = self.win_height * SCALE / SCALE;
         let height = ph;
+
+        // Output / Problems panel clicks
+        if state == ElementState::Pressed && button == MouseButton::Left && self.output_visible {
+            let out_top = ph - FOOTER_HEIGHT - self.output_panel_height;
+            let out_bottom = ph - FOOTER_HEIGHT;
+            let ed_sx = self.explorer_width + SPLITTER_WIDTH + 1.0;
+            if my >= out_top && my < out_top + 24.0 && mx > ed_sx {
+                // Header area
+                let out_right = pw / SCALE;
+                // Close button
+                if mx > out_right - 24.0 { self.output_visible = false;  return; }
+                // Clear button (Output tab only)
+                if self.bottom_panel_tab == BottomPanelTab::Output && mx > out_right - 80.0 && mx < out_right - 30.0 {
+                    self.output_lines.clear(); self.output_scroll_y = 0.0;  return;
+                }
+                // Tab switching: "Output" tab area (ed_sx+10 .. ed_sx+70), "Problems" tab area (ed_sx+80 .. ed_sx+180)
+                if mx >= ed_sx + 10.0 && mx < ed_sx + 70.0 {
+                    self.bottom_panel_tab = BottomPanelTab::Output;
+                    self.output_scroll_y = 0.0;
+                     return;
+                }
+                if mx >= ed_sx + 80.0 && mx < ed_sx + 200.0 {
+                    self.bottom_panel_tab = BottomPanelTab::Problems;
+                    self.output_scroll_y = 0.0;
+                     return;
+                }
+            }
+            // Click on a problem item → navigate to file:line
+            if self.bottom_panel_tab == BottomPanelTab::Problems && my >= out_top + 24.0 && my < out_bottom {
+                let content_y = out_top + 24.0;
+                let line_h = 18.0f32;
+                let skip = (self.output_scroll_y / 18.0).max(0.0) as usize;
+                let clicked_idx = skip + ((my - content_y + (self.output_scroll_y % 18.0)) / line_h) as usize;
+                // Build flat list of (tab_index, line) for all diagnostics
+                let mut diag_entries: Vec<(usize, usize)> = Vec::new();
+                for (ti, t) in self.tabs.iter().enumerate() {
+                    if let TabContent::Code(cw) = &t.content {
+                        for d in &cw.my_editor.diagnostics {
+                            diag_entries.push((ti, d.line));
+                        }
+                    }
+                }
+                if let Some(&(tab_idx, diag_line)) = diag_entries.get(clicked_idx) {
+                    self.active_tab = tab_idx;
+                    if let TabContent::Code(cw) = &mut self.tabs[tab_idx].content {
+                        let max_line = cw.editor.with_buffer(|b| b.lines.len().saturating_sub(1));
+                        let safe_line = diag_line.min(max_line);
+                        cw.editor.set_cursor(cosmic_text::Cursor::new(safe_line, 0));
+                        cw.needs_reshape = true;
+                        // Scroll to center the line
+                        let line_h_scroll = 20.0f32;
+                        cw.scroll_y = (safe_line as f32 * line_h_scroll).max(0.0);
+                    }
+                     return;
+                }
+            }
+            if my >= out_top && my < out_bottom {  return; }
+        }
 
         if state == ElementState::Pressed && button == MouseButton::Right {
             // Right-click in project explorer sidebar → context menu
@@ -242,7 +310,7 @@ impl App {
                     for fm in &self.project.forms {
                         if my >= iy && my < iy + item_h {
                             self.pe_context_menu = Some((mx, my, fm.form.name.clone()));
-                            self.window.as_ref().unwrap().request_redraw();
+                            
                             return;
                         }
                         iy += item_h;
@@ -254,7 +322,7 @@ impl App {
                         for cf in &self.project.code_files {
                             if my >= iy && my < iy + item_h {
                                 self.pe_context_menu = Some((mx, my, cf.name.clone()));
-                                self.window.as_ref().unwrap().request_redraw();
+                                
                                 return;
                             }
                             iy += item_h;
@@ -266,7 +334,7 @@ impl App {
                     cw.context_menu = Some(((mx, my), vec!["Cut".into(), "Copy".into(), "Paste".into(), "Go to Def".into()]));
                 }
             }
-            self.window.as_ref().unwrap().request_redraw();
+            
             return;
         }
 
@@ -279,7 +347,7 @@ impl App {
                     self.remove_project_item(&item_name);
                 }
                 self.pe_context_menu = None;
-                self.window.as_ref().unwrap().request_redraw();
+                
                 return;
             }
 
@@ -293,7 +361,7 @@ impl App {
                 } else {
                     self.project_props_dialog.handle_click(mx, my, win_w, win_h, &self.project);
                 }
-                self.window.as_ref().unwrap().request_redraw();
+                
                 return;
             }
 
@@ -319,7 +387,7 @@ impl App {
                     DropdownEvent::Closed => { self.lang_dropdown = None; }
                     DropdownEvent::None => self.lang_dropdown = Some(dropdown),
                 }
-                self.window.as_ref().unwrap().request_redraw(); return;
+                 return;
             }
 
             // 0b. Theme Picker Menu Intercept
@@ -341,13 +409,13 @@ impl App {
                                 cw.theme = new_theme.clone(); cw.needs_reshape = true;
                             }
                         }
-                        self.window.as_ref().unwrap().request_redraw();
+                        
                         return;
                     }
                     DropdownEvent::None => self.theme_dropdown = Some(dropdown),
                     _ => {}
                 }
-                self.window.as_ref().unwrap().request_redraw(); return;
+                 return;
             }
 
             // 1. Minimap Hit-testing (code editor only)
@@ -357,7 +425,7 @@ impl App {
                         let mut th = 0.0; cw.editor.with_buffer(|b| { for r in b.layout_runs() { if !cw.is_line_hidden(r.line_i) { th += r.line_height; } } });
                         let mry = (my - TAB_BAR_HEIGHT) / (height - TAB_BAR_HEIGHT - FOOTER_HEIGHT);
                         cw.scroll_y = (mry * th).max(0.0);
-                        self.window.as_ref().unwrap().request_redraw();
+                        
                         return;
                     }
                 }
@@ -391,7 +459,7 @@ impl App {
                     d.num_cols = 2; d.col_w = 160.0;
                     self.theme_dropdown = Some(d);
                 }
-                self.window.as_ref().unwrap().request_redraw(); return;
+                 return;
             }
 
             // 4a. Menu bar / toolbar / dropdown click
@@ -404,7 +472,7 @@ impl App {
                         if let TabContent::Form(f) = &mut form_tab.content {
                             let menu_rect = crate::form_designer_tab::Rect { x: 0.0, y: 0.0, w: pw / SCALE, h: 28.0 };
                             if let Some(action) = f.menu_bar.handle_click(mx, my, menu_rect) {
-                                self.window.as_ref().unwrap().request_redraw();
+                                
                                 match action {
                                     crate::form_designer_tab::MenuAction::NewProject => {
                                         self.project = vybe_project::project::Project::new("Project1".to_string());
@@ -642,18 +710,18 @@ impl App {
                                             self.active_tab = self.tabs.len() - 1;
                                         }
                                     }
-                                    self.window.as_ref().unwrap().request_redraw();
+                                    
                                     return;
                                 }
                             }
                             // If dropdown was open but clicked outside, it closed — absorb click
                             if menu_open {
-                                self.window.as_ref().unwrap().request_redraw(); return;
+                                 return;
                             }
                         }
                     }
                     if my < tch {
-                        self.window.as_ref().unwrap().request_redraw(); return;
+                         return;
                     }
                 }
             }
@@ -666,12 +734,12 @@ impl App {
                      self.tabs.remove(idx);
                      if self.tabs.is_empty() { self.active_tab = 0; }
                      else if self.active_tab >= self.tabs.len() { self.active_tab = self.tabs.len() - 1; }
-                     self.window.as_ref().unwrap().request_redraw(); return;
+                      return;
                 }
                 let tab_idx = ((mx - ed_start_x) / 160.0) as usize;
                 if tab_idx < self.tabs.len() { 
                     println!("DEBUG: Tab Bar Click -> Select Tab {}", tab_idx);
-                    self.active_tab = tab_idx; self.window.as_ref().unwrap().request_redraw(); 
+                    self.active_tab = tab_idx;  
                 }
                 return;
             }
@@ -686,7 +754,7 @@ impl App {
                     } else {
                         self.sidebar_tab = SidebarTab::Project;
                     }
-                    self.window.as_ref().unwrap().request_redraw(); return;
+                     return;
                 }
 
                 let now = Instant::now();
@@ -699,7 +767,7 @@ impl App {
                              TreeEvent::Open(path) => {
                                  if let Some(idx) = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path)) {
                                      self.active_tab = idx; if is_double { self.tabs[idx].is_sticky = true; }
-                                     self.window.as_ref().unwrap().request_redraw(); return;
+                                      return;
                                  }
                                  if let Ok(content) = fs::read_to_string(&path) {
                                      let ext = path.split('.').last().unwrap_or("txt");
@@ -732,7 +800,7 @@ impl App {
                         // Forms header
                         if my >= iy && my < iy + item_h {
                             self.project_explorer.forms_collapsed = !self.project_explorer.forms_collapsed;
-                            self.window.as_ref().unwrap().request_redraw(); return;
+                             return;
                         }
                         iy += item_h;
 
@@ -747,7 +815,7 @@ impl App {
                                         }
                                         self.active_tab = idx;
                                     }
-                                    self.window.as_ref().unwrap().request_redraw(); return;
+                                     return;
                                 }
                                 iy += item_h;
                             }
@@ -757,7 +825,7 @@ impl App {
                         if !self.project.code_files.is_empty() {
                             if my >= iy && my < iy + item_h {
                                 self.project_explorer.code_collapsed = !self.project_explorer.code_collapsed;
-                                self.window.as_ref().unwrap().request_redraw(); return;
+                                 return;
                             }
                             iy += item_h;
                             if !self.project_explorer.code_collapsed {
@@ -775,7 +843,7 @@ impl App {
                                         let new_tab = Tab { name: cf.name.clone(), path: None, content: TabContent::Code(widget), is_sticky: true, buffer: None, is_modified: false };
                                         self.tabs.push(new_tab);
                                         self.active_tab = self.tabs.len() - 1;
-                                        self.window.as_ref().unwrap().request_redraw(); return;
+                                         return;
                                     }
                                     iy += item_h;
                                 }
@@ -786,7 +854,7 @@ impl App {
                         if !self.project.project_references.is_empty() {
                             if my >= iy && my < iy + item_h {
                                 self.project_explorer.refs_collapsed = !self.project_explorer.refs_collapsed;
-                                self.window.as_ref().unwrap().request_redraw(); return;
+                                 return;
                             }
                             iy += item_h;
                             if !self.project_explorer.refs_collapsed {
@@ -803,7 +871,7 @@ impl App {
                         if has_any_res {
                         if my >= iy && my < iy + item_h {
                             self.project_explorer.resources_collapsed = !self.project_explorer.resources_collapsed;
-                            self.window.as_ref().unwrap().request_redraw(); return;
+                             return;
                         }
                         iy += item_h;
                         if !self.project_explorer.resources_collapsed {
@@ -816,7 +884,7 @@ impl App {
                                         self.tabs.push(Tab { name: "Resources.resx".to_string(), path: None, content: TabContent::Resources(editor), is_sticky: true, buffer: None, is_modified: false });
                                         self.active_tab = self.tabs.len() - 1;
                                     }
-                                    self.window.as_ref().unwrap().request_redraw(); return;
+                                     return;
                                 }
                                 iy += item_h;
                             }
@@ -824,13 +892,13 @@ impl App {
                         }
                     }
                 }
-                self.window.as_ref().unwrap().request_redraw(); return;
+                 return;
             }
 
             // 4. Splitter Click
             if self.hovering_splitter {
                 println!("DEBUG: Splitter Click -> Start Resizing");
-                self.is_dragging_splitter = true; self.window.as_ref().unwrap().request_redraw(); return;
+                self.is_dragging_splitter = true;  return;
             }
 
             // 5. Editor Click (Deep Isolation)
@@ -839,16 +907,17 @@ impl App {
                 let ed_bottom = height * SCALE - FOOTER_HEIGHT * SCALE;
                 if self.mouse_pos.1 >= ed_top && self.mouse_pos.1 < ed_bottom && mx >= self.explorer_width + SPLITTER_WIDTH {
                     println!("DEBUG: Editor Click at mx={}, my={}", mx, my);
-                    let rect = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.pixmap.as_ref().unwrap().width() as f32 - ed_start_x * SCALE, ed_bottom - ed_top).unwrap();
+                    let rect = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.win_width * SCALE - ed_start_x * SCALE, ed_bottom - ed_top).unwrap();
                     self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now();
                     
                     let mut start_drag = true;
                     match &mut self.tabs[self.active_tab].content {
                         TabContent::Code(cw) => {
-                            cw.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.modifiers)), &mut self.clipboard);
+                            let consumed = cw.handle_mouse(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, rect, Some((self.click_count, button, self.shift_held)), &mut self.clipboard);
+                            if consumed { start_drag = false; }
                         }
                         TabContent::Form(f) => {
-                            let ctrl_held = self.modifiers.state().control_key() || self.modifiers.state().super_key();
+                            let ctrl_held = self.cmd_held;
                             let form_rect = crate::form_designer_tab::Rect { x: ed_start_x, y: ed_top / SCALE, w: rect.width() / SCALE, h: rect.height() / SCALE };
                             let handled = f.handle_mouse_down(self.mouse_pos.0 / SCALE, self.mouse_pos.1 / SCALE, form_rect, ctrl_held);
                             let lay = f.layout(form_rect);
@@ -871,7 +940,7 @@ impl App {
                         }
                     }
                     if start_drag { self.is_dragging = true; }
-                    self.window.as_ref().unwrap().request_redraw();
+                    
                 }
             }
         } else if state == ElementState::Released {
@@ -893,7 +962,7 @@ impl App {
             }
             self.is_dragging = false;
             self.is_dragging_splitter = false;
-            self.window.as_ref().unwrap().request_redraw();
+            
         }
     }
 }

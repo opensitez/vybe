@@ -13,3 +13,4 @@ uuid = { version = "1", features = ["v4"] }
 vybe_forms = { path = "../vybe_forms" }
 winit = "0.30"
 arboard = "3.4"
+softbuffer = "0.4"

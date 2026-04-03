@@ -5,16 +5,11 @@ mod app_keyboard;
 mod app_mouse;
 
 use std::time::Instant;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::fs;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
 use tiny_skia::{Pixmap, PixmapPaint, Rect, Transform, ColorU8};
-use winit::application::ApplicationHandler;
-use winit::event::{WindowEvent, ElementState};
-use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::{Window, WindowAttributes};
-use softbuffer::{Context, Surface};
+use winit::event::ElementState;
 use arboard::Clipboard;
 
 use serde::{Deserialize, Serialize};
@@ -55,6 +50,9 @@ pub(crate) const SIDEBAR_TAB_H: f32 = 28.0;
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum SidebarTab { Files, Project }
 
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum BottomPanelTab { Output, Problems }
+
 #[derive(Clone, Copy)]
 pub(crate) enum EditAction { Undo, Redo, Cut, Copy, Paste, Delete }
 
@@ -92,12 +90,11 @@ pub struct Tab {
 // ── App ────────────────────────────────────────────────────────────────
 
 pub(crate) struct App {
-    pub(crate) window: Option<Arc<Window>>,
-    pub(crate) context: Option<Context<Arc<Window>>>,
-    pub(crate) surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     pub(crate) font_system: FontSystem,
     pub(crate) swash_cache: SwashCache,
-    pub(crate) pixmap: Option<Pixmap>,
+    pub(crate) win_width: f32,
+    pub(crate) win_height: f32,
+    pub(crate) cursor: winit::window::CursorIcon,
     pub(crate) tabs: Vec<Tab>,
     pub(crate) active_tab: usize,
     pub(crate) tree_view: TreeView,
@@ -106,7 +103,9 @@ pub(crate) struct App {
     pub(crate) lang_dropdown: Option<Dropdown>,
     pub(crate) theme_dropdown: Option<Dropdown>,
     pub(crate) clipboard: Option<Clipboard>,
-    pub(crate) modifiers: winit::event::Modifiers,
+    pub(crate) cmd_held: bool,
+    pub(crate) shift_held: bool,
+    pub(crate) alt_held: bool,
     pub(crate) last_click_time: Instant,
     pub(crate) click_count: u32,
     pub(crate) mouse_pos: (f32, f32),
@@ -136,7 +135,21 @@ pub(crate) struct App {
     pub(crate) pe_context_menu: Option<(f32, f32, String)>,
     pub(crate) last_hover_pos: (f32, f32),
     pub(crate) last_hover_time: Instant,
+    // Output panel
+    pub(crate) output_lines: Vec<String>,
+    pub(crate) output_visible: bool,
+    pub(crate) output_panel_height: f32,
+    pub(crate) output_scroll_y: f32,
+    pub(crate) bottom_panel_tab: BottomPanelTab,
+    // Go-to-line dialog
+    pub(crate) goto_line_open: bool,
+    pub(crate) goto_line_query: String,
+    // Build configuration
+    pub(crate) build_config: BuildConfig,
 }
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum BuildConfig { Debug, Release }
 
 impl App {
     fn new(_my_editor: MyEditor, open_form: bool) -> Self {
@@ -171,9 +184,11 @@ impl App {
         let root_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let _root_uri = format!("file://{}", root_dir.to_string_lossy());
         Self { 
-            window: None, context: None, surface: None, font_system: FontSystem::new(), swash_cache: SwashCache::new(), pixmap: None, tabs: Vec::new(), active_tab: 0, 
+            font_system: FontSystem::new(), swash_cache: SwashCache::new(),
+            win_width: 0.0, win_height: 0.0, cursor: winit::window::CursorIcon::Default,
+            tabs: Vec::new(), active_tab: 0, 
             tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), lang_dropdown: None, theme_dropdown: None, clipboard: Clipboard::new().ok(), 
-            modifiers: winit::event::Modifiers::default(), last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), 
+            cmd_held: false, shift_held: false, alt_held: false, last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), 
             explorer_width: EXPLORER_WIDTH, is_dragging_splitter: false, hovering_splitter: false, hovering_tab_close: None,
             is_dragging: false, needs_redraw: true,
             last_lsp_update: Instant::now(), pending_lsp_update: false,
@@ -233,6 +248,14 @@ impl App {
             pe_context_menu: None,
             last_hover_pos: (-1.0, -1.0),
             last_hover_time: Instant::now(),
+            output_lines: Vec::new(),
+            output_visible: false,
+            output_panel_height: 150.0,
+            output_scroll_y: 0.0,
+            bottom_panel_tab: BottomPanelTab::Output,
+            goto_line_open: false,
+            goto_line_query: String::new(),
+            build_config: BuildConfig::Debug,
         }
     }
 
@@ -281,12 +304,13 @@ impl App {
     }
 }
 
-// ── ApplicationHandler ─────────────────────────────────────────────────
+// ── Application (toolkit) ──────────────────────────────────────────────
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window = Arc::new(event_loop.create_window(WindowAttributes::default().with_title("Vybe IDE").with_inner_size(winit::dpi::LogicalSize::new(1200.0, 900.0))).unwrap());
-        let ctx = Context::new(window.clone()).unwrap(); let surf = Surface::new(&ctx, window.clone()).unwrap(); let sz = window.inner_size();
+impl vybe_widgets::Application for App {
+    fn on_init(&mut self, width: f32, height: f32, _scale: f32) {
+        self.win_width = width;
+        self.win_height = height;
+
         let lang = load_language("rust").expect("load rust");
         let my_editor = MyEditor::from_text("// Welcome to Vybe IDE\nfn main() {\n    println!(\"Multi-file support active!\");\n}", &lang);
         let uri = "file:///Users/youness/www/html/vybe/welcome.rs".to_string();
@@ -297,7 +321,7 @@ impl ApplicationHandler for App {
         };
         self.tabs.push(Tab { name: "welcome.rs".to_string(), path: None, content: TabContent::Code(widget), is_sticky: true, buffer: None, is_modified: false });
 
-        // Always add the Form Designer tab — sync with project's first form
+        // Always add the Form Designer tab
         {
             let mut designer_state = crate::form_designer_tab::FormDesignerState::new();
             if let Some(fm) = self.project.forms.first() {
@@ -306,48 +330,75 @@ impl ApplicationHandler for App {
             self.tabs.push(Tab { name: "Form Designer".to_string(), path: None, content: TabContent::Form(designer_state), is_sticky: true, buffer: None, is_modified: false });
         }
         self.active_tab = self.tabs.len().saturating_sub(1);
-        self.window = Some(window); self.context = Some(ctx); self.surface = Some(surf);
-        self.pixmap = Some(Pixmap::new(sz.width, sz.height).unwrap());
-        self.surface.as_mut().unwrap().resize(NonZeroU32::new(sz.width).unwrap(), NonZeroU32::new(sz.height).unwrap()).unwrap();
     }
 
-    fn window_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, _id: winit::window::WindowId, event: WindowEvent) {
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::ModifiersChanged(m) => self.modifiers = m,
-            WindowEvent::Resized(sz) => {
-                if let (Some(s), Some(w)) = (&mut self.surface, &self.window) {
-                    if sz.width > 0 && sz.height > 0 {
-                        s.resize(NonZeroU32::new(sz.width).unwrap(), NonZeroU32::new(sz.height).unwrap()).expect("resize surface");
-                        self.pixmap = Some(Pixmap::new(sz.width, sz.height).unwrap());
-                        w.request_redraw();
-                    }
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta),
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    self.handle_key_press(event);
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_pos = (position.x as f32, position.y as f32);
+    fn on_resize(&mut self, width: f32, height: f32) {
+        self.win_width = width;
+        self.win_height = height;
+    }
+
+    fn render(&mut self, pix: &mut Pixmap, _scale: f32) {
+        self.render_internal(pix);
+    }
+
+    fn handle_mouse(&mut self, event: vybe_widgets::MouseEvent) -> bool {
+        use vybe_widgets::layout::{MouseEventKind, MouseButton};
+        self.cmd_held = event.cmd;
+        self.shift_held = event.shift;
+        self.alt_held = event.alt;
+        self.mouse_pos = (event.x * SCALE, event.y * SCALE);
+        match event.kind {
+            MouseEventKind::Move => {
                 self.handle_cursor_moved();
             }
-            WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
-                self.is_dragging = false;
-                self.is_dragging_splitter = false;
+            MouseEventKind::Press(btn) | MouseEventKind::Release(btn) => {
+                let winit_btn = match btn {
+                    MouseButton::Left => winit::event::MouseButton::Left,
+                    MouseButton::Right => winit::event::MouseButton::Right,
+                    MouseButton::Middle => winit::event::MouseButton::Middle,
+                };
+                let winit_state = if matches!(event.kind, MouseEventKind::Press(_)) {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                };
+                self.handle_mouse_input(winit_state, winit_btn);
             }
-            WindowEvent::MouseInput { state, button, .. } => self.handle_mouse_input(state, button),
-            WindowEvent::RedrawRequested => self.render(),
             _ => {}
         }
+        true
+    }
+
+    fn handle_key(&mut self, event: vybe_widgets::KeyEvent) -> bool {
+        self.cmd_held = event.cmd;
+        self.shift_held = event.shift;
+        self.alt_held = event.alt;
+        self.handle_key_press(event);
+        true
+    }
+
+    fn handle_scroll(&mut self, delta: f32, _x: f32, _y: f32) -> bool {
+        // Convert to winit-style delta and reuse existing handler
+        let winit_delta = winit::event::MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(0.0, delta as f64 / 2.0)
+        );
+        self.handle_mouse_wheel(winit_delta);
+        true
+    }
+
+    fn cursor_icon(&self) -> winit::window::CursorIcon {
+        self.cursor
+    }
+
+    fn on_focus_lost(&mut self) {
+        self.is_dragging = false;
+        self.is_dragging_splitter = false;
     }
 }
 
 // ── Entry Point ────────────────────────────────────────────────────────
 
 pub fn run_gui(my_editor: MyEditor, open_form: bool) {
-    let el = EventLoop::new().expect("event loop"); el.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(my_editor, open_form); el.run_app(&mut app).expect("run app");
+    let app = App::new(my_editor, open_form);
+    vybe_widgets::run_app("Vybe IDE", 1200, 900, SCALE, app);
 }

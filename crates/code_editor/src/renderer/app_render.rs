@@ -4,11 +4,11 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use tiny_skia::{Color as SkiaColor, Paint, Pixmap, PixmapPaint, Rect, Transform, ColorU8, Stroke, PathBuilder};
 
 use cosmic_text::Edit;
-use super::{App, TabContent, SidebarTab, SCALE, TAB_BAR_HEIGHT, MINIMAP_WIDTH, UI_BAR_HEIGHT, FOOTER_HEIGHT, GUTTER_WIDTH, SPLITTER_WIDTH, SIDEBAR_TAB_H};
+use super::{App, TabContent, SidebarTab, BottomPanelTab, SCALE, TAB_BAR_HEIGHT, MINIMAP_WIDTH, UI_BAR_HEIGHT, FOOTER_HEIGHT, GUTTER_WIDTH, SPLITTER_WIDTH, SIDEBAR_TAB_H};
 use crate::lsp_client::{LspRequest, LspEvent};
 
 impl App {
-    pub(super) fn render(&mut self) {
+    pub(super) fn render_internal(&mut self, pix: &mut Pixmap) {
         // Debounce LSP Update
         if self.pending_lsp_update && self.last_lsp_update.elapsed().as_millis() > 300 {
             let mut lsp_text = None;
@@ -27,9 +27,7 @@ impl App {
 
         let theme = self.active_theme();
         let theme_name = self.get_theme_name().to_string();
-        let mut surf = match self.surface.take() { Some(s) => s, None => return };
-        let mut pix_owned = match self.pixmap.take() { Some(p) => p, None => { self.surface = Some(surf); return } };
-        let pix = &mut pix_owned;
+        let pix = pix;
         
         let to_skia = |c: Color| SkiaColor::from_rgba8(c.r(), c.g(), c.b(), c.a());
         pix.fill(to_skia(theme.bg));
@@ -190,9 +188,10 @@ impl App {
             }
 
         // 3. Active Editor or Designer
+        let output_h = if self.output_visible { self.output_panel_height } else { 0.0 };
         if self.active_tab < self.tabs.len() {
              let ed_top = top_chrome_px + (TAB_BAR_HEIGHT + UI_BAR_HEIGHT) * SCALE;
-             let rect = Rect::from_xywh(ed_start_x, ed_top, pix.width() as f32 - ed_start_x, pix.height() as f32 - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
+             let rect = Rect::from_xywh(ed_start_x, ed_top, pix.width() as f32 - ed_start_x, pix.height() as f32 - (ed_top + (FOOTER_HEIGHT + output_h) * SCALE)).unwrap();
 
              // Drain LSP events
              while let Ok(evt) = self.lsp.rx.try_recv() {
@@ -316,6 +315,115 @@ impl App {
              }
         }
 
+        // 3b. Output / Problems Panel (above footer)
+        if self.output_visible {
+            let out_x = ed_start_x;
+            let out_h = self.output_panel_height * SCALE;
+            let out_y = pix.height() as f32 - (FOOTER_HEIGHT + self.output_panel_height) * SCALE;
+            let out_w = pix.width() as f32 - out_x;
+            // Background
+            let mut obg = Paint::default(); obg.set_color_rgba8(25, 25, 30, 255);
+            if let Some(r) = Rect::from_xywh(out_x, out_y, out_w, out_h) { pix.fill_rect(r, &obg, Transform::identity(), None); }
+            // Header bar
+            let mut ohd = Paint::default(); ohd.set_color_rgba8(35, 35, 42, 255);
+            if let Some(r) = Rect::from_xywh(out_x, out_y, out_w, 24.0 * SCALE) { pix.fill_rect(r, &ohd, Transform::identity(), None); }
+
+            // Tab buttons: Output | Problems
+            let tab_y = out_y + 4.0 * SCALE;
+            let output_tab_x = out_x + 10.0 * SCALE;
+            let output_col = if self.bottom_panel_tab == BottomPanelTab::Output { Color::rgb(230, 230, 230) } else { Color::rgb(120, 120, 120) };
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "Output", output_tab_x, tab_y, output_col);
+            // Active tab underline for Output
+            if self.bottom_panel_tab == BottomPanelTab::Output {
+                let mut ul = Paint::default(); ul.set_color_rgba8(0, 122, 204, 255);
+                if let Some(r) = Rect::from_xywh(output_tab_x, out_y + 22.0 * SCALE, 50.0 * SCALE, 2.0 * SCALE) { pix.fill_rect(r, &ul, Transform::identity(), None); }
+            }
+            let problems_tab_x = out_x + 80.0 * SCALE;
+            // Count problems across all tabs
+            let problem_count: usize = self.tabs.iter().map(|t| {
+                if let TabContent::Code(cw) = &t.content { cw.my_editor.diagnostics.len() } else { 0 }
+            }).sum();
+            let problems_label = format!("Problems ({})", problem_count);
+            let problems_col = if self.bottom_panel_tab == BottomPanelTab::Problems { Color::rgb(230, 230, 230) } else { Color::rgb(120, 120, 120) };
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &problems_label, problems_tab_x, tab_y, problems_col);
+            if self.bottom_panel_tab == BottomPanelTab::Problems {
+                let mut ul = Paint::default(); ul.set_color_rgba8(0, 122, 204, 255);
+                if let Some(r) = Rect::from_xywh(problems_tab_x, out_y + 22.0 * SCALE, 100.0 * SCALE, 2.0 * SCALE) { pix.fill_rect(r, &ul, Transform::identity(), None); }
+            }
+
+            // Close button
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "×", out_x + out_w - 24.0 * SCALE, tab_y, Color::rgb(150, 150, 150));
+            // Clear button (only for Output tab)
+            if self.bottom_panel_tab == BottomPanelTab::Output {
+                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "Clear", out_x + out_w - 80.0 * SCALE, tab_y, Color::rgb(120, 120, 120));
+            }
+            // Separator line
+            let mut sep_p = Paint::default(); sep_p.set_color_rgba8(60, 60, 70, 255);
+            if let Some(r) = Rect::from_xywh(out_x, out_y, out_w, 1.0) { pix.fill_rect(r, &sep_p, Transform::identity(), None); }
+
+            let content_y = out_y + 24.0 * SCALE;
+            let content_h = out_h - 24.0 * SCALE;
+            let line_h = 18.0 * SCALE;
+            let visible_lines = (content_h / line_h) as usize;
+
+            match self.bottom_panel_tab {
+                BottomPanelTab::Output => {
+                    // Output lines
+                    let skip = (self.output_scroll_y / 18.0).max(0.0) as usize;
+                    for (i, line) in self.output_lines.iter().skip(skip).take(visible_lines + 1).enumerate() {
+                        let ly = content_y + (i as f32) * line_h - (self.output_scroll_y % 18.0) * SCALE;
+                        if ly >= content_y && ly < out_y + out_h {
+                            let col = if line.starts_with("ERR:") || line.starts_with("Save error") {
+                                Color::rgb(255, 100, 100)
+                            } else if line.starts_with("Building") || line.starts_with("Running") {
+                                Color::rgb(100, 200, 100)
+                            } else {
+                                Color::rgb(180, 180, 180)
+                            };
+                            let display = if line.len() > 120 { &line[..120] } else { line.as_str() };
+                            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, display, out_x + 10.0 * SCALE, ly + 2.0 * SCALE, col);
+                        }
+                    }
+                }
+                BottomPanelTab::Problems => {
+                    // Collect all diagnostics with file names
+                    let all_diags: Vec<(String, usize, vybe_widgets::DiagnosticSeverity, String)> = self.tabs.iter().flat_map(|t| {
+                        let name = t.name.clone();
+                        if let TabContent::Code(cw) = &t.content {
+                            cw.my_editor.diagnostics.iter().map(move |d| {
+                                (name.clone(), d.line + 1, d.severity, d.message.clone())
+                            }).collect::<Vec<_>>()
+                        } else { vec![] }
+                    }).collect();
+
+                    if all_diags.is_empty() {
+                        App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, "No problems detected.", out_x + 10.0 * SCALE, content_y + 4.0 * SCALE, Color::rgb(100, 200, 100));
+                    } else {
+                        let skip = (self.output_scroll_y / 18.0).max(0.0) as usize;
+                        for (i, (file, line, severity, msg)) in all_diags.iter().skip(skip).take(visible_lines + 1).enumerate() {
+                            let ly = content_y + (i as f32) * line_h - (self.output_scroll_y % 18.0) * SCALE;
+                            if ly >= content_y && ly < out_y + out_h {
+                                let (icon, icon_col) = match severity {
+                                    vybe_widgets::DiagnosticSeverity::Error => ("●", Color::rgb(255, 80, 80)),
+                                    vybe_widgets::DiagnosticSeverity::Warning => ("▲", Color::rgb(255, 200, 50)),
+                                    vybe_widgets::DiagnosticSeverity::Info => ("ℹ", Color::rgb(80, 160, 255)),
+                                    vybe_widgets::DiagnosticSeverity::Hint => ("…", Color::rgb(140, 140, 140)),
+                                };
+                                // Icon
+                                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, icon, out_x + 10.0 * SCALE, ly + 2.0 * SCALE, icon_col);
+                                // File:line
+                                let loc = format!("{}:{}", file, line);
+                                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &loc, out_x + 24.0 * SCALE, ly + 2.0 * SCALE, Color::rgb(130, 180, 230));
+                                // Message (offset after file:line column)
+                                let msg_display = if msg.len() > 100 { &msg[..100] } else { msg.as_str() };
+                                App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, msg_display, out_x + 200.0 * SCALE, ly + 2.0 * SCALE, Color::rgb(200, 200, 200));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 4. Footer
         let mut fp = Paint::default(); fp.set_color_rgba8(theme.footer_bg.r(), theme.footer_bg.g(), theme.footer_bg.b(), theme.footer_bg.a());
         pix.fill_rect(Rect::from_xywh(0.0, pix.height() as f32 - FOOTER_HEIGHT * SCALE, pix.width() as f32, FOOTER_HEIGHT * SCALE).unwrap(), &fp, Transform::identity(), None);
@@ -357,10 +465,15 @@ impl App {
 
             let lang_label = format!("Language: {}", self.current_lang);
             let theme_label = format!("Theme: {}", theme_name);
+            let config_label = match self.build_config { super::BuildConfig::Debug => "Debug", super::BuildConfig::Release => "Release" };
             let label_x = pix.width() as f32 - (lang_label.len() as f32 * 9.0 + 20.0) * SCALE;
             let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0) * SCALE;
+            let config_x = theme_x - ((config_label.len() + 2) as f32 * 9.0 + 20.0) * SCALE;
             App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &lang_label, label_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
             App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &theme_label, theme_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, theme.footer_text);
+            // Build config indicator
+            let config_col = match self.build_config { super::BuildConfig::Debug => Color::rgb(255, 180, 50), super::BuildConfig::Release => Color::rgb(100, 200, 100) };
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("[{}]", config_label), config_x, pix.height() as f32 - FOOTER_HEIGHT * SCALE + 4.0 * SCALE, config_col);
 
             if let Some(dropdown) = &self.lang_dropdown {
                 let (w, h) = dropdown.get_size();
@@ -418,6 +531,19 @@ impl App {
             }
         }
 
+        // Go-to-Line Overlay
+        if self.goto_line_open {
+            let gl_w = 300.0 * SCALE; let gl_h = 50.0 * SCALE;
+            let gl_x = (pix.width() as f32 - gl_w) / 2.0; let gl_y = 100.0 * SCALE;
+            let mut bg = Paint::default(); bg.set_color_rgba8(30, 30, 35, 245);
+            pix.fill_rect(Rect::from_xywh(gl_x, gl_y, gl_w, gl_h).unwrap(), &bg, Transform::identity(), None);
+            let mut bp = Paint::default(); bp.set_color_rgba8(0, 122, 204, 255);
+            let mut pb = PathBuilder::new(); pb.push_rect(Rect::from_xywh(gl_x, gl_y, gl_w, gl_h).unwrap());
+            if let Some(path) = pb.finish() { pix.stroke_path(&path, &bp, &Stroke { width: SCALE, ..Default::default() }, Transform::identity(), None); }
+            let max_line = self.tabs.get(self.active_tab).map(|t| match &t.content { TabContent::Code(cw) => cw.editor.with_buffer(|b| b.lines.len()), _ => 0 }).unwrap_or(0);
+            App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("Go to Line (1-{}): {}|", max_line, self.goto_line_query), gl_x + 12.0 * SCALE, gl_y + 16.0 * SCALE, Color::rgb(200, 200, 200));
+        }
+
         // Menu dropdown overlay
         if has_form_tab {
             if let Some(form_tab) = self.tabs.iter().find(|t| matches!(&t.content, TabContent::Form(_))) {
@@ -450,15 +576,6 @@ impl App {
             let label = format!("\u{1F5D1} Remove \"{}\"", item_name);
             crate::ide_text::draw_text(pix, &mut self.font_system, &mut self.swash_cache, &label, cmx + 10.0, cmy + 6.0, 12.0, Color::rgba(180, 40, 40, 255), SCALE);
         }
-
-        let mut buffer = surf.buffer_mut().unwrap();
-        for (i, p) in pix.pixels().iter().enumerate() {
-            buffer[i] = (p.red() as u32) << 16 | (p.green() as u32) << 8 | (p.blue() as u32);
-        }
-        buffer.present().unwrap();
-        self.surface = Some(surf);
-        self.pixmap = Some(pix_owned);
-        self.needs_redraw = false;
     }
 
     /// Render the project explorer sidebar panel

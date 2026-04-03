@@ -52,6 +52,12 @@ pub mod ide_text;
 pub mod text_editor;
 pub mod code_editor_widget;
 pub mod resource_editor;
+pub mod layout;
+pub mod dock_panel;
+pub mod split_panel;
+pub mod tab_panel;
+pub mod status_bar_panel;
+pub mod app_window;
 
 pub use checkbox::Checkbox;
 pub use radio::Radio;
@@ -91,6 +97,14 @@ pub use ide_text::{draw_text, measure_text};
 pub use text_editor::{TextEditor, TokenKind, TokenSpan, LexerState, DiagnosticInfo, DiagnosticSeverity};
 pub use code_editor_widget::{CodeEditorWidget, Theme};
 pub use resource_editor::{ResourceEditor, ResourceEditorEvent, ResourceEntry, ResourceTab};
+
+// ── GUI Toolkit ────────────────────────────────────────────────────────
+pub use layout::{LayoutRect, MouseButton, MouseEventKind, MouseEvent, KeyEvent, RenderContext, Dock, PanelWidget};
+pub use dock_panel::DockPanel;
+pub use split_panel::SplitPanel;
+pub use tab_panel::TabPanel;
+pub use status_bar_panel::StatusBarPanel;
+pub use app_window::{Application, run_app};
 
 use tiny_skia::PathBuilder;
 

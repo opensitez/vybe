@@ -1,18 +1,16 @@
 use std::time::Instant;
 use cosmic_text::{Attrs, Action, Cursor, Edit, Family, Motion, Selection, Shaping};
 use winit::keyboard::{Key, NamedKey};
-#[cfg(target_os = "macos")]
-use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 
 use super::{App, TabContent};
 use vybe_widgets::code_editor_widget::CodeEditorWidget;
 
 impl App {
-    pub(super) fn handle_key_press(&mut self, event: winit::event::KeyEvent) {
+    pub(super) fn handle_key_press(&mut self, event: vybe_widgets::KeyEvent) {
         if self.tabs.is_empty() { return; }
         // Handle Form tab keyboard events
         if let TabContent::Form(f) = &mut self.tabs[self.active_tab].content {
-            let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
+            let cmd = event.cmd;
             let key = &event.logical_key;
             match key {
                 Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
@@ -108,14 +106,14 @@ impl App {
                 }
                 _ => {}
             }
-            self.window.as_ref().unwrap().request_redraw();
+            
             return;
         }
 
         // Handle Resources tab keyboard events
         if let TabContent::Resources(r) = &mut self.tabs[self.active_tab].content {
             let key = &event.logical_key;
-            let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
+            let cmd = event.cmd;
             match key {
                 Key::Named(NamedKey::Escape) => {
                     if self.project_props_dialog.visible {
@@ -163,7 +161,7 @@ impl App {
                     }
                 }
             }
-            self.window.as_ref().unwrap().request_redraw();
+            
             return;
         }
 
@@ -171,23 +169,23 @@ impl App {
         let tab = &mut self.tabs[self.active_tab];
         let w = match &mut tab.content {
             TabContent::Code(cw) => cw,
-            _ => { self.window.as_ref().unwrap().request_redraw(); return; }
+            _ => {  return; }
         };
         let _theme = w.theme.clone();
-        let cmd = self.modifiers.state().super_key() || self.modifiers.state().control_key();
-        let alt = self.modifiers.state().alt_key(); let shift = self.modifiers.state().shift_key();
+        let cmd = event.cmd;
+        let alt = event.alt; let shift = event.shift;
 
         // === Autocomplete keyboard intercepts ===
         if w.autocomplete_visible {
             match event.logical_key {
                 Key::Named(NamedKey::ArrowUp) => {
                     if w.autocomplete_selected > 0 { w.autocomplete_selected -= 1; }
-                    self.window.as_ref().unwrap().request_redraw();
+                    
                     return;
                 }
                 Key::Named(NamedKey::ArrowDown) => {
                     if w.autocomplete_selected < w.autocomplete_items.len().saturating_sub(1) { w.autocomplete_selected += 1; }
-                    self.window.as_ref().unwrap().request_redraw();
+                    
                     return;
                 }
                 Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Tab) => {
@@ -196,12 +194,12 @@ impl App {
                     self.pending_lsp_update = true;
                     self.last_lsp_update = Instant::now();
                     tab.is_modified = true;
-                    self.window.as_ref().unwrap().request_redraw();
+                    
                     return;
                 }
                 Key::Named(NamedKey::Escape) => {
                     w.dismiss_autocomplete();
-                    self.window.as_ref().unwrap().request_redraw();
+                    
                     return;
                 }
                 _ => {
@@ -210,7 +208,7 @@ impl App {
             }
         }
 
-        let key_str = match event.key_without_modifiers() {
+        let key_str = match event.key_without_modifiers.clone() {
             Key::Character(c) => c.to_lowercase(),
             Key::Named(nk) => format!("{:?}", nk),
             _ => String::new(),
@@ -245,16 +243,41 @@ impl App {
                     "MoveLineEnd" => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
                     "MoveWordLeft" => w.editor.action(&mut self.font_system, Action::Motion(Motion::LeftWord)),
                     "MoveWordRight" => w.editor.action(&mut self.font_system, Action::Motion(Motion::RightWord)),
-                    "Save" => { println!("Saving document: {}", tab.name); tab.is_modified = false; }
+                    "Save" => {
+                        let save_path = tab.path.clone();
+                        let text = w.my_editor.rope.to_string();
+                        tab.is_modified = false;
+                        if let Some(path) = save_path {
+                            match std::fs::write(&path, &text) {
+                                Ok(_) => self.output_lines.push(format!("Saved: {}", path)),
+                                Err(e) => self.output_lines.push(format!("Save error: {}", e)),
+                            }
+                        } else if let Some(pp) = self.project_path.clone() {
+                            // Sync current tab code to project before save
+                            let tab_name = tab.name.clone();
+                            let code = w.my_editor.rope.to_string();
+                            if let Some(form_name) = tab_name.strip_suffix(".vb") {
+                                if let Some(fm) = self.project.forms.iter_mut().find(|fm| fm.form.name == form_name) {
+                                    fm.set_user_code(code);
+                                }
+                            } else if let Some(cf) = self.project.code_files.iter_mut().find(|cf| cf.name == tab_name) {
+                                cf.code = code;
+                            }
+                            match vybe_project::serialization::save_project_auto(&self.project, &pp) {
+                                Ok(_) => self.output_lines.push(format!("Saved: {}", pp)),
+                                Err(e) => self.output_lines.push(format!("Save error: {}", e)),
+                            }
+                        }
+                    }
                     "Find" => { w.is_search_open = true; if let Some(t) = w.editor.copy_selection() { if !t.is_empty() { w.search_query = t; } } else { w.search_query.clear(); } }
                     "Replace" => { w.is_search_open = true; w.is_replace_open = !w.is_replace_open; }
                     _ => { acted = false; }
                 }
-                if acted { w.needs_reshape = true; w.sync(); self.window.as_ref().unwrap().request_redraw(); return; }
+                if acted { w.needs_reshape = true; w.sync();  return; }
             }
         }
 
-        match event.key_without_modifiers() {
+        match event.key_without_modifiers.clone() {
             Key::Character(c) if cmd && (c == "=" || c == "+") => { w.set_zoom(&mut self.font_system, 1.0); }
             Key::Character(c) if cmd && c == "-" => { w.set_zoom(&mut self.font_system, -1.0); }
             Key::Character(c) if cmd && c == "0" => { w.font_size = 14.0; w.set_zoom(&mut self.font_system, 0.0); }
@@ -262,6 +285,33 @@ impl App {
             Key::Character(c) if alt && (c == "z" || c == "Z") => { w.wrap_lines = !w.wrap_lines; w.needs_reshape = true; }
             Key::Character(c) if cmd && (c == "m" || c == "M") => { if let Some(p) = w.my_editor.find_matching_bracket(w.editor.cursor().line, w.editor.cursor().index, &w.lang_def) { w.editor.set_cursor(Cursor::new(p.0, p.1)); } }
             Key::Character(c) if cmd && (c == "p" || c == "P") => { self.is_quick_open = !self.is_quick_open; self.quick_open_query.clear(); }
+            Key::Character(c) if cmd && (c == "g" || c == "G") => { self.goto_line_open = !self.goto_line_open; self.goto_line_query.clear(); }
+            Key::Character(c) if cmd && (c == "`") => { self.output_visible = !self.output_visible; }
+            Key::Character(c) if cmd && shift && (c == "b" || c == "B") => {
+                self.build_config = match self.build_config { super::BuildConfig::Debug => super::BuildConfig::Release, super::BuildConfig::Release => super::BuildConfig::Debug };
+            }
+            // Fold/Unfold: Cmd+Shift+[ folds current, Cmd+Shift+] unfolds current
+            Key::Character(c) if cmd && shift && c == "[" => {
+                let line = w.editor.cursor().line;
+                if w.my_editor.folds.iter().any(|(s, _)| *s == line) && !w.my_editor.collapsed_starts.contains(&line) {
+                    w.my_editor.toggle_fold(line);
+                }
+            }
+            Key::Character(c) if cmd && shift && c == "]" => {
+                let line = w.editor.cursor().line;
+                if w.my_editor.collapsed_starts.contains(&line) {
+                    w.my_editor.toggle_fold(line);
+                }
+            }
+            // Fold All: Cmd+Shift+0
+            Key::Character(c) if cmd && shift && c == "0" => {
+                let fold_starts: Vec<usize> = w.my_editor.folds.iter().map(|(s, _)| *s).collect();
+                for s in fold_starts { w.my_editor.collapsed_starts.insert(s); }
+            }
+            // Unfold All: Cmd+Shift+9
+            Key::Character(c) if cmd && shift && c == "9" => {
+                w.my_editor.collapsed_starts.clear();
+            }
              Key::Named(NamedKey::Home) => {
                   let cli = w.editor.cursor().line; let cur = w.editor.cursor().index;
                   let line_text = w.editor.with_buffer(|b| b.lines[cli].text().to_string());
@@ -271,10 +321,20 @@ impl App {
              }
             Key::Named(NamedKey::End) => w.editor.action(&mut self.font_system, Action::Motion(Motion::End)),
             Key::Character(c) if cmd && shift && (c == "k" || c == "K") => { w.editor.action(&mut self.font_system, Action::Motion(Motion::End)); w.editor.action(&mut self.font_system, Action::Backspace); w.editor.action(&mut self.font_system, Action::Motion(Motion::Home)); let len = w.editor.with_buffer(|b| b.lines[w.editor.cursor().line].text().len()); for _ in 0..len { w.editor.action(&mut self.font_system, Action::Delete); } w.editor.action(&mut self.font_system, Action::Delete); }
-            Key::Named(NamedKey::Backspace) => if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); w.editor.action(&mut self.font_system, Action::Backspace); tab.is_modified = true; }
+            Key::Named(NamedKey::Backspace) => if self.goto_line_open { self.goto_line_query.pop(); } else if w.is_search_open { if w.is_replace_open && alt { w.replace_query.pop(); } else { w.search_query.pop(); } } else { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); w.editor.action(&mut self.font_system, Action::Backspace); tab.is_modified = true; }
             Key::Named(NamedKey::Delete) => { w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index); w.editor.action(&mut self.font_system, Action::Delete); tab.is_modified = true; }
             Key::Named(NamedKey::Enter) => {
-                if self.is_quick_open {
+                if self.goto_line_open {
+                    if let Ok(line_num) = self.goto_line_query.trim().parse::<usize>() {
+                        let target = line_num.saturating_sub(1);
+                        let max_line = w.editor.with_buffer(|b| b.lines.len().saturating_sub(1));
+                        let safe_line = target.min(max_line);
+                        w.editor.set_cursor(Cursor::new(safe_line, 0));
+                        w.needs_reshape = true;
+                    }
+                    self.goto_line_open = false;
+                    self.goto_line_query.clear();
+                } else if self.is_quick_open {
                     self.is_quick_open = false;
                 } else if w.is_search_open { w.find_next(&mut self.font_system); } 
                 else { 
@@ -290,7 +350,7 @@ impl App {
                     w.needs_reshape = true; w.sync(); tab.is_modified = true;
                 }
             }
-            Key::Named(NamedKey::Escape) => { self.is_quick_open = false; w.is_search_open = false; w.context_menu = None; }
+            Key::Named(NamedKey::Escape) => { self.is_quick_open = false; self.goto_line_open = false; w.is_search_open = false; w.context_menu = None; }
             Key::Character(c) if cmd && (c == "c" || c == "C") => { if let Some(t) = w.editor.copy_selection() { if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(t); } } }
             Key::Character(c) if cmd && (c == "v" || c == "V") => { 
                  if let Some(cb) = &mut self.clipboard { 
@@ -392,16 +452,27 @@ impl App {
                     let col = w.editor.cursor().index as u32;
                     let _ = self.lsp.send(crate::lsp_client::LspRequest::Definition(uri, line, col));
                 }
-                self.window.as_ref().unwrap().request_redraw();
+                
                 return;
             }
             Key::Named(NamedKey::Space) if cmd => {
                 // Ctrl+Space: trigger autocomplete
                 self.trigger_completion();
-                self.window.as_ref().unwrap().request_redraw();
+                
                 return;
             }
             _ => { if let Some(t) = event.text { if !cmd {
+                // Route text input to open dialogs
+                if self.goto_line_open {
+                    for ch in t.chars() { if ch.is_ascii_digit() { self.goto_line_query.push(ch); } }
+                    
+                    return;
+                }
+                if self.is_quick_open {
+                    for ch in t.chars() { if !ch.is_control() { self.quick_open_query.push(ch); } }
+                    
+                    return;
+                }
                 w.my_editor.save_snapshot(w.editor.cursor().line, w.editor.cursor().index);
                 
                 // Handling selection replacement on type
@@ -449,7 +520,7 @@ impl App {
                 self.pending_lsp_update = true;
                 self.last_lsp_update = Instant::now();
             }
-            self.window.as_ref().unwrap().request_redraw(); 
+             
         }
     }
 }

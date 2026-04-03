@@ -304,20 +304,41 @@ impl TextEditor {
     fn recompute_folds(&mut self, lang: &LanguageDef) {
         self.folds.clear();
         if lang.brackets.is_empty() { return; }
+        let ic = lang.ignore_case;
         for (open, close) in &lang.brackets {
+            let is_keyword = open.len() > 1; // multi-char brackets like "sub" need word-boundary checks
+            let o = if ic { open.to_lowercase() } else { open.clone() };
+            let c = if ic { close.to_lowercase() } else { close.clone() };
             let mut stack: Vec<usize> = Vec::new();
             for li in 0..self.rope.len_lines() {
                 let line = self.rope.line(li).to_string();
-                let trimmed = line.trim();
-                if trimmed.contains(open) { stack.push(li); }
-                if trimmed.contains(close) {
+                let trimmed = if ic { line.trim().to_lowercase() } else { line.trim().to_string() };
+                let has_open = if is_keyword { Self::contains_keyword(&trimmed, &o) } else { trimmed.contains(&*o) };
+                let has_close = if is_keyword { Self::contains_keyword(&trimmed, &c) } else { trimmed.contains(&*c) };
+                // Process close BEFORE open so lines like "} else {" close the
+                // previous block first, then open a new one.
+                if has_close {
                     if let Some(start) = stack.pop() {
                         if li > start { self.folds.push((start, li)); }
                     }
                 }
+                if has_open { stack.push(li); }
             }
         }
         self.folds.sort_by_key(|(s, _)| *s);
+    }
+
+    /// Check if `text` contains `kw` as a whole word (not as a substring of another word).
+    fn contains_keyword(text: &str, kw: &str) -> bool {
+        let mut start = 0;
+        while let Some(pos) = text[start..].find(kw) {
+            let abs = start + pos;
+            let before_ok = abs == 0 || !text.as_bytes()[abs - 1].is_ascii_alphanumeric();
+            let after_ok = abs + kw.len() >= text.len() || !text.as_bytes()[abs + kw.len()].is_ascii_alphanumeric();
+            if before_ok && after_ok { return true; }
+            start = abs + 1;
+        }
+        false
     }
 
     pub fn find_matching_bracket(&self, line_idx: usize, col: usize, lang: &LanguageDef) -> Option<(usize, usize)> {

@@ -569,6 +569,15 @@ pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: 
     });
 }
 
+/// A single item in the autocomplete popup.
+#[derive(Debug, Clone)]
+pub struct AutocompleteItem {
+    pub label: String,
+    pub detail: Option<String>,
+    pub insert_text: String,
+    pub kind_icon: &'static str, // short icon label: "fn", "ty", "kw", "md", "fi", "va", "ct", etc.
+}
+
 pub struct CodeEditorWidget {
     pub editor: cosmic_text::Editor<'static>,
     pub my_editor: TextEditor,
@@ -592,6 +601,13 @@ pub struct CodeEditorWidget {
     pub wrap_lines: bool,
     pub diagnostics: Vec<crate::text_editor::DiagnosticInfo>,
     pub matching_bracket: Option<usize>,
+    // Autocomplete
+    pub autocomplete_items: Vec<AutocompleteItem>,
+    pub autocomplete_selected: usize,
+    pub autocomplete_visible: bool,
+    // Hover tooltip
+    pub hover_text: Option<String>,
+    pub hover_pos: (f32, f32), // pixel position where hover was triggered
 }
 
 impl CodeEditorWidget {
@@ -607,7 +623,7 @@ impl CodeEditorWidget {
         let text = my_editor.rope.to_string();
         buffer.set_text(font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
 
-        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false, diagnostics: Vec::new(), matching_bracket: None };
+        let mut widget = Self { editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false, diagnostics: Vec::new(), matching_bracket: None, autocomplete_items: Vec::new(), autocomplete_selected: 0, autocomplete_visible: false, hover_text: None, hover_pos: (0.0, 0.0) };
         widget.update_digit_cache(font_system);
         widget
     }
@@ -1049,11 +1065,190 @@ impl CodeEditorWidget {
                 draw_ui_text(pixmap, fs, sc, item, *mx * SCALE + 10.0 * SCALE, *my * SCALE + (i as f32 * 25.0 + 5.0) * SCALE, Color::rgb(220, 220, 220));
             }
         }
+
+        // 7. Autocomplete Popup Overlay
+        if self.autocomplete_visible && !self.autocomplete_items.is_empty() {
+            self.render_autocomplete(pixmap, fs, sc, rect);
+        }
+
+        // 8. Hover Tooltip Overlay
+        if let Some(ref text) = self.hover_text {
+            self.render_hover_tooltip(pixmap, fs, sc, rect, text.clone());
+        }
     }
 
-    pub fn handle_mouse(&mut self, fs: &mut FontSystem, x: f32, y: f32, rect: Rect, click: Option<(u32, MouseButton, winit::event::Modifiers)>, clipboard: &mut Option<Clipboard>) {
-        if x < rect.left() || x > rect.right() || y < rect.top() || y > rect.bottom() { return; }
-        if let Some((_, MouseButton::Right, _)) = click { self.context_menu = Some(((x, y), vec!["Copy".to_string(), "Paste".to_string(), "Cut".to_string(), "Select All".to_string(), "Find".to_string(), "Replace".to_string()])); return; }
+    fn render_autocomplete(&mut self, pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, rect: Rect) {
+        let max_visible = 10.min(self.autocomplete_items.len());
+        let item_h = 22.0 * SCALE;
+        let popup_w = 300.0 * SCALE;
+        let popup_h = max_visible as f32 * item_h;
+        let icon_w = 28.0 * SCALE;
+
+        // Position popup at cursor
+        let (popup_x, popup_y) = if let Some((cx, _cy)) = self.editor.cursor_position() {
+            let (x_off, y_off) = self.get_offsets(rect);
+            let mut cy_pixel = y_off;
+            self.editor.with_buffer(|b| {
+                let cursor_line = self.editor.cursor().line;
+                let mut first_top = None;
+                let mut v_sh = 0.0;
+                for r in b.layout_runs() {
+                    if first_top.is_none() { first_top = Some(r.line_top); }
+                    if self.is_line_hidden(r.line_i) { v_sh += r.line_height; continue; }
+                    if r.line_i == cursor_line {
+                        let ft = first_top.unwrap_or(0.0);
+                        cy_pixel = y_off - self.scroll_y + (r.line_top - ft - v_sh) + r.line_height;
+                        break;
+                    }
+                }
+            });
+            let px = (x_off + cx as f32).max(rect.left());
+            let py = cy_pixel;
+            // Flip popup above cursor if it would go below the rect
+            if py + popup_h > rect.bottom() {
+                (px, (py - self.metrics.line_height - popup_h).max(rect.top()))
+            } else {
+                (px, py)
+            }
+        } else {
+            return;
+        };
+
+        if popup_x + popup_w > rect.right() {
+            // skip rendering if popup is totally off-screen
+            return;
+        }
+
+        // Scroll offset for items if selected item is out of visible range
+        let scroll_start = if self.autocomplete_selected >= max_visible {
+            self.autocomplete_selected - max_visible + 1
+        } else { 0 };
+
+        // Background
+        let mut bg = Paint::default(); bg.set_color_rgba8(30, 30, 35, 245);
+        if let Some(r) = Rect::from_xywh(popup_x, popup_y, popup_w, popup_h) {
+            pixmap.fill_rect(r, &bg, Transform::identity(), None);
+        }
+        // Border
+        let mut border = Paint::default(); border.set_color_rgba8(70, 130, 180, 200);
+        if let Some(r) = Rect::from_xywh(popup_x, popup_y, popup_w, 1.0) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+        if let Some(r) = Rect::from_xywh(popup_x, popup_y + popup_h - 1.0, popup_w, 1.0) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+        if let Some(r) = Rect::from_xywh(popup_x, popup_y, 1.0, popup_h) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+        if let Some(r) = Rect::from_xywh(popup_x + popup_w - 1.0, popup_y, 1.0, popup_h) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+
+        // Items
+        for vi in 0..max_visible {
+            let idx = scroll_start + vi;
+            if idx >= self.autocomplete_items.len() { break; }
+            let item = &self.autocomplete_items[idx];
+            let iy = popup_y + vi as f32 * item_h;
+
+            // Highlight selected
+            if idx == self.autocomplete_selected {
+                let mut sel = Paint::default(); sel.set_color_rgba8(50, 100, 150, 180);
+                if let Some(r) = Rect::from_xywh(popup_x + 1.0, iy, popup_w - 2.0, item_h) {
+                    pixmap.fill_rect(r, &sel, Transform::identity(), None);
+                }
+            }
+
+            // Kind icon badge
+            let kind_color = match item.kind_icon {
+                "fn" => Color::rgb(220, 170, 80),   // function - amber
+                "ty" => Color::rgb(80, 200, 180),   // type - teal
+                "kw" => Color::rgb(200, 120, 220),  // keyword - purple
+                "md" => Color::rgb(100, 180, 240),  // module - blue
+                "fi" => Color::rgb(180, 200, 100),  // field - yellow-green
+                "va" => Color::rgb(150, 200, 240),  // variable - light blue
+                "ct" => Color::rgb(240, 150, 100),  // constant - orange
+                "sn" => Color::rgb(200, 200, 100),  // snippet - yellow
+                _ => Color::rgb(180, 180, 180),     // other - gray
+            };
+            draw_ui_text(pixmap, fs, sc, item.kind_icon, popup_x + 4.0 * SCALE, iy + 3.0 * SCALE, kind_color);
+
+            // Label
+            draw_ui_text(pixmap, fs, sc, &item.label, popup_x + icon_w, iy + 3.0 * SCALE, Color::rgb(220, 220, 220));
+
+            // Detail (dimmed, right-aligned)
+            if let Some(ref detail) = item.detail {
+                let truncated: String = detail.chars().take(25).collect();
+                draw_ui_text(pixmap, fs, sc, &truncated, popup_x + popup_w - 140.0 * SCALE, iy + 3.0 * SCALE, Color::rgb(120, 120, 140));
+            }
+        }
+    }
+
+    /// Accept the currently selected autocomplete item, inserting its text.
+    pub fn accept_autocomplete(&mut self, fs: &mut FontSystem) {
+        if !self.autocomplete_visible || self.autocomplete_items.is_empty() { return; }
+        let idx = self.autocomplete_selected.min(self.autocomplete_items.len() - 1);
+        let insert = self.autocomplete_items[idx].insert_text.clone();
+        // Delete the partial word the user has typed (from the trigger point)
+        // We find the word prefix before the cursor and remove it before inserting
+        let cursor = self.editor.cursor();
+        let prefix_len = self.editor.with_buffer(|b| {
+            let line = &b.lines[cursor.line];
+            let text = line.text();
+            let byte_pos = cursor.index.min(text.len());
+            let before = &text[..byte_pos];
+            // Walk back to find the start of the identifier
+            before.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').count()
+        });
+        // Delete prefix_len chars before cursor
+        for _ in 0..prefix_len {
+            self.editor.action(fs, Action::Backspace);
+        }
+        // Insert the completion text
+        for ch in insert.chars() {
+            self.editor.action(fs, Action::Insert(ch));
+        }
+        self.autocomplete_visible = false;
+        self.autocomplete_items.clear();
+        self.needs_reshape = true;
+    }
+
+    /// Dismiss autocomplete popup without accepting.
+    pub fn dismiss_autocomplete(&mut self) {
+        self.autocomplete_visible = false;
+        self.autocomplete_items.clear();
+        self.autocomplete_selected = 0;
+    }
+
+    fn render_hover_tooltip(&self, pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, _rect: Rect, text: String) {
+        let lines: Vec<&str> = text.lines().take(12).collect();
+        if lines.is_empty() { return; }
+        let max_chars = lines.iter().map(|l| l.len()).max().unwrap_or(20).max(20).min(80);
+        let line_h = 18.0 * SCALE;
+        let popup_w = max_chars as f32 * 7.5 * SCALE;
+        let popup_h = lines.len() as f32 * line_h + 8.0 * SCALE;
+        let px = self.hover_pos.0;
+        let py = (self.hover_pos.1 - popup_h - 4.0 * SCALE).max(0.0);
+
+        // Background
+        let mut bg = Paint::default(); bg.set_color_rgba8(35, 35, 40, 240);
+        if let Some(r) = Rect::from_xywh(px, py, popup_w, popup_h) {
+            pixmap.fill_rect(r, &bg, Transform::identity(), None);
+        }
+        // Border
+        let mut border = Paint::default(); border.set_color_rgba8(80, 80, 100, 180);
+        if let Some(r) = Rect::from_xywh(px, py, popup_w, 1.0) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+        if let Some(r) = Rect::from_xywh(px, py + popup_h - 1.0, popup_w, 1.0) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+        if let Some(r) = Rect::from_xywh(px, py, 1.0, popup_h) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+        if let Some(r) = Rect::from_xywh(px + popup_w - 1.0, py, 1.0, popup_h) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+
+        // Text lines
+        for (i, line) in lines.iter().enumerate() {
+            let truncated: String = line.chars().take(80).collect();
+            let color = if line.starts_with("```") || line.starts_with("---") {
+                Color::rgb(100, 100, 120)
+            } else {
+                Color::rgb(200, 210, 220)
+            };
+            draw_ui_text(pixmap, fs, sc, &truncated, px + 6.0 * SCALE, py + 4.0 * SCALE + i as f32 * line_h, color);
+        }
+    }
+
+    pub fn handle_mouse(&mut self, fs: &mut FontSystem, x: f32, y: f32, rect: Rect, click: Option<(u32, MouseButton, bool)>, clipboard: &mut Option<Clipboard>) -> bool {
+        if x < rect.left() || x > rect.right() || y < rect.top() || y > rect.bottom() { return false; }
+        if let Some((_, MouseButton::Right, _)) = click { self.context_menu = Some(((x, y), vec!["Copy".to_string(), "Paste".to_string(), "Cut".to_string(), "Select All".to_string(), "Find".to_string(), "Replace".to_string()])); return false; }
         if let Some((pos, _)) = self.context_menu {
             let menu_h = (6.0 * 25.0) * SCALE;
             if x >= pos.0 && x <= pos.0 + 100.0 * SCALE && y >= pos.1 && y <= pos.1 + menu_h {
@@ -1066,13 +1261,13 @@ impl CodeEditorWidget {
                     4 => { self.is_search_open = true; self.search_query.clear(); },
                     5 => { self.is_search_open = true; self.is_replace_open = true; self.search_query.clear(); self.replace_query.clear(); },
                     _ => {} 
-                } return;
+                } return false;
             } self.context_menu = None;
         }
         if y >= rect.top() && y < rect.bottom() && x > rect.right() - MINIMAP_WIDTH * SCALE {
              let mry = (y - rect.top()) / rect.height(); let mut th = 0.0;
              self.editor.with_buffer(|b| { for r in b.layout_runs() { if !self.is_line_hidden(r.line_i) { th += r.line_height; } } });
-             self.scroll_y = (mry * th).max(0.0); return;
+             self.scroll_y = (mry * th).max(0.0); return false;
         }
         let (x_off, y_off) = self.get_offsets(rect);
 
@@ -1089,7 +1284,7 @@ impl CodeEditorWidget {
                         if y >= vy && y < vy + r.line_height { fl = Some(r.line_i); break; } 
                     } 
                 }); 
-                if let Some(li) = fl { self.my_editor.toggle_fold(li); return; } 
+                if let Some(li) = fl { self.my_editor.toggle_fold(li); return true; } 
             } 
         }
         let mut final_ts = 0.0;
@@ -1107,10 +1302,11 @@ impl CodeEditorWidget {
             } 
         });
         let ex = (x - x_off) as i32; let ey = (y - y_off + final_ts + self.scroll_y) as i32;
-        if let Some((count, _, mods)) = click {
-            if !mods.state().shift_key() && count == 1 { self.editor.action(fs, Action::Escape); }
+        if let Some((count, _, shift_held)) = click {
+            if !shift_held && count == 1 { self.editor.action(fs, Action::Escape); }
             match count { 1 => self.editor.action(fs, Action::Click { x: ex, y: ey }), 2 => self.editor.action(fs, Action::DoubleClick { x: ex, y: ey }), 3 => self.editor.action(fs, Action::TripleClick { x: ex, y: ey }), _ => {} }
         } else { self.editor.action(fs, Action::Drag { x: ex, y: ey }); }
+        false
     }
 
     pub fn sync(&mut self) { 

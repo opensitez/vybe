@@ -7,6 +7,15 @@ use crate::lsp_client::LspRequest;
 use vybe_widgets::code_editor_widget::CodeEditorWidget;
 
 impl App {
+    /// Push a line to the output panel and auto-show it.
+    pub(crate) fn output_push(&mut self, line: String) {
+        self.output_lines.push(line);
+        self.output_visible = true;
+        let total = self.output_lines.len() as f32 * 18.0;
+        let visible = self.output_panel_height - 24.0;
+        self.output_scroll_y = (total - visible).max(0.0);
+    }
+
     pub(super) fn flush_code_to_project(&mut self) {
         for tab in &self.tabs {
             if let TabContent::Code(cw) = &tab.content {
@@ -32,10 +41,10 @@ impl App {
 
     pub(super) fn save_project(&mut self) {
         self.flush_code_to_project();
-        if let Some(ref path) = self.project_path {
-            match vybe_project::serialization::save_project_auto(&self.project, path) {
-                Ok(_) => println!("Saved: {}", path),
-                Err(e) => println!("Save error: {}", e),
+        if let Some(path) = self.project_path.clone() {
+            match vybe_project::serialization::save_project_auto(&self.project, &path) {
+                Ok(_) => self.output_push(format!("Saved: {}", path)),
+                Err(e) => self.output_push(format!("Save error: {}", e)),
             }
         } else {
             if let Some(path) = rfd::FileDialog::new()
@@ -45,8 +54,8 @@ impl App {
                 let path_str = path.to_string_lossy().to_string();
                 self.project_path = Some(path_str.clone());
                 match vybe_project::serialization::save_project_auto(&self.project, &path_str) {
-                    Ok(_) => println!("Saved: {}", path_str),
-                    Err(e) => println!("Save error: {}", e),
+                    Ok(_) => self.output_push(format!("Saved: {}", path_str)),
+                    Err(e) => self.output_push(format!("Save error: {}", e)),
                 }
             }
         }
@@ -54,27 +63,52 @@ impl App {
 
     pub(super) fn run_project(&mut self) {
         self.flush_code_to_project();
-        if let Some(ref path) = self.project_path {
-            let _ = vybe_project::serialization::save_project_auto(&self.project, path);
-            let vybec = std::env::current_exe().ok()
-                .and_then(|p| p.parent().map(|d| d.join("vybec")))
-                .unwrap_or_else(|| std::path::PathBuf::from("vybec"));
-            match std::process::Command::new(&vybec).arg(path).spawn() {
-                Ok(child) => {
-                    self.run_child = Some(child);
-                    println!("Running project: {}", path);
+        let path = match self.project_path.clone() {
+            Some(p) => p,
+            None => { self.output_push("Save the project first.".to_string()); return; }
+        };
+        let _ = vybe_project::serialization::save_project_auto(&self.project, &path);
+        let config_flag = match self.build_config {
+            super::BuildConfig::Debug => "--debug",
+            super::BuildConfig::Release => "--release",
+        };
+        let vybec = std::env::current_exe().ok()
+            .and_then(|p| p.parent().map(|d| d.join("vybec")))
+            .unwrap_or_else(|| std::path::PathBuf::from("vybec"));
+        self.output_push(format!("Building ({})...", if self.build_config == super::BuildConfig::Debug { "Debug" } else { "Release" }));
+        match std::process::Command::new(&vybec)
+            .arg(&path)
+            .arg(config_flag)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(stdout) = child.stdout.take() {
+                    use std::io::BufRead;
+                    let reader = std::io::BufReader::new(stdout);
+                    for line in reader.lines().take(200) {
+                        if let Ok(l) = line { self.output_push(l); }
+                    }
                 }
-                Err(e) => println!("Could not launch vybec: {}", e),
+                if let Some(stderr) = child.stderr.take() {
+                    use std::io::BufRead;
+                    let reader = std::io::BufReader::new(stderr);
+                    for line in reader.lines().take(200) {
+                        if let Ok(l) = line { self.output_push(format!("ERR: {}", l)); }
+                    }
+                }
+                self.run_child = Some(child);
+                self.output_push(format!("Running project: {}", path));
             }
-        } else {
-            println!("Save the project first.");
+            Err(e) => self.output_push(format!("Could not launch vybec: {}", e)),
         }
     }
 
     pub(super) fn stop_project(&mut self) {
         if let Some(ref mut child) = self.run_child {
             let _ = child.kill();
-            println!("Stopped.");
+            self.output_push("Stopped.".to_string());
         }
         self.run_child = None;
     }
