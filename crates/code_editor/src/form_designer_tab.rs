@@ -1,4 +1,5 @@
 use vybe_widgets::{FontSystem, SwashCache, TextColor as CosmicColor};
+use vybe_widgets::color_picker::{ColorPicker, ColorPickerEvent};
 use tiny_skia::{Paint, Pixmap, Transform, Stroke, PathBuilder};
 use uuid::Uuid;
 use vybe_forms::{Form, Control, ControlType};
@@ -346,6 +347,8 @@ pub struct FormDesignerState {
     pub prop_tab: PropTab,
     pub prop_scroll_y: f32,
     pub menu_bar: MenuBarState,
+    pub color_picker: ColorPicker,
+    pub color_picker_prop: Option<String>,
 }
 
 impl FormDesignerState {
@@ -370,6 +373,8 @@ impl FormDesignerState {
             prop_tab: PropTab::Properties,
             prop_scroll_y: 0.0,
             menu_bar: MenuBarState::new(),
+            color_picker: ColorPicker::new(),
+            color_picker_prop: None,
         }
     }
 
@@ -435,7 +440,15 @@ impl FormDesignerState {
         fill(pix, &paint, form_x + form_w - 56.0, btn_y, btn_sz, btn_sz, s);
 
         // Client area
-        paint.set_color_rgba8(240, 240, 240, 255);
+        if let Some(ref hex) = self.form.back_color {
+            if let Some(c) = vybe_widgets::color_picker::PickedColor::from_hex(hex) {
+                paint.set_color_rgba8(c.r, c.g, c.b, c.a);
+            } else {
+                paint.set_color_rgba8(240, 240, 240, 255);
+            }
+        } else {
+            paint.set_color_rgba8(240, 240, 240, 255);
+        }
         let client_y = form_y + TITLE_H;
         let client_h = form_h - TITLE_H;
         fill(pix, &paint, form_x, client_y, form_w, client_h, s);
@@ -1070,10 +1083,40 @@ impl FormDesignerState {
         // Left border (re-draw on top)
         paint.set_color_rgba8(204, 204, 204, 255);
         fill(pix, &paint, rect.x, rect.y, 1.0, rect.h, s);
+
+        // ── Color picker popup overlay ──
+        if self.color_picker.open {
+            let popup_x = rect.x + 10.0;
+            let popup_y = rect.y + PROP_HEADER_H + PROP_TAB_H + 40.0;
+            self.color_picker.render_popup(pix, popup_x, popup_y, s);
+        }
     }
 
     pub fn handle_properties_click(&mut self, mx: f32, my: f32, rect: Rect) -> bool {
         if !rect.contains(mx, my) { return false; }
+
+        // ── Color picker popup is open: route click to it first ──
+        if self.color_picker.open {
+            let popup_x = rect.x + 10.0;
+            let popup_y = rect.y + PROP_HEADER_H + PROP_TAB_H + 40.0;
+            match self.color_picker.handle_click(mx, my, popup_x, popup_y) {
+                ColorPickerEvent::Changed(c) => {
+                    let hex = c.to_hex();
+                    if let Some(prop_name) = self.color_picker_prop.clone() {
+                        self.apply_color_prop(&prop_name, &hex);
+                    }
+                    return true;
+                }
+                ColorPickerEvent::Closed => {
+                    let hex = self.color_picker.color.to_hex();
+                    if let Some(prop_name) = self.color_picker_prop.take() {
+                        self.apply_color_prop(&prop_name, &hex);
+                    }
+                    return true;
+                }
+                ColorPickerEvent::None => { return true; }
+            }
+        }
 
         // Tab click
         let tab_y = rect.y + PROP_HEADER_H;
@@ -1088,7 +1131,52 @@ impl FormDesignerState {
             return true;
         }
 
+        // Property row click (value column)
+        if self.prop_tab == PropTab::Properties {
+            let content_top = tab_y + PROP_TAB_H;
+            let val_x = rect.x + rect.w * 0.42;
+            if my >= content_top && mx >= val_x {
+                let items = self.collect_props();
+                let mut y = content_top + 2.0 - self.prop_scroll_y;
+                for item in &items {
+                    match item {
+                        PropItem::Section(_) => { y += PROP_SECTION_H; }
+                        PropItem::Row(key, value) => {
+                            if my >= y && my < y + PROP_ROW_H {
+                                if key == "BackColor" || key == "ForeColor" {
+                                    self.color_picker.set_from_hex(value);
+                                    self.color_picker.open = true;
+                                    self.color_picker_prop = Some(key.clone());
+                                    return true;
+                                }
+                            }
+                            y += PROP_ROW_H;
+                        }
+                        PropItem::CheckboxRow(_, _) | PropItem::DropdownRow(_, _, _) => { y += PROP_ROW_H; }
+                    }
+                }
+            }
+        }
+
         false
+    }
+
+    fn apply_color_prop(&mut self, prop_name: &str, hex: &str) {
+        if self.selected_controls.is_empty() {
+            // Apply to form itself
+            match prop_name {
+                "BackColor" => { self.form.back_color = Some(hex.to_string()); }
+                "ForeColor" => { self.form.fore_color = Some(hex.to_string()); }
+                _ => {}
+            }
+        } else {
+            // Apply to selected control(s)
+            for id in &self.selected_controls {
+                if let Some(ctrl) = self.form.controls.iter_mut().find(|c| c.id == *id) {
+                    ctrl.properties.set(prop_name, hex.to_string());
+                }
+            }
+        }
     }
 
     pub fn scroll_properties(&mut self, amount: f32) {
@@ -1184,7 +1272,7 @@ impl FormDesignerState {
         let display_text = if ctrl_text.is_empty() { &ctrl.name } else { &ctrl_text };
         match ctrl.control_type {
             ControlType::Button => {
-                paint.set_color_rgba8(225, 225, 225, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(225, 225, 225, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(173, 173, 173, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
@@ -1199,14 +1287,14 @@ impl FormDesignerState {
                 draw_text_with_font(pix, fs, sc, display_text, cx + 2.0, cy + 2.0, font_prop, 12.0, CosmicColor::rgba(0, 102, 204, 255), s);
             }
             ControlType::TextBox | ControlType::MaskedTextBox => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(122, 122, 122, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
                 draw_text_with_font(pix, fs, sc, display_text, cx + 3.0, cy + 3.0, font_prop, 12.0, text_color, s);
             }
             ControlType::RichTextBox => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(122, 122, 122, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
@@ -1234,7 +1322,7 @@ impl FormDesignerState {
                 draw_text_with_font(pix, fs, sc, display_text, cx + 20.0, cy + 2.0, font_prop, 12.0, text_color, s);
             }
             ControlType::ComboBox => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(122, 122, 122, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
@@ -1247,7 +1335,7 @@ impl FormDesignerState {
                 draw_text_with_font(pix, fs, sc, display_text, cx + 3.0, cy + 3.0, font_prop, 12.0, text_color, s);
             }
             ControlType::ListBox => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(122, 122, 122, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
@@ -1257,7 +1345,7 @@ impl FormDesignerState {
                 draw_text_with_font(pix, fs, sc, &ctrl.name, cx + 3.0, cy + 3.0, font_prop, 11.0, grey, s);
             }
             ControlType::PictureBox => {
-                paint.set_color_rgba8(210, 210, 210, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(210, 210, 210, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(160, 160, 160, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
@@ -1271,7 +1359,7 @@ impl FormDesignerState {
                 }
             }
             ControlType::ProgressBar => {
-                paint.set_color_rgba8(230, 230, 230, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(230, 230, 230, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(6, 176, 37, 255);
                 fill(pix, &paint, cx + 1.0, cy + 1.0, (cw - 2.0) * 0.3, ch - 2.0, s);
@@ -1279,7 +1367,7 @@ impl FormDesignerState {
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
             }
             ControlType::NumericUpDown => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(122, 122, 122, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
@@ -1302,7 +1390,7 @@ impl FormDesignerState {
                 fill(pix, &paint, cx + 10.0, track_y - 8.0, 10.0, 16.0, s);
             }
             ControlType::DateTimePicker => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(122, 122, 122, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
@@ -1312,7 +1400,7 @@ impl FormDesignerState {
                 draw_text(pix, fs, sc, "1/1/2024", cx + 4.0, cy + 3.0, 11.0, text_color, s);
             }
             ControlType::TreeView | ControlType::ListView => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(122, 122, 122, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
@@ -1321,7 +1409,7 @@ impl FormDesignerState {
                 draw_text_with_font(pix, fs, sc, &ctrl.name, cx + 4.0, cy + 4.0, font_prop, 11.0, grey, s);
             }
             ControlType::DataGridView => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 // Header row
                 paint.set_color_rgba8(230, 230, 230, 255);
@@ -1349,7 +1437,7 @@ impl FormDesignerState {
                 }
             }
             ControlType::TabControl => {
-                paint.set_color_rgba8(240, 240, 240, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(240, 240, 240, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 // Tab header
                 paint.set_color_rgba8(255, 255, 255, 255);
@@ -1360,7 +1448,7 @@ impl FormDesignerState {
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
             }
             ControlType::MenuStrip | ControlType::ToolStrip | ControlType::StatusStrip => {
-                paint.set_color_rgba8(240, 240, 240, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(240, 240, 240, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(204, 204, 204, 255);
                 fill(pix, &paint, cx, cy + ch - 1.0, cw, 1.0, s);
@@ -1373,7 +1461,7 @@ impl FormDesignerState {
                 draw_text(pix, fs, sc, label, cx + 6.0, cy + 3.0, 11.0, text_color, s);
             }
             ControlType::MonthCalendar => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(0, 120, 215, 255);
                 fill(pix, &paint, cx, cy, cw, 24.0_f32.min(ch), s);
@@ -1382,7 +1470,7 @@ impl FormDesignerState {
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
             }
             ControlType::WebBrowser => {
-                paint.set_color_rgba8(255, 255, 255, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 // Address bar
                 paint.set_color_rgba8(240, 240, 240, 255);
@@ -1396,14 +1484,14 @@ impl FormDesignerState {
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
             }
             ControlType::HScrollBar => {
-                paint.set_color_rgba8(230, 230, 230, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(230, 230, 230, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(188, 188, 188, 255);
                 fill(pix, &paint, cx + 16.0, cy + 2.0, 30.0, ch - 4.0, s);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
             }
             ControlType::VScrollBar => {
-                paint.set_color_rgba8(230, 230, 230, 255);
+                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(230, 230, 230, 255); }
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(188, 188, 188, 255);
                 fill(pix, &paint, cx + 2.0, cy + 16.0, cw - 4.0, 30.0, s);
@@ -1610,6 +1698,16 @@ impl FormDesignerState {
             return true;
         }
 
+        // Close color picker when clicking outside the properties panel
+        if self.color_picker.open {
+            let hex = self.color_picker.color.to_hex();
+            if let Some(prop_name) = self.color_picker_prop.take() {
+                self.apply_color_prop(&prop_name, &hex);
+            }
+            self.color_picker.open = false;
+            // Don't return — let the click also be processed normally
+        }
+
         if !content_rect.contains(mx, my) { return false; }
 
         if let Some((id, handle)) = self.hit_test_handle(mx, my, content_rect) {
@@ -1677,6 +1775,23 @@ impl FormDesignerState {
     }
 
     pub fn handle_mouse_move(&mut self, mx: f32, my: f32, rect: Rect) {
+        // Route drag to color picker if open
+        if self.color_picker.open {
+            let lay = self.layout(rect);
+            let popup_x = lay.properties.x + 10.0;
+            let popup_y = lay.properties.y + PROP_HEADER_H + PROP_TAB_H + 40.0;
+            match self.color_picker.handle_drag(mx, my, popup_x, popup_y) {
+                ColorPickerEvent::Changed(c) => {
+                    let hex = c.to_hex();
+                    if let Some(prop_name) = self.color_picker_prop.clone() {
+                        self.apply_color_prop(&prop_name, &hex);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         let _content_rect = self.layout(rect).content;
 
         if self.lasso_start.is_some() {
@@ -1731,6 +1846,10 @@ impl FormDesignerState {
     }
 
     pub fn handle_mouse_up(&mut self, rect: Rect) {
+        if self.color_picker.open {
+            self.color_picker.handle_mouse_up();
+        }
+
         let content_rect = self.layout(rect).content;
 
         if let (Some(start), Some(end)) = (self.lasso_start, self.lasso_current) {

@@ -32,9 +32,9 @@ impl Form {
             height: 480,
             controls: Vec::new(),
             event_bindings: Vec::new(),
-            back_color: None,
-            fore_color: None,
-            font: None,
+            back_color: Some("#F0F0F0".into()),
+            fore_color: Some("#000000".into()),
+            font: Some("Roboto, 14px".into()),
             properties: PropertyBag::new(),
         }
     }

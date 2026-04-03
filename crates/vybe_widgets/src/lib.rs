@@ -58,6 +58,7 @@ pub mod split_panel;
 pub mod tab_panel;
 pub mod status_bar_panel;
 pub mod output_panel;
+pub mod properties_panel;
 pub mod form;
 pub mod app_window;
 
@@ -107,6 +108,7 @@ pub use split_panel::SplitPanel;
 pub use tab_panel::TabPanel;
 pub use status_bar_panel::StatusBarPanel;
 pub use output_panel::{OutputPanel, OutputPanelEvent, OutputTab, ProblemEntry, ProblemSeverity};
+pub use properties_panel::{PropertiesPanel, EditingProp, PropTab};
 pub use form::Form;
 pub use app_window::{Application, run_app};
 
