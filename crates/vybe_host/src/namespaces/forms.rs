@@ -92,6 +92,12 @@ pub fn register(vm: &mut VM) {
     set_prop(&keys, "controlkey", Value::F64(17.0));
     set_prop(&keys, "menu", Value::F64(18.0));
 
+    // BorderStyle (control-level: None=0, FixedSingle=1, Fixed3D=2)
+    let bs = ensure_namespace(vm, &["Window", "Forms", "BorderStyle"]);
+    set_prop(&bs, "none", Value::F64(0.0));
+    set_prop(&bs, "fixedsingle", Value::F64(1.0));
+    set_prop(&bs, "fixed3d", Value::F64(2.0));
+
     // FormBorderStyle
     let fbs = ensure_namespace(vm, &["Window", "Forms", "FormBorderStyle"]);
     set_prop(&fbs, "none", Value::F64(0.0));
@@ -147,6 +153,13 @@ pub fn register(vm: &mut VM) {
     set_prop(&color, "lightgray", Value::F64(0xD3D3D3 as f64));
     set_prop(&color, "transparent", Value::F64(-1.0));
 
+    // Color.FromArgb — callable from namespace
+    set_prop(&color, "fromargb", host_fn_ref(vm, "vybe:drawing", "color.fromargb"));
+
+    // ColorTranslator
+    let ct = ensure_namespace(vm, &["System", "Drawing", "ColorTranslator"]);
+    set_prop(&ct, "fromhtml", host_fn_ref(vm, "vybe:drawing", "colortranslator.fromhtml"));
+
     // Color shortcut
     let color_short = ensure_namespace(vm, &["Color"]);
     set_prop(&color_short, "black", Value::F64(0x000000 as f64));
@@ -156,6 +169,34 @@ pub fn register(vm: &mut VM) {
     set_prop(&color_short, "blue", Value::F64(0x0000FF as f64));
     set_prop(&color_short, "yellow", Value::F64(0xFFFF00 as f64));
     set_prop(&color_short, "gray", Value::F64(0x808080 as f64));
+    set_prop(&color_short, "fromargb", host_fn_ref(vm, "vybe:drawing", "color.fromargb"));
+
+    // BorderStyle shortcut (bare name)
+    let bs_short = ensure_namespace(vm, &["BorderStyle"]);
+    set_prop(&bs_short, "none", Value::F64(0.0));
+    set_prop(&bs_short, "fixedsingle", Value::F64(1.0));
+    set_prop(&bs_short, "fixed3d", Value::F64(2.0));
+
+    // FormBorderStyle shortcut (bare name)
+    let fbs_short = ensure_namespace(vm, &["FormBorderStyle"]);
+    set_prop(&fbs_short, "none", Value::F64(0.0));
+    set_prop(&fbs_short, "fixedsingle", Value::F64(1.0));
+    set_prop(&fbs_short, "fixed3d", Value::F64(2.0));
+    set_prop(&fbs_short, "sizable", Value::F64(4.0));
+    set_prop(&fbs_short, "fixedtoolwindow", Value::F64(5.0));
+    set_prop(&fbs_short, "sizabletoolwindow", Value::F64(6.0));
+
+    // ContentAlignment shortcut (bare name)
+    let ca_short = ensure_namespace(vm, &["ContentAlignment"]);
+    set_prop(&ca_short, "topleft", Value::F64(1.0));
+    set_prop(&ca_short, "topcenter", Value::F64(2.0));
+    set_prop(&ca_short, "topright", Value::F64(4.0));
+    set_prop(&ca_short, "middleleft", Value::F64(16.0));
+    set_prop(&ca_short, "middlecenter", Value::F64(32.0));
+    set_prop(&ca_short, "middleright", Value::F64(64.0));
+    set_prop(&ca_short, "bottomleft", Value::F64(256.0));
+    set_prop(&ca_short, "bottomcenter", Value::F64(512.0));
+    set_prop(&ca_short, "bottomright", Value::F64(1024.0));
 
     // ContentAlignment
     let ca = ensure_namespace(vm, &["System", "Drawing", "ContentAlignment"]);
@@ -297,6 +338,12 @@ pub fn register(vm: &mut VM) {
     let sys_mb = ensure_namespace(vm, &["System", "Windows", "Forms", "MouseButtons"]);
     for (k, v) in &[("none",0),("left",1),("right",2),("middle",4)] {
         set_prop(&sys_mb, k, Value::F64(*v as f64));
+    }
+
+    // BorderStyle (control-level)
+    let sys_bs = ensure_namespace(vm, &["System", "Windows", "Forms", "BorderStyle"]);
+    for (k, v) in &[("none",0),("fixedsingle",1),("fixed3d",2)] {
+        set_prop(&sys_bs, k, Value::F64(*v as f64));
     }
 
     // MessageBox

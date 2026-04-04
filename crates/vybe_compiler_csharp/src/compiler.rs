@@ -156,28 +156,9 @@ impl Compiler {
             class_methods: HashSet::new(),
             class_field_map: HashMap::new(),
             class_method_map: HashMap::new(),
-            _known_types: Self::init_known_types(),
+            _known_types: common::dotnet::known_types(),
             current_class_base: None,
-            interface_imports: vec![
-                "system".into(),
-                "system.console".into(),
-                "system.math".into(),
-                "system.io".into(),
-                "system.io.file".into(),
-                "system.io.path".into(),
-                "system.io.directory".into(),
-                "system.windows.forms".into(),
-                "system.collections.generic".into(),
-                "system.text".into(),
-                "system.drawing".into(),
-                "system.net".into(),
-                "system.threading".into(),
-                "system.diagnostics".into(),
-                "system.data".into(),
-                "system.security.cryptography".into(),
-                "system.xml.linq".into(),
-                "system.linq".into(),
-            ],
+            interface_imports: common::dotnet::default_interface_imports(),
         }
     }
 
@@ -354,16 +335,9 @@ impl Compiler {
     }
 
     fn is_namespace(&self, name: &str) -> bool {
-        matches!(name.to_lowercase().as_str(),
-            "math" | "console" | "convert" | "string" | "array"
-            | "int" | "double" | "float" | "bool" | "long" | "byte" | "object"
-            | "file" | "io" | "directory" | "path"
-            | "system" | "application" | "environment"
-            | "thread" | "json" | "color" | "datetime"
-            | "stringbuilder" | "process" | "timespan"
-            | "guid" | "point" | "size" | "font" | "random"
-            | "messagebox" | "encoding"
-        )
+        static ROOTS: std::sync::LazyLock<std::collections::HashSet<String>> =
+            std::sync::LazyLock::new(|| vybe_compiler_common::dotnet::namespace_roots());
+        ROOTS.contains(&name.to_lowercase())
     }
 
     fn is_namespace_expr(&self, expr: &Expression) -> bool {
@@ -379,85 +353,15 @@ impl Compiler {
     // ================================================================
 
     fn init_known_types() -> HashMap<String, (&'static str, &'static str)> {
-        let mut m = HashMap::new();
-        for (name, module, func) in &[
-            ("list", "vybe:types", "listNew"),
-            ("dictionary", "vybe:types", "dictNew"),
-            ("queue", "vybe:types", "queueNew"),
-            ("stack", "vybe:types", "stackNew"),
-            ("hashset", "vybe:types", "hashSetNew"),
-            ("arraylist", "vybe:types", "listNew"),
-            ("hashtable", "vybe:types", "dictNew"),
-            ("collection", "vybe:types", "listNew"),
-            ("sortedlist", "vybe:types", "dictNew"),
-            ("datetime", "vybe:types", "dateTimeNew"),
-            ("stringbuilder", "vybe:types", "stringBuilderNew"),
-            ("datatable", "vybe:data", "dataTableNew"),
-            ("dataset", "vybe:data", "dataSetNew"),
-            ("point", "vybe:drawing", "pointNew"),
-            ("size", "vybe:drawing", "sizeNew"),
-            ("sizef", "vybe:drawing", "sizeNew"),
-            ("font", "vybe:drawing", "fontNew"),
-            ("random", "vybe:threading", "randomNew"),
-            ("stopwatch", "vybe:threading", "stopwatchNew"),
-            ("sqlconnection", "vybe:database", "connect"),
-            ("tcpclient", "vybe:net", "tcpConnect"),
-            ("tcplistener", "vybe:net", "tcpListenerNew"),
-            ("udpclient", "vybe:net", "udpNew"),
-            ("streamreader", "vybe:net", "streamReaderNew"),
-            ("streamwriter", "vybe:net", "streamWriterNew"),
-            ("form", "vybe:gui", "newForm"),
-        ] {
-            m.insert(name.to_string(), (*module, *func));
-        }
-        m
+        common::dotnet::known_types()
     }
 
     // ================================================================
     // Interface resolution (Component Model)
     // ================================================================
 
-    /// Resolve a dotted C# name to a (module, function) host import.
-    /// e.g. "Console.WriteLine" → ("wasi:cli", "log")
-    /// e.g. "Math.Floor" → ("vybe:math", "floor")
     fn resolve_interface_call(&self, parts: &[&str]) -> Option<(String, String)> {
-        let lower_parts: Vec<String> = parts.iter().map(|p| p.to_lowercase()).collect();
-
-        for prefix_len in (1..lower_parts.len()).rev() {
-            let prefix = lower_parts[..prefix_len].join(".");
-            if self.interface_imports.contains(&prefix) {
-                let func = lower_parts[prefix_len..].join(".");
-                let module = match prefix.as_str() {
-                    "system.console" => "wasi:cli",
-                    "system.math" => "vybe:math",
-                    "system.io.file" => "wasi:filesystem",
-                    "system.io.path" => "wasi:filesystem",
-                    "system.io.directory" => "wasi:filesystem",
-                    "system.io" => "wasi:filesystem",
-                    "system.convert" => "vybe:convert",
-                    "system.string" => "vybe:string",
-                    "system.array" => "vybe:array",
-                    "system.environment" => "wasi:cli",
-                    "system.threading.thread" => "wasi:clocks",
-                    "system.threading" => "vybe:threading",
-                    "system.diagnostics" => "wasi:cli",
-                    "system.net" => "wasi:http",
-                    "system.net.sockets" => "vybe:net",
-                    "system.text.regularexpressions" => "vybe:regex",
-                    "system.text" => "vybe:string",
-                    "system.collections.generic" => "vybe:types",
-                    "system.data" => "vybe:data",
-                    "system.security.cryptography" => "vybe:crypto",
-                    "system.xml.linq" => "vybe:xml",
-                    "system.drawing" => "vybe:drawing",
-                    "system.windows.forms" => "vybe:gui",
-                    _ => &prefix,
-                };
-                let mapped_func = map_interface_func(module, &func);
-                return Some((module.to_string(), mapped_func));
-            }
-        }
-        None
+        common::dotnet::resolve_interface_call(parts, &self.interface_imports)
     }
 
     // ================================================================
@@ -2195,6 +2099,13 @@ impl Compiler {
                         _ => {}
                     }
                 }
+                // Application.Run(form) → runApplication(form)
+                if obj_lower == "application" && meth_lower == "run" {
+                    for arg in args { self.compile_expression(arg)?; }
+                    let idx = self.import("vybe:gui", "runApplication");
+                    self.emit_host_call(idx, args.len() as u8);
+                    return Ok(());
+                }
                 // string.Join(sep, arr) → array_join opcode
                 if obj_lower == "string" && meth_lower == "join" && args.len() == 2 {
                     // array_join expects [array, delimiter] on stack
@@ -3016,87 +2927,3 @@ impl Compiler {
 // Helper functions
 // ================================================================
 
-/// Map C#/CLR method names to actual host function names.
-fn map_interface_func(module: &str, func: &str) -> String {
-    match (module, func) {
-        // Console
-        ("wasi:cli", "writeline") => "log".into(),
-        ("wasi:cli", "write") => "log".into(),
-        ("wasi:cli", "readline") => "readLine".into(),
-        ("wasi:cli", "error") => "error".into(),
-        // Math
-        ("vybe:math", f) => f.to_string(),
-        // Filesystem
-        ("wasi:filesystem", "readalltext") => "readFile".into(),
-        ("wasi:filesystem", "writealltext") => "writeFile".into(),
-        ("wasi:filesystem", "appendalltext") => "appendFile".into(),
-        ("wasi:filesystem", "exists") => "exists".into(),
-        ("wasi:filesystem", "delete") => "remove".into(),
-        ("wasi:filesystem", "copy") => "copy".into(),
-        ("wasi:filesystem", "move") => "rename".into(),
-        ("wasi:filesystem", "combine") => "pathCombine".into(),
-        ("wasi:filesystem", "getfilename") => "pathGetFileName".into(),
-        ("wasi:filesystem", "getextension") => "pathGetExtension".into(),
-        ("wasi:filesystem", "getdirectoryname") => "pathGetDirectory".into(),
-        ("wasi:filesystem", "getfilenamewithoutextension") => "pathGetFileNameWithoutExt".into(),
-        ("wasi:filesystem", "changeextension") => "pathChangeExtension".into(),
-        ("wasi:filesystem", "getfullpath") => "pathGetFullPath".into(),
-        ("wasi:filesystem", "gettemppath") => "pathGetTempPath".into(),
-        ("wasi:filesystem", "createdirectory") => "mkdir".into(),
-        ("wasi:filesystem", "getfiles") => "listDir".into(),
-        ("wasi:filesystem", "getcurrentdirectory") => "cwd".into(),
-        // Convert
-        ("vybe:convert", "toint32") => "cint".into(),
-        ("vybe:convert", "todouble") => "cdbl".into(),
-        ("vybe:convert", "tostring") => "toString".into(),
-        ("vybe:convert", "toboolean") => "cbool".into(),
-        ("vybe:convert", "todatetime") => "toString".into(),
-        // Environment
-        ("wasi:cli", "getenvironmentvariable") => "getEnv".into(),
-        ("wasi:cli", "machinename") => "machineName".into(),
-        ("wasi:cli", "currentdirectory") => "cwd".into(),
-        // Threading
-        ("wasi:clocks", "sleep") => "sleep".into(),
-        // GUI
-        ("vybe:gui", f) => {
-            let cap = capitalize_control_name(f);
-            if !cap.is_empty() && cap != f {
-                format!("new_{}", cap)
-            } else {
-                f.to_string()
-            }
-        }
-        // Default
-        (_, f) => f.to_string(),
-    }
-}
-
-/// Map lowercase control name to proper cased name.
-fn capitalize_control_name(name: &str) -> String {
-    match name {
-        "button" => "Button", "label" => "Label", "textbox" => "TextBox",
-        "checkbox" => "CheckBox", "radiobutton" => "RadioButton",
-        "combobox" => "ComboBox", "listbox" => "ListBox",
-        "panel" => "Panel", "groupbox" => "GroupBox",
-        "tabcontrol" => "TabControl", "tabpage" => "TabPage",
-        "datagridview" => "DataGridView", "progressbar" => "ProgressBar",
-        "trackbar" => "TrackBar", "numericupdown" => "NumericUpDown",
-        "datetimepicker" => "DateTimePicker", "richtextbox" => "RichTextBox",
-        "picturebox" => "PictureBox", "menustrip" => "MenuStrip",
-        "toolstrip" => "ToolStrip", "statusstrip" => "StatusStrip",
-        "splitcontainer" => "SplitContainer",
-        "flowlayoutpanel" => "FlowLayoutPanel",
-        "tablelayoutpanel" => "TableLayoutPanel",
-        "linklabel" => "LinkLabel", "maskedtextbox" => "MaskedTextBox",
-        "listview" => "ListView", "webbrowser" => "WebBrowser",
-        "monthcalendar" => "MonthCalendar",
-        "contextmenustrip" => "ContextMenuStrip",
-        "timer" => "Timer", "bindingsource" => "BindingSource",
-        "tooltip" => "ToolTip", "imagelist" => "ImageList",
-        "openfiledialog" => "OpenFileDialog",
-        "savefiledialog" => "SaveFileDialog",
-        "folderbrowserdialog" => "FolderBrowserDialog",
-        "colordialog" => "ColorDialog", "fontdialog" => "FontDialog",
-        _ => return name.to_string(),
-    }.to_string()
-}

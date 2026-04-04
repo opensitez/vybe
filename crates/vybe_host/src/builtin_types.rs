@@ -316,10 +316,15 @@ pub fn register_all(vm: &mut VM) {
     // --- Stopwatch ---
     {
         let mut t = TypeDef::new("Stopwatch");
+        if let Some(idx) = h(vm, "vybe:threading", "stopwatchStart") {
+            t.methods.insert("start".into(), Method::HostFn(idx));
+        }
+        if let Some(idx) = h(vm, "vybe:threading", "stopwatchStop") {
+            t.methods.insert("stop".into(), Method::HostFn(idx));
+        }
         if let Some(idx) = h(vm, "vybe:threading", "stopwatchElapsed") {
             t.methods.insert("elapsedmilliseconds".into(), Method::HostFn(idx));
             t.methods.insert("elapsed".into(), Method::HostFn(idx));
-            t.methods.insert("stop".into(), Method::HostFn(idx));
         }
         t.parent = Some(0);
         vm.type_registry.register(t);

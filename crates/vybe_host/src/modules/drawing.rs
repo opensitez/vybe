@@ -76,6 +76,51 @@ pub fn register(vm: &mut VM) {
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
 
+    // Color.FromArgb(r, g, b) or Color.FromArgb(a, r, g, b)
+    vm.register_host_fn("vybe:drawing", "color.fromargb", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let (a, r, g, b) = if args.len() >= 4 {
+            (args[0].as_f64() as u8, args[1].as_f64() as u8, args[2].as_f64() as u8, args[3].as_f64() as u8)
+        } else if args.len() == 3 {
+            (255, args[0].as_f64() as u8, args[1].as_f64() as u8, args[2].as_f64() as u8)
+        } else if args.len() == 1 {
+            let val = args[0].as_f64() as u32;
+            (((val >> 24) & 0xFF) as u8, ((val >> 16) & 0xFF) as u8, ((val >> 8) & 0xFF) as u8, (val & 0xFF) as u8)
+        } else {
+            (255, 0, 0, 0)
+        };
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Rc::from("Color")));
+        obj.properties.insert("r".into(), Value::F64(r as f64));
+        obj.properties.insert("g".into(), Value::F64(g as f64));
+        obj.properties.insert("b".into(), Value::F64(b as f64));
+        obj.properties.insert("a".into(), Value::F64(a as f64));
+        obj.properties.insert("name".into(), Value::String(Rc::from(format!("#{:02X}{:02X}{:02X}", r, g, b).as_str())));
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }));
+
+    // ColorTranslator.FromHtml("#RRGGBB")
+    vm.register_host_fn("vybe:drawing", "colortranslator.fromhtml", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let html = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        let html = html.trim_start_matches('#');
+        let (r, g, b) = if html.len() == 6 {
+            (
+                u8::from_str_radix(&html[0..2], 16).unwrap_or(0),
+                u8::from_str_radix(&html[2..4], 16).unwrap_or(0),
+                u8::from_str_radix(&html[4..6], 16).unwrap_or(0),
+            )
+        } else {
+            (0, 0, 0)
+        };
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Rc::from("Color")));
+        obj.properties.insert("r".into(), Value::F64(r as f64));
+        obj.properties.insert("g".into(), Value::F64(g as f64));
+        obj.properties.insert("b".into(), Value::F64(b as f64));
+        obj.properties.insert("a".into(), Value::F64(255.0));
+        obj.properties.insert("name".into(), Value::String(Rc::from(format!("#{:02X}{:02X}{:02X}", r, g, b).as_str())));
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }));
+
     // Color constants (Color.Red, Color.Blue, etc.) — stub as named objects
     vm.register_host_fn("vybe:drawing", "colorFromName", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let name = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "Black".into());

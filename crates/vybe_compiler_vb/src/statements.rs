@@ -9,6 +9,16 @@ use vybe_parser_basic::ast::*;
 
 use crate::compiler::{Compiler, VarResolution, LoopContext};
 
+/// Check if a step expression is negative at compile time.
+fn is_negative_expr(expr: &Expression) -> bool {
+    match expr {
+        Expression::Negate(_) => true,
+        Expression::IntegerLiteral(n) => *n < 0,
+        Expression::DoubleLiteral(n) => *n < 0.0,
+        _ => false,
+    }
+}
+
 impl Compiler {
     pub(crate) fn compile_statement(&mut self, stmt: &Statement) -> Result<(), String> {
         match stmt {
@@ -143,10 +153,18 @@ impl Compiler {
                 let i_slot = self.define_local(&var_name);
                 self.emit_u16(Op::local_set, i_slot);
                 self.emit(Op::drop);
+
+                // Determine step direction at compile time for the loop condition
+                let negative_step = step.as_ref().map(|s| is_negative_expr(s)).unwrap_or(false);
+
                 let loop_start = self.current_offset();
                 self.emit_u16(Op::local_get, i_slot);
                 self.compile_expression(end)?;
-                self.emit(Op::dyn_le);
+                if negative_step {
+                    self.emit(Op::dyn_ge); // i >= end for negative step
+                } else {
+                    self.emit(Op::dyn_le); // i <= end for positive step
+                }
                 common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                 let exit = self.emit_jump(Op::br_if_false);
                 self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });

@@ -363,76 +363,27 @@ pub fn build_project_code(project: &vybe_project::Project) -> (String, Option<vy
         all_code.push('\n');
     }
     for fm in &project.forms {
-        let form = &fm.form;
-        let mut designer = format!("Partial Class {}\n", form.name);
-        designer.push_str("    Inherits System.Windows.Forms.Form\n\n");
-        for ctrl in &form.controls {
-            designer.push_str(&format!("    Friend WithEvents {} As {}\n", ctrl.name, control_type_name(ctrl)));
-        }
         let user_code = fm.get_user_code();
-        let has_ctor = user_code.to_uppercase().contains("SUB NEW");
-        if !has_ctor {
-            designer.push_str("\n    Public Sub New()\n");
-            designer.push_str("        InitializeComponent()\n");
-            designer.push_str("    End Sub\n");
+        let user_upper = user_code.to_uppercase();
+        let has_init = user_upper.contains("INITIALIZECOMPONENT");
+
+        if has_init {
+            // User code already has InitializeComponent — use it directly.
+            // The compiler handles fully-qualified .NET names via:
+            // - compile_new_expr prefix stripping (New System.Windows.Forms.Panel → new_Panel)
+            // - resolve_interface_call (System.Drawing.Color.FromArgb → vybe:gui/color.fromargb)
+            // - runtime namespace objects (System.Windows.Forms.BorderStyle.FixedSingle → F64)
+            all_code.push_str(user_code);
+            all_code.push('\n');
+        } else {
+            // No user InitializeComponent — generate designer from the form model
+            // using the full-featured codegen that handles colors, fonts, nesting, etc.
+            let designer = vybe_forms::serialization::designer_codegen::generate_designer_code(&fm.form);
+            all_code.push_str(&designer);
+            all_code.push('\n');
+            all_code.push_str(user_code);
+            all_code.push('\n');
         }
-        designer.push_str("\n    Private Sub InitializeComponent()\n");
-        for ctrl in &form.controls {
-            designer.push_str(&format!("        Me.{} = New {}()\n", ctrl.name, control_type_name(ctrl)));
-        }
-        for ctrl in &form.controls {
-            let is_non_visual = ctrl.control_type.is_non_visual();
-            designer.push_str(&format!("        Me.{}.Name = \"{}\"\n", ctrl.name, ctrl.name));
-            if let Some(text) = ctrl.properties.get_string("Text") {
-                designer.push_str(&format!("        Me.{}.Text = \"{}\"\n", ctrl.name, text));
-            }
-            for (key, val) in ctrl.properties.iter() {
-                if let Some(s) = val.as_string() {
-                    let k = key.as_str();
-                    if matches!(k, "Name" | "Text" | "Location" | "Size" | "TabIndex"
-                        | "Enabled" | "Visible" | "BackColor" | "ForeColor" | "Font") {
-                        continue;
-                    }
-                    if k.starts_with("DataBindings.") { continue; }
-                    if !s.is_empty() {
-                        if k == "DataSource" {
-                            designer.push_str(&format!("        Me.{}.DataSource = Me.{}\n", ctrl.name, s));
-                        } else if k == "BindingSource" {
-                            designer.push_str(&format!("        Me.{}.BindingSource = Me.{}\n", ctrl.name, s));
-                        } else if k.starts_with("DataBinding:") {
-                            let parts: Vec<&str> = k.splitn(2, ':').collect();
-                            if parts.len() == 2 {
-                                let prop = parts[1];
-                                let binding_parts: Vec<&str> = s.splitn(2, |c| c == '|' || c == '.').collect();
-                                if binding_parts.len() == 2 {
-                                    designer.push_str(&format!(
-                                        "        Me.{}.DataBindings.Add(\"{}\", Me.{}, \"{}\")\n",
-                                        ctrl.name, prop, binding_parts[0], binding_parts[1]
-                                    ));
-                                }
-                            }
-                        } else {
-                            designer.push_str(&format!("        Me.{}.{} = \"{}\"\n", ctrl.name, k, s));
-                        }
-                    }
-                }
-            }
-            if !is_non_visual {
-                designer.push_str(&format!("        Me.{}.Location = New Point({}, {})\n", ctrl.name, ctrl.bounds.x, ctrl.bounds.y));
-                designer.push_str(&format!("        Me.{}.Size = New Size({}, {})\n", ctrl.name, ctrl.bounds.width, ctrl.bounds.height));
-                designer.push_str(&format!("        Me.Controls.Add(Me.{})\n", ctrl.name));
-            }
-        }
-        designer.push_str(&format!("        Me.Name = \"{}\"\n", form.name));
-        if !form.text.is_empty() {
-            designer.push_str(&format!("        Me.Text = \"{}\"\n", form.text));
-        }
-        designer.push_str("    End Sub\n");
-        designer.push_str("End Class\n");
-        all_code.push_str(&designer);
-        all_code.push('\n');
-        all_code.push_str(&fm.get_user_code());
-        all_code.push('\n');
     }
 
     let startup_form_name = match &project.startup_object {
@@ -504,133 +455,9 @@ fn run_project(path: &Path, _extra_args: &[String]) {
         }
     };
 
-    // Compile ALL code — modules, classes, forms — into one program.
-    // For forms, generate simplified InitializeComponent from the parsed form model
-    // instead of re-including the raw designer code (which uses fully-qualified names
-    // like System.Windows.Forms.FormStartPosition.CenterScreen that our compiler can't handle).
-    let mut all_code = String::new();
-    for cf in &project.code_files {
-        all_code.push_str(&cf.code);
-        all_code.push('\n');
-    }
-    for fm in &project.forms {
-        // Generate simple designer code from the parsed form model
-        let form = &fm.form;
-        let mut designer = format!("Partial Class {}\n", form.name);
-        designer.push_str("    Inherits System.Windows.Forms.Form\n\n");
-        // Field declarations
-        for ctrl in &form.controls {
-            designer.push_str(&format!("    Friend WithEvents {} As {}\n", ctrl.name, control_type_name(ctrl)));
-        }
-        // Auto-inject constructor that calls InitializeComponent if user code doesn't have one
-        let user_code = fm.get_user_code();
-        let has_ctor = user_code.to_uppercase().contains("SUB NEW");
-        if !has_ctor {
-            designer.push_str("\n    Public Sub New()\n");
-            designer.push_str("        InitializeComponent()\n");
-            designer.push_str("    End Sub\n");
-        }
-        designer.push_str("\n    Private Sub InitializeComponent()\n");
-        // Create controls using bare names (not fully-qualified)
-        for ctrl in &form.controls {
-            designer.push_str(&format!("        Me.{} = New {}()\n", ctrl.name, control_type_name(ctrl)));
-        }
-        // Set properties on all controls, but only Controls.Add for visual ones
-        for ctrl in &form.controls {
-            let is_non_visual = ctrl.control_type.is_non_visual();
-            designer.push_str(&format!("        Me.{}.Name = \"{}\"\n", ctrl.name, ctrl.name));
-            if let Some(text) = ctrl.properties.get_string("Text") {
-                designer.push_str(&format!("        Me.{}.Text = \"{}\"\n", ctrl.name, text));
-            }
-            // Emit all string properties from the parsed form model
-            // (ConnectionString, DataSource, DataMember, DbType, etc.)
-            for (key, val) in ctrl.properties.iter() {
-                if let Some(s) = val.as_string() {
-                    let k = key.as_str();
-                    // Skip already emitted or layout properties
-                    if matches!(k, "Name" | "Text" | "Location" | "Size" | "TabIndex"
-                        | "Enabled" | "Visible" | "BackColor" | "ForeColor" | "Font") {
-                        continue;
-                    }
-                    // Skip DataBindings.* properties — handled by data binding system
-                    if k.starts_with("DataBindings.") {
-                        continue;
-                    }
-                    if !s.is_empty() {
-                        if k == "DataSource" {
-                            // DataSource is a reference to another control: Me.bs1.DataSource = Me.da1
-                            designer.push_str(&format!("        Me.{}.DataSource = Me.{}\n", ctrl.name, s));
-                        } else if k == "BindingSource" {
-                            designer.push_str(&format!("        Me.{}.BindingSource = Me.{}\n", ctrl.name, s));
-                        } else if k.starts_with("DataBinding:") {
-                            // DataBindings.Add("Text", bs1, "ColumnName")
-                            let parts: Vec<&str> = k.splitn(2, ':').collect();
-                            if parts.len() == 2 {
-                                let prop = parts[1];
-                                // s = "bs1|ColumnName" or "bs1.ColumnName"
-                                let binding_parts: Vec<&str> = s.splitn(2, |c| c == '|' || c == '.').collect();
-                                if binding_parts.len() == 2 {
-                                    designer.push_str(&format!(
-                                        "        Me.{}.DataBindings.Add(\"{}\", Me.{}, \"{}\")\n",
-                                        ctrl.name, prop, binding_parts[0], binding_parts[1]
-                                    ));
-                                }
-                            }
-                        } else {
-                            // Generic property: Me.ctrl.Prop = "value"
-                            designer.push_str(&format!("        Me.{}.{} = \"{}\"\n", ctrl.name, k, s));
-                        }
-                    }
-                }
-            }
-            if !is_non_visual {
-                designer.push_str(&format!(
-                    "        Me.{}.Location = New Point({}, {})\n",
-                    ctrl.name, ctrl.bounds.x, ctrl.bounds.y
-                ));
-                designer.push_str(&format!(
-                    "        Me.{}.Size = New Size({}, {})\n",
-                    ctrl.name, ctrl.bounds.width, ctrl.bounds.height
-                ));
-                designer.push_str(&format!("        Me.Controls.Add(Me.{})\n", ctrl.name));
-            }
-        }
-        // Form properties
-        designer.push_str(&format!("        Me.Name = \"{}\"\n", form.name));
-        if !form.text.is_empty() {
-            designer.push_str(&format!("        Me.Text = \"{}\"\n", form.text));
-        }
-        designer.push_str("    End Sub\n");
-        designer.push_str("End Class\n");
-        eprintln!("[GENERATED-DESIGNER]\n{}", designer);
-        all_code.push_str(&designer);
-        all_code.push('\n');
-        // User code (event handlers etc.)
-        all_code.push_str(&fm.get_user_code());
-        all_code.push('\n');
-    }
+    let (all_code, startup_form) = build_project_code(&project);
 
-    // Determine startup mode
-    let startup_form_name = match &project.startup_object {
-        vybe_project::StartupObject::Form(name) => Some(name.clone()),
-        vybe_project::StartupObject::None if !project.forms.is_empty() => {
-            Some(project.forms.first().unwrap().form.name.clone())
-        }
-        _ => None,
-    };
-
-    let startup_form = startup_form_name.as_ref().and_then(|_| {
-        project.get_startup_form().map(|fm| fm.form.clone())
-            .or_else(|| project.forms.first().map(|fm| fm.form.clone()))
-    });
-
-    let is_sub_main = project.starts_with_main()
-        || all_code.to_uppercase().contains("SUB MAIN");
-
-    // For form projects, we compile the class then instantiate it with
-    // `New FormName()` which calls InitializeComponent and wires events.
-
-    if startup_form.is_none() && !is_sub_main {
+    if startup_form.is_none() && !all_code.to_uppercase().contains("SUB MAIN") {
         eprintln!("Error: project has no forms and no Sub Main entry point");
         std::process::exit(1);
     }
@@ -638,16 +465,6 @@ fn run_project(path: &Path, _extra_args: &[String]) {
     if all_code.trim().is_empty() && startup_form.is_none() {
         eprintln!("Error: no code to run");
         std::process::exit(1);
-    }
-
-    // For form projects, instantiate the class and run the app.
-    // InitializeComponent creates controls (emits AddControl side effects),
-    // sets properties, and wires Handles events — all via the VM.
-    if let Some(ref form) = startup_form {
-        all_code.push_str(&format!(
-            "\nDim __f As New {}()\nApplication.Run(__f)\n",
-            form.name
-        ));
     }
 
     // Set up VM + compile ALL code (class defs + entry point together)

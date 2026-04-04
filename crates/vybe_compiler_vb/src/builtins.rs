@@ -155,6 +155,32 @@ impl Compiler {
                 }
                 return Ok(Some(()));
             }
+
+            // Imports-based resolution: e.g. "stopwatch.startnew" with Imports System.Diagnostics
+            // → resolve to system.diagnostics.stopwatch.startnew via namespace chain
+            if all_parts.len() >= 2 && all_parts[0] != "console" {
+                let imports = self.interface_imports.clone();
+                for import_path in &imports {
+                    let full_path = format!("{}.{}", import_path, fname);
+                    let resolved_parts: Vec<&str> = full_path.split('.').collect();
+                    if self.is_namespace(resolved_parts[0]) {
+                        let root_idx = self.add_string_constant(resolved_parts[0]);
+                        self.emit_u16(Op::global_get, root_idx);
+                        for part in &resolved_parts[1..] {
+                            let idx = self.add_string_constant(part);
+                            self.emit_u16(Op::struct_get, idx);
+                        }
+                        let last = *resolved_parts.last().unwrap();
+                        let is_constant = matches!(last, "pi" | "e" | "maxvalue" | "minvalue"
+                            | "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon");
+                        if !is_constant {
+                            for arg in args { self.compile_expression(arg)?; }
+                            self.emit_u8(Op::call, args.len() as u8);
+                        }
+                        return Ok(Some(()));
+                    }
+                }
+            }
         }
 
         // Map VB function name → (host_module, host_name)
@@ -391,11 +417,41 @@ impl Compiler {
                 let last = *all_parts.last().unwrap();
                 let is_constant = matches!(last, "pi" | "e" | "maxvalue" | "minvalue"
                     | "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon");
-                if !is_constant {
+                if !is_constant && !args.is_empty() {
                     for arg in args { self.compile_expression(arg)?; }
                     self.emit_u8(Op::call, args.len() as u8);
                 }
                 return Ok(Some(()));
+            }
+
+            // Imports-based resolution for bare type member access
+            // e.g. "stopwatch.frequency" with Imports System.Diagnostics
+            // BUT skip if the first part is a local variable (e.g. "sw.elapsedmilliseconds"
+            // where "sw" is a Dim'd Stopwatch — not a namespace component)
+            if all_parts.len() >= 2 && all_parts[0] != "console"
+                && !matches!(self.resolve_variable(all_parts[0]), VarResolution::Local(_))
+            {
+                let imports = self.interface_imports.clone();
+                for import_path in &imports {
+                    let full_path = format!("{}.{}", import_path, full_name);
+                    let resolved_parts: Vec<&str> = full_path.split('.').collect();
+                    if self.is_namespace(resolved_parts[0]) {
+                        let root_idx = self.add_string_constant(resolved_parts[0]);
+                        self.emit_u16(Op::global_get, root_idx);
+                        for part in &resolved_parts[1..] {
+                            let idx = self.add_string_constant(part);
+                            self.emit_u16(Op::struct_get, idx);
+                        }
+                        let last = *resolved_parts.last().unwrap();
+                        let is_constant = matches!(last, "pi" | "e" | "maxvalue" | "minvalue"
+                            | "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon");
+                        if !is_constant && !args.is_empty() {
+                            for arg in args { self.compile_expression(arg)?; }
+                            self.emit_u8(Op::call, args.len() as u8);
+                        }
+                        return Ok(Some(()));
+                    }
+                }
             }
         }
 

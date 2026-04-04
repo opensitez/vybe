@@ -155,21 +155,34 @@ pub fn register(vm: &mut VM) {
     }));
 
     // format(value, formatStr) → formatted string
+    // Supports both VB6 Format(value, spec) and .NET String.Format("{0}...", args...)
     vm.register_host_fn("vybe:string", "format", Box::new(|_ctx, a| {
-        let val = f(a, 0);
-        let fmt = s(a, 1).to_lowercase();
-        let result = match fmt.as_str() {
-            "0" | "0.0" | "#.#" | "fixed" => format!("{:.1}", val),
-            "0.00" | "#.##" | "standard" => format!("{:.2}", val),
-            "percent" => format!("{:.2}%", val * 100.0),
-            "currency" => format!("${:.2}", val),
-            "scientific" => format!("{:e}", val),
-            "yes/no" => if val != 0.0 { "Yes".into() } else { "No".into() },
-            "true/false" => if val != 0.0 { "True".into() } else { "False".into() },
-            "on/off" => if val != 0.0 { "On".into() } else { "Off".into() },
-            _ => format!("{}", val),
-        };
-        Value::String(Rc::from(result.as_str()))
+        let first = s(a, 0);
+        // Detect .NET composite format: first arg is a string containing {0}, {1}, etc.
+        if first.contains("{0}") || first.contains("{1}") || first.contains("{2}") {
+            let mut result = first.clone();
+            for (i, arg) in a[1..].iter().enumerate() {
+                let placeholder = format!("{{{}}}", i);
+                result = result.replace(&placeholder, &format!("{}", arg));
+            }
+            Value::String(Rc::from(result.as_str()))
+        } else {
+            // VB6 Format(value, formatSpec)
+            let val = f(a, 0);
+            let fmt = s(a, 1).to_lowercase();
+            let result = match fmt.as_str() {
+                "0" | "0.0" | "#.#" | "fixed" => format!("{:.1}", val),
+                "0.00" | "#.##" | "standard" => format!("{:.2}", val),
+                "percent" => format!("{:.2}%", val * 100.0),
+                "currency" => format!("${:.2}", val),
+                "scientific" => format!("{:e}", val),
+                "yes/no" => if val != 0.0 { "Yes".into() } else { "No".into() },
+                "true/false" => if val != 0.0 { "True".into() } else { "False".into() },
+                "on/off" => if val != 0.0 { "On".into() } else { "Off".into() },
+                _ => format!("{}", val),
+            };
+            Value::String(Rc::from(result.as_str()))
+        }
     }));
 
     // lset(str, length) → left-align in field

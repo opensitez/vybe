@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use vybe_bytecode::{VM, Value, HostContext};
-use vybe_bytecode::value::Object;
+use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
     // Task.Run — simplified: just call the function synchronously
@@ -46,31 +46,76 @@ pub fn register(vm: &mut VM) {
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
 
-    // Stopwatch
-    vm.register_host_fn("vybe:threading", "stopwatchNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as f64;
-        let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("Stopwatch")));
-        obj.properties.insert("__start".into(), Value::F64(now));
-        obj.properties.insert("isrunning".into(), Value::Bool(true));
-        obj.properties.insert("elapsedmilliseconds".into(), Value::F64(0.0));
-        Value::Object(Rc::new(RefCell::new(obj)))
+    // Stopwatch.Start()
+    vm.register_host_fn("vybe:threading", "stopwatchStart", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut o = obj.borrow_mut();
+            let running = o.properties.get("isrunning").map(|v| v.as_bool()).unwrap_or(false);
+            if !running {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as f64;
+                o.properties.insert("__start".into(), Value::F64(now));
+                o.properties.insert("isrunning".into(), Value::Bool(true));
+            }
+        }
+        Value::Null
     }));
 
+    // Stopwatch.Stop()
+    vm.register_host_fn("vybe:threading", "stopwatchStop", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut o = obj.borrow_mut();
+            let running = o.properties.get("isrunning").map(|v| v.as_bool()).unwrap_or(false);
+            if running {
+                let start = o.properties.get("__start").map(|v| v.as_f64()).unwrap_or(0.0);
+                let acc = o.properties.get("__accumulated").map(|v| v.as_f64()).unwrap_or(0.0);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as f64;
+                o.properties.insert("__accumulated".into(), Value::F64(acc + (now - start)));
+                o.properties.insert("isrunning".into(), Value::Bool(false));
+            }
+        }
+        Value::Null
+    }));
+
+    // Stopwatch.ElapsedMilliseconds (property getter)
     vm.register_host_fn("vybe:threading", "stopwatchElapsed", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.borrow();
-            let start = o.properties.get("__start").map(|v| v.as_f64()).unwrap_or(0.0);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as f64;
-            return Value::F64(now - start);
+            let acc = o.properties.get("__accumulated").map(|v| v.as_f64()).unwrap_or(0.0);
+            let running = o.properties.get("isrunning").map(|v| v.as_bool()).unwrap_or(false);
+            if running {
+                let start = o.properties.get("__start").map(|v| v.as_f64()).unwrap_or(0.0);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as f64;
+                return Value::F64(acc + (now - start));
+            }
+            return Value::F64(acc);
         }
         Value::F64(0.0)
+    }));
+
+    // Stopwatch constructor — capture method indices for __get_ property getters
+    let elapsed_idx = *vm.host_registry.get(&("vybe:threading".into(), "stopwatchElapsed".into())).unwrap();
+    vm.register_host_fn("vybe:threading", "stopwatchNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Rc::from("Stopwatch")));
+        obj.properties.insert("__start".into(), Value::F64(0.0));
+        obj.properties.insert("__accumulated".into(), Value::F64(0.0));
+        obj.properties.insert("isrunning".into(), Value::Bool(false));
+        // ElapsedMilliseconds is a .NET property — register as __get_ so struct_get auto-invokes
+        let mut getter = Object::new();
+        getter.kind = ObjectKind::HostFunction(elapsed_idx);
+        let getter_val = Value::Object(Rc::new(RefCell::new(getter)));
+        obj.properties.insert("__get_elapsedmilliseconds".into(), getter_val.clone());
+        obj.properties.insert("__get_elapsed".into(), getter_val);
+        Value::Object(Rc::new(RefCell::new(obj)))
     }));
 
     // System.Random

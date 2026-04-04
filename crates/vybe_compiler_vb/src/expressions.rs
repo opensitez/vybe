@@ -534,19 +534,30 @@ impl Compiler {
             return Ok(());
         }
 
-        // Strip generic type params and fully-qualified prefixes
+        // Strip generic type params and fully-qualified prefixes.
+        // Use interface_imports to generically strip any known namespace prefix.
         let name = name.find("(of ").map(|p| name[..p].to_string()).unwrap_or(name);
-        let bare = name
-            .strip_prefix("system.data.sqlclient.").or_else(|| name.strip_prefix("system.data.oledb."))
-            .or_else(|| name.strip_prefix("system.net.sockets."))
-            .or_else(|| name.strip_prefix("system.io."))
-            .or_else(|| name.strip_prefix("system.collections."))
-            .or_else(|| name.strip_prefix("system.text."))
-            .or_else(|| name.strip_prefix("system.windows.forms."))
-            .or_else(|| name.strip_prefix("system.drawing."))
-            .or_else(|| name.strip_prefix("adodb."))
-            .unwrap_or(&name)
-            .to_string();
+        let bare = {
+            let mut result = name.clone();
+            // Sort imports by length descending so longer prefixes match first
+            // e.g. "system.data.sqlclient" before "system.data"
+            let mut sorted_imports = self.interface_imports.clone();
+            sorted_imports.sort_by(|a, b| b.len().cmp(&a.len()));
+            for prefix in &sorted_imports {
+                let prefix_dot = format!("{}.", prefix);
+                if let Some(stripped) = name.strip_prefix(&*prefix_dot) {
+                    result = stripped.to_string();
+                    break;
+                }
+            }
+            // Also strip common non-System prefixes
+            if result == name {
+                if let Some(stripped) = name.strip_prefix("adodb.") {
+                    result = stripped.to_string();
+                }
+            }
+            result
+        };
 
         // 1. TypeRegistry known_types table — direct call, no null prefix
         if let Some(&(module, func)) = self.known_types.get(&bare) {
@@ -570,7 +581,46 @@ impl Compiler {
             return Ok(());
         }
 
-        // 3. Cross-language class: WASM import
+        // 3. Namespace chain for fully-qualified dotted names
+        //    e.g. New System.Diagnostics.Stopwatch → global_get "system" → struct_get "diagnostics" → struct_get "stopwatch" → call N
+        {
+            let parts: Vec<&str> = name.split('.').collect();
+            if parts.len() >= 2 && self.is_namespace(parts[0]) {
+                let root_idx = self.add_string_constant(parts[0]);
+                self.emit_u16(Op::global_get, root_idx);
+                for part in &parts[1..] {
+                    let idx = self.add_string_constant(part);
+                    self.emit_u16(Op::struct_get, idx);
+                }
+                for arg in args { self.compile_expression(arg)?; }
+                self.emit_u8(Op::call, args.len() as u8);
+                return Ok(());
+            }
+        }
+
+        // 4. Imports-based resolution for bare type names
+        //    e.g. New Stopwatch with Imports System.Diagnostics
+        //    → resolve to system.diagnostics.stopwatch → namespace chain
+        if !name.contains('.') {
+            let imports = self.interface_imports.clone();
+            for import_path in &imports {
+                let full_path = format!("{}.{}", import_path, name);
+                let parts: Vec<&str> = full_path.split('.').collect();
+                if parts.len() >= 2 && self.is_namespace(parts[0]) {
+                    let root_idx = self.add_string_constant(parts[0]);
+                    self.emit_u16(Op::global_get, root_idx);
+                    for part in &parts[1..] {
+                        let idx = self.add_string_constant(part);
+                        self.emit_u16(Op::struct_get, idx);
+                    }
+                    for arg in args { self.compile_expression(arg)?; }
+                    self.emit_u8(Op::call, args.len() as u8);
+                    return Ok(());
+                }
+            }
+        }
+
+        // 5. Cross-language class: WASM import (last resort)
         let idx = self.import("*", &name);
         for arg in args { self.compile_expression(arg)?; }
         self.emit_host_call(idx, args.len() as u8);
@@ -643,38 +693,5 @@ impl Compiler {
 
 /// Capitalize control type name: "textbox" → "TextBox", "datagridview" → "DataGridView"
 pub fn capitalize_control_name(name: &str) -> String {
-    // Map of known control names with proper casing
-    match name {
-        "button" => "Button", "label" => "Label", "textbox" => "TextBox",
-        "checkbox" => "CheckBox", "radiobutton" => "RadioButton",
-        "combobox" => "ComboBox", "listbox" => "ListBox",
-        "panel" => "Panel", "groupbox" => "GroupBox",
-        "tabcontrol" => "TabControl", "tabpage" => "TabPage",
-        "datagridview" => "DataGridView", "progressbar" => "ProgressBar",
-        "trackbar" => "TrackBar", "numericupdown" => "NumericUpDown",
-        "datetimepicker" => "DateTimePicker", "richtextbox" => "RichTextBox",
-        "picturebox" => "PictureBox", "menustrip" => "MenuStrip",
-        "toolstrip" => "ToolStrip", "statusstrip" => "StatusStrip",
-        "splitcontainer" => "SplitContainer",
-        "flowlayoutpanel" => "FlowLayoutPanel",
-        "tablelayoutpanel" => "TableLayoutPanel",
-        "linklabel" => "LinkLabel", "maskedtextbox" => "MaskedTextBox",
-        "listview" => "ListView", "webbrowser" => "WebBrowser",
-        "monthcalendar" => "MonthCalendar",
-        "contextmenustrip" => "ContextMenuStrip",
-        "timer" => "Timer", "bindingsource" => "BindingSource",
-        "tooltip" => "ToolTip", "imagelist" => "ImageList",
-        "hscrollbar" => "HScrollBar", "vscrollbar" => "VScrollBar",
-        "bindingnavigator" => "BindingNavigator",
-        "dataset" => "DataSet", "datatable" => "DataTable",
-        "dataadapter" => "DataAdapter",
-        "treeview" => "TreeView", "notifyicon" => "NotifyIcon",
-        "errorprovider" => "ErrorProvider", "helpprovider" => "HelpProvider",
-        "backgroundworker" => "BackgroundWorker",
-        "openfiledialog" => "OpenFileDialog",
-        "savefiledialog" => "SaveFileDialog",
-        "folderbrowserdialog" => "FolderBrowserDialog",
-        "colordialog" => "ColorDialog", "fontdialog" => "FontDialog",
-        _ => return name.to_string(),
-    }.to_string()
+    vybe_compiler_common::dotnet::capitalize_control_name(name)
 }

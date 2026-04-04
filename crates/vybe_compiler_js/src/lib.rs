@@ -17,13 +17,13 @@ pub fn setup_and_compile(
     Compiler::new().compile(program)
 }
 
-/// Set up VM with all host functions + GUI, then compile.
+/// Set up VM with all host functions + GUI stubs, then compile.
 pub fn setup_and_compile_with_gui(
     vm: &mut VM,
     program: &vybe_parser_js::Program,
-    queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+    _queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
 ) -> Result<Vec<vybe_bytecode::Chunk>, String> {
-    vybe_host::register_all_with_gui(vm, queue);
+    vybe_host::register_all(vm);
     register_js_coercion(vm);
     Compiler::new().compile(program)
 }

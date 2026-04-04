@@ -50,7 +50,47 @@ pub fn register(
     vm.register_host_fn("vybe:gui", "controlsAdd", {
         let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            // args[0] = parent container, args[1] = child control
+            // Compute parent's absolute offset so child is positioned inside parent.
+            let (parent_abs_x, parent_abs_y) = if let Some(Value::Object(parent_obj)) = args.first() {
+                let po = parent_obj.borrow();
+                let (px, py) = if let Some(Value::Object(loc)) = po.properties.get("location") {
+                    let loc = loc.borrow();
+                    (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
+                     loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
+                } else {
+                    (po.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0),
+                     po.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0))
+                };
+                // Walk up __parent chain to accumulate offsets for deeply nested containers
+                let mut abs_x = px;
+                let mut abs_y = py;
+                let mut cur = po.properties.get("__parent").cloned();
+                drop(po);
+                while let Some(Value::Object(ancestor)) = cur {
+                    let anc = ancestor.borrow();
+                    let (ax, ay) = if let Some(Value::Object(loc)) = anc.properties.get("location") {
+                        let loc = loc.borrow();
+                        (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
+                         loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
+                    } else {
+                        (anc.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0),
+                         anc.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0))
+                    };
+                    abs_x += ax;
+                    abs_y += ay;
+                    cur = anc.properties.get("__parent").cloned();
+                }
+                (abs_x, abs_y)
+            } else {
+                (0, 0)
+            };
+
             if let Some(Value::Object(obj)) = args.get(1) {
+                // Record parent reference on the child for deep nesting
+                if let Some(parent_val) = args.first() {
+                    obj.borrow_mut().properties.insert("__parent".into(), parent_val.clone());
+                }
                 let o = obj.borrow();
                 let control_type = o.properties.get("__control_type")
                     .map(|v| format!("{}", v)).unwrap_or_else(|| "Button".into());
@@ -77,11 +117,19 @@ pub fn register(
                     .filter(|(k, _)| !k.starts_with("__") && !matches!(k.as_str(),
                         "name" | "left" | "top" | "width" | "height" | "text"
                         | "location" | "size" | "show" | "close" | "focus" | "hide" | "showdialog"))
-                    .map(|(k, v)| (capitalize_first(k), format!("{}", v)))
+                    .filter_map(|(k, v)| {
+                        let val_str = value_to_property_string(v)?;
+                        Some((capitalize_first(k), val_str))
+                    })
                     .collect();
                 drop(o);
+                // Add widget at absolute position (child local + parent absolute)
+                let abs_left = left + parent_abs_x;
+                let abs_top = top + parent_abs_y;
+                eprintln!("[controlsAdd] type='{}' name='{}' text='{}' local=({},{}) parent_abs=({},{}) abs=({},{}) size={}x{}",
+                    control_type, control_name, text, left, top, parent_abs_x, parent_abs_y, abs_left, abs_top, width, height);
                 let mut g = gui.borrow_mut();
-                g.add_widget(&control_type, &control_name, &text, left, top, width, height);
+                g.add_widget(&control_type, &control_name, &text, abs_left, abs_top, width, height);
                 let name_lower = control_name.to_lowercase();
                 for (prop, val) in props {
                     apply_property(&mut g.form, &name_lower, &prop, &val);
@@ -321,6 +369,42 @@ fn capitalize_first(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+/// Convert a VM Value into a string suitable for apply_property.
+/// Returns None for values that shouldn't be passed as properties (functions, etc.).
+fn value_to_property_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.to_string()),
+        Value::F64(n) => Some(n.to_string()),
+        Value::I32(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(if *b { "True".into() } else { "False".into() }),
+        Value::Object(obj) => {
+            let o = obj.borrow();
+            // Color objects → extract "name" which holds "#RRGGBB" or named color
+            if let Some(Value::String(t)) = o.properties.get("__type") {
+                if t.as_ref() == "Color" {
+                    if let Some(Value::String(name)) = o.properties.get("name") {
+                        return Some(name.to_string());
+                    }
+                    // Fallback: reconstruct from r,g,b
+                    let r = o.properties.get("r").map(|v| v.as_f64() as u8).unwrap_or(0);
+                    let g = o.properties.get("g").map(|v| v.as_f64() as u8).unwrap_or(0);
+                    let b = o.properties.get("b").map(|v| v.as_f64() as u8).unwrap_or(0);
+                    return Some(format!("#{:02X}{:02X}{:02X}", r, g, b));
+                }
+                if t.as_ref() == "BorderStyle" {
+                    if let Some(Value::String(name)) = o.properties.get("name") {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+            // Skip complex objects (Point, Size, functions, etc.)
+            None
+        }
+        Value::Null => None,
+        _ => None,
     }
 }
 

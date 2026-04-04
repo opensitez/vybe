@@ -26,6 +26,7 @@ pub mod target;
 pub mod stdlib;
 pub mod bundle;
 pub mod imports;
+pub mod dotnet;
 
 pub use target::Target;
 pub use stdlib::StdLib;

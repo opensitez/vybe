@@ -717,18 +717,48 @@ pub fn launch_vybewidget_form(
         vm.globals.insert("__f".into(), form_obj);
     }
 
-    // Build widgets into gui.form — GuiState owns the form permanently
-    {
+    // Always rebuild widgets from the form model when it has controls.
+    // The form model is extracted from the same AST and has correct positions,
+    // sizes, text, nesting, colors. The VM's controlsAdd creates widgets too
+    // early (before properties are set in .NET designer code order), producing
+    // widgets with wrong names, zero positions, and default sizes.
+    //
+    // vybe_widgets is a flat arena — all controls live at the root level with
+    // absolute positions. The form model has parent_id for nesting, so we
+    // convert relative child positions to absolute by walking up the parent chain.
+    let model_control_count = form.controls.iter().filter(|c| !c.control_type.is_non_visual()).count();
+    if model_control_count > 0 {
+        // Build a lookup: control id → (x, y) for absolute position computation
+        let id_to_bounds: std::collections::HashMap<_, _> =
+            form.controls.iter().map(|c| (c.id, &c.bounds)).collect();
+
         let mut g = gui.borrow_mut();
         g.form = WidgetForm::new(&form.text);
+        g.control_names.clear();
         for ctrl in &form.controls {
             if ctrl.control_type.is_non_visual() { continue; }
             let widget = make_widget(ctrl);
-            let b = &ctrl.bounds;
-            g.form.add_boxed_control(widget, b.x as f32, b.y as f32, b.width as f32, b.height as f32);
+
+            // Compute absolute position by walking up parent chain
+            let mut abs_x = ctrl.bounds.x;
+            let mut abs_y = ctrl.bounds.y;
+            let mut parent = ctrl.parent_id;
+            while let Some(pid) = parent {
+                if let Some(pb) = id_to_bounds.get(&pid) {
+                    abs_x += pb.x;
+                    abs_y += pb.y;
+                }
+                // Walk further up
+                parent = form.controls.iter().find(|c| c.id == pid).and_then(|c| c.parent_id);
+            }
+
+            g.form.add_boxed_control(widget, abs_x as f32, abs_y as f32, ctrl.bounds.width as f32, ctrl.bounds.height as f32);
             g.control_names.push(ctrl.name.to_lowercase());
         }
     }
+
+    // Debug dump all widget state before rendering
+    gui.borrow().form.debug_dump();
 
     let (data_bindings, binding_sources, navigators) = extract_binding_info(form);
 

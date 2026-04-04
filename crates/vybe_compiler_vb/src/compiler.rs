@@ -26,6 +26,8 @@ pub struct Compiler {
     pub(crate) class_method_map: std::collections::HashMap<String, HashSet<String>>,
     /// Component Model: imported interface prefixes from `Imports` statements.
     pub(crate) interface_imports: Vec<String>,
+    /// Dynamic set of names recognized as namespace/type roots for dotted resolution.
+    pub(crate) namespace_roots: HashSet<String>,
     /// Known built-in types: name → (constructor_module, constructor_fn)
     pub(crate) known_types: std::collections::HashMap<String, (&'static str, &'static str)>,
     /// Declared function signatures: name → vec of is_byref per param
@@ -68,29 +70,17 @@ impl Compiler {
             known_arrays: HashSet::new(),
             class_type_ids: std::collections::HashMap::new(),
             current_class_parent: None,
-            interface_imports: vec![
-                // Default imports — always available
-                "system".into(),
-                "system.console".into(),
-                "system.math".into(),
-                "system.io".into(),
-                "system.io.file".into(),
-                "system.io.path".into(),
-                "system.io.directory".into(),
-                "system.windows.forms".into(),
-                "system.collections.generic".into(),
-                "system.text".into(),
-                "system.drawing".into(),
-                "system.net".into(),
-                "system.threading".into(),
-                "system.diagnostics".into(),
-                "system.data".into(),
-                "system.security.cryptography".into(),
-                "system.xml.linq".into(),
-                "microsoft.visualbasic".into(),
-            ],
+            interface_imports: {
+                let mut imports = common::dotnet::default_interface_imports();
+                // VB-specific default import
+                imports.push("microsoft.visualbasic".into());
+                imports
+            },
+            namespace_roots: common::dotnet::namespace_roots(),
         }
     }
+
+
 
     pub fn compile(mut self, program: &Program) -> Result<Vec<Chunk>, String> {
         // Merge partial classes before compilation
@@ -194,15 +184,7 @@ impl Compiler {
     }
 
     pub(crate) fn is_namespace(&self, name: &str) -> bool {
-        matches!(name,
-            "math" | "console" | "convert" | "strings" | "array"
-            | "window" | "file" | "io" | "directory"
-            | "vybe" | "system" | "application"
-            | "environment" | "thread" | "json" | "color"
-            | "datetime" | "stringbuilder" | "process"
-            | "timespan" | "guid" | "point" | "size" | "font" | "random"
-            | "path" | "messagebox" | "encoding"
-        )
+        self.namespace_roots.contains(name)
     }
 
     pub(crate) fn is_namespace_expr(&self, expr: &Expression) -> bool {
@@ -272,170 +254,14 @@ impl Compiler {
     ///
     /// Returns None if no interface matches.
     pub(crate) fn resolve_interface_call(&self, parts: &[&str]) -> Option<(String, String)> {
-        // Build progressively longer prefixes and check against imports
-        // e.g. for ["System", "Windows", "Forms", "Button"]:
-        //   try "system" → no match for "windows.forms.button"
-        //   try "system.windows" → no match
-        //   try "system.windows.forms" → match! func = "button"
-        let lower_parts: Vec<String> = parts.iter().map(|p| p.to_lowercase()).collect();
-
-        for prefix_len in (1..lower_parts.len()).rev() {
-            let prefix = lower_parts[..prefix_len].join(".");
-            if self.interface_imports.contains(&prefix) {
-                let func = lower_parts[prefix_len..].join(".");
-                // Map to actual host module
-                let module = match prefix.as_str() {
-                    "system.console" => "wasi:cli",
-                    "system.math" => "vybe:math",
-                    "system.io.file" => "wasi:filesystem",
-                    "system.io.path" => "wasi:filesystem",
-                    "system.io.directory" => "wasi:filesystem",
-                    "system.io" => "wasi:filesystem",
-                    "system.convert" => "vybe:convert",
-                    "system.string" => "vybe:string",
-                    "system.array" => "vybe:array",
-                    "system.environment" => "wasi:cli",
-                    "system.threading.thread" => "wasi:clocks",
-                    "system.threading" => "vybe:threading",
-                    "system.diagnostics" => "wasi:cli",
-                    "system.net" => "wasi:http",
-                    "system.net.sockets" => "vybe:net",
-                    "system.text.regularexpressions" => "vybe:regex",
-                    "system.text" => "vybe:string",
-                    "system.collections.generic" => "vybe:types",
-                    "system.data" => "vybe:data",
-                    "system.security.cryptography" => "vybe:crypto",
-                    "system.xml.linq" => "vybe:xml",
-                    "system.drawing" => "vybe:drawing",
-                    "system.windows.forms" => "vybe:gui",
-                    "microsoft.visualbasic" => "vybe:string",
-                    _ => &prefix,
-                };
-                // Map VB method names to actual host function names
-                let mapped_func = map_interface_func(module, &func);
-                return Some((module.to_string(), mapped_func));
-            }
-        }
-        None
+        common::dotnet::resolve_interface_call(parts, &self.interface_imports)
     }
 
     fn init_known_types() -> std::collections::HashMap<String, (&'static str, &'static str)> {
-        let mut m = std::collections::HashMap::new();
-        // All built-in types with their constructor host functions
-        for (name, module, func) in &[
-            ("list", "vybe:types", "listNew"),
-            ("dictionary", "vybe:types", "dictNew"),
-            ("queue", "vybe:types", "queueNew"),
-            ("stack", "vybe:types", "stackNew"),
-            ("hashset", "vybe:types", "hashSetNew"),
-            ("arraylist", "vybe:types", "listNew"),
-            ("hashtable", "vybe:types", "dictNew"),
-            ("collection", "vybe:types", "listNew"),
-            ("sortedlist", "vybe:types", "dictNew"),
-            ("datetime", "vybe:types", "dateTimeNew"),
-            ("stringbuilder", "vybe:types", "stringBuilderNew"),
-            ("datatable", "vybe:data", "dataTableNew"),
-            ("dataset", "vybe:data", "dataSetNew"),
-            ("point", "vybe:drawing", "pointNew"),
-            ("size", "vybe:drawing", "sizeNew"),
-            ("sizef", "vybe:drawing", "sizeNew"),
-            ("font", "vybe:drawing", "fontNew"),
-            ("pen", "vybe:drawing", "penNew"),
-            ("solidbrush", "vybe:drawing", "solidBrushNew"),
-            ("color", "vybe:drawing", "colorFromName"),
-            ("graphics", "vybe:drawing", "graphicsNew"),
-            ("random", "vybe:threading", "randomNew"),
-            ("stopwatch", "vybe:threading", "stopwatchNew"),
-            ("sqlconnection", "vybe:database", "connect"),
-            ("tcpclient", "vybe:net", "tcpConnect"),
-            ("tcplistener", "vybe:net", "tcpListenerNew"),
-            ("udpclient", "vybe:net", "udpNew"),
-            ("streamreader", "vybe:net", "streamReaderNew"),
-            ("streamwriter", "vybe:net", "streamWriterNew"),
-            // WinForms controls (handled separately via capitalize)
-            ("form", "vybe:gui", "newForm"),
-        ] {
-            m.insert(name.to_string(), (*module, *func));
-        }
-        m
+        common::dotnet::known_types()
     }
 
 } // end impl Compiler (part 1)
-
-/// Map VB/CLR method names to actual host function names.
-/// e.g. "writeline" → "log", "getdirectoryname" → "pathGetDirectory"
-fn map_interface_func(module: &str, func: &str) -> String {
-    match (module, func) {
-        // Console
-        ("wasi:cli", "writeline") => "log".into(),
-        ("wasi:cli", "write") => "log".into(),
-        ("wasi:cli", "readline") => "readLine".into(),
-        ("wasi:cli", "error") => "error".into(),
-        // Math
-        ("vybe:math", f) => f.to_string(), // math names match
-        // Filesystem
-        ("wasi:filesystem", "readalltext") => "readFile".into(),
-        ("wasi:filesystem", "writealltext") => "writeFile".into(),
-        ("wasi:filesystem", "appendalltext") => "appendFile".into(),
-        ("wasi:filesystem", "exists") => "exists".into(),
-        ("wasi:filesystem", "delete") => "remove".into(),
-        ("wasi:filesystem", "copy") => "copy".into(),
-        ("wasi:filesystem", "move") => "rename".into(),
-        ("wasi:filesystem", "combine") => "pathCombine".into(),
-        ("wasi:filesystem", "getfilename") => "pathGetFileName".into(),
-        ("wasi:filesystem", "getextension") => "pathGetExtension".into(),
-        ("wasi:filesystem", "getdirectoryname") => "pathGetDirectory".into(),
-        ("wasi:filesystem", "getfilenamewithoutextension") => "pathGetFileNameWithoutExt".into(),
-        ("wasi:filesystem", "changeextension") => "pathChangeExtension".into(),
-        ("wasi:filesystem", "getfullpath") => "pathGetFullPath".into(),
-        ("wasi:filesystem", "gettemppath") => "pathGetTempPath".into(),
-        ("wasi:filesystem", "createdirectory") => "mkdir".into(),
-        ("wasi:filesystem", "getfiles") => "listDir".into(),
-        ("wasi:filesystem", "getcurrentdirectory") => "cwd".into(),
-        // Convert
-        ("vybe:convert", "toint32") => "cint".into(),
-        ("vybe:convert", "todouble") => "cdbl".into(),
-        ("vybe:convert", "tostring") => "toString".into(),
-        ("vybe:convert", "toboolean") => "cbool".into(),
-        ("vybe:convert", "todatetime") => "toString".into(), // simplified
-        // Environment
-        ("wasi:cli", "getenvironmentvariable") => "getEnv".into(),
-        ("wasi:cli", "machinename") => "machineName".into(),
-        ("wasi:cli", "currentdirectory") => "cwd".into(),
-        ("wasi:cli", "print") => "log".into(),
-        // Threading
-        ("wasi:clocks", "sleep") => "sleep".into(),
-        // GUI
-        ("vybe:gui", f) => {
-            // WinForms control constructors: button → new_Button
-            let cap = capitalize_control_name_for_interface(f);
-            if !cap.is_empty() {
-                format!("new_{}", cap)
-            } else {
-                f.to_string()
-            }
-        }
-        // Default: use as-is
-        (_, f) => f.to_string(),
-    }
-}
-
-fn capitalize_control_name_for_interface(name: &str) -> String {
-    match name {
-        "button" | "label" | "textbox" | "checkbox" | "radiobutton"
-        | "combobox" | "listbox" | "panel" | "groupbox" | "tabcontrol"
-        | "tabpage" | "datagridview" | "progressbar" | "trackbar"
-        | "numericupdown" | "datetimepicker" | "richtextbox" | "picturebox"
-        | "menustrip" | "toolstrip" | "statusstrip" | "splitcontainer"
-        | "flowlayoutpanel" | "tablelayoutpanel" | "linklabel" | "maskedtextbox"
-        | "listview" | "webbrowser" | "monthcalendar" | "contextmenustrip"
-        | "timer" | "bindingsource" | "tooltip" | "imagelist" => {
-            // Use the capitalize function from expressions.rs
-            super::expressions::capitalize_control_name(name)
-        }
-        _ => String::new(),
-    }
-}
 
 impl Compiler {
     /// Emit set_type_id for the TOS object using __tid_<name> global.
