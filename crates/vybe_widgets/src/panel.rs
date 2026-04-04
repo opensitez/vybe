@@ -4,6 +4,29 @@ use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
 use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
+/// Parse a color string like "#C8C8C8" or "Red" into (r, g, b, a).
+fn parse_color_string(s: &str) -> Option<(u8, u8, u8, u8)> {
+    let s = s.trim();
+    if s.starts_with('#') && s.len() >= 7 {
+        let r = u8::from_str_radix(&s[1..3], 16).ok()?;
+        let g = u8::from_str_radix(&s[3..5], 16).ok()?;
+        let b = u8::from_str_radix(&s[5..7], 16).ok()?;
+        return Some((r, g, b, 255));
+    }
+    match s.to_lowercase().as_str() {
+        "red" => Some((255, 0, 0, 255)),
+        "green" => Some((0, 128, 0, 255)),
+        "blue" => Some((0, 0, 255, 255)),
+        "white" => Some((255, 255, 255, 255)),
+        "black" => Some((0, 0, 0, 255)),
+        "yellow" => Some((255, 255, 0, 255)),
+        "gray" | "grey" => Some((128, 128, 128, 255)),
+        "lightgray" | "lightgrey" => Some((211, 211, 211, 255)),
+        "transparent" => Some((0, 0, 0, 0)),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BorderStyle {
     None,
@@ -102,4 +125,32 @@ impl PanelWidget for Panel {
     }
     fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::Custom(key, val) => {
+                match key.as_str() {
+                    "SetBackColor" => {
+                        if let CommandValue::Text(color_str) = val {
+                            if let Some(rgba) = parse_color_string(color_str) {
+                                self.colors.background = rgba;
+                            }
+                        }
+                        CommandValue::None
+                    }
+                    "SetBorderStyle" => {
+                        if let CommandValue::Text(s) = val {
+                            match s.to_lowercase().as_str() {
+                                "fixedsingle" | "1" => self.border_style = BorderStyle::FixedSingle,
+                                "fixed3d" | "2" => self.border_style = BorderStyle::Fixed3D,
+                                _ => self.border_style = BorderStyle::None,
+                            }
+                        }
+                        CommandValue::None
+                    }
+                    _ => CommandValue::None,
+                }
+            }
+            _ => CommandValue::None,
+        }
+    }
 }

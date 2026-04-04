@@ -111,9 +111,7 @@ impl Compiler {
                 VBType::Custom(n) => n.to_lowercase(),
                 _ => String::new(),
             };
-            let is_framework = parent_name.starts_with("system.")
-                || parent_name.contains("windows.forms");
-            !parent_name.is_empty() && !is_framework
+            !parent_name.is_empty() && !self.dotnet_types.is_framework_type(&parent_name)
         } else {
             false
         };
@@ -211,6 +209,28 @@ impl Compiler {
         // Compile constructor body (may call InitializeComponent, MyBase.New, etc.)
         for stmt in &ctor_body {
             self.compile_statement(stmt)?;
+        }
+
+        // .NET convention: if no explicit constructor and the class has
+        // InitializeComponent(), auto-call it. This is standard for WinForms
+        // designer-generated classes (Form, UserControl, etc.).
+        {
+            let method_names: Vec<String> = class.methods.iter().map(|m| match m {
+                MethodDecl::Sub(s) => s.name.as_str().to_lowercase(),
+                MethodDecl::Function(f) => f.name.as_str().to_lowercase(),
+            }).collect();
+            let base_type_str = class.inherits.as_ref().and_then(|t| match t {
+                VBType::Custom(n) => Some(n.as_str()),
+                _ => None,
+            });
+            if common::type_registry::needs_auto_init_component(
+                has_explicit_ctor, &method_names, base_type_str, &self.dotnet_types,
+            ) {
+                let line = self.line;
+                common::classes::emit_auto_init_component(
+                    &mut self.chunks[self.current_chunk_idx], this_slot, line,
+                );
+            }
         }
 
         // Wire Handles clauses → emit AddHandler calls
@@ -338,6 +358,21 @@ impl Compiler {
         // Store this class's full field/method sets (own + inherited) for future derived classes
         self.class_field_map.insert(name.to_lowercase(), self.class_fields.clone());
         self.class_method_map.insert(name.to_lowercase(), self.class_methods.clone());
+
+        // Register in compile-time type hierarchy so derived classes can walk the chain
+        {
+            let parent_str = class.inherits.as_ref().and_then(|t| match t {
+                VBType::Custom(n) => Some(n.as_str()),
+                _ => None,
+            });
+            self.dotnet_types.register_user_type(
+                name,
+                parent_str,
+                self.class_fields.clone(),
+                self.class_methods.clone(),
+            );
+        }
+
         self.class_fields = saved_fields;
         self.class_methods = saved_methods;
 
@@ -374,7 +409,7 @@ impl Compiler {
                 VBType::Custom(pn) => pn.to_lowercase(),
                 _ => String::new(),
             };
-            if !parent_name.is_empty() && !parent_name.starts_with("system.") {
+            if !parent_name.is_empty() && !self.dotnet_types.is_framework_type(&parent_name) {
                 self.emit(Op::dup);
                 let parent_idx = self.add_string_constant(&parent_name);
                 self.emit_u16(Op::global_get, parent_idx);

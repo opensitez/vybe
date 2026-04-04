@@ -27,6 +27,8 @@ pub mod stdlib;
 pub mod bundle;
 pub mod imports;
 pub mod dotnet;
+pub mod type_registry;
 
 pub use target::Target;
+pub use type_registry::CompileTimeTypes;
 pub use stdlib::StdLib;

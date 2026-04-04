@@ -90,6 +90,16 @@ impl Form {
         self.controls.len()
     }
 
+    /// Dump all widgets' names, positions and types for debugging.
+    pub fn debug_dump(&self) {
+        eprintln!("[WIDGET-DUMP] Form '{}' bg={:?} controls={}:", self.title, self.background, self.controls.len());
+        for (i, w) in self.controls.iter().enumerate() {
+            let r = w.rect();
+            eprintln!("  [{}] name='{}' rect=({:.0},{:.0} {:.0}x{:.0})",
+                i, w.name(), r.x, r.y, r.w, r.h);
+        }
+    }
+
     /// Get a reference to a control by index.
     pub fn control(&self, index: usize) -> Option<&dyn PanelWidget> {
         self.controls.get(index).map(|c| c.as_ref())

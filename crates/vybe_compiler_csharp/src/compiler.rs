@@ -138,6 +138,8 @@ pub struct Compiler {
     _known_types: HashMap<String, (&'static str, &'static str)>,
     /// Track current class's base type name (for base() calls in constructors).
     current_class_base: Option<String>,
+    /// .NET type hierarchy for proper inheritance checks.
+    dotnet_types: vybe_compiler_common::CompileTimeTypes,
 }
 
 impl Compiler {
@@ -158,6 +160,7 @@ impl Compiler {
             class_method_map: HashMap::new(),
             _known_types: common::dotnet::known_types(),
             current_class_base: None,
+            dotnet_types: vybe_compiler_common::CompileTimeTypes::new(),
             interface_imports: common::dotnet::default_interface_imports(),
         }
     }
@@ -558,18 +561,15 @@ impl Compiler {
         // Determine if this class has a real (non-framework) base class
         let has_user_base = class.base_type.as_ref().map(|parent| {
             let parent_lower = parent.to_lowercase();
-            let is_framework = parent_lower.starts_with("system.")
-                || parent_lower.contains("windows.forms")
-                || matches!(parent_lower.as_str(),
-                    "form" | "control" | "usercontrol" | "panel" | "component"
-                    | "object" | "eventargs" | "exception"
-                );
+            let is_framework = self.dotnet_types.is_framework_type(&parent_lower);
             let is_interface = self.defined_interfaces.contains(&parent_lower);
             !parent_lower.is_empty() && !is_framework && !is_interface
         }).unwrap_or(false);
 
         let is_form_type = class.base_type.as_ref().map(|p|
-            matches!(p.to_lowercase().as_str(), "form" | "usercontrol" | "panel")
+            self.dotnet_types.is_form_type(p)
+                || self.dotnet_types.is_subtype_of(p, "usercontrol")
+                || self.dotnet_types.is_subtype_of(p, "panel")
         ).unwrap_or(false);
 
         if has_user_base {
@@ -665,6 +665,22 @@ impl Compiler {
             self.compile_statement(stmt)?;
         }
 
+        // .NET convention: if no explicit constructor and the class has
+        // InitializeComponent(), auto-call it (WinForms designer pattern).
+        {
+            let has_explicit_ctor = ctor.is_some();
+            let method_names: Vec<String> = instance_methods.iter()
+                .map(|m| m.name.to_lowercase()).collect();
+            if vybe_compiler_common::type_registry::needs_auto_init_component(
+                has_explicit_ctor, &method_names, class.base_type.as_deref(), &self.dotnet_types,
+            ) {
+                let line = self.line;
+                vybe_compiler_common::classes::emit_auto_init_component(
+                    &mut self.chunks[self.current_chunk_idx], this_slot, line,
+                );
+            }
+        }
+
         // Attach property getters/setters (non-auto only)
         for prop in &properties {
             let prop_name = prop.name.to_lowercase();
@@ -732,6 +748,15 @@ impl Compiler {
         // Store field/method sets for inheritance
         self.class_field_map.insert(name.to_lowercase(), self.class_fields.clone());
         self.class_method_map.insert(name.to_lowercase(), self.class_methods.clone());
+
+        // Register in compile-time type hierarchy so derived classes can walk the chain
+        self.dotnet_types.register_user_type(
+            &name,
+            class.base_type.as_deref(),
+            self.class_fields.clone(),
+            self.class_methods.clone(),
+        );
+
         self.class_fields = saved_fields;
         self.class_methods = saved_methods;
 
@@ -758,11 +783,10 @@ impl Compiler {
 
         self.emit_ref_func(idx, &upvalues);
 
-        // Inherit parent's static members (skip for interface implementations)
+        // Inherit parent's static members (skip for framework/interface bases)
         if let Some(ref parent) = class.base_type {
             let parent_lower = parent.to_lowercase();
-            let is_fw = parent_lower.starts_with("system.")
-                || matches!(parent_lower.as_str(), "form" | "control" | "usercontrol" | "panel" | "component" | "object" | "exception");
+            let is_fw = self.dotnet_types.is_framework_type(&parent_lower);
             let is_iface = self.defined_interfaces.contains(&parent_lower);
             if !parent_lower.is_empty() && !is_fw && !is_iface {
                 self.emit(Op::dup);

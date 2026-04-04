@@ -428,8 +428,11 @@ impl Compiler {
             // e.g. "stopwatch.frequency" with Imports System.Diagnostics
             // BUT skip if the first part is a local variable (e.g. "sw.elapsedmilliseconds"
             // where "sw" is a Dim'd Stopwatch — not a namespace component)
+            // ALSO skip if the first part is a class field (e.g. "btn0.text"
+            // where "btn0" is a Me.btn0 control — not a namespace component)
             if all_parts.len() >= 2 && all_parts[0] != "console"
                 && !matches!(self.resolve_variable(all_parts[0]), VarResolution::Local(_))
+                && !self.class_fields.contains(all_parts[0])
             {
                 let imports = self.interface_imports.clone();
                 for import_path in &imports {

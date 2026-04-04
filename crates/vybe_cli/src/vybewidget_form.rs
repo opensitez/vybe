@@ -366,13 +366,22 @@ impl FormApp {
             if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
                 let fo = form_obj.borrow();
                 eprintln!("[sync] control_names={:?}", g.control_names);
-                eprintln!("[sync] __f keys={:?}", fo.properties.keys().collect::<Vec<_>>());
                 for ctrl_name in &g.control_names {
-                    if let Some(vybe_bytecode::Value::Object(co)) = fo.properties.get(ctrl_name) {
-                        let c = co.borrow();
-                        if let Some(text) = c.properties.get("text") {
-                            eprintln!("[sync] {} text={}", ctrl_name, text);
-                            ups.push((ctrl_name.clone(), format!("{}", text)));
+                    match fo.properties.get(ctrl_name) {
+                        Some(vybe_bytecode::Value::Object(co)) => {
+                            let c = co.borrow();
+                            let keys: Vec<&String> = c.properties.keys().collect();
+                            eprintln!("[sync] {} is Object, props={:?}", ctrl_name, keys);
+                            if let Some(text) = c.properties.get("text") {
+                                let text_str = format!("{}", text);
+                                ups.push((ctrl_name.clone(), text_str));
+                            }
+                        }
+                        Some(other) => {
+                            eprintln!("[sync] {} = {} (type: {})", ctrl_name, other, other.type_tag());
+                        }
+                        None => {
+                            eprintln!("[sync] {} NOT FOUND in __f", ctrl_name);
                         }
                     }
                 }

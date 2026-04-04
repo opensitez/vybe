@@ -39,6 +39,8 @@ pub struct Compiler {
     pub(crate) class_type_ids: std::collections::HashMap<String, usize>,
     /// Track current class's parent name (for MyBase.New() calls in constructors).
     pub(crate) current_class_parent: Option<String>,
+    /// .NET type hierarchy for proper inheritance checks.
+    pub(crate) dotnet_types: common::CompileTimeTypes,
 }
 
 pub(crate) struct LoopContext {
@@ -70,6 +72,7 @@ impl Compiler {
             known_arrays: HashSet::new(),
             class_type_ids: std::collections::HashMap::new(),
             current_class_parent: None,
+            dotnet_types: common::CompileTimeTypes::new(),
             interface_imports: {
                 let mut imports = common::dotnet::default_interface_imports();
                 // VB-specific default import

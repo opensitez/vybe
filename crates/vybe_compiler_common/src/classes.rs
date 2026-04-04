@@ -407,3 +407,30 @@ pub fn register_class_with_interfaces(
 ) {
     register_type(chunks, name, parent, fields, methods, false, implements, constructor_chunk);
 }
+
+// ── .NET default constructor: auto-call InitializeComponent ─────────────
+
+/// In .NET, if a class defines `InitializeComponent()` (typical of WinForms
+/// designer-generated code) and has no explicit constructor, the default
+/// constructor must call `InitializeComponent()` automatically. Both VB and
+/// C# follow this convention.
+///
+/// Emits bytecode equivalent to:
+///   Me.InitializeComponent()      ' VB
+///   this.InitializeComponent();   // C#
+///
+/// The `this_slot` is the local variable holding the class instance.
+/// Call this AFTER instance methods have been attached to `this` (so that
+/// `struct_get "initializecomponent"` finds the method).
+pub fn emit_auto_init_component(chunk: &mut Chunk, this_slot: u16, line: u32) {
+    // Me.InitializeComponent() → struct_get + call with this as arg
+    chunk.emit_op_u16(Op::local_get, this_slot, line);   // [this]
+    let name_idx = chunk.add_constant(Value::String(Rc::from("initializecomponent")));
+    chunk.emit_op_u16(Op::struct_get, name_idx, line);    // [method_ref]
+    chunk.emit_op_u16(Op::local_get, this_slot, line);    // [method_ref, this]
+    chunk.emit_op_u8(Op::call, 1, line);                  // call(1) → [result]
+    chunk.emit_op(Op::drop, line);                        // []
+}
+
+// NOTE: needs_auto_init_component() has moved to type_registry.rs where it
+// uses the proper CompileTimeTypes hierarchy instead of string matching.
