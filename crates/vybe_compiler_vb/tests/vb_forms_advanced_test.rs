@@ -50,7 +50,7 @@ fn run_vb_gui(source: &str) -> (VM, Rc<RefCell<vybe_host::SideEffectQueue>>, Rc<
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
     let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let out = output.clone();
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    vybe_host::register_all(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
     vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();

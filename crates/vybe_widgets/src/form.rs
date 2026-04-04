@@ -67,6 +67,24 @@ impl Form {
         self.controls.push(Box::new(widget));
     }
 
+    /// Add an already-boxed control at an absolute position.
+    pub fn add_boxed_control(
+        &mut self,
+        mut widget: Box<dyn PanelWidget>,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) {
+        widget.set_rect(LayoutRect::new(
+            self.rect.x + x,
+            self.rect.y + y,
+            width,
+            height,
+        ));
+        self.controls.push(widget);
+    }
+
     /// Number of controls on this form.
     pub fn control_count(&self) -> usize {
         self.controls.len()

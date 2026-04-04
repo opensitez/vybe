@@ -27,7 +27,7 @@ vybe_parser_csharp = { workspace = true }
 vybe_compiler_csharp = { workspace = true }
 vybe_parser_dart = { workspace = true }
 vybe_compiler_dart = { workspace = true }
-vybe_host = { workspace = true }
+vybe_host = { workspace = true, features = ["gui"] }
 vybe_parser_php = { workspace = true }
 vybe_compiler_php = { workspace = true }
 vybe_parser_python = { workspace = true }
@@ -41,9 +41,5 @@ vybe_compiler_pascal = { workspace = true }
 vybe_compiler_common = { workspace = true }
 vybe_forms = { workspace = true }
 vybe_project = { workspace = true }
-winit = "0.30"
-tiny-skia = "0.11"
-softbuffer = "0.4"
-fontdue = "0.9"
+vybe_widgets = { workspace = true }
 rfd = "0.17"
-eframe = "0.22"

@@ -1,185 +1,55 @@
+//! `vybe:gui` host module — registers GUI host functions on the VM.
+//!
+//! When the `gui` feature is enabled, host functions directly create
+//! `vybe_widgets` widgets and store them in a shared `GuiState`.
+
+#[cfg(feature = "gui")]
+mod gui_impl {
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use vybe_bytecode::{VM, Value, HostContext};
-use crate::side_effect::{PropValue, SideEffect, SideEffectQueue};
+use crate::gui_state::GuiState;
+use crate::side_effect::{SideEffect, SideEffectQueue};
 
-pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
-    let q = queue.clone();
+pub fn register(
+    vm: &mut VM,
+    queue: Rc<RefCell<SideEffectQueue>>,
+    gui: Rc<RefCell<GuiState>>,
+) {
+    // Form creation
     vm.register_host_fn("vybe:gui", "createForm", {
-        let q = q.clone();
+        let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let title = str_arg(args, 0, "Form1");
             let name = title.clone();
-            q.borrow_mut().push(SideEffect::PropertyChange {
-                object: name.clone(), property: "Text".into(),
-                value: PropValue::String(title),
-            });
+            let mut g = gui.borrow_mut();
+            g.form = vybe_widgets::Form::new(&title);
             Value::String(Rc::from(name.as_str()))
         })
     });
-    vm.register_host_fn("vybe:gui", "addControl", {
-        let q = q.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let form_name = str_arg(args, 0, "Form1");
-            let control_type = str_arg(args, 1, "Button");
-            let control_name = str_arg(args, 2, "control1");
-            let left = i32_arg(args, 3, 0);
-            let top = i32_arg(args, 4, 0);
-            let width = i32_arg(args, 5, 100);
-            let height = i32_arg(args, 6, 30);
-            q.borrow_mut().push(SideEffect::AddControl {
-                form_name, control_name: control_name.clone(), control_type,
-                left, top, width, height, parent_name: String::new(),
-            });
-            Value::String(Rc::from(control_name.as_str()))
-        })
-    });
-    vm.register_host_fn("vybe:gui", "setProperty", {
-        let q = q.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let control = str_arg(args, 0, "");
-            let property = str_arg(args, 1, "");
-            let value = vm_to_prop(args.get(2).cloned().unwrap_or(Value::Null));
-            q.borrow_mut().push(SideEffect::PropertyChange { object: control, property, value });
-            Value::Null
-        })
-    });
-    vm.register_host_fn("vybe:gui", "getProperty", Box::new(|_ctx, _| Value::Null));
-    vm.register_host_fn("vybe:gui", "onEvent", {
-        let q = q.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let control = str_arg(args, 0, "");
-            let event = str_arg(args, 1, "");
-            let callback = args.get(2).cloned().unwrap_or(Value::Null);
-            q.borrow_mut().register_event(&control, &event, callback);
-            Value::Null
-        })
-    });
-    vm.register_host_fn("vybe:gui", "showForm", {
-        let q = q.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let form_name = match args.first() {
-                Some(Value::Object(obj)) => {
-                    let o = obj.borrow();
-                    o.properties.get("name").or_else(|| o.properties.get("__control_name"))
-                        .map(|v| format!("{}", v)).unwrap_or_else(|| "Form1".into())
-                }
-                _ => str_arg(args, 0, "Form1"),
-            };
-            q.borrow_mut().push(SideEffect::FormShow { form_name });
-            Value::Null
-        })
-    });
-    vm.register_host_fn("vybe:gui", "runApplication", {
-        let q = q.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            // Accept either a string name or a form object
-            let form_name = match args.first() {
-                Some(Value::Object(obj)) => {
-                    let o = obj.borrow();
-                    o.properties.get("__control_name")
-                        .map(|v| format!("{}", v))
-                        .unwrap_or_else(|| str_arg(args, 0, "Form1"))
-                }
-                _ => str_arg(args, 0, "Form1"),
-            };
-            let form_obj = args.first().cloned();
-            q.borrow_mut().push(SideEffect::RunApplication { form_name, form_object: form_obj });
-            Value::Null
-        })
-    });
-    vm.register_host_fn("vybe:gui", "msgBox", {
-        let q = q.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            q.borrow_mut().push(SideEffect::MsgBox { text: str_arg(args, 0, ""), title: str_arg(args, 1, "") });
-            Value::Null
-        })
-    });
-    vm.register_host_fn("vybe:gui", "closeForm", {
-        let q = q.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let form_name = match args.first() {
-                Some(Value::Object(obj)) => {
-                    let o = obj.borrow();
-                    o.properties.get("name").or_else(|| o.properties.get("__control_name"))
-                        .map(|v| format!("{}", v)).unwrap_or_else(|| "Form1".into())
-                }
-                _ => str_arg(args, 0, "Form1"),
-            };
-            q.borrow_mut().push(SideEffect::FormClose { form_name });
-            Value::Null
-        })
-    });
 
-    // --- WinForms-style OOP API ---
-    // newControl(controlType) → creates an object representing a control
-    // The object has __control_type, __control_name, and methods
-    vm.register_host_fn("vybe:gui", "newControl", {
-        let _q = q.clone();
+    vm.register_host_fn("vybe:gui", "newForm", {
+        let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            use vybe_bytecode::value::Object;
-            static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-            let control_type = str_arg(args, 0, "Button");
-            let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let name = format!("{}_{}", control_type, id);
-            let mut obj = Object::new();
-            obj.properties.insert("__control_type".into(), Value::String(Rc::from(control_type.as_str())));
+            let title = str_arg(args, 0, "Form1");
+            let name = title.clone();
+            { let mut g = gui.borrow_mut(); g.form = vybe_widgets::Form::new(&title); }
+            let mut obj = vybe_bytecode::value::Object::new();
+            obj.properties.insert("__control_type".into(), Value::String(Rc::from("Form")));
             obj.properties.insert("__control_name".into(), Value::String(Rc::from(name.as_str())));
             obj.properties.insert("name".into(), Value::String(Rc::from(name.as_str())));
-            // Default size
-            obj.properties.insert("width".into(), Value::F64(100.0));
-            obj.properties.insert("height".into(), Value::F64(30.0));
-            obj.properties.insert("left".into(), Value::F64(0.0));
-            obj.properties.insert("top".into(), Value::F64(0.0));
-            Value::Object(Rc::new(std::cell::RefCell::new(obj)))
+            obj.properties.insert("text".into(), Value::String(Rc::from(title.as_str())));
+            obj.properties.insert("width".into(), Value::F64(800.0));
+            obj.properties.insert("height".into(), Value::F64(600.0));
+            Value::Object(Rc::new(RefCell::new(obj)))
         })
     });
 
-    // controlSetProperty(controlObj, property, value)
-    // Pushes a PropertyChange side effect using the control's __control_name
-    vm.register_host_fn("vybe:gui", "controlSetProperty", {
-        let q = q.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(Value::Object(obj)) = args.first() {
-                let o = obj.borrow();
-                let control_name = o.properties.get("__control_name")
-                    .map(|v| format!("{}", v))
-                    .unwrap_or_default();
-                let property = str_arg(args, 1, "");
-                let value = vm_to_prop(args.get(2).cloned().unwrap_or(Value::Null));
-                // Also store on the object itself for later reads
-                drop(o);
-                let prop_lower = property.to_lowercase();
-                let val = args.get(2).cloned().unwrap_or(Value::Null);
-                obj.borrow_mut().properties.insert(prop_lower.clone(), val.clone());
-                // When Name is set, also update __control_name (used for event dispatch)
-                if prop_lower == "name" {
-                    obj.borrow_mut().properties.insert("__control_name".into(), val);
-                }
-                q.borrow_mut().push(SideEffect::PropertyChange {
-                    object: control_name, property, value,
-                });
-            }
-            Value::Null
-        })
-    });
-
-    // controlsAdd(formName, controlObj) — adds a control to a form
-    // Reads __control_type, __control_name, and position from the object
+    // Add control to form
     vm.register_host_fn("vybe:gui", "controlsAdd", {
-        let q = q.clone();
+        let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            // Accept either a string or a form object as first arg
-            let form_name = match args.first() {
-                Some(Value::Object(obj)) => {
-                    let o = obj.borrow();
-                    o.properties.get("__control_name")
-                        .or_else(|| o.properties.get("name"))
-                        .map(|v| format!("{}", v))
-                        .unwrap_or_else(|| "Form1".into())
-                }
-                _ => str_arg(args, 0, "Form1"),
-            };
             if let Some(Value::Object(obj)) = args.get(1) {
                 let o = obj.borrow();
                 let control_type = o.properties.get("__control_type")
@@ -187,72 +57,177 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
                 let control_name = o.properties.get("name")
                     .or_else(|| o.properties.get("__control_name"))
                     .map(|v| format!("{}", v)).unwrap_or_else(|| "ctrl".into());
-                // Read position from Location (Point with x,y) or direct left/top
+                let text = o.properties.get("text")
+                    .map(|v| format!("{}", v)).unwrap_or_default();
+                let left = o.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0);
+                let top = o.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0);
+                let width = o.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100);
+                let height = o.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30);
                 let (left, top) = if let Some(Value::Object(loc)) = o.properties.get("location") {
                     let loc = loc.borrow();
-                    (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
-                     loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
-                } else {
-                    (o.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0),
-                     o.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0))
-                };
-                // Read size from Size (with width,height) or direct width/height
+                    (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(left),
+                     loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(top))
+                } else { (left, top) };
                 let (width, height) = if let Some(Value::Object(sz)) = o.properties.get("size") {
                     let sz = sz.borrow();
-                    (sz.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100),
-                     sz.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30))
-                } else {
-                    (o.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100),
-                     o.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30))
-                };
-                q.borrow_mut().push(SideEffect::AddControl {
-                    form_name, control_name: control_name.clone(), control_type,
-                    left, top, width, height, parent_name: String::new(),
-                });
-                // Emit any properties that were set before adding
-                // Capitalize first letter to match WinForms convention (text → Text)
-                for (key, val) in &o.properties {
-                    if key.starts_with("__") || key == "name" || key == "left" || key == "top"
-                        || key == "width" || key == "height" { continue; }
-                    let prop_name = capitalize_first(key);
-                    q.borrow_mut().push(SideEffect::PropertyChange {
-                        object: control_name.clone(),
-                        property: prop_name,
-                        value: vm_to_prop(val.clone()),
-                    });
+                    (sz.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(width),
+                     sz.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(height))
+                } else { (width, height) };
+                let props: Vec<(String, String)> = o.properties.iter()
+                    .filter(|(k, _)| !k.starts_with("__") && !matches!(k.as_str(),
+                        "name" | "left" | "top" | "width" | "height" | "text"
+                        | "location" | "size" | "show" | "close" | "focus" | "hide" | "showdialog"))
+                    .map(|(k, v)| (capitalize_first(k), format!("{}", v)))
+                    .collect();
+                drop(o);
+                let mut g = gui.borrow_mut();
+                g.add_widget(&control_type, &control_name, &text, left, top, width, height);
+                let name_lower = control_name.to_lowercase();
+                for (prop, val) in props {
+                    apply_property(&mut g.form, &name_lower, &prop, &val);
                 }
             }
             Value::Null
         })
     });
 
-    // newForm(title?) → creates a form object
-    vm.register_host_fn("vybe:gui", "newForm", {
-        let q = q.clone();
+    vm.register_host_fn("vybe:gui", "addControl", {
+        let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            use vybe_bytecode::value::Object;
-            let title = str_arg(args, 0, "Form1");
-            let name = title.clone();
-            let mut obj = Object::new();
-            obj.properties.insert("__control_type".into(), Value::String(Rc::from("Form")));
-            obj.properties.insert("__control_name".into(), Value::String(Rc::from(name.as_str())));
-            obj.properties.insert("name".into(), Value::String(Rc::from(name.as_str())));
-            obj.properties.insert("text".into(), Value::String(Rc::from(title.as_str())));
-            obj.properties.insert("width".into(), Value::F64(800.0));
-            obj.properties.insert("height".into(), Value::F64(600.0));
-            q.borrow_mut().push(SideEffect::PropertyChange {
-                object: name.clone(), property: "Text".into(),
-                value: PropValue::String(title),
-            });
-            Value::Object(Rc::new(std::cell::RefCell::new(obj)))
+            let _form_name = str_arg(args, 0, "Form1");
+            let control_type = str_arg(args, 1, "Button");
+            let control_name = str_arg(args, 2, "control1");
+            let left = i32_arg(args, 3, 0);
+            let top = i32_arg(args, 4, 0);
+            let width = i32_arg(args, 5, 100);
+            let height = i32_arg(args, 6, 30);
+            gui.borrow_mut().add_widget(&control_type, &control_name, "", left, top, width, height);
+            Value::String(Rc::from(control_name.as_str()))
         })
     });
 
-    // No-op function for layout methods (SuspendLayout, ResumeLayout, etc.)
-    vm.register_host_fn("vybe:gui", "noop", Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null));
+    // Property set/get — directly update the widget
+    vm.register_host_fn("vybe:gui", "setProperty", {
+        let gui = gui.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let control = str_arg(args, 0, "");
+            let property = str_arg(args, 1, "");
+            let val_str = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
+            gui.borrow_mut().set_property(&control, &property, &val_str);
+            Value::Null
+        })
+    });
 
-    // Generic WinForms control constructor: new_Button(), new_Label(), etc.
-    // Creates a simple object with __control_type set.
+    vm.register_host_fn("vybe:gui", "controlSetProperty", {
+        let gui = gui.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let control_name = {
+                    let o = obj.borrow();
+                    o.properties.get("__control_name")
+                        .map(|v| format!("{}", v)).unwrap_or_default()
+                };
+                let property = str_arg(args, 1, "");
+                let val = args.get(2).cloned().unwrap_or(Value::Null);
+                let val_str = format!("{}", val);
+                let prop_lower = property.to_lowercase();
+                obj.borrow_mut().properties.insert(prop_lower.clone(), val.clone());
+                if prop_lower == "name" {
+                    obj.borrow_mut().properties.insert("__control_name".into(), val);
+                }
+                gui.borrow_mut().set_property(&control_name, &property, &val_str);
+            }
+            Value::Null
+        })
+    });
+
+    vm.register_host_fn("vybe:gui", "getProperty", {
+        let gui = gui.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let control = str_arg(args, 0, "");
+            let property = str_arg(args, 1, "");
+            let val = gui.borrow_mut().get_property(&control, &property);
+            if val.is_empty() { Value::Null } else { Value::String(Rc::from(val.as_str())) }
+        })
+    });
+
+    // Event registration
+    vm.register_host_fn("vybe:gui", "onEvent", {
+        let gui = gui.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let control = str_arg(args, 0, "");
+            let event = str_arg(args, 1, "");
+            let callback = args.get(2).cloned().unwrap_or(Value::Null);
+            gui.borrow_mut().register_event(&control, &event, callback);
+            Value::Null
+        })
+    });
+
+    vm.register_host_fn("vybe:gui", "addHandler", {
+        let gui = gui.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let ctrl = str_arg(args, 0, "");
+            let event = str_arg(args, 1, "");
+            if let Some(callback) = args.get(2) {
+                gui.borrow_mut().register_event(&ctrl, &event, callback.clone());
+            }
+            Value::Null
+        })
+    });
+
+    vm.register_host_fn("vybe:gui", "removeHandler", Box::new(|_ctx, _| Value::Null));
+
+    // Form lifecycle
+    vm.register_host_fn("vybe:gui", "showForm", {
+        let gui = gui.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let mut g = gui.borrow_mut();
+            g.should_run = true;
+            if let Some(obj) = args.first().cloned() { g.form_object = Some(obj); }
+            Value::Null
+        })
+    });
+
+    vm.register_host_fn("vybe:gui", "runApplication", {
+        let gui = gui.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let mut g = gui.borrow_mut();
+            g.should_run = true;
+            if let Some(obj) = args.first().cloned() {
+                if let Value::Object(o) = &obj {
+                    let o = o.borrow();
+                    if let Some(w) = o.properties.get("width") { g.width = w.as_f64() as u32; }
+                    if let Some(h) = o.properties.get("height") { g.height = h.as_f64() as u32; }
+                }
+                g.form_object = Some(obj);
+            }
+            Value::Null
+        })
+    });
+
+    vm.register_host_fn("vybe:gui", "closeForm", {
+        let gui = gui.clone();
+        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+            gui.borrow_mut().close_requested = true;
+            Value::Null
+        })
+    });
+
+    // MsgBox (still uses side-effect queue for now)
+    vm.register_host_fn("vybe:gui", "msgBox", {
+        let q = queue.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            q.borrow_mut().push(SideEffect::MsgBox {
+                text: str_arg(args, 0, ""),
+                title: str_arg(args, 1, ""),
+            });
+            Value::Null
+        })
+    });
+
+    vm.register_host_fn("vybe:gui", "noop", Box::new(|_ctx, _| Value::Null));
+
+    // Control constructors
     let control_types = [
         "Button", "Label", "TextBox", "CheckBox", "RadioButton", "ComboBox",
         "ListBox", "Panel", "GroupBox", "TabControl", "TabPage", "DataGridView",
@@ -263,77 +238,40 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
         "BindingSource", "DataSet", "DataTable", "DataAdapter",
         "OpenFileDialog", "SaveFileDialog", "FontDialog", "ColorDialog",
         "FolderBrowserDialog", "PrintDialog", "PrintPreviewDialog",
-        "ListView", "WebBrowser", "MonthCalendar", "ContextMenuStrip",
-        "Timer", "BindingSource", "DataSet", "ImageList", "ToolTip",
+        "ListView", "WebBrowser", "ContextMenuStrip",
+        "Timer", "ImageList", "ToolTip",
         "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",
         "Form", "TreeView",
     ];
-    // Register control methods as host functions (shared across all instances)
-    let q_show = q.clone();
-    vm.register_host_fn("vybe:gui", "__ctrl_show", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let name = if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
-            o.properties.get("name").or_else(|| o.properties.get("__control_name"))
-                .map(|v| format!("{}", v)).unwrap_or_else(|| "Form1".into())
-        } else { "Form1".into() };
-        q_show.borrow_mut().push(SideEffect::FormShow { form_name: name });
+
+    let gui_show = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_show", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        gui_show.borrow_mut().should_run = true;
         Value::Null
     }));
-    let q_close = q.clone();
-    vm.register_host_fn("vybe:gui", "__ctrl_close", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let name = if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
-            o.properties.get("name").or_else(|| o.properties.get("__control_name"))
-                .map(|v| format!("{}", v)).unwrap_or_else(|| "Form1".into())
-        } else { "Form1".into() };
-        q_close.borrow_mut().push(SideEffect::FormClose { form_name: name });
+    let gui_close = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_close", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        gui_close.borrow_mut().close_requested = true;
         Value::Null
     }));
     vm.register_host_fn("vybe:gui", "__ctrl_focus", Box::new(|_ctx, _| Value::Null));
     vm.register_host_fn("vybe:gui", "__ctrl_hide", Box::new(|_ctx, _| Value::Null));
-    // ShowDialog stub — returns DialogResult.OK (1). Overridden by skia_form with rfd.
     vm.register_host_fn("vybe:gui", "__dlg_showdialog", Box::new(|_ctx, _| Value::I32(1)));
+    vm.register_host_fn("vybe:gui", "__dlg_show", Box::new(|_ctx, _| Value::I32(0)));
 
-    // Get method refs for attaching to control objects
-    let show_ref = {
-        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__ctrl_show".into())).unwrap();
-        let mut o = vybe_bytecode::value::Object::new();
-        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
-        Value::Object(Rc::new(RefCell::new(o)))
-    };
-    let close_ref = {
-        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__ctrl_close".into())).unwrap();
-        let mut o = vybe_bytecode::value::Object::new();
-        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
-        Value::Object(Rc::new(RefCell::new(o)))
-    };
-    let focus_ref = {
-        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__ctrl_focus".into())).unwrap();
-        let mut o = vybe_bytecode::value::Object::new();
-        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
-        Value::Object(Rc::new(RefCell::new(o)))
-    };
-    let hide_ref = {
-        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__ctrl_hide".into())).unwrap();
-        let mut o = vybe_bytecode::value::Object::new();
-        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
-        Value::Object(Rc::new(RefCell::new(o)))
-    };
-
-    let dlg_ref = {
-        let idx = *vm.host_registry.get(&("vybe:gui".into(), "__dlg_showdialog".into())).unwrap();
-        let mut o = vybe_bytecode::value::Object::new();
-        o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
-        Value::Object(Rc::new(RefCell::new(o)))
-    };
+    let show_ref = host_fn_ref(vm, "__ctrl_show");
+    let close_ref = host_fn_ref(vm, "__ctrl_close");
+    let focus_ref = host_fn_ref(vm, "__ctrl_focus");
+    let hide_ref = host_fn_ref(vm, "__ctrl_hide");
+    let dlg_ref = host_fn_ref(vm, "__dlg_showdialog");
 
     for ct in control_types {
         let type_name = ct.to_string();
         let show = show_ref.clone();
         let close = close_ref.clone();
         let focus = focus_ref.clone();
-        let dlg_ref = dlg_ref.clone();
         let hide = hide_ref.clone();
+        let dlg = dlg_ref.clone();
         vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
             use std::sync::atomic::{AtomicU32, Ordering};
             static COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -348,61 +286,34 @@ pub fn register(vm: &mut VM, queue: Rc<RefCell<SideEffectQueue>>) {
             obj.properties.insert("height".into(), Value::F64(30.0));
             obj.properties.insert("left".into(), Value::F64(0.0));
             obj.properties.insert("top".into(), Value::F64(0.0));
-            // Methods on the control object
             obj.properties.insert("show".into(), show.clone());
             obj.properties.insert("close".into(), close.clone());
             obj.properties.insert("focus".into(), focus.clone());
             obj.properties.insert("hide".into(), hide.clone());
-            // Dialog objects get showdialog method
             if matches!(type_name.as_str(),
                 "OpenFileDialog" | "SaveFileDialog" | "FontDialog" | "ColorDialog"
                 | "FolderBrowserDialog" | "PrintDialog" | "PrintPreviewDialog"
             ) {
-                obj.properties.insert("showdialog".into(), dlg_ref.clone());
+                obj.properties.insert("showdialog".into(), dlg.clone());
             }
             Value::Object(Rc::new(RefCell::new(obj)))
         }));
     }
-
-    // addHandler(controlName, eventName, callback) → registers an event handler
-    vm.register_host_fn("vybe:gui", "addHandler", {
-        let q = queue.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let ctrl = str_arg(args, 0, "");
-            let event = str_arg(args, 1, "");
-            if let Some(callback) = args.get(2) {
-                q.borrow_mut().register_event(&ctrl, &event, callback.clone());
-            }
-            Value::Null
-        })
-    });
-
-    // removeHandler(eventTarget, handlerName) → removes an event handler
-    vm.register_host_fn("vybe:gui", "removeHandler", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let _target = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        let _handler = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-        // In the side-effect model, event handlers are managed by the UI layer.
-        // Removal would be a side-effect, but for now we accept the call silently.
-        Value::Null
-    }));
 }
 
 fn str_arg(args: &[Value], idx: usize, default: &str) -> String {
     args.get(idx).map(|v| format!("{}", v)).unwrap_or_else(|| default.into())
 }
+
 fn i32_arg(args: &[Value], idx: usize, default: i32) -> i32 {
     args.get(idx).map(|v| v.as_f64() as i32).unwrap_or(default)
 }
-fn vm_to_prop(v: Value) -> PropValue {
-    match v {
-        Value::Null | Value::Undefined => PropValue::Null,
-        Value::Bool(b) => PropValue::Bool(b),
-        Value::I32(n) => PropValue::Int(n as i64),
-        Value::I64(n) => PropValue::Int(n),
-        Value::F64(n) => PropValue::Float(n),
-        Value::String(s) => PropValue::String(s.to_string()),
-        Value::Object(_) | Value::V128(_) | Value::WeakRef(_) => PropValue::String(format!("{}", v)),
-    }
+
+fn host_fn_ref(vm: &VM, name: &str) -> Value {
+    let idx = *vm.host_registry.get(&("vybe:gui".into(), name.into())).unwrap();
+    let mut o = vybe_bytecode::value::Object::new();
+    o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
+    Value::Object(Rc::new(RefCell::new(o)))
 }
 
 fn capitalize_first(s: &str) -> String {
@@ -410,5 +321,58 @@ fn capitalize_first(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+fn apply_property(form: &mut vybe_widgets::Form, control_name: &str, property: &str, value: &str) {
+    use vybe_widgets::{WidgetCommand, CommandValue};
+    match property {
+        "Text" | "text" => {
+            form.send_command(control_name, &WidgetCommand::SetText(value.to_string()));
+        }
+        "Enabled" | "enabled" => {
+            let enabled = !matches!(value, "false" | "False" | "0" | "");
+            form.send_command(control_name, &WidgetCommand::SetEnabled(enabled));
+        }
+        "Visible" | "visible" => {
+            let visible = !matches!(value, "false" | "False" | "0" | "");
+            form.send_command(control_name, &WidgetCommand::SetVisible(visible));
+        }
+        "ReadOnly" | "readonly" => {
+            let ro = matches!(value, "true" | "True" | "1");
+            form.send_command(control_name, &WidgetCommand::Custom("SetReadOnly".into(), CommandValue::Bool(ro)));
+        }
+        _ => {
+            form.send_command(control_name, &WidgetCommand::Custom(
+                format!("Set{}", capitalize_first(property)),
+                CommandValue::Text(value.to_string()),
+            ));
+        }
+    }
+}
+
+} // mod gui_impl
+
+// Public re-export when gui feature is on
+#[cfg(feature = "gui")]
+pub use gui_impl::register;
+
+// Non-GUI fallback: register stubs so compiled code does not crash.
+#[cfg(not(feature = "gui"))]
+pub fn register(
+    vm: &mut vybe_bytecode::VM,
+    _queue: std::rc::Rc<std::cell::RefCell<crate::side_effect::SideEffectQueue>>,
+) {
+    use vybe_bytecode::Value;
+    let stubs = [
+        "createForm", "addControl", "setProperty", "getProperty",
+        "onEvent", "showForm", "runApplication", "msgBox", "closeForm",
+        "newControl", "controlSetProperty", "controlsAdd", "newForm",
+        "noop", "addHandler", "removeHandler",
+        "__ctrl_show", "__ctrl_close", "__ctrl_focus", "__ctrl_hide",
+        "__dlg_showdialog", "__dlg_show",
+    ];
+    for name in stubs {
+        vm.register_host_fn("vybe:gui", name, Box::new(|_ctx, _| Value::Null));
     }
 }

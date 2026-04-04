@@ -85,6 +85,9 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
         let surf = Surface::new(&ctx, window.clone()).unwrap();
         let sz = window.inner_size();
 
+        // Use the actual display scale factor from the OS
+        self.scale = window.scale_factor() as f32;
+
         self.window = Some(window);
         self.context = Some(ctx);
         self.surface = Some(surf);
@@ -115,6 +118,24 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale = scale_factor as f32;
+                if let Some(w) = &self.window {
+                    let sz = w.inner_size();
+                    if sz.width > 0 && sz.height > 0 {
+                        if let Some(s) = &mut self.surface {
+                            s.resize(
+                                NonZeroU32::new(sz.width).unwrap(),
+                                NonZeroU32::new(sz.height).unwrap(),
+                            ).unwrap();
+                        }
+                        self.pixmap = Some(Pixmap::new(sz.width, sz.height).unwrap());
+                        self.app.on_resize(sz.width as f32 / self.scale, sz.height as f32 / self.scale);
+                        w.request_redraw();
+                    }
+                }
+            }
 
             WindowEvent::ModifiersChanged(m) => {
                 self.modifiers = m;

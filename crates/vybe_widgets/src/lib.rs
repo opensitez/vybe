@@ -53,6 +53,7 @@ pub mod text_editor;
 pub mod code_editor_widget;
 pub mod resource_editor;
 pub mod layout;
+pub mod binding_navigator;
 pub mod dock_panel;
 pub mod split_panel;
 pub mod stack_panel;
@@ -105,6 +106,7 @@ pub use resource_editor::{ResourceEditor, ResourceEditorEvent, ResourceEntry, Re
 
 // ── GUI Toolkit ────────────────────────────────────────────────────────
 pub use layout::{LayoutRect, MouseButton, MouseEventKind, MouseEvent, KeyEvent, RenderContext, Dock, PanelWidget, WidgetEvent, NullWidget, CursorMotion, WidgetId, FocusManager, WidgetCommand, CommandValue, CheckState, SelectionMode, TextAlign, Anchor, AnchorLayout, apply_anchor_layouts};
+pub use binding_navigator::{BindingNavigator, NavAction};
 pub use dock_panel::DockPanel;
 pub use split_panel::SplitPanel;
 pub use stack_panel::{StackPanel, Orientation};
@@ -115,9 +117,18 @@ pub use output_panel::{OutputPanel, OutputPanelEvent, OutputTab, ProblemEntry, P
 pub use properties_panel::{PropertiesPanel, EditingProp, PropTab};
 pub use form::Form;
 pub use app_window::{Application, run_app};
+pub use winit::window::CursorIcon;
 
 // ── Re-exports from cosmic-text (so consumers don't need cosmic_text directly) ──
 pub use cosmic_text::{FontSystem, SwashCache, Color as TextColor};
+
+// ── Re-exports from tiny-skia (so consumers don't need tiny-skia directly) ──
+pub use tiny_skia::Pixmap;
+
+/// Fill a pixmap with a solid RGBA background colour.
+pub fn fill_background(pixmap: &mut tiny_skia::Pixmap, r: u8, g: u8, b: u8, a: u8) {
+    pixmap.fill(tiny_skia::Color::from_rgba8(r, g, b, a));
+}
 
 use tiny_skia::PathBuilder;
 

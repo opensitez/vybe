@@ -11,7 +11,7 @@ fn compile_vb_gui(source: &str) -> (Vec<String>, Vec<SideEffect>) {
     let out = output.clone();
     let queue = Rc::new(RefCell::new(SideEffectQueue::new()));
 
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    vybe_host::register_all(&mut vm);
     vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
         out.borrow_mut().push(parts.join(" "));

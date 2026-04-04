@@ -6,6 +6,21 @@ use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
 
 pub fn register(vm: &mut VM) {
+    // Register Color as a global namespace with color constants
+    {
+        let mut color_obj = Object::new();
+        color_obj.properties.insert("__type".into(), Value::String(Rc::from("Color")));
+        for name in ["Red", "Blue", "Green", "Black", "White", "Yellow", "Orange",
+                      "Purple", "Cyan", "Magenta", "Gray", "Brown", "Pink",
+                      "LightGray", "DarkGray", "Transparent"] {
+            let mut c = Object::new();
+            c.properties.insert("__type".into(), Value::String(Rc::from("Color")));
+            c.properties.insert("name".into(), Value::String(Rc::from(name)));
+            color_obj.properties.insert(name.to_lowercase(), Value::Object(Rc::new(RefCell::new(c))));
+        }
+        vm.globals.insert("color".into(), Value::Object(Rc::new(RefCell::new(color_obj))));
+    }
+
     // New Point(x, y)
     vm.register_host_fn("vybe:drawing", "pointNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let x = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
@@ -40,4 +55,48 @@ pub fn register(vm: &mut VM) {
         obj.properties.insert("italic".into(), Value::Bool(false));
         Value::Object(Rc::new(RefCell::new(obj)))
     }));
+
+    // New Pen(color, width)
+    vm.register_host_fn("vybe:drawing", "penNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let color = args.first().cloned().unwrap_or(Value::Null);
+        let width = args.get(1).map(|v| v.as_f64()).unwrap_or(1.0);
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Rc::from("Pen")));
+        obj.properties.insert("color".into(), color);
+        obj.properties.insert("width".into(), Value::F64(width));
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }));
+
+    // New SolidBrush(color)
+    vm.register_host_fn("vybe:drawing", "solidBrushNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let color = args.first().cloned().unwrap_or(Value::Null);
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Rc::from("SolidBrush")));
+        obj.properties.insert("color".into(), color);
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }));
+
+    // Color constants (Color.Red, Color.Blue, etc.) — stub as named objects
+    vm.register_host_fn("vybe:drawing", "colorFromName", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let name = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "Black".into());
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Rc::from("Color")));
+        obj.properties.insert("name".into(), Value::String(Rc::from(name.as_str())));
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }));
+
+    // Graphics stub — CreateGraphics() returns a stub object
+    vm.register_host_fn("vybe:drawing", "graphicsNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Rc::from("Graphics")));
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }));
+
+    // Drawing method stubs (DrawLine, FillRectangle, etc.) — no-ops for now
+    for name in ["drawLine", "drawRectangle", "fillRectangle", "drawEllipse", "fillEllipse",
+                 "drawString", "drawImage", "clear", "drawArc", "fillPolygon"] {
+        vm.register_host_fn("vybe:drawing", name, Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+            Value::Null
+        }));
+    }
 }

@@ -92,11 +92,12 @@ fn run_project(path: &Path, dump: bool) {
     // ── Phase 1: Set up VM with host functions ─────────────────
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if config.host.gui {
-        vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = if config.host.gui {
+        vybe_host::register_all_with_gui(&mut vm, queue.clone())
     } else {
         vybe_host::register_all(&mut vm);
-    }
+        Rc::new(RefCell::new(vybe_host::GuiState::new()))
+    };
     vybe_host::setup_namespaces(&mut vm);
 
     // ── Phase 2: Compile ALL files into Components ─────────────
@@ -386,7 +387,7 @@ fn run_project(path: &Path, dump: bool) {
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -398,14 +399,14 @@ fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bo
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if sandbox {
+    let gui = if sandbox {
         eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
         vybe_host::register_with_capabilities_and_gui(
             &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
-        );
+        )
     } else {
-        vybe_host::register_all_with_gui(&mut vm, queue.clone());
-    }
+        vybe_host::register_all_with_gui(&mut vm, queue.clone())
+    };
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_vb::Compiler::new().compile(&program) {
@@ -427,7 +428,7 @@ fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bo
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -439,14 +440,14 @@ fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bo
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if sandbox {
+    let gui = if sandbox {
         eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
         vybe_host::register_with_capabilities_and_gui(
             &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
-        );
+        )
     } else {
-        vybe_host::register_all_with_gui(&mut vm, queue.clone());
-    }
+        vybe_host::register_all_with_gui(&mut vm, queue.clone())
+    };
     vybe_compiler_js::register_js_coercion(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
 
@@ -469,7 +470,7 @@ fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bo
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -481,14 +482,14 @@ fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if sandbox {
+    let gui = if sandbox {
         eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
         vybe_host::register_with_capabilities_and_gui(
             &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
-        );
+        )
     } else {
-        vybe_host::register_all_with_gui(&mut vm, queue.clone());
-    }
+        vybe_host::register_all_with_gui(&mut vm, queue.clone())
+    };
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_dart::Compiler::new().compile(&program) {
@@ -510,7 +511,7 @@ fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable: bool) {
@@ -526,19 +527,19 @@ fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable:
     // On --portable, only minimal WASI imports are registered.
 
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if !portable {
-        if sandbox {
+    let gui = if !portable {
+        let g = if sandbox {
             eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
             vybe_host::register_with_capabilities_and_gui(
                 &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
-            );
+            )
         } else {
-            vybe_host::register_all_with_gui(&mut vm, queue.clone());
-        }
+            vybe_host::register_all_with_gui(&mut vm, queue.clone())
+        };
         vybe_host::setup_namespaces(&mut vm);
+        g
     } else {
         eprintln!("[portable] Running with WASM stdlib only — no Vybe host optimizations");
-        // Register minimal WASI imports for I/O
         vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
             for a in args { print!("{}", a); }
             println!();
@@ -549,7 +550,8 @@ fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable:
             std::io::stdin().read_line(&mut line).ok();
             vybe_bytecode::Value::String(std::rc::Rc::from(line.trim()))
         }));
-    }
+        Rc::new(RefCell::new(vybe_host::GuiState::new()))
+    };
 
     let chunks = match vybe_compiler_python::Compiler::new().compile(&module) {
         Ok(c) => c,
@@ -570,7 +572,7 @@ fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable:
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn run_php(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -582,14 +584,14 @@ fn run_php(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: b
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if sandbox {
+    let gui = if sandbox {
         eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
         vybe_host::register_with_capabilities_and_gui(
             &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
-        );
+        )
     } else {
-        vybe_host::register_all_with_gui(&mut vm, queue.clone());
-    }
+        vybe_host::register_all_with_gui(&mut vm, queue.clone())
+    };
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_php::Compiler::new().compile(&program) {
@@ -611,7 +613,7 @@ fn run_php(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: b
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn run_cobol(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -623,14 +625,14 @@ fn run_cobol(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable:
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if sandbox {
+    let gui = if sandbox {
         eprintln!("[sandbox] Restricted mode");
         vybe_host::register_with_capabilities_and_gui(
             &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
-        );
+        )
     } else {
-        vybe_host::register_all_with_gui(&mut vm, queue.clone());
-    }
+        vybe_host::register_all_with_gui(&mut vm, queue.clone())
+    };
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_cobol::Compiler::new().compile(&program) {
@@ -652,7 +654,7 @@ fn run_cobol(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable:
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn run_ruby(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -664,14 +666,14 @@ fn run_ruby(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if sandbox {
+    let gui = if sandbox {
         eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
         vybe_host::register_with_capabilities_and_gui(
             &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
-        );
+        )
     } else {
-        vybe_host::register_all_with_gui(&mut vm, queue.clone());
-    }
+        vybe_host::register_all_with_gui(&mut vm, queue.clone())
+    };
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_ruby::Compiler::new().compile(&program) {
@@ -693,7 +695,7 @@ fn run_ruby(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn run_pascal(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -705,14 +707,14 @@ fn run_pascal(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    if sandbox {
+    let gui = if sandbox {
         eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
         vybe_host::register_with_capabilities_and_gui(
             &mut vm, &vybe_host::Capabilities::safe(), queue.clone(),
-        );
+        )
     } else {
-        vybe_host::register_all_with_gui(&mut vm, queue.clone());
-    }
+        vybe_host::register_all_with_gui(&mut vm, queue.clone())
+    };
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_pascal::Compiler::new().compile(&program) {
@@ -734,7 +736,7 @@ fn run_pascal(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn run_wasm(path: &Path) {
@@ -754,14 +756,14 @@ fn run_wasm(path: &Path) {
 
     let mut vm = VM::new();
     let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
     vybe_host::setup_namespaces(&mut vm);
 
     match vm.run(chunks) {
         Ok(_) => {}
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
-    vybe_cli::runner::launch_vm_form(vm, queue, None);
+    vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
 }
 
 fn read_file(path: &Path) -> String {

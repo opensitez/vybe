@@ -7,6 +7,7 @@ use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget
 
 pub struct Label {
     pub id: WidgetId,
+    pub name: String,
     pub text: String,
     pub width: f32,
     pub height: f32,
@@ -23,6 +24,7 @@ impl Label {
     pub fn new<S: Into<String>>(text: S) -> Self {
         Self {
             id: WidgetId::next(),
+            name: String::new(),
             text: text.into(),
             width: 100.0,
             height: 20.0,
@@ -39,6 +41,7 @@ impl Label {
         }
     }
 
+    pub fn with_name<S: Into<String>>(mut self, name: S) -> Self { self.name = name.into(); self }
     pub fn with_text_align(mut self, align: TextAlign) -> Self { self.text_align = align; self }
     pub fn with_word_wrap(mut self) -> Self { self.word_wrap = true; self }
 
@@ -119,6 +122,7 @@ impl PanelWidget for Label {
 
     fn rect(&self) -> LayoutRect { self.rect }
     fn widget_id(&self) -> WidgetId { self.id }
+    fn name(&self) -> &str { &self.name }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;

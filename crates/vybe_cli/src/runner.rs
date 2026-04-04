@@ -53,15 +53,12 @@ pub fn run(path: &Path, extra_args: &[String]) {
 /// Supports multi-file modules (import/export).
 /// If the JS program emits gui.runApplication(), a Dioxus window is launched.
 fn run_js_file(path: &Path) {
-    // 1. Create VM + shared side effect queue
     let mut vm = vybe_bytecode::VM::new();
     let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
 
-    // 2. Register all host modules (vybe:* + js:coerce)
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
     vybe_compiler_js::register_js_coercion(&mut vm);
 
-    // 3. Load, resolve imports, and compile all modules
     let chunks = match vybe_compiler_js::load_and_compile(path) {
         Ok(c) => c,
         Err(e) => {
@@ -70,7 +67,6 @@ fn run_js_file(path: &Path) {
         }
     };
 
-    // 4. Run the top-level JS code (sets up form, controls, etc.)
     match vm.run(chunks) {
         Ok(_) => {}
         Err(e) => {
@@ -79,66 +75,19 @@ fn run_js_file(path: &Path) {
         }
     }
 
-    // 5. Check the side effect queue — did the JS request a GUI?
+    // Drain remaining side effects (console output, msgbox)
     let effects = queue.borrow_mut().drain();
-    let mut form_name = None;
-    let mut form_title = String::new();
-    let mut form = vybe_forms::Form::new("JSForm");
-    form.width = 800;
-    form.height = 600;
-
     for effect in &effects {
         match effect {
-            vybe_host::SideEffect::RunApplication { form_name: name, .. } => {
-                form_name = Some(name.clone());
-            }
-            vybe_host::SideEffect::AddControl {
-                control_name, control_type, left, top, width, height, ..
-            } => {
-                let ct = vybe_forms::control::ControlType::from_name(control_type)
-                    .unwrap_or(vybe_forms::control::ControlType::Label);
-                let mut ctrl = vybe_forms::Control::new(ct, control_name.clone(), *left, *top);
-                ctrl.bounds = vybe_forms::Bounds::new(*left, *top, *width, *height);
-                form.controls.push(ctrl);
-            }
-            vybe_host::SideEffect::PropertyChange { object, property, value } => {
-                let val_str = value.as_string();
-                // Form-level property
-                if Some(object.clone()) == form_name || object == "JSForm"
-                    || form_name.as_ref().is_some_and(|n| n == object)
-                {
-                    match property.as_str() {
-                        "Text" => { form.text = val_str.clone(); form_title = val_str; }
-                        "Width" => { form.width = val_str.parse().unwrap_or(800); }
-                        "Height" => { form.height = val_str.parse().unwrap_or(600); }
-                        _ => {}
-                    }
-                } else {
-                    // Control property
-                    if let Some(ctrl) = form.controls.iter_mut().find(|c| c.name == *object) {
-                        ctrl.properties.set(property.clone(), val_str);
-                    }
-                }
-            }
-            vybe_host::SideEffect::ConsoleOutput(msg) => {
-                print!("{msg}");
-            }
-            vybe_host::SideEffect::MsgBox { text, title } => {
-                println!("[MsgBox] {}: {}", title, text);
-            }
+            vybe_host::SideEffect::ConsoleOutput(msg) => print!("{msg}"),
+            vybe_host::SideEffect::MsgBox { text, title } => println!("[MsgBox] {title}: {text}"),
             _ => {}
         }
     }
 
-    // 6. If RunApplication was called, launch the JS form with event support
-    if let Some(name) = form_name {
-        if form_title.is_empty() {
-            form_title = name.clone();
-        }
-        form.name = name;
-
-        // Launch using egui renderer (replaces Dioxus UI in this crate).
-        crate::egui_form::launch_egui_form(vm, queue, &form, &form_title);
+    // If runApplication was called, GuiState already has the real widgets
+    if gui.borrow().should_run {
+        crate::vybewidget_form::launch_gui(vm, queue, gui);
     }
 }
 
@@ -266,107 +215,44 @@ pub fn launch_project_form(
     form: vybe_forms::Form,
     vm: vybe_bytecode::VM,
     queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+    gui: std::rc::Rc<std::cell::RefCell<vybe_host::GuiState>>,
 ) {
-    // Launch using egui renderer (replaces Dioxus UI in this crate).
-    let title = if form.text.is_empty() { form.name.clone() } else { form.text.clone() };
-    crate::egui_form::launch_egui_form(vm, queue, &form, &title);
+    crate::vybewidget_form::launch_vybewidget_form(vm, queue, gui, &form);
 }
 
 // ---------------------------------------------------------------------------
 // Public API: launch a bytecode VM form from side effects
 // ---------------------------------------------------------------------------
 
-/// Build a form from side effects and launch a Dioxus window.
-/// Called by both `run_js_file` and `vybec` after compiling and running bytecode.
-/// If no RunApplication side effect was emitted, just prints console output.
+/// Launch a form after VM has run.
+/// For programmatic forms, GuiState already has the real widgets.
+/// For designer forms, pass `initial_form` to build widgets from the model.
 pub fn launch_vm_form(
-    mut vm: vybe_bytecode::VM,
+    vm: vybe_bytecode::VM,
     queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+    gui: std::rc::Rc<std::cell::RefCell<vybe_host::GuiState>>,
     initial_form: Option<vybe_forms::Form>,
 ) {
     let effects = queue.borrow_mut().drain();
 
-    // Process side effects for form object reference and console output
     for effect in &effects {
         match effect {
-            vybe_host::SideEffect::RunApplication { form_object, .. } => {
-                if let Some(obj) = form_object {
-                    vm.globals.insert("__f".into(), obj.clone());
-                }
-            }
             vybe_host::SideEffect::ConsoleOutput(msg) => print!("{msg}"),
             vybe_host::SideEffect::MsgBox { text, title } => println!("[MsgBox] {title}: {text}"),
             _ => {}
         }
     }
 
-    // Build the form — use the parsed model if available, otherwise from side effects
-    let (form, form_title) = if let Some(mut f) = initial_form {
-        // Designer form — apply any runtime property changes from side effects
-        let fname = f.name.to_lowercase();
-        for effect in &effects {
-            if let vybe_host::SideEffect::PropertyChange { object, property, value } = effect {
-                let val_str = value.as_string();
-                if object.to_lowercase() == fname {
-                    match property.as_str() {
-                        "Text" | "Caption" => { f.text = val_str; }
-                        _ => {}
-                    }
-                } else if let Some(ctrl) = f.controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(object)) {
-                    ctrl.properties.set(property.clone(), val_str);
-                }
-            }
-        }
-        let title = if f.text.is_empty() { f.name.clone() } else { f.text.clone() };
-        (f, title)
-    } else {
-        // Programmatic form — build entirely from side effects
-        let mut form = vybe_forms::Form::new("VMForm");
-        form.width = 800;
-        form.height = 600;
-        let mut run_form_name = None;
-        let mut form_title = String::new();
-        for effect in &effects {
-            match effect {
-                vybe_host::SideEffect::RunApplication { form_name: name, .. } => {
-                    run_form_name = Some(name.clone());
-                }
-                vybe_host::SideEffect::AddControl {
-                    control_name, control_type, left, top, width, height, ..
-                } => {
-                    let ct = vybe_forms::control::ControlType::from_name(control_type)
-                        .unwrap_or(vybe_forms::control::ControlType::Label);
-                    let mut ctrl = vybe_forms::Control::new(ct, control_name.clone(), *left, *top);
-                    ctrl.bounds = vybe_forms::Bounds::new(*left, *top, *width, *height);
-                    form.controls.push(ctrl);
-                }
-                vybe_host::SideEffect::PropertyChange { object, property, value } => {
-                    let val_str = value.as_string();
-                    if Some(object.clone()) == run_form_name || object == "VMForm" {
-                        match property.as_str() {
-                            "Text" | "Caption" => { form.text = val_str.clone(); form_title = val_str; }
-                            "Width" => { form.width = val_str.parse().unwrap_or(800); }
-                            "Height" => { form.height = val_str.parse().unwrap_or(600); }
-                            _ => {}
-                        }
-                    } else if let Some(ctrl) = form.controls.iter_mut().find(|c| c.name == *object) {
-                        ctrl.properties.set(property.clone(), val_str);
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Some(name) = run_form_name {
-            if form_title.is_empty() { form_title = name.clone(); }
-            form.name = name;
-        }
-        (form, form_title)
-    };
+    let should_launch = gui.borrow().should_run || initial_form.is_some();
 
-    eprintln!("[LAUNCH] title={:?} controls={} width={} height={}", form_title, form.controls.len(), form.width, form.height);
-    if !form_title.is_empty() || !form.controls.is_empty() {
-        // Use tiny-skia renderer — no webview
-        crate::skia_form::launch_skia_form(vm, queue, &form, &form_title);
+    if should_launch {
+        if let Some(form) = initial_form {
+            // Designer form path — convert vybe_forms into real widgets
+            crate::vybewidget_form::launch_vybewidget_form(vm, queue, gui, &form);
+        } else {
+            // Programmatic form path — GuiState already has all widgets
+            crate::vybewidget_form::launch_gui(vm, queue, gui);
+        }
     }
 }
 
@@ -392,7 +278,7 @@ fn run_cs_file(path: &Path) {
 
     let mut vm = vybe_bytecode::VM::new();
     let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_csharp::Compiler::new().compile(&unit) {
@@ -411,7 +297,7 @@ fn run_cs_file(path: &Path) {
         }
     }
 
-    launch_vm_form(vm, queue, None);
+    launch_vm_form(vm, queue, gui, None);
 }
 
 /// Run a standalone .vb file via the bytecode VM.
@@ -434,7 +320,7 @@ fn run_vb_file(path: &Path, _extra_args: &[String]) {
 
     let mut vm = vybe_bytecode::VM::new();
     let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_vb::Compiler::new().compile(&program) {
@@ -453,7 +339,7 @@ fn run_vb_file(path: &Path, _extra_args: &[String]) {
         }
     }
 
-    launch_vm_form(vm, queue, None);
+    launch_vm_form(vm, queue, gui, None);
 }
 
 /// Map internal ControlType debug names to host-recognized constructor names.
@@ -585,7 +471,7 @@ pub fn run_project_in_memory(project: &vybe_project::Project) {
 
     let mut vm = vybe_bytecode::VM::new();
     let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
     vybe_host::setup_namespaces(&mut vm);
 
     match parse_program(&all_code) {
@@ -605,7 +491,7 @@ pub fn run_project_in_memory(project: &vybe_project::Project) {
         Err(e) => { eprintln!("Parse error: {:?}", e); return; }
     }
 
-    launch_vm_form(vm, queue, startup_form);
+    launch_vm_form(vm, queue, gui, startup_form);
 }
 
 /// Run a .vbp / .vbproj project.
@@ -666,7 +552,7 @@ fn run_project(path: &Path, _extra_args: &[String]) {
                         | "Enabled" | "Visible" | "BackColor" | "ForeColor" | "Font") {
                         continue;
                     }
-                    // Skip DataBindings.* properties — handled by skia_form data binding system
+                    // Skip DataBindings.* properties — handled by data binding system
                     if k.starts_with("DataBindings.") {
                         continue;
                     }
@@ -767,7 +653,7 @@ fn run_project(path: &Path, _extra_args: &[String]) {
     // Set up VM + compile ALL code (class defs + entry point together)
     let mut vm = vybe_bytecode::VM::new();
     let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
-    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
     vybe_host::setup_namespaces(&mut vm);
 
     if !all_code.trim().is_empty() {
@@ -790,11 +676,10 @@ fn run_project(path: &Path, _extra_args: &[String]) {
     }
 
     // Pass the parsed form model directly — no side effects needed for layout.
-    // The form model IS the source of truth for rendering.
     // Side effects are only used for runtime property changes during events.
     if let Some(form) = startup_form {
-        launch_vm_form(vm, queue, Some(form));
+        launch_vm_form(vm, queue, gui, Some(form));
     } else {
-        launch_vm_form(vm, queue, None);
+        launch_vm_form(vm, queue, gui, None);
     }
 }
