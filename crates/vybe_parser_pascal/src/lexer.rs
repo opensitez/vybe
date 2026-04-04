@@ -67,10 +67,10 @@ impl Lexer {
             ';' => Token::Semicolon,
             '@' => Token::At,
             '^' => Token::Caret,
-            '+' => Token::Plus,
-            '-' => Token::Minus,
-            '*' => Token::Star,
-            '/' => Token::Slash,
+            '+' => { if self.eat('=') { Token::PlusAssign } else { Token::Plus } }
+            '-' => { if self.eat('=') { Token::MinusAssign } else { Token::Minus } }
+            '*' => { if self.eat('=') { Token::StarAssign } else { Token::Star } }
+            '/' => { if self.eat('=') { Token::SlashAssign } else { Token::Slash } }
             '=' => Token::Eq,
             '<' => {
                 if self.eat('>') { Token::NotEq }

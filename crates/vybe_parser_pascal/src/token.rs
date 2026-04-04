@@ -36,6 +36,10 @@ pub enum Token {
     NotEq,       // <>
     Lt, Gt, Le, Ge,
     Assign,      // :=
+    PlusAssign,  // +=
+    MinusAssign, // -=
+    StarAssign,  // *=
+    SlashAssign, // /=
     At,          // @
     Caret,       // ^
     DotDot,      // ..

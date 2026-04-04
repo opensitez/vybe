@@ -31,6 +31,7 @@ pub struct VarDecl {
 #[derive(Debug, Clone)]
 pub struct ConstDecl {
     pub name: String,
+    pub type_name: Option<TypeRef>,
     pub value: Expression,
 }
 
@@ -43,18 +44,35 @@ pub struct TypeDecl {
 #[derive(Debug, Clone)]
 pub enum TypeDef {
     Alias(TypeRef),
-    Record(Vec<VarDecl>),
-    Enum(Vec<String>),
+    Record(RecordDef),
+    Enum(Vec<EnumValue>),
     Array { index: Option<(Expression, Expression)>, element: Box<TypeRef> },
     Pointer(Box<TypeRef>),
     /// Object Pascal class declaration: `TFoo = class(TParent) ... end;`
     Class(ClassDef),
+    /// Interface declaration: `IFoo = interface ... end;`
+    InterfaceDef(InterfaceDecl),
+}
+
+/// Enum value: `Red` or `Red = 0`
+#[derive(Debug, Clone)]
+pub struct EnumValue {
+    pub name: String,
+    pub value: Option<Expression>,
+}
+
+/// Record definition — can have fields and methods (advanced records)
+#[derive(Debug, Clone)]
+pub struct RecordDef {
+    pub fields: Vec<VarDecl>,
+    pub methods: Vec<MethodSig>,
 }
 
 /// Object Pascal class definition.
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub parent: Option<String>,
+    pub interfaces: Vec<String>,
     pub members: Vec<ClassMember>,
 }
 
@@ -64,6 +82,7 @@ pub enum ClassMember {
     Field(VarDecl),
     MethodDecl(MethodSig),
     PropertyDecl(PropertyDef),
+    ClassVar(VarDecl),
 }
 
 /// Method signature declared inside the class body (implementation is separate).
@@ -75,6 +94,7 @@ pub struct MethodSig {
     pub return_type: Option<TypeRef>,
     pub directives: Vec<MethodDirective>,
     pub is_static: bool,
+    pub is_operator: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,10 +110,20 @@ pub struct PropertyDef {
     pub type_name: TypeRef,
     pub reader: Option<String>,
     pub writer: Option<String>,
+    pub default: bool,
+    pub index_type: Option<TypeRef>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Visibility { Private, Protected, Public, Published }
+
+/// Interface declaration
+#[derive(Debug, Clone)]
+pub struct InterfaceDecl {
+    pub parent: Option<String>,
+    pub methods: Vec<MethodSig>,
+    pub properties: Vec<PropertyDef>,
+}
 
 /// Method implementation: `constructor TFoo.Create(...); begin ... end;`
 #[derive(Debug, Clone)]
@@ -152,10 +182,14 @@ pub enum PassBy { Value, Var, Const, Out }
 #[derive(Debug, Clone)]
 pub enum Statement {
     Assign { target: Expression, value: Expression },
+    /// Compound assignment: target += value, target -= value, etc.
+    CompoundAssign { target: Expression, op: CompoundOp, value: Expression },
     Call { name: Expression, args: Vec<Expression> },
     Block(Vec<Statement>),
     If { cond: Expression, then: Box<Statement>, else_: Option<Box<Statement>> },
     For { var: String, from: Expression, to: Expression, downto: bool, body: Box<Statement> },
+    /// for item in collection do body
+    ForIn { var: String, collection: Expression, body: Box<Statement> },
     While { cond: Expression, body: Box<Statement> },
     Repeat { body: Vec<Statement>, until: Expression },
     Case { expr: Expression, arms: Vec<CaseArm>, else_: Option<Vec<Statement>> },
@@ -167,6 +201,9 @@ pub enum Statement {
     Continue,
     Empty,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompoundOp { Add, Sub, Mul, Div }
 
 #[derive(Debug, Clone)]
 pub struct CaseArm {
@@ -216,6 +253,12 @@ pub enum Expression {
     ArrayLiteral(Vec<Expression>),
     /// `inherited Create(args)` or bare `inherited`
     Inherited { method: Option<String>, args: Vec<Expression> },
+    /// Anonymous procedure/function: `procedure(x: Integer) begin ... end`
+    Lambda { params: Vec<Param>, return_type: Option<TypeRef>, body: Vec<Statement> },
+    /// `obj is TClassName`
+    IsCheck { expr: Box<Expression>, type_name: String },
+    /// `obj as TClassName`
+    AsCast { expr: Box<Expression>, type_name: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

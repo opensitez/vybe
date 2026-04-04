@@ -46,14 +46,12 @@ impl Parser {
     // ── Program ───────────────────────────────────────────────────────────────
 
     pub fn parse_program(&mut self) -> Result<Program, String> {
-        // program Name; or unit Name;
         let name = if self.eat(&Token::Program) || self.eat(&Token::Unit) {
             let n = self.expect_ident()?;
             self.eat(&Token::Semicolon);
             n
         } else { "main".into() };
 
-        // uses clause
         let uses = if self.eat(&Token::Uses) {
             let mut u = vec![self.expect_ident()?];
             while self.eat(&Token::Comma) { u.push(self.expect_ident()?); }
@@ -61,13 +59,11 @@ impl Parser {
             u
         } else { Vec::new() };
 
-        // Skip interface/implementation sections (unit files)
         self.eat(&Token::Interface);
         self.eat(&Token::Implementation);
 
         let decls = self.parse_decl_section()?;
 
-        // Main body
         let body = if self.peek() == &Token::Begin {
             self.parse_compound()?
         } else { Vec::new() };
@@ -87,7 +83,6 @@ impl Parser {
                 Token::Type => { self.advance(); decls.push(Decl::Type(self.parse_type_section()?)); }
                 Token::Procedure => {
                     self.advance();
-                    // Check for method implementation: procedure TFoo.Bar(...)
                     if self.is_method_impl() {
                         decls.push(Decl::Method(self.parse_method_impl(MethodKind::Procedure)?));
                     } else {
@@ -116,12 +111,10 @@ impl Parser {
         Ok(decls)
     }
 
-    /// Check if current position is `ClassName.MethodName` (method implementation)
     fn is_method_impl(&self) -> bool {
         matches!(self.peek(), Token::Identifier(_)) && self.peek2() == &Token::Dot
     }
 
-    /// Parse `ClassName.MethodName(params); begin ... end;`
     fn parse_method_impl(&mut self, kind: MethodKind) -> Result<MethodImpl, String> {
         let class_name = self.expect_ident()?;
         self.expect(Token::Dot)?;
@@ -156,10 +149,15 @@ impl Parser {
         let mut consts = Vec::new();
         while let Token::Identifier(_) = self.peek() {
             let name = self.expect_ident()?;
+            // Typed constant: `N: Integer = 42;`
+            let type_name = if self.eat(&Token::Colon) {
+                let t = self.parse_type_ref()?;
+                Some(t)
+            } else { None };
             self.expect(Token::Eq)?;
             let value = self.parse_expr()?;
             self.eat(&Token::Semicolon);
-            consts.push(ConstDecl { name, value });
+            consts.push(ConstDecl { name, type_name, value });
         }
         Ok(consts)
     }
@@ -180,13 +178,15 @@ impl Parser {
         match self.peek().clone() {
             Token::Record => {
                 self.advance();
-                let fields = self.parse_var_section()?;
-                self.expect(Token::End)?;
-                Ok(TypeDef::Record(fields))
+                self.parse_record_def()
             }
             Token::Class => {
                 self.advance();
                 self.parse_class_def()
+            }
+            Token::Interface => {
+                self.advance();
+                self.parse_interface_def()
             }
             Token::Array => {
                 self.advance();
@@ -206,22 +206,91 @@ impl Parser {
                 let t = self.parse_type_ref()?;
                 Ok(TypeDef::Pointer(Box::new(t)))
             }
+            Token::LParen => {
+                // Enum: (Red, Green, Blue) or (Red = 0, Green = 1, ...)
+                self.advance();
+                let mut values = Vec::new();
+                while self.peek() != &Token::RParen && self.peek() != &Token::EOF {
+                    let name = self.expect_ident()?;
+                    let value = if self.eat(&Token::Eq) { Some(self.parse_expr()?) } else { None };
+                    values.push(EnumValue { name, value });
+                    if !self.eat(&Token::Comma) { break; }
+                }
+                self.expect(Token::RParen)?;
+                Ok(TypeDef::Enum(values))
+            }
             _ => Ok(TypeDef::Alias(self.parse_type_ref()?)),
         }
     }
 
-    /// Parse `class(TParent) ... end`  (Token::Class already consumed)
+    fn parse_record_def(&mut self) -> Result<TypeDef, String> {
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+        loop {
+            // Skip visibility
+            match self.peek() {
+                Token::Public | Token::Private | Token::Protected => { self.advance(); continue; }
+                _ => {}
+            }
+            if self.peek() == &Token::End || self.peek() == &Token::EOF { break; }
+            match self.peek().clone() {
+                Token::Constructor | Token::Destructor | Token::Procedure | Token::Function => {
+                    let kind = match self.advance() {
+                        Token::Constructor => MethodKind::Constructor,
+                        Token::Destructor => MethodKind::Destructor,
+                        Token::Procedure => MethodKind::Procedure,
+                        Token::Function => MethodKind::Function,
+                        _ => unreachable!(),
+                    };
+                    methods.push(self.parse_method_sig(kind)?);
+                }
+                Token::Class => {
+                    self.advance();
+                    let kind = match self.advance() {
+                        Token::Procedure => MethodKind::Procedure,
+                        Token::Function => MethodKind::Function,
+                        _ => break,
+                    };
+                    let mut sig = self.parse_method_sig(kind)?;
+                    sig.is_static = true;
+                    methods.push(sig);
+                }
+                Token::Identifier(_) => {
+                    if let Token::Identifier(name) = self.peek().clone() {
+                        if name.to_lowercase() == "operator" {
+                            self.advance();
+                            let mut sig = self.parse_method_sig(MethodKind::Function)?;
+                            sig.is_operator = true;
+                            methods.push(sig);
+                            continue;
+                        }
+                    }
+                    fields.push(self.parse_field_decl()?);
+                }
+                _ => break,
+            }
+        }
+        self.expect(Token::End)?;
+        Ok(TypeDef::Record(RecordDef { fields, methods }))
+    }
+
     fn parse_class_def(&mut self) -> Result<TypeDef, String> {
-        // Optional parent: class(TParent)
-        let parent = if self.eat(&Token::LParen) {
-            let p = self.expect_ident()?;
+        // Optional parent + interfaces: class(TParent, IFoo, IBar)
+        let mut parent = None;
+        let mut interfaces = Vec::new();
+        if self.eat(&Token::LParen) {
+            let first = self.expect_ident()?;
+            // Check if first is an interface (starts with I) or a class
+            parent = Some(first);
+            while self.eat(&Token::Comma) {
+                interfaces.push(self.expect_ident()?);
+            }
             self.expect(Token::RParen)?;
-            Some(p)
-        } else { None };
+        }
 
         // Forward declaration: `TFoo = class;`
         if self.peek() == &Token::Semicolon {
-            return Ok(TypeDef::Class(ClassDef { parent, members: Vec::new() }));
+            return Ok(TypeDef::Class(ClassDef { parent, interfaces, members: Vec::new() }));
         }
 
         let mut members = Vec::new();
@@ -247,16 +316,13 @@ impl Parser {
                 }
                 Token::Procedure => {
                     self.advance();
-                    let is_static = false;
-                    members.push(ClassMember::MethodDecl(self.parse_method_sig_with_static(MethodKind::Procedure, is_static)?));
+                    members.push(ClassMember::MethodDecl(self.parse_method_sig_with_static(MethodKind::Procedure, false)?));
                 }
                 Token::Function => {
                     self.advance();
-                    let is_static = false;
-                    members.push(ClassMember::MethodDecl(self.parse_method_sig_with_static(MethodKind::Function, is_static)?));
+                    members.push(ClassMember::MethodDecl(self.parse_method_sig_with_static(MethodKind::Function, false)?));
                 }
                 Token::Class => {
-                    // class procedure / class function (static)
                     self.advance();
                     match self.peek().clone() {
                         Token::Procedure => {
@@ -267,12 +333,16 @@ impl Parser {
                             self.advance();
                             members.push(ClassMember::MethodDecl(self.parse_method_sig_with_static(MethodKind::Function, true)?));
                         }
+                        Token::Var => {
+                            // class var FCount: Integer;
+                            self.advance();
+                            let field = self.parse_field_decl()?;
+                            members.push(ClassMember::ClassVar(field));
+                        }
                         _ => break,
                     }
                 }
                 Token::Identifier(_) => {
-                    // Field declaration: FName: Type;
-                    // or property declaration
                     if let Token::Identifier(name) = self.peek().clone() {
                         if name.to_lowercase() == "property" {
                             self.advance();
@@ -283,14 +353,53 @@ impl Parser {
                     let field = self.parse_field_decl()?;
                     members.push(ClassMember::Field(field));
                 }
-                _ => {
-                    // Try parsing as field (handles type keywords like String, Integer)
-                    break;
-                }
+                _ => break,
             }
         }
         self.expect(Token::End)?;
-        Ok(TypeDef::Class(ClassDef { parent, members }))
+        Ok(TypeDef::Class(ClassDef { parent, interfaces, members }))
+    }
+
+    fn parse_interface_def(&mut self) -> Result<TypeDef, String> {
+        let parent = if self.eat(&Token::LParen) {
+            let p = self.expect_ident()?;
+            self.expect(Token::RParen)?;
+            Some(p)
+        } else { None };
+
+        // Forward declaration
+        if self.peek() == &Token::Semicolon {
+            return Ok(TypeDef::InterfaceDef(InterfaceDecl { parent, methods: Vec::new(), properties: Vec::new() }));
+        }
+
+        let mut methods = Vec::new();
+        let mut properties = Vec::new();
+        loop {
+            if self.peek() == &Token::End || self.peek() == &Token::EOF { break; }
+            match self.peek().clone() {
+                Token::Procedure => {
+                    self.advance();
+                    methods.push(self.parse_method_sig(MethodKind::Procedure)?);
+                }
+                Token::Function => {
+                    self.advance();
+                    methods.push(self.parse_method_sig(MethodKind::Function)?);
+                }
+                Token::Identifier(_) => {
+                    if let Token::Identifier(name) = self.peek().clone() {
+                        if name.to_lowercase() == "property" {
+                            self.advance();
+                            properties.push(self.parse_property_def()?);
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        self.expect(Token::End)?;
+        Ok(TypeDef::InterfaceDef(InterfaceDecl { parent, methods, properties }))
     }
 
     fn parse_method_sig(&mut self, kind: MethodKind) -> Result<MethodSig, String> {
@@ -306,7 +415,6 @@ impl Parser {
         } else { None };
         self.eat(&Token::Semicolon);
 
-        // Parse directives: virtual; override; abstract;
         let mut directives = Vec::new();
         loop {
             match self.peek() {
@@ -314,13 +422,20 @@ impl Parser {
                 Token::Override => { self.advance(); directives.push(MethodDirective::Override); self.eat(&Token::Semicolon); }
                 Token::Abstract => { self.advance(); directives.push(MethodDirective::Abstract); self.eat(&Token::Semicolon); }
                 _ => {
-                    // Check for 'reintroduce' as identifier
                     if let Token::Identifier(s) = self.peek() {
-                        if s.to_lowercase() == "reintroduce" {
-                            self.advance();
-                            directives.push(MethodDirective::Reintroduce);
-                            self.eat(&Token::Semicolon);
-                            continue;
+                        match s.to_lowercase().as_str() {
+                            "reintroduce" => {
+                                self.advance();
+                                directives.push(MethodDirective::Reintroduce);
+                                self.eat(&Token::Semicolon);
+                                continue;
+                            }
+                            "overload" | "inline" | "cdecl" | "stdcall" | "register" | "dynamic" => {
+                                self.advance();
+                                self.eat(&Token::Semicolon);
+                                continue;
+                            }
+                            _ => {}
                         }
                     }
                     break;
@@ -328,7 +443,7 @@ impl Parser {
             }
         }
 
-        Ok(MethodSig { kind, name, params, return_type, directives, is_static })
+        Ok(MethodSig { kind, name, params, return_type, directives, is_static, is_operator: false })
     }
 
     fn parse_field_decl(&mut self) -> Result<VarDecl, String> {
@@ -342,21 +457,40 @@ impl Parser {
 
     fn parse_property_def(&mut self) -> Result<PropertyDef, String> {
         let name = self.expect_ident()?;
+        // Optional index: property Items[Index: Integer]: String
+        let index_type = if self.eat(&Token::LBracket) {
+            // skip param name
+            self.expect_ident()?;
+            self.expect(Token::Colon)?;
+            let t = self.parse_type_ref()?;
+            self.expect(Token::RBracket)?;
+            Some(t)
+        } else { None };
         self.expect(Token::Colon)?;
         let type_name = self.parse_type_ref()?;
         let mut reader = None;
         let mut writer = None;
-        // read GetX / read FField
+        let mut default = false;
         while let Token::Identifier(kw) = self.peek() {
             match kw.to_lowercase().as_str() {
                 "read" => { self.advance(); reader = Some(self.expect_ident()?); }
                 "write" => { self.advance(); writer = Some(self.expect_ident()?); }
-                "default" => { self.advance(); self.parse_expr()?; /* skip default value */ break; }
+                "default" => {
+                    self.advance();
+                    // `default;` at end means default array property
+                    if self.peek() == &Token::Semicolon {
+                        default = true;
+                    } else {
+                        self.parse_expr()?; // skip default value expr
+                    }
+                    break;
+                }
+                "stored" | "nodefault" => { self.advance(); self.parse_expr().ok(); break; }
                 _ => break,
             }
         }
         self.eat(&Token::Semicolon);
-        Ok(PropertyDef { name, type_name, reader, writer })
+        Ok(PropertyDef { name, type_name, reader, writer, default, index_type })
     }
 
     fn parse_type_ref(&mut self) -> Result<TypeRef, String> {
@@ -367,6 +501,39 @@ impl Parser {
             Token::Boolean => { self.advance(); "Boolean".into() }
             Token::Char => { self.advance(); "Char".into() }
             Token::Pointer => { self.advance(); "Pointer".into() }
+            // Procedural types: procedure or function(...): Type
+            Token::Procedure => {
+                self.advance();
+                // Skip optional params
+                if self.peek() == &Token::LParen {
+                    let mut depth = 1;
+                    self.advance();
+                    while depth > 0 && self.peek() != &Token::EOF {
+                        match self.advance() {
+                            Token::LParen => depth += 1,
+                            Token::RParen => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                }
+                "Procedure".into()
+            }
+            Token::Function => {
+                self.advance();
+                if self.peek() == &Token::LParen {
+                    let mut depth = 1;
+                    self.advance();
+                    while depth > 0 && self.peek() != &Token::EOF {
+                        match self.advance() {
+                            Token::LParen => depth += 1,
+                            Token::RParen => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                }
+                if self.eat(&Token::Colon) { self.parse_type_ref()?; }
+                "Function".into()
+            }
             Token::Array => {
                 self.advance();
                 if self.eat(&Token::LBracket) {
@@ -377,7 +544,17 @@ impl Parser {
                 let elem = self.parse_type_ref()?;
                 return Ok(TypeRef { name: format!("Array<{}>", elem.name), generic: None });
             }
-            Token::Identifier(s) => { self.advance(); s }
+            Token::Identifier(s) => {
+                self.advance();
+                // Check for generic: TList<Integer>
+                if self.peek() == &Token::Lt {
+                    self.advance();
+                    let generic = self.parse_type_ref()?;
+                    self.expect(Token::Gt)?;
+                    return Ok(TypeRef { name: s, generic: Some(Box::new(generic)) });
+                }
+                s
+            }
             t => return Err(format!("Expected type, got {:?}", t)),
         };
         Ok(TypeRef::simple(&name))
@@ -416,7 +593,12 @@ impl Parser {
             let pass_by = match self.peek() {
                 Token::Var => { self.advance(); PassBy::Var }
                 Token::Const => { self.advance(); PassBy::Const }
-                _ => PassBy::Value,
+                _ => {
+                    if let Token::Identifier(s) = self.peek() {
+                        if s.to_lowercase() == "out" { self.advance(); PassBy::Out }
+                        else { PassBy::Value }
+                    } else { PassBy::Value }
+                }
             };
             let mut names = vec![self.expect_ident()?];
             while self.eat(&Token::Comma) {
@@ -481,7 +663,6 @@ impl Parser {
             }
             Token::Inherited => {
                 self.advance();
-                // inherited Create(args) or bare inherited
                 if let Token::Identifier(_) = self.peek() {
                     let method = self.expect_ident()?;
                     let args = if self.peek() == &Token::LParen { self.parse_arg_list()? } else { Vec::new() };
@@ -503,12 +684,36 @@ impl Parser {
 
     fn parse_assign_or_call(&mut self) -> Result<Statement, String> {
         let expr = self.parse_expr()?;
-        if self.eat(&Token::Assign) {
-            let value = self.parse_expr()?;
-            Ok(Statement::Assign { target: expr, value })
-        } else {
-            // It's a procedure call (expression statement)
-            Ok(Statement::Call { name: expr.clone(), args: Vec::new() })
+        match self.peek() {
+            Token::Assign => {
+                self.advance();
+                let value = self.parse_expr()?;
+                Ok(Statement::Assign { target: expr, value })
+            }
+            Token::PlusAssign => {
+                self.advance();
+                let value = self.parse_expr()?;
+                Ok(Statement::CompoundAssign { target: expr, op: CompoundOp::Add, value })
+            }
+            Token::MinusAssign => {
+                self.advance();
+                let value = self.parse_expr()?;
+                Ok(Statement::CompoundAssign { target: expr, op: CompoundOp::Sub, value })
+            }
+            Token::StarAssign => {
+                self.advance();
+                let value = self.parse_expr()?;
+                Ok(Statement::CompoundAssign { target: expr, op: CompoundOp::Mul, value })
+            }
+            Token::SlashAssign => {
+                self.advance();
+                let value = self.parse_expr()?;
+                Ok(Statement::CompoundAssign { target: expr, op: CompoundOp::Div, value })
+            }
+            _ => {
+                // Expression statement (procedure call)
+                Ok(Statement::Call { name: expr, args: Vec::new() })
+            }
         }
     }
 
@@ -524,6 +729,15 @@ impl Parser {
     fn parse_for(&mut self) -> Result<Statement, String> {
         self.advance();
         let var = self.expect_ident()?;
+
+        // for..in: `for item in collection do`
+        if self.eat(&Token::In) {
+            let collection = self.parse_expr()?;
+            self.expect(Token::Do)?;
+            let body = Box::new(self.parse_statement()?);
+            return Ok(Statement::ForIn { var, collection, body });
+        }
+
         self.expect(Token::Assign)?;
         let from = self.parse_expr()?;
         let downto = if self.eat(&Token::Downto) { true } else { self.expect(Token::To)?; false };
@@ -618,13 +832,12 @@ impl Parser {
         let handler = if self.eat(&Token::Except) {
             let mut clauses = Vec::new();
             let mut else_stmts = None;
-            // on E: ExceptionType do ...
             while self.peek() == &Token::On {
                 self.advance();
                 let var_name = if let Token::Identifier(_) = self.peek() {
                     if self.peek2() == &Token::Colon {
                         let v = self.expect_ident()?;
-                        self.advance(); // colon
+                        self.advance();
                         Some(v)
                     } else { None }
                 } else { None };
@@ -635,7 +848,6 @@ impl Parser {
                 clauses.push(ExceptClause { on_type, var_name, body: cb });
             }
             if clauses.is_empty() {
-                // bare except block
                 let mut stmts = Vec::new();
                 while !matches!(self.peek(), Token::End | Token::EOF) {
                     stmts.push(self.parse_statement()?);
@@ -661,7 +873,24 @@ impl Parser {
     // ── Expressions ───────────────────────────────────────────────────────────
 
     fn parse_expr(&mut self) -> Result<Expression, String> {
-        self.parse_relational()
+        let mut left = self.parse_relational()?;
+        // is / as operators (lower precedence than relational)
+        loop {
+            match self.peek() {
+                Token::Is => {
+                    self.advance();
+                    let type_name = self.expect_ident()?;
+                    left = Expression::IsCheck { expr: Box::new(left), type_name };
+                }
+                Token::As => {
+                    self.advance();
+                    let type_name = self.expect_ident()?;
+                    left = Expression::AsCast { expr: Box::new(left), type_name };
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
     }
 
     fn parse_relational(&mut self) -> Result<Expression, String> {
@@ -783,7 +1012,6 @@ impl Parser {
                 Ok(e)
             }
             Token::LBracket => {
-                // Set literal [a, b, c]
                 self.advance();
                 let mut elems = Vec::new();
                 while self.peek() != &Token::RBracket && self.peek() != &Token::EOF {
@@ -798,6 +1026,23 @@ impl Parser {
                 let name = self.expect_ident()?;
                 let args = if self.peek() == &Token::LParen { self.parse_arg_list()? } else { Vec::new() };
                 Ok(Expression::Call { callee: Box::new(Expression::Identifier(name)), args })
+            }
+            // Anonymous procedure: `procedure(params) begin ... end`
+            Token::Procedure => {
+                self.advance();
+                let params = if self.peek() == &Token::LParen { self.parse_params()? } else { Vec::new() };
+                let body = self.parse_compound()?;
+                Ok(Expression::Lambda { params, return_type: None, body })
+            }
+            // Anonymous function: `function(params): Type begin ... end`
+            Token::Function => {
+                self.advance();
+                let params = if self.peek() == &Token::LParen { self.parse_params()? } else { Vec::new() };
+                let return_type = if self.eat(&Token::Colon) {
+                    Some(self.parse_type_ref()?)
+                } else { None };
+                let body = self.parse_compound()?;
+                Ok(Expression::Lambda { params, return_type, body })
             }
             Token::Identifier(name) => {
                 self.advance();

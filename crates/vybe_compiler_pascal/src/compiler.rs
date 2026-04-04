@@ -181,6 +181,7 @@ impl Compiler {
                             let idx = self.str_const(name);
                             self.emit_u16(Op::global_set, idx);
                             self.emit(Op::drop);
+                            self.defined_globals.insert(name.clone());
                         } else {
                             let slot = self.scope_mut().define(name);
                             self.emit_u16(Op::local_set, slot);
@@ -205,8 +206,35 @@ impl Compiler {
             }
             Decl::Type(types) => {
                 for t in types {
-                    if let TypeDef::Class(ref class_def) = t.def {
-                        self.register_class(&t.name, class_def)?;
+                    match &t.def {
+                        TypeDef::Class(class_def) => {
+                            self.register_class(&t.name, class_def)?;
+                        }
+                        TypeDef::Enum(values) => {
+                            // Compile enum: each value becomes a global constant (ordinal)
+                            for (i, ev) in values.iter().enumerate() {
+                                let val = if let Some(ref expr) = ev.value {
+                                    // Will be evaluated at runtime, but for simple ints:
+                                    self.compile_expr(expr)?;
+                                } else {
+                                    self.emit_const(Value::F64(i as f64));
+                                };
+                                let _ = val;
+                                let idx = self.str_const(&ev.name);
+                                self.emit_u16(Op::global_set, idx);
+                                self.emit(Op::drop);
+                                self.defined_globals.insert(ev.name.clone());
+                            }
+                        }
+                        TypeDef::InterfaceDef(_) => {
+                            // Interfaces are compile-time only (method contracts)
+                            self.defined_globals.insert(t.name.clone());
+                        }
+                        TypeDef::Record(_) => {
+                            // Record types: compile-time only for now
+                            // (record instances are created as objects)
+                        }
+                        _ => {} // Alias, Array, Pointer — type-only
                     }
                 }
             }
@@ -460,7 +488,16 @@ impl Compiler {
                 for p in end_patches { self.patch_jump(p); }
                 self.emit(Op::drop);
             }
-            Statement::With { vars: _, body } => {
+            Statement::With { vars, body } => {
+                // `with obj do` — compile body. In a proper implementation
+                // we'd add obj's fields to scope. For now, store obj in a temp
+                // and make it accessible as the implicit self.
+                if let Some(first) = vars.first() {
+                    self.compile_expr(first)?;
+                    let with_slot = self.scope_mut().define("__with_obj");
+                    self.emit_u16(Op::local_set, with_slot);
+                    self.emit(Op::drop);
+                }
                 self.compile_stmt(body)?;
             }
             Statement::Try { body, handler } => {
@@ -525,6 +562,40 @@ impl Compiler {
                     let target = ctx.continue_target;
                     self.emit_loop(target);
                 }
+            }
+            Statement::CompoundAssign { target, op, value } => {
+                // target += value → target := target + value
+                self.compile_expr(target)?;
+                self.compile_expr(value)?;
+                match op {
+                    CompoundOp::Add => self.emit(Op::dyn_add),
+                    CompoundOp::Sub => self.emit(Op::f64_sub),
+                    CompoundOp::Mul => self.emit(Op::f64_mul),
+                    CompoundOp::Div => self.emit(Op::f64_div),
+                }
+                self.compile_assign_target(target)?;
+            }
+            Statement::ForIn { var, collection, body } => {
+                // for item in collection do body
+                // Uses common::loops::emit_for_in_start/end
+                self.compile_expr(collection)?;
+                let arr_slot = self.scope_mut().define("__forin_arr");
+                self.emit_u16(Op::local_set, arr_slot);
+                self.emit(Op::drop);
+                let idx_slot = self.scope_mut().define("__forin_idx");
+                let line = self.line;
+                let (loop_start, exit_jump) = common::loops::emit_for_in_start(
+                    &mut self.chunks[self.current], arr_slot, idx_slot, line,
+                );
+                // Element is on stack from emit_for_in_start
+                self.emit_var_set(var);
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: loop_start });
+                self.compile_stmt(body)?;
+                let ctx = self.loops.pop().unwrap();
+                common::loops::emit_for_in_end(
+                    &mut self.chunks[self.current], idx_slot, loop_start, exit_jump, line,
+                );
+                for p in ctx.break_patches { self.patch_jump(p); }
             }
         }
         Ok(())
@@ -710,6 +781,24 @@ impl Compiler {
                         self.emit_u8(Op::call_ref, 0);
                         return Ok(());
                     }
+                    // ClassName.ClassVar → global lookup
+                    if self.classes.contains_key(class_name.as_str()) {
+                        let global_name = format!("{}.{}", class_name, field);
+                        let idx = self.str_const(&global_name);
+                        self.emit_u16(Op::global_get, idx);
+                        return Ok(());
+                    }
+                }
+                // Self.FName → explicit self field access
+                if let Expression::Identifier(name) = record.as_ref() {
+                    if name.eq_ignore_ascii_case("Self") {
+                        if let Some(slot) = self.scope().resolve("Self") {
+                            self.emit_u16(Op::local_get, slot);
+                            let idx = self.str_const(field);
+                            self.emit_u16(Op::struct_get, idx);
+                            return Ok(());
+                        }
+                    }
                 }
                 self.compile_expr(record)?;
                 let idx = self.str_const(field);
@@ -745,6 +834,72 @@ impl Compiler {
             }
             Expression::Call { callee, args } => {
                 self.compile_call(callee, args)?;
+            }
+            Expression::Lambda { params, return_type, body } => {
+                // Anonymous procedure/function → compile as closure
+                let arity: u8 = params.iter().map(|p| p.names.len() as u8).sum();
+                let has_result = return_type.is_some();
+                let func_idx = self.chunks.len();
+                let chunk = common::functions::create_function_chunk("<lambda>", arity);
+                self.chunks.push(chunk);
+                self.scopes.push(Scope::new_function());
+                let saved = self.current;
+                self.current = func_idx;
+                for param in params {
+                    for pname in &param.names { self.scope_mut().define(pname); }
+                }
+                let result_slot = if has_result {
+                    let rs = self.scope_mut().define("Result");
+                    self.emit(Op::null);
+                    self.emit_u16(Op::local_set, rs);
+                    self.emit(Op::drop);
+                    Some(rs)
+                } else { None };
+
+                let saved_fn = self.current_func_name.take();
+                let saved_rs = self.current_result_slot.take();
+                if has_result {
+                    self.current_func_name = Some("<lambda>".to_string());
+                    self.current_result_slot = result_slot;
+                }
+
+                for stmt in body { self.compile_stmt(stmt)?; }
+
+                if let Some(rs) = result_slot {
+                    self.emit_u16(Op::local_get, rs);
+                    self.emit(Op::r#return);
+                } else {
+                    let line = self.line;
+                    common::functions::emit_function_epilogue(&mut self.chunks[func_idx], line);
+                }
+
+                self.current_func_name = saved_fn;
+                self.current_result_slot = saved_rs;
+
+                let locals = self.scope().next_slot;
+                self.chunks[func_idx].local_count = locals;
+                let uvs = self.scopes.last().unwrap().upvalues.clone();
+                self.scopes.pop();
+                self.current = saved;
+                let line = self.line;
+                common::functions::emit_ref_func(&mut self.chunks[self.current], func_idx, uvs.len() as u8, line);
+                for uv in &uvs {
+                    self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
+                    self.chunks[self.current].emit(uv.index, line);
+                }
+            }
+            Expression::IsCheck { expr, type_name } => {
+                // obj is TClassName → check __type field
+                // For child classes, emit_instanceof_chain re-stamps __type
+                self.compile_expr(expr)?;
+                let type_key = self.str_const("__type");
+                self.emit_u16(Op::struct_get, type_key);
+                self.emit_const(Value::String(Rc::from(type_name.as_str())));
+                self.emit(Op::dyn_eq);
+            }
+            Expression::AsCast { expr, type_name: _ } => {
+                // obj as TClassName → runtime: just return the object (no type erasure in our VM)
+                self.compile_expr(expr)?;
             }
             Expression::Inherited { method, args } => {
                 // inherited Create(args) → call parent constructor
@@ -996,6 +1151,140 @@ impl Compiler {
                 self.emit(Op::null);
                 Ok(true)
             }
+            // ── String manipulation ────────────────────────────────────
+            "format" => {
+                // Format('Hello %s, you are %d', [name, age])
+                // Simplified: just concat the format string and args via host
+                for a in args { self.compile_expr(a)?; }
+                let idx = self.import("vybe:string", "format");
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(true)
+            }
+            "delete" => {
+                // Delete(s, index, count) — mutates string variable
+                if args.len() >= 3 {
+                    if let Expression::Identifier(var) = &args[0] {
+                        let var = var.clone();
+                        self.emit_var_get(&var);
+                        self.compile_expr(&args[1])?;
+                        self.compile_expr(&args[2])?;
+                        let idx = self.import("vybe:string", "deleteStr");
+                        self.emit_host_call(idx, 3);
+                        self.emit_var_set(&var);
+                    }
+                }
+                self.emit(Op::null);
+                Ok(true)
+            }
+            "insert" => {
+                // Insert(source, s, index) — mutates s
+                if args.len() >= 3 {
+                    if let Expression::Identifier(var) = &args[1] {
+                        let var = var.clone();
+                        self.compile_expr(&args[0])?; // source
+                        self.emit_var_get(&var);       // s
+                        self.compile_expr(&args[2])?; // index
+                        let idx = self.import("vybe:string", "insertStr");
+                        self.emit_host_call(idx, 3);
+                        self.emit_var_set(&var);
+                    }
+                }
+                self.emit(Op::null);
+                Ok(true)
+            }
+            "stringreplace" => {
+                // StringReplace(s, old, new, [flags]) → new string
+                if args.len() >= 3 {
+                    self.compile_expr(&args[0])?;
+                    self.compile_expr(&args[1])?;
+                    self.compile_expr(&args[2])?;
+                    common::strings::emit_replace(self.chunk(), line);
+                } else { self.emit(Op::null); }
+                Ok(true)
+            }
+            "stringofchar" => {
+                // StringOfChar(ch, count) → string
+                self.compile_expr(&args[0])?;
+                self.compile_expr(&args[1])?;
+                common::strings::emit_repeat(self.chunk(), line);
+                Ok(true)
+            }
+            "comparestr" | "comparetext" => {
+                self.compile_expr(&args[0])?;
+                self.compile_expr(&args[1])?;
+                // Simple: return 0 if equal, -1 if a < b, 1 if a > b
+                let idx = self.import("vybe:string", "compare");
+                self.emit_host_call(idx, 2);
+                Ok(true)
+            }
+            "leftstr" => {
+                // LeftStr(s, count) → s[0..count]
+                self.compile_expr(&args[0])?;
+                self.emit_const(Value::F64(0.0)); // start = 0
+                self.compile_expr(&args[1])?;     // length
+                common::strings::emit_substring(self.chunk(), line);
+                Ok(true)
+            }
+            "rightstr" => {
+                // RightStr(s, count) → s[len-count..]
+                self.compile_expr(&args[0])?;
+                self.emit(Op::dup);
+                common::strings::emit_length(self.chunk(), line);
+                self.compile_expr(&args[1])?;
+                self.emit(Op::f64_sub); // start = len - count
+                self.compile_expr(&args[1])?; // length = count
+                common::strings::emit_substring(self.chunk(), line);
+                Ok(true)
+            }
+            // ── Object lifecycle ──────────────────────────────────────
+            "free" | "freeandnil" => {
+                // In our GC'd VM, Free is a no-op
+                if let Some(Expression::Identifier(var)) = args.first() {
+                    if name.to_lowercase() == "freeandnil" {
+                        self.emit(Op::null);
+                        let var = var.clone();
+                        self.emit_var_set(&var);
+                    }
+                }
+                self.emit(Op::null);
+                Ok(true)
+            }
+            // ── Type info ─────────────────────────────────────────────
+            "classname" | "typename" => {
+                if !args.is_empty() {
+                    self.compile_expr(&args[0])?;
+                    let type_key = self.str_const("__type");
+                    self.emit_u16(Op::struct_get, type_key);
+                } else { self.emit(Op::null); }
+                Ok(true)
+            }
+            // ── Array operations ──────────────────────────────────────
+            "append" => {
+                // Append to dynamic array: SetLength + assign last
+                if args.len() >= 2 {
+                    self.compile_expr(&args[0])?;
+                    self.compile_expr(&args[1])?;
+                    let idx = self.import("vybe:array", "push");
+                    self.emit_host_call(idx, 2);
+                } else { self.emit(Op::null); }
+                Ok(true)
+            }
+            "sort" => {
+                if !args.is_empty() {
+                    self.compile_expr(&args[0])?;
+                    let idx = self.import("vybe:array", "sort");
+                    self.emit_host_call(idx, 1);
+                } else { self.emit(Op::null); }
+                Ok(true)
+            }
+            "reverse" => {
+                if !args.is_empty() {
+                    self.compile_expr(&args[0])?;
+                    let idx = self.import("vybe:array", "reverse");
+                    self.emit_host_call(idx, 1);
+                } else { self.emit(Op::null); }
+                Ok(true)
+            }
             _ => Ok(false),
         }
     }
@@ -1025,6 +1314,7 @@ impl Compiler {
         let mut fields = Vec::new();
         let mut method_sigs = Vec::new();
         let mut properties = Vec::new();
+        let mut class_vars = Vec::new();
 
         for member in &class_def.members {
             match member {
@@ -1037,6 +1327,9 @@ impl Compiler {
                 ClassMember::PropertyDecl(prop) => {
                     properties.push(prop.clone());
                 }
+                ClassMember::ClassVar(v) => {
+                    for cname in &v.names { class_vars.push(cname.clone()); }
+                }
             }
         }
 
@@ -1048,6 +1341,17 @@ impl Compiler {
             properties,
         });
         self.defined_globals.insert(name.to_string());
+
+        // Initialize class variables as globals
+        let line = self.line;
+        for cv in &class_vars {
+            let global_name = format!("{}.{}", name, cv);
+            self.emit(Op::null);
+            let idx = self.str_const(&global_name);
+            self.emit_u16(Op::global_set, idx);
+            self.emit(Op::drop);
+        }
+
         Ok(())
     }
 
@@ -1220,6 +1524,13 @@ impl Compiler {
                 }
 
                 common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, class_name, line);
+                // Re-stamp __type for child class (parent constructor set it to parent name)
+                self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
+                let type_str = self.chunks[wrapper_idx].add_constant(Value::String(Rc::from(class_name.as_str())));
+                let type_key = self.chunks[wrapper_idx].add_constant(Value::String(Rc::from("__type")));
+                self.chunks[wrapper_idx].emit_op_u16(Op::r#const, type_str, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::struct_set, type_key, line);
+                self.chunks[wrapper_idx].emit_op(Op::drop, line);
             } else {
                 // Base class: same pattern as Ruby — create object, bind methods, call init.
                 common::classes::emit_new_typed_object(&mut self.chunks[wrapper_idx], this_slot, class_name, line);
@@ -1249,7 +1560,6 @@ impl Compiler {
                 common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, class_name, line);
             }
 
-            common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, class_name, line);
             common::classes::emit_constructor_return(&mut self.chunks[wrapper_idx], this_slot, line);
 
             // Store wrapper as global constructor
