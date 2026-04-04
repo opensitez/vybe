@@ -1,64 +1,63 @@
-//! FlowLayoutPanel — arranges children in a flow (left-to-right, wrapping to next row).
+//! WrapPanel — arranges children in sequential position, wrapping to the next
+//! line when the edge of the panel is reached.
 //!
-//! Like WinForms FlowLayoutPanel: children are placed sequentially; when a child
-//! would overflow the current row it wraps to the next row.
+//! Unlike FlowLayoutPanel (which preserves each child's size), WrapPanel can
+//! optionally enforce uniform item width/height for a grid-like appearance.
 
 use tiny_skia::*;
 use super::WidgetColors;
 use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::stack_panel::Orientation;
 
-/// Flow direction for child arrangement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FlowDirection {
-    LeftToRight,
-    TopDown,
-}
-
-pub struct FlowLayoutPanel {
-    pub width: f32,
-    pub height: f32,
-    pub colors: WidgetColors,
-    pub id: WidgetId,
-    pub name: String,
-    pub flow_direction: FlowDirection,
+pub struct WrapPanel {
+    pub orientation: Orientation,
     /// Spacing between children in pixels.
     pub spacing: f32,
     /// Padding inside the panel edges.
     pub padding: f32,
-    /// Whether children wrap to the next row/column when they exceed the panel size.
-    pub wrap_contents: bool,
+    /// If set, all children use this width. Otherwise each child keeps its own width.
+    pub item_width: Option<f32>,
+    /// If set, all children use this height. Otherwise each child keeps its own height.
+    pub item_height: Option<f32>,
+    pub colors: WidgetColors,
+    pub id: WidgetId,
+    pub name: String,
     rect: LayoutRect,
     children: Vec<Box<dyn PanelWidget>>,
 }
 
-impl FlowLayoutPanel {
-    pub fn new() -> Self {
+impl WrapPanel {
+    pub fn new(orientation: Orientation) -> Self {
         Self {
-            width: 300.0,
-            height: 200.0,
+            orientation,
+            spacing: 4.0,
+            padding: 4.0,
+            item_width: None,
+            item_height: None,
             colors: WidgetColors {
-                background: (250, 250, 250, 255),
-                border: (180, 180, 180, 255),
+                background: (240, 240, 240, 0), // transparent by default
                 ..WidgetColors::default()
             },
             id: WidgetId::next(),
             name: String::new(),
-            flow_direction: FlowDirection::LeftToRight,
-            spacing: 4.0,
-            padding: 4.0,
-            wrap_contents: true,
             rect: LayoutRect::zero(),
             children: Vec::new(),
         }
     }
 
+    pub fn horizontal() -> Self { Self::new(Orientation::Horizontal) }
+    pub fn vertical() -> Self { Self::new(Orientation::Vertical) }
+
     pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
-    pub fn with_direction(mut self, dir: FlowDirection) -> Self { self.flow_direction = dir; self }
     pub fn with_spacing(mut self, spacing: f32) -> Self { self.spacing = spacing; self }
     pub fn with_padding(mut self, padding: f32) -> Self { self.padding = padding; self }
-    pub fn with_wrap(mut self, wrap: bool) -> Self { self.wrap_contents = wrap; self }
+    pub fn with_item_width(mut self, w: f32) -> Self { self.item_width = Some(w); self }
+    pub fn with_item_height(mut self, h: f32) -> Self { self.item_height = Some(h); self }
+    pub fn with_background(mut self, r: u8, g: u8, b: u8, a: u8) -> Self {
+        self.colors.background = (r, g, b, a);
+        self
+    }
 
-    /// Add a child widget. Triggers relayout.
     pub fn add(&mut self, widget: Box<dyn PanelWidget>) {
         self.children.push(widget);
         self.relayout();
@@ -68,38 +67,35 @@ impl FlowLayoutPanel {
     pub fn child_mut(&mut self, index: usize) -> &mut dyn PanelWidget { &mut *self.children[index] }
     pub fn child_count(&self) -> usize { self.children.len() }
 
-    /// Remove a child by index. Triggers relayout.
     pub fn remove(&mut self, index: usize) -> Box<dyn PanelWidget> {
         let w = self.children.remove(index);
         self.relayout();
         w
     }
 
-    /// Arrange children according to flow direction.
     fn relayout(&mut self) {
         let r = self.rect;
         if r.w <= 0.0 || r.h <= 0.0 { return; }
 
-        match self.flow_direction {
-            FlowDirection::LeftToRight => self.layout_left_to_right(),
-            FlowDirection::TopDown => self.layout_top_down(),
+        match self.orientation {
+            Orientation::Horizontal => self.layout_horizontal(),
+            Orientation::Vertical => self.layout_vertical(),
         }
     }
 
-    fn layout_left_to_right(&mut self) {
+    fn layout_horizontal(&mut self) {
         let r = self.rect;
         let mut cx = r.x + self.padding;
         let mut cy = r.y + self.padding;
-        let mut row_height: f32 = 0.0;
         let max_x = r.x + r.w - self.padding;
+        let mut row_height: f32 = 0.0;
 
         for child in &mut self.children {
             let cr = child.rect();
-            let cw = cr.w.max(20.0); // minimum child width
-            let ch = cr.h.max(16.0); // minimum child height
+            let cw = self.item_width.unwrap_or(cr.w.max(20.0));
+            let ch = self.item_height.unwrap_or(cr.h.max(16.0));
 
-            // Wrap to next row if needed
-            if self.wrap_contents && cx + cw > max_x && cx > r.x + self.padding {
+            if cx + cw > max_x && cx > r.x + self.padding {
                 cx = r.x + self.padding;
                 cy += row_height + self.spacing;
                 row_height = 0.0;
@@ -111,20 +107,19 @@ impl FlowLayoutPanel {
         }
     }
 
-    fn layout_top_down(&mut self) {
+    fn layout_vertical(&mut self) {
         let r = self.rect;
         let mut cx = r.x + self.padding;
         let mut cy = r.y + self.padding;
-        let mut col_width: f32 = 0.0;
         let max_y = r.y + r.h - self.padding;
+        let mut col_width: f32 = 0.0;
 
         for child in &mut self.children {
             let cr = child.rect();
-            let cw = cr.w.max(20.0);
-            let ch = cr.h.max(16.0);
+            let cw = self.item_width.unwrap_or(cr.w.max(20.0));
+            let ch = self.item_height.unwrap_or(cr.h.max(16.0));
 
-            // Wrap to next column if needed
-            if self.wrap_contents && cy + ch > max_y && cy > r.y + self.padding {
+            if cy + ch > max_y && cy > r.y + self.padding {
                 cy = r.y + self.padding;
                 cx += col_width + self.spacing;
                 col_width = 0.0;
@@ -135,58 +130,33 @@ impl FlowLayoutPanel {
             col_width = col_width.max(cw);
         }
     }
-
-    /// Paint — light background with dashed border.
-    pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
-        let ts = Transform::from_scale(scale, scale);
-        let mut paint = Paint::default();
-        paint.anti_alias = true;
-
-        // Light background
-        let (r, g, b, a) = self.colors.background;
-        paint.set_color_rgba8(r, g, b, a);
-        if let Some(rect) = Rect::from_xywh(x, y, self.width, self.height) {
-            pixmap.fill_rect(rect, &paint, ts, None);
-        }
-
-        // Dashed border
-        let (r, g, b, a) = self.colors.border;
-        paint.set_color_rgba8(r, g, b, a);
-        let mut stroke = Stroke::default();
-        stroke.width = 1.0;
-        stroke.dash = StrokeDash::new(vec![4.0, 3.0], 0.0);
-
-        let mut pb = PathBuilder::new();
-        pb.move_to(x, y);
-        pb.line_to(x + self.width, y);
-        pb.line_to(x + self.width, y + self.height);
-        pb.line_to(x, y + self.height);
-        pb.close();
-        if let Some(path) = pb.finish() {
-            pixmap.stroke_path(&path, &paint, &stroke, ts, None);
-        }
-    }
-
-    pub fn measure(&self) -> (f32, f32) {
-        (self.width, self.height)
-    }
 }
 
-impl PanelWidget for FlowLayoutPanel {
+impl PanelWidget for WrapPanel {
     fn name(&self) -> &str { &self.name }
     fn widget_id(&self) -> WidgetId { self.id }
+
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
-        self.width = rect.w;
-        self.height = rect.h;
         self.relayout();
     }
+
     fn rect(&self) -> LayoutRect { self.rect }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
         if r.w <= 0.0 || r.h <= 0.0 { return; }
-        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+
+        let (br, bg, bb, ba) = self.colors.background;
+        if ba > 0 {
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(br, bg, bb, ba);
+            let ts = Transform::from_scale(ctx.scale, ctx.scale);
+            if let Some(rect) = Rect::from_xywh(r.x, r.y, r.w, r.h) {
+                ctx.pixmap.fill_rect(rect, &paint, ts, None);
+            }
+        }
+
         for child in &mut self.children {
             child.render(ctx);
         }

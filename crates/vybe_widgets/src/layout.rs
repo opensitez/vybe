@@ -298,6 +298,114 @@ pub enum TextAlign {
     Right,
 }
 
+// ── Anchor ──────────────────────────────────────────────────────────────
+
+/// Anchor edges — bitflags indicating which edges of the parent the widget
+/// is anchored to. When a parent resizes, anchored edges maintain their
+/// distance to the parent edge. Un-anchored edges allow the widget to grow/shrink.
+///
+/// Default is `TOP | LEFT` (widget stays at its position, doesn't resize).
+/// Set `TOP | LEFT | RIGHT` to stretch horizontally with parent.
+/// Set all four to stretch in both axes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Anchor(pub u8);
+
+impl Anchor {
+    pub const NONE: Anchor = Anchor(0);
+    pub const TOP: Anchor = Anchor(1);
+    pub const BOTTOM: Anchor = Anchor(2);
+    pub const LEFT: Anchor = Anchor(4);
+    pub const RIGHT: Anchor = Anchor(8);
+    pub const TOP_LEFT: Anchor = Anchor(1 | 4);
+    pub const ALL: Anchor = Anchor(1 | 2 | 4 | 8);
+
+    pub fn has_top(self) -> bool { self.0 & 1 != 0 }
+    pub fn has_bottom(self) -> bool { self.0 & 2 != 0 }
+    pub fn has_left(self) -> bool { self.0 & 4 != 0 }
+    pub fn has_right(self) -> bool { self.0 & 8 != 0 }
+}
+
+impl std::ops::BitOr for Anchor {
+    type Output = Anchor;
+    fn bitor(self, rhs: Anchor) -> Anchor { Anchor(self.0 | rhs.0) }
+}
+
+impl Default for Anchor {
+    fn default() -> Self { Anchor::TOP_LEFT }
+}
+
+/// Stored state for anchor layout: the widget's position relative to its parent
+/// at the time of initial placement, plus the parent size at that time.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AnchorLayout {
+    /// Widget rect when anchor was first set (relative to parent origin).
+    pub initial_rect: LayoutRect,
+    /// Parent size when anchor was first set.
+    pub parent_size: (f32, f32),
+    /// Anchor edges.
+    pub anchor: Anchor,
+}
+
+impl AnchorLayout {
+    /// Compute where the widget should be placed given the new parent size.
+    pub fn resolve(&self, new_parent_w: f32, new_parent_h: f32, parent_x: f32, parent_y: f32) -> LayoutRect {
+        let ir = self.initial_rect;
+        let (pw, ph) = self.parent_size;
+        if pw <= 0.0 || ph <= 0.0 {
+            return LayoutRect::new(parent_x + ir.x, parent_y + ir.y, ir.w, ir.h);
+        }
+        let a = self.anchor;
+
+        // Distances from edges in original parent
+        let dist_left = ir.x;
+        let dist_top = ir.y;
+        let dist_right = pw - (ir.x + ir.w);
+        let dist_bottom = ph - (ir.y + ir.h);
+
+        // Compute new x & w
+        let (nx, nw) = if a.has_left() && a.has_right() {
+            // Both: maintain distance from both edges → widget stretches
+            let l = dist_left;
+            let r = new_parent_w - dist_right;
+            (l, (r - l).max(0.0))
+        } else if a.has_right() {
+            // Right only: maintain distance from right edge
+            let r = new_parent_w - dist_right;
+            (r - ir.w, ir.w)
+        } else {
+            // Left (default): maintain distance from left edge
+            (dist_left, ir.w)
+        };
+
+        // Compute new y & h
+        let (ny, nh) = if a.has_top() && a.has_bottom() {
+            let t = dist_top;
+            let b = new_parent_h - dist_bottom;
+            (t, (b - t).max(0.0))
+        } else if a.has_bottom() {
+            let b = new_parent_h - dist_bottom;
+            (b - ir.h, ir.h)
+        } else {
+            (dist_top, ir.h)
+        };
+
+        LayoutRect::new(parent_x + nx, parent_y + ny, nw, nh)
+    }
+}
+
+/// Apply anchor layout to a list of (AnchorLayout, widget) pairs when the parent resizes.
+pub fn apply_anchor_layouts(
+    layouts: &[AnchorLayout],
+    widgets: &mut [Box<dyn PanelWidget>],
+    parent_rect: LayoutRect,
+) {
+    for (al, w) in layouts.iter().zip(widgets.iter_mut()) {
+        if al.anchor == Anchor::NONE { continue; }
+        let new_rect = al.resolve(parent_rect.w, parent_rect.h, parent_rect.x, parent_rect.y);
+        w.set_rect(new_rect);
+    }
+}
+
 /// Commands sent from the host application **to** a widget.
 #[derive(Clone, Debug)]
 pub enum WidgetCommand {
@@ -450,6 +558,12 @@ pub trait PanelWidget {
 
     /// Set the tooltip text for this widget.
     fn set_tooltip(&mut self, _tooltip: &str) {}
+
+    /// Get the anchor setting for this widget. Default: top-left (no resize).
+    fn anchor(&self) -> Anchor { Anchor::TOP_LEFT }
+
+    /// Set the anchor edges for this widget.
+    fn set_anchor(&mut self, _anchor: Anchor) {}
 }
 
 // ── NullWidget ─────────────────────────────────────────────────────────
