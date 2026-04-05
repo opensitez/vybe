@@ -1,0 +1,314 @@
+# Pascal Grammar Definition
+# ─────────────────────────
+# This file fully describes Object Pascal syntax.
+# The engine reads this and produces vybe_parser_common::Module.
+
+[language]
+name = "pascal"
+case_sensitive = false
+statement_terminator = ";"
+
+# ═══════════════════════════════════════════════════════════
+# LEXER — tokenization rules
+# ═══════════════════════════════════════════════════════════
+
+[lexer]
+# Comments
+comment_line = "//"
+comment_block = ["{", "}"]
+comment_block = ["(*", "*)"]
+
+# Strings
+string_delimiters = ["'"]
+string_escape = "''"        # doubled quote for escape
+
+# Char literals: #65 → 'A'
+char_prefix = "#"
+
+# Number formats
+hex_prefix = "$"
+
+# Keywords (all become keyword tokens; case-insensitive)
+keywords = [
+  "program", "unit", "uses", "interface", "implementation",
+  "begin", "end", "var", "const", "type",
+  "procedure", "function", "constructor", "destructor", "forward",
+  "if", "then", "else",
+  "for", "to", "downto", "do", "in",
+  "while", "repeat", "until",
+  "case", "of", "otherwise",
+  "class", "record", "object", "interface", "inherited",
+  "override", "virtual", "abstract",
+  "try", "except", "finally", "raise", "on",
+  "with", "is", "as",
+  "and", "or", "not", "xor", "div", "mod", "shl", "shr",
+  "nil", "true", "false",
+  "exit", "break", "continue", "halt",
+  "new", "result", "self",
+  "public", "private", "protected", "published",
+  "array", "set", "file", "of",
+  "string", "integer", "real", "boolean", "char",
+  "byte", "word", "longint", "shortint", "cardinal", "int64",
+  "single", "double", "extended", "pointer",
+]
+
+# Operators (multi-char, ordered longest-first)
+operators = [
+  ":=", "+=", "-=", "*=", "/=",
+  "<>", "<=", ">=", "..",
+  "+", "-", "*", "/",
+  "=", "<", ">",
+  "(", ")", "[", "]",
+  ".", ",", ";", ":", "^", "@",
+]
+
+# ═══════════════════════════════════════════════════════════
+# OPERATORS — precedence and associativity
+# ═══════════════════════════════════════════════════════════
+
+[operators]
+# Higher number = higher precedence (tighter binding).
+# Associativity: left (default), right, prefix.
+
+[[operators.prefix]]
+ops = ["not", "-", "@"]
+
+[[operators.infix]]
+precedence = 1
+ops = ["or", "xor"]
+assoc = "left"
+
+[[operators.infix]]
+precedence = 2
+ops = ["and"]
+assoc = "left"
+
+[[operators.infix]]
+precedence = 3
+ops = ["=", "<>", "<", ">", "<=", ">=", "in", "is", "as"]
+assoc = "left"
+
+[[operators.infix]]
+precedence = 4
+ops = ["+", "-"]
+assoc = "left"
+
+[[operators.infix]]
+precedence = 5
+ops = ["*", "/", "div", "mod", "shl", "shr"]
+assoc = "left"
+
+# ═══════════════════════════════════════════════════════════
+# BLOCKS — how to delimit a group of statements
+# ═══════════════════════════════════════════════════════════
+
+[blocks]
+# The primary compound block
+compound = { open = "begin", close = "end" }
+
+# Single-statement blocks (used after then, do, else, etc.)
+# The engine tries compound first, then falls back to single statement.
+
+# ═══════════════════════════════════════════════════════════
+# TYPES — how type annotations work
+# ═══════════════════════════════════════════════════════════
+
+[types]
+# Type comes AFTER the name, separated by ":"
+position = "after"    # "before" for C#/Dart, "after" for Pascal/VB, "none" for JS/Ruby
+separator = ":"
+
+# ═══════════════════════════════════════════════════════════
+# STATEMENTS — syntax patterns
+# ═══════════════════════════════════════════════════════════
+#
+# Pattern syntax:
+#   "keyword"     — literal keyword or operator token
+#   EXPR          — parse an expression
+#   IDENT         — parse an identifier
+#   BLOCK         — parse a block (compound or single stmt)
+#   STMT_LIST     — parse statements until a closing keyword
+#   TYPE          — parse a type annotation
+#   PARAMS        — parse a parameter list (parens + typed params)
+#   (X)?          — optional
+#   (X | Y)       — alternatives
+#   (X)*          — zero or more (separator in braces)
+#
+# Each pattern maps to a StmtKind variant in the common AST.
+
+[statements]
+
+[statements.if]
+pattern = '"if" EXPR "then" BLOCK ("else" BLOCK)?'
+maps_to = "If"
+
+[statements.while]
+pattern = '"while" EXPR "do" BLOCK'
+maps_to = "While"
+
+[statements.for]
+pattern = '"for" IDENT ":=" EXPR "to" EXPR "do" BLOCK'
+maps_to = "For"
+
+[statements.for_downto]
+pattern = '"for" IDENT ":=" EXPR "downto" EXPR "do" BLOCK'
+maps_to = "For"
+extra = { downto = true }
+
+[statements.for_in]
+pattern = '"for" IDENT "in" EXPR "do" BLOCK'
+maps_to = "ForIn"
+
+[statements.repeat]
+pattern = '"repeat" STMT_LIST "until" EXPR'
+maps_to = "DoWhile"
+extra = { until = true }
+
+[statements.case]
+pattern = '"case" EXPR "of" CASE_ARMS ("else" STMT_LIST)? "end"'
+maps_to = "Switch"
+
+[statements.try_except]
+pattern = '"try" STMT_LIST "except" CATCH_CLAUSES "end"'
+maps_to = "Try"
+
+[statements.try_finally]
+pattern = '"try" STMT_LIST "finally" STMT_LIST "end"'
+maps_to = "Try"
+
+[statements.with]
+pattern = '"with" EXPR "do" BLOCK'
+maps_to = "With"
+
+[statements.raise]
+pattern = '"raise" EXPR?'
+maps_to = "Throw"
+
+[statements.exit]
+pattern = '"exit" ("(" EXPR ")")?'
+maps_to = "Exit"
+
+[statements.break]
+pattern = '"break"'
+maps_to = "Break"
+
+[statements.continue]
+pattern = '"continue"'
+maps_to = "Continue"
+
+[statements.inherited]
+pattern = '"inherited" (IDENT ("(" EXPR_LIST ")")?)?'
+maps_to = "Expr"
+extra = { kind = "inherited" }
+
+# ═══════════════════════════════════════════════════════════
+# DECLARATIONS — top-level and nested declarations
+# ═══════════════════════════════════════════════════════════
+
+[declarations]
+
+[declarations.var]
+pattern = '"var" (IDENT_LIST ":" TYPE ("=" EXPR)? ";")*'
+maps_to = "VarDecl"
+
+[declarations.const]
+pattern = '"const" (IDENT (":" TYPE)? "=" EXPR ";")*'
+maps_to = "VarDecl"
+extra = { is_const = true }
+
+[declarations.procedure]
+pattern = '"procedure" IDENT PARAMS? ";" DECL_SECTION BLOCK ";"'
+maps_to = "FunctionDecl"
+
+[declarations.function]
+pattern = '"function" IDENT PARAMS? ":" TYPE ";" DECL_SECTION BLOCK ";"'
+maps_to = "FunctionDecl"
+
+[declarations.constructor]
+pattern = '"constructor" IDENT "." IDENT PARAMS? ";" DECL_SECTION BLOCK ";"'
+maps_to = "FunctionDecl"
+extra = { kind = "constructor" }
+
+[declarations.destructor]
+pattern = '"destructor" IDENT "." IDENT PARAMS? ";" DECL_SECTION BLOCK ";"'
+maps_to = "FunctionDecl"
+extra = { kind = "destructor" }
+
+[declarations.method_impl]
+pattern = '("procedure"|"function") IDENT "." IDENT PARAMS? (":" TYPE)? ";" DECL_SECTION BLOCK ";"'
+maps_to = "FunctionDecl"
+extra = { kind = "method" }
+
+[declarations.type_section]
+pattern = '"type" (IDENT "=" TYPE_DEF ";")*'
+maps_to = "TypeDecls"
+
+[declarations.class]
+pattern = '"class" ("(" IDENT_LIST ")")? CLASS_MEMBERS "end"'
+maps_to = "ClassDecl"
+
+[declarations.interface]
+pattern = '"interface" ("(" IDENT ")")? INTERFACE_MEMBERS "end"'
+maps_to = "InterfaceDecl"
+
+[declarations.record]
+pattern = '"record" RECORD_MEMBERS "end"'
+maps_to = "StructDecl"
+
+[declarations.enum]
+pattern = '"(" ENUM_MEMBERS ")"'
+maps_to = "EnumDecl"
+
+# ═══════════════════════════════════════════════════════════
+# EXPRESSIONS — primary forms (beyond operator table)
+# ═══════════════════════════════════════════════════════════
+
+[expressions]
+# Postfix operations (applied after primary parsing)
+member_access = "."
+index_access = ["[", "]"]
+call = ["(", ")"]
+deref = "^"
+
+# Primary expression forms
+[expressions.primary]
+# These are tried in order during primary expression parsing
+array_literal = ["[", "]"]
+set_literal = ["[", "]"]
+paren_group = ["(", ")"]
+lambda_proc = '"procedure" PARAMS? BLOCK'
+lambda_func = '"function" PARAMS? (":" TYPE)? BLOCK'
+
+# ═══════════════════════════════════════════════════════════
+# PARAMS — parameter list syntax
+# ═══════════════════════════════════════════════════════════
+
+[params]
+open = "("
+close = ")"
+separator = ";"
+name_type_separator = ":"
+type_position = "after"     # name comes first, then : Type
+pass_by_keywords = { "var" = "ref", "const" = "const", "out" = "out" }
+default_value = "="
+# Multiple names per param group: (a, b: Integer; c: String)
+multi_name = true
+multi_name_separator = ","
+
+# ═══════════════════════════════════════════════════════════
+# ASSIGNMENT
+# ═══════════════════════════════════════════════════════════
+
+[assignment]
+operator = ":="
+compound_operators = { "+=" = "Add", "-=" = "Sub", "*=" = "Mul", "/=" = "Div" }
+
+# ═══════════════════════════════════════════════════════════
+# PROGRAM STRUCTURE
+# ═══════════════════════════════════════════════════════════
+
+[program]
+# Top-level structure of a Pascal file
+header = '"program" IDENT ";"'
+uses = '"uses" IDENT_LIST ";"'
+body = 'DECL_SECTION BLOCK "."'

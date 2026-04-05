@@ -35,6 +35,8 @@ pub mod rt;
 
 use vybe_bytecode::{VM, Value, HostContext};
 use std::collections::HashSet;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 /// Capability flags for host module access.
 /// Follows WASI's capability-based security model.
@@ -128,12 +130,28 @@ pub fn register_all(vm: &mut VM) {
     // doesn't fail with "Unresolved import" in non-GUI contexts.
     if vm.host_registry.get(&("vybe:gui".to_string(), "controlSetProperty".to_string())).is_none() {
         vm.register_host_fn("vybe:gui", "controlSetProperty", Box::new(|_ctx, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "setProperty", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "showForm", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "closeForm", Box::new(|_ctx, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "showFormDialog", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "noop", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "runApplication", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "onEvent", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "controlsAdd", Box::new(|_ctx, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "newForm", Box::new(|_ctx, args| {
+            use vybe_bytecode::value::Object;
+            let title = args.first().map(|v| format!("{v}")).unwrap_or_default();
+            let mut obj = Object::new();
+            obj.properties.insert("__control_type".into(), Value::String(Rc::from("Form")));
+            obj.properties.insert("text".into(), Value::String(Rc::from(title.as_str())));
+            obj.properties.insert("name".into(), Value::String(Rc::from("form")));
+            // Controls collection (no-op stub)
+            let mut ctrls = Object::new_array(vec![]);
+            ctrls.properties.insert("__type".into(), Value::String(Rc::from("List")));
+            obj.properties.insert("controls".into(), Value::Object(Rc::new(RefCell::new(ctrls))));
+            Value::Object(Rc::new(RefCell::new(obj)))
+        }));
+        vm.register_host_fn("vybe:gui", "addHandler", Box::new(|_ctx, _| Value::Null));
     }
     // DO NOT call setup_namespaces here — tests override host fns after register_all.
     // setup_namespaces must be called AFTER all host fn registrations.

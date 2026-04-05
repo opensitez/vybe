@@ -1,0 +1,88 @@
+# Lisp Grammar Definition
+# ───────────────────────
+# Demonstrates that the grammar format handles S-expression languages.
+# Everything is an expression. No statements, no declarations as separate concepts.
+
+[language]
+name = "lisp"
+case_sensitive = true
+statement_terminator = "none"
+expression_language = true     # everything is an expression, no stmt/decl distinction
+
+[lexer]
+comment_line = ";"
+
+string_delimiters = ["\""]
+string_escape = "\\"
+
+keywords = [
+  "defun", "defmacro", "lambda", "let", "let*", "letrec",
+  "if", "cond", "when", "unless",
+  "begin", "progn", "do",
+  "define", "set!", "setq",
+  "quote", "quasiquote", "unquote",
+  "car", "cdr", "cons", "list",
+  "nil", "t",
+  "and", "or", "not",
+  "eq", "equal", "eql",
+  "defclass", "defmethod", "make-instance",
+]
+
+operators = [
+  "(", ")", "'", "`", ",", ",@", "#",
+  "+", "-", "*", "/",
+  "=", "<", ">", "<=", ">=",
+]
+
+[operators]
+# Lisp has no infix operators in the traditional sense.
+# All "operators" are just function calls: (+ 1 2)
+# The engine treats them as prefix call syntax.
+
+[blocks]
+# S-expression: ( ... ) is the universal block
+compound = { open = "(", close = ")" }
+
+[types]
+position = "none"
+
+[statements]
+# Lisp has no statements — everything is an expression.
+# Special forms are recognized by the first symbol in an S-expression.
+
+[declarations]
+[declarations.function]
+pattern = '"(" "defun" IDENT "(" PARAMS ")" EXPR_LIST ")"'
+maps_to = "FunctionDecl"
+
+[declarations.variable]
+pattern = '"(" ("define"|"defvar"|"defparameter") IDENT EXPR ")"'
+maps_to = "VarDecl"
+
+[declarations.class]
+pattern = '"(" "defclass" IDENT "(" IDENT_LIST ")" SLOT_DEFS ")"'
+maps_to = "ClassDecl"
+
+[expressions]
+# The core: S-expressions
+# (func arg1 arg2 ...) → Call
+# (op arg1 arg2) → Call (operators are functions)
+# 'expr → Quote
+# `expr → Quasiquote
+call = ["(", ")"]
+
+[expressions.primary]
+list_literal = ["(", ")"]
+quote = "'"
+quasiquote = "`"
+
+[params]
+# No parens around individual params, just space-separated names
+open = "("
+close = ")"
+separator = " "
+type_position = "none"
+
+[assignment]
+# (set! x value) or (setq x value) — no operator, it's a special form
+operator = "none"
