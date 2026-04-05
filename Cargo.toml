@@ -32,6 +32,9 @@ members = [
     "crates/vybe_compiler_ruby",
     "crates/vybe_parser_cobol",
     "crates/vybe_compiler_cobol",
+    "crates/vybe_lsp",
+    "crates/vybe_parser_generic",
+    "crates/vybe_compiler_generic",
 ]
 
 [workspace.package]
@@ -86,6 +89,9 @@ vybe_parser_ruby = { path = "crates/vybe_parser_ruby" }
 vybe_compiler_ruby = { path = "crates/vybe_compiler_ruby" }
 vybe_parser_cobol = { path = "crates/vybe_parser_cobol" }
 vybe_compiler_cobol = { path = "crates/vybe_compiler_cobol" }
+vybe_lsp = { path = "crates/vybe_lsp" }
+vybe_parser_generic = { path = "crates/vybe_parser_generic" }
+vybe_compiler_generic = { path = "crates/vybe_compiler_generic" }
 rhtmledit = { path = "crates/htmlbox" }
 vybe_widgets = { path = "crates/vybe_widgets" }
 
