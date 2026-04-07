@@ -215,7 +215,6 @@ struct FormApp {
     font_system: FontSystem,
     swash_cache: SwashCache,
     vm: Rc<RefCell<vybe_bytecode::VM>>,
-    queue: Rc<RefCell<vybe_host::SideEffectQueue>>,
     gui: Rc<RefCell<GuiState>>,
     // Data binding state
     data_bindings: Vec<DataBindingEntry>,
@@ -303,10 +302,8 @@ impl FormApp {
     fn fire_click(&mut self, control_name: &str) {
         let callback = {
             let g = self.gui.borrow();
-            eprintln!("[fire_click] control={:?} all_keys={:?}", control_name, g.event_keys());
             g.get_event_handler(&control_name.to_lowercase(), "Click").cloned()
         };
-        eprintln!("[fire_click] found={}", callback.is_some());
         if let Some(cb) = callback {
             self.invoke_callback(&cb, control_name);
         }
@@ -317,7 +314,6 @@ impl FormApp {
         let me = vm.globals.get("__f").cloned()
             .unwrap_or(vybe_bytecode::Value::Null);
         let arity = fn_arity(cb);
-        eprintln!("[invoke_callback] control={:?} arity={} me_type={}", control_name, arity, me.type_tag());
         let sender = vybe_bytecode::Value::String(Rc::from(control_name));
         let result = match arity {
             0 => vm.invoke(cb, &[]),
@@ -325,10 +321,6 @@ impl FormApp {
             2 => vm.invoke(cb, &[me, sender]),
             _ => vm.invoke(cb, &[me, sender, vybe_bytecode::Value::Null]),
         };
-        match &result {
-            Ok(v) => eprintln!("[invoke_callback] OK result_type={}", v.type_tag()),
-            Err(e) => eprintln!("[invoke_callback] ERROR: {}", e),
-        }
         if let Err(e) = result {
             eprintln!("Event handler error: {e}");
         }
@@ -338,19 +330,11 @@ impl FormApp {
     }
 
     fn drain_side_effects(&mut self) {
-        let effects = self.queue.borrow_mut().drain();
-        for effect in effects {
-            match effect {
-                vybe_host::SideEffect::ConsoleOutput(msg) => {
-                    print!("{msg}");
-                }
-                vybe_host::SideEffect::MsgBox { text, title } => {
-                    rfd::MessageDialog::new()
-                        .set_title(&title).set_description(&text)
-                        .set_level(rfd::MessageLevel::Info).show();
-                }
-                _ => {}
-            }
+        let dialogs: Vec<(String, String)> = self.gui.borrow_mut().pending_dialogs.drain(..).collect();
+        for (text, title) in dialogs {
+            rfd::MessageDialog::new()
+                .set_title(&title).set_description(&text)
+                .set_level(rfd::MessageLevel::Info).show();
         }
     }
 
@@ -365,32 +349,17 @@ impl FormApp {
             let mut ups: Vec<(String, String)> = Vec::new();
             if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
                 let fo = form_obj.borrow();
-                eprintln!("[sync] control_names={:?}", g.control_names);
                 for ctrl_name in &g.control_names {
-                    match fo.properties.get(ctrl_name) {
-                        Some(vybe_bytecode::Value::Object(co)) => {
-                            let c = co.borrow();
-                            let keys: Vec<&String> = c.properties.keys().collect();
-                            eprintln!("[sync] {} is Object, props={:?}", ctrl_name, keys);
-                            if let Some(text) = c.properties.get("text") {
-                                let text_str = format!("{}", text);
-                                ups.push((ctrl_name.clone(), text_str));
-                            }
-                        }
-                        Some(other) => {
-                            eprintln!("[sync] {} = {} (type: {})", ctrl_name, other, other.type_tag());
-                        }
-                        None => {
-                            eprintln!("[sync] {} NOT FOUND in __f", ctrl_name);
+                    if let Some(vybe_bytecode::Value::Object(co)) = fo.properties.get(ctrl_name) {
+                        let c = co.borrow();
+                        if let Some(text) = c.properties.get("text") {
+                            ups.push((ctrl_name.clone(), format!("{}", text)));
                         }
                     }
                 }
-            } else {
-                eprintln!("[sync] __f not found or not an object");
             }
             ups
         };
-        eprintln!("[sync] pushing {} updates", updates.len());
         if !updates.is_empty() {
             let mut g = self.gui.borrow_mut();
             for (name, text) in updates {
@@ -715,7 +684,6 @@ fn extract_binding_info(form: &vybe_forms::Form) -> (Vec<DataBindingEntry>, Vec<
 
 pub fn launch_vybewidget_form(
     mut vm: vybe_bytecode::VM,
-    queue: Rc<RefCell<vybe_host::SideEffectQueue>>,
     gui: Rc<RefCell<GuiState>>,
     form: &vybe_forms::Form,
 ) {
@@ -775,7 +743,6 @@ pub fn launch_vybewidget_form(
         font_system: FontSystem::new(),
         swash_cache: SwashCache::new(),
         vm: Rc::new(RefCell::new(vm)),
-        queue,
         gui,
         data_bindings,
         binding_sources,
@@ -796,7 +763,6 @@ pub fn launch_vybewidget_form(
 /// Launch a programmatic form — GuiState already has all widgets and event handlers.
 pub fn launch_gui(
     mut vm: vybe_bytecode::VM,
-    queue: Rc<RefCell<vybe_host::SideEffectQueue>>,
     gui: Rc<RefCell<GuiState>>,
 ) {
     register_dialog_fns(&mut vm);
@@ -816,7 +782,6 @@ pub fn launch_gui(
         font_system: FontSystem::new(),
         swash_cache: SwashCache::new(),
         vm: Rc::new(RefCell::new(vm)),
-        queue,
         gui,
         data_bindings: Vec::new(),
         binding_sources: Vec::new(),

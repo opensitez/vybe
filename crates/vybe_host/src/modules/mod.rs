@@ -219,11 +219,10 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
 #[cfg(feature = "gui")]
 pub fn register_all_with_gui(
     vm: &mut VM,
-    queue: std::rc::Rc<std::cell::RefCell<crate::SideEffectQueue>>,
 ) -> std::rc::Rc<std::cell::RefCell<crate::gui_state::GuiState>> {
     let gui = std::rc::Rc::new(std::cell::RefCell::new(crate::gui_state::GuiState::new()));
     register_all(vm);
-    gui::register(vm, queue, gui.clone());
+    gui::register(vm, gui.clone());
     // DO NOT call setup_namespaces here — callers do it after all overrides.
     gui
 }
@@ -234,12 +233,11 @@ pub fn register_all_with_gui(
 pub fn register_with_capabilities_and_gui(
     vm: &mut VM,
     caps: &Capabilities,
-    queue: std::rc::Rc<std::cell::RefCell<crate::SideEffectQueue>>,
 ) -> std::rc::Rc<std::cell::RefCell<crate::gui_state::GuiState>> {
     let gui = std::rc::Rc::new(std::cell::RefCell::new(crate::gui_state::GuiState::new()));
     register_with_capabilities(vm, caps);
     if caps.has(Capability::Gui) {
-        gui::register(vm, queue, gui.clone());
+        gui::register(vm, gui.clone());
         crate::namespaces::setup_namespaces(vm);
     }
     gui

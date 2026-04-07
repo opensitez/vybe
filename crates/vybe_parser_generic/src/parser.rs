@@ -565,6 +565,30 @@ impl<'a> Parser<'a> {
             let expr = Expression::new(ExprKind::Inherited { method, args });
             return Ok(Some(Statement::with_span(StmtKind::Expr(expr), self.span_from(line, col))));
         }
+        // addhandler (VB): AddHandler ctrl.Event, AddressOf handler
+        if self.is_keyword("addhandler") {
+            self.advance();
+            let event_expr = self.parse_expression()?;
+            self.eat_op(",");
+            // "AddressOf" — keyword in some grammars, identifier in others
+            if !self.eat_keyword("addressof") {
+                if self.peek().text.eq_ignore_ascii_case("addressof") {
+                    self.advance();
+                }
+            }
+            let handler = self.parse_expression()?;
+            return Ok(Some(Statement::with_span(StmtKind::Extra {
+                tag: "addhandler".into(),
+                exprs: vec![event_expr, handler],
+                stmts: Vec::new(),
+            }, self.span_from(line, col))));
+        }
+        // removehandler (VB): no-op
+        if self.is_keyword("removehandler") {
+            self.advance();
+            while !self.at_stmt_end() { self.advance(); }
+            return Ok(Some(Statement::with_span(StmtKind::Empty, self.span_from(line, col))));
+        }
         // block (begin/end or {})
         if self.is_keyword(&self.grammar.blocks.open) || self.is_op(&self.grammar.blocks.open) {
             let stmts = self.parse_block()?;

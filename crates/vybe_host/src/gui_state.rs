@@ -35,6 +35,8 @@ pub struct GuiState {
     pub form_object: Option<Value>,
     /// Pending close request.
     pub close_requested: bool,
+    /// Pending MsgBox dialogs: (text, title). Drained by the runner after each VM invocation.
+    pub pending_dialogs: Vec<(String, String)>,
 }
 
 impl GuiState {
@@ -48,19 +50,19 @@ impl GuiState {
             should_run: false,
             form_object: None,
             close_requested: false,
+            pending_dialogs: Vec::new(),
         }
     }
 
     /// Register an event handler: key = "controlname.eventname" (control lowercased).
     pub fn register_event(&mut self, control: &str, event: &str, callback: Value) {
         let key = format!("{}.{}", control.to_lowercase(), event);
-        eprintln!("[register_event] key={:?} callback_type={}", key, callback.type_tag());
         self.event_handlers.insert(key, callback);
     }
 
     /// Look up an event handler.
     pub fn get_event_handler(&self, control: &str, event: &str) -> Option<&Value> {
-        let key = format!("{}.{}", control.to_lowercase(), event);
+        let key = format!("{}.{}", control.to_lowercase(), event.to_lowercase());
         self.event_handlers.get(&key)
     }
 

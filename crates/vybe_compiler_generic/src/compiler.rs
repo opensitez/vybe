@@ -470,8 +470,35 @@ impl Compiler {
                     self.emit(Op::drop);
                 }
             }
+            StmtKind::Extra { tag, exprs, .. } => {
+                match tag.as_str() {
+                    "addhandler" => {
+                        // AddHandler ctrl.Event, AddressOf handler
+                        // → onEvent(ctrl.__control_name, "Event", handler_fn)
+                        if exprs.len() >= 2 {
+                            if let ExprKind::Member { object, field, .. } = &exprs[0].kind {
+                                self.compile_expr(object)?;
+                                let name_key = self.str_const("__control_name");
+                                self.emit_u16(Op::struct_get, name_key);
+                                let ev = field.to_lowercase();
+                                self.emit_const(Value::String(Rc::from(ev.as_str())));
+                                self.compile_expr(&exprs[1])?;
+                                let idx = self.import("vybe:gui", "onEvent");
+                                self.emit_host_call(idx, 3);
+                                self.emit(Op::drop);
+                            } else {
+                                self.emit(Op::null);
+                                self.emit(Op::drop);
+                            }
+                        }
+                    }
+                    _ => {
+                        // Other Extra tags — no-op
+                    }
+                }
+            }
             _ => {
-                // InterfaceDecl, StructDecl, TypeAlias, PropertyDecl, EventDecl, Extra
+                // InterfaceDecl, StructDecl, TypeAlias, PropertyDecl, EventDecl
                 // — no-ops or TODO
             }
         }
@@ -949,6 +976,18 @@ impl Compiler {
                 }
                 // Method call: obj.method(args)
                 if let ExprKind::Member { object, field, .. } = &callee.kind {
+                    // form.Controls.Add(ctrl) → controlsAdd(form, ctrl)
+                    if field.eq_ignore_ascii_case("add") {
+                        if let ExprKind::Member { object: inner_obj, field: inner_field, .. } = &object.kind {
+                            if inner_field.eq_ignore_ascii_case("controls") {
+                                self.compile_expr(inner_obj)?;
+                                for a in args { self.compile_expr(a)?; }
+                                let idx = self.import("vybe:gui", "controlsAdd");
+                                self.emit_host_call(idx, (args.len() + 1) as u8);
+                                return Ok(());
+                            }
+                        }
+                    }
                     self.compile_expr(object)?;
                     let field_name = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
                     let prop = self.str_const(&field_name);

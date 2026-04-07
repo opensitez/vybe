@@ -10,11 +10,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use vybe_bytecode::{VM, Value, HostContext};
 use crate::gui_state::GuiState;
-use crate::side_effect::{SideEffect, SideEffectQueue};
 
 pub fn register(
     vm: &mut VM,
-    queue: Rc<RefCell<SideEffectQueue>>,
     gui: Rc<RefCell<GuiState>>,
 ) {
     // Form creation
@@ -126,8 +124,6 @@ pub fn register(
                 // Add widget at absolute position (child local + parent absolute)
                 let abs_left = left + parent_abs_x;
                 let abs_top = top + parent_abs_y;
-                eprintln!("[controlsAdd] type='{}' name='{}' text='{}' local=({},{}) parent_abs=({},{}) abs=({},{}) size={}x{}",
-                    control_type, control_name, text, left, top, parent_abs_x, parent_abs_y, abs_left, abs_top, width, height);
                 let mut g = gui.borrow_mut();
                 g.add_widget(&control_type, &control_name, &text, abs_left, abs_top, width, height);
                 let name_lower = control_name.to_lowercase();
@@ -261,14 +257,13 @@ pub fn register(
         })
     });
 
-    // MsgBox (still uses side-effect queue for now)
+    // MsgBox — push to GuiState pending_dialogs; runner drains and shows dialog
     vm.register_host_fn("vybe:gui", "msgBox", {
-        let q = queue.clone();
+        let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            q.borrow_mut().push(SideEffect::MsgBox {
-                text: str_arg(args, 0, ""),
-                title: str_arg(args, 1, ""),
-            });
+            let text = str_arg(args, 0, "");
+            let title = str_arg(args, 1, "");
+            gui.borrow_mut().pending_dialogs.push((text, title));
             Value::Null
         })
     });
@@ -445,7 +440,6 @@ pub use gui_impl::register;
 #[cfg(not(feature = "gui"))]
 pub fn register(
     vm: &mut vybe_bytecode::VM,
-    _queue: std::rc::Rc<std::cell::RefCell<crate::side_effect::SideEffectQueue>>,
 ) {
     use vybe_bytecode::Value;
     let stubs = [

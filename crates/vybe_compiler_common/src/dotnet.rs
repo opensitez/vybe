@@ -287,6 +287,8 @@ pub fn default_interface_imports() -> Vec<String> {
         "system.xml.linq".into(),
         // LINQ
         "system.linq".into(),
+        // WinForms bare names (for Application.Run, Application.Exit)
+        "application".into(),
     ]
 }
 
@@ -330,6 +332,7 @@ pub fn namespace_to_host_module<'a>(prefix: &'a str) -> &'a str {
         "system.drawing" => "vybe:drawing",
         // WinForms
         "system.windows.forms" => "vybe:gui",
+        "application" => "vybe:gui",
         // VB-specific
         "microsoft.visualbasic" => "vybe:string",
         // Fallback
@@ -400,6 +403,8 @@ pub fn map_host_func(module: &str, func: &str) -> String {
 
         // ── GUI / WinForms ──
         ("vybe:gui", "application.run") => "runApplication".into(),
+        ("vybe:gui", "run") => "runApplication".into(),
+        ("vybe:gui", "exit") => "appExit".into(),
         ("vybe:gui", f) => {
             let cap = capitalize_control_name(f);
             if !cap.is_empty() && cap != f {

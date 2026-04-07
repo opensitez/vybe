@@ -5,8 +5,6 @@
 //! Compare with vybec (language-specific compilers) to validate parity.
 
 use std::path::Path;
-use std::rc::Rc;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_parser_generic::grammar::*;
@@ -59,8 +57,8 @@ fn main() {
 
     // Run
     let mut vm = VM::new();
-    let queue = Rc::new(RefCell::new(vybe_host::SideEffectQueue::new()));
-    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm);
+    vybe_host::setup_namespaces(&mut vm);
 
     match vm.run(chunks) {
         Ok(_) => {}
@@ -69,7 +67,7 @@ fn main() {
 
     // If the program created forms, launch the GUI
     if gui.borrow().should_run {
-        vybe_cli::runner::launch_vm_form(vm, queue, gui, None);
+        vybe_cli::runner::launch_vm_form(vm, gui, None);
     }
 }
 
@@ -284,6 +282,7 @@ fn vb_grammar() -> GrammarDef {
                 "date".into(), "byte".into(), "long".into(), "short".into(), "single".into(), "char".into(), "decimal".into(),
                 "me".into(), "mybase".into(), "myclass".into(),
                 "withevents".into(), "handles".into(), "addhandler".into(), "removehandler".into(), "raiseevent".into(),
+                "addressof".into(),
                 "event".into(), "delegate".into(),
                 "byval".into(), "byref".into(), "optional".into(), "paramarray".into(),
                 "readonly".into(), "writeonly".into(), "const".into(),

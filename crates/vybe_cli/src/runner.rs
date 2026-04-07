@@ -54,9 +54,8 @@ pub fn run(path: &Path, extra_args: &[String]) {
 /// If the JS program emits gui.runApplication(), a Dioxus window is launched.
 fn run_js_file(path: &Path) {
     let mut vm = vybe_bytecode::VM::new();
-    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
 
-    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm);
     vybe_compiler_js::register_js_coercion(&mut vm);
 
     let chunks = match vybe_compiler_js::load_and_compile(path) {
@@ -75,19 +74,17 @@ fn run_js_file(path: &Path) {
         }
     }
 
-    // Drain remaining side effects (console output, msgbox)
-    let effects = queue.borrow_mut().drain();
-    for effect in &effects {
-        match effect {
-            vybe_host::SideEffect::ConsoleOutput(msg) => print!("{msg}"),
-            vybe_host::SideEffect::MsgBox { text, title } => println!("[MsgBox] {title}: {text}"),
-            _ => {}
+    // Drain any pending MsgBox dialogs (before GUI window opens)
+    {
+        let dialogs: Vec<(String, String)> = gui.borrow_mut().pending_dialogs.drain(..).collect();
+        for (text, title) in dialogs {
+            println!("[MsgBox] {title}: {text}");
         }
     }
 
     // If runApplication was called, GuiState already has the real widgets
     if gui.borrow().should_run {
-        crate::vybewidget_form::launch_gui(vm, queue, gui);
+        crate::vybewidget_form::launch_gui(vm, gui);
     }
 }
 
@@ -100,7 +97,7 @@ fn run_js_file(path: &Path) {
 fn wire_handles_from_chunks(
     program: &vybe_parser_basic::ast::Program,
     vm: &mut vybe_bytecode::VM,
-    queue: &Rc<RefCell<vybe_host::SideEffectQueue>>,
+    gui: &Rc<RefCell<vybe_host::GuiState>>,
 ) {
     use vybe_parser_basic::ast::*;
     for decl in &program.declarations {
@@ -137,7 +134,7 @@ fn wire_handles_from_chunks(
                         if parts.len() == 2 {
                             let ctrl = parts[0].to_lowercase();
                             let event = parts[1].to_string();
-                            queue.borrow_mut().register_event(&ctrl, &event, func_val.clone());
+                            gui.borrow_mut().register_event(&ctrl, &event, func_val.clone());
                         }
                     }
                 }
@@ -146,13 +143,13 @@ fn wire_handles_from_chunks(
     }
 }
 
-/// Scan parsed AST for Handles clauses and register event handlers with the side effect queue.
+/// Scan parsed AST for Handles clauses and register event handlers with GuiState.
 /// Looks up the compiled function in VM globals and wires it to the control.event.
 #[allow(dead_code)]
 fn wire_handles_from_ast(
     program: &vybe_parser_basic::ast::Program,
     vm: &vybe_bytecode::VM,
-    queue: &std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+    gui: &std::rc::Rc<std::cell::RefCell<vybe_host::GuiState>>,
 ) {
     use vybe_parser_basic::ast::*;
     for decl in &program.declarations {
@@ -201,7 +198,7 @@ fn wire_handles_from_ast(
                                 parts[0].to_lowercase()
                             };
                             let event = parts[1].to_string();
-                            queue.borrow_mut().register_event(&ctrl, &event, func.clone());
+                            gui.borrow_mut().register_event(&ctrl, &event, func.clone());
                         }
                     }
                 }
@@ -214,10 +211,9 @@ fn wire_handles_from_ast(
 pub fn launch_project_form(
     form: vybe_forms::Form,
     vm: vybe_bytecode::VM,
-    queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
     gui: std::rc::Rc<std::cell::RefCell<vybe_host::GuiState>>,
 ) {
-    crate::vybewidget_form::launch_vybewidget_form(vm, queue, gui, &form);
+    crate::vybewidget_form::launch_vybewidget_form(vm, gui, &form);
 }
 
 // ---------------------------------------------------------------------------
@@ -229,17 +225,14 @@ pub fn launch_project_form(
 /// For designer forms, pass `initial_form` to build widgets from the model.
 pub fn launch_vm_form(
     vm: vybe_bytecode::VM,
-    queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
     gui: std::rc::Rc<std::cell::RefCell<vybe_host::GuiState>>,
     initial_form: Option<vybe_forms::Form>,
 ) {
-    let effects = queue.borrow_mut().drain();
-
-    for effect in &effects {
-        match effect {
-            vybe_host::SideEffect::ConsoleOutput(msg) => print!("{msg}"),
-            vybe_host::SideEffect::MsgBox { text, title } => println!("[MsgBox] {title}: {text}"),
-            _ => {}
+    // Drain any pending MsgBox dialogs produced before the window opens
+    {
+        let dialogs: Vec<(String, String)> = gui.borrow_mut().pending_dialogs.drain(..).collect();
+        for (text, title) in dialogs {
+            println!("[MsgBox] {title}: {text}");
         }
     }
 
@@ -248,10 +241,10 @@ pub fn launch_vm_form(
     if should_launch {
         if let Some(form) = initial_form {
             // Designer form path — convert vybe_forms into real widgets
-            crate::vybewidget_form::launch_vybewidget_form(vm, queue, gui, &form);
+            crate::vybewidget_form::launch_vybewidget_form(vm, gui, &form);
         } else {
             // Programmatic form path — GuiState already has all widgets
-            crate::vybewidget_form::launch_gui(vm, queue, gui);
+            crate::vybewidget_form::launch_gui(vm, gui);
         }
     }
 }
@@ -277,8 +270,7 @@ fn run_cs_file(path: &Path) {
     };
 
     let mut vm = vybe_bytecode::VM::new();
-    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
-    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_csharp::Compiler::new().compile(&unit) {
@@ -297,7 +289,7 @@ fn run_cs_file(path: &Path) {
         }
     }
 
-    launch_vm_form(vm, queue, gui, None);
+    launch_vm_form(vm, gui, None);
 }
 
 /// Run a standalone .vb file via the bytecode VM.
@@ -319,8 +311,7 @@ fn run_vb_file(path: &Path, _extra_args: &[String]) {
     };
 
     let mut vm = vybe_bytecode::VM::new();
-    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
-    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
 
     let chunks = match vybe_compiler_vb::Compiler::new().compile(&program) {
@@ -339,7 +330,7 @@ fn run_vb_file(path: &Path, _extra_args: &[String]) {
         }
     }
 
-    launch_vm_form(vm, queue, gui, None);
+    launch_vm_form(vm, gui, None);
 }
 
 /// Map internal ControlType debug names to host-recognized constructor names.
@@ -421,8 +412,7 @@ pub fn run_project_in_memory(project: &vybe_project::Project) {
     }
 
     let mut vm = vybe_bytecode::VM::new();
-    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
-    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
 
     match parse_program(&all_code) {
@@ -442,7 +432,7 @@ pub fn run_project_in_memory(project: &vybe_project::Project) {
         Err(e) => { eprintln!("Parse error: {:?}", e); return; }
     }
 
-    launch_vm_form(vm, queue, gui, startup_form);
+    launch_vm_form(vm, gui, startup_form);
 }
 
 /// Run a .vbp / .vbproj project.
@@ -469,8 +459,7 @@ fn run_project(path: &Path, _extra_args: &[String]) {
 
     // Set up VM + compile ALL code (class defs + entry point together)
     let mut vm = vybe_bytecode::VM::new();
-    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
-    let gui = vybe_host::register_all_with_gui(&mut vm, queue.clone());
+    let gui = vybe_host::register_all_with_gui(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
 
     if !all_code.trim().is_empty() {
@@ -494,9 +483,5 @@ fn run_project(path: &Path, _extra_args: &[String]) {
 
     // Pass the parsed form model directly — no side effects needed for layout.
     // Side effects are only used for runtime property changes during events.
-    if let Some(form) = startup_form {
-        launch_vm_form(vm, queue, gui, Some(form));
-    } else {
-        launch_vm_form(vm, queue, gui, None);
-    }
+    launch_vm_form(vm, gui, startup_form);
 }
