@@ -52,9 +52,48 @@ pub fn emit_read_file(chunk: &mut Chunk, line: u32) {
     chunk.emit(1, line);
 }
 
-/// Write file contents. Stack: [filename, contents] → [null]
-pub fn emit_write_file(chunk: &mut Chunk, line: u32) {
+/// Write to file. Stack: [target, data...] → [null]
+/// For whole-file: argc=2 (filename, contents). For handle: argc=N (handle, items...).
+pub fn emit_write_file(chunk: &mut Chunk, argc: u8, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "writeFile");
     chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit(argc, line);
+}
+
+// ── File handle I/O (wasi:filesystem) ─────────────────────────────────
+
+/// Open file handle. Stack: [filename, mode] → [handle]
+pub fn emit_open_file(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasi:filesystem", "openFile");
+    chunk.emit_op_u16(Op::call_import, idx, line);
     chunk.emit(2, line);
+}
+
+/// Close file handle. Stack: [handle] → []
+pub fn emit_close_file(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasi:filesystem", "closeFile");
+    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit(1, line);
+}
+
+/// Print to file handle. Stack: [handle, data...] → []
+pub fn emit_print_file(chunk: &mut Chunk, argc: u8, line: u32) {
+    let idx = chunk.add_import("wasi:filesystem", "printFile");
+    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit(argc, line);
+}
+
+
+/// Read from file handle (Input). Stack: [handle] → [string]
+pub fn emit_input_file(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasi:filesystem", "inputFile");
+    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit(1, line);
+}
+
+/// Read line from file handle. Stack: [handle] → [string]
+pub fn emit_line_input(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasi:filesystem", "lineInput");
+    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit(1, line);
 }

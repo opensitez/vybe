@@ -30,6 +30,8 @@ struct LoopCtx {
 struct PendingClass {
     parent: Option<String>,
     fields: Vec<String>,
+    /// Static methods: (name, chunk_idx) — tracked for inheritance
+    statics: Vec<(String, usize)>,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -784,7 +786,7 @@ impl Compiler {
             StmtKind::OpenFile { path, mode: _, file_number } => {
                 self.compile_expr(path)?;
                 self.compile_expr(file_number)?;
-                let idx = self.import("vybe:io", "openFile");
+                let idx = self.import("wasi:filesystem", "openFile");
                 self.emit_host_call(idx, 2);
                 self.emit(Op::drop);
             }
@@ -794,29 +796,28 @@ impl Compiler {
                 } else {
                     self.emit(Op::null);
                 }
-                let idx = self.import("vybe:io", "closeFile");
+                let idx = self.import("wasi:filesystem", "closeFile");
                 self.emit_host_call(idx, 1);
                 self.emit(Op::drop);
             }
             StmtKind::PrintFile { file_number, items } => {
                 self.compile_expr(file_number)?;
                 for item in items { self.compile_expr(item)?; }
-                let idx = self.import("vybe:io", "printFile");
+                let idx = self.import("wasi:filesystem", "printFile");
                 self.emit_host_call(idx, (items.len() + 1) as u8);
                 self.emit(Op::drop);
             }
             StmtKind::WriteFile { file_number, items } => {
                 self.compile_expr(file_number)?;
                 for item in items { self.compile_expr(item)?; }
-                let idx = self.import("vybe:io", "writeFile");
+                let idx = self.import("wasi:filesystem", "writeFile");
                 self.emit_host_call(idx, (items.len() + 1) as u8);
                 self.emit(Op::drop);
             }
             StmtKind::InputFile { file_number, variables } => {
                 self.compile_expr(file_number)?;
-                let idx = self.import("vybe:io", "inputFile");
+                let idx = self.import("wasi:filesystem", "inputFile");
                 self.emit_host_call(idx, 1);
-                // Assign result to each variable (simplified: assign to first)
                 if let Some(first) = variables.first() {
                     self.emit_var_set(first);
                 } else {
@@ -825,7 +826,7 @@ impl Compiler {
             }
             StmtKind::LineInput { file_number, variable } => {
                 self.compile_expr(file_number)?;
-                let idx = self.import("vybe:io", "lineInput");
+                let idx = self.import("wasi:filesystem", "lineInput");
                 self.emit_host_call(idx, 1);
                 self.emit_var_set(variable);
             }
@@ -1050,8 +1051,11 @@ impl Compiler {
                                 // ...rest: slice from current index
                                 self.emit_u16(Op::local_get, arr_slot);
                                 self.emit_const(Value::F64(i as f64));
-                                let idx = self.import("vybe:array", "slice");
-                                self.emit_host_call(idx, 2);
+                                // end = arr.length
+                                self.emit_u16(Op::local_get, arr_slot);
+                                self.emit(Op::array_length);
+                                let line = self.line;
+                                common::collections::emit_slice(self.chunk(), line);
                                 let slot = self.scope_mut().define(name);
                                 self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
                             }
@@ -1161,8 +1165,10 @@ impl Compiler {
                                 ArrayPatternElem::Rest(name) => {
                                     self.emit_u16(Op::local_get, arr_slot);
                                     self.emit_const(Value::F64(i as f64));
-                                    let idx = self.import("vybe:array", "slice");
-                                    self.emit_host_call(idx, 2);
+                                    self.emit_u16(Op::local_get, arr_slot);
+                                    self.emit(Op::array_length);
+                                    let line = self.line;
+                                    common::collections::emit_slice(self.chunk(), line);
                                     self.emit_var_set(name);
                                 }
                                 _ => {}
@@ -1283,14 +1289,19 @@ impl Compiler {
         let ctor_name = self.profile.constructor_name.clone();
         let result_style = self.profile.function_return.clone();
 
-        // Collect fields and initializers
+        // Collect fields and initializers (separate instance vs static)
         let mut fields = Vec::new();
         let mut field_inits: Vec<(String, Option<Expression>)> = Vec::new();
+        let mut static_field_inits: Vec<(String, Option<Expression>)> = Vec::new();
         for m in members {
-            if let ClassMember::Field { name: fname, init, .. } = m {
+            if let ClassMember::Field { name: fname, init, modifiers, .. } = m {
                 let fname = self.canon(fname);
-                fields.push(fname.clone());
-                field_inits.push((fname, init.clone()));
+                if modifiers.is_static {
+                    static_field_inits.push((fname, init.clone()));
+                } else {
+                    fields.push(fname.clone());
+                    field_inits.push((fname, init.clone()));
+                }
             }
         }
 
@@ -1298,6 +1309,7 @@ impl Compiler {
         self.pending_classes.insert(name.to_string(), PendingClass {
             parent: parent.clone(),
             fields: fields.clone(),
+            statics: Vec::new(), // filled after methods are compiled
         });
 
         // Compile methods (including constructor body)
@@ -1687,11 +1699,50 @@ impl Compiler {
         let ctor_local = self.scope_mut().define(&format!("__{}_ctor", name));
         common::classes::emit_store_constructor(self.chunk(), name, ctor_idx, ctor_local, line);
 
-        // Attach static methods to the constructor object
-        for (mname, mci, _, _) in &static_methods {
-            common::classes::emit_attach_static_method(self.chunk(), ctor_local, mname, *mci, line);
+        // Initialize static fields on the constructor object
+        for (fname, init) in &static_field_inits {
+            self.emit_u16(Op::local_get, ctor_local);
+            if let Some(init_expr) = init {
+                self.compile_expr(init_expr)?;
+            } else {
+                self.emit(Op::null);
+            }
+            let fk = self.str_const(fname);
+            self.emit_u16(Op::struct_set, fk);
+            self.emit(Op::drop);
         }
 
+        // Attach static methods to the constructor object
+        let mut all_statics: Vec<(String, usize)> = Vec::new();
+        for (mname, mci, _, _) in &static_methods {
+            common::classes::emit_attach_static_method(self.chunk(), ctor_local, mname, *mci, line);
+            all_statics.push((mname.clone(), *mci));
+        }
+
+        // Inherit parent's static methods — walk up the chain via PendingClass
+        if let Some(parent_name) = parent {
+            let mut current_parent = Some(self.canon(parent_name));
+            while let Some(ref pname) = current_parent {
+                let parent_statics = self.pending_classes.get(pname.as_str())
+                    .map(|pc| pc.statics.clone())
+                    .unwrap_or_default();
+                let next_parent = self.pending_classes.get(pname.as_str())
+                    .and_then(|pc| pc.parent.clone());
+                for (sname, sci) in &parent_statics {
+                    // Only inherit if child doesn't already define it
+                    if !all_statics.iter().any(|(n, _)| n == sname) {
+                        common::classes::emit_attach_static_method(self.chunk(), ctor_local, sname, *sci, line);
+                        all_statics.push((sname.clone(), *sci));
+                    }
+                }
+                current_parent = next_parent;
+            }
+        }
+
+        // Store statics in PendingClass for grandchildren to inherit
+        if let Some(pc) = self.pending_classes.get_mut(name) {
+            pc.statics = all_statics;
+        }
 
         let all_methods: Vec<(String, usize)> = method_chunks.iter().map(|(n, c, _, _)| (n.clone(), *c)).collect();
         let parent_str = parent.clone().unwrap_or_default();
@@ -2042,13 +2093,21 @@ impl Compiler {
                         ObjectProperty::Spread(expr) => {
                             // Object spread: merge properties from expr into current object
                             self.compile_expr(expr)?;
-                            let idx = self.import("vybe:collections", "objectMerge");
+                            let idx = self.import("vybe:object", "assign");
                             self.emit_host_call(idx, 2);
                         }
                         ObjectProperty::Method { key, value } => {
                             self.emit(Op::dup);
                             if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
-                                self.compile_lambda(params, &LambdaBody::Block(body.clone()))?;
+                                // Object methods receive `this` as implicit first arg
+                                let mut method_params = vec![Param {
+                                    name: self.profile.self_keyword.clone(),
+                                    type_hint: None, default: None,
+                                    pass_by: PassBy::Value, is_rest: false,
+                                    is_kwargs: false, is_optional: false, is_nullable: false,
+                                }];
+                                method_params.extend(params.iter().cloned());
+                                self.compile_lambda(&method_params, &LambdaBody::Block(body.clone()))?;
                             } else {
                                 self.emit(Op::null);
                             }
@@ -2059,7 +2118,15 @@ impl Compiler {
                         ObjectProperty::Accessor { kind, key, value } => {
                             self.emit(Op::dup);
                             if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
-                                self.compile_lambda(params, &LambdaBody::Block(body.clone()))?;
+                                // Accessors receive `this` as first arg
+                                let mut accessor_params = vec![Param {
+                                    name: self.profile.self_keyword.clone(),
+                                    type_hint: None, default: None,
+                                    pass_by: PassBy::Value, is_rest: false,
+                                    is_kwargs: false, is_optional: false, is_nullable: false,
+                                }];
+                                accessor_params.extend(params.iter().cloned());
+                                self.compile_lambda(&accessor_params, &LambdaBody::Block(body.clone()))?;
                             } else {
                                 self.emit(Op::null);
                             }
@@ -2244,8 +2311,7 @@ impl Compiler {
                     // Push element
                     self.emit_u16(Op::local_get, result_slot);
                     self.compile_expr(element)?;
-                    let push_idx = self.import("vybe:array", "push");
-                    self.emit_host_call(push_idx, 2);
+                    self.emit(Op::array_push);
                     self.emit(Op::drop);
 
                     if let Some(skip) = cond_skip { self.patch_jump(skip); }
@@ -2650,7 +2716,7 @@ impl Compiler {
         // ── Value method: obj.toUpperCase() ─────────────────────────
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             if let Some(def) = self.profile.lookup_value_method(field).cloned() {
-                // Object is first arg
+                // Object is first arg, then explicit args
                 self.compile_expr(object)?;
                 for a in &arg_exprs { self.compile_expr(a)?; }
                 match &def.emit {
@@ -2659,8 +2725,7 @@ impl Compiler {
                         self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
                     }
                     BuiltinEmit::Opcode(op_name) => {
-                        // Object already on stack. Just compile remaining args and emit opcode.
-                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        // Object + args already on stack from above
                         self.emit_named_opcode(op_name);
                     }
                     BuiltinEmit::StrLength => {
@@ -2714,21 +2779,16 @@ impl Compiler {
                         common::loops::emit_reduce(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, line);
                     }
                     "forEach" | "foreach" => {
-                        // forEach: iterate and call fn(elem, idx) for each, return undefined
-                        let (loop_start, exit_jump) = common::loops::emit_for_in_start(
-                            self.chunk(), arr_slot, idx_slot, line);
-                        let elem_slot = self.scope_mut().define("__fe_elem");
-                        self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
-                        self.emit_u16(Op::local_get, fn_slot);
-                        self.emit_u16(Op::local_get, elem_slot);
-                        self.emit_u16(Op::local_get, idx_slot);
-                        self.emit_u8(Op::call_ref, 2);
-                        self.emit(Op::drop);
-                        common::loops::emit_for_in_end(self.chunk(), idx_slot, loop_start, exit_jump, line);
-                        self.emit(Op::null);
+                        common::loops::emit_foreach(self.chunk(), fn_slot, arr_slot, idx_slot, line);
+                    }
+                    "some" => {
+                        common::loops::emit_any_every(self.chunk(), fn_slot, arr_slot, idx_slot, true, line);
+                    }
+                    "every" => {
+                        common::loops::emit_any_every(self.chunk(), fn_slot, arr_slot, idx_slot, false, line);
                     }
                     "find" => {
-                        // find: iterate, call fn(elem), return first truthy or null
+                        // find uses includes pattern but returns element not bool
                         self.emit(Op::null);
                         self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
                         let (loop_start, exit_jump) = common::loops::emit_for_in_start(
@@ -2742,7 +2802,6 @@ impl Compiler {
                         let skip = self.emit_jump(Op::br_if_false);
                         self.emit_u16(Op::local_get, elem_slot);
                         self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
-                        // break out of loop
                         let brk = self.emit_jump(Op::br);
                         self.patch_jump(skip);
                         common::loops::emit_for_in_end(self.chunk(), idx_slot, loop_start, exit_jump, line);
@@ -2750,29 +2809,20 @@ impl Compiler {
                         self.emit_u16(Op::local_get, result_slot);
                     }
                     "includes" => {
-                        // includes(val): iterate, check === each, return bool
-                        self.emit(Op::r#false);
-                        self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
-                        let (loop_start, exit_jump) = common::loops::emit_for_in_start(
-                            self.chunk(), arr_slot, idx_slot, line);
-                        // elem on stack from for_in_start
+                        // includes uses contains from compiler_common
+                        self.emit_u16(Op::local_get, arr_slot);
                         self.emit_u16(Op::local_get, fn_slot); // fn_slot holds the search value
-                        self.emit(Op::dyn_eq);
-                        let skip = self.emit_jump(Op::br_if_false);
-                        self.emit(Op::r#true);
-                        self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
-                        let brk = self.emit_jump(Op::br);
-                        self.patch_jump(skip);
-                        common::loops::emit_for_in_end(self.chunk(), idx_slot, loop_start, exit_jump, line);
-                        self.patch_jump(brk);
-                        self.emit_u16(Op::local_get, result_slot);
+                        common::collections::emit_contains(self.chunk(), line);
                     }
                     "sort" => {
-                        // sort with optional comparator — call host sort
-                        let sort_idx = self.import("vybe:array", "sort");
+                        // sorted from compiler_common (returns new sorted array)
                         self.emit_u16(Op::local_get, arr_slot);
-                        self.emit_u16(Op::local_get, fn_slot);
-                        self.emit_host_call(sort_idx, 2);
+                        common::collections::emit_sorted(self.chunk(), line);
+                    }
+                    "indexOf" | "indexof" => {
+                        self.emit_u16(Op::local_get, arr_slot);
+                        self.emit_u16(Op::local_get, fn_slot); // search value
+                        common::collections::emit_index_of(self.chunk(), line);
                     }
                     _ => {
                         // Fallback: call as regular method
@@ -2947,7 +2997,7 @@ impl Compiler {
             BinOp::Div => self.emit(Op::f64_div),
             BinOp::IDiv | BinOp::FloorDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
             BinOp::Mod => self.emit(Op::f64_mod),
-            BinOp::Pow => { let i = self.import("vybe:math", "pow"); self.emit_host_call(i, 2); }
+            BinOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             BinOp::Eq => self.emit(Op::dyn_eq),
             BinOp::NotEq => self.emit(Op::dyn_ne),
             BinOp::StrictEq => self.emit(Op::dyn_eq), // strict eq is same in our VM
@@ -2971,12 +3021,23 @@ impl Compiler {
             BinOp::UShr => self.emit(Op::i32_shr_u),
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In => {
-                let idx = self.import("vybe:collections", "setHas");
-                self.emit_host_call(idx, 2);
+                // `x in arr` → contains(arr, x). Stack has [x, arr], need [arr, x].
+                let tmp = self.scope_mut().define("__in_tmp");
+                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop); // save arr
+                let tmp2 = self.scope_mut().define("__in_val");
+                self.emit_u16(Op::local_set, tmp2); self.emit(Op::drop); // save x
+                self.emit_u16(Op::local_get, tmp);  // push arr
+                self.emit_u16(Op::local_get, tmp2); // push x
+                let l = self.line; common::collections::emit_contains(self.chunk(), l);
             }
             BinOp::NotIn => {
-                let idx = self.import("vybe:collections", "setHas");
-                self.emit_host_call(idx, 2);
+                let tmp = self.scope_mut().define("__notin_tmp");
+                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
+                let tmp2 = self.scope_mut().define("__notin_val");
+                self.emit_u16(Op::local_set, tmp2); self.emit(Op::drop);
+                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::local_get, tmp2);
+                let l = self.line; common::collections::emit_contains(self.chunk(), l);
                 self.emit(Op::dyn_not);
             }
             BinOp::InstanceOf => {
@@ -3015,7 +3076,7 @@ impl Compiler {
             CompoundOp::Div => self.emit(Op::f64_div),
             CompoundOp::IDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
             CompoundOp::Mod => self.emit(Op::f64_mod),
-            CompoundOp::Pow => { let i = self.import("vybe:math", "pow"); self.emit_host_call(i, 2); }
+            CompoundOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             CompoundOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             CompoundOp::BitAnd => self.emit(Op::i32_and),
             CompoundOp::BitOr => self.emit(Op::i32_or),
