@@ -3962,6 +3962,7 @@ impl VM {
         let arity = func.arity as usize;
         let base = self.stack.len() - argc - 1;
 
+
         // Arity validation: warn on mismatch but don't trap.
         // Dynamic languages (JS, Python, Ruby) rely on flexible arity.
         // WASM strict mode would trap here; we pad missing args with Null

@@ -1301,7 +1301,8 @@ impl Compiler {
         });
 
         // Compile methods (including constructor body)
-        let mut method_chunks: Vec<(String, usize, bool)> = Vec::new();
+        // (name, chunk_idx, is_ctor, is_static)
+        let mut method_chunks: Vec<(String, usize, bool, bool)> = Vec::new();
         let saved_class = self.current_class.take();
         self.current_class = Some(name.to_string());
 
@@ -1361,7 +1362,7 @@ impl Compiler {
                         self.current = saved;
 
                         let bound_name = self.canon(mname);
-                        method_chunks.push((bound_name, ci, is_ctor));
+                        method_chunks.push((bound_name, ci, is_ctor, modifiers.is_static));
                     }
                 }
                 ClassMember::Constructor { params, body, base_args, .. } => {
@@ -1406,7 +1407,7 @@ impl Compiler {
                     self.scopes.pop();
                     self.current = saved;
 
-                    method_chunks.push(("constructor".to_string(), ci, true));
+                    method_chunks.push(("constructor".to_string(), ci, true, false));
                 }
                 ClassMember::Property { name: pname, getter, setter, .. } => {
                     let pname_canon = self.canon(pname);
@@ -1448,7 +1449,7 @@ impl Compiler {
                         self.chunks[ci].local_count = locals;
                         self.scopes.pop();
                         self.current = saved;
-                        method_chunks.push((get_name, ci, false));
+                        method_chunks.push((get_name, ci, false, false));
                     }
 
                     // Setter → __set_<prop>
@@ -1484,7 +1485,7 @@ impl Compiler {
                         self.chunks[ci].local_count = locals;
                         self.scopes.pop();
                         self.current = saved;
-                        method_chunks.push((set_name, ci, false));
+                        method_chunks.push((set_name, ci, false, false));
                     }
                 }
                 ClassMember::Const { name: cname, value, .. } => {
@@ -1504,94 +1505,197 @@ impl Compiler {
 
         self.current_class = saved_class;
 
-        // Find constructor
-        let ctor = method_chunks.iter().find(|(_, _, is_ctor)| *is_ctor);
-        let user_arity = ctor.map(|(_, ci, _)| {
-            let a = self.chunks[*ci].arity;
-            if a > 0 { a - 1 } else { 0 }
-        }).unwrap_or(0);
+        // Find constructor body and its user arity
+        let ctor = method_chunks.iter().find(|(_, _, is_ctor, _)| *is_ctor);
+        let ctor_body: Option<(&Vec<Statement>, &Vec<Param>)> = members.iter().find_map(|m| {
+            match m {
+                ClassMember::Method(stmt) => {
+                    if let StmtKind::FunctionDecl { name: mname, params, body, modifiers, .. } = &stmt.kind {
+                        let is_ctor = mname.eq_ignore_ascii_case(&ctor_name)
+                            || modifiers.is_static && mname.eq_ignore_ascii_case("new");
+                        if is_ctor && !body.is_empty() { return Some((body, params)); }
+                    }
+                    None
+                }
+                ClassMember::Constructor { params, body, .. } => Some((body, params)),
+                _ => None,
+            }
+        });
 
-        // Build constructor wrapper
-        let wrapper_idx = self.chunks.len();
-        let wrapper = common::functions::create_function_chunk(&format!("{}_ctor", name), user_arity);
-        self.chunks.push(wrapper);
-        let line = self.line;
+        let user_params: Vec<String> = ctor_body.map(|(_, params)| {
+            if self.profile.explicit_self_param {
+                params.iter().skip(1).map(|p| p.name.clone()).collect()
+            } else {
+                params.iter().map(|p| p.name.clone()).collect()
+            }
+        }).unwrap_or_default();
+        let user_arity = user_params.len() as u8;
+
+        // ── Single constructor function (not split wrapper + body) ──────
+        // This is the ONLY function that `new ClassName(args)` calls.
+        // It creates the object, initializes fields, binds methods, runs
+        // user constructor body, and returns this.
+        let ctor_idx = self.chunks.len();
+        let ctor_chunk = common::functions::create_function_chunk(name, user_arity);
+        self.chunks.push(ctor_chunk);
+        self.scopes.push(Scope::new_function());
+        let saved_cur = self.current;
+        let saved_class2 = self.current_class.take();
+        self.current = ctor_idx;
+        self.current_class = Some(name.to_string());
+
+        // Define user params (slot 1..N), then this (slot N+1)
+        for p in &user_params { self.scope_mut().define(p); }
+        self.scope_mut().define(&self_kw); // this_slot = user_arity + 1
         let this_slot = (user_arity as u16) + 1;
-        self.chunks[wrapper_idx].local_count = this_slot + 1;
 
         let is_child = parent.is_some();
+        let line = self.line;
+
+        // Separate instance methods from static methods
+        let instance_methods: Vec<&(String, usize, bool, bool)> = method_chunks.iter()
+            .filter(|(_, _, ic, is_static)| !*ic && !*is_static)
+            .collect();
+        let static_methods: Vec<&(String, usize, bool, bool)> = method_chunks.iter()
+            .filter(|(_, _, ic, is_static)| !*ic && *is_static)
+            .collect();
+        let instance_method_names: Vec<String> = instance_methods.iter()
+            .map(|(n, _, _, _)| n.clone())
+            .collect();
+
         if is_child {
-            if let Some(parent_name) = parent {
-                let pidx = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from(parent_name.as_str())));
-                self.chunks[wrapper_idx].emit_op_u16(Op::global_get, pidx, line);
-                for i in 0..user_arity {
-                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+            // ── Child class ─────────────────────────────────────────────
+            // For child classes, the constructor body calls super() which
+            // creates the object. We run the body FIRST, then bind methods.
+            // This works for both explicit super (JS) and implicit (VB/C#)
+            // because super() stores the result in this_slot.
+
+            // Start with null this — super() will set it
+            self.emit(Op::null);
+            self.emit_u16(Op::local_set, this_slot);
+            self.emit(Op::drop);
+
+            // If no explicit constructor body, auto-call parent with user args
+            if ctor_body.is_none() {
+                if let Some(parent_name) = parent {
+                    let pname = self.canon(parent_name);
+                    let pidx = self.str_const(&pname);
+                    self.emit_u16(Op::global_get, pidx);
+                    for i in 0..user_arity {
+                        self.emit_u16(Op::local_get, (i as u16) + 1);
+                    }
+                    self.emit_u8(Op::call_ref, user_arity);
+                    self.emit_u16(Op::local_set, this_slot);
+                    self.emit(Op::drop);
                 }
-                self.chunks[wrapper_idx].emit_op_u8(Op::call_ref, user_arity as u8, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_set, this_slot, line);
             } else {
-                self.chunks[wrapper_idx].emit_op(Op::null, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_set, this_slot, line);
+                // Run constructor body — super() inside sets this_slot
+                let (body, _) = ctor_body.unwrap();
+                for s in body { self.compile_stmt(s)?; }
             }
-            if let Some((_, init_ci, _)) = ctor {
-                common::functions::emit_ref_func(&mut self.chunks[wrapper_idx], *init_ci, 0, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
-                for i in 0..user_arity {
-                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+
+            // After super() ran, save base methods that child will override
+            if let Some(parent_name) = parent {
+                let pname = self.canon(parent_name);
+                let child_refs: Vec<&str> = instance_method_names.iter().map(|s| s.as_str()).collect();
+                for method_name in &child_refs {
+                    common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
                 }
-                self.chunks[wrapper_idx].emit_op_u8(Op::call_ref, (user_arity + 1) as u8, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_set, this_slot, line);
+                common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
             }
-            for (mname, mci, is_ctor) in &method_chunks {
-                if *is_ctor { continue; }
-                common::classes::emit_bind_method_with_aliases(&mut self.chunks[wrapper_idx], this_slot, mname, *mci, line);
-            }
-            common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, name, line);
-            self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
-            let ts = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from(name)));
-            let tk = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from("__type")));
-            self.chunks[wrapper_idx].emit_op_u16(Op::r#const, ts, line);
-            self.chunks[wrapper_idx].emit_op_u16(Op::struct_set, tk, line);
-            self.chunks[wrapper_idx].emit_op(Op::drop, line);
-        } else {
-            common::classes::emit_new_typed_object(&mut self.chunks[wrapper_idx], this_slot, name, line);
+
+            // Initialize child's own fields
             for (fname, init) in &field_inits {
                 if let Some(init_expr) = init {
-                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
-                    let saved_cur = self.current;
-                    self.current = wrapper_idx;
+                    self.emit_u16(Op::local_get, this_slot);
                     self.compile_expr(init_expr)?;
-                    self.current = saved_cur;
-                    let fk = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from(fname.as_str())));
-                    self.chunks[wrapper_idx].emit_op_u16(Op::struct_set, fk, line);
-                    self.chunks[wrapper_idx].emit_op(Op::drop, line);
+                    let fk = self.str_const(fname);
+                    self.emit_u16(Op::struct_set, fk);
+                    self.emit(Op::drop);
                 } else {
-                    common::classes::emit_init_field_null(&mut self.chunks[wrapper_idx], this_slot, fname, line);
+                    common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
                 }
             }
-            for (mname, mci, is_ctor) in &method_chunks {
-                if *is_ctor { continue; }
-                common::classes::emit_bind_method_with_aliases(&mut self.chunks[wrapper_idx], this_slot, mname, *mci, line);
-            }
-            if let Some((_, init_ci, _)) = ctor {
-                common::functions::emit_ref_func(&mut self.chunks[wrapper_idx], *init_ci, 0, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
-                for i in 0..user_arity {
-                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+
+            // Bind child methods (overwrite parent's)
+            for (mname, mci, _, _) in &instance_methods {
+                if mname.starts_with("__get_") {
+                    let prop = mname.strip_prefix("__get_").unwrap_or(mname);
+                    common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
+                } else if mname.starts_with("__set_") {
+                    let prop = mname.strip_prefix("__set_").unwrap_or(mname);
+                    common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
+                } else {
+                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
                 }
-                self.chunks[wrapper_idx].emit_op_u8(Op::call_ref, (user_arity + 1) as u8, line);
-                self.chunks[wrapper_idx].emit_op(Op::drop, line);
             }
-            common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, name, line);
+        } else {
+            // ── Base class ──────────────────────────────────────────────
+            common::classes::emit_new_typed_object(self.chunk(), this_slot, name, line);
+
+            // Initialize fields
+            for (fname, init) in &field_inits {
+                if let Some(init_expr) = init {
+                    self.emit_u16(Op::local_get, this_slot);
+                    self.compile_expr(init_expr)?;
+                    let fk = self.str_const(fname);
+                    self.emit_u16(Op::struct_set, fk);
+                    self.emit(Op::drop);
+                } else {
+                    common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
+                }
+            }
+
+            // Bind instance methods
+            for (mname, mci, _, _) in &instance_methods {
+                if mname.starts_with("__get_") {
+                    let prop = mname.strip_prefix("__get_").unwrap_or(mname);
+                    common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
+                } else if mname.starts_with("__set_") {
+                    let prop = mname.strip_prefix("__set_").unwrap_or(mname);
+                    common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
+                } else {
+                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                }
+            }
+
+            // Run user constructor body
+            if let Some((body, _)) = ctor_body {
+                for s in body { self.compile_stmt(s)?; }
+            }
         }
-        common::classes::emit_constructor_return(&mut self.chunks[wrapper_idx], this_slot, line);
 
+        // Check for auto InitializeComponent (.NET pattern)
+        let has_init_component = instance_methods.iter()
+            .any(|(n, _, _, _)| n.eq_ignore_ascii_case("initializecomponent"));
+        let has_explicit_ctor = ctor_body.is_some();
+        if has_init_component && !has_explicit_ctor {
+            common::classes::emit_auto_init_component(self.chunk(), this_slot, line);
+        }
+
+        // Finalize: instanceof chain
+        common::classes::emit_instanceof_chain(self.chunk(), this_slot, name, line);
+        common::classes::emit_constructor_return(self.chunk(), this_slot, line);
+
+        let locals = self.scope().next_slot;
+        self.chunks[ctor_idx].local_count = locals;
+        self.scopes.pop();
+        self.current = saved_cur;
+        self.current_class = saved_class2;
+
+        // Store constructor globally and register type
         let ctor_local = self.scope_mut().define(&format!("__{}_ctor", name));
-        common::classes::emit_store_constructor(&mut self.chunks[self.current], name, wrapper_idx, ctor_local, line);
+        common::classes::emit_store_constructor(self.chunk(), name, ctor_idx, ctor_local, line);
 
-        let all_methods: Vec<(String, usize)> = method_chunks.iter().map(|(n, c, _)| (n.clone(), *c)).collect();
+        // Attach static methods to the constructor object
+        for (mname, mci, _, _) in &static_methods {
+            common::classes::emit_attach_static_method(self.chunk(), ctor_local, mname, *mci, line);
+        }
+
+
+        let all_methods: Vec<(String, usize)> = method_chunks.iter().map(|(n, c, _, _)| (n.clone(), *c)).collect();
         let parent_str = parent.clone().unwrap_or_default();
-        common::classes::register_type(&mut self.chunks, name, &parent_str, fields, all_methods, false, Vec::new(), Some(wrapper_idx));
+        common::classes::register_type(&mut self.chunks, name, &parent_str, fields, all_methods, false, Vec::new(), Some(ctor_idx));
 
         Ok(())
     }
@@ -1654,7 +1758,19 @@ impl Compiler {
             }
 
             ExprKind::Super => {
-                self.emit(Op::null); // TODO: super reference
+                // super refers to the parent class constructor.
+                // Look up the parent from the current class's PendingClass info.
+                if let Some(ref class_name) = self.current_class.clone() {
+                    if let Some(parent_name) = self.pending_classes.get(class_name.as_str()).and_then(|pc| pc.parent.clone()) {
+                        let pname = self.canon(&parent_name);
+                        let idx = self.str_const(&pname);
+                        self.emit_u16(Op::global_get, idx);
+                    } else {
+                        self.emit(Op::null);
+                    }
+                } else {
+                    self.emit(Op::null);
+                }
             }
 
             // ── Binary ──────────────────────────────────────────────────
@@ -2048,20 +2164,42 @@ impl Compiler {
 
             // ── SuperCall (VB/Python) ───────────────────────────────────
             ExprKind::SuperCall { method, args } => {
-                if let Some(ref class_name) = self.current_class.clone() {
-                    let parent = self.pending_classes.get(class_name.as_str()).and_then(|c| c.parent.clone());
-                    if let Some(parent_name) = parent {
-                        let parent_idx = self.str_const(&parent_name);
-                        self.emit_u16(Op::global_get, parent_idx);
-                        for a in args { self.compile_expr(&a.value)?; }
-                        self.emit_u8(Op::call_ref, args.len() as u8);
-                        // Store result in self slot
-                        let self_kw = self.profile.self_keyword.clone();
-                        if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
-                            self.emit(Op::dup);
-                            self.emit_u16(Op::local_set, slot);
-                            self.emit(Op::drop);
+                let self_kw = self.profile.self_keyword.clone();
+                let ctor_name = self.profile.constructor_name.clone();
+                let is_ctor_call = method.is_none() || method.as_ref().map_or(false, |m|
+                    m.eq_ignore_ascii_case(&ctor_name) || m.eq_ignore_ascii_case("new") || m.eq_ignore_ascii_case("__init__")
+                );
+
+                if is_ctor_call {
+                    // super() / MyBase.New(args) → call parent constructor
+                    if let Some(ref class_name) = self.current_class.clone() {
+                        if let Some(parent_name) = self.pending_classes.get(class_name.as_str()).and_then(|c| c.parent.clone()) {
+                            let pname = self.canon(&parent_name);
+                            let pidx = self.str_const(&pname);
+                            self.emit_u16(Op::global_get, pidx);
+                            for a in args { self.compile_expr(&a.value)?; }
+                            self.emit_u8(Op::call_ref, args.len() as u8);
+                            if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                                self.emit(Op::dup);
+                                self.emit_u16(Op::local_set, slot);
+                                self.emit(Op::drop);
+                            }
+                        } else {
+                            self.emit(Op::null);
                         }
+                    } else {
+                        self.emit(Op::null);
+                    }
+                } else if let Some(ref mname) = method {
+                    // MyBase.Method(args) → this.__base_method(this, args)
+                    let base_name = format!("__base_{}", self.canon(mname));
+                    if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                        let prop = self.str_const(&base_name);
+                        self.emit_u16(Op::local_get, self_slot);
+                        self.emit_u16(Op::struct_get, prop);
+                        self.emit_u16(Op::local_get, self_slot);
+                        for a in args { self.compile_expr(&a.value)?; }
+                        self.emit_u8(Op::call_ref, (args.len() + 1) as u8);
                     } else {
                         self.emit(Op::null);
                     }
@@ -2260,6 +2398,48 @@ impl Compiler {
 
     fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
+
+        // ── super(args) → call parent constructor, store result as this ──
+        if let ExprKind::Super = &callee.kind {
+            if let Some(ref class_name) = self.current_class.clone() {
+                if let Some(parent_name) = self.pending_classes.get(class_name.as_str()).and_then(|pc| pc.parent.clone()) {
+                    let pname = self.canon(&parent_name);
+                    let pidx = self.str_const(&pname);
+                    self.emit_u16(Op::global_get, pidx);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::call_ref, arg_exprs.len() as u8);
+                    // Store result as this
+                    let self_kw = self.profile.self_keyword.clone();
+                    if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                        self.emit(Op::dup);
+                        self.emit_u16(Op::local_set, slot);
+                        self.emit(Op::drop);
+                    }
+                    return Ok(());
+                }
+            }
+            // No parent — emit null
+            self.emit(Op::null);
+            return Ok(());
+        }
+
+        // ── super.method(args) → this.__base_method(args) ────────────
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if matches!(&object.kind, ExprKind::Super) {
+                let base_name = format!("__base_{}", self.canon(field));
+                let self_kw = self.profile.self_keyword.clone();
+                if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                    let prop = self.str_const(&base_name);
+                    self.emit_u16(Op::local_get, self_slot);
+                    self.emit_u16(Op::struct_get, prop);
+                    // Call with this as first arg
+                    self.emit_u16(Op::local_get, self_slot);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
+                    return Ok(());
+                }
+            }
+        }
 
         // ── Builtin check: Ident("print") ───────────────────────────
         if let ExprKind::Ident(name) = &callee.kind {

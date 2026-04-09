@@ -220,6 +220,31 @@ pub fn emit_cross_language_aliases(chunk: &mut Chunk, this_slot: u16, method_nam
     }
 }
 
+// ── Super call (cross-language) ────────────────────────────────────────
+
+/// After calling the parent constructor (result on TOS), store it as `this` and
+/// save any parent methods that the child will override.
+///
+/// The compiler handles the actual call: global_get(parent) → push args → call_ref(argc).
+/// This helper stores the result and prepares for child method override.
+///
+/// Stack before: [parent_return_value]  Stack after: []
+pub fn emit_super_call_store_result(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    child_method_names: &[&str],
+    line: u32,
+) {
+    // Store parent-created object as this
+    chunk.emit_op_u16(Op::local_set, this_slot, line);
+    chunk.emit_op(Op::drop, line);
+
+    // Save parent's methods that child will override (for super.method() calls)
+    for method_name in child_method_names {
+        emit_save_base_method(chunk, this_slot, method_name, line);
+    }
+}
+
 // ── Inheritance ─────────────────────────────────────────────────────────
 
 /// Save parent's version of a method as __base_<name> before child override.
@@ -407,6 +432,8 @@ pub fn register_class_with_interfaces(
 ) {
     register_type(chunks, name, parent, fields, methods, false, implements, constructor_chunk);
 }
+
+// ── Super call (cross-language) ────────────────────────────────────────
 
 // ── .NET default constructor: auto-call InitializeComponent ─────────────
 

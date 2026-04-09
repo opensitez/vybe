@@ -873,15 +873,38 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // Call / member / index chain
         Rule::call_expression => walk_call_chain(pair),
         Rule::new_expression => {
+            // new_expression = { "new" ~ primary ~ call_chain* }
+            // Walk inner pairs: first is the class name (primary), rest are call_chain
             let mut inner = pair.into_inner();
-            let callee = walk_expression(inner.next().ok_or("Empty new")?)?;
-            // new_expression wraps call_expression, which may have parsed args
-            match callee.kind {
-                ExprKind::Call { callee: inner_callee, args, .. } => {
-                    Ok(ExprKind::New { class: inner_callee, args })
+            let first = inner.next().ok_or("Empty new")?;
+            let mut expr = walk_expression(first)?;
+
+            // Process call_chain pairs (just like walk_call_chain does)
+            for chain in inner {
+                if chain.as_rule() != Rule::call_chain { continue; }
+                let chain_src = chain.as_str();
+                let chain_inner: Vec<Pair<Rule>> = chain.into_inner().collect();
+
+                if chain_src.starts_with("(") {
+                    // Constructor args: new Foo(42) → the (42) is a call_chain
+                    let args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
+                        walk_arguments(arg_pair)?
+                    } else { Vec::new() };
+                    // Return as New with these args
+                    return Ok(ExprKind::New { class: Box::new(expr), args });
+                } else if chain_src.starts_with(".") {
+                    // Member access: new Foo.Bar(42)
+                    let name = chain_inner.into_iter()
+                        .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name)
+                        .map(|p| p.as_str().to_string())
+                        .unwrap_or_default();
+                    expr = Expression::new(ExprKind::Member {
+                        object: Box::new(expr), field: name, null_safe: false,
+                    });
                 }
-                _ => Ok(ExprKind::New { class: Box::new(callee), args: Vec::new() }),
             }
+            // No call_chain with args → new Foo (no parens)
+            Ok(ExprKind::New { class: Box::new(expr), args: Vec::new() })
         }
 
         // Primary
