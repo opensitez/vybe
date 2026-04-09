@@ -2,6 +2,10 @@
 # ───────────────────────────────────
 # Full port of vybe_compiler_vb builtins.rs (900 lines) + compiler settings
 
+[info]
+name = "vb"
+extensions = ["vb"]
+
 [compiler]
 function_return = "result_slot"        # VB uses FunctionName = value AND Return
 self_keyword = "me"

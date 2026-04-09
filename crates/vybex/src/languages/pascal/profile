@@ -3,6 +3,10 @@
 # Full port of vybe_compiler_pascal builtins — I/O, math, string, type,
 # array, conversion, and object lifecycle functions.
 
+[info]
+name = "pascal"
+extensions = ["pas", "pp", "dpr", "lpr"]
+
 [compiler]
 function_return = "result_slot"        # Pascal uses Result := value
 self_keyword = "self"

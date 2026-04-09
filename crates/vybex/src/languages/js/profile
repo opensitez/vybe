@@ -3,6 +3,10 @@
 # Full port of vybe_compiler_js (3624 lines) — builtins, module aliases,
 # value methods, namespace intrinsics, constructors
 
+[info]
+name = "js"
+extensions = ["js", "mjs"]
+
 [compiler]
 function_return = "explicit"
 self_keyword = "this"
