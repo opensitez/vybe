@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Value, Op};
 use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::convert as common_convert;
@@ -582,7 +582,7 @@ impl Compiler {
                     if args.len() >= 2 {
                         self.compile_expression(&args[1])?;
                     } else {
-                        self.emit_constant(Value::String(Rc::from(" ")));
+                        self.emit_constant(Value::String(Arc::from(" ")));
                     }
                     common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
@@ -623,7 +623,7 @@ impl Compiler {
             // Space(n) → str_repeat(" ", n)
             "space" | "space$" | "spc" => {
                 if args.len() == 1 {
-                    self.emit_constant(Value::String(Rc::from(" ")));
+                    self.emit_constant(Value::String(Arc::from(" ")));
                     self.compile_expression(&args[0])?;
                     common_strings::emit_repeat(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
@@ -636,7 +636,7 @@ impl Compiler {
                     if args.len() >= 2 {
                         self.compile_expression(&args[1])?;
                     } else {
-                        self.emit_constant(Value::String(Rc::from(" ")));
+                        self.emit_constant(Value::String(Arc::from(" ")));
                     }
                     common_collections::emit_join(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
@@ -731,7 +731,7 @@ impl Compiler {
                 }
                 // Space(n) → str_repeat(" ", n)
                 "space" | "space$" | "spc" => {
-                    self.emit_constant(Value::String(Rc::from(" ")));
+                    self.emit_constant(Value::String(Arc::from(" ")));
                     self.compile_expression(&args[0])?;
                     common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     common_strings::emit_repeat(&mut self.chunks[self.current_chunk_idx], self.line);

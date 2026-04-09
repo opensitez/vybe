@@ -8,7 +8,7 @@
 //! - Same scope/local tracking via Scope
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use vybe_bytecode::{Chunk, Op, Value};
 use vybe_compiler_common as common;
@@ -264,7 +264,7 @@ impl Compiler {
     }
 
     fn add_string_constant(&mut self, s: &str) -> u16 {
-        self.chunks[self.current_chunk_idx].add_constant(Value::String(Rc::from(s)))
+        self.chunks[self.current_chunk_idx].add_constant(Value::String(Arc::from(s)))
     }
 
     fn emit_host_call(&mut self, import_idx: u16, argc: u8) {
@@ -438,7 +438,7 @@ impl Compiler {
         self.emit_u16(Op::struct_new, 0);
         let name_idx = self.add_string_constant("__interface_name");
         self.emit(Op::dup);
-        self.emit_constant(Value::String(Rc::from(iface.name.as_str())));
+        self.emit_constant(Value::String(Arc::from(iface.name.as_str())));
         self.emit_u16(Op::struct_set, name_idx);
         self.emit(Op::drop);
         self.emit_global_set(&iface.name.to_lowercase());
@@ -597,17 +597,17 @@ impl Compiler {
         // For Form types, set up GUI properties on this
         if is_form_type {
             self.emit_u16(Op::local_get, this_slot);
-            self.emit_constant(Value::String(Rc::from(name.to_lowercase().as_str())));
+            self.emit_constant(Value::String(Arc::from(name.to_lowercase().as_str())));
             let name_idx = self.add_string_constant("__control_name");
             self.emit_u16(Op::struct_set, name_idx);
             self.emit(Op::drop);
             self.emit_u16(Op::local_get, this_slot);
-            self.emit_constant(Value::String(Rc::from("Form")));
+            self.emit_constant(Value::String(Arc::from("Form")));
             let type_idx = self.add_string_constant("__control_type");
             self.emit_u16(Op::struct_set, type_idx);
             self.emit(Op::drop);
             self.emit_u16(Op::local_get, this_slot);
-            self.emit_constant(Value::String(Rc::from(name.as_str())));
+            self.emit_constant(Value::String(Arc::from(name.as_str())));
             let text_idx = self.add_string_constant("name");
             self.emit_u16(Op::struct_set, text_idx);
             self.emit(Op::drop);
@@ -725,7 +725,7 @@ impl Compiler {
             self.emit(Op::set_type_id);
             // Update __type string
             self.emit_u16(Op::local_get, this_slot);
-            self.emit_constant(Value::String(Rc::from(name.as_str())));
+            self.emit_constant(Value::String(Arc::from(name.as_str())));
             let type_key = self.add_string_constant("__type");
             self.emit_u16(Op::struct_set, type_key);
             self.emit(Op::drop);
@@ -1392,7 +1392,7 @@ impl Compiler {
                             Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
                         }
                     };
-                    self.emit_constant(Value::String(Rc::from(cap_prop.as_str())));
+                    self.emit_constant(Value::String(Arc::from(cap_prop.as_str())));
                     self.emit_u16(Op::local_get, tmp);
                     let set_idx = self.import("vybe:gui", "controlSetProperty");
                     self.emit_host_call(set_idx, 3);
@@ -1439,7 +1439,7 @@ impl Compiler {
                     let name_idx = self.add_string_constant("name");
                     self.emit_u16(Op::struct_get, name_idx);
                     // Event name
-                    self.emit_constant(Value::String(Rc::from(event_name.as_str())));
+                    self.emit_constant(Value::String(Arc::from(event_name.as_str())));
                     // Handler
                     self.compile_expression(value)?;
                     let idx = self.import("vybe:gui", "onEvent");
@@ -1636,10 +1636,10 @@ impl Compiler {
                 }
             }
             Expression::StringLiteral(s) => {
-                self.emit_constant(Value::String(Rc::from(s.as_str())));
+                self.emit_constant(Value::String(Arc::from(s.as_str())));
             }
             Expression::CharLiteral(c) => {
-                self.emit_constant(Value::String(Rc::from(c.to_string().as_str())));
+                self.emit_constant(Value::String(Arc::from(c.to_string().as_str())));
             }
             Expression::BoolLiteral(b) => {
                 self.emit(if *b { Op::r#true } else { Op::r#false });
@@ -1777,7 +1777,7 @@ impl Compiler {
                 self.compile_expression(inner)?;
             }
             Expression::TypeOf(type_name) => {
-                self.emit_constant(Value::String(Rc::from(type_name.as_str())));
+                self.emit_constant(Value::String(Arc::from(type_name.as_str())));
             }
 
             // -- Ternary --
@@ -1816,7 +1816,7 @@ impl Compiler {
 
             // -- NameOf --
             Expression::NameOf(name) => {
-                self.emit_constant(Value::String(Rc::from(name.as_str())));
+                self.emit_constant(Value::String(Arc::from(name.as_str())));
             }
 
             // -- Default --
@@ -2020,7 +2020,7 @@ impl Compiler {
                 // Actually, member access alone isn't callable — it gets used in Call
                 // Just push as a global reference
                 let full = parts.join(".");
-                self.emit_constant(Value::String(Rc::from(full.as_str())));
+                self.emit_constant(Value::String(Arc::from(full.as_str())));
                 let _ = math_op;
                 return Ok(());
             }
@@ -2030,7 +2030,7 @@ impl Compiler {
             if let Some((module, func)) = self.resolve_interface_call(&parts_refs) {
                 // It's a known namespace function reference
                 let full = format!("{}:{}", module, func);
-                self.emit_constant(Value::String(Rc::from(full.as_str())));
+                self.emit_constant(Value::String(Arc::from(full.as_str())));
                 return Ok(());
             }
         }
@@ -2761,7 +2761,7 @@ impl Compiler {
 
         // Try runtime callMethod dispatch (handles List, Map, Set, Dict, Queue, Stack)
         self.compile_expression(obj)?;
-        self.emit_constant(Value::String(Rc::from(method)));
+        self.emit_constant(Value::String(Arc::from(method)));
         for arg in args { self.compile_expression(arg)?; }
         let cm_idx = self.import("vybe:runtime", "callMethod");
         self.emit_host_call(cm_idx, (args.len() + 2) as u8);
@@ -2834,7 +2834,7 @@ impl Compiler {
             if let Some(msg_arg) = args.first() {
                 self.compile_expression(msg_arg)?;
             } else {
-                self.emit_constant(Value::String(Rc::from("")));
+                self.emit_constant(Value::String(Arc::from("")));
             }
             let msg_idx = self.add_string_constant("message");
             self.emit_u16(Op::struct_set, msg_idx);

@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_parser_php::ast::*;
 use vybe_compiler_common as common;
@@ -73,7 +73,7 @@ impl Compiler {
     }
 
     fn add_string_constant(&mut self, s: &str) -> u16 {
-        self.chunks[self.current_chunk_idx].add_constant(Value::String(Rc::from(s)))
+        self.chunks[self.current_chunk_idx].add_constant(Value::String(Arc::from(s)))
     }
 
     fn current_offset(&self) -> usize {
@@ -505,7 +505,7 @@ impl Compiler {
                 self.emit_constant(Value::F64(*n));
             }
             Expression::Str(s) => {
-                self.emit_constant(Value::String(Rc::from(s.as_str())));
+                self.emit_constant(Value::String(Arc::from(s.as_str())));
             }
             Expression::Bool(b) => {
                 if *b { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
@@ -523,7 +523,7 @@ impl Compiler {
             Expression::Identifier(name) => {
                 let lower = name.to_lowercase();
                 match lower.as_str() {
-                    "php_eol" => { self.emit_constant(Value::String(Rc::from("\n"))); }
+                    "php_eol" => { self.emit_constant(Value::String(Arc::from("\n"))); }
                     "php_int_max" => { self.emit_constant(Value::F64(i64::MAX as f64)); }
                     "php_int_min" => { self.emit_constant(Value::F64(i64::MIN as f64)); }
                     "m_pi" | "m_pi_value" => { self.emit_constant(Value::F64(std::f64::consts::PI)); }
@@ -946,7 +946,7 @@ impl Compiler {
                         Some(Expression::Number(n)) => n.to_string(),
                         _ => i.to_string(),
                     };
-                    self.emit_constant(Value::String(Rc::from(key.as_str())));
+                    self.emit_constant(Value::String(Arc::from(key.as_str())));
                     self.emit(Op::array_get);
                     match &elem.value {
                         Expression::Variable(name) => { self.emit_var_set(name); }
@@ -1147,7 +1147,7 @@ impl Compiler {
                         "isSuspended" => "suspended",
                         _ => "unknown",
                     };
-                    self.emit_constant(Value::String(Rc::from(expected)));
+                    self.emit_constant(Value::String(Arc::from(expected)));
                     self.emit(Op::dyn_eq);
                     return Ok(());
                 }
@@ -1380,21 +1380,21 @@ impl Compiler {
                 // $pdo->beginTransaction / commit / rollBack
                 "beginTransaction" | "begintransaction" => {
                     self.compile_expression(object)?;
-                    self.emit_constant(Value::String(Rc::from("BEGIN")));
+                    self.emit_constant(Value::String(Arc::from("BEGIN")));
                     let idx = self.import("vybe:database", "execute");
                     self.emit_host_call(idx, 2);
                     return Ok(());
                 }
                 "commit" => {
                     self.compile_expression(object)?;
-                    self.emit_constant(Value::String(Rc::from("COMMIT")));
+                    self.emit_constant(Value::String(Arc::from("COMMIT")));
                     let idx = self.import("vybe:database", "execute");
                     self.emit_host_call(idx, 2);
                     return Ok(());
                 }
                 "rollBack" | "rollback" => {
                     self.compile_expression(object)?;
-                    self.emit_constant(Value::String(Rc::from("ROLLBACK")));
+                    self.emit_constant(Value::String(Arc::from("ROLLBACK")));
                     let idx = self.import("vybe:database", "execute");
                     self.emit_host_call(idx, 2);
                     return Ok(());
@@ -1586,8 +1586,8 @@ impl Compiler {
             "nl2br" => {
                 // str_replace("\n", "<br />\n", $str) — inline using str_replace opcode
                 compile_args!(); // subject on stack
-                self.emit_constant(Value::String(Rc::from("\n")));
-                self.emit_constant(Value::String(Rc::from("<br />\n")));
+                self.emit_constant(Value::String(Arc::from("\n")));
+                self.emit_constant(Value::String(Arc::from("<br />\n")));
                 common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
@@ -1595,8 +1595,8 @@ impl Compiler {
                 // Chain of str_replace: & → &amp; < → &lt; > → &gt; " → &quot;
                 compile_args!();
                 for (from, to) in &[("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("\"", "&quot;")] {
-                    self.emit_constant(Value::String(Rc::from(*from)));
-                    self.emit_constant(Value::String(Rc::from(*to)));
+                    self.emit_constant(Value::String(Arc::from(*from)));
+                    self.emit_constant(Value::String(Arc::from(*to)));
                     common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 }
                 return Ok(Some(()));
@@ -2028,8 +2028,8 @@ impl Compiler {
             // ── Environment / CLI (existing wasi:cli host) ──
             "getenv" => { compile_args!(); let i = self.import("wasi:cli", "getEnv"); self.emit_host_call(i, 1); return Ok(Some(())); }
             "php_uname" => { let i = self.import("wasi:cli", "platform"); self.emit_host_call(i, 0); return Ok(Some(())); }
-            "php_sapi_name" => { self.emit_constant(Value::String(Rc::from("vybe"))); return Ok(Some(())); }
-            "phpversion" => { self.emit_constant(Value::String(Rc::from("8.3.0"))); return Ok(Some(())); }
+            "php_sapi_name" => { self.emit_constant(Value::String(Arc::from("vybe"))); return Ok(Some(())); }
+            "phpversion" => { self.emit_constant(Value::String(Arc::from("8.3.0"))); return Ok(Some(())); }
             "getcwd" => { let i = self.import("wasi:cli", "cwd"); self.emit_host_call(i, 0); return Ok(Some(())); }
             "gethostname" => { let i = self.import("wasi:cli", "machineName"); self.emit_host_call(i, 0); return Ok(Some(())); }
 
@@ -2084,7 +2084,7 @@ impl Compiler {
                 let i = self.import("wasi:filesystem", "readFile");
                 self.emit_host_call(i, 1);
                 // Split by newline
-                self.emit_constant(Value::String(Rc::from("\n")));
+                self.emit_constant(Value::String(Arc::from("\n")));
                 common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
@@ -2185,7 +2185,7 @@ impl Compiler {
             "readline" | "fgets_stdin" => { let i = self.import("wasi:cli", "readLine"); self.emit_host_call(i, 0); return Ok(Some(())); }
             "error_log" => { compile_args!(); let i = self.import("wasi:cli", "error"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
             "trigger_error" => { compile_args!(); let i = self.import("wasi:cli", "warn"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
-            "php_info" => { self.emit_constant(Value::String(Rc::from("Vybe PHP 8.3 on WASM VM"))); let line = self.line; common::io::emit_print(&mut self.chunks[c], 1, line); return Ok(Some(())); }
+            "php_info" => { self.emit_constant(Value::String(Arc::from("Vybe PHP 8.3 on WASM VM"))); let line = self.line; common::io::emit_print(&mut self.chunks[c], 1, line); return Ok(Some(())); }
             "get_current_user" => { let i = self.import("wasi:cli", "userName"); self.emit_host_call(i, 0); return Ok(Some(())); }
 
             // ── File handles (same host as VB Open/Print/Input/Close) ──
@@ -2345,7 +2345,7 @@ impl Compiler {
                 if !args.is_empty() {
                     self.compile_expression(&args[0].value)?;
                 } else {
-                    self.emit_constant(Value::String(Rc::from("")));
+                    self.emit_constant(Value::String(Arc::from("")));
                 }
                 self.emit_u16(Op::local_set, msg_slot);
                 let line = self.line;
@@ -2381,7 +2381,7 @@ impl Compiler {
             }
             // new StringBuilder → same as VB/C# StringBuilder
             if name == "StringBuilder" {
-                if !args.is_empty() { self.compile_expression(&args[0].value)?; } else { self.emit_constant(Value::String(Rc::from(""))); }
+                if !args.is_empty() { self.compile_expression(&args[0].value)?; } else { self.emit_constant(Value::String(Arc::from(""))); }
                 let i = self.import("vybe:types", "stringBuilderNew");
                 self.emit_host_call(i, 1);
                 return Ok(());
@@ -2590,7 +2590,7 @@ impl Compiler {
             let line = self.line;
             let trait_lower = trait_name.to_lowercase();
             // Get trait constructor, call with 0 args to get prototype with bound methods
-            let trait_c = self.chunks[ctor_idx].add_constant(Value::String(Rc::from(trait_lower.as_str())));
+            let trait_c = self.chunks[ctor_idx].add_constant(Value::String(Arc::from(trait_lower.as_str())));
             self.chunks[ctor_idx].emit_op_u16(Op::global_get, trait_c, line);
             self.chunks[ctor_idx].emit_op_u8(Op::call_ref, 0, line);
             // assign(this, traitPrototype) — copies all methods onto this
@@ -2718,7 +2718,7 @@ impl Compiler {
             common::dict::emit_new(&mut self.chunks[c], line);
             // name property
             self.emit(Op::dup);
-            self.emit_constant(Value::String(Rc::from(const_name.as_str())));
+            self.emit_constant(Value::String(Arc::from(const_name.as_str())));
             let name_key = self.add_string_constant("name");
             self.emit_u16(Op::struct_set, name_key);
             self.emit(Op::drop);
@@ -2730,7 +2730,7 @@ impl Compiler {
             self.emit(Op::drop);
             // __type property for instanceof
             self.emit(Op::dup);
-            self.emit_constant(Value::String(Rc::from(class_name.as_str())));
+            self.emit_constant(Value::String(Arc::from(class_name.as_str())));
             let type_key = self.add_string_constant("__type");
             self.emit_u16(Op::struct_set, type_key);
             self.emit(Op::drop);

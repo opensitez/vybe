@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_compiler_common::classes as common_classes;
@@ -120,7 +120,7 @@ impl Compiler {
         self.chunks[self.current_chunk_idx].emit_loop(target, line);
     }
     fn add_string_constant(&mut self, s: &str) -> u16 {
-        self.chunks[self.current_chunk_idx].add_constant(Value::String(Rc::from(s)))
+        self.chunks[self.current_chunk_idx].add_constant(Value::String(Arc::from(s)))
     }
     fn import(&mut self, module: &str, name: &str) -> u16 {
         self.chunks[0].add_import(module, name)
@@ -327,7 +327,7 @@ impl Compiler {
                 if let Some(a) = args.first() {
                     self.compile_expression(&a.value)?;
                 } else {
-                    self.emit_constant(Value::String(Rc::from(",")));
+                    self.emit_constant(Value::String(Arc::from(",")));
                 }
                 common_collections::emit_join(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(Some(()))
@@ -522,7 +522,7 @@ impl Compiler {
 
             // Set __type
             self.emit_u16(Op::local_get, slot);
-            self.emit_constant(Value::String(Rc::from(enum_name.as_str())));
+            self.emit_constant(Value::String(Arc::from(enum_name.as_str())));
             let type_idx = self.add_string_constant("__type");
             self.emit_u16(Op::struct_set, type_idx);
             self.emit(Op::drop);
@@ -536,7 +536,7 @@ impl Compiler {
 
             // Set name
             self.emit_u16(Op::local_get, slot);
-            self.emit_constant(Value::String(Rc::from(val.as_str())));
+            self.emit_constant(Value::String(Arc::from(val.as_str())));
             let name_idx = self.add_string_constant("name");
             self.emit_u16(Op::struct_set, name_idx);
             self.emit(Op::drop);
@@ -816,7 +816,7 @@ impl Compiler {
                         // on the stack for the upcoming local_set.
                         if std::env::var("VYBE_DART_DEBUG_CATCH_TRACE").is_ok() {
                             let log_imp = self.import("wasi:cli", "log");
-                            self.emit_constant(Value::String(Rc::from("[dart-catch] exception:")));
+                            self.emit_constant(Value::String(Arc::from("[dart-catch] exception:")));
                             self.emit_host_call(log_imp, 1);
                             self.emit(Op::drop);
                             self.emit(Op::dup);
@@ -882,7 +882,7 @@ impl Compiler {
                 if let Some(m) = msg {
                     self.compile_expression(m)?;
                 } else {
-                    self.emit_constant(Value::String(Rc::from("Assertion failed")));
+                    self.emit_constant(Value::String(Arc::from("Assertion failed")));
                 }
                 common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.patch_jump(ok);
@@ -999,7 +999,7 @@ impl Compiler {
                 
                 // Get from the named args map: map[name] via array_get (standard WASM)
                 self.emit_u16(Op::local_get, map_slot);
-                self.emit_constant(Value::String(Rc::from(p.name.as_str())));
+                self.emit_constant(Value::String(Arc::from(p.name.as_str())));
                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 
                 // If Null/Undefined and we have a default value, apply it
@@ -1184,7 +1184,7 @@ impl Compiler {
                             CtorInitializer::AssertInit(expr) => {
                                 self.compile_expression(&expr)?;
                                 let is_true = self.emit_jump(Op::br_if_true);
-                                self.emit_constant(Value::String(Rc::from("Assertion failed")));
+                                self.emit_constant(Value::String(Arc::from("Assertion failed")));
                                 common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
                                 self.patch_jump(is_true);
                             }
@@ -1406,14 +1406,14 @@ impl Compiler {
             Expression::String(s) => {
                 match s {
                     StringExpr::Simple(text) => {
-                        self.emit_constant(Value::String(Rc::from(text.as_str())));
+                        self.emit_constant(Value::String(Arc::from(text.as_str())));
                     }
                     StringExpr::Interpolated(parts) => {
                         let count = parts.len();
                         for part in parts {
                             match part {
                                 StringPart::Literal(lit) => {
-                                    self.emit_constant(Value::String(Rc::from(lit.as_str())));
+                                    self.emit_constant(Value::String(Arc::from(lit.as_str())));
                                 }
                                 StringPart::Expr(e) => {
                                     self.compile_expression(e)?;
@@ -1489,7 +1489,7 @@ impl Compiler {
             Expression::Set { elements, type_arg } => {
                 let ctor = self.import("vybe:collections", "Set");
                 let argc = if let Some(t) = type_arg {
-                    self.emit_constant(Value::String(Rc::from(t.name.as_str())));
+                    self.emit_constant(Value::String(Arc::from(t.name.as_str())));
                     1
                 } else { 0 };
                 self.emit_host_call(ctor, argc);
@@ -1680,7 +1680,7 @@ impl Compiler {
                         }
                     }
                     "StringBuffer" => {
-                        if args.is_empty() { self.emit_constant(Value::String(Rc::from(""))); }
+                        if args.is_empty() { self.emit_constant(Value::String(Arc::from(""))); }
                         else { let count = self.emit_args(args)?; let _ = count; }
                         let idx = self.import("vybe:types", "stringBuilderNew");
                         self.emit_host_call(idx, 1);

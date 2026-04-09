@@ -5,7 +5,7 @@ pub mod module_loader;
 pub use compiler::Compiler;
 pub use module_loader::load_and_compile;
 use vybe_bytecode::{VM, Value};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Set up VM with all host functions needed by JS, then compile.
 pub fn setup_and_compile(
@@ -21,7 +21,7 @@ pub fn setup_and_compile(
 pub fn setup_and_compile_with_gui(
     vm: &mut VM,
     program: &vybe_parser_js::Program,
-    _queue: std::rc::Rc<std::cell::RefCell<vybe_host::SideEffectQueue>>,
+    _queue: Arc<std::sync::Mutex<vybe_host::SideEffectQueue>>,
 ) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     vybe_host::register_all(vm);
     register_js_coercion(vm);
@@ -39,7 +39,7 @@ pub fn register_js_coercion(vm: &mut VM) {
             Value::F64(_) | Value::I32(_) | Value::I64(_) => "number",
             Value::String(_) => "string",
             Value::Object(o) => {
-                let obj = o.borrow();
+                let obj = o.lock().unwrap();
                 match &obj.kind {
                     vybe_bytecode::value::ObjectKind::Function(_) => "function",
                     _ => "object",
@@ -47,7 +47,7 @@ pub fn register_js_coercion(vm: &mut VM) {
             }
             Value::V128(_) | Value::WeakRef(_) => "object",
         };
-        Value::String(Rc::from(s))
+        Value::String(Arc::from(s))
     }));
 
     vm.register_host_fn("js:coerce", "toNumber", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
@@ -55,7 +55,7 @@ pub fn register_js_coercion(vm: &mut VM) {
     }));
 
     vm.register_host_fn("js:coerce", "toString", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::String(Rc::from(format!("{}", args.first().unwrap_or(&Value::Null)).as_str()))
+        Value::String(Arc::from(format!("{}", args.first().unwrap_or(&Value::Null)).as_str()))
     }));
 
     vm.register_host_fn("js:coerce", "toBoolean", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
@@ -72,7 +72,7 @@ pub fn register_js_coercion(vm: &mut VM) {
         let a = args.first().unwrap_or(&Value::Null);
         let b = args.get(1).unwrap_or(&Value::Null);
         if matches!(a, Value::String(_)) || matches!(b, Value::String(_)) {
-            Value::String(Rc::from(format!("{}{}", a, b).as_str()))
+            Value::String(Arc::from(format!("{}{}", a, b).as_str()))
         } else {
             Value::F64(a.as_f64() + b.as_f64())
         }

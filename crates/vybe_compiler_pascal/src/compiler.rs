@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 use vybe_parser_pascal::ast::*;
@@ -104,7 +104,7 @@ impl Compiler {
     }
     fn current_offset(&self) -> usize { self.chunks[self.current].current_offset() }
     fn str_const(&mut self, s: &str) -> u16 {
-        self.chunks[self.current].add_constant(Value::String(Rc::from(s)))
+        self.chunks[self.current].add_constant(Value::String(Arc::from(s)))
     }
     fn chunk(&mut self) -> &mut Chunk { &mut self.chunks[self.current] }
 
@@ -173,7 +173,7 @@ impl Compiler {
                                 "integer" | "longint" | "int64" | "cardinal" | "byte" | "word" | "shortint"
                                 | "real" | "double" | "single" | "extended" => self.emit(Op::f64_const_0),
                                 "boolean" => self.emit(Op::r#false),
-                                "string" => self.emit_const(Value::String(Rc::from(""))),
+                                "string" => self.emit_const(Value::String(Arc::from(""))),
                                 _ => self.emit(Op::null),
                             }
                         }
@@ -674,11 +674,11 @@ impl Compiler {
             }
             Expression::Nil => self.emit(Op::null),
             Expression::Str(s) => {
-                let idx = self.chunks[self.current].add_constant(Value::String(Rc::from(s.as_str())));
+                let idx = self.chunks[self.current].add_constant(Value::String(Arc::from(s.as_str())));
                 self.chunks[self.current].emit_op_u16(Op::r#const, idx, line);
             }
             Expression::Char(c) => {
-                let idx = self.chunks[self.current].add_constant(Value::String(Rc::from(c.to_string().as_str())));
+                let idx = self.chunks[self.current].add_constant(Value::String(Arc::from(c.to_string().as_str())));
                 self.chunks[self.current].emit_op_u16(Op::r#const, idx, line);
             }
             Expression::Identifier(name) => {
@@ -894,7 +894,7 @@ impl Compiler {
                 self.compile_expr(expr)?;
                 let type_key = self.str_const("__type");
                 self.emit_u16(Op::struct_get, type_key);
-                self.emit_const(Value::String(Rc::from(type_name.as_str())));
+                self.emit_const(Value::String(Arc::from(type_name.as_str())));
                 self.emit(Op::dyn_eq);
             }
             Expression::AsCast { expr, type_name: _ } => {
@@ -1526,8 +1526,8 @@ impl Compiler {
                 common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, class_name, line);
                 // Re-stamp __type for child class (parent constructor set it to parent name)
                 self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
-                let type_str = self.chunks[wrapper_idx].add_constant(Value::String(Rc::from(class_name.as_str())));
-                let type_key = self.chunks[wrapper_idx].add_constant(Value::String(Rc::from("__type")));
+                let type_str = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from(class_name.as_str())));
+                let type_key = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from("__type")));
                 self.chunks[wrapper_idx].emit_op_u16(Op::r#const, type_str, line);
                 self.chunks[wrapper_idx].emit_op_u16(Op::struct_set, type_key, line);
                 self.chunks[wrapper_idx].emit_op(Op::drop, line);

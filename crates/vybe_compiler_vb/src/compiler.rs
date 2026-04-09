@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use std::collections::HashSet;
 
 use vybe_bytecode::{Chunk, Value, Op};
@@ -145,7 +145,7 @@ impl Compiler {
         self.chunks[self.current_chunk_idx].emit_loop(target, line);
     }
     pub(crate) fn add_string_constant(&mut self, s: &str) -> u16 {
-        self.chunks[self.current_chunk_idx].add_constant(Value::String(Rc::from(s)))
+        self.chunks[self.current_chunk_idx].add_constant(Value::String(Arc::from(s)))
     }
     pub(crate) fn emit_host_call(&mut self, import_idx: u16, argc: u8) {
         let line = self.line;

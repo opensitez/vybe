@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Value, Op};
 use vybe_parser_basic::ast::*;
 use vybe_compiler_common as common;
@@ -254,8 +254,8 @@ impl Compiler {
                         } else {
                             ctrl.to_lowercase()
                         };
-                        self.emit_constant(Value::String(Rc::from(ctrl_str.as_str())));
-                        self.emit_constant(Value::String(Rc::from(event)));
+                        self.emit_constant(Value::String(Arc::from(ctrl_str.as_str())));
+                        self.emit_constant(Value::String(Arc::from(event)));
                         // Push the method as a closure reference
                         self.emit_u16(Op::local_get, this_slot);
                         let method_idx = self.add_string_constant(&method_name);
@@ -334,7 +334,7 @@ impl Compiler {
             self.emit(Op::set_type_id);
             // Update __type string
             self.emit_u16(Op::local_get, this_slot);
-            self.emit_constant(Value::String(Rc::from(name)));
+            self.emit_constant(Value::String(Arc::from(name)));
             let type_key = self.add_string_constant("__type");
             self.emit_u16(Op::struct_set, type_key);
             self.emit(Op::drop);

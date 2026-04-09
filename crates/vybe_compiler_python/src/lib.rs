@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use std::collections::HashMap;
 use vybe_parser_python::ast::*;
 use vybe_bytecode::{Chunk, Value};
@@ -215,11 +215,11 @@ impl Compiler {
                         // obj.attr op= value → obj.attr = obj.attr op value
                         self.compile_expr(obj, chunk_idx)?;
                         self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                        let attr_c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(attr.as_str())));
+                        let attr_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
                         self.chunk(chunk_idx).emit_op_u16(Op::struct_get, attr_c, 0);
                         self.compile_expr(value, chunk_idx)?;
                         self.emit_aug_op(*op, chunk_idx);
-                        let attr_c2 = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(attr.as_str())));
+                        let attr_c2 = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
                         self.chunk(chunk_idx).emit_op_u16(Op::struct_set, attr_c2, 0);
                     }
                     Expression::Subscript { value: obj, slice } => {
@@ -475,7 +475,7 @@ impl Compiler {
                                 if let Expression::Name(attr_name) = target {
                                     self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
                                     self.compile_expr(value, ctor_idx)?;
-                                    let attr_key = self.chunk(ctor_idx).add_constant(Value::String(Rc::from(attr_name.as_str())));
+                                    let attr_key = self.chunk(ctor_idx).add_constant(Value::String(Arc::from(attr_name.as_str())));
                                     self.chunk(ctor_idx).emit_op_u16(Op::struct_set, attr_key, 0);
                                     self.chunk(ctor_idx).emit_op(Op::drop, 0);
                                 }
@@ -726,7 +726,7 @@ impl Compiler {
                             // del obj.attr → deleteProperty(obj, attr_str)
                             common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_deleteproperty", 0);
                             self.compile_expr(value, chunk_idx)?;
-                            let key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(attr.as_str())));
+                            let key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
                             self.chunk(chunk_idx).emit_op_u16(Op::r#const, key, 0);
                             common::bundle::emit_call_invoke(self.chunk(chunk_idx), 2, 0);
                             self.chunk(chunk_idx).emit_op(Op::drop, 0);
@@ -745,7 +745,7 @@ impl Compiler {
                 if let Some(m) = msg {
                     self.compile_expr(m, chunk_idx)?;
                 } else {
-                    let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("AssertionError")));
+                    let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("AssertionError")));
                     self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
                 }
                 self.chunk(chunk_idx).emit_op(Op::throw_ref, 0);
@@ -765,7 +765,7 @@ impl Compiler {
 
                     // Call __enter__ if it exists, otherwise use value directly
                     self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                    let enter_key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("__enter__")));
+                    let enter_key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("__enter__")));
                     self.chunk(chunk_idx).emit_op_u16(Op::struct_get, enter_key, 0);
                     self.chunk(chunk_idx).emit_op(Op::dup, 0);
                     self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
@@ -792,7 +792,7 @@ impl Compiler {
                 // Call __exit__ on each context (reverse order)
                 for ctx_local in ctx_locals.iter().rev() {
                     self.chunk(chunk_idx).emit_op_u16(Op::local_get, *ctx_local, 0);
-                    let exit_key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("__exit__")));
+                    let exit_key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("__exit__")));
                     self.chunk(chunk_idx).emit_op_u16(Op::struct_get, exit_key, 0);
                     self.chunk(chunk_idx).emit_op(Op::dup, 0);
                     self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
@@ -1112,7 +1112,7 @@ impl Compiler {
                 self.chunk(chunk_idx).emit_op(Op::drop, 0);
                 self.compile_expr(value, chunk_idx)?; // push obj
                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp, 0); // push rhs_value
-                let name_c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(attr.as_str())));
+                let name_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
                 self.chunk(chunk_idx).emit_op_u16(Op::struct_set, name_c, 0);
             }
             Expression::Subscript { value, slice } => {
@@ -1186,7 +1186,7 @@ impl Compiler {
                 self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
             }
             Expression::Str(s) => {
-                let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(s.as_str())));
+                let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(s.as_str())));
                 self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
             }
             Expression::FString { parts } => {
@@ -1195,7 +1195,7 @@ impl Compiler {
                 for part in parts {
                     match part {
                         FStringPart::Literal(s) => {
-                            let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(s.as_str())));
+                            let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(s.as_str())));
                             self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
                             count += 1;
                         }
@@ -1210,7 +1210,7 @@ impl Compiler {
                         FStringPart::FormattedExpr(e, spec) => {
                             self.compile_expr(e, chunk_idx)?;
                             // Apply format spec via host format function
-                            let spec_c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(spec.as_str())));
+                            let spec_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(spec.as_str())));
                             self.chunk(chunk_idx).emit_op_u16(Op::r#const, spec_c, 0);
                             let fmt_fn = self.chunk(chunk_idx).add_import("vybe:string", "format");
                             self.chunk(chunk_idx).emit_op_u16(Op::call_import, fmt_fn, 0);
@@ -1241,7 +1241,7 @@ impl Compiler {
                         self.chunk(chunk_idx).emit_op_u8(Op::upvalue_get, idx, 0);
                     }
                     VarResolution::Global => {
-                        let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(name.as_str())));
+                        let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(name.as_str())));
                         self.chunk(chunk_idx).emit_op_u16(Op::global_get, c, 0);
                     }
                 }
@@ -1639,7 +1639,7 @@ impl Compiler {
                                 };
                                 if !type_str.is_empty() {
                                     // Use ref_test opcode — standard WASM GC type check
-                                    let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(type_str.as_str())));
+                                    let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(type_str.as_str())));
                                     self.chunk(chunk_idx).emit_op_u16(Op::ref_test, c, 0);
                                 } else {
                                     // Dynamic: compile type expr, use host pytype + eq
@@ -1798,7 +1798,7 @@ impl Compiler {
                                 self.chunk(chunk_idx).emit_op(Op::drop, 0);
                                 // Try struct_get "__call__"
                                 self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_slot, 0);
-                                let call_key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("__call__")));
+                                let call_key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("__call__")));
                                 self.chunk(chunk_idx).emit_op_u16(Op::struct_get, call_key, 0);
                                 self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
                                 self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
@@ -1842,7 +1842,7 @@ impl Compiler {
                             if args.len() >= 1 {
                                 self.chunk(chunk_idx).emit_op(Op::dup, 0);
                                 self.compile_expr(&args[0], chunk_idx)?;
-                                let key = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("__default_factory")));
+                                let key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("__default_factory")));
                                 self.chunk(chunk_idx).emit_op_u16(Op::struct_set, key, 0);
                                 self.chunk(chunk_idx).emit_op(Op::drop, 0);
                             }
@@ -2009,7 +2009,7 @@ impl Compiler {
                     }
                 }
                 self.compile_expr(value, chunk_idx)?;
-                let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(attr.as_str())));
+                let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
                 self.chunk(chunk_idx).emit_op_u16(Op::struct_get, c, 0);
             }
 
@@ -2193,7 +2193,7 @@ impl Compiler {
         self.chunk(script_chunk_idx).emit(0, 0);
         self.chunk(script_chunk_idx).emit_op_u16(Op::local_set, local, 0);
         let global_name = self.chunk(script_chunk_idx).add_constant(
-            Value::String(Rc::from(lower.as_str()))
+            Value::String(Arc::from(lower.as_str()))
         );
         self.chunk(script_chunk_idx).emit_op_u16(Op::global_set, global_name, 0);
         self.chunk(script_chunk_idx).emit_op(Op::drop, 0);
@@ -2251,7 +2251,7 @@ impl Compiler {
             // Convert each arg to string and join with sep
             for (i, a) in args.iter().enumerate() {
                 // "" + arg → string coercion
-                let empty = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("")));
+                let empty = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("")));
                 self.chunk(chunk_idx).emit_op_u16(Op::r#const, empty, 0);
                 self.compile_expr(a, chunk_idx)?;
                 self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
@@ -2308,7 +2308,7 @@ impl Compiler {
                 if let Expression::Name(n) = func.as_ref() {
                     if n == "super" && super_args.is_empty() {
                         if let Some(ref parent) = self.current_class_parent.clone() {
-                            let parent_c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(parent.as_str())));
+                            let parent_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(parent.as_str())));
                             self.chunk(chunk_idx).emit_op_u16(Op::global_get, parent_c, 0);
                             for a in args { self.compile_expr(a, chunk_idx)?; }
                             self.chunk(chunk_idx).emit_op_u8(Op::call_ref, args.len() as u8, 0);
@@ -2771,7 +2771,7 @@ impl Compiler {
             "split" => {
                 self.compile_expr(obj, chunk_idx)?;
                 if args.is_empty() {
-                    let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(" ")));
+                    let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(" ")));
                     self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
                 } else { self.compile_expr(&args[0], chunk_idx)?; }
                 self.chunk(chunk_idx).emit_op(Op::str_split, 0);
@@ -2820,7 +2820,7 @@ impl Compiler {
             }
             "format" => {
                 self.compile_expr(obj, chunk_idx)?;
-                let placeholder = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("{}")));
+                let placeholder = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("{}")));
                 let two = self.chunk(chunk_idx).add_constant(Value::I32(2));
                 let max_val = self.chunk(chunk_idx).add_constant(Value::I32(i32::MAX));
                 for a in args {
@@ -2869,7 +2869,7 @@ impl Compiler {
             }
             "splitlines" => {
                 self.compile_expr(obj, chunk_idx)?;
-                let c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("\n")));
+                let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("\n")));
                 self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
                 self.chunk(chunk_idx).emit_op(Op::str_split, 0);
             }
@@ -2955,7 +2955,7 @@ impl Compiler {
 
         // Try struct_get method from the object
         self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
-        let method_c = self.chunk(chunk_idx).add_constant(Value::String(Rc::from(method)));
+        let method_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(method)));
         self.chunk(chunk_idx).emit_op_u16(Op::struct_get, method_c, 0);
         self.chunk(chunk_idx).emit_op(Op::dup, 0);
         self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
@@ -3066,7 +3066,7 @@ impl Compiler {
                 let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "readFile");
                 self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
                 self.chunk(chunk_idx).emit(1, 0);
-                let nl = self.chunk(chunk_idx).add_constant(Value::String(Rc::from("\n")));
+                let nl = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("\n")));
                 self.chunk(chunk_idx).emit_op_u16(Op::r#const, nl, 0);
                 self.chunk(chunk_idx).emit_op(Op::str_split, 0);
             }

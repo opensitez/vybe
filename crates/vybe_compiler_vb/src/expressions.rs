@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Value, Op};
 use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::convert as common_convert;
@@ -32,7 +32,7 @@ impl Compiler {
                     self.emit_constant(Value::F64(v));
                 }
             }
-            Expression::StringLiteral(s) => self.emit_constant(Value::String(Rc::from(s.as_str()))),
+            Expression::StringLiteral(s) => self.emit_constant(Value::String(Arc::from(s.as_str()))),
             Expression::BooleanLiteral(b) => {
                 if *b { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
             }
@@ -211,7 +211,7 @@ impl Compiler {
 
             // Date literal
             Expression::DateLiteral(s) => {
-                self.emit_constant(Value::String(Rc::from(s.as_str())));
+                self.emit_constant(Value::String(Arc::from(s.as_str())));
             }
 
             Expression::Await(expr) => {
@@ -516,7 +516,7 @@ impl Compiler {
             if let Some(msg_arg) = args.first() {
                 self.compile_expression(msg_arg)?;
             } else {
-                self.emit_constant(Value::String(Rc::from("")));
+                self.emit_constant(Value::String(Arc::from("")));
             }
             let msg_idx = self.add_string_constant("message");
             self.emit_u16(Op::struct_set, msg_idx);

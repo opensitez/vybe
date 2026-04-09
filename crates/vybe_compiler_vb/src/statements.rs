@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Value, Op};
 use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::convert as common_convert;
@@ -95,7 +95,7 @@ impl Compiler {
                             Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
                         }
                     };
-                    self.emit_constant(Value::String(Rc::from(cap.as_str())));
+                    self.emit_constant(Value::String(Arc::from(cap.as_str())));
                     self.emit_u16(Op::local_get, tmp);
                     let set_idx = self.import("vybe:gui", "controlSetProperty");
                     self.emit_host_call(set_idx, 3);
@@ -460,8 +460,8 @@ impl Compiler {
             }
             // RemoveHandler obj.Event, AddressOf handler
             Statement::RemoveHandler { event_target, handler } => {
-                self.emit_constant(Value::String(Rc::from(event_target.as_str())));
-                self.emit_constant(Value::String(Rc::from(handler.as_str())));
+                self.emit_constant(Value::String(Arc::from(event_target.as_str())));
+                self.emit_constant(Value::String(Arc::from(handler.as_str())));
                 let idx = self.import("vybe:gui", "removeHandler");
                 self.emit_host_call(idx, 2);
                 self.emit(Op::drop);
@@ -542,7 +542,7 @@ impl Compiler {
                     FileOpenMode::Binary => "Binary",
                     FileOpenMode::Random => "Random",
                 };
-                self.emit_constant(Value::String(Rc::from(mode_str)));
+                self.emit_constant(Value::String(Arc::from(mode_str)));
                 self.compile_expression(file_number)?;
                 let idx = self.import("wasi:filesystem", "openFile");
                 self.emit_host_call(idx, 3);
@@ -725,10 +725,10 @@ impl Compiler {
                         self.emit_u16(Op::struct_get, name_idx);
                     }
                     VarResolution::Global => {
-                        self.emit_constant(Value::String(Rc::from(control.as_str())));
+                        self.emit_constant(Value::String(Arc::from(control.as_str())));
                     }
                 }
-                self.emit_constant(Value::String(Rc::from(event.as_str())));
+                self.emit_constant(Value::String(Arc::from(event.as_str())));
                 let handler_lower = handler.to_lowercase();
                 let handler_lower = handler_lower.trim_start_matches("me.");
                 let idx = self.add_string_constant(handler_lower);

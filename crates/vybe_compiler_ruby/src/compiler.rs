@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_parser_ruby::ast::*;
 use vybe_compiler_common as common;
@@ -73,7 +73,7 @@ impl Compiler {
     }
 
     fn add_string_constant(&mut self, s: &str) -> u16 {
-        self.chunks[self.current_chunk_idx].add_constant(Value::String(Rc::from(s)))
+        self.chunks[self.current_chunk_idx].add_constant(Value::String(Arc::from(s)))
     }
 
     fn current_offset(&self) -> usize {
@@ -196,7 +196,7 @@ impl Compiler {
             Statement::Puts(exprs) | Statement::Print(exprs) | Statement::P(exprs) => {
                 let c = self.current_chunk_idx;
                 if exprs.is_empty() {
-                    self.emit_constant(Value::String(Rc::from("")));
+                    self.emit_constant(Value::String(Arc::from("")));
                     let line = self.line;
                     common::io::emit_print(&mut self.chunks[c], 1, line);
                     self.emit(Op::drop);
@@ -408,7 +408,7 @@ impl Compiler {
                 if let Some(expr) = val {
                     self.compile_expression(expr)?;
                 } else {
-                    self.emit_constant(Value::String(Rc::from("RuntimeError")));
+                    self.emit_constant(Value::String(Arc::from("RuntimeError")));
                 }
                 let line = self.line;
                 common::errors::emit_throw(&mut self.chunks[self.current_chunk_idx], line);
@@ -565,10 +565,10 @@ impl Compiler {
                 self.emit_constant(Value::F64(*n));
             }
             Expression::Str(s) => {
-                self.emit_constant(Value::String(Rc::from(s.as_str())));
+                self.emit_constant(Value::String(Arc::from(s.as_str())));
             }
             Expression::Symbol(s) => {
-                self.emit_constant(Value::String(Rc::from(s.as_str())));
+                self.emit_constant(Value::String(Arc::from(s.as_str())));
             }
             Expression::Bool(b) => {
                 if *b { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
@@ -812,7 +812,7 @@ impl Compiler {
                 for part in parts {
                     match part {
                         InterpolPart::Lit(s) => {
-                            self.emit_constant(Value::String(Rc::from(s.as_str())));
+                            self.emit_constant(Value::String(Arc::from(s.as_str())));
                         }
                         InterpolPart::Expr(e) => {
                             self.compile_expression(e)?;
@@ -847,7 +847,7 @@ impl Compiler {
 
             Expression::Regex(pattern) => {
                 // Create regex via host import
-                self.emit_constant(Value::String(Rc::from(pattern.as_str())));
+                self.emit_constant(Value::String(Arc::from(pattern.as_str())));
                 let idx = self.import("vybe:regex", "compile");
                 self.emit_host_call(idx, 1);
             }
@@ -865,7 +865,7 @@ impl Compiler {
                 self.emit(Op::dyn_not);
                 // Convert to string "expression" or nil
                 let skip = self.emit_jump(Op::br_if_false);
-                self.emit_constant(Value::String(Rc::from("expression")));
+                self.emit_constant(Value::String(Arc::from("expression")));
                 let end = self.emit_jump(Op::br);
                 self.patch_jump(skip);
                 self.emit(Op::null);
@@ -978,7 +978,7 @@ impl Compiler {
             Expression::RespondTo { object, method } => {
                 // obj.respond_to?(:method) → check if property exists
                 self.compile_expression(object)?;
-                self.emit_constant(Value::String(Rc::from(method.as_str())));
+                self.emit_constant(Value::String(Arc::from(method.as_str())));
                 let idx = self.import("vybe:object", "hasProperty");
                 self.emit_host_call(idx, 2);
             }
@@ -1123,7 +1123,7 @@ impl Compiler {
             }
 
             Expression::Backtick(cmd) => {
-                self.emit_constant(Value::String(Rc::from(cmd.as_str())));
+                self.emit_constant(Value::String(Arc::from(cmd.as_str())));
                 let i = self.import("vybe:types", "processStart");
                 self.emit_host_call(i, 1);
             }
@@ -1146,14 +1146,14 @@ impl Compiler {
             Expression::MagicConstant(mc) => {
                 match mc {
                     MagicConst::File => {
-                        self.emit_constant(Value::String(Rc::from("<main>")));
+                        self.emit_constant(Value::String(Arc::from("<main>")));
                     }
                     MagicConst::Dir => {
                         let i = self.import("wasi:cli", "cwd");
                         self.emit_host_call(i, 0);
                     }
                     MagicConst::Method => {
-                        self.emit_constant(Value::String(Rc::from("<main>")));
+                        self.emit_constant(Value::String(Arc::from("<main>")));
                     }
                     MagicConst::Line => {
                         self.emit_constant(Value::F64(self.line as f64));
@@ -1485,7 +1485,7 @@ impl Compiler {
                 "split" => {
                     self.compile_expression(recv)?;
                     if args.is_empty() {
-                        self.emit_constant(Value::String(Rc::from(" ")));
+                        self.emit_constant(Value::String(Arc::from(" ")));
                     } else {
                         self.compile_expression(&args[0])?;
                     }
@@ -1495,7 +1495,7 @@ impl Compiler {
                 "join" => {
                     self.compile_expression(recv)?;
                     if args.is_empty() {
-                        self.emit_constant(Value::String(Rc::from("")));
+                        self.emit_constant(Value::String(Arc::from("")));
                     } else {
                         self.compile_expression(&args[0])?;
                     }
@@ -1513,7 +1513,7 @@ impl Compiler {
                 }
                 "chars" => {
                     self.compile_expression(recv)?;
-                    self.emit_constant(Value::String(Rc::from("")));
+                    self.emit_constant(Value::String(Arc::from("")));
                     common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
@@ -1978,7 +1978,7 @@ impl Compiler {
                     self.compile_expression(recv)?;
                     let state_key = self.add_string_constant("__cont_state");
                     self.emit_u16(Op::struct_get, state_key);
-                    self.emit_constant(Value::String(Rc::from("done")));
+                    self.emit_constant(Value::String(Arc::from("done")));
                     self.emit(Op::dyn_ne);
                     return Ok(());
                 }
@@ -2303,7 +2303,7 @@ impl Compiler {
                 }
                 "bytes" => {
                     self.compile_expression(recv)?;
-                    self.emit_constant(Value::String(Rc::from("")));
+                    self.emit_constant(Value::String(Arc::from("")));
                     common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
@@ -2764,7 +2764,7 @@ impl Compiler {
                     self.compile_expression(recv)?;
                     let i = self.import("wasi:filesystem", "readFile");
                     self.emit_host_call(i, 1);
-                    self.emit_constant(Value::String(Rc::from("\n")));
+                    self.emit_constant(Value::String(Arc::from("\n")));
                     common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(());
                 }
@@ -3075,7 +3075,7 @@ impl Compiler {
                 "encoding" => {
                     self.compile_expression(recv)?;
                     self.emit(Op::drop);
-                    self.emit_constant(Value::String(Rc::from("UTF-8")));
+                    self.emit_constant(Value::String(Arc::from("UTF-8")));
                     return Ok(());
                 }
                 "valid_encoding?" => {
@@ -3380,7 +3380,7 @@ impl Compiler {
                     if !args.is_empty() {
                         self.compile_expression(&args[0])?;
                     } else {
-                        self.emit_constant(Value::String(Rc::from("")));
+                        self.emit_constant(Value::String(Arc::from("")));
                     }
                     self.emit_u16(Op::local_set, msg_slot);
                     let line = self.line;
@@ -3416,7 +3416,7 @@ impl Compiler {
                 }
                 "StringBuilder" | "StringIO" => {
                     if !args.is_empty() { self.compile_expression(&args[0])?; }
-                    else { self.emit_constant(Value::String(Rc::from(""))); }
+                    else { self.emit_constant(Value::String(Arc::from(""))); }
                     let i = self.import("vybe:types", "stringBuilderNew");
                     self.emit_host_call(i, 1);
                     return Ok(());

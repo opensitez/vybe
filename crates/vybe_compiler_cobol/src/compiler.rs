@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_parser_cobol::ast::*;
 use vybe_compiler_common as common;
@@ -87,7 +87,7 @@ impl Compiler {
     }
 
     fn add_string_constant(&mut self, s: &str) -> u16 {
-        self.chunks[self.current_chunk_idx].add_constant(Value::String(Rc::from(s)))
+        self.chunks[self.current_chunk_idx].add_constant(Value::String(Arc::from(s)))
     }
 
     fn current_offset(&self) -> usize {
@@ -177,7 +177,7 @@ impl Compiler {
 
             // Store PIC metadata for formatting (internal)
             if let Some(pic) = &item.pic {
-                self.emit_constant(Value::String(Rc::from(pic.as_str())));
+                self.emit_constant(Value::String(Arc::from(pic.as_str())));
                 let pk = self.add_string_constant(&format!("__PIC_{}", name));
                 self.emit_u16(Op::global_set, pk);
             }
@@ -202,7 +202,7 @@ impl Compiler {
                     // Already compiled the literal; now pad it
                     // Emit: str_pad_end to pad with spaces
                     self.emit_constant(Value::F64(size as f64));
-                    self.emit_constant(Value::String(Rc::from(" ")));
+                    self.emit_constant(Value::String(Arc::from(" ")));
                     self.emit(Op::str_pad_end);
                 }
             }
@@ -213,7 +213,7 @@ impl Compiler {
             if upper.starts_with('X') || upper.starts_with('A') {
                 // Space-fill to PIC size
                 let spaces: String = " ".repeat(size.max(1));
-                self.emit_constant(Value::String(Rc::from(spaces.as_str())));
+                self.emit_constant(Value::String(Arc::from(spaces.as_str())));
             } else {
                 self.emit_constant(Value::F64(0.0));
             }
@@ -226,11 +226,11 @@ impl Compiler {
     fn compile_literal(&mut self, lit: &Literal) -> Result<(), String> {
         match lit {
             Literal::Num(n) => { self.emit_constant(Value::F64(*n)); }
-            Literal::Str(s) => { self.emit_constant(Value::String(Rc::from(s.as_str()))); }
-            Literal::Spaces => { self.emit_constant(Value::String(Rc::from(" "))); }
+            Literal::Str(s) => { self.emit_constant(Value::String(Arc::from(s.as_str()))); }
+            Literal::Spaces => { self.emit_constant(Value::String(Arc::from(" "))); }
             Literal::Zeros => { self.emit_constant(Value::F64(0.0)); }
-            Literal::LowValues => { self.emit_constant(Value::String(Rc::from(""))); }
-            Literal::HighValues => { self.emit_constant(Value::String(Rc::from("\u{FFFF}"))); }
+            Literal::LowValues => { self.emit_constant(Value::String(Arc::from(""))); }
+            Literal::HighValues => { self.emit_constant(Value::String(Arc::from("\u{FFFF}"))); }
             Literal::True => { self.emit(Op::r#true); }
             Literal::False => { self.emit(Op::r#false); }
         }
@@ -612,7 +612,7 @@ impl Compiler {
                     if !first { common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line); }
                     first = false;
                 }
-                if first { self.emit_constant(Value::String(Rc::from(""))); }
+                if first { self.emit_constant(Value::String(Arc::from(""))); }
                 let idx = self.add_string_constant(into);
                 self.emit_u16(Op::global_set, idx);
             }
@@ -621,9 +621,9 @@ impl Compiler {
                 let src_idx = self.add_string_constant(src);
                 self.emit_u16(Op::global_get, src_idx);
                 if let Some(delim) = delimiters.first() {
-                    self.emit_constant(Value::String(Rc::from(delim.as_str())));
+                    self.emit_constant(Value::String(Arc::from(delim.as_str())));
                 } else {
-                    self.emit_constant(Value::String(Rc::from(" ")));
+                    self.emit_constant(Value::String(Arc::from(" ")));
                 }
                 common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 // Assign each part to the target variables
@@ -642,7 +642,7 @@ impl Compiler {
                 // Count occurrences of target in var
                 let var_idx = self.add_string_constant(var);
                 self.emit_u16(Op::global_get, var_idx);
-                self.emit_constant(Value::String(Rc::from(target.as_str())));
+                self.emit_constant(Value::String(Arc::from(target.as_str())));
                 common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(1));
@@ -654,8 +654,8 @@ impl Compiler {
             Statement::InspectReplacing { var, mode: _, old, new } => {
                 let var_idx = self.add_string_constant(var);
                 self.emit_u16(Op::global_get, var_idx);
-                self.emit_constant(Value::String(Rc::from(old.as_str())));
-                self.emit_constant(Value::String(Rc::from(new.as_str())));
+                self.emit_constant(Value::String(Arc::from(old.as_str())));
+                self.emit_constant(Value::String(Arc::from(new.as_str())));
                 common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::global_set, var_idx);
             }
@@ -677,7 +677,7 @@ impl Compiler {
 
             Statement::Initialize(name) => {
                 // Reset to default values (spaces for alpha, zeros for numeric)
-                self.emit_constant(Value::String(Rc::from("")));
+                self.emit_constant(Value::String(Arc::from("")));
                 let idx = self.add_string_constant(name);
                 self.emit_u16(Op::global_set, idx);
             }
@@ -738,14 +738,14 @@ impl Compiler {
             }
 
             Statement::Open { mode, file } => {
-                self.emit_constant(Value::String(Rc::from(file.as_str())));
+                self.emit_constant(Value::String(Arc::from(file.as_str())));
                 let mode_str = match mode {
                     FileMode::Input => "r",
                     FileMode::Output => "w",
                     FileMode::Extend => "a",
                     FileMode::IoMode => "rw",
                 };
-                self.emit_constant(Value::String(Rc::from(mode_str)));
+                self.emit_constant(Value::String(Arc::from(mode_str)));
                 let i = self.import("wasi:filesystem", "openFile");
                 self.emit_host_call(i, 2);
                 let fi = self.add_string_constant(&format!("__file_{}", file));
@@ -864,7 +864,7 @@ impl Compiler {
             }
 
             Statement::DeleteFile(file) => {
-                self.emit_constant(Value::String(Rc::from(file.as_str())));
+                self.emit_constant(Value::String(Arc::from(file.as_str())));
                 let i = self.import("wasi:filesystem", "remove");
                 self.emit_host_call(i, 1);
                 self.emit(Op::drop);
@@ -899,8 +899,8 @@ impl Compiler {
                 // INSPECT var CONVERTING from TO to → character-by-character translation
                 let var_idx = self.add_string_constant(var);
                 self.emit_u16(Op::global_get, var_idx);
-                self.emit_constant(Value::String(Rc::from(from.as_str())));
-                self.emit_constant(Value::String(Rc::from(to.as_str())));
+                self.emit_constant(Value::String(Arc::from(from.as_str())));
+                self.emit_constant(Value::String(Arc::from(to.as_str())));
                 common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_u16(Op::global_set, var_idx);
             }
@@ -1206,7 +1206,7 @@ impl Compiler {
                         for (condition, handler) in params {
                             let key = format!("__CICS_HANDLER_{}", condition);
                             let ki = self.add_string_constant(&key);
-                            self.emit_constant(Value::String(Rc::from(handler.as_str())));
+                            self.emit_constant(Value::String(Arc::from(handler.as_str())));
                             self.emit_u16(Op::global_set, ki);
                         }
                     }
@@ -1245,7 +1245,7 @@ impl Compiler {
                                 let fi = self.add_string_constant(&from_var);
                                 self.emit_u16(Op::global_get, fi);
                             } else {
-                                self.emit_constant(Value::String(Rc::from("")));
+                                self.emit_constant(Value::String(Arc::from("")));
                             }
                             common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
                             self.emit(Op::drop);
@@ -1339,7 +1339,7 @@ impl Compiler {
                                     self.emit_u16(Op::global_set, vi);
                                 }
                                 "SYSID" | "APPLID" => {
-                                    self.emit_constant(Value::String(Rc::from("VYBE")));
+                                    self.emit_constant(Value::String(Arc::from("VYBE")));
                                     let vi = self.add_string_constant(val);
                                     self.emit_u16(Op::global_set, vi);
                                 }
@@ -1350,7 +1350,7 @@ impl Compiler {
                                 }
                                 _ => {
                                     // Generic: return empty string
-                                    self.emit_constant(Value::String(Rc::from("")));
+                                    self.emit_constant(Value::String(Arc::from("")));
                                     let vi = self.add_string_constant(val);
                                     self.emit_u16(Op::global_set, vi);
                                 }
@@ -1383,7 +1383,7 @@ impl Compiler {
                                 let fi = self.add_string_constant(&from_var);
                                 self.emit_u16(Op::global_get, fi);
                             } else {
-                                self.emit_constant(Value::String(Rc::from("")));
+                                self.emit_constant(Value::String(Arc::from("")));
                             }
                             self.emit_u16(Op::global_set, ck);
                         }
@@ -1499,7 +1499,7 @@ impl Compiler {
                         for (key, val) in params {
                             if key == "ABCODE" { code = val.clone(); }
                         }
-                        self.emit_constant(Value::String(Rc::from(code.as_str())));
+                        self.emit_constant(Value::String(Arc::from(code.as_str())));
                         let line = self.line;
                         common::errors::emit_throw(&mut self.chunks[self.current_chunk_idx], line);
                     }
@@ -1509,7 +1509,7 @@ impl Compiler {
                         // System resource queries — simplified
                         for (key, val) in params {
                             if !val.is_empty() {
-                                self.emit_constant(Value::String(Rc::from("")));
+                                self.emit_constant(Value::String(Arc::from("")));
                                 let vi = self.add_string_constant(val);
                                 self.emit_u16(Op::global_set, vi);
                             }
@@ -1640,7 +1640,7 @@ impl Compiler {
                 // Format a number using PIC editing mask
                 let vi = self.add_string_constant(var);
                 self.emit_u16(Op::global_get, vi);
-                self.emit_constant(Value::String(Rc::from(pic.as_str())));
+                self.emit_constant(Value::String(Arc::from(pic.as_str())));
                 let i = self.import("vybe:string", "format");
                 self.emit_host_call(i, 2);
                 let c = self.current_chunk_idx;
@@ -1671,7 +1671,7 @@ impl Compiler {
                 // Build SQL string, push host vars, call query
                 let conn_idx = self.add_string_constant("__SQL_CONN");
                 self.emit_u16(Op::global_get, conn_idx);
-                self.emit_constant(Value::String(Rc::from(sql.as_str())));
+                self.emit_constant(Value::String(Arc::from(sql.as_str())));
                 // Push WHERE-clause host vars as parameters
                 for var in from_vars {
                     let vi = self.add_string_constant(var);
@@ -1704,7 +1704,7 @@ impl Compiler {
                 // EXEC SQL INSERT/UPDATE/DELETE ... END-EXEC
                 let conn_idx = self.add_string_constant("__SQL_CONN");
                 self.emit_u16(Op::global_get, conn_idx);
-                self.emit_constant(Value::String(Rc::from(sql.as_str())));
+                self.emit_constant(Value::String(Arc::from(sql.as_str())));
                 for var in host_vars {
                     let vi = self.add_string_constant(var);
                     self.emit_u16(Op::global_get, vi);
@@ -1721,7 +1721,7 @@ impl Compiler {
             Statement::SqlCommit => {
                 let conn_idx = self.add_string_constant("__SQL_CONN");
                 self.emit_u16(Op::global_get, conn_idx);
-                self.emit_constant(Value::String(Rc::from("COMMIT")));
+                self.emit_constant(Value::String(Arc::from("COMMIT")));
                 let i = self.import("vybe:database", "execute");
                 self.emit_host_call(i, 2);
                 self.emit(Op::drop);
@@ -1730,7 +1730,7 @@ impl Compiler {
             Statement::SqlRollback => {
                 let conn_idx = self.add_string_constant("__SQL_CONN");
                 self.emit_u16(Op::global_get, conn_idx);
-                self.emit_constant(Value::String(Rc::from("ROLLBACK")));
+                self.emit_constant(Value::String(Arc::from("ROLLBACK")));
                 let i = self.import("vybe:database", "execute");
                 self.emit_host_call(i, 2);
                 self.emit(Op::drop);
@@ -1739,7 +1739,7 @@ impl Compiler {
             Statement::SqlDeclareCursor { cursor_name, sql, host_vars } => {
                 // Store cursor SQL + params for later OPEN
                 let cursor_sql_key = self.add_string_constant(&format!("__CURSOR_{}_SQL", cursor_name));
-                self.emit_constant(Value::String(Rc::from(sql.as_str())));
+                self.emit_constant(Value::String(Arc::from(sql.as_str())));
                 self.emit_u16(Op::global_set, cursor_sql_key);
                 // Store host var names for parameter binding
                 for (i, var) in host_vars.iter().enumerate() {

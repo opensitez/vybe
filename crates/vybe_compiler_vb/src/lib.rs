@@ -7,8 +7,7 @@ mod classes;
 
 pub use compiler::Compiler;
 use vybe_bytecode::{VM, Value, HostContext};
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 
 /// Set up VM with all host functions needed by VB, then compile.
 pub fn setup_and_compile(
@@ -23,7 +22,7 @@ pub fn setup_and_compile(
 pub fn setup_and_compile_with_gui(
     vm: &mut VM,
     program: &vybe_parser_basic::ast::Program,
-    _queue: Rc<RefCell<vybe_host::SideEffectQueue>>,
+    _queue: Arc<Mutex<vybe_host::SideEffectQueue>>,
 ) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     vybe_host::register_all(vm);
     Compiler::new().compile(program)
@@ -34,7 +33,7 @@ pub fn compile_and_run(source: &str) -> Result<Vec<String>, String> {
     let program = vybe_parser_basic::parse_program(source)
         .map_err(|e| format!("Parse error: {e}"))?;
     let mut vm = VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
 
     // Register host functions
@@ -43,11 +42,11 @@ pub fn compile_and_run(source: &str) -> Result<Vec<String>, String> {
     // Override console.log to capture output
     vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-        out.borrow_mut().push(parts.join(" "));
+        out.lock().unwrap().push(parts.join(" "));
         Value::Null
     }));
 
     let chunks = Compiler::new().compile(&program)?;
     vm.run(chunks).map_err(|e| format!("Runtime error: {e}"))?;
-    Ok(output.borrow().clone())
+    Ok(output.lock().unwrap().clone())
 }

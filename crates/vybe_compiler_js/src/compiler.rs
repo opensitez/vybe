@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use vybe_bytecode::{Chunk, Value, Op};
 use vybe_bytecode::chunk::TypeEntry;
@@ -143,7 +143,7 @@ impl Compiler {
         self.chunks[self.current_chunk_idx].emit_loop(target, line);
     }
     fn add_string_constant(&mut self, s: &str) -> u16 {
-        self.chunks[self.current_chunk_idx].add_constant(Value::String(Rc::from(s)))
+        self.chunks[self.current_chunk_idx].add_constant(Value::String(Arc::from(s)))
     }
 
     /// Emit CallHost: [CallHost, import_hi, import_lo, argc]
@@ -701,7 +701,7 @@ impl Compiler {
                 if let Some(name) = &class.name {
                     // Set name property on the constructor for instanceof support
                     self.emit(Op::dup);
-                    self.emit_constant(Value::String(Rc::from(name.as_str())));
+                    self.emit_constant(Value::String(Arc::from(name.as_str())));
                     let name_idx = self.add_string_constant("name");
                     self.emit_u16(Op::struct_set, name_idx);
                     self.emit(Op::drop);
@@ -973,7 +973,7 @@ impl Compiler {
                     self.emit_constant(Value::F64(v));
                 }
             }
-            Expression::String(s) => { self.emit_constant(Value::String(Rc::from(s.as_str()))); }
+            Expression::String(s) => { self.emit_constant(Value::String(Arc::from(s.as_str()))); }
             Expression::Boolean(true) => self.emit(Op::r#true),
             Expression::Boolean(false) => self.emit(Op::r#false),
             Expression::Null => self.emit(Op::null),
@@ -1291,13 +1291,13 @@ impl Compiler {
                     for prop in properties {
                         match prop {
                             PropertyDef::KeyValue { key, value } => {
-                                self.emit_constant(Value::String(Rc::from(key.as_str())));
+                                self.emit_constant(Value::String(Arc::from(key.as_str())));
                                 self.compile_expression(value)?;
                                 string_keys.push(key.clone());
                                 count += 1;
                             }
                             PropertyDef::Shorthand(name) => {
-                                self.emit_constant(Value::String(Rc::from(name.as_str())));
+                                self.emit_constant(Value::String(Arc::from(name.as_str())));
                                 match self.resolve_variable(name) {
                                     VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
                                     VarResolution::Upvalue(idx) => self.emit_u8(Op::upvalue_get, idx),
@@ -1307,7 +1307,7 @@ impl Compiler {
                                 count += 1;
                             }
                             PropertyDef::Method { key, value } => {
-                                self.emit_constant(Value::String(Rc::from(key.as_str())));
+                                self.emit_constant(Value::String(Arc::from(key.as_str())));
                                 self.compile_method(value)?; // method, not function — adds `this` as local 0
                                 string_keys.push(key.clone());
                                 count += 1;
@@ -1329,11 +1329,11 @@ impl Compiler {
                         let chunk = &mut self.chunks[self.current_chunk_idx];
                         chunk.emit_op(Op::dup, line);
                         for k in &string_keys {
-                            let idx = chunk.add_constant(Value::String(Rc::from(k.as_str())));
+                            let idx = chunk.add_constant(Value::String(Arc::from(k.as_str())));
                             chunk.emit_op_u16(Op::r#const, idx, line);
                         }
                         chunk.emit_op_u16(Op::array_new, string_keys.len() as u16, line);
-                        let keys_idx = chunk.add_constant(Value::String(Rc::from("__keys")));
+                        let keys_idx = chunk.add_constant(Value::String(Arc::from("__keys")));
                         chunk.emit_op_u16(Op::struct_set, keys_idx, line);
                         chunk.emit_op(Op::drop, line);
                     }
@@ -1370,7 +1370,7 @@ impl Compiler {
                 let mut count = 0u8;
                 for (i, quasi) in quasis.iter().enumerate() {
                     if !quasi.is_empty() || expressions.is_empty() {
-                        self.emit_constant(Value::String(Rc::from(quasi.as_str())));
+                        self.emit_constant(Value::String(Arc::from(quasi.as_str())));
                         count += 1;
                     }
                     if i < expressions.len() {
@@ -1396,7 +1396,7 @@ impl Compiler {
                         self.compile_expression(object)?;
                         let prop = property.to_lowercase();
                         let idx = self.import("vybe:object", "deleteProperty");
-                        self.emit_constant(Value::String(std::rc::Rc::from(prop.as_str())));
+                        self.emit_constant(Value::String(Arc::from(prop.as_str())));
                         self.emit_host_call(idx, 2);
                     }
                     Expression::ComputedMember { object, property } => {
@@ -2318,7 +2318,7 @@ impl Compiler {
                 // swap: arr[j] = b, arr[j+1] = a
                 self.emit_u16(Op::local_get, arr_slot);
                 self.emit_u16(Op::local_get, j_slot);
-                self.emit_constant(Value::String(Rc::from(""))); // key placeholder — we need to use array_set properly
+                self.emit_constant(Value::String(Arc::from(""))); // key placeholder — we need to use array_set properly
                 // Actually array_set wants [obj, key, val]. Let me use the host push approach.
                 // Simpler: use computed member assignment
                 // arr[j] = b
@@ -3042,7 +3042,7 @@ impl Compiler {
             self.emit(Op::set_type_id);
             // Update __type string
             self.emit_u16(Op::local_get, this_slot);
-            self.emit_constant(Value::String(Rc::from(name)));
+            self.emit_constant(Value::String(Arc::from(name)));
             let type_key = self.add_string_constant("__type");
             self.emit_u16(Op::struct_set, type_key);
             self.emit(Op::drop);
@@ -3380,7 +3380,7 @@ impl Compiler {
                 }
                 "join" if !is_class_instance => {
                     self.compile_expression(object)?;
-                    self.emit_constant(Value::String(Rc::from(",")));
+                    self.emit_constant(Value::String(Arc::from(",")));
                     common_collections::emit_join(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }
