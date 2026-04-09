@@ -505,7 +505,7 @@ pub enum WidgetEvent {
 ///
 /// All panel containers and leaf widgets implement this trait.
 /// Coordinates are in logical (unscaled) pixels.
-pub trait PanelWidget {
+pub trait PanelWidget: Send + Sync {
     /// Assign a layout rectangle to this widget.
     fn set_rect(&mut self, rect: LayoutRect);
 

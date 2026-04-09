@@ -551,7 +551,7 @@ impl PanelWidget for TextInput {
 
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetText(t) => { self.value = t.clone(); CommandValue::None }
+            WidgetCommand::SetText(t) => { self.value = t.clone(); self.cursor = self.value.len(); self.selection_anchor = None; CommandValue::None }
             WidgetCommand::GetText => CommandValue::Text(self.value.clone()),
             WidgetCommand::GetValue => CommandValue::Text(self.value.clone()),
             WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
