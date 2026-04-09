@@ -12,7 +12,7 @@
 //! Python `def`, Dart `void f()`, JS `function`, C# `void F()`, VB `Sub`
 //! all produce the same Chunk structure.
 
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
@@ -69,7 +69,7 @@ pub fn emit_ref_func(chunk: &mut Chunk, func_chunk_idx: usize, upvalue_count: u8
 /// Caller must have closure_ref on stack (from emit_ref_func).
 /// Stack before: [closure_ref]  Stack after: []
 pub fn emit_store_global_func(chunk: &mut Chunk, name: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Rc::from(name)));
+    let idx = chunk.add_constant(Value::String(Arc::from(name)));
     chunk.emit_op_u16(Op::global_set, idx, line);
     chunk.emit_op(Op::drop, line);
 }
@@ -88,7 +88,7 @@ pub fn emit_store_local_func(chunk: &mut Chunk, slot: u16, line: u32) {
 /// Pushes the function ref, then caller pushes args, then calls emit_call_args.
 /// Stack: [] → [function_ref]
 pub fn emit_push_global_func(chunk: &mut Chunk, name: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Rc::from(name)));
+    let idx = chunk.add_constant(Value::String(Arc::from(name)));
     chunk.emit_op_u16(Op::global_get, idx, line);
 }
 
@@ -147,4 +147,29 @@ pub fn emit_async_wrapper(chunk: &mut Chunk, body_chunk_idx: usize, line: u32) {
 /// Same as create_function_chunk but named with $async suffix for debugging.
 pub fn create_async_body_chunk(name: &str, arity: u8) -> Chunk {
     create_function_chunk(&format!("{}$async", name), arity)
+}
+
+// ── Spread arguments ───────────────────────────────────────────────────
+//
+// When a call has spread arguments: f(a, ...arr, b)
+// The compiler builds an args array at runtime:
+//   1. array_new 0 (empty array)
+//   2. For each normal arg: compile + array_push
+//   3. For each spread arg: compile + array_concat (flattens into the array)
+//   4. Use the array length as argc for the call
+//
+// This is language-agnostic — JS, Python (*args), Ruby (*splat) all use this.
+
+/// Emit: create empty args array → push one argument → leave array on stack.
+/// Call this for each non-spread argument in a spread call.
+/// Stack before: [args_array, value]  Stack after: [args_array]
+pub fn emit_spread_push_arg(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::array_push, line);
+}
+
+/// Emit: concat a spread array into the args array.
+/// Call this for each spread argument: `...arr`.
+/// Stack before: [args_array, spread_array]  Stack after: [merged_array]
+pub fn emit_spread_concat_arg(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::array_concat, line);
 }

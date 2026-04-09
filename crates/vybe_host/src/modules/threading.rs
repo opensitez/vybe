@@ -1,21 +1,24 @@
 //! System.Threading.Tasks, ThreadPool, Interlocked, Stopwatch, BackgroundWorker
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
-    // Task.Run — simplified: just call the function synchronously
-    vm.register_host_fn("vybe:threading", "taskRun", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        // In our synchronous VM, Task.Run just executes immediately
-        // The callback is args[0], but we can't call it from a host fn
-        // Return a "completed task" object
+    // Thread/Task spawning is handled by WASM stack switching opcodes
+    // (cont_new + resume) emitted by compiler_common::threading.
+    // No host functions needed for spawn/join — it's pure WASM.
+
+    // Task.Run — legacy host fn for old compilers that still use call_import
+    vm.register_host_fn("vybe:threading", "taskRun", Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        let callback = args.first().cloned().unwrap_or(Value::Null);
+        let result = ctx.invoke(&callback, &[]);
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("Task")));
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Task")));
         obj.properties.insert("iscompleted".into(), Value::Bool(true));
-        obj.properties.insert("status".into(), Value::String(Rc::from("RanToCompletion")));
-        Value::Object(Rc::new(RefCell::new(obj)))
+        obj.properties.insert("status".into(), Value::String(Arc::from("RanToCompletion")));
+        obj.properties.insert("result".into(), result);
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // Task.Delay(ms) — sleep
@@ -23,33 +26,33 @@ pub fn register(vm: &mut VM) {
         let ms = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
         std::thread::sleep(std::time::Duration::from_millis(ms));
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("Task")));
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Task")));
         obj.properties.insert("iscompleted".into(), Value::Bool(true));
-        Value::Object(Rc::new(RefCell::new(obj)))
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // Task.FromResult(value)
     vm.register_host_fn("vybe:threading", "taskFromResult", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let val = args.first().cloned().unwrap_or(Value::Null);
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("Task")));
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Task")));
         obj.properties.insert("iscompleted".into(), Value::Bool(true));
         obj.properties.insert("result".into(), val);
-        Value::Object(Rc::new(RefCell::new(obj)))
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // Task.CompletedTask
     vm.register_host_fn("vybe:threading", "taskCompleted", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("Task")));
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Task")));
         obj.properties.insert("iscompleted".into(), Value::Bool(true));
-        Value::Object(Rc::new(RefCell::new(obj)))
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // Stopwatch.Start()
     vm.register_host_fn("vybe:threading", "stopwatchStart", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.borrow_mut();
+            let mut o = obj.lock().unwrap();
             let running = o.properties.get("isrunning").map(|v| v.as_bool()).unwrap_or(false);
             if !running {
                 let now = std::time::SystemTime::now()
@@ -66,7 +69,7 @@ pub fn register(vm: &mut VM) {
     // Stopwatch.Stop()
     vm.register_host_fn("vybe:threading", "stopwatchStop", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.borrow_mut();
+            let mut o = obj.lock().unwrap();
             let running = o.properties.get("isrunning").map(|v| v.as_bool()).unwrap_or(false);
             if running {
                 let start = o.properties.get("__start").map(|v| v.as_f64()).unwrap_or(0.0);
@@ -85,7 +88,7 @@ pub fn register(vm: &mut VM) {
     // Stopwatch.ElapsedMilliseconds (property getter)
     vm.register_host_fn("vybe:threading", "stopwatchElapsed", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             let acc = o.properties.get("__accumulated").map(|v| v.as_f64()).unwrap_or(0.0);
             let running = o.properties.get("isrunning").map(|v| v.as_bool()).unwrap_or(false);
             if running {
@@ -105,17 +108,17 @@ pub fn register(vm: &mut VM) {
     let elapsed_idx = *vm.host_registry.get(&("vybe:threading".into(), "stopwatchElapsed".into())).unwrap();
     vm.register_host_fn("vybe:threading", "stopwatchNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("Stopwatch")));
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Stopwatch")));
         obj.properties.insert("__start".into(), Value::F64(0.0));
         obj.properties.insert("__accumulated".into(), Value::F64(0.0));
         obj.properties.insert("isrunning".into(), Value::Bool(false));
         // ElapsedMilliseconds is a .NET property — register as __get_ so struct_get auto-invokes
         let mut getter = Object::new();
         getter.kind = ObjectKind::HostFunction(elapsed_idx);
-        let getter_val = Value::Object(Rc::new(RefCell::new(getter)));
+        let getter_val = Value::Object(Arc::new(Mutex::new(getter)));
         obj.properties.insert("__get_elapsedmilliseconds".into(), getter_val.clone());
         obj.properties.insert("__get_elapsed".into(), getter_val);
-        Value::Object(Rc::new(RefCell::new(obj)))
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // System.Random
@@ -125,9 +128,9 @@ pub fn register(vm: &mut VM) {
             .unwrap_or_default()
             .subsec_nanos() as u64;
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("Random")));
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Random")));
         obj.properties.insert("__seed".into(), Value::F64(seed as f64));
-        Value::Object(Rc::new(RefCell::new(obj)))
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     vm.register_host_fn("vybe:threading", "randomNext", Box::new(|_ctx: &mut HostContext, args: &[Value]| {

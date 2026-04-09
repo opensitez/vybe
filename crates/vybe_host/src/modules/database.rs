@@ -1,9 +1,7 @@
 //! vybe:database — SQL database access (SQLite, PostgreSQL, MySQL).
 //! Uses typed sqlx pools per driver — no AnyPool, so MySQL TINYINT/BIT work natively.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
@@ -94,7 +92,7 @@ fn val_from_str(raw: &str) -> Value {
     } else if raw == "null" || raw.is_empty() {
         Value::Null
     } else {
-        Value::String(Rc::from(raw))
+        Value::String(Arc::from(raw))
     }
 }
 
@@ -109,7 +107,7 @@ fn sqlite_row_to_value(row: &sqlx::sqlite::SqliteRow) -> Value {
             .unwrap_or_else(|_| "null".to_string());
         obj.properties.insert(name, val_from_str(&raw));
     }
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 fn mysql_row_to_value(row: &sqlx::mysql::MySqlRow) -> Value {
@@ -125,7 +123,7 @@ fn mysql_row_to_value(row: &sqlx::mysql::MySqlRow) -> Value {
             .unwrap_or_else(|_| "null".to_string());
         obj.properties.insert(name, val_from_str(&raw));
     }
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 fn pg_row_to_value(row: &sqlx::postgres::PgRow) -> Value {
@@ -139,7 +137,7 @@ fn pg_row_to_value(row: &sqlx::postgres::PgRow) -> Value {
             .unwrap_or_else(|_| "null".to_string());
         obj.properties.insert(name, val_from_str(&raw));
     }
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 // ── Typed fetch helpers ──────────────────────────────────────────────────────
@@ -219,7 +217,7 @@ fn fetch_column_names(pool: &DbPool, sql: &str) -> Vec<String> {
 fn scalar_from_value(v: Value) -> Value {
     // v is already a row object — grab the first property
     if let Value::Object(obj) = v {
-        let o = obj.borrow();
+        let o = obj.lock().unwrap();
         if let Some(first) = o.properties.values().next() {
             return first.clone();
         }
@@ -234,10 +232,10 @@ pub fn register(vm: &mut VM) {
         let raw = s(args, 0);
         if raw.is_empty() || raw == "null" {
             let mut obj = Object::new();
-            obj.properties.insert("__type".into(), Value::String(Rc::from("SqlConnection")));
+            obj.properties.insert("__type".into(), Value::String(Arc::from("SqlConnection")));
             obj.properties.insert("__conn_id".into(), Value::F64(0.0));
-            obj.properties.insert("state".into(), Value::String(Rc::from("Closed")));
-            return Value::Object(Rc::new(RefCell::new(obj)));
+            obj.properties.insert("state".into(), Value::String(Arc::from("Closed")));
+            return Value::Object(Arc::new(Mutex::new(obj)));
         }
         let conn_str = normalize_conn_str_full(&raw);
         match connect_pool(&conn_str) {
@@ -245,11 +243,11 @@ pub fn register(vm: &mut VM) {
                 let id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
                 get_state().lock().unwrap().connections.insert(id, DbConn { pool, conn_str: conn_str.clone() });
                 let mut obj = Object::new();
-                obj.properties.insert("__type".into(), Value::String(Rc::from("SqlConnection")));
+                obj.properties.insert("__type".into(), Value::String(Arc::from("SqlConnection")));
                 obj.properties.insert("__conn_id".into(), Value::F64(id as f64));
-                obj.properties.insert("connectionstring".into(), Value::String(Rc::from(conn_str.as_str())));
-                obj.properties.insert("state".into(), Value::String(Rc::from("Open")));
-                Value::Object(Rc::new(RefCell::new(obj)))
+                obj.properties.insert("connectionstring".into(), Value::String(Arc::from(conn_str.as_str())));
+                obj.properties.insert("state".into(), Value::String(Arc::from("Open")));
+                Value::Object(Arc::new(Mutex::new(obj)))
             }
             Err(e) => { eprintln!("db.connect error: {}", e); Value::Null }
         }
@@ -265,13 +263,13 @@ pub fn register(vm: &mut VM) {
         let guard = state.lock().unwrap();
         let conn = match guard.connections.get(&conn_id) {
             Some(c) => c,
-            None => return Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))),
+            None => return Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))),
         };
         match fetch_all_rows(&conn.pool, &sql) {
-            Ok(rows) => Value::Object(Rc::new(RefCell::new(Object::new_array(rows)))),
+            Ok(rows) => Value::Object(Arc::new(Mutex::new(Object::new_array(rows)))),
             Err(e) => {
                 eprintln!("db.query error: {}", e);
-                Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+                Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
             }
         }
     }));
@@ -316,7 +314,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:database", "open", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let raw = {
-                let o = obj.borrow();
+                let o = obj.lock().unwrap();
                 o.properties.get("connectionstring").map(|v| format!("{}", v)).unwrap_or_default()
             };
             if raw.is_empty() { return Value::Null; }
@@ -325,9 +323,9 @@ pub fn register(vm: &mut VM) {
                 Ok(pool) => {
                     let id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
                     get_state().lock().unwrap().connections.insert(id, DbConn { pool, conn_str });
-                    let mut o = obj.borrow_mut();
+                    let mut o = obj.lock().unwrap();
                     o.properties.insert("__conn_id".into(), Value::F64(id as f64));
-                    o.properties.insert("state".into(), Value::String(Rc::from("Open")));
+                    o.properties.insert("state".into(), Value::String(Arc::from("Open")));
                 }
                 Err(e) => eprintln!("db.open error: {}", e),
             }
@@ -338,10 +336,10 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:database", "createCommand", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let conn_id = get_conn_id(args);
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("SqlCommand")));
+        obj.properties.insert("__type".into(), Value::String(Arc::from("SqlCommand")));
         obj.properties.insert("__conn_id".into(), Value::F64(conn_id as f64));
-        obj.properties.insert("commandtext".into(), Value::String(Rc::from("")));
-        Value::Object(Rc::new(RefCell::new(obj)))
+        obj.properties.insert("commandtext".into(), Value::String(Arc::from("")));
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     vm.register_host_fn("vybe:database", "close", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
@@ -360,19 +358,19 @@ pub fn register(vm: &mut VM) {
         let guard = state.lock().unwrap();
         let conn = match guard.connections.get(&conn_id) {
             Some(c) => c,
-            None => return Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))),
+            None => return Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))),
         };
         let sql = tables_sql(&conn.conn_str);
         match fetch_all_rows(&conn.pool, sql) {
             Ok(rows) => {
                 let names: Vec<Value> = rows.into_iter().filter_map(|v| {
                     if let Value::Object(o) = v {
-                        o.borrow().properties.values().next().cloned()
+                        o.lock().unwrap().properties.values().next().cloned()
                     } else { None }
                 }).collect();
-                Value::Object(Rc::new(RefCell::new(Object::new_array(names))))
+                Value::Object(Arc::new(Mutex::new(Object::new_array(names))))
             }
-            Err(_) => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))),
+            Err(_) => Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))),
         }
     }));
 
@@ -383,7 +381,7 @@ pub fn register(vm: &mut VM) {
         let guard = state.lock().unwrap();
         let conn = match guard.connections.get(&conn_id) {
             Some(c) => c,
-            None => return Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))),
+            None => return Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))),
         };
         let sql = columns_sql(&conn.conn_str, &table);
         match fetch_all_rows(&conn.pool, &sql) {
@@ -391,12 +389,12 @@ pub fn register(vm: &mut VM) {
                 let col_idx = if conn.conn_str.starts_with("sqlite:") { 1 } else { 0 };
                 let names: Vec<Value> = rows.into_iter().filter_map(|v| {
                     if let Value::Object(o) = v {
-                        o.borrow().properties.values().nth(col_idx).cloned()
+                        o.lock().unwrap().properties.values().nth(col_idx).cloned()
                     } else { None }
                 }).collect();
-                Value::Object(Rc::new(RefCell::new(Object::new_array(names))))
+                Value::Object(Arc::new(Mutex::new(Object::new_array(names))))
             }
-            Err(_) => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))),
+            Err(_) => Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))),
         }
     }));
 
@@ -443,7 +441,7 @@ fn s(args: &[Value], idx: usize) -> String {
 /// Get SQL from either a SqlCommand object's commandtext or a plain string arg.
 fn get_sql(args: &[Value]) -> String {
     if let Some(Value::Object(obj)) = args.first() {
-        let o = obj.borrow();
+        let o = obj.lock().unwrap();
         let ct = o.properties.get("commandtext").map(|v| format!("{}", v)).unwrap_or_default();
         if !ct.is_empty() { return ct; }
     }
@@ -454,7 +452,7 @@ fn get_conn_id(args: &[Value]) -> u64 {
     match args.first() {
         Some(Value::F64(n)) => *n as u64,
         Some(Value::Object(obj)) => {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             o.properties.get("__conn_id").map(|v| v.as_f64() as u64).unwrap_or(0)
         }
         _ => 0,
@@ -463,7 +461,7 @@ fn get_conn_id(args: &[Value]) -> u64 {
 
 fn extract_params(args: &[Value], idx: usize) -> Vec<String> {
     if let Some(Value::Object(obj)) = args.get(idx) {
-        let o = obj.borrow();
+        let o = obj.lock().unwrap();
         if let ObjectKind::Array(ref elems) = o.kind {
             return elems.iter().map(|v| format!("{}", v)).collect();
         }
@@ -520,7 +518,7 @@ pub fn test_connection_and_list_tables(conn_str: &str) -> Result<Vec<String>, St
     let rows = fetch_all_rows(&pool, sql).map_err(|e| format!("Query failed: {}", e))?;
     let tables: Vec<String> = rows.into_iter().filter_map(|v| {
         if let Value::Object(o) = v {
-            if let Some(Value::String(s)) = o.borrow().properties.values().next() {
+            if let Some(Value::String(s)) = o.lock().unwrap().properties.values().next() {
                 let name = s.to_string();
                 if !name.starts_with("sqlite_") && !name.starts_with("_sqlx") {
                     return Some(name);
@@ -555,14 +553,14 @@ pub fn query_rows(conn_str: &str, sql: &str) -> Result<(Vec<String>, Vec<HashMap
 
     // Collect column names from first row
     let columns: Vec<String> = if let Some(Value::Object(first)) = value_rows.first() {
-        first.borrow().properties.keys().cloned().collect()
+        first.lock().unwrap().properties.keys().cloned().collect()
     } else {
         fetch_column_names(&pool, sql)
     };
 
     let result: Vec<HashMap<String, String>> = value_rows.into_iter().filter_map(|v| {
         if let Value::Object(obj) = v {
-            let map = obj.borrow().properties.iter().map(|(k, v)| {
+            let map = obj.lock().unwrap().properties.iter().map(|(k, v)| {
                 (k.clone(), format!("{}", v))
             }).collect();
             Some(map)

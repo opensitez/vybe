@@ -1,7 +1,6 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 /// A universal VM value. Language-agnostic — no coercion rules here.
 /// The compiler is responsible for emitting type checks and conversions.
@@ -15,11 +14,11 @@ pub enum Value {
     I32(i32),
     I64(i64),
     F64(f64),
-    String(Rc<str>),
-    Object(Rc<RefCell<Object>>),
+    String(Arc<str>),
+    Object(Arc<Mutex<Object>>),
     /// Weak reference to an object — does not prevent collection.
     /// Upgrade to strong reference with `ref_deref` opcode.
-    WeakRef(Weak<RefCell<Object>>),
+    WeakRef(Weak<Mutex<Object>>),
     /// SIMD 128-bit vector (4×i32, 2×f64, 4×f32, 16×i8, 8×i16).
     V128([u8; 16]),
 }
@@ -82,7 +81,7 @@ impl Value {
             Value::F64(_) => "f64",
             Value::String(_) => "string",
             Value::Object(o) => {
-                let obj = o.borrow();
+                let obj = o.lock().unwrap();
                 match &obj.kind {
                     ObjectKind::Ordinary => "object",
                     ObjectKind::Array(_) => "array",
@@ -110,7 +109,7 @@ impl Value {
                 if a.is_nan() || b.is_nan() { false } else { a == b }
             }
             (Value::String(a), Value::String(b)) => a == b,
-            (Value::Object(a), Value::Object(b)) => Rc::ptr_eq(a, b),
+            (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
             // Cross-type numeric equality: I32(0) == F64(0.0), etc.
             (Value::I32(a), Value::F64(b)) => (*a as f64) == *b,
             (Value::F64(a), Value::I32(b)) => *a == (*b as f64),
@@ -140,7 +139,7 @@ impl fmt::Display for Value {
             }
             Value::String(s) => write!(f, "{}", s),
             Value::Object(o) => {
-                let obj = o.borrow();
+                let obj = o.lock().unwrap();
                 match &obj.kind {
                     ObjectKind::Array(elems) => {
                         let parts: Vec<String> = elems.iter().map(|v| format!("{}", v)).collect();
@@ -256,7 +255,7 @@ pub struct Function {
     pub name: Option<String>,
     pub arity: u8,
     pub chunk_index: usize,
-    pub upvalues: Vec<Rc<RefCell<Upvalue>>>,
+    pub upvalues: Vec<Arc<Mutex<Upvalue>>>,
 }
 
 /// A captured variable (upvalue).

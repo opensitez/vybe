@@ -4,7 +4,7 @@
 //! C# $strings, VB string concat) emit the same pattern: compile parts,
 //! toString each expression, concatenate.
 
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
@@ -29,7 +29,7 @@ pub fn emit_to_string_with_import(chunk: &mut Chunk, import_idx: u16, line: u32)
 /// Stack before: [part1, part2, ..., partN]  Stack after: [concatenated_string]
 pub fn emit_concat(chunk: &mut Chunk, part_count: usize, line: u32) {
     if part_count == 0 {
-        let c = chunk.add_constant(Value::String(Rc::from("")));
+        let c = chunk.add_constant(Value::String(Arc::from("")));
         chunk.emit_op_u16(Op::r#const, c, line);
     } else if part_count > 1 {
         // Use str_concat_n if available (more efficient for many parts)
@@ -55,7 +55,7 @@ pub fn emit_interpolation_part(chunk: &mut Chunk, line: u32) {
 /// Emit a string literal part.
 /// Stack: [] → [string]
 pub fn emit_literal_part(chunk: &mut Chunk, text: &str, line: u32) {
-    let c = chunk.add_constant(Value::String(Rc::from(text)));
+    let c = chunk.add_constant(Value::String(Arc::from(text)));
     chunk.emit_op_u16(Op::r#const, c, line);
 }
 

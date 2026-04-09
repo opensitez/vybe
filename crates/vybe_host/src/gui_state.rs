@@ -18,7 +18,7 @@ use vybe_widgets::{
 };
 
 /// Holds the live widget form + event callbacks.
-/// Created before VM runs, shared with host fns via `Rc<RefCell<>>`.
+/// Created before VM runs, shared with host fns via `Arc<Mutex<>>`.
 pub struct GuiState {
     /// The widget form being built by host functions.
     pub form: WidgetForm,
@@ -54,13 +54,15 @@ impl GuiState {
         }
     }
 
-    /// Register an event handler: key = "controlname.eventname" (control lowercased).
+    /// Register an event handler: key = "controlname.eventname" (both lowercased).
+    /// Lowercasing both ensures VB (case-insensitive) and JS (case-sensitive)
+    /// both match — events are always "Click", "TextChanged" etc.
     pub fn register_event(&mut self, control: &str, event: &str, callback: Value) {
-        let key = format!("{}.{}", control.to_lowercase(), event);
+        let key = format!("{}.{}", control.to_lowercase(), event.to_lowercase());
         self.event_handlers.insert(key, callback);
     }
 
-    /// Look up an event handler.
+    /// Look up an event handler. Both control and event are lowercased.
     pub fn get_event_handler(&self, control: &str, event: &str) -> Option<&Value> {
         let key = format!("{}.{}", control.to_lowercase(), event.to_lowercase());
         self.event_handlers.get(&key)
@@ -158,6 +160,7 @@ fn make_widget(type_name: &str, name: &str, text: &str, w: f32, h: f32) -> Box<d
         "textbox" | "richtextbox" => {
             let mut t = TextInput::new().with_name(name);
             t.value = text.to_string();
+            t.cursor = t.value.len();
             t.width = w;
             t.height = h;
             Box::new(t)

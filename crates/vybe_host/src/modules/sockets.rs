@@ -1,11 +1,9 @@
 //! System.Net.Sockets — TcpClient, TcpListener, UdpClient
 //! Real socket implementations for networking tests.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpStream, TcpListener, UdpSocket};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
@@ -30,16 +28,16 @@ fn get_state() -> Arc<Mutex<SocketState>> {
 
 fn make_obj(type_name: &str, id: u64) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Rc::from(type_name)));
+    obj.properties.insert("__type".into(), Value::String(Arc::from(type_name)));
     obj.properties.insert("__socket_id".into(), Value::F64(id as f64));
     obj.properties.insert("connected".into(), Value::Bool(true));
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 fn get_id(args: &[Value]) -> u64 {
     match args.first() {
         Some(Value::Object(obj)) => {
-            obj.borrow().properties.get("__socket_id").map(|v| v.as_f64() as u64).unwrap_or(0)
+            obj.lock().unwrap().properties.get("__socket_id").map(|v| v.as_f64() as u64).unwrap_or(0)
         }
         Some(Value::F64(n)) => *n as u64,
         _ => 0,
@@ -56,11 +54,11 @@ pub fn register(vm: &mut VM) {
             Ok(listener) => {
                 let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
                 let mut obj = Object::new();
-                obj.properties.insert("__type".into(), Value::String(Rc::from("TcpListener")));
+                obj.properties.insert("__type".into(), Value::String(Arc::from("TcpListener")));
                 obj.properties.insert("__socket_id".into(), Value::F64(id as f64));
                 obj.properties.insert("port".into(), Value::F64(port as f64));
                 get_state().lock().unwrap().tcp_listeners.insert(id, listener);
-                Value::Object(Rc::new(RefCell::new(obj)))
+                Value::Object(Arc::new(Mutex::new(obj)))
             }
             Err(e) => {
                 eprintln!("TcpListener bind error on port {}: {}", port, e);
@@ -115,13 +113,13 @@ pub fn register(vm: &mut VM) {
             Ok(stream) => {
                 let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
                 let mut obj = Object::new();
-                obj.properties.insert("__type".into(), Value::String(Rc::from("TcpClient")));
+                obj.properties.insert("__type".into(), Value::String(Arc::from("TcpClient")));
                 obj.properties.insert("__socket_id".into(), Value::F64(id as f64));
                 obj.properties.insert("connected".into(), Value::Bool(true));
-                obj.properties.insert("host".into(), Value::String(Rc::from(host.as_str())));
+                obj.properties.insert("host".into(), Value::String(Arc::from(host.as_str())));
                 obj.properties.insert("port".into(), Value::F64(port as f64));
                 get_state().lock().unwrap().tcp_streams.insert(id, stream);
-                Value::Object(Rc::new(RefCell::new(obj)))
+                Value::Object(Arc::new(Mutex::new(obj)))
             }
             Err(e) => {
                 eprintln!("TcpClient connect error: {}", e);
@@ -148,10 +146,10 @@ pub fn register(vm: &mut VM) {
         // args[0] = null (this), args[1] = stream/tcpclient object OR file path
         let inner = args.get(1).or(args.first()).cloned().unwrap_or(Value::Null);
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("StreamWriter")));
+        obj.properties.insert("__type".into(), Value::String(Arc::from("StreamWriter")));
         // If inner is a TcpClient, copy its socket id
         if let Value::Object(ref inner_obj) = inner {
-            let io = inner_obj.borrow();
+            let io = inner_obj.lock().unwrap();
             if let Some(sid) = io.properties.get("__socket_id") {
                 obj.properties.insert("__socket_id".into(), sid.clone());
             }
@@ -161,9 +159,9 @@ pub fn register(vm: &mut VM) {
         } else if let Value::String(ref s) = inner {
             // File path
             obj.properties.insert("__path".into(), Value::String(s.clone()));
-            obj.properties.insert("__buffer".into(), Value::String(Rc::from("")));
+            obj.properties.insert("__buffer".into(), Value::String(Arc::from("")));
         }
-        Value::Object(Rc::new(RefCell::new(obj)))
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // StreamWriter.WriteLine(text)
@@ -180,9 +178,9 @@ pub fn register(vm: &mut VM) {
             }
         } else if let Some(Value::Object(obj)) = args.first() {
             // File buffer
-            let mut o = obj.borrow_mut();
+            let mut o = obj.lock().unwrap();
             let buf = o.properties.get("__buffer").map(|v| format!("{}", v)).unwrap_or_default();
-            o.properties.insert("__buffer".into(), Value::String(Rc::from(format!("{}{}\n", buf, text).as_str())));
+            o.properties.insert("__buffer".into(), Value::String(Arc::from(format!("{}{}\n", buf, text).as_str())));
         }
         Value::Null
     }));
@@ -203,7 +201,7 @@ pub fn register(vm: &mut VM) {
     // StreamWriter.Close()
     vm.register_host_fn("vybe:net", "streamWriterClose", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             if let Some(Value::String(path)) = o.properties.get("__path") {
                 let buf = o.properties.get("__buffer").map(|v| format!("{}", v)).unwrap_or_default();
                 let _ = std::fs::write(path.as_ref(), &buf);
@@ -216,9 +214,9 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:net", "streamReaderNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let inner = args.get(1).or(args.first()).cloned().unwrap_or(Value::Null);
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Rc::from("StreamReader")));
+        obj.properties.insert("__type".into(), Value::String(Arc::from("StreamReader")));
         if let Value::Object(ref inner_obj) = inner {
-            let io = inner_obj.borrow();
+            let io = inner_obj.lock().unwrap();
             if let Some(sid) = io.properties.get("__socket_id") {
                 obj.properties.insert("__socket_id".into(), sid.clone());
             }
@@ -226,8 +224,8 @@ pub fn register(vm: &mut VM) {
             // File path
             match std::fs::read_to_string(s.as_ref()) {
                 Ok(content) => {
-                    let lines: Vec<Value> = content.lines().map(|l| Value::String(Rc::from(l))).collect();
-                    obj.properties.insert("__lines".into(), Value::Object(Rc::new(RefCell::new(
+                    let lines: Vec<Value> = content.lines().map(|l| Value::String(Arc::from(l))).collect();
+                    obj.properties.insert("__lines".into(), Value::Object(Arc::new(Mutex::new(
                         vybe_bytecode::value::Object::new_array(lines)
                     ))));
                     obj.properties.insert("__pos".into(), Value::F64(0.0));
@@ -235,7 +233,7 @@ pub fn register(vm: &mut VM) {
                 Err(_) => {}
             }
         }
-        Value::Object(Rc::new(RefCell::new(obj)))
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // StreamReader.ReadLine()
@@ -259,17 +257,17 @@ pub fn register(vm: &mut VM) {
                     }
                 }
                 if !line.is_empty() {
-                    return Value::String(Rc::from(String::from_utf8_lossy(&line).as_ref()));
+                    return Value::String(Arc::from(String::from_utf8_lossy(&line).as_ref()));
                 }
                 return Value::Null;
             }
         }
         // File-based reader
         if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.borrow_mut();
+            let mut o = obj.lock().unwrap();
             let pos = o.properties.get("__pos").map(|v| v.as_f64() as usize).unwrap_or(0);
             if let Some(Value::Object(lines_obj)) = o.properties.get("__lines") {
-                let lo = lines_obj.borrow();
+                let lo = lines_obj.lock().unwrap();
                 if let vybe_bytecode::value::ObjectKind::Array(ref elems) = lo.kind {
                     if pos < elems.len() {
                         let line = elems[pos].clone();
@@ -291,11 +289,11 @@ pub fn register(vm: &mut VM) {
             Ok(socket) => {
                 let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
                 let mut obj = Object::new();
-                obj.properties.insert("__type".into(), Value::String(Rc::from("UdpClient")));
+                obj.properties.insert("__type".into(), Value::String(Arc::from("UdpClient")));
                 obj.properties.insert("__socket_id".into(), Value::F64(id as f64));
                 obj.properties.insert("port".into(), Value::F64(port as f64));
                 get_state().lock().unwrap().udp_sockets.insert(id, socket);
-                Value::Object(Rc::new(RefCell::new(obj)))
+                Value::Object(Arc::new(Mutex::new(obj)))
             }
             Err(e) => {
                 eprintln!("UdpClient bind error: {}", e);
@@ -327,7 +325,7 @@ pub fn register(vm: &mut VM) {
             let mut buf = [0u8; 4096];
             match socket.recv_from(&mut buf) {
                 Ok((n, _addr)) => {
-                    return Value::String(Rc::from(String::from_utf8_lossy(&buf[..n]).as_ref()));
+                    return Value::String(Arc::from(String::from_utf8_lossy(&buf[..n]).as_ref()));
                 }
                 Err(e) => eprintln!("UDP receive error: {}", e),
             }
@@ -348,11 +346,11 @@ pub fn register(vm: &mut VM) {
         match std::net::ToSocketAddrs::to_socket_addrs(&format!("{}:0", host)) {
             Ok(addrs) => {
                 let ips: Vec<Value> = addrs
-                    .map(|a| Value::String(Rc::from(a.ip().to_string().as_str())))
+                    .map(|a| Value::String(Arc::from(a.ip().to_string().as_str())))
                     .collect();
-                Value::Object(Rc::new(RefCell::new(vybe_bytecode::value::Object::new_array(ips))))
+                Value::Object(Arc::new(Mutex::new(vybe_bytecode::value::Object::new_array(ips))))
             }
-            Err(_) => Value::Object(Rc::new(RefCell::new(vybe_bytecode::value::Object::new_array(vec![])))),
+            Err(_) => Value::Object(Arc::new(Mutex::new(vybe_bytecode::value::Object::new_array(vec![])))),
         }
     }));
 }

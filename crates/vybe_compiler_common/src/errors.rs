@@ -4,7 +4,7 @@
 //! - try_start → body → try_end → handler
 //! - try_table for typed multi-catch
 
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
@@ -19,32 +19,32 @@ pub fn emit_exception_constructor(chunk: &mut Chunk, this_slot: u16, exc_name: &
 
     // __type = exc_name (for ref_test matching)
     chunk.emit_op_u16(Op::local_get, this_slot, line);
-    let t_val = chunk.add_constant(Value::String(Rc::from(exc_name)));
+    let t_val = chunk.add_constant(Value::String(Arc::from(exc_name)));
     chunk.emit_op_u16(Op::r#const, t_val, line);
-    let t_key = chunk.add_constant(Value::String(Rc::from("__type")));
+    let t_key = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_op_u16(Op::struct_set, t_key, line);
     chunk.emit_op(Op::drop, line);
 
     // __exception_type = exc_name (Python convention)
     chunk.emit_op_u16(Op::local_get, this_slot, line);
-    let et_val = chunk.add_constant(Value::String(Rc::from(exc_name)));
+    let et_val = chunk.add_constant(Value::String(Arc::from(exc_name)));
     chunk.emit_op_u16(Op::r#const, et_val, line);
-    let et_key = chunk.add_constant(Value::String(Rc::from("__exception_type")));
+    let et_key = chunk.add_constant(Value::String(Arc::from("__exception_type")));
     chunk.emit_op_u16(Op::struct_set, et_key, line);
     chunk.emit_op(Op::drop, line);
 
     // name = exc_name (JS Error convention)
     chunk.emit_op_u16(Op::local_get, this_slot, line);
-    let n_val = chunk.add_constant(Value::String(Rc::from(exc_name)));
+    let n_val = chunk.add_constant(Value::String(Arc::from(exc_name)));
     chunk.emit_op_u16(Op::r#const, n_val, line);
-    let n_key = chunk.add_constant(Value::String(Rc::from("name")));
+    let n_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::struct_set, n_key, line);
     chunk.emit_op(Op::drop, line);
 
     // message = msg_slot
     chunk.emit_op_u16(Op::local_get, this_slot, line);
     chunk.emit_op_u16(Op::local_get, msg_slot, line);
-    let m_key = chunk.add_constant(Value::String(Rc::from("message")));
+    let m_key = chunk.add_constant(Value::String(Arc::from("message")));
     chunk.emit_op_u16(Op::struct_set, m_key, line);
     chunk.emit_op(Op::drop, line);
 }

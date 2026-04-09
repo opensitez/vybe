@@ -1,0 +1,494 @@
+# Visual Basic .NET Compiler Profile
+# ───────────────────────────────────
+# Full port of vybe_compiler_vb builtins.rs (900 lines) + compiler settings
+
+[compiler]
+function_return = "result_slot"        # VB uses FunctionName = value AND Return
+self_keyword = "me"
+base_keyword = "mybase"
+constructor_name = "New"               # Sub New()
+separated_methods = false              # methods live inside class body
+implicit_self_fields = true            # bare field names resolve to Me.field inside class
+explicit_self_param = false            # Me is implicit, not a param
+enum_as_ordinals = false
+case_sensitive = false
+string_indexing = "one_based"          # Mid(), InStr() are 1-based
+array_upper_bound_inclusive = true     # Dim arr(5) means 0..5 inclusive (6 elements)
+parens_for_index = true                # arr(i) not arr[i] — () is both call and index
+entry_point = "main"                   # auto-call Main if defined
+# VB-specific compiler behaviors
+partial_classes = true                 # merge Partial Class declarations before compiling
+byref_boxing = true                    # ByRef args wrapped in single-element arrays for call-by-reference
+with_block = true                      # With obj ... End With — bare .Member resolves to With target
+event_side_effects = true              # member assignment on controls triggers property change events
+new_with_initializer = true            # New Foo() With { .Prop = val }
+new_from_initializer = true            # New List(Of T) From { items }
+linq_queries = true                    # LINQ query syntax compiled to method chains
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — every function/method the VB compiler knows about
+# ────────────────────────────────────────────────────────────────────────────
+#
+# emit formats:
+#   "print"                    → common::io::emit_print
+#   "str_length"               → common::strings::emit_length
+#   "opcode:<op>"              → single WASM opcode (e.g. f64_abs)
+#   "host:<module>:<func>"     → call_import(module, func)
+#   "intrinsic:<name>"         → multi-opcode sequence handled by compiler
+#   "mutate:add"               → in-place mutation (Inc/Dec)
+#   "noop"                     → emit nothing (no-op stub)
+#   "namespace_chain"          → resolve via global namespace objects
+
+[builtins]
+
+# ── I/O ──────────────────────────────────────────────────────────────────────
+
+"console.writeline"   = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
+"console.write"       = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
+"console.error.writeline" = { emit = "host:wasi:cli:error",  min_args = 0, max_args = 255 }
+"console.error"       = { emit = "host:wasi:cli:error",      min_args = 0, max_args = 255 }
+"console.readline"    = { emit = "host:wasi:cli:readLine",   min_args = 0, max_args = 0 }
+"msgbox"              = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
+"inputbox"            = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
+"debug.print"         = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
+
+# ── Type Conversions ─────────────────────────────────────────────────────────
+
+cstr    = { emit = "host:vybe:convert:toString",   min_args = 1, max_args = 1 }
+cint    = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
+cdbl    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
+cbool   = { emit = "opcode:dyn_to_bool",           min_args = 1, max_args = 1 }
+clng    = { emit = "host:vybe:convert:clng",       min_args = 1, max_args = 1 }
+csng    = { emit = "host:vybe:convert:csng",       min_args = 1, max_args = 1 }
+cbyte   = { emit = "intrinsic:cbyte",              min_args = 1, max_args = 1 }
+cchar   = { emit = "host:vybe:convert:cchar",      min_args = 1, max_args = 1 }
+cshort  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
+cushort = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
+cuint   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
+culng   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
+csbyte  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
+ccur    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
+cdec    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
+cvar    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
+cobj    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
+val     = { emit = "host:vybe:convert:val",        min_args = 1, max_args = 1 }
+hex     = { emit = "host:vybe:convert:hex",        min_args = 1, max_args = 1 }
+"hex$"  = { emit = "host:vybe:convert:hex",        min_args = 1, max_args = 1 }
+oct     = { emit = "host:vybe:convert:oct",        min_args = 1, max_args = 1 }
+"oct$"  = { emit = "host:vybe:convert:oct",        min_args = 1, max_args = 1 }
+str     = { emit = "host:vybe:convert:str",        min_args = 1, max_args = 1 }
+"str$"  = { emit = "host:vybe:convert:str",        min_args = 1, max_args = 1 }
+iif     = { emit = "host:vybe:convert:iif",        min_args = 3, max_args = 3 }
+choose  = { emit = "host:vybe:convert:choose",     min_args = 2, max_args = 255 }
+rgb     = { emit = "host:vybe:convert:rgb",        min_args = 3, max_args = 3 }
+qbcolor = { emit = "host:vybe:convert:rgb",        min_args = 1, max_args = 1 }
+
+# ── Type Checking ────────────────────────────────────────────────────────────
+
+isnumeric  = { emit = "host:vybe:convert:isNumeric",  min_args = 1, max_args = 1 }
+isnothing  = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
+isnull     = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
+isempty    = { emit = "host:vybe:convert:isEmpty",     min_args = 1, max_args = 1 }
+isobject   = { emit = "host:vybe:convert:isObject",    min_args = 1, max_args = 1 }
+isarray    = { emit = "opcode:ref_is_array",           min_args = 1, max_args = 1 }
+isdate     = { emit = "host:vybe:convert:isDate",      min_args = 1, max_args = 1 }
+isdbnull   = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
+iserror    = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
+typename   = { emit = "opcode:ref_typeof",             min_args = 1, max_args = 1 }
+vartype    = { emit = "host:vybe:convert:varType",     min_args = 1, max_args = 1 }
+
+# ── Math — WASM opcodes (zero overhead) ─────────────────────────────────────
+
+abs           = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
+"math.abs"    = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
+"system.math.abs" = { emit = "opcode:f64_abs", min_args = 1, max_args = 1 }
+fix           = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
+int           = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
+"math.floor"  = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
+"system.math.floor" = { emit = "opcode:f64_floor", min_args = 1, max_args = 1 }
+"math.ceiling" = { emit = "opcode:f64_ceil",   min_args = 1, max_args = 1 }
+"math.ceil"   = { emit = "opcode:f64_ceil",    min_args = 1, max_args = 1 }
+"system.math.ceiling" = { emit = "opcode:f64_ceil", min_args = 1, max_args = 1 }
+"system.math.ceil" = { emit = "opcode:f64_ceil", min_args = 1, max_args = 1 }
+sqr           = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
+"math.sqrt"   = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
+"system.math.sqrt" = { emit = "opcode:f64_sqrt", min_args = 1, max_args = 1 }
+"math.truncate" = { emit = "opcode:f64_trunc", min_args = 1, max_args = 1 }
+"system.math.truncate" = { emit = "opcode:f64_trunc", min_args = 1, max_args = 1 }
+round         = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
+"math.round"  = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
+"system.math.round" = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
+"math.min"    = { emit = "opcode:f64_min",     min_args = 2, max_args = 2 }
+"system.math.min" = { emit = "opcode:f64_min", min_args = 2, max_args = 2 }
+"math.max"    = { emit = "opcode:f64_max",     min_args = 2, max_args = 2 }
+"system.math.max" = { emit = "opcode:f64_max", min_args = 2, max_args = 2 }
+
+"convert.toint32" = { emit = "opcode:i32_from_f64", min_args = 1, max_args = 1 }
+"convert.toint"   = { emit = "opcode:i32_from_f64", min_args = 1, max_args = 1 }
+"convert.todouble" = { emit = "opcode:f64_from_i32", min_args = 1, max_args = 1 }
+
+# ── Math — host calls ───────────────────────────────────────────────────────
+
+sgn        = { emit = "host:vybe:math:sign",   min_args = 1, max_args = 1 }
+rnd        = { emit = "host:vybe:math:random", min_args = 0, max_args = 1 }
+randomize  = { emit = "host:vybe:math:random", min_args = 0, max_args = 0 }
+log        = { emit = "host:vybe:math:log",    min_args = 1, max_args = 1 }
+exp        = { emit = "host:vybe:math:exp",    min_args = 1, max_args = 1 }
+sin        = { emit = "host:vybe:math:sin",    min_args = 1, max_args = 1 }
+cos        = { emit = "host:vybe:math:cos",    min_args = 1, max_args = 1 }
+tan        = { emit = "host:vybe:math:tan",    min_args = 1, max_args = 1 }
+atn        = { emit = "host:vybe:math:atan",   min_args = 1, max_args = 1 }
+atan       = { emit = "host:vybe:math:atan",   min_args = 1, max_args = 1 }
+
+# ── String functions — WASM string builtins (zero overhead) ──────────────────
+
+len        = { emit = "opcode:str_length",         min_args = 1, max_args = 1 }
+ucase      = { emit = "opcode:str_to_upper",       min_args = 1, max_args = 1 }
+"ucase$"   = { emit = "opcode:str_to_upper",       min_args = 1, max_args = 1 }
+lcase      = { emit = "opcode:str_to_lower",       min_args = 1, max_args = 1 }
+"lcase$"   = { emit = "opcode:str_to_lower",       min_args = 1, max_args = 1 }
+trim       = { emit = "opcode:str_trim",           min_args = 1, max_args = 1 }
+"trim$"    = { emit = "opcode:str_trim",           min_args = 1, max_args = 1 }
+ltrim      = { emit = "opcode:str_trim_start",     min_args = 1, max_args = 1 }
+"ltrim$"   = { emit = "opcode:str_trim_start",     min_args = 1, max_args = 1 }
+rtrim      = { emit = "opcode:str_trim_end",       min_args = 1, max_args = 1 }
+"rtrim$"   = { emit = "opcode:str_trim_end",       min_args = 1, max_args = 1 }
+strreverse = { emit = "opcode:str_reverse",        min_args = 1, max_args = 1 }
+chr        = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
+"chr$"     = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
+chrw       = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
+
+# ── String functions — multi-opcode intrinsics ───────────────────────────────
+
+asc        = { emit = "intrinsic:asc",             min_args = 1, max_args = 1 }
+ascw       = { emit = "intrinsic:asc",             min_args = 1, max_args = 1 }
+"string"   = { emit = "intrinsic:string_repeat",   min_args = 2, max_args = 2 }
+"string$"  = { emit = "intrinsic:string_repeat",   min_args = 2, max_args = 2 }
+instr      = { emit = "intrinsic:instr",           min_args = 2, max_args = 3 }
+instrrev   = { emit = "intrinsic:instrrev",        min_args = 2, max_args = 2 }
+replace    = { emit = "intrinsic:replace",         min_args = 3, max_args = 3 }
+split      = { emit = "intrinsic:split",           min_args = 1, max_args = 2 }
+join       = { emit = "intrinsic:join",            min_args = 1, max_args = 2 }
+left       = { emit = "intrinsic:left",            min_args = 2, max_args = 2 }
+"left$"    = { emit = "intrinsic:left",            min_args = 2, max_args = 2 }
+right      = { emit = "host:vybe:string:right",    min_args = 2, max_args = 2 }
+"right$"   = { emit = "host:vybe:string:right",    min_args = 2, max_args = 2 }
+mid        = { emit = "intrinsic:mid",             min_args = 2, max_args = 3 }
+"mid$"     = { emit = "intrinsic:mid",             min_args = 2, max_args = 3 }
+space      = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
+"space$"   = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
+spc        = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
+strcomp    = { emit = "opcode:str_compare",        min_args = 2, max_args = 2 }
+format     = { emit = "host:vybe:string:format",   min_args = 1, max_args = 2 }
+"format$"  = { emit = "host:vybe:string:format",   min_args = 1, max_args = 2 }
+lset       = { emit = "host:vybe:string:lset",     min_args = 2, max_args = 2 }
+rset       = { emit = "host:vybe:string:rset",     min_args = 2, max_args = 2 }
+filter     = { emit = "host:vybe:string:filter",   min_args = 2, max_args = 4 }
+"string.isnullorempty" = { emit = "intrinsic:string_isnullorempty", min_args = 1, max_args = 1 }
+
+# Format variants
+formatnumber   = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
+formatcurrency = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
+formatpercent  = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
+formatdatetime = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
+strconv        = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 2 }
+strdup         = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+
+# ── Array functions ──────────────────────────────────────────────────────────
+
+ubound  = { emit = "intrinsic:ubound",            min_args = 1, max_args = 1 }
+lbound  = { emit = "intrinsic:lbound",            min_args = 0, max_args = 1 }
+array   = { emit = "host:vybe:array:from",         min_args = 0, max_args = 255 }
+erase   = { emit = "noop",                         min_args = 1, max_args = 1 }
+
+# ── Date/Time functions ──────────────────────────────────────────────────────
+
+now          = { emit = "host:wasi:clocks:vbNow",    min_args = 0, max_args = 0 }
+date         = { emit = "host:wasi:clocks:vbDate",   min_args = 0, max_args = 0 }
+today        = { emit = "host:wasi:clocks:vbDate",   min_args = 0, max_args = 0 }
+time         = { emit = "host:wasi:clocks:vbTime",   min_args = 0, max_args = 0 }
+timeofday    = { emit = "host:wasi:clocks:vbTime",   min_args = 0, max_args = 0 }
+timer        = { emit = "host:wasi:clocks:vbTimer",  min_args = 0, max_args = 0 }
+year         = { emit = "host:wasi:clocks:vbYear",   min_args = 1, max_args = 1 }
+month        = { emit = "host:wasi:clocks:vbMonth",  min_args = 1, max_args = 1 }
+day          = { emit = "host:wasi:clocks:vbDay",    min_args = 1, max_args = 1 }
+hour         = { emit = "host:wasi:clocks:vbHour",   min_args = 1, max_args = 1 }
+minute       = { emit = "host:wasi:clocks:vbMinute", min_args = 1, max_args = 1 }
+second       = { emit = "host:wasi:clocks:vbSecond", min_args = 1, max_args = 1 }
+dateadd      = { emit = "host:wasi:clocks:vbNow",    min_args = 3, max_args = 3 }
+datediff     = { emit = "host:wasi:clocks:vbNow",    min_args = 3, max_args = 3 }
+datepart     = { emit = "host:wasi:clocks:vbNow",    min_args = 2, max_args = 2 }
+dateserial   = { emit = "host:wasi:clocks:vbNow",    min_args = 3, max_args = 3 }
+datevalue    = { emit = "host:wasi:clocks:vbNow",    min_args = 1, max_args = 1 }
+timeserial   = { emit = "host:wasi:clocks:vbNow",    min_args = 3, max_args = 3 }
+timevalue    = { emit = "host:wasi:clocks:vbNow",    min_args = 1, max_args = 1 }
+cdate        = { emit = "host:wasi:clocks:vbNow",    min_args = 1, max_args = 1 }
+monthname    = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+weekday      = { emit = "host:wasi:clocks:vbDay",    min_args = 1, max_args = 1 }
+weekdayname  = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+
+# ── File I/O ─────────────────────────────────────────────────────────────────
+
+"dir"        = { emit = "host:wasi:filesystem:listDir",  min_args = 0, max_args = 1 }
+"dir$"       = { emit = "host:wasi:filesystem:listDir",  min_args = 0, max_args = 1 }
+filecopy     = { emit = "host:wasi:filesystem:copy",     min_args = 2, max_args = 2 }
+kill         = { emit = "host:wasi:filesystem:remove",   min_args = 1, max_args = 1 }
+fileexists   = { emit = "host:wasi:filesystem:exists",   min_args = 1, max_args = 1 }
+"file.exists" = { emit = "host:wasi:filesystem:exists",  min_args = 1, max_args = 1 }
+filedatetime = { emit = "host:wasi:clocks:vbNow",        min_args = 1, max_args = 1 }
+filelen      = { emit = "host:wasi:filesystem:fileSize",  min_args = 1, max_args = 1 }
+lof          = { emit = "host:wasi:filesystem:fileSize",  min_args = 1, max_args = 1 }
+"curdir"     = { emit = "host:wasi:cli:cwd",              min_args = 0, max_args = 0 }
+"curdir$"    = { emit = "host:wasi:cli:cwd",              min_args = 0, max_args = 0 }
+chdir        = { emit = "host:wasi:cli:cwd",              min_args = 1, max_args = 1 }
+mkdir        = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 1 }
+rmdir        = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
+freefile     = { emit = "host:vybe:convert:cint",         min_args = 0, max_args = 0 }
+"name"       = { emit = "host:wasi:filesystem:rename",    min_args = 2, max_args = 2 }
+loc          = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
+fileattr     = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
+getattr      = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
+setattr      = { emit = "noop",                           min_args = 2, max_args = 2 }
+eof          = { emit = "host:vybe:convert:cbool",        min_args = 1, max_args = 1 }
+seek         = { emit = "noop",                           min_args = 2, max_args = 2 }
+get          = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 3 }
+put          = { emit = "host:wasi:filesystem:writeFile", min_args = 1, max_args = 3 }
+
+# ── Layout methods (no-ops in our renderer) ──────────────────────────────────
+
+suspendlayout  = { emit = "noop", min_args = 0, max_args = 0 }
+resumelayout   = { emit = "noop", min_args = 0, max_args = 0 }
+performlayout  = { emit = "noop", min_args = 0, max_args = 0 }
+
+# ── Interaction ──────────────────────────────────────────────────────────────
+
+beep         = { emit = "noop",                            min_args = 0, max_args = 0 }
+shell        = { emit = "host:vybe:types:processStart",    min_args = 1, max_args = 2 }
+environ      = { emit = "host:wasi:cli:getEnv",            min_args = 1, max_args = 1 }
+"environ$"   = { emit = "host:wasi:cli:getEnv",            min_args = 1, max_args = 1 }
+command      = { emit = "host:wasi:cli:args",              min_args = 0, max_args = 0 }
+"command$"   = { emit = "host:wasi:cli:args",              min_args = 0, max_args = 0 }
+sendkeys     = { emit = "noop",                            min_args = 1, max_args = 2 }
+appactivate  = { emit = "noop",                            min_args = 1, max_args = 1 }
+doevents     = { emit = "noop",                            min_args = 0, max_args = 0 }
+
+# ── JSON / XML / Regex ───────────────────────────────────────────────────────
+
+"json.serialize"   = { emit = "host:vybe:json:stringify", min_args = 1, max_args = 1 }
+"json.deserialize" = { emit = "host:vybe:json:parse",    min_args = 1, max_args = 1 }
+"xml.parse"        = { emit = "host:vybe:xml:parse",     min_args = 1, max_args = 1 }
+"xdocument.parse"  = { emit = "host:vybe:xml:parse",     min_args = 1, max_args = 1 }
+"xml.load"         = { emit = "host:vybe:xml:load",      min_args = 1, max_args = 1 }
+"xdocument.load"   = { emit = "host:vybe:xml:load",      min_args = 1, max_args = 1 }
+"xml.save"         = { emit = "host:vybe:xml:toString",  min_args = 1, max_args = 1 }
+"xdocument.save"   = { emit = "host:vybe:xml:toString",  min_args = 1, max_args = 1 }
+"regex.ismatch"    = { emit = "host:vybe:regex:test",    min_args = 2, max_args = 2 }
+"regex.match"      = { emit = "host:vybe:regex:match",   min_args = 2, max_args = 2 }
+"regex.matches"    = { emit = "host:vybe:regex:match",   min_args = 2, max_args = 2 }
+"regex.replace"    = { emit = "host:vybe:regex:replace", min_args = 3, max_args = 3 }
+"regex.split"      = { emit = "host:vybe:regex:split",   min_args = 2, max_args = 2 }
+
+# ── Encoding ─────────────────────────────────────────────────────────────────
+
+"encoding.ascii.getbytes"      = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+"encoding.utf8.getbytes"       = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+"encoding.unicode.getbytes"    = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+"encoding.default.getbytes"    = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+"encoding.ascii.getstring"     = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+"encoding.utf8.getstring"      = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+"encoding.unicode.getstring"   = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+"encoding.default.getstring"   = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+"encoding.getencoding"         = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+"encoding.convert"             = { emit = "host:vybe:convert:toString", min_args = 3, max_args = 3 }
+
+# ── StringBuilder ────────────────────────────────────────────────────────────
+
+stringbuilder = { emit = "host:vybe:types:stringBuilderNew", min_args = 0, max_args = 1 }
+switch        = { emit = "host:vybe:convert:choose",         min_args = 2, max_args = 255 }
+
+# ── Legacy VB6 ───────────────────────────────────────────────────────────────
+
+loadpicture  = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+savepicture  = { emit = "noop",                        min_args = 1, max_args = 2 }
+load         = { emit = "noop",                        min_args = 1, max_args = 1 }
+unload       = { emit = "noop",                        min_args = 1, max_args = 1 }
+app          = { emit = "host:wasi:cli:args",          min_args = 0, max_args = 0 }
+screen       = { emit = "host:vybe:convert:cint",      min_args = 0, max_args = 0 }
+clipboard    = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 1 }
+forms        = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 0 }
+print        = { emit = "host:wasi:cli:log",           min_args = 0, max_args = 255 }
+write        = { emit = "host:wasi:cli:log",           min_args = 0, max_args = 255 }
+input        = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
+inputb       = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
+lineinput    = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
+close        = { emit = "noop",                        min_args = 0, max_args = 1 }
+open         = { emit = "host:wasi:filesystem:readFile", min_args = 1, max_args = 3 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# INTRINSIC DEFINITIONS — multi-opcode sequences
+# ────────────────────────────────────────────────────────────────────────────
+# These are referenced by emit = "intrinsic:<name>" above.
+# The compiler's intrinsic handler knows how to emit them.
+
+[intrinsics]
+# CByte: truncate to 0-255 → i32_from_f64 + i32_and(0xFF)
+cbyte = "to_int, const_i32(255), i32_and"
+
+# UBound: array length - 1
+ubound = "array_len, const_i32(1), i32_sub"
+
+# LBound: always 0 in .NET
+lbound = "const_i32(0)"
+
+# Asc(s): first char code → i32_const_0, str_char_code_at
+asc = "const_i32(0), str_char_code_at"
+
+# Space(n): str_repeat(" ", n)
+space = "const_str( ), swap, to_int, str_repeat"
+
+# String(n, char): str_repeat(char, n) — args are reversed vs VB order
+string_repeat = "swap, str_repeat"
+
+# InStr(s, find): str_index_of + 1 (VB 1-based: 0=not found, 1=first)
+instr = "str_index_of, const_i32(1), i32_add"
+
+# InStrRev(s, find): str_last_index_of + 1
+instrrev = "str_last_index_of, const_i32(1), i32_add"
+
+# Replace(s, old, new): str_replace
+replace = "str_replace"
+
+# Split(s, delim?): if 1 arg → split on " "
+split = "str_split"
+
+# Join(arr, delim?): if 1 arg → join with " "
+join = "array_join"
+
+# Left(s, n): substring(s, 0, n)
+left = "const_i32(0), swap, to_int, str_substring"
+
+# Mid(s, start, len?): substring adjusted for 1-based
+mid = "mid_1based"
+
+# String.IsNullOrEmpty: dup, ref_is_null OR str_length == 0
+string_isnullorempty = "dup, ref_is_null, br_if_true, str_length, const_i32(0), dyn_eq"
+
+# ────────────────────────────────────────────────────────────────────────────
+# VALUE METHODS — instance methods called on objects
+# ────────────────────────────────────────────────────────────────────────────
+
+[value_methods]
+
+# String instance methods (VB strings are .NET System.String)
+toupper       = { emit = "opcode:str_to_upper",       min_args = 0, max_args = 0 }
+tolower       = { emit = "opcode:str_to_lower",       min_args = 0, max_args = 0 }
+"trim"        = { emit = "opcode:str_trim",            min_args = 0, max_args = 0 }
+trimstart     = { emit = "opcode:str_trim_start",      min_args = 0, max_args = 0 }
+trimend       = { emit = "opcode:str_trim_end",        min_args = 0, max_args = 0 }
+startswith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 1 }
+endswith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 1 }
+substring     = { emit = "opcode:str_substring",       min_args = 1, max_args = 2 }
+indexof       = { emit = "opcode:str_index_of",        min_args = 1, max_args = 1 }
+lastindexof   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 1 }
+contains      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
+tostring      = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 0 }
+padleft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
+padright      = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
+
+# Collection instance methods (.NET List(Of T), Dictionary, etc.)
+add           = { emit = "opcode:array_push",          min_args = 1, max_args = 1 }
+remove        = { emit = "host:vybe:array:remove",     min_args = 1, max_args = 1 }
+removeat      = { emit = "host:vybe:array:removeAt",   min_args = 1, max_args = 1 }
+insert        = { emit = "host:vybe:array:insert",     min_args = 2, max_args = 2 }
+clear         = { emit = "host:vybe:array:clear",      min_args = 0, max_args = 0 }
+count         = { emit = "opcode:array_length",        min_args = 0, max_args = 0 }
+sort          = { emit = "host:vybe:array:sort",       min_args = 0, max_args = 0 }
+reverse       = { emit = "opcode:array_reverse",       min_args = 0, max_args = 0 }
+toarray       = { emit = "host:vybe:array:clone",      min_args = 0, max_args = 0 }
+containskey   = { emit = "host:vybe:object:hasOwn",    min_args = 1, max_args = 1 }
+
+# WinForms methods — no-ops in our renderer
+suspendlayout  = { emit = "noop", min_args = 0, max_args = 0 }
+resumelayout   = { emit = "noop", min_args = 0, max_args = 0 }
+performlayout  = { emit = "noop", min_args = 0, max_args = 0 }
+refresh        = { emit = "noop", min_args = 0, max_args = 0 }
+invalidate     = { emit = "noop", min_args = 0, max_args = 0 }
+update         = { emit = "noop", min_args = 0, max_args = 0 }
+begininit      = { emit = "noop", min_args = 0, max_args = 0 }
+endinit        = { emit = "noop", min_args = 0, max_args = 0 }
+dispose        = { emit = "noop", min_args = 0, max_args = 0 }
+bringtofront   = { emit = "noop", min_args = 0, max_args = 0 }
+sendtoback     = { emit = "noop", min_args = 0, max_args = 0 }
+
+# GUI methods — host calls
+show           = { emit = "host:vybe:gui:showForm",        min_args = 0, max_args = 0 }
+close          = { emit = "host:vybe:gui:closeForm",       min_args = 0, max_args = 0 }
+showdialog     = { emit = "host:vybe:gui:showFormDialog",  min_args = 0, max_args = 0 }
+hide           = { emit = "host:vybe:gui:hideForm",        min_args = 0, max_args = 0 }
+
+# Controls.Add — special: parent object passed as first arg
+"controls.add" = { emit = "host:vybe:gui:controlsAdd",    min_args = 1, max_args = 1 }
+
+# Stopwatch methods
+start          = { emit = "host:vybe:types:stopwatchStart", min_args = 0, max_args = 0 }
+stop           = { emit = "host:vybe:types:stopwatchStop",  min_args = 0, max_args = 0 }
+reset          = { emit = "host:vybe:types:stopwatchReset", min_args = 0, max_args = 0 }
+
+# StringBuilder methods
+append         = { emit = "host:vybe:types:sbAppend",      min_args = 1, max_args = 1 }
+appendline     = { emit = "host:vybe:types:sbAppendLine",  min_args = 0, max_args = 1 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# .NET NAMESPACE RESOLUTION
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespaces]
+# Use the .NET BCL namespace resolution from vybe_compiler_common::dotnet.
+# This gives us 60+ namespace roots, default imports, known constants,
+# resolve_dotted_name(), and the full .NET resolution order
+# (locals → fields → FQN → imports → known types).
+use_dotnet = true
+
+# Additional default imports specific to VB (beyond the common .NET ones)
+extra_imports = [
+  "microsoft.visualbasic",
+]
+
+# ────────────────────────────────────────────────────────────────────────────
+# KNOWN TYPES — constructor mappings for New TypeName()
+# ────────────────────────────────────────────────────────────────────────────
+
+[known_types]
+# name = [host_module, host_function]
+"list"           = ["vybe:types", "listNew"]
+"dictionary"     = ["vybe:types", "dictNew"]
+"stack"          = ["vybe:types", "stackNew"]
+"queue"          = ["vybe:types", "queueNew"]
+"hashset"        = ["vybe:types", "hashSetNew"]
+"sortedlist"     = ["vybe:types", "sortedListNew"]
+"arraylist"      = ["vybe:types", "listNew"]
+"collection"     = ["vybe:types", "listNew"]
+"hashtable"      = ["vybe:types", "dictNew"]
+"stringbuilder"  = ["vybe:types", "stringBuilderNew"]
+"stopwatch"      = ["vybe:types", "stopwatchNew"]
+"random"         = ["vybe:types", "randomNew"]
+"regex"          = ["vybe:types", "regexNew"]
+"streamreader"   = ["wasi:filesystem", "readFile"]
+"streamwriter"   = ["wasi:filesystem", "writeFile"]
+"memorystream"   = ["vybe:types", "listNew"]
+"filestream"     = ["wasi:filesystem", "readFile"]
+"binaryreader"   = ["wasi:filesystem", "readFile"]
+"binarywriter"   = ["wasi:filesystem", "writeFile"]
+"xmldocument"    = ["vybe:xml", "parse"]
+"xdocument"      = ["vybe:xml", "parse"]
+"webrequest"     = ["wasi:http", "fetch"]
+"webclient"      = ["wasi:http", "fetch"]
+"httpclient"     = ["wasi:http", "fetch"]
+"task"           = ["vybe:types", "taskNew"]
+"thread"         = ["vybe:types", "threadNew"]
+"timer"          = ["vybe:types", "timerNew"]
+"process"        = ["vybe:types", "processNew"]
+"datatable"      = ["vybe:types", "dataTableNew"]
+"datarow"        = ["vybe:types", "dataRowNew"]
+"bindingsource"  = ["vybe:types", "bindingSourceNew"]
+"dataadapter"    = ["vybe:types", "dataAdapterNew"]

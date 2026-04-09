@@ -1,0 +1,935 @@
+//! Common AST targeting WASM bytecode via vybe_compiler_common.
+//!
+//! Maps to compiler_common modules:
+//!   classes    → ClassDecl, ClassMember, Property
+//!   functions  → FunctionDecl, Param, Lambda
+//!   collections → Array, ForIn, destructuring
+//!   dict       → Object literals
+//!   loops      → For, ForIn, While, DoWhile
+//!   errors     → Try, CatchClause, Throw
+//!   expressions → Binary, Unary, Ternary, NullCoalesce
+//!   strings    → builtins (profile-driven)
+//!   math       → builtins (profile-driven)
+//!   io         → Echo, builtins (profile-driven)
+//!   threading  → async/await
+//!   dotnet     → namespace resolution (profile-driven)
+
+// ════════════════════════════════════════════════════════════════════════════
+// Module (top-level compilation unit)
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub struct Module {
+    pub name: String,
+    pub language: Lang,
+    pub body: Vec<Statement>,
+    pub imports: Vec<Import>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Lang {
+    VB, JavaScript, CSharp, Python, Ruby, PHP, Dart, Pascal, Cobol, Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub kind: ImportKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportKind {
+    /// `Imports System.IO` / `import os` / `use Foo\Bar`
+    Simple { path: String, alias: Option<String> },
+    /// `from os import path, getcwd` / `import { x, y } from "mod"`
+    /// Python: level > 0 for relative imports (`from ...pkg import x` → level=3)
+    Named { path: String, names: Vec<ImportName>, level: usize },
+    /// `import * as ns from "mod"` / `from os import *`
+    Wildcard { path: String, alias: Option<String> },
+    /// `import defaultExport from "mod"` (JS)
+    Default { path: String, local: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportName {
+    pub name: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Span {
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Statements
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub struct Statement {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+impl Statement {
+    pub fn new(kind: StmtKind) -> Self { Self { kind, span: Span::default() } }
+    pub fn with_span(kind: StmtKind, span: Span) -> Self { Self { kind, span } }
+}
+
+#[derive(Debug, Clone)]
+pub enum StmtKind {
+    /// Expression used as a statement.
+    Expr(Expression),
+
+    /// Block of statements.
+    Block(Vec<Statement>),
+
+    // ── Variable declarations ────────────────────────────────────────────
+
+    VarDecl {
+        declarations: Vec<VarDeclarator>,
+        kind: VarDeclKind,
+    },
+
+    // ── Functions (compiler_common::functions) ───────────────────────────
+
+    FunctionDecl {
+        name: String,
+        params: Vec<Param>,
+        return_type: Option<String>,
+        body: Vec<Statement>,
+        modifiers: Modifiers,
+        handles: Vec<String>,
+        is_async: bool,
+        /// Dart: `sync*`/`async*` generator functions
+        is_generator: bool,
+        is_sub: bool,
+    },
+
+    // ── Classes (compiler_common::classes) ───────────────────────────────
+
+    ClassDecl {
+        name: String,
+        /// VB: single parent. Python: multiple bases. JS: single extends (as expression).
+        parents: Vec<String>,
+        interfaces: Vec<String>,
+        members: Vec<ClassMember>,
+        modifiers: ClassModifiers,
+    },
+
+    InterfaceDecl {
+        name: String,
+        parents: Vec<String>,
+        members: Vec<InterfaceMember>,
+    },
+
+    EnumDecl {
+        name: String,
+        members: Vec<EnumMember>,
+        visibility: Visibility,
+    },
+
+    StructDecl {
+        name: String,
+        interfaces: Vec<String>,
+        members: Vec<ClassMember>,
+        visibility: Visibility,
+    },
+
+    ModuleDecl {
+        name: String,
+        members: Vec<ClassMember>,
+        visibility: Visibility,
+    },
+
+    NamespaceDecl {
+        name: String,
+        body: Vec<Statement>,
+    },
+
+    DelegateDecl {
+        name: String,
+        params: Vec<Param>,
+        return_type: Option<String>,
+        is_sub: bool,
+        visibility: Visibility,
+    },
+
+    // ── Control flow (br_if, br, loop opcodes) ──────────────────────────
+
+    If {
+        cond: Expression,
+        then_body: Vec<Statement>,
+        elifs: Vec<(Expression, Vec<Statement>)>,
+        else_body: Option<Vec<Statement>>,
+    },
+
+    For {
+        init: Option<Box<Statement>>,
+        cond: Option<Expression>,
+        update: Option<Expression>,
+        body: Vec<Statement>,
+    },
+
+    /// compiler_common::loops::emit_for_in
+    ForIn {
+        var: String,
+        /// PHP: `foreach ($arr as $key => $value)` — key variable
+        key: Option<String>,
+        iter: Expression,
+        body: Vec<Statement>,
+        /// JS for-of vs for-in
+        of: bool,
+        /// Python: `for x in items: ... else: ...`
+        else_body: Option<Vec<Statement>>,
+        /// Python: `async for`
+        is_async: bool,
+    },
+
+    While {
+        cond: Expression,
+        body: Vec<Statement>,
+        /// Python: `while cond: ... else: ...`
+        else_body: Option<Vec<Statement>>,
+    },
+
+    DoWhile {
+        body: Vec<Statement>,
+        cond: Expression,
+        until: bool,
+    },
+
+    Switch {
+        expr: Expression,
+        cases: Vec<SwitchCase>,
+        default: Option<Vec<Statement>>,
+    },
+
+    // ── Exception handling (compiler_common::errors) ─────────────────────
+
+    Try {
+        body: Vec<Statement>,
+        catches: Vec<CatchClause>,
+        else_body: Option<Vec<Statement>>,
+        finally: Option<Vec<Statement>>,
+    },
+
+    // ── With / Using / Lock ─────────────────────────────────────────────
+
+    /// Python: `with a() as x, b() as y:` — multiple items
+    /// VB: `With obj ... End With` — single item, no var
+    With {
+        items: Vec<WithItem>,
+        body: Vec<Statement>,
+        is_async: bool,
+    },
+
+    Using {
+        var: String,
+        resource: Expression,
+        body: Vec<Statement>,
+    },
+
+    Lock {
+        expr: Expression,
+        body: Vec<Statement>,
+    },
+
+    // ── Jumps ────────────────────────────────────────────────────────────
+
+    Return(Option<Expression>),
+    Break(BreakTarget),
+    Continue(ContinueTarget),
+    /// Python: `raise X from Y` — cause is the chained exception
+    Throw { expr: Option<Expression>, cause: Option<Expression> },
+
+    // ── Assignment ───────────────────────────────────────────────────────
+
+    /// Python: `a = b = c = 5` — multiple targets
+    Assign {
+        targets: Vec<Expression>,
+        value: Expression,
+    },
+
+    CompoundAssign {
+        target: Expression,
+        op: CompoundOp,
+        value: Expression,
+    },
+
+    // ── Array operations ─────────────────────────────────────────────────
+
+    ReDim {
+        preserve: bool,
+        array: String,
+        bounds: Vec<Expression>,
+    },
+
+    // ── Events ───────────────────────────────────────────────────────────
+
+    AddHandler {
+        event_target: String,
+        handler: String,
+    },
+
+    RemoveHandler {
+        event_target: String,
+        handler: String,
+    },
+
+    RaiseEvent {
+        event_name: String,
+        args: Vec<Expression>,
+    },
+
+    // ── Error handling (VB6 legacy) ──────────────────────────────────────
+
+    OnErrorResumeNext,
+    OnErrorGoTo(String),
+    GoTo(String),
+    Label(String),
+
+    // ── File I/O (VB6 legacy) ────────────────────────────────────────────
+
+    OpenFile {
+        path: Expression,
+        mode: FileMode,
+        file_number: Expression,
+    },
+    CloseFile(Option<Expression>),
+    PrintFile {
+        file_number: Expression,
+        items: Vec<Expression>,
+    },
+    WriteFile {
+        file_number: Expression,
+        items: Vec<Expression>,
+    },
+    InputFile {
+        file_number: Expression,
+        variables: Vec<String>,
+    },
+    LineInput {
+        file_number: Expression,
+        variable: String,
+    },
+
+    // ── Module system (JS) ───────────────────────────────────────────────
+
+    Export {
+        declaration: Option<Box<Statement>>,
+        names: Vec<ExportName>,
+        default: Option<Box<Expression>>,
+    },
+
+    // ── Labeled statement (JS) ──────────────────────────────────────────
+
+    /// `myLabel: for (...) {}` — wraps a statement with a label for break/continue
+    Labeled {
+        label: String,
+        body: Box<Statement>,
+    },
+
+    // ── Other ────────────────────────────────────────────────────────────
+
+    Empty,
+    ScopeDecl { kind: ScopeDeclKind, names: Vec<String> },
+    Delete(Vec<Expression>),
+    Assert { test: Expression, msg: Option<Expression> },
+    Echo(Vec<Expression>),
+
+    /// Python `match subject: case pattern: ...` — statement-level with full patterns
+    MatchStatement {
+        subject: Expression,
+        cases: Vec<MatchCase>,
+    },
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Class members (compiler_common::classes)
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub enum ClassMember {
+    Field {
+        name: String,
+        type_hint: Option<String>,
+        init: Option<Expression>,
+        modifiers: Modifiers,
+        with_events: bool,
+        array_bounds: Option<Vec<Expression>>,
+    },
+
+    Method(Box<Statement>),
+
+    Constructor {
+        params: Vec<Param>,
+        body: Vec<Statement>,
+        base_args: Option<Vec<Expression>>,
+        visibility: Visibility,
+    },
+
+    /// __get_ / __set_ closures on the struct
+    Property {
+        name: String,
+        type_hint: Option<String>,
+        getter: Option<Vec<Statement>>,
+        setter: Option<PropertySetter>,
+        is_auto: bool,
+        modifiers: Modifiers,
+    },
+
+    Event {
+        name: String,
+        type_hint: Option<String>,
+        params: Vec<Param>,
+        visibility: Visibility,
+    },
+
+    Const {
+        name: String,
+        type_hint: Option<String>,
+        value: Expression,
+        visibility: Visibility,
+    },
+
+    NestedType(Box<Statement>),
+}
+
+#[derive(Debug, Clone)]
+pub struct PropertySetter {
+    pub param: Param,
+    pub body: Vec<Statement>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Interface members
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub enum InterfaceMember {
+    Method {
+        name: String,
+        params: Vec<Param>,
+        return_type: Option<String>,
+        is_sub: bool,
+    },
+    Property {
+        name: String,
+        type_hint: Option<String>,
+        is_readonly: bool,
+        is_writeonly: bool,
+    },
+    Event {
+        name: String,
+        type_hint: Option<String>,
+    },
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Expressions
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub struct Expression {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+impl Expression {
+    pub fn new(kind: ExprKind) -> Self { Self { kind, span: Span::default() } }
+    pub fn with_span(kind: ExprKind, span: Span) -> Self { Self { kind, span } }
+    pub fn ident(name: &str) -> Self { Self::new(ExprKind::Ident(name.to_string())) }
+    pub fn int(n: i64) -> Self { Self::new(ExprKind::Lit(Literal::Int(n))) }
+    pub fn float(n: f64) -> Self { Self::new(ExprKind::Lit(Literal::Float(n))) }
+    pub fn string(s: &str) -> Self { Self::new(ExprKind::Lit(Literal::Str(s.to_string()))) }
+    pub fn bool(b: bool) -> Self { Self::new(ExprKind::Lit(Literal::Bool(b))) }
+    pub fn null() -> Self { Self::new(ExprKind::Lit(Literal::Null)) }
+}
+
+#[derive(Debug, Clone)]
+pub enum ExprKind {
+    Lit(Literal),
+    Ident(String),
+    This,
+    Super,
+
+    // ── Operators (compiler_common::expressions) ─────────────────────────
+
+    Binary { op: BinOp, left: Box<Expression>, right: Box<Expression> },
+    Unary { op: UnaryOp, expr: Box<Expression> },
+    Ternary { cond: Box<Expression>, then: Box<Expression>, else_: Box<Expression> },
+
+    // ── Access (struct_get / struct_set) ─────────────────────────────────
+
+    Member { object: Box<Expression>, field: String, null_safe: bool },
+    Index { object: Box<Expression>, index: Box<Expression> },
+
+    // ── Calls (call opcode) ─────────────────────────────────────────────
+
+    Call { callee: Box<Expression>, args: Vec<Argument>, optional: bool },
+
+    // ── Object creation (compiler_common::classes) ──────────────────────
+
+    New { class: Box<Expression>, args: Vec<Argument> },
+
+    // ── Assignment as expression ─────────────────────────────────────────
+
+    Assign { target: Box<Expression>, value: Box<Expression> },
+
+    // ── Functions as values (ref_func) ──────────────────────────────────
+
+    Lambda {
+        params: Vec<Param>,
+        body: LambdaBody,
+        is_async: bool,
+        /// PHP: `function() use ($x, $y) { }` — explicitly captured variables
+        captures: Vec<String>,
+    },
+
+    // ── Collections (compiler_common::collections, dict) ────────────────
+
+    Array(Vec<ArrayElement>),
+    /// Python `(1, 2, 3)` — immutable sequence
+    Tuple(Vec<Expression>),
+    /// Python `{1, 2, 3}` — unordered unique collection
+    Set(Vec<Expression>),
+    Object(Vec<ObjectProperty>),
+
+    // ── String interpolation ─────────────────────────────────────────────
+
+    Interpolation(Vec<InterpolPart>),
+
+    // ── Type operations ──────────────────────────────────────────────────
+
+    IsType { expr: Box<Expression>, type_name: String },
+    Cast { expr: Box<Expression>, type_name: String },
+    TypeOf(Box<Expression>),
+
+    // ── Null handling (compiler_common::expressions) ─────────────────────
+
+    NullCoalesce { left: Box<Expression>, right: Box<Expression> },
+
+    // ── Spread / rest ────────────────────────────────────────────────────
+
+    Spread(Box<Expression>),
+
+    // ── Async (compiler_common::functions) ───────────────────────────────
+
+    Await(Box<Expression>),
+    Yield(Option<Box<Expression>>),
+    YieldFrom(Box<Expression>),
+
+    // ── VB / .NET ────────────────────────────────────────────────────────
+
+    AddressOf(String),
+    SuperCall { method: Option<String>, args: Vec<Argument> },
+
+    // ── Python ───────────────────────────────────────────────────────────
+
+    Comprehension {
+        kind: ComprehensionKind,
+        element: Box<Expression>,
+        generators: Vec<ComprehensionGen>,
+    },
+    Slice {
+        lower: Option<Box<Expression>>,
+        upper: Option<Box<Expression>>,
+        step: Option<Box<Expression>>,
+    },
+    Walrus { target: Box<Expression>, value: Box<Expression> },
+
+    // ── JS ───────────────────────────────────────────────────────────────
+
+    Void(Box<Expression>),
+    Delete(Box<Expression>),
+    Destructure(DestructurePattern),
+    /// `(a, b, c)` — evaluates all, result is last value
+    Sequence(Vec<Expression>),
+    /// `class { ... }` as an expression: `let C = class { ... }`
+    ClassExpr {
+        name: Option<String>,
+        parent: Option<Box<Expression>>,
+        members: Vec<ClassMember>,
+    },
+    /// `function(...) { }` as an expression: `let f = function() { ... }`
+    FunctionExpr(Box<Statement>),  // always StmtKind::FunctionDecl
+
+    // ── Range ────────────────────────────────────────────────────────────
+
+    Range { start: Box<Expression>, end: Box<Expression>, inclusive: bool },
+
+    // ── PHP ──────────────────────────────────────────────────────────────
+
+    StaticAccess { class: Box<Expression>, member: Box<Expression> },
+
+    // ── Match expression (PHP/Python) ────────────────────────────────────
+
+    Match {
+        subject: Box<Expression>,
+        arms: Vec<MatchArm>,
+    },
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Supporting types
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub enum Literal {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Char(char),
+    Null,
+    Undefined,
+    /// Python `...`
+    Ellipsis,
+}
+
+// ── Variables ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct VarDeclarator {
+    pub pattern: BindingPattern,
+    pub type_hint: Option<String>,
+    pub init: Option<Expression>,
+    pub array_bounds: Option<Vec<Expression>>,
+    pub with_events: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum VarDeclKind { Dim, Let, Const, Var, Static }
+
+#[derive(Debug, Clone)]
+pub enum BindingPattern {
+    Ident(String),
+    Object(Vec<ObjectPatternProp>),
+    Array(Vec<ArrayPatternElem>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjectPatternProp {
+    pub key: String,
+    pub value: Option<BindingPattern>,
+    pub default: Option<Expression>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ArrayPatternElem {
+    Pattern(BindingPattern, Option<Expression>),
+    Rest(String),
+    Hole,
+}
+
+// ── Parameters ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub name: String,
+    pub type_hint: Option<String>,
+    pub default: Option<Expression>,
+    pub pass_by: PassBy,
+    pub is_rest: bool,
+    pub is_kwargs: bool,
+    pub is_optional: bool,
+    pub is_nullable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PassBy { Value, Ref, Out, Const }
+
+// ── Arguments ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct Argument {
+    pub value: Expression,
+    pub name: Option<String>,
+    pub by_ref: bool,
+    pub spread: bool,
+}
+
+impl Argument {
+    pub fn positional(value: Expression) -> Self {
+        Self { value, name: None, by_ref: false, spread: false }
+    }
+}
+
+// ── Lambda body ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum LambdaBody {
+    Expr(Box<Expression>),
+    Block(Vec<Statement>),
+}
+
+// ── Array/Object literals ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ArrayElement {
+    /// PHP: `"key" => value` — associative array key
+    pub key: Option<Expression>,
+    pub value: Expression,
+    pub spread: bool,
+    /// PHP: `&$var` — by-reference element
+    pub by_ref: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum ObjectProperty {
+    KeyValue { key: Expression, value: Expression },
+    Shorthand(String),
+    Spread(Expression),
+    Method { key: String, value: Box<Statement> },
+    Accessor { kind: AccessorKind, key: String, value: Box<Statement> },
+    Computed { key: Expression, value: Expression },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AccessorKind { Get, Set }
+
+// ── Interpolation ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum InterpolPart {
+    Text(String),
+    Expr(Expression),
+    Formatted(Expression, String),
+}
+
+// ── Switch / Case ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SwitchCase {
+    pub conditions: Vec<CaseCondition>,
+    pub body: Vec<Statement>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CaseCondition {
+    Value(Expression),
+    Range { from: Expression, to: Expression },
+    Comparison { op: ComparisonOp, expr: Expression },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ComparisonOp { Eq, NotEq, Lt, LtEq, Gt, GtEq }
+
+// ── Catch ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct CatchClause {
+    pub types: Vec<String>,
+    pub var_name: Option<String>,
+    /// Dart: `catch (e, stackTrace)` — second variable for stack trace
+    pub stack_var: Option<String>,
+    pub body: Vec<Statement>,
+    pub when_clause: Option<Expression>,
+}
+
+// ── Match (PHP expression-level) ─────────────────────────────────────────────
+
+/// PHP: `match($x) { val1, val2 => expr, default => expr }`
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    /// None = default arm
+    pub conditions: Option<Vec<Expression>>,
+    pub body: Expression,
+}
+
+// ── Match (Python statement-level with patterns) ─────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct MatchCase {
+    pub pattern: Pattern,
+    pub guard: Option<Expression>,
+    pub body: Vec<Statement>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    /// `case 42:` / `case "hello":`
+    Value(Expression),
+    /// `case None:` / `case True:`
+    Singleton(Expression),
+    /// `case [a, b, c]:`
+    Sequence(Vec<Pattern>),
+    /// `case {"key": value}:`
+    Mapping(Vec<(Expression, Pattern)>),
+    /// `case MyClass(x, y):` / `case Point(x=1, y=2):`
+    Class {
+        cls: Expression,
+        patterns: Vec<Pattern>,
+        kw_patterns: Vec<(String, Pattern)>,
+    },
+    /// `case [first, *rest]:`
+    Star(Option<String>),
+    /// `case pattern as name:`
+    As {
+        pattern: Option<Box<Pattern>>,
+        name: Option<String>,
+    },
+    /// `case a | b | c:`
+    Or(Vec<Pattern>),
+    /// `case _:`
+    Wildcard,
+}
+
+// ── With items ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct WithItem {
+    pub expr: Expression,
+    pub var: Option<String>,
+}
+
+// ── Comprehension ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ComprehensionKind { List, Set, Dict, Generator }
+
+#[derive(Debug, Clone)]
+pub struct ComprehensionGen {
+    pub target: Expression,
+    pub iter: Expression,
+    pub conditions: Vec<Expression>,
+    pub is_async: bool,
+}
+
+// ── Destructuring ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum DestructurePattern {
+    Object(Vec<ObjectPatternProp>),
+    Array(Vec<ArrayPatternElem>),
+}
+
+// ── Break/Continue targets ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum BreakTarget {
+    Implicit,
+    Label(String),
+    Kind(ExitKind),
+    Value(Expression),
+    /// PHP: `break 2;` — skip N levels
+    Level(u32),
+}
+
+#[derive(Debug, Clone)]
+pub enum ContinueTarget {
+    Implicit,
+    Label(String),
+    Kind(ContinueKind),
+    /// PHP: `continue 2;` — skip N levels
+    Level(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExitKind { Sub, Function, For, Do, While, Select, Try, Property }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ContinueKind { Do, For, While }
+
+// ── Misc enums ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScopeDeclKind { Global, Nonlocal }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FileMode { Input, Output, Append, Binary, Random }
+
+#[derive(Debug, Clone)]
+pub struct ExportName {
+    pub name: String,
+    pub alias: Option<String>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Operators
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BinOp {
+    Add, Sub, Mul, Div, IDiv, Mod, Pow,
+    Eq, NotEq, StrictEq, StrictNotEq, Lt, Gt, LtEq, GtEq,
+    Spaceship,
+    And, Or, Xor,
+    BitAnd, BitOr, BitXor, Shl, Shr, UShr,
+    Concat,
+    In, NotIn, InstanceOf,
+    NullCoalesce,
+    MatMul, FloorDiv,
+    Like,
+    Is, IsNot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UnaryOp {
+    Neg, Pos,
+    Not, BitNot,
+    PreInc, PreDec,
+    PostInc, PostDec,
+    Typeof, Void, Delete,
+    Deref, AddrOf,
+    Await,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CompoundOp {
+    Add, Sub, Mul, Div, IDiv, Mod, Pow,
+    Concat,
+    BitAnd, BitOr, BitXor, Shl, Shr, UShr,
+    And, Or, NullCoalesce,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Modifiers
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Default)]
+pub struct Modifiers {
+    pub visibility: Visibility,
+    pub is_static: bool,
+    pub is_abstract: bool,
+    pub is_virtual: bool,
+    pub is_override: bool,
+    pub is_readonly: bool,
+    pub is_shared: bool,
+    pub is_extension: bool,
+    pub is_overloads: bool,
+    pub is_not_overridable: bool,
+    pub decorators: Vec<Expression>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ClassModifiers {
+    pub visibility: Visibility,
+    pub is_partial: bool,
+    pub is_abstract: bool,
+    pub is_sealed: bool,
+    pub is_static: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Visibility {
+    #[default]
+    Public,
+    Private,
+    Protected,
+    Internal,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Enum members
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub struct EnumMember {
+    pub name: String,
+    pub value: Option<Expression>,
+}

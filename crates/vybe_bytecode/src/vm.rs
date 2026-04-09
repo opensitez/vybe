@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, Weak as ArcWeak};
 
 use crate::chunk::Chunk;
 use crate::error::VMError;
@@ -56,7 +57,8 @@ impl<'a> HostContext<'a> {
 }
 
 /// Host function signature. Receives restricted context + args, returns a value.
-pub type HostFn = Box<dyn Fn(&mut HostContext, &[Value]) -> Value>;
+/// Host function signature.
+pub type HostFn = Arc<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>;
 
 /// WASM import resolution target. An import can resolve to:
 /// - A host function (provided by the embedder)
@@ -77,7 +79,7 @@ struct CallFrame {
     chunk_index: usize,
     ip: usize,
     base: usize,
-    upvalues: Vec<Rc<RefCell<Upvalue>>>,
+    upvalues: Vec<Arc<Mutex<Upvalue>>>,
 }
 
 /// Exception handler entry — pushed by try_start, popped by try_end or catch.
@@ -106,7 +108,7 @@ pub struct VM {
     frames: Vec<CallFrame>,
     stack: Vec<Value>,
     pub globals: HashMap<String, Value>,
-    open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
+    open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
     host_fns: Vec<HostFn>,
     /// Registry: (module, name) → index into host_fns.
     pub host_registry: HashMap<(String, String), usize>,
@@ -149,13 +151,18 @@ pub struct VM {
     /// When an object's strong count reaches the weak+finalizer threshold,
     /// the callback is queued for execution.
     finalizers: Vec<FinalizerEntry>,
+    /// Active threads spawned by thread_spawn opcode.
+    /// Maps thread_id → JoinHandle that returns the serialized result.
+    thread_handles: HashMap<i32, std::thread::JoinHandle<Vec<u8>>>,
+    /// Next thread ID to assign.
+    next_thread_id: i32,
 }
 
 /// A registered finalizer for an object.
 #[derive(Clone)]
 struct FinalizerEntry {
     /// Weak reference to the target object.
-    target: std::rc::Weak<RefCell<crate::value::Object>>,
+    target: ArcWeak<Mutex<crate::value::Object>>,
     /// Callback to invoke when the object is about to be collected.
     callback: Value,
 }
@@ -193,6 +200,8 @@ impl VM {
             module_prefix: None,
             case_aliases: HashMap::new(),
             finalizers: Vec::new(),
+            thread_handles: HashMap::new(),
+            next_thread_id: 1,
         }
     }
 
@@ -241,7 +250,7 @@ impl VM {
                     };
                     let mut obj = Object::new();
                     obj.kind = ObjectKind::Function(func);
-                    Value::Object(Rc::new(RefCell::new(obj)))
+                    Value::Object(Arc::new(Mutex::new(obj)))
                 } else {
                     Value::Null
                 }
@@ -311,9 +320,9 @@ impl VM {
 
     /// Register a host function with a (module, name) pair.
     /// Also adds it to the function table for call_indirect dispatch.
-    pub fn register_host_fn(&mut self, module: &str, name: &str, f: HostFn) {
+    pub fn register_host_fn(&mut self, module: &str, name: &str, f: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>) {
         let idx = self.host_fns.len();
-        self.host_fns.push(f);
+        self.host_fns.push(Arc::from(f));
         self.host_registry.insert((module.to_string(), name.to_string()), idx);
         // Add to function table — func_table index == host_fns index for host functions
         while self.func_table.len() <= idx {
@@ -322,7 +331,7 @@ impl VM {
         // Store as a lightweight marker — call_indirect will recognize host fn indices
         let mut obj = Object::new();
         obj.kind = ObjectKind::HostFunction(idx);
-        self.func_table[idx] = Value::Object(Rc::new(RefCell::new(obj)));
+        self.func_table[idx] = Value::Object(Arc::new(Mutex::new(obj)));
     }
 
     /// Create a HostContext with callback capability for host functions.
@@ -450,12 +459,12 @@ impl VM {
                                 kind: crate::value::ObjectKind::Function(func),
                                 type_id: 0, fields: Vec::new(),
                             };
-                            Value::Object(Rc::new(RefCell::new(obj)))
+                            Value::Object(Arc::new(Mutex::new(obj)))
                         }
                         crate::component::ExportImpl::HostFn(idx) => {
                             let mut obj = crate::value::Object::new();
                             obj.kind = crate::value::ObjectKind::HostFunction(*idx);
-                            Value::Object(Rc::new(RefCell::new(obj)))
+                            Value::Object(Arc::new(Mutex::new(obj)))
                         }
                     };
                     // Store in module-scoped globals
@@ -492,12 +501,12 @@ impl VM {
                                 kind: crate::value::ObjectKind::Function(func),
                                 type_id: 0, fields: Vec::new(),
                             };
-                            Value::Object(Rc::new(RefCell::new(obj)))
+                            Value::Object(Arc::new(Mutex::new(obj)))
                         }
                         crate::component::ExportImpl::HostFn(idx) => {
                             let mut obj = crate::value::Object::new();
                             obj.kind = crate::value::ObjectKind::HostFunction(*idx);
-                            Value::Object(Rc::new(RefCell::new(obj)))
+                            Value::Object(Arc::new(Mutex::new(obj)))
                         }
                     };
                     // Available to this module via its prefix
@@ -1061,7 +1070,7 @@ impl VM {
     fn test_type(&self, val: &Value, target_name: &str) -> bool {
         match val {
             Value::Object(o) => {
-                let ob = o.borrow();
+                let ob = o.lock().unwrap();
                 // Fast path: type_id is set (properly typed object)
                 if ob.type_id > 0 {
                     if let Some(target_id) = self.type_registry.get_id(target_name) {
@@ -1091,7 +1100,7 @@ impl VM {
 
                 // Check __types array (JS class inheritance chain)
                 if let Some(Value::Object(types)) = ob.properties.get("__types") {
-                    let t = types.borrow();
+                    let t = types.lock().unwrap();
                     if let crate::value::ObjectKind::Array(ref elems) = t.kind {
                         let target_lower = target_name.to_lowercase();
                         if elems.iter().any(|e| format!("{}", e).to_lowercase() == target_lower) {
@@ -1133,7 +1142,7 @@ impl VM {
                 s_lower.starts_with(&tag_lower) || s_lower.contains(&tag_lower)
             }
             Value::Object(o) => {
-                let ob = o.borrow();
+                let ob = o.lock().unwrap();
                 // Check __exception_type property (set by language-specific throw)
                 if let Some(et) = ob.properties.get("__exception_type") {
                     let et_str = format!("{}", et).to_lowercase();
@@ -1289,7 +1298,7 @@ impl VM {
                 Op::upvalue_get => {
                     let idx = self.read_byte() as usize;
                     let uv = self.frame().upvalues[idx].clone();
-                    let val = match &uv.borrow().location {
+                    let val = match &uv.lock().unwrap().location {
                         UpvalueLocation::Open(si) => self.stack[*si].clone(),
                         UpvalueLocation::Closed(v) => v.clone(),
                     };
@@ -1299,7 +1308,7 @@ impl VM {
                     let idx = self.read_byte() as usize;
                     let val = self.peek(0).clone();
                     let uv = self.frame().upvalues[idx].clone();
-                    let mut u = uv.borrow_mut();
+                    let mut u = uv.lock().unwrap();
                     match &mut u.location {
                         UpvalueLocation::Open(si) => self.stack[*si] = val,
                         UpvalueLocation::Closed(v) => *v = val,
@@ -1311,10 +1320,25 @@ impl VM {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let obj = self.pop();
-                    // Check for getter first
+                    // Auto-join thread when accessing .result on a Task/Thread object
                     if let Value::Object(ref o) = obj {
+                        let needs_join = {
+                            let o_ref = o.lock().unwrap();
+                            (name == "result" || name == "exitcode")
+                                && o_ref.properties.contains_key("__thread_id")
+                                && !o_ref.properties.get("iscompleted").map(|v| v.as_bool()).unwrap_or(true)
+                        };
+                        if needs_join {
+                            let tid = o.lock().unwrap().properties.get("__thread_id")
+                                .map(|v| v.as_f64() as i32).unwrap_or(-1);
+                            if let Some(handle) = self.thread_handles.remove(&tid) {
+                                let _ = handle.join();
+                                // Task object was updated by child thread
+                            }
+                        }
+                        // Check for getter
                         let getter_key = format!("__get_{}", name);
-                        let getter = o.borrow().properties.get(&getter_key).cloned();
+                        let getter = o.lock().unwrap().properties.get(&getter_key).cloned();
                         if let Some(getter_fn) = getter {
                             self.push(getter_fn)?;
                             self.push(obj)?;
@@ -1332,7 +1356,7 @@ impl VM {
                     if let Value::Object(o) = &obj {
                         // Check for setter: __set_{name}
                         let setter_key = format!("__set_{}", name);
-                        let setter = o.borrow().properties.get(&setter_key).cloned();
+                        let setter = o.lock().unwrap().properties.get(&setter_key).cloned();
                         if let Some(setter_fn) = setter {
                             // Call the setter with this = obj, value = val
                             self.push(setter_fn)?;
@@ -1343,14 +1367,7 @@ impl VM {
                             self.pop(); // discard setter return
                             self.push(val)?;
                         } else {
-                            o.borrow_mut().set(name.clone(), val.clone());
-                            // Sync __control_name when "name" is set on a control object
-                            if name == "name" {
-                                let has_ctrl = o.borrow().properties.contains_key("__control_name");
-                                if has_ctrl {
-                                    o.borrow_mut().properties.insert("__control_name".into(), val.clone());
-                                }
-                            }
+                            o.lock().unwrap().set(name.clone(), val.clone());
                             self.push(val)?;
                         }
                     } else {
@@ -1366,7 +1383,7 @@ impl VM {
                             let k = {
                                 let idx = key.as_f64() as i64;
                                 if idx < 0 {
-                                    let ob = o.borrow();
+                                    let ob = o.lock().unwrap();
                                     let len = match &ob.kind {
                                         ObjectKind::Array(a) => a.len() as i64,
                                         _ => 0,
@@ -1376,10 +1393,10 @@ impl VM {
                                     format!("{}", key)
                                 }
                             };
-                            let val = o.borrow().get(&k);
+                            let val = o.lock().unwrap().get(&k);
                             // If not found and object has __getitem__, call it
                             if matches!(val, Value::Null) {
-                                let getitem = o.borrow().properties.get("__getitem__").cloned();
+                                let getitem = o.lock().unwrap().properties.get("__getitem__").cloned();
                                 if let Some(func) = getitem {
                                     self.push(func)?;
                                     self.push(obj.clone())?; // self
@@ -1393,7 +1410,7 @@ impl VM {
                         Value::String(s) => {
                             let i = key.as_f64() as usize;
                             if let Some(ch) = s.chars().nth(i) {
-                                self.push(Value::String(Rc::from(ch.to_string().as_str())))?;
+                                self.push(Value::String(Arc::from(ch.to_string().as_str())))?;
                             } else {
                                 self.push(Value::Null)?;
                             }
@@ -1407,7 +1424,7 @@ impl VM {
                     let obj = self.pop();
                     if let Value::Object(o) = &obj {
                         // Check for __setitem__ dunder
-                        let setitem = o.borrow().properties.get("__setitem__").cloned();
+                        let setitem = o.lock().unwrap().properties.get("__setitem__").cloned();
                         if let Some(func) = setitem {
                             self.push(func)?;
                             self.push(obj.clone())?; // self
@@ -1419,7 +1436,7 @@ impl VM {
                             continue;
                         }
                         let k = format!("{}", key);
-                        o.borrow_mut().set(k, val.clone());
+                        o.lock().unwrap().set(k, val.clone());
                     }
                     self.push(val)?;
                 }
@@ -1563,7 +1580,7 @@ impl VM {
                     let b = self.pop();
                     let a = self.pop();
                     let s = format!("{}{}", a, b);
-                    self.push(Value::String(Rc::from(s.as_str())))?;
+                    self.push(Value::String(Arc::from(s.as_str())))?;
                 }
                 Op::str_concat_n => {
                     let count = self.read_byte() as usize;
@@ -1574,7 +1591,7 @@ impl VM {
                         result.push_str(&format!("{}", self.stack[i]));
                     }
                     self.stack.truncate(start);
-                    self.push(Value::String(Rc::from(result.as_str())))?;
+                    self.push(Value::String(Arc::from(result.as_str())))?;
                 }
 
                 // -- Bitwise --
@@ -1678,7 +1695,7 @@ impl VM {
                     let name = if chunk.name == "<script>" { None } else { Some(chunk.name.clone()) };
 
                     let uv_count = self.read_byte() as usize;
-                    let mut upvalues: Vec<Rc<RefCell<Upvalue>>> = Vec::with_capacity(uv_count);
+                    let mut upvalues: Vec<Arc<Mutex<Upvalue>>> = Vec::with_capacity(uv_count);
                     for _ in 0..uv_count {
                         let is_local = self.read_byte() != 0;
                         let index = self.read_byte() as usize;
@@ -1697,7 +1714,7 @@ impl VM {
                     // Add to function table for call_indirect
                     let table_idx = self.func_table.len();
                     obj.properties.insert("__table_idx".into(), Value::F64(table_idx as f64));
-                    let func_val = Value::Object(Rc::new(RefCell::new(obj)));
+                    let func_val = Value::Object(Arc::new(Mutex::new(obj)));
                     self.func_table.push(func_val.clone());
                     self.push(func_val)?;
                 }
@@ -1717,7 +1734,7 @@ impl VM {
                             let args: Vec<Value> = self.stack[base..].to_vec();
                             self.stack.truncate(base);
 
-                            let placeholder: HostFn = Box::new(|_, _| Value::Null);
+                            let placeholder: HostFn = Arc::new(|_, _| Value::Null);
                             let host_fn = std::mem::replace(&mut self.host_fns[host_idx], placeholder);
                             let result = {
                                 let mut ctx = self.make_host_context();
@@ -1727,7 +1744,7 @@ impl VM {
 
                             // JSPI: transparent async suspension
                             if let Value::Object(ref obj) = result {
-                                let o = obj.borrow();
+                                let o = obj.lock().unwrap();
                                 let is_pending = o.properties.get("__type")
                                     .map(|v| format!("{}", v) == "Promise")
                                     .unwrap_or(false)
@@ -1757,7 +1774,7 @@ impl VM {
                             };
                             let mut obj = crate::value::Object::new();
                             obj.kind = crate::value::ObjectKind::Function(func);
-                            let func_val = Value::Object(Rc::new(RefCell::new(obj)));
+                            let func_val = Value::Object(Arc::new(Mutex::new(obj)));
                             let args_start = self.stack.len() - argc;
                             self.stack.insert(args_start, func_val);
                             self.call_value(argc)?;
@@ -1789,7 +1806,7 @@ impl VM {
                         obj.set(key, val);
                     }
                     self.stack.truncate(start);
-                    self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 Op::array_new => {
                     let count = self.read_u16() as usize;
@@ -1797,7 +1814,7 @@ impl VM {
                     let start = self.stack.len() - count;
                     let elems: Vec<Value> = self.stack[start..].to_vec();
                     self.stack.truncate(start);
-                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(elems)))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(elems)))))?;
                 }
 
                 // -- Immediates --
@@ -1881,7 +1898,7 @@ impl VM {
                 Op::ref_is_object => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Object(_))))?; }
                 Op::ref_is_func => {
                     let v = self.pop();
-                    let is_fn = matches!(&v, Value::Object(o) if matches!(o.borrow().kind, ObjectKind::Function(_)));
+                    let is_fn = matches!(&v, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Function(_)));
                     self.push(Value::Bool(is_fn))?;
                 }
 
@@ -1903,7 +1920,7 @@ impl VM {
                         (Value::F64(x), Value::F64(y)) => Value::F64(x + y),
                         (Value::I32(x), Value::I32(y)) => Value::I32(x.wrapping_add(*y)),
                         (Value::String(_), _) | (_, Value::String(_)) => {
-                            Value::String(Rc::from(format!("{}{}", a, b).as_str()))
+                            Value::String(Arc::from(format!("{}{}", a, b).as_str()))
                         }
                         // Object with __add__ dunder → cross-language operator overloading
                         (Value::Object(obj), _) => {
@@ -1934,7 +1951,7 @@ impl VM {
                             if let Ok(sv) = s.parse::<f64>() { sv == *n as f64 } else { false }
                         }
                         (Value::String(x), Value::String(y)) => x == y,
-                        (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
+                        (Value::Object(x), Value::Object(y)) => Arc::ptr_eq(x, y),
                         _ => false,
                     };
                     self.push(Value::Bool(result))?;
@@ -1957,7 +1974,7 @@ impl VM {
                             if let Ok(sv) = s.parse::<f64>() { sv != *n as f64 } else { true }
                         }
                         (Value::String(x), Value::String(y)) => x != y,
-                        (Value::Object(x), Value::Object(y)) => !Rc::ptr_eq(x, y),
+                        (Value::Object(x), Value::Object(y)) => !Arc::ptr_eq(x, y),
                         _ => true,
                     };
                     self.push(Value::Bool(result))?;
@@ -2019,7 +2036,7 @@ impl VM {
                 Op::r#await => {
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         let is_promise = o.properties.get("__type")
                             .map(|v| format!("{}", v) == "Promise")
                             .unwrap_or(false);
@@ -2371,12 +2388,12 @@ impl VM {
                     let count = self.read_byte() as usize;
                     let start = self.stack.len() - count;
                     let values: Vec<Value> = self.stack.drain(start..).collect();
-                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(values)))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(values)))))?;
                 }
                 Op::unpack => {
                     let arr = self.pop();
                     if let Value::Object(obj) = arr {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref elems) = o.kind {
                             let elems = elems.clone();
                             drop(o);
@@ -2467,7 +2484,7 @@ impl VM {
                     // In full CM, this would validate/convert the value shape.
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         if o.type_id == 0 && type_idx < self.type_registry.types.len() {
                             o.type_id = type_idx;
                         }
@@ -2480,7 +2497,7 @@ impl VM {
                     // For now: validate type_id matches, strip interface metadata.
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if type_idx < self.type_registry.types.len() && o.type_id != type_idx {
                             // Type mismatch — could trap, for now allow
                         }
@@ -2519,7 +2536,7 @@ impl VM {
                     if let Some(td) = self.type_registry.get(type_id) {
                         obj.fields = vec![Value::Null; td.field_count()];
                     }
-                    self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
 
                 // -- Shared-Everything Threads (shared GC objects) --
@@ -2527,7 +2544,7 @@ impl VM {
                     let field_idx = self.read_u16() as usize;
                     let obj_val = self.pop();
                     if let Value::Object(ref obj) = obj_val {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         // Atomic read of indexed field
                         let val = if field_idx < o.fields.len() {
                             o.fields[field_idx].clone()
@@ -2544,7 +2561,7 @@ impl VM {
                     let value = self.pop();
                     let obj_val = self.pop();
                     if let Value::Object(ref obj) = obj_val {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         // Atomic write of indexed field
                         if field_idx < o.fields.len() {
                             o.fields[field_idx] = value;
@@ -2562,7 +2579,7 @@ impl VM {
                     let arr_val = self.pop();
                     let idx = idx_val.as_f64() as usize;
                     if let Value::Object(ref obj) = arr_val {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref elems) = o.kind {
                             self.push(elems.get(idx).cloned().unwrap_or(Value::Null))?;
                         } else {
@@ -2578,7 +2595,7 @@ impl VM {
                     let arr_val = self.pop();
                     let idx = idx_val.as_f64() as usize;
                     if let Value::Object(ref obj) = arr_val {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut elems) = o.kind {
                             if idx < elems.len() {
                                 elems[idx] = value;
@@ -2592,7 +2609,7 @@ impl VM {
                     let expected = self.pop();
                     let obj_val = self.pop();
                     if let Value::Object(ref obj) = obj_val {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         if field_idx < o.fields.len() {
                             let old = o.fields[field_idx].clone();
                             // Compare (using string repr for simplicity)
@@ -2612,7 +2629,7 @@ impl VM {
                 Op::ref_make_weak => {
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
-                        self.push(Value::WeakRef(Rc::downgrade(obj)))?;
+                        self.push(Value::WeakRef(Arc::downgrade(obj)))?;
                     } else {
                         self.push(Value::Null)?;
                     }
@@ -2644,7 +2661,7 @@ impl VM {
                     let target = self.pop();
                     if let Value::Object(ref obj) = target {
                         self.finalizers.push(FinalizerEntry {
-                            target: Rc::downgrade(obj),
+                            target: Arc::downgrade(obj),
                             callback,
                         });
                     }
@@ -2696,7 +2713,7 @@ impl VM {
                     let len = match &s {
                         Value::String(s) => s.chars().count() as i32,
                         Value::Object(obj) => {
-                            let o = obj.borrow();
+                            let o = obj.lock().unwrap();
                             if let ObjectKind::Array(a) = &o.kind { a.len() as i32 }
                             else if let Some(Value::F64(n)) = o.properties.get("length") { *n as i32 }
                             else { 0 }
@@ -2716,15 +2733,15 @@ impl VM {
                 Op::str_from_char_code => {
                     let code = self.pop().as_i32() as u32;
                     let ch = char::from_u32(code).unwrap_or('\0');
-                    self.push(Value::String(Rc::from(ch.to_string().as_str())))?;
+                    self.push(Value::String(Arc::from(ch.to_string().as_str())))?;
                 }
                 Op::str_char_at => {
                     let idx = self.pop().as_i32() as usize;
                     let s = self.pop();
                     let ch = if let Value::String(s) = &s {
-                        s.chars().nth(idx).map(|c| Rc::from(c.to_string().as_str()))
-                            .unwrap_or(Rc::from(""))
-                    } else { Rc::from("") };
+                        s.chars().nth(idx).map(|c| Arc::from(c.to_string().as_str()))
+                            .unwrap_or(Arc::from(""))
+                    } else { Arc::from("") };
                     self.push(Value::String(ch))?;
                 }
                 Op::str_substring | Op::str_slice => {
@@ -2736,8 +2753,8 @@ impl VM {
                         let end = end.min(chars.len());
                         let start = start.min(end);
                         let sub: String = chars[start..end].iter().collect();
-                        Rc::from(sub.as_str())
-                    } else { Rc::from("") };
+                        Arc::from(sub.as_str())
+                    } else { Arc::from("") };
                     self.push(Value::String(result))?;
                 }
                 Op::str_index_of => {
@@ -2787,30 +2804,30 @@ impl VM {
                 Op::str_to_upper => {
                     let s = self.pop();
                     let r = if let Value::String(s) = &s {
-                        Rc::from(s.to_uppercase().as_str())
-                    } else { Rc::from("") };
+                        Arc::from(s.to_uppercase().as_str())
+                    } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 Op::str_to_lower => {
                     let s = self.pop();
                     let r = if let Value::String(s) = &s {
-                        Rc::from(s.to_lowercase().as_str())
-                    } else { Rc::from("") };
+                        Arc::from(s.to_lowercase().as_str())
+                    } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 Op::str_trim => {
                     let s = self.pop();
-                    let r = if let Value::String(s) = &s { Rc::from(s.trim()) } else { Rc::from("") };
+                    let r = if let Value::String(s) = &s { Arc::from(s.trim()) } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 Op::str_trim_start => {
                     let s = self.pop();
-                    let r = if let Value::String(s) = &s { Rc::from(s.trim_start()) } else { Rc::from("") };
+                    let r = if let Value::String(s) = &s { Arc::from(s.trim_start()) } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 Op::str_trim_end => {
                     let s = self.pop();
-                    let r = if let Value::String(s) = &s { Rc::from(s.trim_end()) } else { Rc::from("") };
+                    let r = if let Value::String(s) = &s { Arc::from(s.trim_end()) } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 Op::str_starts_with => {
@@ -2841,9 +2858,9 @@ impl VM {
                     let new = self.pop(); let old = self.pop(); let s = self.pop();
                     let r = match (&s, &old, &new) {
                         (Value::String(s), Value::String(o), Value::String(n)) => {
-                            Rc::from(s.replace(o.as_ref(), n.as_ref()).as_str())
+                            Arc::from(s.replace(o.as_ref(), n.as_ref()).as_str())
                         }
-                        _ => Rc::from(""),
+                        _ => Arc::from(""),
                     };
                     self.push(Value::String(r))?;
                 }
@@ -2851,58 +2868,58 @@ impl VM {
                     let delim = self.pop(); let s = self.pop();
                     let parts: Vec<Value> = match (&s, &delim) {
                         (Value::String(s), Value::String(d)) => {
-                            s.split(d.as_ref()).map(|p| Value::String(Rc::from(p))).collect()
+                            s.split(d.as_ref()).map(|p| Value::String(Arc::from(p))).collect()
                         }
                         _ => vec![],
                     };
-                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(parts)))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(parts)))))?;
                 }
                 Op::str_repeat => {
                     let count = self.pop().as_i32().max(0) as usize;
                     let s = self.pop();
                     let r = if let Value::String(s) = &s {
-                        Rc::from(s.repeat(count).as_str())
-                    } else { Rc::from("") };
+                        Arc::from(s.repeat(count).as_str())
+                    } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 Op::str_pad_start => {
                     let fill = self.pop(); let target_len = self.pop().as_i32().max(0) as usize;
                     let s = self.pop();
                     let r = if let (Value::String(s), Value::String(f)) = (&s, &fill) {
-                        if s.len() >= target_len { Rc::clone(s) }
+                        if s.len() >= target_len { Arc::clone(s) }
                         else {
                             let pad = target_len - s.len();
                             let fill_str: String = f.chars().cycle().take(pad).collect();
-                            Rc::from(format!("{}{}", fill_str, s).as_str())
+                            Arc::from(format!("{}{}", fill_str, s).as_str())
                         }
-                    } else { Rc::from("") };
+                    } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 Op::str_pad_end => {
                     let fill = self.pop(); let target_len = self.pop().as_i32().max(0) as usize;
                     let s = self.pop();
                     let r = if let (Value::String(s), Value::String(f)) = (&s, &fill) {
-                        if s.len() >= target_len { Rc::clone(s) }
+                        if s.len() >= target_len { Arc::clone(s) }
                         else {
                             let pad = target_len - s.len();
                             let fill_str: String = f.chars().cycle().take(pad).collect();
-                            Rc::from(format!("{}{}", s, fill_str).as_str())
+                            Arc::from(format!("{}{}", s, fill_str).as_str())
                         }
-                    } else { Rc::from("") };
+                    } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 Op::str_reverse => {
                     let s = self.pop();
                     let r = if let Value::String(s) = &s {
-                        Rc::from(s.chars().rev().collect::<String>().as_str())
-                    } else { Rc::from("") };
+                        Arc::from(s.chars().rev().collect::<String>().as_str())
+                    } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 // Unicode code points (beyond BMP — emoji, CJK)
                 Op::str_from_code_point => {
                     let cp = self.pop().as_i32() as u32;
                     let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
-                    self.push(Value::String(Rc::from(ch.to_string().as_str())))?;
+                    self.push(Value::String(Arc::from(ch.to_string().as_str())))?;
                 }
                 Op::str_code_point_at => {
                     let idx = self.pop().as_i32() as usize;
@@ -2918,17 +2935,17 @@ impl VM {
                     let codes: Vec<Value> = if let Value::String(s) = &s {
                         s.chars().map(|c| Value::I32(c as i32)).collect()
                     } else { vec![] };
-                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(codes)))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(codes)))))?;
                 }
                 Op::str_from_char_codes => {
                     let arr = self.pop();
                     let s = if let Value::Object(obj) = &arr {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(a) = &o.kind {
                             a.iter().filter_map(|v| char::from_u32(v.as_i32() as u32)).collect::<String>()
                         } else { String::new() }
                     } else { String::new() };
-                    self.push(Value::String(Rc::from(s.as_str())))?;
+                    self.push(Value::String(Arc::from(s.as_str())))?;
                 }
                 // Type discrimination opcodes
                 Op::ref_typeof => {
@@ -2942,7 +2959,7 @@ impl VM {
                         Value::V128(_) => "v128",
                         Value::WeakRef(_) => "weakref",
                         Value::Object(o) => {
-                            let ob = o.borrow();
+                            let ob = o.lock().unwrap();
                             match &ob.kind {
                                 ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "function",
                                 ObjectKind::Array(_) => "array",
@@ -2950,11 +2967,11 @@ impl VM {
                             }
                         }
                     };
-                    self.push(Value::String(Rc::from(tag)))?;
+                    self.push(Value::String(Arc::from(tag)))?;
                 }
                 Op::ref_is_array => {
                     let v = self.pop();
-                    let is_arr = matches!(&v, Value::Object(o) if matches!(o.borrow().kind, ObjectKind::Array(_)));
+                    let is_arr = matches!(&v, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Array(_)));
                     self.push(Value::Bool(is_arr))?;
                 }
 
@@ -2962,7 +2979,7 @@ impl VM {
                 Op::array_length => {
                     let arr = self.pop();
                     let len = if let Value::Object(obj) = &arr {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(a) = &o.kind { a.len() as i32 } else { 0 }
                     } else if let Value::String(s) = &arr {
                         s.chars().count() as i32
@@ -2972,7 +2989,7 @@ impl VM {
                 Op::array_push => {
                     let val = self.pop(); let arr = self.pop();
                     if let Value::Object(obj) = &arr {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut a) = o.kind { a.push(val); }
                     }
                     self.push(arr)?;
@@ -2980,7 +2997,7 @@ impl VM {
                 Op::array_pop => {
                     let arr = self.pop();
                     let val = if let Value::Object(obj) = &arr {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut a) = o.kind { a.pop().unwrap_or(Value::Null) }
                         else { Value::Null }
                     } else { Value::Null };
@@ -2990,13 +3007,13 @@ impl VM {
                     let end = self.pop().as_i32(); let start = self.pop().as_i32();
                     let arr = self.pop();
                     let result = if let Value::Object(obj) = &arr {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(a) = &o.kind {
                             let len = a.len() as i32;
                             let s = if start < 0 { (len + start).max(0) as usize } else { start.min(len) as usize };
                             let e = if end < 0 { (len + end).max(0) as usize } else { end.min(len) as usize };
                             let sliced: Vec<Value> = a[s..e.max(s)].to_vec();
-                            Value::Object(Rc::new(RefCell::new(Object::new_array(sliced))))
+                            Value::Object(Arc::new(Mutex::new(Object::new_array(sliced))))
                         } else { Value::Null }
                     } else { Value::Null };
                     self.push(result)?;
@@ -3004,18 +3021,18 @@ impl VM {
                 Op::array_join => {
                     let delim = self.pop(); let arr = self.pop();
                     let r = if let (Value::Object(obj), Value::String(d)) = (&arr, &delim) {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(a) = &o.kind {
                             let parts: Vec<String> = a.iter().map(|v| format!("{}", v)).collect();
-                            Rc::from(parts.join(d.as_ref()).as_str())
-                        } else { Rc::from("") }
-                    } else { Rc::from("") };
+                            Arc::from(parts.join(d.as_ref()).as_str())
+                        } else { Arc::from("") }
+                    } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
                 Op::array_reverse => {
                     let arr = self.pop();
                     if let Value::Object(obj) = &arr {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut a) = o.kind { a.reverse(); }
                     }
                     self.push(arr)?;
@@ -3030,7 +3047,7 @@ impl VM {
                         (Value::String(h), Value::String(n)) => h.contains(n.as_ref()),
                         // Array containment: 2 in [1,2,3]
                         (Value::Object(obj), _) => {
-                            let o = obj.borrow();
+                            let o = obj.lock().unwrap();
                             if let ObjectKind::Array(a) = &o.kind {
                                 a.iter().any(|v| v.eq(&needle))
                             } else {
@@ -3046,7 +3063,7 @@ impl VM {
                 Op::array_index_of => {
                     let needle = self.pop(); let arr = self.pop();
                     let idx = if let Value::Object(obj) = &arr {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(a) = &o.kind {
                             a.iter().position(|v| v.eq(&needle)).map(|p| p as i32).unwrap_or(-1)
                         } else { -1 }
@@ -3058,7 +3075,7 @@ impl VM {
                 Op::array_new_default => {
                     let len = self.pop().as_i32().max(0) as usize;
                     let elems = vec![Value::Null; len];
-                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(elems)))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(elems)))))?;
                 }
                 Op::array_fill => {
                     let count = self.pop().as_i32().max(0) as usize;
@@ -3066,7 +3083,7 @@ impl VM {
                     let val = self.pop();
                     let arr = self.pop();
                     if let Value::Object(obj) = &arr {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut a) = o.kind {
                             let end = (start + count).min(a.len());
                             for i in start..end { a[i] = val.clone(); }
@@ -3081,7 +3098,7 @@ impl VM {
                     let dst = self.pop();
                     // Read source slice
                     let src_vals: Vec<Value> = if let Value::Object(obj) = &src {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(a) = &o.kind {
                             let end = (src_off + len).min(a.len());
                             a[src_off.min(a.len())..end].to_vec()
@@ -3089,7 +3106,7 @@ impl VM {
                     } else { vec![] };
                     // Write to destination
                     if let Value::Object(obj) = &dst {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut a) = o.kind {
                             for (i, v) in src_vals.into_iter().enumerate() {
                                 let idx = dst_off + i;
@@ -3103,19 +3120,19 @@ impl VM {
                     let a = self.pop();
                     let mut result = Vec::new();
                     if let Value::Object(obj) = &a {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(arr) = &o.kind { result.extend(arr.iter().cloned()); }
                     }
                     if let Value::Object(obj) = &b {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(arr) = &o.kind { result.extend(arr.iter().cloned()); }
                     }
-                    self.push(Value::Object(Rc::new(RefCell::new(Object::new_array(result)))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(result)))))?;
                 }
                 Op::array_shift => {
                     let arr = self.pop();
                     let val = if let Value::Object(obj) = &arr {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut a) = o.kind {
                             if a.is_empty() { Value::Null } else { a.remove(0) }
                         } else { Value::Null }
@@ -3130,9 +3147,9 @@ impl VM {
                     let func_val = self.pop();
                     let mut obj = Object::new_typed(0);
                     obj.properties.insert("__cont_func".into(), func_val);
-                    obj.properties.insert("__cont_state".into(), Value::String(Rc::from("ready")));
+                    obj.properties.insert("__cont_state".into(), Value::String(Arc::from("ready")));
                     obj.properties.insert("__cont_value".into(), Value::Null);
-                    self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 Op::suspend => {
                     let _tag = self.read_u16();
@@ -3150,12 +3167,12 @@ impl VM {
                     let cont = self.pop();
                     if let Value::Object(obj) = &cont {
                         let func_val = {
-                            let o = obj.borrow();
+                            let o = obj.lock().unwrap();
                             o.properties.get("__cont_func").cloned().unwrap_or(Value::Null)
                         };
                         {
-                            let mut o = obj.borrow_mut();
-                            o.properties.insert("__cont_state".into(), Value::String(Rc::from("running")));
+                            let mut o = obj.lock().unwrap();
+                            o.properties.insert("__cont_state".into(), Value::String(Arc::from("running")));
                             o.properties.insert("__cont_value".into(), val.clone());
                         }
                         // Call the continuation's function with the resume value
@@ -3172,11 +3189,144 @@ impl VM {
                     let val = self.pop();
                     let cont = self.pop();
                     if let Value::Object(obj) = &cont {
-                        let mut o = obj.borrow_mut();
+                        let mut o = obj.lock().unwrap();
                         o.properties.insert("__cont_value".into(), val.clone());
-                        o.properties.insert("__cont_state".into(), Value::String(Rc::from("running")));
+                        o.properties.insert("__cont_state".into(), Value::String(Arc::from("running")));
                     }
                     self.push(val)?;
+                }
+
+                // -- wasi-threads: real OS thread spawning --
+                Op::thread_spawn => {
+                    // [func_ref] → [task_object]
+                    // Per wasi-threads: spawn a real OS thread.
+                    // Value is now Arc-based (Send+Sync), so chunks and host_fns
+                    // can be shared directly — no serialization needed.
+                    let func_val = self.pop();
+
+                    let chunk_idx = match &func_val {
+                        Value::Object(obj) => {
+                            let o = obj.lock().unwrap();
+                            match &o.kind {
+                                ObjectKind::Function(f) => Some(f.chunk_index),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(ci) = chunk_idx {
+                        let tid = self.next_thread_id;
+                        self.next_thread_id += 1;
+
+                        // Create task object FIRST so child can write result to it
+                        let mut obj = Object::new();
+                        obj.properties.insert("__type".into(), Value::String(Arc::from("Task")));
+                        obj.properties.insert("__thread_id".into(), Value::I32(tid));
+                        obj.properties.insert("iscompleted".into(), Value::Bool(false));
+                        obj.properties.insert("isalive".into(), Value::Bool(true));
+                        obj.properties.insert("result".into(), Value::Null);
+                        obj.properties.insert("status".into(), Value::String(Arc::from("Running")));
+                        let task_obj = Arc::new(Mutex::new(obj));
+                        let task_for_child = task_obj.clone();
+
+                        // Share directly — Value is Send+Sync now
+                        let child_chunks = self.chunks.clone();
+                        let child_memory = self.memory.clone();
+                        let child_host_fns = self.host_fns.clone();
+                        let child_host_registry = self.host_registry.clone();
+                        let child_import_table = self.import_table.clone();
+
+                        let handle = std::thread::spawn(move || {
+                            let mut child_vm = VM::new();
+                            child_vm.chunks = child_chunks;
+                            child_vm.memory = child_memory;
+                            child_vm.host_fns = child_host_fns;
+                            child_vm.host_registry = child_host_registry;
+                            child_vm.import_table = child_import_table;
+
+                            // Set up call frame
+                            let arity = child_vm.chunks.get(ci).map(|c| c.arity).unwrap_or(0);
+                            child_vm.frames.push(CallFrame {
+                                chunk_index: ci,
+                                ip: 0,
+                                base: 0,
+                                upvalues: Vec::new(),
+                            });
+                            let local_count = child_vm.chunks.get(ci)
+                                .map(|c| c.local_count as usize)
+                                .unwrap_or(1)
+                                .max(64);
+                            for _ in 0..local_count {
+                                child_vm.stack.push(Value::Null);
+                            }
+
+                            let result = match child_vm.execute() {
+                                Ok(val) => {
+                                    // Store return value in the shared task object
+                                    let mut t = task_for_child.lock().unwrap();
+                                    t.properties.insert("result".into(), val.clone());
+                                    t.properties.insert("iscompleted".into(), Value::Bool(true));
+                                    t.properties.insert("isalive".into(), Value::Bool(false));
+                                    t.properties.insert("hasexited".into(), Value::Bool(true));
+                                    t.properties.insert("exitcode".into(), Value::I32(0));
+                                    t.properties.insert("status".into(), Value::String(Arc::from("RanToCompletion")));
+                                    vec![0u8]
+                                }
+                                Err(e) => {
+                                    let mut t = task_for_child.lock().unwrap();
+                                    t.properties.insert("iscompleted".into(), Value::Bool(true));
+                                    t.properties.insert("isalive".into(), Value::Bool(false));
+                                    t.properties.insert("hasexited".into(), Value::Bool(true));
+                                    t.properties.insert("exitcode".into(), Value::I32(-1));
+                                    t.properties.insert("status".into(), Value::String(Arc::from("Faulted")));
+                                    eprintln!("[thread {}] error: {}", tid, e.message);
+                                    vec![1u8]
+                                }
+                            };
+                            result
+                        });
+
+                        self.thread_handles.insert(tid, handle);
+                        self.push(Value::Object(task_obj))?;
+                    } else {
+                        self.push(Value::Null)?;
+                    }
+                }
+                Op::thread_join => {
+                    // [task_object] → [status: i32]
+                    // Wait for a thread to complete. Accepts either a task object
+                    // (with __thread_id) or a raw i32 thread ID.
+                    let task_val = self.pop();
+                    let tid = match &task_val {
+                        Value::Object(obj) => {
+                            let o = obj.lock().unwrap();
+                            o.properties.get("__thread_id").map(|v| v.as_f64() as i32).unwrap_or(-1)
+                        }
+                        Value::I32(n) => *n,
+                        _ => task_val.as_f64() as i32,
+                    };
+
+                    if let Some(handle) = self.thread_handles.remove(&tid) {
+                        let success = match handle.join() {
+                            Ok(result) => result.first().copied().unwrap_or(1) == 0,
+                            Err(_) => false,
+                        };
+                        // Update the task object properties
+                        if let Value::Object(obj) = &task_val {
+                            let mut o = obj.lock().unwrap();
+                            o.properties.insert("iscompleted".into(), Value::Bool(true));
+                            o.properties.insert("isalive".into(), Value::Bool(false));
+                            o.properties.insert("hasexited".into(), Value::Bool(true));
+                            o.properties.insert("exitcode".into(), Value::I32(if success { 0 } else { -1 }));
+                            o.properties.insert("status".into(), Value::String(Arc::from(
+                                if success { "RanToCompletion" } else { "Faulted" }
+                            )));
+                        }
+                        self.push(Value::I32(if success { 0 } else { -1 }))?;
+                    } else {
+                        self.push(Value::I32(-1))?;
+                    }
                 }
 
                 // -- Extended Const Expressions --
@@ -3197,16 +3347,16 @@ impl VM {
                     let func_val = self.pop();
                     let mut obj = Object::new_typed(0);
                     obj.properties.insert("__cont_func".into(), func_val);
-                    obj.properties.insert("__cont_state".into(), Value::String(Rc::from("ready")));
+                    obj.properties.insert("__cont_state".into(), Value::String(Arc::from("ready")));
                     obj.properties.insert("__cont_value".into(), Value::Null);
                     // Store tag info for type checking on suspend/resume
                     obj.properties.insert("__cont_tag".into(), Value::I32(tag_idx as i32));
                     if tag_idx < self.chunks[0].continuation_tags.len() {
                         let tag = &self.chunks[0].continuation_tags[tag_idx];
-                        obj.properties.insert("__cont_yield_type".into(), Value::String(Rc::from(tag.yield_type.as_str())));
-                        obj.properties.insert("__cont_resume_type".into(), Value::String(Rc::from(tag.resume_type.as_str())));
+                        obj.properties.insert("__cont_yield_type".into(), Value::String(Arc::from(tag.yield_type.as_str())));
+                        obj.properties.insert("__cont_resume_type".into(), Value::String(Arc::from(tag.resume_type.as_str())));
                     }
-                    self.push(Value::Object(Rc::new(RefCell::new(obj))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 Op::suspend_typed => {
                     let _tag_idx = self.read_u16();
@@ -3223,7 +3373,7 @@ impl VM {
                     if let Value::Object(obj) = &cont {
                         // Validate resume value type matches continuation's resume_type
                         let expected_type = {
-                            let o = obj.borrow();
+                            let o = obj.lock().unwrap();
                             o.properties.get("__cont_resume_type")
                                 .map(|v| format!("{}", v))
                                 .unwrap_or_default()
@@ -3236,12 +3386,12 @@ impl VM {
                             }
                         }
                         let func_val = {
-                            let o = obj.borrow();
+                            let o = obj.lock().unwrap();
                             o.properties.get("__cont_func").cloned().unwrap_or(Value::Null)
                         };
                         {
-                            let mut o = obj.borrow_mut();
-                            o.properties.insert("__cont_state".into(), Value::String(Rc::from("running")));
+                            let mut o = obj.lock().unwrap();
+                            o.properties.insert("__cont_state".into(), Value::String(Arc::from("running")));
                             o.properties.insert("__cont_value".into(), val.clone());
                         }
                         self.push(func_val)?;
@@ -3254,15 +3404,15 @@ impl VM {
 
                 // -- String References (zero-copy) --
                 Op::string_as_ref => {
-                    // String → StringRef: since our strings are already Rc<str>,
-                    // this is effectively a no-op — we keep the same Rc.
+                    // String → StringRef: since our strings are already Arc<str>,
+                    // this is effectively a no-op — we keep the same Arc.
                     // The semantic difference: stringref signals cross-component sharing intent.
                     let val = self.pop();
-                    // Just pass through — Rc<str> is already shared
+                    // Just pass through — Arc<str> is already shared
                     self.push(val)?;
                 }
                 Op::string_from_ref => {
-                    // StringRef → String: dereference (zero-copy with Rc).
+                    // StringRef → String: dereference (zero-copy with Arc).
                     let val = self.pop();
                     self.push(val)?;
                 }
@@ -3271,7 +3421,7 @@ impl VM {
                     let b = self.pop();
                     let a = self.pop();
                     let eq = match (&a, &b) {
-                        (Value::String(sa), Value::String(sb)) => Rc::ptr_eq(sa, sb),
+                        (Value::String(sa), Value::String(sb)) => Arc::ptr_eq(sa, sb),
                         _ => false,
                     };
                     self.push(Value::Bool(eq))?;
@@ -3548,7 +3698,7 @@ impl VM {
                     // by the compiler for synchronous-looking code that calls async APIs.
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         let is_pending = o.properties.get("__type")
                             .map(|v| format!("{}", v) == "Promise")
                             .unwrap_or(false)
@@ -3579,7 +3729,7 @@ impl VM {
                     let type_id = self.pop().as_i32() as usize;
                     let obj = self.peek(0);
                     if let Value::Object(o) = obj {
-                        o.borrow_mut().type_id = type_id;
+                        o.lock().unwrap().type_id = type_id;
                     }
                 }
 
@@ -3593,51 +3743,51 @@ impl VM {
 
                     match &iterable {
                         Value::Object(o) => {
-                            let ob = o.borrow();
+                            let ob = o.lock().unwrap();
                             // Check for __iter__ method
                             if ob.properties.contains_key("__iter__") {
                                 // Store the iterable and we'll call __iter__ via iter_next
                                 drop(ob);
                                 iter_obj.properties.insert("__iterable".into(), iterable.clone());
-                                iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("dunder")));
+                                iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("dunder")));
                                 iter_obj.properties.insert("__started".into(), Value::Bool(false));
                             } else if matches!(&ob.kind, ObjectKind::Array(_)) {
                                 // Array: index-based iteration
                                 drop(ob);
                                 iter_obj.properties.insert("__iterable".into(), iterable.clone());
-                                iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("array")));
+                                iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("array")));
                                 iter_obj.properties.insert("__index".into(), Value::I32(0));
                             } else {
                                 // Dict/Object: iterate keys
                                 let keys: Vec<Value> = ob.properties.keys()
                                     .filter(|k| !k.starts_with("__"))
-                                    .map(|k| Value::String(Rc::from(k.as_str())))
+                                    .map(|k| Value::String(Arc::from(k.as_str())))
                                     .collect();
                                 drop(ob);
-                                let keys_arr = Value::Object(Rc::new(RefCell::new(Object::new_array(keys))));
+                                let keys_arr = Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
                                 iter_obj.properties.insert("__iterable".into(), keys_arr);
-                                iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("array")));
+                                iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("array")));
                                 iter_obj.properties.insert("__index".into(), Value::I32(0));
                             }
                         }
                         Value::String(s) => {
                             // String: iterate characters
                             let chars: Vec<Value> = s.chars()
-                                .map(|c| Value::String(Rc::from(c.to_string().as_str())))
+                                .map(|c| Value::String(Arc::from(c.to_string().as_str())))
                                 .collect();
-                            let chars_arr = Value::Object(Rc::new(RefCell::new(Object::new_array(chars))));
+                            let chars_arr = Value::Object(Arc::new(Mutex::new(Object::new_array(chars))));
                             iter_obj.properties.insert("__iterable".into(), chars_arr);
-                            iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("array")));
+                            iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("array")));
                             iter_obj.properties.insert("__index".into(), Value::I32(0));
                         }
                         _ => {
                             // Not iterable
-                            iter_obj.properties.insert("__protocol".into(), Value::String(Rc::from("empty")));
+                            iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("empty")));
                         }
                     }
-                    iter_obj.properties.insert("__type".into(), Value::String(Rc::from("iterator")));
+                    iter_obj.properties.insert("__type".into(), Value::String(Arc::from("iterator")));
                     iter_obj.properties.insert("__done".into(), Value::Bool(false));
-                    self.push(Value::Object(Rc::new(RefCell::new(iter_obj))))?;
+                    self.push(Value::Object(Arc::new(Mutex::new(iter_obj))))?;
                 }
                 Op::iter_next => {
                     // Advance iterator. Returns {value, done}.
@@ -3645,19 +3795,19 @@ impl VM {
                     let iter_val = self.pop();
                     if let Value::Object(ref iter_obj) = iter_val {
                         let protocol = {
-                            let ob = iter_obj.borrow();
+                            let ob = iter_obj.lock().unwrap();
                             ob.properties.get("__protocol").map(|v| v.to_string()).unwrap_or_default()
                         };
 
                         match protocol.as_str() {
                             "array" => {
                                 let (value, done) = {
-                                    let mut ob = iter_obj.borrow_mut();
+                                    let mut ob = iter_obj.lock().unwrap();
                                     let idx = ob.properties.get("__index")
                                         .map(|v| v.as_i32() as usize).unwrap_or(0);
                                     let iterable = ob.properties.get("__iterable").cloned().unwrap_or(Value::Null);
                                     let (val, is_done) = if let Value::Object(arr) = &iterable {
-                                        let arr_ob = arr.borrow();
+                                        let arr_ob = arr.lock().unwrap();
                                         if let ObjectKind::Array(elems) = &arr_ob.kind {
                                             if idx < elems.len() {
                                                 (elems[idx].clone(), false)
@@ -3682,14 +3832,14 @@ impl VM {
                                 // First call: call __iter__ to get the iterator object
                                 // Subsequent: call __next__ on the iterator
                                 let started = {
-                                    let ob = iter_obj.borrow();
+                                    let ob = iter_obj.lock().unwrap();
                                     ob.properties.get("__started").map(|v| dyn_truthy(v)).unwrap_or(false)
                                 };
                                 if !started {
                                     // Call __iter__ on the iterable
-                                    let iterable = iter_obj.borrow().properties.get("__iterable").cloned().unwrap_or(Value::Null);
+                                    let iterable = iter_obj.lock().unwrap().properties.get("__iterable").cloned().unwrap_or(Value::Null);
                                     if let Value::Object(ref it_obj) = iterable {
-                                        let iter_fn = it_obj.borrow().properties.get("__iter__").cloned();
+                                        let iter_fn = it_obj.lock().unwrap().properties.get("__iter__").cloned();
                                         if let Some(func) = iter_fn {
                                             self.push(func)?;
                                             self.push(iterable.clone())?;
@@ -3698,7 +3848,7 @@ impl VM {
                                             // For simplicity, assume __iter__ returns self or an array
                                         }
                                     }
-                                    iter_obj.borrow_mut().properties.insert("__started".into(), Value::Bool(true));
+                                    iter_obj.lock().unwrap().properties.insert("__started".into(), Value::Bool(true));
                                 }
                                 // For now, treat dunder iterators as done (full protocol needs coroutines)
                                 self.push(Value::Null)?;
@@ -3718,7 +3868,7 @@ impl VM {
                     // Spread array onto stack: [array] → [elem0, elem1, ...]
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
-                        let o = obj.borrow();
+                        let o = obj.lock().unwrap();
                         if let ObjectKind::Array(elems) = &o.kind {
                             for elem in elems {
                                 self.push(elem.clone())?;
@@ -3735,9 +3885,9 @@ impl VM {
 
     /// Try to call a dunder method (__add__, __lt__, etc.) on an object.
     /// Returns Some(result) if the method exists, None otherwise.
-    fn try_dunder_binary(&mut self, obj: &Rc<RefCell<crate::value::Object>>, arg: &Value, dunder: &str) -> Option<Value> {
+    fn try_dunder_binary(&mut self, obj: &Arc<Mutex<crate::value::Object>>, arg: &Value, dunder: &str) -> Option<Value> {
         let method = {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             o.properties.get(dunder).cloned()
         };
         if let Some(func_val) = method {
@@ -3761,7 +3911,7 @@ impl VM {
 
         match &callee {
             Value::Object(obj) => {
-                let o = obj.borrow();
+                let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Function(func) => {
                         self.call_function(func, argc)?;
@@ -3772,7 +3922,7 @@ impl VM {
                         let args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
                         for _ in 0..argc { self.stack.pop(); }
                         self.stack.pop();
-                        let placeholder: HostFn = Box::new(|_, _| Value::Null);
+                        let placeholder: HostFn = Arc::new(|_, _| Value::Null);
                         let host_fn = std::mem::replace(&mut self.host_fns[idx], placeholder);
                         let result = {
                             let mut ctx = self.make_host_context();
@@ -3839,13 +3989,13 @@ impl VM {
         Ok(())
     }
 
-    fn capture_upvalue(&mut self, stack_idx: usize) -> Rc<RefCell<Upvalue>> {
+    fn capture_upvalue(&mut self, stack_idx: usize) -> Arc<Mutex<Upvalue>> {
         for uv in &self.open_upvalues {
-            if let UpvalueLocation::Open(idx) = uv.borrow().location {
+            if let UpvalueLocation::Open(idx) = uv.lock().unwrap().location {
                 if idx == stack_idx { return uv.clone(); }
             }
         }
-        let uv = Rc::new(RefCell::new(Upvalue { location: UpvalueLocation::Open(stack_idx) }));
+        let uv = Arc::new(Mutex::new(Upvalue { location: UpvalueLocation::Open(stack_idx) }));
         self.open_upvalues.push(uv.clone());
         uv
     }
@@ -3854,12 +4004,12 @@ impl VM {
         let mut i = 0;
         while i < self.open_upvalues.len() {
             let should_close = matches!(
-                self.open_upvalues[i].borrow().location,
+                self.open_upvalues[i].lock().unwrap().location,
                 UpvalueLocation::Open(idx) if idx >= from
             );
             if should_close {
                 let uv = self.open_upvalues.remove(i);
-                let mut u = uv.borrow_mut();
+                let mut u = uv.lock().unwrap();
                 if let UpvalueLocation::Open(idx) = u.location {
                     u.location = UpvalueLocation::Closed(self.stack[idx].clone());
                 }
@@ -3882,7 +4032,7 @@ impl VM {
     pub fn resolve_property(&self, obj: &Value, name: &str) -> Result<Value, VMError> {
         match obj {
             Value::Object(o) => {
-                let ob = o.borrow();
+                let ob = o.lock().unwrap();
 
                 // 1. Instance property (getters handled in struct_get opcode directly)
                 let val = ob.get(name);
@@ -3901,7 +4051,7 @@ impl VM {
                 }
 
                 // Also try inferring type from ObjectKind or __type property
-                let ob = o.borrow();
+                let ob = o.lock().unwrap();
                 let inferred_type = ob.properties.get("__type")
                     .map(|v| format!("{}", v).to_lowercase())
                     .unwrap_or_else(|| match &ob.kind {
@@ -3960,7 +4110,7 @@ impl VM {
                     // Fallback: create new (shouldn't happen if registered properly)
                     let mut obj = Object::new();
                     obj.kind = ObjectKind::HostFunction(*idx);
-                    Value::Object(Rc::new(RefCell::new(obj)))
+                    Value::Object(Arc::new(Mutex::new(obj)))
                 }
             }
             crate::typedef::Method::ChunkFn(idx) => {
@@ -3972,7 +4122,7 @@ impl VM {
                     upvalues: Vec::new(),
                 };
                 let obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0, fields: Vec::new() };
-                Value::Object(Rc::new(RefCell::new(obj)))
+                Value::Object(Arc::new(Mutex::new(obj)))
             }
         }
     }
@@ -3987,7 +4137,7 @@ fn dyn_truthy(v: &Value) -> bool {
         Value::I64(n) => *n != 0,
         Value::String(s) => !s.is_empty(),
         Value::Object(o) => {
-            let ob = o.borrow();
+            let ob = o.lock().unwrap();
             // Check __bool__ property (set by Python classes as a bool value).
             // If __bool__ is a Bool value, use it. If it's a function, we can't
             // call it from here (no VM access) — the compiler should call it

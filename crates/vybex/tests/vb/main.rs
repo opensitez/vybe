@@ -1,0 +1,15 @@
+mod helpers;
+mod vb_basic_test;
+mod vb_builtins_test;
+mod vb_class_test;
+mod vb_comprehensive_test;
+mod vb_cross_language_test;
+mod vb_forms_advanced_test;
+mod vb_forms_test;
+mod vb_gui_test;
+mod vb_host_interop_test;
+mod vb_inheritance_test;
+mod vb_interop_test;
+mod vb_namespace_test;
+mod vb_objects_collections_test;
+mod vb_threading_test;

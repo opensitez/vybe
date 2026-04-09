@@ -1,15 +1,15 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use std::io::{BufRead, Write};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn("wasi:filesystem", "readFile", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let path = s(args, 0);
         match std::fs::read_to_string(&path) {
-            Ok(contents) => Value::String(Rc::from(contents.as_str())),
-            Err(e) => Value::String(Rc::from(format!("Error: {}", e).as_str())),
+            Ok(contents) => Value::String(Arc::from(contents.as_str())),
+            Err(e) => Value::String(Arc::from(format!("Error: {}", e).as_str())),
         }
     }));
 
@@ -18,7 +18,7 @@ pub fn register(vm: &mut VM) {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let vals: Vec<Value> = bytes.iter().map(|b| Value::F64(*b as f64)).collect();
-                Value::Object(Rc::new(RefCell::new(Object::new_array(vals))))
+                Value::Object(Arc::new(Mutex::new(Object::new_array(vals))))
             }
             Err(_) => Value::Null,
         }
@@ -75,11 +75,11 @@ pub fn register(vm: &mut VM) {
             Ok(entries) => {
                 let items: Vec<Value> = entries
                     .filter_map(|e| e.ok())
-                    .map(|e| Value::String(Rc::from(e.file_name().to_string_lossy().as_ref())))
+                    .map(|e| Value::String(Arc::from(e.file_name().to_string_lossy().as_ref())))
                     .collect();
-                Value::Object(Rc::new(RefCell::new(Object::new_array(items))))
+                Value::Object(Arc::new(Mutex::new(Object::new_array(items))))
             }
-            Err(_) => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))),
+            Err(_) => Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))),
         }
     }));
 
@@ -121,7 +121,7 @@ pub fn register(vm: &mut VM) {
                     let ms = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
                     obj.properties.insert("modified".into(), Value::F64(ms as f64));
                 }
-                Value::Object(Rc::new(RefCell::new(obj)))
+                Value::Object(Arc::new(Mutex::new(obj)))
             }
             Err(_) => Value::Null,
         }
@@ -134,16 +134,16 @@ pub fn register(vm: &mut VM) {
             Ok(entries) => {
                 let items: Vec<Value> = entries.filter_map(|e| e.ok()).map(|e| {
                     let mut obj = Object::new();
-                    obj.properties.insert("name".into(), Value::String(Rc::from(e.file_name().to_string_lossy().as_ref())));
+                    obj.properties.insert("name".into(), Value::String(Arc::from(e.file_name().to_string_lossy().as_ref())));
                     if let Ok(ft) = e.file_type() {
                         obj.properties.insert("isFile".into(), Value::Bool(ft.is_file()));
                         obj.properties.insert("isDir".into(), Value::Bool(ft.is_dir()));
                     }
-                    Value::Object(Rc::new(RefCell::new(obj)))
+                    Value::Object(Arc::new(Mutex::new(obj)))
                 }).collect();
-                Value::Object(Rc::new(RefCell::new(Object::new_array(items))))
+                Value::Object(Arc::new(Mutex::new(Object::new_array(items))))
             }
-            Err(_) => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![])))),
+            Err(_) => Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))),
         }
     }));
 
@@ -152,48 +152,48 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("wasi:filesystem", "pathCombine", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let mut path = std::path::PathBuf::from(s(args, 0));
         for i in 1..args.len() { path.push(s(args, i)); }
-        Value::String(Rc::from(path.to_string_lossy().as_ref()))
+        Value::String(Arc::from(path.to_string_lossy().as_ref()))
     }));
 
     vm.register_host_fn("wasi:filesystem", "pathGetFileName", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let input = s(args, 0);
         let p = std::path::Path::new(&input);
-        Value::String(Rc::from(p.file_name().unwrap_or_default().to_string_lossy().as_ref()))
+        Value::String(Arc::from(p.file_name().unwrap_or_default().to_string_lossy().as_ref()))
     }));
 
     vm.register_host_fn("wasi:filesystem", "pathGetExtension", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let input = s(args, 0);
         let p = std::path::Path::new(&input);
-        Value::String(Rc::from(p.extension().unwrap_or_default().to_string_lossy().as_ref()))
+        Value::String(Arc::from(p.extension().unwrap_or_default().to_string_lossy().as_ref()))
     }));
 
     vm.register_host_fn("wasi:filesystem", "pathGetDirectory", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let input = s(args, 0);
         let p = std::path::Path::new(&input);
-        Value::String(Rc::from(p.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default().as_str()))
+        Value::String(Arc::from(p.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default().as_str()))
     }));
 
     vm.register_host_fn("wasi:filesystem", "pathGetFileNameWithoutExt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let input = s(args, 0);
         let p = std::path::Path::new(&input);
-        Value::String(Rc::from(p.file_stem().unwrap_or_default().to_string_lossy().as_ref()))
+        Value::String(Arc::from(p.file_stem().unwrap_or_default().to_string_lossy().as_ref()))
     }));
 
     vm.register_host_fn("wasi:filesystem", "pathChangeExtension", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let mut p = std::path::PathBuf::from(s(args, 0));
         p.set_extension(s(args, 1).trim_start_matches('.'));
-        Value::String(Rc::from(p.to_string_lossy().as_ref()))
+        Value::String(Arc::from(p.to_string_lossy().as_ref()))
     }));
 
     vm.register_host_fn("wasi:filesystem", "pathGetFullPath", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         match std::fs::canonicalize(s(args, 0)) {
-            Ok(p) => Value::String(Rc::from(p.to_string_lossy().as_ref())),
-            Err(_) => Value::String(Rc::from(s(args, 0).as_str())),
+            Ok(p) => Value::String(Arc::from(p.to_string_lossy().as_ref())),
+            Err(_) => Value::String(Arc::from(s(args, 0).as_str())),
         }
     }));
 
     vm.register_host_fn("wasi:filesystem", "pathGetTempPath", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        Value::String(Rc::from(std::env::temp_dir().to_string_lossy().as_ref()))
+        Value::String(Arc::from(std::env::temp_dir().to_string_lossy().as_ref()))
     }));
 
     // -- VB6 file handle I/O --
@@ -291,12 +291,12 @@ pub fn register(vm: &mut VM) {
                 if let Some(ref mut r) = h.reader {
                     let mut line = String::new();
                     if r.read_line(&mut line).is_ok() {
-                        return Value::String(Rc::from(line.trim_end_matches('\n').trim_end_matches('\r')));
+                        return Value::String(Arc::from(line.trim_end_matches('\n').trim_end_matches('\r')));
                     }
                 }
             }
         }
-        Value::String(Rc::from(""))
+        Value::String(Arc::from(""))
     }));
 
     // inputFile(fileNumber) → array of comma-separated values from one line
@@ -308,18 +308,16 @@ pub fn register(vm: &mut VM) {
                     let mut line = String::new();
                     if r.read_line(&mut line).is_ok() {
                         let vals: Vec<Value> = line.trim().split(',')
-                            .map(|s| Value::String(Rc::from(s.trim())))
+                            .map(|s| Value::String(Arc::from(s.trim())))
                             .collect();
-                        return Value::Object(Rc::new(RefCell::new(Object::new_array(vals))));
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
                     }
                 }
             }
         }
-        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
     }));
 }
-
-use std::sync::Mutex;
 
 struct FileHandle {
     reader: Option<std::io::BufReader<std::fs::File>>,

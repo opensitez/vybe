@@ -18,8 +18,7 @@ mod types;
 mod threading;
 mod data;
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{VM, Value, HostContext};
 
@@ -52,7 +51,7 @@ pub(crate) fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
     let root = if let Some(existing) = vm.globals.get(&root_key) {
         existing.clone()
     } else {
-        let obj = Value::Object(Rc::new(RefCell::new(Object::new())));
+        let obj = Value::Object(Arc::new(Mutex::new(Object::new())));
         vm.globals.insert(root_key.clone(), obj.clone());
         obj
     };
@@ -60,16 +59,16 @@ pub(crate) fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
     for &segment in &path[1..] {
         let key = segment.to_lowercase();
         let next = if let Value::Object(ref obj) = current {
-            obj.borrow().properties.get(&key).cloned()
+            obj.lock().unwrap().properties.get(&key).cloned()
         } else {
             None
         };
         if let Some(existing) = next {
             current = existing;
         } else {
-            let new_obj = Value::Object(Rc::new(RefCell::new(Object::new())));
+            let new_obj = Value::Object(Arc::new(Mutex::new(Object::new())));
             if let Value::Object(ref obj) = current {
-                obj.borrow_mut().properties.insert(key, new_obj.clone());
+                obj.lock().unwrap().properties.insert(key, new_obj.clone());
             }
             current = new_obj;
         }
@@ -80,7 +79,7 @@ pub(crate) fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
 /// Set a property on a namespace object (lowercased key).
 pub(crate) fn set_prop(ns: &Value, name: &str, value: Value) {
     if let Value::Object(obj) = ns {
-        obj.borrow_mut().properties.insert(name.to_lowercase(), value);
+        obj.lock().unwrap().properties.insert(name.to_lowercase(), value);
     }
 }
 
@@ -88,11 +87,11 @@ pub(crate) fn set_prop(ns: &Value, name: &str, value: Value) {
 pub(crate) fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
     if let Some(&idx) = vm.host_registry.get(&(module.to_string(), name.to_string())) {
         let mut obj = Object::new();
-        obj.properties.insert("__host_module".into(), Value::String(Rc::from(module)));
-        obj.properties.insert("__host_name".into(), Value::String(Rc::from(name)));
+        obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
+        obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
         obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(Rc::new(RefCell::new(obj)))
+        Value::Object(Arc::new(Mutex::new(obj)))
     } else {
         Value::Null
     }

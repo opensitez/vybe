@@ -9,8 +9,7 @@
 //! When compiling to real .wasm, the compiler emits `call_import` to these
 //! instead of using custom opcodes.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
@@ -20,8 +19,8 @@ pub fn register(vm: &mut VM) {
         let a = args.first().unwrap_or(&Value::Null);
         let b = args.get(1).unwrap_or(&Value::Null);
         match (a, b) {
-            (Value::String(s1), _) => Value::String(Rc::from(format!("{}{}", s1, b).as_str())),
-            (_, Value::String(s2)) => Value::String(Rc::from(format!("{}{}", a, s2).as_str())),
+            (Value::String(s1), _) => Value::String(Arc::from(format!("{}{}", s1, b).as_str())),
+            (_, Value::String(s2)) => Value::String(Arc::from(format!("{}{}", a, s2).as_str())),
             _ => Value::F64(a.as_f64() + b.as_f64()),
         }
     }));
@@ -88,14 +87,14 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:rt", "str_concat", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let a = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         let b = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-        Value::String(Rc::from(format!("{}{}", a, b).as_str()))
+        Value::String(Arc::from(format!("{}{}", a, b).as_str()))
     }));
 
     // Property access (dynamic, string-based)
     vm.register_host_fn("vybe:rt", "get_prop", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let name = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-            return obj.borrow().get(&name);
+            return obj.lock().unwrap().get(&name);
         }
         Value::Null
     }));
@@ -104,7 +103,7 @@ pub fn register(vm: &mut VM) {
         if let Some(Value::Object(obj)) = args.first() {
             let name = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let val = args.get(2).cloned().unwrap_or(Value::Null);
-            obj.borrow_mut().set(name, val.clone());
+            obj.lock().unwrap().set(name, val.clone());
             return val;
         }
         Value::Null
@@ -112,18 +111,18 @@ pub fn register(vm: &mut VM) {
 
     // Object/array construction
     vm.register_host_fn("vybe:rt", "new_object", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        Value::Object(Rc::new(RefCell::new(Object::new())))
+        Value::Object(Arc::new(Mutex::new(Object::new())))
     }));
 
     vm.register_host_fn("vybe:rt", "new_array", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let elems: Vec<Value> = args.to_vec();
-        Value::Object(Rc::new(RefCell::new(Object::new_array(elems))))
+        Value::Object(Arc::new(Mutex::new(Object::new_array(elems))))
     }));
 
     vm.register_host_fn("vybe:rt", "array_get", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-            return obj.borrow().get(&key);
+            return obj.lock().unwrap().get(&key);
         }
         Value::Null
     }));
@@ -132,7 +131,7 @@ pub fn register(vm: &mut VM) {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let val = args.get(2).cloned().unwrap_or(Value::Null);
-            obj.borrow_mut().set(key, val.clone());
+            obj.lock().unwrap().set(key, val.clone());
             return val;
         }
         Value::Null
@@ -147,7 +146,7 @@ pub fn register(vm: &mut VM) {
             Value::I32(_) | Value::I64(_) | Value::F64(_) => "number",
             Value::String(_) => "string",
             Value::Object(o) => {
-                let ob = o.borrow();
+                let ob = o.lock().unwrap();
                 match &ob.kind {
                     ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "function",
                     ObjectKind::Array(_) => "array",
@@ -157,7 +156,7 @@ pub fn register(vm: &mut VM) {
             Value::V128(_) => "v128",
             Value::WeakRef(_) => "weakref",
         };
-        Value::String(Rc::from(tag))
+        Value::String(Arc::from(tag))
     }));
 
     // Global variable access (dynamic, string-keyed)
@@ -176,7 +175,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:rt", "struct_get_idx", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             // Indexed access: use properties in insertion order (approximate)
             if let Some(val) = o.properties.values().nth(idx) {
                 return val.clone();
@@ -189,7 +188,7 @@ pub fn register(vm: &mut VM) {
         if let Some(Value::Object(obj)) = args.first() {
             let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
             let val = args.get(2).cloned().unwrap_or(Value::Null);
-            let mut o = obj.borrow_mut();
+            let mut o = obj.lock().unwrap();
             if let Some(key) = o.properties.keys().nth(idx).cloned() {
                 o.properties.insert(key, val.clone());
                 return val;

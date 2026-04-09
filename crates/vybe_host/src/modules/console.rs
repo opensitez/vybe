@@ -1,9 +1,9 @@
 use vybe_bytecode::{VM, Value, HostContext};
 use std::collections::HashMap;
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 thread_local! {
-    static TIMERS: RefCell<HashMap<String, f64>> = RefCell::new(HashMap::new());
+    static TIMERS: std::cell::RefCell<HashMap<String, f64>> = std::cell::RefCell::new(HashMap::new());
 }
 
 pub fn register(vm: &mut VM) {
@@ -38,7 +38,7 @@ pub fn register(vm: &mut VM) {
         }
         let mut line = String::new();
         match std::io::stdin().read_line(&mut line) {
-            Ok(_) => Value::String(std::rc::Rc::from(line.trim_end_matches('\n').trim_end_matches('\r'))),
+            Ok(_) => Value::String(std::sync::Arc::from(line.trim_end_matches('\n').trim_end_matches('\r'))),
             Err(_) => Value::Null,
         }
     }));

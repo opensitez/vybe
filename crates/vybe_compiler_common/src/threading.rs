@@ -15,7 +15,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 // ── Atomic memory operations (WASM Threads spec) ────────────────────────
 
@@ -123,20 +123,59 @@ pub fn emit_lock_release(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_op(Op::drop, line); // drop notify count
 }
 
-// ── Thread spawning (host function) ─────────────────────────────────────
+// ── Thread/Task (WASM stack switching) ──────────────────────────────────
+//
+// WASM stack switching primitives:
+//   cont_new  — create a continuation (fiber) from a function reference
+//   resume    — start/resume the continuation, passing a value
+//   suspend   — pause the current continuation
+//
+// Two patterns:
+//   1. Task.Run(fn) — create AND run immediately: cont_new + resume
+//   2. New Thread(fn) — create only: cont_new. Start later with resume.
 
-/// Emit thread spawn: creates a new thread running the given function.
-/// Stack before: [func_ref]  Stack after: [thread_handle]
-pub fn emit_thread_spawn(chunk: &mut Chunk, line: u32) {
-    let spawn_fn = chunk.add_import("wasi:thread", "spawn");
-    chunk.emit_op_u16(Op::call_import, spawn_fn, line);
-    chunk.emit(1, line);
+/// Emit Task.Run(fn) — spawn OS thread and return thread handle.
+/// Stack before: [func_ref]  Stack after: [thread_id: i32]
+pub fn emit_task_run(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::thread_spawn, line);
 }
 
-/// Emit thread join: wait for a thread to complete.
-/// Stack before: [thread_handle]  Stack after: [result]
+/// Emit New Thread(fn) — spawn OS thread, return thread handle.
+/// Stack before: [func_ref]  Stack after: [thread_id: i32]
+pub fn emit_thread_new(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::thread_spawn, line);
+}
+
+/// Emit thread.Start() — for pre-created threads.
+/// In wasi-threads, thread_spawn both creates AND starts, so Start is a no-op.
+/// Stack before: [thread_id]  Stack after: [thread_id] (passthrough)
+pub fn emit_thread_start(_chunk: &mut Chunk, _line: u32) {
+    // thread_spawn already started the thread. Nothing to do.
+}
+
+/// Emit thread.Join() — wait for thread to complete.
+/// Stack before: [thread_id]  Stack after: [status: i32]
 pub fn emit_thread_join(chunk: &mut Chunk, line: u32) {
-    let join_fn = chunk.add_import("wasi:thread", "join");
-    chunk.emit_op_u16(Op::call_import, join_fn, line);
+    chunk.emit_op(Op::thread_join, line);
+}
+
+/// Emit suspend — yield from current continuation (stack switching).
+/// Stack before: [value]  Stack after: (suspended — caller gets value)
+pub fn emit_suspend(chunk: &mut Chunk, line: u32) {
+    let tag = chunk.add_constant(Value::I32(0));
+    chunk.emit_op_u16(Op::suspend, tag, line);
+}
+
+/// Emit Thread.Sleep(ms) — blocks the current thread for the given duration.
+/// `sleep_import_idx` must be obtained from chunk 0 via `chunks[0].add_import("wasi:clocks", "sleep")`.
+/// Stack before: [ms_value]  Stack after: []
+pub fn emit_sleep(chunk: &mut Chunk, sleep_import_idx: u16, line: u32) {
+    chunk.emit_op_u16(Op::call_import, sleep_import_idx, line);
     chunk.emit(1, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+// Backward compat
+pub fn emit_thread_spawn(chunk: &mut Chunk, line: u32) {
+    emit_thread_new(chunk, line);
 }

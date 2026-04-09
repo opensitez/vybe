@@ -8,6 +8,7 @@
 
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use vybe_host::GuiState;
 
 use vybe_widgets::{
@@ -215,7 +216,7 @@ struct FormApp {
     font_system: FontSystem,
     swash_cache: SwashCache,
     vm: Rc<RefCell<vybe_bytecode::VM>>,
-    gui: Rc<RefCell<GuiState>>,
+    gui: Arc<Mutex<GuiState>>,
     // Data binding state
     data_bindings: Vec<DataBindingEntry>,
     binding_sources: Vec<BindingSourceInfo>,
@@ -226,7 +227,7 @@ struct FormApp {
 
 impl Application for FormApp {
     fn on_init(&mut self, width: f32, height: f32, _scale: f32) {
-        self.gui.borrow_mut().form.set_rect(LayoutRect::new(0.0, 0.0, width, height));
+        self.gui.lock().unwrap().form.set_rect(LayoutRect::new(0.0, 0.0, width, height));
         if !self.initialised {
             self.initialised = true;
             self.fire_load_event();
@@ -235,12 +236,12 @@ impl Application for FormApp {
     }
 
     fn on_resize(&mut self, width: f32, height: f32) {
-        self.gui.borrow_mut().form.set_rect(LayoutRect::new(0.0, 0.0, width, height));
+        self.gui.lock().unwrap().form.set_rect(LayoutRect::new(0.0, 0.0, width, height));
     }
 
     fn render(&mut self, pixmap: &mut Pixmap, scale: f32) {
         fill_background(pixmap, 240, 240, 240, 255);
-        let mut g = self.gui.borrow_mut();
+        let mut g = self.gui.lock().unwrap();
         let mut ctx = RenderContext {
             pixmap,
             font_system: &mut self.font_system,
@@ -251,19 +252,19 @@ impl Application for FormApp {
     }
 
     fn handle_mouse(&mut self, event: MouseEvent) -> bool {
-        self.gui.borrow_mut().form.handle_mouse(&event);
+        self.gui.lock().unwrap().form.handle_mouse(&event);
         self.process_widget_events();
         true
     }
 
     fn handle_key(&mut self, event: KeyEvent) -> bool {
-        self.gui.borrow_mut().form.handle_key(&event);
+        self.gui.lock().unwrap().form.handle_key(&event);
         self.process_widget_events();
         true
     }
 
     fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
-        self.gui.borrow_mut().form.handle_scroll(delta, x, y)
+        self.gui.lock().unwrap().form.handle_scroll(delta, x, y)
     }
 
     fn cursor_icon(&self) -> vybe_widgets::CursorIcon {
@@ -276,7 +277,7 @@ impl Application for FormApp {
 impl FormApp {
     fn fire_load_event(&mut self) {
         let callback = {
-            let g = self.gui.borrow();
+            let g = self.gui.lock().unwrap();
             g.get_event_handler("form1", "Load").cloned()
                 .or_else(|| g.get_event_handler("me", "Load").cloned())
         };
@@ -301,7 +302,7 @@ impl FormApp {
 
     fn fire_click(&mut self, control_name: &str) {
         let callback = {
-            let g = self.gui.borrow();
+            let g = self.gui.lock().unwrap();
             g.get_event_handler(&control_name.to_lowercase(), "Click").cloned()
         };
         if let Some(cb) = callback {
@@ -314,7 +315,7 @@ impl FormApp {
         let me = vm.globals.get("__f").cloned()
             .unwrap_or(vybe_bytecode::Value::Null);
         let arity = fn_arity(cb);
-        let sender = vybe_bytecode::Value::String(Rc::from(control_name));
+        let sender = vybe_bytecode::Value::String(Arc::from(control_name));
         let result = match arity {
             0 => vm.invoke(cb, &[]),
             1 => vm.invoke(cb, &[me]),
@@ -330,7 +331,7 @@ impl FormApp {
     }
 
     fn drain_side_effects(&mut self) {
-        let dialogs: Vec<(String, String)> = self.gui.borrow_mut().pending_dialogs.drain(..).collect();
+        let dialogs: Vec<(String, String)> = self.gui.lock().unwrap().pending_dialogs.drain(..).collect();
         for (text, title) in dialogs {
             rfd::MessageDialog::new()
                 .set_title(&title).set_description(&text)
@@ -345,13 +346,13 @@ impl FormApp {
     fn sync_widgets_from_vm(&mut self) {
         let updates = {
             let vm = self.vm.borrow();
-            let g = self.gui.borrow();
+            let g = self.gui.lock().unwrap();
             let mut ups: Vec<(String, String)> = Vec::new();
             if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
-                let fo = form_obj.borrow();
+                let fo = form_obj.lock().unwrap();
                 for ctrl_name in &g.control_names {
                     if let Some(vybe_bytecode::Value::Object(co)) = fo.properties.get(ctrl_name) {
-                        let c = co.borrow();
+                        let c = co.lock().unwrap();
                         if let Some(text) = c.properties.get("text") {
                             ups.push((ctrl_name.clone(), format!("{}", text)));
                         }
@@ -361,7 +362,7 @@ impl FormApp {
             ups
         };
         if !updates.is_empty() {
-            let mut g = self.gui.borrow_mut();
+            let mut g = self.gui.lock().unwrap();
             for (name, text) in updates {
                 g.form.send_command(&name, &WidgetCommand::SetText(text));
             }
@@ -370,7 +371,7 @@ impl FormApp {
 
     /// Drain all widget events and map them to VM callbacks.
     fn process_widget_events(&mut self) {
-        let events = self.gui.borrow_mut().form.drain_events();
+        let events = self.gui.lock().unwrap().form.drain_events();
         for event in events {
             match &event {
                 WidgetEvent::ButtonClicked(name) |
@@ -383,7 +384,7 @@ impl FormApp {
                 WidgetEvent::SelectChanged(name, _) |
                 WidgetEvent::ListBoxSelected(name, _) => {
                     let callback = {
-                        let g = self.gui.borrow();
+                        let g = self.gui.lock().unwrap();
                         g.get_event_handler(&name.to_lowercase(), "SelectedIndexChanged").cloned()
                             .or_else(|| g.get_event_handler(&name.to_lowercase(), "Click").cloned())
                     };
@@ -448,18 +449,18 @@ impl FormApp {
     fn get_connection_string(&self, bs_name: &str, adapter_name: &str) -> String {
         let vm = self.vm.borrow();
         if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
-            let fo = form_obj.borrow();
+            let fo = form_obj.lock().unwrap();
             if let Some(vybe_bytecode::Value::Object(bs_obj)) = fo.properties.get(&bs_name.to_lowercase()) {
-                let bs = bs_obj.borrow();
+                let bs = bs_obj.lock().unwrap();
                 if let Some(vybe_bytecode::Value::Object(da_obj)) = bs.properties.get("datasource") {
-                    let da = da_obj.borrow();
+                    let da = da_obj.lock().unwrap();
                     if let Some(v) = da.properties.get("connectionstring") {
                         return format!("{}", v);
                     }
                 }
             }
             if let Some(vybe_bytecode::Value::Object(da_obj)) = fo.properties.get(&adapter_name.to_lowercase()) {
-                let da = da_obj.borrow();
+                let da = da_obj.lock().unwrap();
                 if let Some(v) = da.properties.get("connectionstring") {
                     return format!("{}", v);
                 }
@@ -479,7 +480,7 @@ impl FormApp {
 
         let vm = self.vm.borrow_mut();
         if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
-            let fo = form_obj.borrow();
+            let fo = form_obj.lock().unwrap();
             for binding in &self.data_bindings {
                 if !binding.source_name.eq_ignore_ascii_case(bs_name) { continue; }
                 let col_key = row.keys()
@@ -488,9 +489,9 @@ impl FormApp {
                 let value = col_key.and_then(|k| row.get(&k)).cloned().unwrap_or_default();
                 let ctrl_lower = binding.control_name.to_lowercase();
                 if let Some(vybe_bytecode::Value::Object(ctrl_obj)) = fo.properties.get(&ctrl_lower) {
-                    ctrl_obj.borrow_mut().properties.insert(
+                    ctrl_obj.lock().unwrap().properties.insert(
                         binding.property.to_lowercase(),
-                        vybe_bytecode::Value::String(Rc::from(value.as_str())),
+                        vybe_bytecode::Value::String(Arc::from(value.as_str())),
                     );
                 }
             }
@@ -500,7 +501,7 @@ impl FormApp {
     }
 
     fn update_navigator_positions(&mut self) {
-        let mut g = self.gui.borrow_mut();
+        let mut g = self.gui.lock().unwrap();
         for nav_info in &self.navigators {
             if let Some(store) = self.data_store.get(&nav_info.binding_source_name.to_lowercase()) {
                 let pos_count = format!("{},{}", store.position, store.rows.len());
@@ -542,7 +543,7 @@ impl FormApp {
 fn fn_arity(val: &vybe_bytecode::Value) -> usize {
     match val {
         vybe_bytecode::Value::Object(obj) => {
-            match &obj.borrow().kind {
+            match &obj.lock().unwrap().kind {
                 vybe_bytecode::value::ObjectKind::Function(f) => f.arity as usize,
                 _ => 0,
             }
@@ -556,10 +557,11 @@ fn fn_arity(val: &vybe_bytecode::Value) -> usize {
 fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
     use vybe_bytecode::Value;
     use vybe_bytecode::value::{Object, ObjectKind};
+    use std::sync::{Arc, Mutex};
 
     vm.register_host_fn("vybe:gui", "__dlg_show", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let dialog_type = if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             o.properties.get("__control_type").map(|v| format!("{}", v)).unwrap_or_default()
         } else { String::new() };
 
@@ -568,8 +570,8 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
                 let result = rfd::FileDialog::new().set_title("Open File").pick_file();
                 if let Some(path) = result {
                     if let Some(Value::Object(obj)) = args.first() {
-                        obj.borrow_mut().properties.insert("filename".into(),
-                            Value::String(Rc::from(path.to_string_lossy().as_ref())));
+                        obj.lock().unwrap().properties.insert("filename".into(),
+                            Value::String(Arc::from(path.to_string_lossy().as_ref())));
                     }
                     Value::I32(1)
                 } else { Value::I32(0) }
@@ -578,8 +580,8 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
                 let result = rfd::FileDialog::new().set_title("Save File").save_file();
                 if let Some(path) = result {
                     if let Some(Value::Object(obj)) = args.first() {
-                        obj.borrow_mut().properties.insert("filename".into(),
-                            Value::String(Rc::from(path.to_string_lossy().as_ref())));
+                        obj.lock().unwrap().properties.insert("filename".into(),
+                            Value::String(Arc::from(path.to_string_lossy().as_ref())));
                     }
                     Value::I32(1)
                 } else { Value::I32(0) }
@@ -588,8 +590,8 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
                 let result = rfd::FileDialog::new().set_title("Select Folder").pick_folder();
                 if let Some(path) = result {
                     if let Some(Value::Object(obj)) = args.first() {
-                        obj.borrow_mut().properties.insert("selectedpath".into(),
-                            Value::String(Rc::from(path.to_string_lossy().as_ref())));
+                        obj.lock().unwrap().properties.insert("selectedpath".into(),
+                            Value::String(Arc::from(path.to_string_lossy().as_ref())));
                     }
                     Value::I32(1)
                 } else { Value::I32(0) }
@@ -610,14 +612,14 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
 
     vm.register_host_fn("vybe:gui", "inputBox", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let default = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
-        Value::String(Rc::from(default.as_str()))
+        Value::String(Arc::from(default.as_str()))
     }));
 
     let dlg_show_idx = *vm.host_registry.get(&("vybe:gui".into(), "__dlg_show".into())).unwrap();
     let dlg_show_ref = {
         let mut o = Object::new();
         o.kind = ObjectKind::HostFunction(dlg_show_idx);
-        Value::Object(Rc::new(RefCell::new(o)))
+        Value::Object(Arc::new(Mutex::new(o)))
     };
     vm.globals.insert("__dlg_show_ref".into(), dlg_show_ref);
 }
@@ -684,13 +686,13 @@ fn extract_binding_info(form: &vybe_forms::Form) -> (Vec<DataBindingEntry>, Vec<
 
 pub fn launch_vybewidget_form(
     mut vm: vybe_bytecode::VM,
-    gui: Rc<RefCell<GuiState>>,
+    gui: Arc<Mutex<GuiState>>,
     form: &vybe_forms::Form,
 ) {
     register_dialog_fns(&mut vm);
 
     // Set __f so event handlers have a `this`/`Me` reference
-    if let Some(form_obj) = gui.borrow().form_object.clone() {
+    if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
         vm.globals.insert("__f".into(), form_obj);
     }
 
@@ -709,7 +711,7 @@ pub fn launch_vybewidget_form(
         let id_to_bounds: std::collections::HashMap<_, _> =
             form.controls.iter().map(|c| (c.id, &c.bounds)).collect();
 
-        let mut g = gui.borrow_mut();
+        let mut g = gui.lock().unwrap();
         g.form = WidgetForm::new(&form.text);
         g.control_names.clear();
         for ctrl in &form.controls {
@@ -735,7 +737,7 @@ pub fn launch_vybewidget_form(
     }
 
     // Debug dump all widget state before rendering
-    gui.borrow().form.debug_dump();
+    gui.lock().unwrap().form.debug_dump();
 
     let (data_bindings, binding_sources, navigators) = extract_binding_info(form);
 
@@ -763,17 +765,17 @@ pub fn launch_vybewidget_form(
 /// Launch a programmatic form — GuiState already has all widgets and event handlers.
 pub fn launch_gui(
     mut vm: vybe_bytecode::VM,
-    gui: Rc<RefCell<GuiState>>,
+    gui: Arc<Mutex<GuiState>>,
 ) {
     register_dialog_fns(&mut vm);
 
     let (title, width, height) = {
-        let g = gui.borrow();
+        let g = gui.lock().unwrap();
         ("Form1".to_string(), g.width, g.height)
     };
 
     // Set __f so event handlers have a `this`/`Me` reference
-    if let Some(form_obj) = gui.borrow().form_object.clone() {
+    if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
         vm.globals.insert("__f".into(), form_obj);
     }
 

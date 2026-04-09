@@ -1,0 +1,218 @@
+# Pascal / Object Pascal Compiler Profile
+# ────────────────────────────────────────
+# Full port of vybe_compiler_pascal builtins — I/O, math, string, type,
+# array, conversion, and object lifecycle functions.
+
+[compiler]
+function_return = "result_slot"        # Pascal uses Result := value
+self_keyword = "self"
+base_keyword = "inherited"
+constructor_name = "Create"            # constructor Create;
+separated_methods = true               # methods implemented outside class body (TFoo.Method)
+implicit_self_fields = true            # bare field names resolve to Self.field inside methods
+explicit_self_param = false            # Self is implicit, not a param
+enum_as_ordinals = true                # enums are ordinal values in Pascal
+case_sensitive = false                 # Pascal is case-insensitive
+string_indexing = "one_based"          # Pascal strings are 1-based
+array_upper_bound_inclusive = true     # array[0..5] means 0..5 inclusive
+parens_for_index = false               # Pascal uses [] for indexing, not ()
+entry_point = "main"                   # program body is the entry point
+hoist_var = false
+dynamic_add = false
+commonjs_require = false
+partial_classes = false
+byref_boxing = false
+with_block = true                      # with obj do begin ... end
+event_side_effects = false
+new_with_initializer = false
+new_from_initializer = false
+linq_queries = false
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — every function/procedure the Pascal compiler knows about
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtins]
+
+# ── I/O ──────────────────────────────────────────────────────────────────────
+
+writeln       = { emit = "print",                          min_args = 0, max_args = 255 }
+write         = { emit = "print",                          min_args = 0, max_args = 255 }
+readln        = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
+read          = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
+
+# ── Math — WASM opcodes (zero overhead) ─────────────────────────────────────
+
+abs           = { emit = "opcode:f64_abs",                 min_args = 1, max_args = 1 }
+sqrt          = { emit = "opcode:f64_sqrt",                min_args = 1, max_args = 1 }
+round         = { emit = "opcode:f64_nearest",             min_args = 1, max_args = 1 }
+trunc         = { emit = "opcode:f64_trunc",               min_args = 1, max_args = 1 }
+int           = { emit = "opcode:f64_trunc",               min_args = 1, max_args = 1 }
+floor         = { emit = "opcode:f64_floor",               min_args = 1, max_args = 1 }
+ceil          = { emit = "opcode:f64_ceil",                min_args = 1, max_args = 1 }
+min           = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
+max           = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
+
+# ── Math — host calls ───────────────────────────────────────────────────────
+
+sin           = { emit = "host:vybe:math:sin",             min_args = 1, max_args = 1 }
+cos           = { emit = "host:vybe:math:cos",             min_args = 1, max_args = 1 }
+arctan        = { emit = "host:vybe:math:atan",            min_args = 1, max_args = 1 }
+exp           = { emit = "host:vybe:math:exp",             min_args = 1, max_args = 1 }
+ln            = { emit = "host:vybe:math:log",             min_args = 1, max_args = 1 }
+power         = { emit = "host:vybe:math:pow",             min_args = 2, max_args = 2 }
+random        = { emit = "host:wasi:random:random",        min_args = 0, max_args = 0 }
+randomize     = { emit = "noop",                           min_args = 0, max_args = 0 }
+
+# ── Math — intrinsics (multi-opcode) ────────────────────────────────────────
+
+sqr           = { emit = "intrinsic:sqr",                  min_args = 1, max_args = 1 }
+
+# ── String functions — WASM opcodes ─────────────────────────────────────────
+
+length        = { emit = "str_length",                     min_args = 1, max_args = 1 }
+upcase        = { emit = "opcode:str_to_upper",            min_args = 1, max_args = 1 }
+uppercase     = { emit = "opcode:str_to_upper",            min_args = 1, max_args = 1 }
+lowercase     = { emit = "opcode:str_to_lower",            min_args = 1, max_args = 1 }
+trim          = { emit = "opcode:str_trim",                min_args = 1, max_args = 1 }
+trimleft      = { emit = "opcode:str_trim_start",          min_args = 1, max_args = 1 }
+trimright     = { emit = "opcode:str_trim_end",            min_args = 1, max_args = 1 }
+
+# ── String functions — intrinsics (multi-opcode) ────────────────────────────
+
+pos           = { emit = "intrinsic:pos",                  min_args = 2, max_args = 2 }
+copy          = { emit = "intrinsic:copy",                 min_args = 2, max_args = 3 }
+
+# ── String functions — host calls ───────────────────────────────────────────
+
+concat        = { emit = "host:vybe:string:concat",        min_args = 1, max_args = 255 }
+chr           = { emit = "host:vybe:string:chr",           min_args = 1, max_args = 1 }
+ord           = { emit = "host:vybe:string:charCodeAt",    min_args = 1, max_args = 1 }
+format        = { emit = "host:vybe:string:format",        min_args = 1, max_args = 255 }
+stringreplace = { emit = "opcode:str_replace",             min_args = 3, max_args = 4 }
+stringofchar  = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
+leftstr       = { emit = "intrinsic:leftstr",              min_args = 2, max_args = 2 }
+rightstr      = { emit = "intrinsic:rightstr",             min_args = 2, max_args = 2 }
+comparestr    = { emit = "host:vybe:string:compare",       min_args = 2, max_args = 2 }
+comparetext   = { emit = "host:vybe:string:compare",       min_args = 2, max_args = 2 }
+delete        = { emit = "host:vybe:string:deleteStr",     min_args = 3, max_args = 3 }
+insert        = { emit = "host:vybe:string:insertStr",     min_args = 3, max_args = 3 }
+
+# ── Type conversion ─────────────────────────────────────────────────────────
+
+inttostr      = { emit = "host:vybe:convert:toString",     min_args = 1, max_args = 1 }
+floattostr    = { emit = "host:vybe:convert:toString",     min_args = 1, max_args = 1 }
+strtoint      = { emit = "host:vybe:convert:parseInt",     min_args = 1, max_args = 1 }
+strtointdef   = { emit = "host:vybe:convert:parseInt",     min_args = 1, max_args = 2 }
+strtofloat    = { emit = "host:vybe:convert:parseFloat",   min_args = 1, max_args = 1 }
+booltostr     = { emit = "host:vybe:convert:toString",     min_args = 1, max_args = 1 }
+strtobool     = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
+
+# ── Ordinal / increment / decrement ─────────────────────────────────────────
+
+inc           = { emit = "mutate:add",                     min_args = 1, max_args = 2 }
+dec           = { emit = "mutate:sub",                     min_args = 1, max_args = 2 }
+succ          = { emit = "intrinsic:succ",                 min_args = 1, max_args = 1 }
+pred          = { emit = "intrinsic:pred",                 min_args = 1, max_args = 1 }
+
+# ── Type info ────────────────────────────────────────────────────────────────
+
+high          = { emit = "intrinsic:high",                 min_args = 1, max_args = 1 }
+low           = { emit = "intrinsic:low",                  min_args = 1, max_args = 1 }
+assigned      = { emit = "intrinsic:assigned",             min_args = 1, max_args = 1 }
+sizeof        = { emit = "intrinsic:sizeof",               min_args = 1, max_args = 1 }
+classname     = { emit = "intrinsic:classname",            min_args = 1, max_args = 1 }
+typename      = { emit = "intrinsic:classname",            min_args = 1, max_args = 1 }
+
+# ── Array operations ─────────────────────────────────────────────────────────
+
+setlength     = { emit = "host:vybe:array:newWithLength",  min_args = 2, max_args = 2 }
+append        = { emit = "host:vybe:array:push",           min_args = 2, max_args = 2 }
+sort          = { emit = "host:vybe:array:sort",           min_args = 1, max_args = 1 }
+reverse       = { emit = "host:vybe:array:reverse",        min_args = 1, max_args = 1 }
+
+# ── Object lifecycle ─────────────────────────────────────────────────────────
+
+free          = { emit = "noop",                           min_args = 1, max_args = 1 }
+freeandnil    = { emit = "noop",                           min_args = 1, max_args = 1 }
+new           = { emit = "noop",                           min_args = 1, max_args = 1 }
+dispose       = { emit = "noop",                           min_args = 1, max_args = 1 }
+
+# ── Control flow ─────────────────────────────────────────────────────────────
+
+halt          = { emit = "host:vybe:runtime:halt",         min_args = 0, max_args = 1 }
+exit          = { emit = "noop",                           min_args = 0, max_args = 0 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# INTRINSIC DEFINITIONS — multi-opcode sequences
+# ────────────────────────────────────────────────────────────────────────────
+
+[intrinsics]
+
+# Sqr(x) → x * x (square, NOT square root)
+sqr = "dup, f64_mul"
+
+# Succ(x) → x + 1
+succ = "const_f64(1), dyn_add"
+
+# Pred(x) → x - 1
+pred = "const_f64(1), f64_sub"
+
+# High(arr) → Length(arr) - 1
+high = "array_len, const_i32(1), i32_sub"
+
+# Low(arr) → 0 (always 0 for dynamic arrays)
+low = "const_i32(0)"
+
+# Assigned(x) → x is not null
+assigned = "ref_is_null, dyn_not"
+
+# SizeOf(x) → always 4 in our VM (everything is a boxed value)
+sizeof = "drop, const_i32(4)"
+
+# ClassName(obj) → obj.__type
+classname = "const_str(__type), struct_get"
+
+# Pos(substr, s) → IndexOf + 1 (Pascal 1-based)
+pos = "str_index_of, const_i32(1), i32_add"
+
+# Copy(s, start, len) → substring adjusted for 1-based indexing
+copy = "mid_1based"
+
+# LeftStr(s, count) → substring(s, 0, count)
+leftstr = "const_i32(0), swap, to_int, str_substring"
+
+# RightStr(s, count) → substring(s, len-count, count)
+rightstr = "dup, str_length, swap, to_int, f64_sub, swap, to_int, str_substring"
+
+# ────────────────────────────────────────────────────────────────────────────
+# VALUE METHODS — instance methods called on Pascal objects
+# ────────────────────────────────────────────────────────────────────────────
+
+[value_methods]
+# Pascal doesn't have significant value methods — most operations are
+# free functions. But TStringList etc. may use some.
+free          = { emit = "noop",                           min_args = 0, max_args = 0 }
+tostring      = { emit = "host:vybe:convert:toString",     min_args = 0, max_args = 0 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONSTANTS — identifier-level constants (no function call)
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespace_constants]
+"maxint"      = 2147483647
+"pi"          = 3.141592653589793
+
+# ────────────────────────────────────────────────────────────────────────────
+# MODULE ALIASES — Pascal unit names → host modules
+# ────────────────────────────────────────────────────────────────────────────
+
+[module_aliases]
+# No significant module aliases for Pascal
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONFIG
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespaces]
+use_dotnet = false

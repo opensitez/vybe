@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{VM, Value, HostContext};
 
 pub fn register(vm: &mut VM) {
@@ -58,7 +58,7 @@ pub fn register(vm: &mut VM) {
             m += 1;
         }
 
-        Value::String(Rc::from(format!(
+        Value::String(Arc::from(format!(
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
             y, m + 1, remaining + 1, hours, minutes, seconds, millis
         ).as_str()))
@@ -75,7 +75,7 @@ pub fn register(vm: &mut VM) {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        Value::String(Rc::from(format_timestamp(now).as_str()))
+        Value::String(Arc::from(format_timestamp(now).as_str()))
     }));
 
     // date/today → current date as string
@@ -85,7 +85,7 @@ pub fn register(vm: &mut VM) {
             .unwrap_or_default()
             .as_secs();
         let (y, m, d, _, _, _) = decompose_timestamp(now);
-        Value::String(Rc::from(format!("{:02}/{:02}/{:04}", m, d, y).as_str()))
+        Value::String(Arc::from(format!("{:02}/{:02}/{:04}", m, d, y).as_str()))
     }));
 
     // time → current time as string
@@ -95,7 +95,7 @@ pub fn register(vm: &mut VM) {
             .unwrap_or_default()
             .as_secs();
         let (_, _, _, h, min, s) = decompose_timestamp(now);
-        Value::String(Rc::from(format!("{:02}:{:02}:{:02}", h, min, s).as_str()))
+        Value::String(Arc::from(format!("{:02}:{:02}:{:02}", h, min, s).as_str()))
     }));
 
     // timer → seconds since midnight

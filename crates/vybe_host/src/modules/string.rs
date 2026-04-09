@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 
 pub fn register(vm: &mut VM) {
@@ -7,8 +7,8 @@ pub fn register(vm: &mut VM) {
         let len = st.len() as i64;
         let start = norm(f(a, 1) as i64, len);
         let end = if a.len() > 2 { norm(f(a, 2) as i64, len) } else { len as usize };
-        if start < end { Value::String(Rc::from(&st[start..end])) }
-        else { Value::String(Rc::from("")) }
+        if start < end { Value::String(Arc::from(&st[start..end])) }
+        else { Value::String(Arc::from("")) }
     }));
     vm.register_host_fn("vybe:string", "indexOf", Box::new(|_ctx, a| {
         match a.first() {
@@ -19,7 +19,7 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Some(Value::Object(obj)) => {
-                let o = obj.borrow();
+                let o = obj.lock().unwrap();
                 if let vybe_bytecode::value::ObjectKind::Array(ref elems) = o.kind {
                     let search = a.get(1).cloned().unwrap_or(Value::Null);
                     for (i, elem) in elems.iter().enumerate() {
@@ -33,16 +33,16 @@ pub fn register(vm: &mut VM) {
     }));
     vm.register_host_fn("vybe:string", "includes",    Box::new(|_ctx, a| Value::Bool(s(a, 0).contains(&s(a, 1)))));
     vm.register_host_fn("vybe:string", "split", Box::new(|_ctx, a| {
-        let parts: Vec<Value> = s(a, 0).split(&s(a, 1)).map(|p| Value::String(Rc::from(p))).collect();
-        Value::Object(Rc::new(std::cell::RefCell::new(vybe_bytecode::value::Object::new_array(parts))))
+        let parts: Vec<Value> = s(a, 0).split(&s(a, 1)).map(|p| Value::String(Arc::from(p))).collect();
+        Value::Object(Arc::new(Mutex::new(vybe_bytecode::value::Object::new_array(parts))))
     }));
-    vm.register_host_fn("vybe:string", "replace",    Box::new(|_ctx, a| Value::String(Rc::from(s(a, 0).replacen(&s(a, 1), &s(a, 2), 1).as_str()))));
+    vm.register_host_fn("vybe:string", "replace",    Box::new(|_ctx, a| Value::String(Arc::from(s(a, 0).replacen(&s(a, 1), &s(a, 2), 1).as_str()))));
     vm.register_host_fn("vybe:string", "startsWith", Box::new(|_ctx, a| Value::Bool(s(a, 0).starts_with(&s(a, 1)))));
     vm.register_host_fn("vybe:string", "endsWith",   Box::new(|_ctx, a| Value::Bool(s(a, 0).ends_with(&s(a, 1)))));
     vm.register_host_fn("vybe:string", "charAt", Box::new(|_ctx, a| {
         match s(a, 0).chars().nth(f(a, 1) as usize) {
-            Some(c) => Value::String(Rc::from(c.to_string().as_str())),
-            None => Value::String(Rc::from("")),
+            Some(c) => Value::String(Arc::from(c.to_string().as_str())),
+            None => Value::String(Arc::from("")),
         }
     }));
     vm.register_host_fn("vybe:string", "substring", Box::new(|_ctx, a| {
@@ -50,7 +50,7 @@ pub fn register(vm: &mut VM) {
         let start = (f(a, 1) as usize).min(st.len());
         let end = if a.len() > 2 { (f(a, 2) as usize).min(st.len()) } else { st.len() };
         let (start, end) = if start > end { (end, start) } else { (start, end) };
-        Value::String(Rc::from(&st[start..end]))
+        Value::String(Arc::from(&st[start..end]))
     }));
 
     // charCodeAt(str, index) → number
@@ -68,19 +68,19 @@ pub fn register(vm: &mut VM) {
         let result: String = a.iter()
             .map(|v| char::from_u32(v.as_f64() as u32).unwrap_or('\0'))
             .collect();
-        Value::String(Rc::from(result.as_str()))
+        Value::String(Arc::from(result.as_str()))
     }));
 
     // repeat(str, count) → string
     vm.register_host_fn("vybe:string", "repeat", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let count = f(a, 1) as usize;
-        Value::String(Rc::from(st.repeat(count).as_str()))
+        Value::String(Arc::from(st.repeat(count).as_str()))
     }));
 
     // replaceAll(str, search, replace) → string
     vm.register_host_fn("vybe:string", "replaceAll", Box::new(|_ctx, a| {
-        Value::String(Rc::from(s(a, 0).replace(&s(a, 1), &s(a, 2)).as_str()))
+        Value::String(Arc::from(s(a, 0).replace(&s(a, 1), &s(a, 2)).as_str()))
     }));
 
     // --- VB-compatible string functions (available to all languages) ---
@@ -90,7 +90,7 @@ pub fn register(vm: &mut VM) {
         let st = s(a, 0);
         let n = f(a, 1) as usize;
         let end = n.min(st.len());
-        Value::String(Rc::from(&st[..end]))
+        Value::String(Arc::from(&st[..end]))
     }));
 
     // right(str, n) → last n characters
@@ -98,7 +98,7 @@ pub fn register(vm: &mut VM) {
         let st = s(a, 0);
         let n = f(a, 1) as usize;
         let start = st.len().saturating_sub(n);
-        Value::String(Rc::from(&st[start..]))
+        Value::String(Arc::from(&st[start..]))
     }));
 
     // mid(str, start, length?) → substring (1-based start like VB)
@@ -110,7 +110,7 @@ pub fn register(vm: &mut VM) {
         } else {
             st.len()
         };
-        Value::String(Rc::from(&st[start..end]))
+        Value::String(Arc::from(&st[start..end]))
     }));
 
     // instr(str, search) → 1-based position, 0 if not found
@@ -141,7 +141,7 @@ pub fn register(vm: &mut VM) {
         let n = f(a, 0) as usize;
         let ch = s(a, 1);
         let c = ch.chars().next().unwrap_or(' ');
-        Value::String(Rc::from(c.to_string().repeat(n).as_str()))
+        Value::String(Arc::from(c.to_string().repeat(n).as_str()))
     }));
 
     // instrrev(str, search) → 1-based position of LAST occurrence, 0 if not found
@@ -165,7 +165,7 @@ pub fn register(vm: &mut VM) {
                 let placeholder = format!("{{{}}}", i);
                 result = result.replace(&placeholder, &format!("{}", arg));
             }
-            Value::String(Rc::from(result.as_str()))
+            Value::String(Arc::from(result.as_str()))
         } else {
             // VB6 Format(value, formatSpec)
             let val = f(a, 0);
@@ -181,7 +181,7 @@ pub fn register(vm: &mut VM) {
                 "on/off" => if val != 0.0 { "On".into() } else { "Off".into() },
                 _ => format!("{}", val),
             };
-            Value::String(Rc::from(result.as_str()))
+            Value::String(Arc::from(result.as_str()))
         }
     }));
 
@@ -189,25 +189,25 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:string", "lset", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let len = f(a, 1) as usize;
-        Value::String(Rc::from(format!("{:<width$}", st, width = len).as_str()))
+        Value::String(Arc::from(format!("{:<width$}", st, width = len).as_str()))
     }));
 
     // rset(str, length) → right-align in field
     vm.register_host_fn("vybe:string", "rset", Box::new(|_ctx, a| {
         let st = s(a, 0);
         let len = f(a, 1) as usize;
-        Value::String(Rc::from(format!("{:>width$}", st, width = len).as_str()))
+        Value::String(Arc::from(format!("{:>width$}", st, width = len).as_str()))
     }));
 
     // filter(arr, match, include?) → filtered array
     vm.register_host_fn("vybe:string", "filter", Box::new(|_ctx, a| {
-        use std::cell::RefCell;
+        use std::sync::Mutex;
         use vybe_bytecode::value::{Object, ObjectKind};
         let match_str = s(a, 1);
         let include = if a.len() > 2 { f(a, 2) != 0.0 } else { true };
         let mut results = Vec::new();
         if let Some(Value::Object(obj)) = a.first() {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             if let ObjectKind::Array(ref elems) = o.kind {
                 for elem in elems {
                     let es = format!("{}", elem);
@@ -218,7 +218,7 @@ pub fn register(vm: &mut VM) {
                 }
             }
         }
-        Value::Object(Rc::new(RefCell::new(Object::new_array(results))))
+        Value::Object(Arc::new(Mutex::new(Object::new_array(results))))
     }));
 
     // count(str, sub) → number of non-overlapping occurrences
@@ -238,10 +238,10 @@ pub fn register(vm: &mut VM) {
         let fill = args.get(2).map(|v| format!("{}", v)).unwrap_or_else(|| " ".to_string());
         let fill_char = fill.chars().next().unwrap_or(' ');
         if s.len() >= width {
-            Value::String(Rc::from(s))
+            Value::String(Arc::from(s))
         } else {
             let padding: String = std::iter::repeat(fill_char).take(width - s.len()).collect();
-            Value::String(Rc::from(format!("{}{}", padding, s)))
+            Value::String(Arc::from(format!("{}{}", padding, s)))
         }
     }));
 }

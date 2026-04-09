@@ -1,0 +1,477 @@
+// JavaScript Grammar for pest parser
+// Covers everything vybe_parser_js supports
+//
+// ASI: NEWLINE is a visible token (not whitespace). Statements terminate on
+// ";" or NEWLINE or before "}" or at EOI. return/break/continue/throw
+// restrict expression to same line via !NEWLINE lookahead.
+//
+// Regex: grammar structure disambiguates — regex only in primary (expression
+// start), division only in multiplicative (between expressions).
+
+WHITESPACE = _{ " " | "\t" | "\r" }
+COMMENT = _{ line_comment | block_comment }
+line_comment = _{ "//" ~ (!("\n" | "\r") ~ ANY)* }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+NEWLINE = { "\n" | "\r\n" }
+
+// ── Statement terminators (ASI) ──────────────────────────────────────────────
+// A statement ends with ";" or NEWLINE or before "}" or at EOI.
+// Newlines inside parens/brackets/braces don't terminate (handled by pest's
+// WHITESPACE consuming spaces/tabs but not newlines — so NEWLINE is explicit).
+
+terminator = _{ ";" | NEWLINE | &"}" | &EOI }
+// Consume optional terminators (semicolons and newlines)
+eat_terminators = _{ (";" | NEWLINE)* }
+
+// ── Program ─────────────────────────────────────────────────────────────────
+
+program = { SOI ~ eat_terminators ~ (statement ~ eat_terminators)* ~ EOI }
+
+// ── Statements ──────────────────────────────────────────────────────────────
+
+statement = _{
+    empty_statement
+    | block_statement
+    | variable_declaration
+    | async_function_declaration
+    | function_declaration
+    | class_declaration
+    | if_statement
+    | for_statement
+    | while_statement
+    | do_while_statement
+    | switch_statement
+    | return_statement
+    | break_statement
+    | continue_statement
+    | throw_statement
+    | try_statement
+    | import_statement
+    | export_statement
+    | labeled_statement
+    | expression_statement
+}
+
+empty_statement = { ";" | NEWLINE }
+
+block_statement = { "{" ~ statement* ~ "}" }
+
+// ── Variable declarations ───────────────────────────────────────────────────
+
+variable_declaration = {
+    var_kind ~ var_declarator ~ ("," ~ var_declarator)* ~ terminator
+}
+
+var_kind = { "var" | "let" | "const" }
+
+var_declarator = { binding_pattern ~ ("=" ~ assignment_expression)? }
+
+binding_pattern = { object_pattern | array_pattern | ident_name }
+
+object_pattern = {
+    "{" ~ (object_pattern_prop ~ ("," ~ object_pattern_prop)*)? ~ ","? ~ "}"
+}
+
+object_pattern_prop = {
+    "..." ~ ident_name                                             // rest: { ...rest }
+    | ident_name ~ ":" ~ binding_pattern ~ ("=" ~ assignment_expression)?  // rename: { a: b }
+    | ident_name ~ ("=" ~ assignment_expression)?                  // shorthand: { a } or { a = default }
+}
+
+array_pattern = {
+    "[" ~ (array_pattern_elem ~ ("," ~ array_pattern_elem)*)? ~ ","? ~ "]"
+}
+
+array_pattern_elem = {
+    "..." ~ ident_name           // rest: [...rest]
+    | array_hole                 // hole: skip
+    | binding_pattern ~ ("=" ~ assignment_expression)?
+}
+
+array_hole = { &"," }   // empty slot before comma
+
+// ── Function declaration ────────────────────────────────────────────────────
+
+function_declaration = {
+    "function" ~ ident_name ~ "(" ~ param_list? ~ ")" ~ function_body
+}
+
+async_function_declaration = {
+    "async" ~ "function" ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+}
+
+function_body = { "{" ~ statement* ~ "}" }
+
+param_list = { param ~ ("," ~ param)* ~ ","? }
+
+param = { "..."? ~ ident_name ~ ("=" ~ assignment_expression)? }
+
+// ── Class declaration ───────────────────────────────────────────────────────
+
+class_declaration = {
+    "class" ~ ident_name? ~ ("extends" ~ assignment_expression)? ~ class_body
+}
+
+class_body = { "{" ~ (";"? ~ class_member)* ~ ";"? ~ "}" }
+
+class_member = {
+    static_kw? ~ (getter_method | setter_method | class_method | class_property)
+}
+
+static_kw = { "static" }
+
+getter_method = { "get" ~ property_name ~ "(" ~ ")" ~ function_body }
+setter_method = { "set" ~ property_name ~ "(" ~ param ~ ")" ~ function_body }
+class_method = { async_kw? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body }
+class_property = { property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
+
+async_kw = { "async" }
+
+property_name = { computed_property_name | string_literal | numeric_literal | ident_or_keyword }
+computed_property_name = { "[" ~ assignment_expression ~ "]" }
+
+// ── If ──────────────────────────────────────────────────────────────────────
+
+if_statement = {
+    "if" ~ "(" ~ expression ~ ")" ~ statement ~ ("else" ~ statement)?
+}
+
+// ── For / For-in / For-of ───────────────────────────────────────────────────
+
+for_statement = {
+    "for" ~ "(" ~ for_header ~ ")" ~ statement
+}
+
+// Ordered choice: try for-in/of first (they're more specific), then fall back to C-style
+for_header = {
+    for_in_header | for_of_header | for_c_header
+}
+
+for_in_header = {
+    (var_kind ~ ident_name | ident_name) ~ "in" ~ expression
+}
+
+for_of_header = {
+    (var_kind ~ ident_name | ident_name) ~ "of" ~ expression
+}
+
+for_c_header = {
+    for_c_init? ~ ";" ~ expression? ~ ";" ~ expression?
+}
+
+for_c_init = { variable_declaration_no_semi | expression }
+
+variable_declaration_no_semi = {
+    var_kind ~ var_declarator ~ ("," ~ var_declarator)*
+}
+
+// ── While / Do-while ────────────────────────────────────────────────────────
+
+while_statement = { "while" ~ "(" ~ expression ~ ")" ~ statement }
+
+do_while_statement = { "do" ~ statement ~ "while" ~ "(" ~ expression ~ ")" ~ terminator }
+
+// ── Switch ──────────────────────────────────────────────────────────────────
+
+switch_statement = {
+    "switch" ~ "(" ~ expression ~ ")" ~ "{" ~ switch_case* ~ "}"
+}
+
+switch_case = {
+    ("case" ~ expression | "default") ~ ":" ~ statement*
+}
+
+// ── Jump statements ─────────────────────────────────────────────────────────
+// Note: ASI — break/continue/return/throw treat newline as terminator.
+// In pest we approximate with optional ";" since we can't check newlines in rules.
+
+// ASI: return/break/continue/throw — expression must be on same line.
+// If NEWLINE follows the keyword, no expression is consumed.
+return_statement = { "return" ~ (!NEWLINE ~ expression)? ~ terminator }
+break_statement = { "break" ~ (!NEWLINE ~ ident_name)? ~ terminator }
+continue_statement = { "continue" ~ (!NEWLINE ~ ident_name)? ~ terminator }
+// throw REQUIRES an expression (no ASI between throw and expression in spec,
+// but we still don't consume across newline for safety)
+throw_statement = { "throw" ~ !NEWLINE ~ expression ~ terminator }
+
+// ── Try / Catch / Finally ───────────────────────────────────────────────────
+
+try_statement = {
+    "try" ~ block_statement ~ catch_clause? ~ finally_clause?
+}
+
+catch_clause = { "catch" ~ ("(" ~ ident_name ~ ")")? ~ block_statement }
+finally_clause = { "finally" ~ block_statement }
+
+// ── Import / Export ─────────────────────────────────────────────────────────
+
+import_statement = {
+    "import" ~ (import_clause ~ "from")? ~ string_literal ~ terminator
+}
+
+import_clause = {
+    namespace_import
+    | named_imports
+    | default_import ~ ("," ~ named_imports)?
+}
+
+namespace_import = { "*" ~ "as" ~ ident_name }
+named_imports = { "{" ~ (import_specifier ~ ("," ~ import_specifier)*)? ~ ","? ~ "}" }
+default_import = { ident_name }
+import_specifier = { ident_or_keyword ~ ("as" ~ ident_name)? }
+
+export_statement = {
+    "export" ~ "default" ~ (function_declaration | class_declaration | assignment_expression) ~ terminator
+    | "export" ~ "{" ~ (export_specifier ~ ("," ~ export_specifier)*)? ~ ","? ~ "}" ~ terminator
+    | "export" ~ (function_declaration | class_declaration | variable_declaration)
+}
+
+export_specifier = { ident_name ~ ("as" ~ ident_name)? }
+
+// ── Labeled statement ───────────────────────────────────────────────────────
+// Must come before expression_statement. pest tries labeled first; if ":" is not
+// found after identifier, backtracks to expression_statement.
+
+labeled_statement = { ident_name ~ ":" ~ statement }
+
+// ── Expression statement ────────────────────────────────────────────────────
+
+expression_statement = { expression ~ terminator }
+
+// ── Expressions ─────────────────────────────────────────────────────────────
+
+expression = { assignment_expression ~ ("," ~ assignment_expression)* }
+
+assignment_expression = {
+    conditional_expression ~ (assignment_op ~ assignment_expression)?
+}
+
+assignment_op = {
+    ">>>=" | ">>=" | "<<=" |
+    "**=" | "&&=" | "||=" | "??=" |
+    "+=" | "-=" | "*=" | "/=" | "%=" |
+    "&=" | "|=" | "^=" |
+    "="
+}
+
+conditional_expression = {
+    nullish_coalescing ~ ("?" ~ assignment_expression ~ ":" ~ assignment_expression)?
+}
+
+nullish_coalescing = { logical_or ~ (nullish_op ~ logical_or)* }
+nullish_op = { "??" }
+logical_or = { logical_and ~ (or_op ~ logical_and)* }
+or_op = { "||" }
+logical_and = { bitwise_or ~ (and_op ~ bitwise_or)* }
+and_op = { "&&" }
+bitwise_or = { bitwise_xor ~ (bitor_op ~ bitwise_xor)* }
+bitor_op = { "|" ~ !("=" | "|") }
+bitwise_xor = { bitwise_and ~ (bitxor_op ~ bitwise_and)* }
+bitxor_op = { "^" ~ !"=" }
+bitwise_and = { equality ~ (bitand_op ~ equality)* }
+bitand_op = { "&" ~ !("=" | "&") }
+
+equality = { relational ~ (equality_op ~ relational)* }
+equality_op = { "===" | "!==" | "==" | "!=" }
+
+relational = { shift ~ (relational_op ~ shift)* }
+relational_op = { "<=" | ">=" | "<" ~ !"<" | ">" ~ !">" | "instanceof" | "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+shift = { additive ~ (shift_op ~ additive)* }
+shift_op = { ">>>" ~ !"=" | ">>" ~ !(">" | "=") | "<<" ~ !"=" }
+
+additive = { multiplicative ~ (additive_op ~ multiplicative)* }
+additive_op = { "+" ~ !("+" | "=") | "-" ~ !("-" | "=") }
+
+multiplicative = { exponentiation ~ (multiplicative_op ~ exponentiation)* }
+multiplicative_op = { "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
+
+exponentiation = { unary ~ (exp_op ~ exponentiation)? }
+exp_op = { "**" ~ !"=" }
+
+unary = {
+    unary_op ~ unary
+    | postfix
+}
+
+unary_op = {
+    "-" ~ !("-" | "=")
+    | "+" ~ !("+" | "=")
+    | "!" ~ !"="
+    | "~"
+    | "typeof" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "void" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "delete" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "++"
+    | "--"
+    | "await" ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+postfix = { call_expression ~ postfix_op? }
+postfix_op = { "++" | "--" }
+
+// ── Call / Member / Index chain ─────────────────────────────────────────────
+
+call_expression = {
+    (new_expression | primary) ~ call_chain*
+}
+
+call_chain = {
+    "?." ~ "(" ~ argument_list? ~ ")"          // optional call: obj?.()
+    | "?." ~ ident_or_keyword                   // optional member: obj?.prop
+    | "(" ~ argument_list? ~ ")"                // call: f(args)
+    | "." ~ ident_or_keyword                    // member: obj.prop
+    | "[" ~ expression ~ "]"                    // computed: obj[expr]
+}
+
+new_expression = { "new" ~ call_expression }
+
+argument_list = { argument ~ ("," ~ argument)* ~ ","? }
+argument = { "..." ~ assignment_expression | assignment_expression }
+
+// ── Primary expressions ─────────────────────────────────────────────────────
+// Arrow functions tried BEFORE grouped expression (ordered choice with backtracking)
+
+primary = {
+    arrow_function
+    | async_arrow_function
+    | "(" ~ expression ~ ")"
+    | async_function_expression
+    | function_expression
+    | class_expression
+    | array_literal
+    | object_literal
+    | template_literal
+    | "this" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "super" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "true" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "false" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "null" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "undefined" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "..." ~ assignment_expression
+    | numeric_literal
+    | string_literal
+    | regex_literal
+    | ident_name
+}
+
+// ── Arrow functions ─────────────────────────────────────────────────────────
+// pest tries these first due to ordered choice. If "=>" is not found, backtracks.
+
+arrow_function = {
+    ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ arrow_body
+}
+
+async_arrow_function = {
+    "async" ~ !(ASCII_ALPHANUMERIC | "_") ~ ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ arrow_body
+}
+
+arrow_body = { function_body | assignment_expression }
+
+// ── Function / Class expressions ────────────────────────────────────────────
+
+function_expression = {
+    "function" ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+}
+
+async_function_expression = {
+    "async" ~ !(ASCII_ALPHANUMERIC | "_") ~ "function" ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+}
+
+class_expression = {
+    "class" ~ ident_name? ~ ("extends" ~ assignment_expression)? ~ class_body
+}
+
+// ── Array literal ───────────────────────────────────────────────────────────
+
+array_literal = {
+    "[" ~ (array_element ~ ("," ~ array_element)*)? ~ ","? ~ "]"
+}
+
+array_element = { "..." ~ assignment_expression | assignment_expression }
+
+// ── Object literal ──────────────────────────────────────────────────────────
+
+object_literal = {
+    "{" ~ (object_property ~ ("," ~ object_property)*)? ~ ","? ~ "}"
+}
+
+object_property = {
+    "..." ~ assignment_expression                                     // spread
+    | computed_property_name ~ ":" ~ assignment_expression             // computed key
+    | "get" ~ property_name ~ "(" ~ ")" ~ function_body               // getter
+    | "set" ~ property_name ~ "(" ~ param ~ ")" ~ function_body       // setter
+    | property_name ~ "(" ~ param_list? ~ ")" ~ function_body         // method shorthand
+    | property_name ~ ":" ~ assignment_expression                      // key: value
+    | ident_name                                                       // shorthand { x }
+}
+
+// ── Template literals ───────────────────────────────────────────────────────
+
+template_literal = {
+    template_full
+    | template_head ~ expression ~ (template_middle ~ expression)* ~ template_tail
+}
+
+template_full = @{ "`" ~ template_chars* ~ "`" }
+template_head = @{ "`" ~ template_chars* ~ "${" }
+template_middle = @{ "}" ~ template_chars* ~ "${" }
+template_tail = @{ "}" ~ template_chars* ~ "`" }
+template_chars = _{ "\\`" | "\\$" | "\\\\" | (!( "`" | "${") ~ ANY) }
+
+// ── Regex literal ───────────────────────────────────────────────────────────
+// NOTE: regex vs division ambiguity cannot be fully resolved in PEG.
+// The walker uses lexer context to disambiguate. This rule is a best-effort
+// pattern that works when regex appears in primary position.
+
+regex_literal = @{
+    "/" ~ regex_body ~ "/" ~ regex_flags?
+}
+regex_body = @{ (regex_char | regex_class)+ }
+regex_char = @{ "\\" ~ ANY | !("/" | "[" | NEWLINE) ~ ANY }
+regex_class = @{ "[" ~ ("\\" ~ ANY | !"]" ~ ANY)* ~ "]" }
+regex_flags = @{ ('a'..'z' | 'A'..'Z')* }
+
+// ── Literals ────────────────────────────────────────────────────────────────
+
+numeric_literal = @{
+    ("0x" | "0X") ~ ASCII_HEX_DIGIT+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0o" | "0O") ~ ('0'..'7')+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0b" | "0B") ~ ('0'..'1')+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
+    | "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
+    | ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+string_literal = @{
+    "'" ~ ("\\'" | "\\\\" | (!"'" ~ !NEWLINE ~ ANY))* ~ "'"
+    | "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ !NEWLINE ~ ANY))* ~ "\""
+}
+
+// ── Identifiers ─────────────────────────────────────────────────────────────
+// ident_name: any identifier including contextual keywords (get, set, from, of, as, async)
+// Used in most positions. The strict `identifier` from the old grammar excluded
+// too many contextual keywords that JS allows as identifiers.
+
+ident_name = @{
+    !strict_keyword ~ (ASCII_ALPHA | "_" | "$") ~ (ASCII_ALPHANUMERIC | "_" | "$")*
+}
+
+// ident_or_keyword: any word — used after "." for property access and in property names
+// where ALL keywords are valid (obj.class, obj.return, etc.)
+ident_or_keyword = @{
+    (ASCII_ALPHA | "_" | "$") ~ (ASCII_ALPHANUMERIC | "_" | "$")*
+}
+
+// Only truly reserved words that can NEVER be identifiers in any context.
+// Contextual keywords (get, set, from, of, as, async, await, yield, let) are NOT here
+// because JS allows them as identifiers in non-keyword positions.
+strict_keyword = _{
+    ("var" | "const" | "function" | "return" | "if" | "else" |
+     "for" | "while" | "do" | "break" | "continue" | "switch" | "case" |
+     "default" | "new" | "delete" | "typeof" | "void" | "instanceof" |
+     "in" | "this" | "super" | "class" | "extends" | "static" |
+     "throw" | "try" | "catch" | "finally" | "true" |
+     "false" | "null" | "undefined" | "import" | "export")
+    ~ !(ASCII_ALPHANUMERIC | "_" | "$")
+}

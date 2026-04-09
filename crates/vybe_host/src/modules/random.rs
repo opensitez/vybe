@@ -1,11 +1,10 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
 
 // Simple xorshift64 PRNG state — thread-local for safety.
 thread_local! {
-    static RNG_STATE: RefCell<u64> = RefCell::new(
+    static RNG_STATE: std::cell::RefCell<u64> = std::cell::RefCell::new(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -58,7 +57,7 @@ pub fn register(vm: &mut VM) {
         for _ in 0..n {
             bytes.push(Value::F64((next_u64() & 0xFF) as f64));
         }
-        Value::Object(Rc::new(RefCell::new(Object::new_array(bytes))))
+        Value::Object(Arc::new(Mutex::new(Object::new_array(bytes))))
     }));
 
     // Random UUID v4
@@ -73,6 +72,6 @@ pub fn register(vm: &mut VM) {
             (b >> 48) as u16 & 0x3FFF | 0x8000,
             b & 0xFFFFFFFFFFFF,
         );
-        Value::String(Rc::from(s.as_str()))
+        Value::String(Arc::from(s.as_str()))
     }));
 }

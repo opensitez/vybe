@@ -6,14 +6,13 @@
 #[cfg(feature = "gui")]
 mod gui_impl {
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use crate::gui_state::GuiState;
 
 pub fn register(
     vm: &mut VM,
-    gui: Rc<RefCell<GuiState>>,
+    gui: Arc<Mutex<GuiState>>,
 ) {
     // Form creation
     vm.register_host_fn("vybe:gui", "createForm", {
@@ -21,9 +20,9 @@ pub fn register(
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let title = str_arg(args, 0, "Form1");
             let name = title.clone();
-            let mut g = gui.borrow_mut();
+            let mut g = gui.lock().unwrap();
             g.form = vybe_widgets::Form::new(&title);
-            Value::String(Rc::from(name.as_str()))
+            Value::String(Arc::from(name.as_str()))
         })
     });
 
@@ -32,15 +31,15 @@ pub fn register(
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let title = str_arg(args, 0, "Form1");
             let name = title.clone();
-            { let mut g = gui.borrow_mut(); g.form = vybe_widgets::Form::new(&title); }
+            { let mut g = gui.lock().unwrap(); g.form = vybe_widgets::Form::new(&title); }
             let mut obj = vybe_bytecode::value::Object::new();
-            obj.properties.insert("__control_type".into(), Value::String(Rc::from("Form")));
-            obj.properties.insert("__control_name".into(), Value::String(Rc::from(name.as_str())));
-            obj.properties.insert("name".into(), Value::String(Rc::from(name.as_str())));
-            obj.properties.insert("text".into(), Value::String(Rc::from(title.as_str())));
+            obj.properties.insert("__control_type".into(), Value::String(Arc::from("Form")));
+            obj.properties.insert("__control_name".into(), Value::String(Arc::from(name.as_str())));
+            obj.properties.insert("name".into(), Value::String(Arc::from(name.as_str())));
+            obj.properties.insert("text".into(), Value::String(Arc::from(title.as_str())));
             obj.properties.insert("width".into(), Value::F64(800.0));
             obj.properties.insert("height".into(), Value::F64(600.0));
-            Value::Object(Rc::new(RefCell::new(obj)))
+            Value::Object(Arc::new(Mutex::new(obj)))
         })
     });
 
@@ -51,9 +50,9 @@ pub fn register(
             // args[0] = parent container, args[1] = child control
             // Compute parent's absolute offset so child is positioned inside parent.
             let (parent_abs_x, parent_abs_y) = if let Some(Value::Object(parent_obj)) = args.first() {
-                let po = parent_obj.borrow();
+                let po = parent_obj.lock().unwrap();
                 let (px, py) = if let Some(Value::Object(loc)) = po.properties.get("location") {
-                    let loc = loc.borrow();
+                    let loc = loc.lock().unwrap();
                     (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
                      loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
                 } else {
@@ -66,9 +65,9 @@ pub fn register(
                 let mut cur = po.properties.get("__parent").cloned();
                 drop(po);
                 while let Some(Value::Object(ancestor)) = cur {
-                    let anc = ancestor.borrow();
+                    let anc = ancestor.lock().unwrap();
                     let (ax, ay) = if let Some(Value::Object(loc)) = anc.properties.get("location") {
-                        let loc = loc.borrow();
+                        let loc = loc.lock().unwrap();
                         (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
                          loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
                     } else {
@@ -87,9 +86,9 @@ pub fn register(
             if let Some(Value::Object(obj)) = args.get(1) {
                 // Record parent reference on the child for deep nesting
                 if let Some(parent_val) = args.first() {
-                    obj.borrow_mut().properties.insert("__parent".into(), parent_val.clone());
+                    obj.lock().unwrap().properties.insert("__parent".into(), parent_val.clone());
                 }
-                let o = obj.borrow();
+                let o = obj.lock().unwrap();
                 let control_type = o.properties.get("__control_type")
                     .map(|v| format!("{}", v)).unwrap_or_else(|| "Button".into());
                 let control_name = o.properties.get("name")
@@ -102,12 +101,12 @@ pub fn register(
                 let width = o.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100);
                 let height = o.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30);
                 let (left, top) = if let Some(Value::Object(loc)) = o.properties.get("location") {
-                    let loc = loc.borrow();
+                    let loc = loc.lock().unwrap();
                     (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(left),
                      loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(top))
                 } else { (left, top) };
                 let (width, height) = if let Some(Value::Object(sz)) = o.properties.get("size") {
-                    let sz = sz.borrow();
+                    let sz = sz.lock().unwrap();
                     (sz.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(width),
                      sz.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(height))
                 } else { (width, height) };
@@ -124,7 +123,7 @@ pub fn register(
                 // Add widget at absolute position (child local + parent absolute)
                 let abs_left = left + parent_abs_x;
                 let abs_top = top + parent_abs_y;
-                let mut g = gui.borrow_mut();
+                let mut g = gui.lock().unwrap();
                 g.add_widget(&control_type, &control_name, &text, abs_left, abs_top, width, height);
                 let name_lower = control_name.to_lowercase();
                 for (prop, val) in props {
@@ -145,8 +144,8 @@ pub fn register(
             let top = i32_arg(args, 4, 0);
             let width = i32_arg(args, 5, 100);
             let height = i32_arg(args, 6, 30);
-            gui.borrow_mut().add_widget(&control_type, &control_name, "", left, top, width, height);
-            Value::String(Rc::from(control_name.as_str()))
+            gui.lock().unwrap().add_widget(&control_type, &control_name, "", left, top, width, height);
+            Value::String(Arc::from(control_name.as_str()))
         })
     });
 
@@ -157,7 +156,7 @@ pub fn register(
             let control = str_arg(args, 0, "");
             let property = str_arg(args, 1, "");
             let val_str = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
-            gui.borrow_mut().set_property(&control, &property, &val_str);
+            gui.lock().unwrap().set_property(&control, &property, &val_str);
             Value::Null
         })
     });
@@ -167,7 +166,7 @@ pub fn register(
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
                 let control_name = {
-                    let o = obj.borrow();
+                    let o = obj.lock().unwrap();
                     o.properties.get("__control_name")
                         .map(|v| format!("{}", v)).unwrap_or_default()
                 };
@@ -175,11 +174,11 @@ pub fn register(
                 let val = args.get(2).cloned().unwrap_or(Value::Null);
                 let val_str = format!("{}", val);
                 let prop_lower = property.to_lowercase();
-                obj.borrow_mut().properties.insert(prop_lower.clone(), val.clone());
+                obj.lock().unwrap().properties.insert(prop_lower.clone(), val.clone());
                 if prop_lower == "name" {
-                    obj.borrow_mut().properties.insert("__control_name".into(), val);
+                    obj.lock().unwrap().properties.insert("__control_name".into(), val);
                 }
-                gui.borrow_mut().set_property(&control_name, &property, &val_str);
+                gui.lock().unwrap().set_property(&control_name, &property, &val_str);
             }
             Value::Null
         })
@@ -190,8 +189,8 @@ pub fn register(
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let control = str_arg(args, 0, "");
             let property = str_arg(args, 1, "");
-            let val = gui.borrow_mut().get_property(&control, &property);
-            if val.is_empty() { Value::Null } else { Value::String(Rc::from(val.as_str())) }
+            let val = gui.lock().unwrap().get_property(&control, &property);
+            if val.is_empty() { Value::Null } else { Value::String(Arc::from(val.as_str())) }
         })
     });
 
@@ -202,7 +201,7 @@ pub fn register(
             let control = str_arg(args, 0, "");
             let event = str_arg(args, 1, "");
             let callback = args.get(2).cloned().unwrap_or(Value::Null);
-            gui.borrow_mut().register_event(&control, &event, callback);
+            gui.lock().unwrap().register_event(&control, &event, callback);
             Value::Null
         })
     });
@@ -213,7 +212,7 @@ pub fn register(
             let ctrl = str_arg(args, 0, "");
             let event = str_arg(args, 1, "");
             if let Some(callback) = args.get(2) {
-                gui.borrow_mut().register_event(&ctrl, &event, callback.clone());
+                gui.lock().unwrap().register_event(&ctrl, &event, callback.clone());
             }
             Value::Null
         })
@@ -225,7 +224,7 @@ pub fn register(
     vm.register_host_fn("vybe:gui", "showForm", {
         let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let mut g = gui.borrow_mut();
+            let mut g = gui.lock().unwrap();
             g.should_run = true;
             if let Some(obj) = args.first().cloned() { g.form_object = Some(obj); }
             Value::Null
@@ -235,11 +234,11 @@ pub fn register(
     vm.register_host_fn("vybe:gui", "runApplication", {
         let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let mut g = gui.borrow_mut();
+            let mut g = gui.lock().unwrap();
             g.should_run = true;
             if let Some(obj) = args.first().cloned() {
                 if let Value::Object(o) = &obj {
-                    let o = o.borrow();
+                    let o = o.lock().unwrap();
                     if let Some(w) = o.properties.get("width") { g.width = w.as_f64() as u32; }
                     if let Some(h) = o.properties.get("height") { g.height = h.as_f64() as u32; }
                 }
@@ -252,7 +251,7 @@ pub fn register(
     vm.register_host_fn("vybe:gui", "closeForm", {
         let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-            gui.borrow_mut().close_requested = true;
+            gui.lock().unwrap().close_requested = true;
             Value::Null
         })
     });
@@ -263,7 +262,7 @@ pub fn register(
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let text = str_arg(args, 0, "");
             let title = str_arg(args, 1, "");
-            gui.borrow_mut().pending_dialogs.push((text, title));
+            gui.lock().unwrap().pending_dialogs.push((text, title));
             Value::Null
         })
     });
@@ -289,12 +288,12 @@ pub fn register(
 
     let gui_show = gui.clone();
     vm.register_host_fn("vybe:gui", "__ctrl_show", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-        gui_show.borrow_mut().should_run = true;
+        gui_show.lock().unwrap().should_run = true;
         Value::Null
     }));
     let gui_close = gui.clone();
     vm.register_host_fn("vybe:gui", "__ctrl_close", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-        gui_close.borrow_mut().close_requested = true;
+        gui_close.lock().unwrap().close_requested = true;
         Value::Null
     }));
     vm.register_host_fn("vybe:gui", "__ctrl_focus", Box::new(|_ctx, _| Value::Null));
@@ -321,10 +320,10 @@ pub fn register(
             let id = COUNTER.fetch_add(1, Ordering::Relaxed);
             let name = format!("{}_{}", type_name, id);
             let mut obj = vybe_bytecode::value::Object::new();
-            obj.properties.insert("__control_type".into(), Value::String(Rc::from(type_name.as_str())));
-            obj.properties.insert("__control_name".into(), Value::String(Rc::from(name.as_str())));
-            obj.properties.insert("__type".into(), Value::String(Rc::from(type_name.as_str())));
-            obj.properties.insert("name".into(), Value::String(Rc::from(name.as_str())));
+            obj.properties.insert("__control_type".into(), Value::String(Arc::from(type_name.as_str())));
+            obj.properties.insert("__control_name".into(), Value::String(Arc::from(name.as_str())));
+            obj.properties.insert("__type".into(), Value::String(Arc::from(type_name.as_str())));
+            obj.properties.insert("name".into(), Value::String(Arc::from(name.as_str())));
             obj.properties.insert("width".into(), Value::F64(100.0));
             obj.properties.insert("height".into(), Value::F64(30.0));
             obj.properties.insert("left".into(), Value::F64(0.0));
@@ -339,7 +338,7 @@ pub fn register(
             ) {
                 obj.properties.insert("showdialog".into(), dlg.clone());
             }
-            Value::Object(Rc::new(RefCell::new(obj)))
+            Value::Object(Arc::new(Mutex::new(obj)))
         }));
     }
 }
@@ -356,7 +355,7 @@ fn host_fn_ref(vm: &VM, name: &str) -> Value {
     let idx = *vm.host_registry.get(&("vybe:gui".into(), name.into())).unwrap();
     let mut o = vybe_bytecode::value::Object::new();
     o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
-    Value::Object(Rc::new(RefCell::new(o)))
+    Value::Object(Arc::new(Mutex::new(o)))
 }
 
 fn capitalize_first(s: &str) -> String {
@@ -376,7 +375,7 @@ fn value_to_property_string(v: &Value) -> Option<String> {
         Value::I32(n) => Some(n.to_string()),
         Value::Bool(b) => Some(if *b { "True".into() } else { "False".into() }),
         Value::Object(obj) => {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             // Color objects → extract "name" which holds "#RRGGBB" or named color
             if let Some(Value::String(t)) = o.properties.get("__type") {
                 if t.as_ref() == "Color" {

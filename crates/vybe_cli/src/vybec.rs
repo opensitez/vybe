@@ -12,8 +12,7 @@
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::VM;
 
 fn main() {
@@ -95,7 +94,7 @@ fn run_project(path: &Path, dump: bool) {
         vybe_host::register_all_with_gui(&mut vm)
     } else {
         vybe_host::register_all(&mut vm);
-        Rc::new(RefCell::new(vybe_host::GuiState::new()))
+        Arc::new(Mutex::new(vybe_host::GuiState::new()))
     };
     vybe_host::setup_namespaces(&mut vm);
 
@@ -543,9 +542,9 @@ fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable:
         vm.register_host_fn("wasi:cli", "readLine", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _| {
             let mut line = String::new();
             std::io::stdin().read_line(&mut line).ok();
-            vybe_bytecode::Value::String(std::rc::Rc::from(line.trim()))
+            vybe_bytecode::Value::String(std::sync::Arc::from(line.trim()))
         }));
-        Rc::new(RefCell::new(vybe_host::GuiState::new()))
+        Arc::new(Mutex::new(vybe_host::GuiState::new()))
     };
 
     let chunks = match vybe_compiler_python::Compiler::new().compile(&module) {

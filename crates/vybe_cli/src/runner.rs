@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 
 use vybe_parser_basic::parse_program;
 
@@ -76,14 +75,14 @@ fn run_js_file(path: &Path) {
 
     // Drain any pending MsgBox dialogs (before GUI window opens)
     {
-        let dialogs: Vec<(String, String)> = gui.borrow_mut().pending_dialogs.drain(..).collect();
+        let dialogs: Vec<(String, String)> = gui.lock().unwrap().pending_dialogs.drain(..).collect();
         for (text, title) in dialogs {
             println!("[MsgBox] {title}: {text}");
         }
     }
 
     // If runApplication was called, GuiState already has the real widgets
-    if gui.borrow().should_run {
+    if gui.lock().unwrap().should_run {
         crate::vybewidget_form::launch_gui(vm, gui);
     }
 }
@@ -97,7 +96,7 @@ fn run_js_file(path: &Path) {
 fn wire_handles_from_chunks(
     program: &vybe_parser_basic::ast::Program,
     vm: &mut vybe_bytecode::VM,
-    gui: &Rc<RefCell<vybe_host::GuiState>>,
+    gui: &Arc<Mutex<vybe_host::GuiState>>,
 ) {
     use vybe_parser_basic::ast::*;
     for decl in &program.declarations {
@@ -127,14 +126,14 @@ fn wire_handles_from_chunks(
                         kind: vybe_bytecode::value::ObjectKind::Function(func),
                         type_id: 0, fields: Vec::new(),
                     };
-                    let func_val = vybe_bytecode::Value::Object(Rc::new(RefCell::new(obj)));
+                    let func_val = vybe_bytecode::Value::Object(Arc::new(Mutex::new(obj)));
 
                     for handle in handle_list {
                         let parts: Vec<&str> = handle.splitn(2, '.').collect();
                         if parts.len() == 2 {
                             let ctrl = parts[0].to_lowercase();
                             let event = parts[1].to_string();
-                            gui.borrow_mut().register_event(&ctrl, &event, func_val.clone());
+                            gui.lock().unwrap().register_event(&ctrl, &event, func_val.clone());
                         }
                     }
                 }
@@ -149,7 +148,7 @@ fn wire_handles_from_chunks(
 fn wire_handles_from_ast(
     program: &vybe_parser_basic::ast::Program,
     vm: &vybe_bytecode::VM,
-    gui: &std::rc::Rc<std::cell::RefCell<vybe_host::GuiState>>,
+    gui: &std::sync::Arc<std::sync::Mutex<vybe_host::GuiState>>,
 ) {
     use vybe_parser_basic::ast::*;
     for decl in &program.declarations {
@@ -169,7 +168,7 @@ fn wire_handles_from_ast(
                 let func_val = vm.globals.get(&method_lower).cloned().or_else(|| {
                     // Method is on the class — look up class global, get method property
                     if let Some(vybe_bytecode::Value::Object(class_obj)) = vm.globals.get(&class_name) {
-                        let o = class_obj.borrow();
+                        let o = class_obj.lock().unwrap();
                         o.properties.get(&method_lower).cloned()
                     } else {
                         None
@@ -180,7 +179,7 @@ fn wire_handles_from_ast(
                     if let Some(class_val) = vm.globals.get(&class_name) {
                         eprintln!("[wire] class={} type={}", class_name, class_val.type_tag());
                         if let vybe_bytecode::Value::Object(class_obj) = class_val {
-                            let o = class_obj.borrow();
+                            let o = class_obj.lock().unwrap();
                             eprintln!("[wire] class={} kind={:?} props={:?}", class_name, std::mem::discriminant(&o.kind), o.properties.keys().collect::<Vec<_>>());
                         }
                     } else {
@@ -198,7 +197,7 @@ fn wire_handles_from_ast(
                                 parts[0].to_lowercase()
                             };
                             let event = parts[1].to_string();
-                            gui.borrow_mut().register_event(&ctrl, &event, func.clone());
+                            gui.lock().unwrap().register_event(&ctrl, &event, func.clone());
                         }
                     }
                 }
@@ -211,7 +210,7 @@ fn wire_handles_from_ast(
 pub fn launch_project_form(
     form: vybe_forms::Form,
     vm: vybe_bytecode::VM,
-    gui: std::rc::Rc<std::cell::RefCell<vybe_host::GuiState>>,
+    gui: std::sync::Arc<std::sync::Mutex<vybe_host::GuiState>>,
 ) {
     crate::vybewidget_form::launch_vybewidget_form(vm, gui, &form);
 }
@@ -225,18 +224,18 @@ pub fn launch_project_form(
 /// For designer forms, pass `initial_form` to build widgets from the model.
 pub fn launch_vm_form(
     vm: vybe_bytecode::VM,
-    gui: std::rc::Rc<std::cell::RefCell<vybe_host::GuiState>>,
+    gui: std::sync::Arc<std::sync::Mutex<vybe_host::GuiState>>,
     initial_form: Option<vybe_forms::Form>,
 ) {
     // Drain any pending MsgBox dialogs produced before the window opens
     {
-        let dialogs: Vec<(String, String)> = gui.borrow_mut().pending_dialogs.drain(..).collect();
+        let dialogs: Vec<(String, String)> = gui.lock().unwrap().pending_dialogs.drain(..).collect();
         for (text, title) in dialogs {
             println!("[MsgBox] {title}: {text}");
         }
     }
 
-    let should_launch = gui.borrow().should_run || initial_form.is_some();
+    let should_launch = gui.lock().unwrap().should_run || initial_form.is_some();
 
     if should_launch {
         if let Some(form) = initial_form {

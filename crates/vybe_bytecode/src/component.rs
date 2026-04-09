@@ -253,7 +253,7 @@ impl Linker {
                             if lower == s.as_ref() { // already lowercase (VB convention)
                                 if let Some(canonical) = case_map.get(&lower) {
                                     if canonical.as_str() != s.as_ref() {
-                                        *val = crate::Value::String(std::rc::Rc::from(canonical.as_str()));
+                                        *val = crate::Value::String(std::sync::Arc::from(canonical.as_str()));
                                     }
                                 }
                             }

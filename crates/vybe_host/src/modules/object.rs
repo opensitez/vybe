@@ -1,5 +1,4 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
@@ -7,59 +6,59 @@ pub fn register(vm: &mut VM) {
     // Object.keys(obj) → array of property name strings
     vm.register_host_fn("vybe:object", "keys", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             // If __keys array exists (dict with key tracking), use it directly
             if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
-                let ka = keys_arr.borrow();
+                let ka = keys_arr.lock().unwrap();
                 if let ObjectKind::Array(ref elems) = ka.kind {
-                    return Value::Object(Rc::new(RefCell::new(Object::new_array(elems.clone()))));
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(elems.clone()))));
                 }
             }
             let keys: Vec<Value> = o.properties.keys()
                 .filter(|k| *k != "length" && !k.starts_with("__")) // exclude internal properties
-                .map(|k| Value::String(Rc::from(k.as_str())))
+                .map(|k| Value::String(Arc::from(k.as_str())))
                 .collect();
-            return Value::Object(Rc::new(RefCell::new(Object::new_array(keys))));
+            return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
         }
-        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
     }));
 
     // Object.values(obj) → array of property values
     vm.register_host_fn("vybe:object", "values", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             // If __keys array exists, use it to get values in insertion order
             if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
-                let ka = keys_arr.borrow();
+                let ka = keys_arr.lock().unwrap();
                 if let ObjectKind::Array(ref elems) = ka.kind {
                     let vals: Vec<Value> = elems.iter()
                         .filter_map(|k| if let Value::String(s) = k { o.properties.get(s.as_ref()).cloned() } else { None })
                         .collect();
-                    return Value::Object(Rc::new(RefCell::new(Object::new_array(vals))));
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
                 }
             }
             let vals: Vec<Value> = o.properties.iter()
                 .filter(|(k, _)| !k.starts_with("__"))
                 .map(|(_, v)| v.clone())
                 .collect();
-            return Value::Object(Rc::new(RefCell::new(Object::new_array(vals))));
+            return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
         }
-        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
     }));
 
     // Object.entries(obj) → array of [key, value] pairs
     vm.register_host_fn("vybe:object", "entries", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             // If __keys array exists, use it for insertion-order entries
             if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
-                let ka = keys_arr.borrow();
+                let ka = keys_arr.lock().unwrap();
                 if let ObjectKind::Array(ref elems) = ka.kind {
                     let entries: Vec<Value> = elems.iter()
                         .filter_map(|k| {
                             if let Value::String(s) = k {
                                 o.properties.get(s.as_ref()).map(|v| {
-                                    Value::Object(Rc::new(RefCell::new(Object::new_array(vec![
+                                    Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
                                         Value::String(s.clone()),
                                         v.clone(),
                                     ]))))
@@ -67,21 +66,21 @@ pub fn register(vm: &mut VM) {
                             } else { None }
                         })
                         .collect();
-                    return Value::Object(Rc::new(RefCell::new(Object::new_array(entries))));
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
                 }
             }
             let entries: Vec<Value> = o.properties.iter()
                 .filter(|(k, _)| !k.starts_with("__"))
                 .map(|(k, v)| {
-                    Value::Object(Rc::new(RefCell::new(Object::new_array(vec![
-                        Value::String(Rc::from(k.as_str())),
+                    Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                        Value::String(Arc::from(k.as_str())),
                         v.clone(),
                     ]))))
                 })
                 .collect();
-            return Value::Object(Rc::new(RefCell::new(Object::new_array(entries))));
+            return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
         }
-        Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))))
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
     }));
 
     // Object.assign(target, ...sources) → target with all source props copied
@@ -89,8 +88,8 @@ pub fn register(vm: &mut VM) {
         if let Some(Value::Object(target)) = args.first() {
             for source_arg in &args[1..] {
                 if let Value::Object(source) = source_arg {
-                    let src = source.borrow();
-                    let mut tgt = target.borrow_mut();
+                    let src = source.lock().unwrap();
+                    let mut tgt = target.lock().unwrap();
                     for (k, v) in &src.properties {
                         tgt.properties.insert(k.clone(), v.clone());
                     }
@@ -104,7 +103,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:object", "hasProperty", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         if let Some(Value::Object(obj)) = args.get(1) {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             Value::Bool(o.properties.contains_key(&key))
         } else {
             Value::Bool(false)
@@ -115,7 +114,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:object", "deleteProperty", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-            obj.borrow_mut().properties.remove(&key);
+            obj.lock().unwrap().properties.remove(&key);
             Value::Bool(true)
         } else {
             Value::Bool(false)
@@ -131,11 +130,11 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:object", "fromEntries", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let mut obj = Object::new();
         if let Some(Value::Object(arr)) = args.first() {
-            let a = arr.borrow();
+            let a = arr.lock().unwrap();
             if let ObjectKind::Array(entries) = &a.kind {
                 for entry in entries {
                     if let Value::Object(pair) = entry {
-                        let p = pair.borrow();
+                        let p = pair.lock().unwrap();
                         if let ObjectKind::Array(kv) = &p.kind {
                             if kv.len() >= 2 {
                                 let k = format!("{}", kv[0]);
@@ -146,14 +145,14 @@ pub fn register(vm: &mut VM) {
                 }
             }
         }
-        Value::Object(Rc::new(RefCell::new(obj)))
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // Object.hasOwn(obj, key) — ES2022
     vm.register_host_fn("vybe:object", "hasOwn", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-            Value::Bool(obj.borrow().properties.contains_key(&key))
+            Value::Bool(obj.lock().unwrap().properties.contains_key(&key))
         } else {
             Value::Bool(false)
         }
@@ -164,7 +163,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:object", "instanceOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         // Extract target type name from the constructor object (args[1])
         let target_name = if let Some(Value::Object(ctor)) = args.get(1) {
-            ctor.borrow().properties.get("name").map(|v| format!("{}", v)).unwrap_or_default()
+            ctor.lock().unwrap().properties.get("name").map(|v| format!("{}", v)).unwrap_or_default()
         } else if let Some(Value::String(s)) = args.get(1) {
             // Allow passing type name directly as string (for ref_test fallback)
             s.to_string()
@@ -174,7 +173,7 @@ pub fn register(vm: &mut VM) {
         if target_name.is_empty() { return Value::Bool(false); }
 
         if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
 
             // 1. Try type_id-based check via type registry (fast path)
             //    This uses the same logic as ref_test/test_type in the VM.
@@ -193,7 +192,7 @@ pub fn register(vm: &mut VM) {
 
             // 2. Check __types array (JS class inheritance chain)
             if let Some(Value::Object(types)) = o.properties.get("__types") {
-                let t = types.borrow();
+                let t = types.lock().unwrap();
                 if let ObjectKind::Array(ref elems) = t.kind {
                     if elems.iter().any(|e| format!("{}", e) == target_name) {
                         return Value::Bool(true);

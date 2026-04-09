@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{VM, Value, HostContext};
 
 pub fn register(vm: &mut VM) {
@@ -17,7 +17,7 @@ pub fn register(vm: &mut VM) {
         Value::F64(s.trim().parse::<f64>().unwrap_or(f64::NAN))
     }));
     vm.register_host_fn("vybe:convert", "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::String(std::rc::Rc::from(format!("{}", args.first().unwrap_or(&Value::Null)).as_str()))
+        Value::String(std::sync::Arc::from(format!("{}", args.first().unwrap_or(&Value::Null)).as_str()))
     }));
     vm.register_host_fn("vybe:convert", "isNaN", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         Value::Bool(args.first().map(|v| v.as_f64().is_nan()).unwrap_or(true))
@@ -35,16 +35,16 @@ pub fn register(vm: &mut VM) {
     // btoa(string) — base64 encode
     vm.register_host_fn("vybe:convert", "btoa", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        use std::rc::Rc;
-        Value::String(Rc::from(base64_encode(s.as_bytes()).as_str()))
+        use std::sync::Arc;
+        Value::String(Arc::from(base64_encode(s.as_bytes()).as_str()))
     }));
 
     // atob(base64) — base64 decode
     vm.register_host_fn("vybe:convert", "atob", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        use std::rc::Rc;
+        use std::sync::Arc;
         match base64_decode(&s) {
-            Some(bytes) => Value::String(Rc::from(String::from_utf8_lossy(&bytes).as_ref())),
+            Some(bytes) => Value::String(Arc::from(String::from_utf8_lossy(&bytes).as_ref())),
             None => Value::Null,
         }
     }));
@@ -52,7 +52,7 @@ pub fn register(vm: &mut VM) {
     // encodeURIComponent
     vm.register_host_fn("vybe:convert", "encodeURIComponent", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        use std::rc::Rc;
+        use std::sync::Arc;
         let encoded: String = s.chars().map(|c| {
             if c.is_ascii_alphanumeric() || "-_.!~*'()".contains(c) {
                 c.to_string()
@@ -62,13 +62,13 @@ pub fn register(vm: &mut VM) {
                 buf[..c.len_utf8()].iter().map(|b| format!("%{:02X}", b)).collect()
             }
         }).collect();
-        Value::String(Rc::from(encoded.as_str()))
+        Value::String(Arc::from(encoded.as_str()))
     }));
 
     // decodeURIComponent
     vm.register_host_fn("vybe:convert", "decodeURIComponent", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        use std::rc::Rc;
+        use std::sync::Arc;
         let mut result = String::new();
         let bytes = s.as_bytes();
         let mut i = 0;
@@ -83,7 +83,7 @@ pub fn register(vm: &mut VM) {
             result.push(bytes[i] as char);
             i += 1;
         }
-        Value::String(Rc::from(result.as_str()))
+        Value::String(Arc::from(result.as_str()))
     }));
 
     // --- VB-compatible conversion functions ---
@@ -131,28 +131,28 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:convert", "cchar", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         match s.chars().next() {
-            Some(c) => Value::String(Rc::from(c.to_string().as_str())),
-            None => Value::String(Rc::from("")),
+            Some(c) => Value::String(Arc::from(c.to_string().as_str())),
+            None => Value::String(Arc::from("")),
         }
     }));
 
     // hex(value) → hex string
     vm.register_host_fn("vybe:convert", "hex", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let n = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
-        Value::String(Rc::from(format!("{:X}", n).as_str()))
+        Value::String(Arc::from(format!("{:X}", n).as_str()))
     }));
 
     // oct(value) → octal string
     vm.register_host_fn("vybe:convert", "oct", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let n = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
-        Value::String(Rc::from(format!("{:o}", n).as_str()))
+        Value::String(Arc::from(format!("{:o}", n).as_str()))
     }));
 
     // str(value) → string with leading space for positive numbers (VB6 compat)
     vm.register_host_fn("vybe:convert", "str", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
         let s = if n >= 0.0 { format!(" {}", n) } else { format!("{}", n) };
-        Value::String(Rc::from(s.as_str()))
+        Value::String(Arc::from(s.as_str()))
     }));
 
     // vartype(value) → VB VarType constant
@@ -192,7 +192,7 @@ pub fn register(vm: &mut VM) {
         let target = args.get(1).map(|v| format!("{}", v).to_lowercase()).unwrap_or_default();
         match args.first() {
             Some(Value::Object(obj)) => {
-                let o = obj.borrow();
+                let o = obj.lock().unwrap();
                 // Check __type property
                 if let Some(t) = o.properties.get("__type") {
                     if format!("{}", t).to_lowercase() == target { return Value::Bool(true); }

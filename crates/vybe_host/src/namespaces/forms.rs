@@ -28,9 +28,9 @@ pub fn register(vm: &mut VM) {
                 Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
                     use vybe_bytecode::value::Object;
                     let mut obj = Object::new();
-                    obj.properties.insert("__control_type".into(), Value::String(Rc::from(type_str.as_str())));
-                    obj.properties.insert("name".into(), Value::String(Rc::from(type_str.to_lowercase().as_str())));
-                    Value::Object(Rc::new(RefCell::new(obj)))
+                    obj.properties.insert("__control_type".into(), Value::String(Arc::from(type_str.as_str())));
+                    obj.properties.insert("name".into(), Value::String(Arc::from(type_str.to_lowercase().as_str())));
+                    Value::Object(Arc::new(Mutex::new(obj)))
                 })
             });
         }

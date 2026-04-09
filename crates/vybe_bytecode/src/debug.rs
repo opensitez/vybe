@@ -108,6 +108,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::i64_atomic_load | Op::i64_atomic_store |
         Op::i64_atomic_rmw_add | Op::i64_atomic_rmw_sub | Op::i64_atomic_rmw_cmpxchg |
         Op::memory_atomic_wait32 | Op::memory_atomic_notify |
+        Op::thread_spawn | Op::thread_join |
         // Memory64
         Op::i64_memory_size | Op::i64_memory_grow |
         Op::i32_load_64 | Op::i64_load_64 | Op::f64_load_64 |

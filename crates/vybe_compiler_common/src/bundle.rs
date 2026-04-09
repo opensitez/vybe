@@ -12,7 +12,7 @@
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 use crate::stdlib::build_stdlib;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Mapping from stdlib chunk name to the global name used at call sites.
 const MAPPINGS: &[(&str, &str)] = &[
@@ -85,7 +85,7 @@ pub fn emit_stdlib_preamble(script: &mut Chunk, stdlib_base: usize) {
         script.emit_op_u16(Op::ref_func, ci as u16, 0);
         script.emit(0, 0); // 0 upvalues
         // global_set stores it under the __vybe_* name
-        let name_c = script.add_constant(Value::String(Rc::from(global_name)));
+        let name_c = script.add_constant(Value::String(Arc::from(global_name)));
         script.emit_op_u16(Op::global_set, name_c, 0);
         script.emit_op(Op::drop, 0);
     }
@@ -108,7 +108,7 @@ pub fn append_stdlib_chunks(program_chunks: &mut Vec<Chunk>) {
 ///   compile_expr(arg2);                               // push step
 ///   emit_call_invoke(chunk, 3, 0);                    // call_ref 3
 pub fn emit_call_push_func(chunk: &mut Chunk, global_name: &str, line: u32) {
-    let name_c = chunk.add_constant(Value::String(Rc::from(global_name)));
+    let name_c = chunk.add_constant(Value::String(Arc::from(global_name)));
     chunk.emit_op_u16(Op::global_get, name_c, line);
 }
 
@@ -147,7 +147,7 @@ pub fn finalize_with_stdlib(chunks: &mut Vec<Chunk>) {
 /// MUST push args AFTER calling this (which means this only works for 0-arg calls).
 /// For multi-arg calls, use the push_func/invoke pair.
 pub fn emit_call(chunk: &mut Chunk, global_name: &str, argc: u8, line: u32) {
-    let name_c = chunk.add_constant(Value::String(Rc::from(global_name)));
+    let name_c = chunk.add_constant(Value::String(Arc::from(global_name)));
     chunk.emit_op_u16(Op::global_get, name_c, line);
     chunk.emit_op_u8(Op::call_ref, argc, line);
 }

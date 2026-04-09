@@ -653,7 +653,7 @@ fn build_to_string() -> Chunk {
     c.arity = 1;
     c.local_count = 2;
     let val = 1u16;
-    let empty = c.add_constant(Value::String(std::rc::Rc::from("")));
+    let empty = c.add_constant(Value::String(std::sync::Arc::from("")));
     c.emit_op_u16(Op::r#const, empty, 0);
     c.emit_op_u16(Op::local_get, val, 0);
     c.emit_op(Op::dyn_add, 0);
@@ -782,7 +782,7 @@ fn build_is_numeric() -> Chunk {
     c.emit_op(Op::ref_typeof, 0);
 
     // Check if type is "number" (covers I32, I64, F64)
-    let num_str = c.add_constant(Value::String(std::rc::Rc::from("number")));
+    let num_str = c.add_constant(Value::String(std::sync::Arc::from("number")));
     c.emit_op_u16(Op::r#const, num_str, 0);
     c.emit_op(Op::str_equals, 0);
 
@@ -797,7 +797,7 @@ fn build_is_numeric() -> Chunk {
     // Also check if it's a numeric string by trying to convert.
     c.emit_op_u16(Op::local_get, val, 0);
     c.emit_op(Op::ref_typeof, 0);
-    let i32_str = c.add_constant(Value::String(std::rc::Rc::from("i32")));
+    let i32_str = c.add_constant(Value::String(std::sync::Arc::from("i32")));
     c.emit_op_u16(Op::r#const, i32_str, 0);
     c.emit_op(Op::str_equals, 0);
 
@@ -879,7 +879,7 @@ fn build_instance_of() -> Chunk {
     // ref_test needs a constant pool string, but we have a dynamic value.
     // Workaround: compare __type property with the type name string.
     c.emit_op_u16(Op::local_get, 1, 0); // obj
-    let type_key = c.add_constant(Value::String(std::rc::Rc::from("__type")));
+    let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
     c.emit_op_u16(Op::r#const, type_key, 0);
     c.emit_op(Op::array_get, 0); // obj["__type"]
     c.emit_op_u16(Op::local_get, 2, 0); // type_name
@@ -989,11 +989,11 @@ fn build_slice_step() -> Chunk {
 
 // ── dynMul(a, b) → string repeat or numeric multiply ─────────
 fn build_dyn_mul() -> Chunk {
-    use std::rc::Rc;
+    use std::sync::Arc;
     let mut c = Chunk::new("__stdlib_dynmul");
     c.arity = 2;
     c.local_count = 3;
-    let str_tag = c.add_constant(Value::String(Rc::from("string")));
+    let str_tag = c.add_constant(Value::String(Arc::from("string")));
     // if typeof(a) == "string": return str_repeat(a, b)
     c.emit_op_u16(Op::local_get, 1, 0);
     c.emit_op(Op::ref_typeof, 0);

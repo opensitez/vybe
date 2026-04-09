@@ -1,5 +1,4 @@
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use std::io::{Read, Write};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
@@ -9,8 +8,8 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("wasi:http", "get", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let url = s(args, 0);
         match http_request("GET", &url, None) {
-            Ok(body) => Value::String(Rc::from(body.as_str())),
-            Err(e) => Value::String(Rc::from(format!("Error: {}", e).as_str())),
+            Ok(body) => Value::String(Arc::from(body.as_str())),
+            Err(e) => Value::String(Arc::from(format!("Error: {}", e).as_str())),
         }
     }));
 
@@ -19,8 +18,8 @@ pub fn register(vm: &mut VM) {
         let url = s(args, 0);
         let body = s(args, 1);
         match http_request("POST", &url, Some(&body)) {
-            Ok(resp) => Value::String(Rc::from(resp.as_str())),
-            Err(e) => Value::String(Rc::from(format!("Error: {}", e).as_str())),
+            Ok(resp) => Value::String(Arc::from(resp.as_str())),
+            Err(e) => Value::String(Arc::from(format!("Error: {}", e).as_str())),
         }
     }));
 
@@ -34,16 +33,16 @@ pub fn register(vm: &mut VM) {
             Ok(resp_body) => {
                 let mut obj = Object::new();
                 obj.properties.insert("status".into(), Value::F64(200.0));
-                obj.properties.insert("body".into(), Value::String(Rc::from(resp_body.as_str())));
+                obj.properties.insert("body".into(), Value::String(Arc::from(resp_body.as_str())));
                 obj.properties.insert("ok".into(), Value::Bool(true));
-                Value::Object(Rc::new(RefCell::new(obj)))
+                Value::Object(Arc::new(Mutex::new(obj)))
             }
             Err(e) => {
                 let mut obj = Object::new();
                 obj.properties.insert("status".into(), Value::F64(0.0));
-                obj.properties.insert("body".into(), Value::String(Rc::from(format!("{}", e).as_str())));
+                obj.properties.insert("body".into(), Value::String(Arc::from(format!("{}", e).as_str())));
                 obj.properties.insert("ok".into(), Value::Bool(false));
-                Value::Object(Rc::new(RefCell::new(obj)))
+                Value::Object(Arc::new(Mutex::new(obj)))
             }
         }
     }));

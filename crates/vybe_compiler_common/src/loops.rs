@@ -14,6 +14,58 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
+// ── Basic loop primitives ──────────────────────────────────────────────
+//
+// These are the building blocks for while, do-while, and C-style for loops.
+// All compilers MUST use these instead of hand-rolling loop bytecode.
+
+/// Emit the start of a while loop: mark loop start, compile condition already
+/// on stack, branch out if false.
+/// Returns (loop_start, exit_jump) — caller compiles body, then calls emit_loop_end.
+///
+/// Usage:
+///   let (start, exit) = emit_while_start(chunk, line);
+///   // caller: compile condition expression
+///   // caller: emit dyn_to_bool
+///   // caller: let exit = emit_while_cond(chunk, line);
+///   // caller: compile body
+///   emit_loop_end(chunk, start, exit, line);
+pub fn emit_loop_start(chunk: &mut Chunk) -> usize {
+    chunk.current_offset()
+}
+
+/// After condition is on stack: convert to bool, jump out if false.
+/// Returns exit_jump to patch later.
+pub fn emit_loop_cond(chunk: &mut Chunk, line: u32) -> usize {
+    chunk.emit_op(Op::dyn_to_bool, line);
+    chunk.emit_jump(Op::br_if_false, line)
+}
+
+/// End of loop: jump back to start, patch the exit.
+pub fn emit_loop_end(chunk: &mut Chunk, loop_start: usize, exit_jump: usize, line: u32) {
+    chunk.emit_loop(loop_start, line);
+    chunk.patch_jump(exit_jump);
+}
+
+/// Emit unconditional loop back (for do-while where condition is at the end).
+/// Returns loop_start for the unconditional loop point.
+pub fn emit_do_loop_start(chunk: &mut Chunk) -> usize {
+    chunk.current_offset()
+}
+
+/// End of do-while: condition on stack, branch back to start if true.
+/// `negate` = true for `until` (loop while condition is FALSE).
+pub fn emit_do_loop_end(chunk: &mut Chunk, loop_start: usize, negate: bool, line: u32) {
+    chunk.emit_op(Op::dyn_to_bool, line);
+    if negate {
+        chunk.emit_op(Op::dyn_not, line);
+    }
+    // Branch back to start if condition is true
+    let exit = chunk.emit_jump(Op::br_if_false, line);
+    chunk.emit_loop(loop_start, line);
+    chunk.patch_jump(exit);
+}
+
 // ── For-in iteration ────────────────────────────────────────────────────
 
 /// Emit the start of a for-in loop: init index, check condition, load element.
@@ -149,7 +201,7 @@ pub fn emit_foreach(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: u1
 /// Emit `reduce(fn, arr)` → fn(fn(arr[0], arr[1]), arr[2]), ...
 /// Stack after: [accumulated_value]
 pub fn emit_reduce(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, acc_slot: u16, idx_slot: u16, line: u32) {
-    use std::rc::Rc;
+    use std::sync::Arc;
     use vybe_bytecode::Value;
 
     // acc = arr[0]

@@ -5,7 +5,7 @@
 //! patch points so the caller can compile the language-specific sub-expressions
 //! in between.
 
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
@@ -162,7 +162,7 @@ pub fn emit_null_safe_end(chunk: &mut Chunk, skip: usize, line: u32) {
 /// Or use the simpler one-shot helpers below.
 pub fn emit_try_method(chunk: &mut Chunk, obj_slot: u16, method_name: &str, line: u32) -> (usize, bool) {
     chunk.emit_op_u16(Op::local_get, obj_slot, line);
-    let key = chunk.add_constant(Value::String(Rc::from(method_name)));
+    let key = chunk.add_constant(Value::String(Arc::from(method_name)));
     chunk.emit_op_u16(Op::struct_get, key, line);
     chunk.emit_op(Op::dup, line);
     chunk.emit_op(Op::ref_is_null, line);
@@ -290,7 +290,7 @@ pub fn emit_rich_compare(chunk: &mut Chunk, dunder: &str, fallback_op: Op, line:
 pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u16, dunder: &str, fallback_op: Op, line: u32) {
     // Try struct_get dunder on left
     chunk.emit_op_u16(Op::local_get, left_slot, line);
-    let key = chunk.add_constant(Value::String(Rc::from(dunder)));
+    let key = chunk.add_constant(Value::String(Arc::from(dunder)));
     chunk.emit_op_u16(Op::struct_get, key, line);
 
     // Check if method exists (non-null)
@@ -326,7 +326,7 @@ pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u
 pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     // Try struct_get "__get_length" on object
     chunk.emit_op_u16(Op::local_get, obj_slot, line);
-    let key = chunk.add_constant(Value::String(Rc::from("__get_length")));
+    let key = chunk.add_constant(Value::String(Arc::from("__get_length")));
     chunk.emit_op_u16(Op::struct_get, key, line);
 
     chunk.emit_op(Op::dup, line);

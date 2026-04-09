@@ -35,8 +35,7 @@ pub mod rt;
 
 use vybe_bytecode::{VM, Value, HostContext};
 use std::collections::HashSet;
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 
 /// Capability flags for host module access.
 /// Follows WASI's capability-based security model.
@@ -142,14 +141,14 @@ pub fn register_all(vm: &mut VM) {
             use vybe_bytecode::value::Object;
             let title = args.first().map(|v| format!("{v}")).unwrap_or_default();
             let mut obj = Object::new();
-            obj.properties.insert("__control_type".into(), Value::String(Rc::from("Form")));
-            obj.properties.insert("text".into(), Value::String(Rc::from(title.as_str())));
-            obj.properties.insert("name".into(), Value::String(Rc::from("form")));
+            obj.properties.insert("__control_type".into(), Value::String(Arc::from("Form")));
+            obj.properties.insert("text".into(), Value::String(Arc::from(title.as_str())));
+            obj.properties.insert("name".into(), Value::String(Arc::from("form")));
             // Controls collection (no-op stub)
             let mut ctrls = Object::new_array(vec![]);
-            ctrls.properties.insert("__type".into(), Value::String(Rc::from("List")));
-            obj.properties.insert("controls".into(), Value::Object(Rc::new(RefCell::new(ctrls))));
-            Value::Object(Rc::new(RefCell::new(obj)))
+            ctrls.properties.insert("__type".into(), Value::String(Arc::from("List")));
+            obj.properties.insert("controls".into(), Value::Object(Arc::new(Mutex::new(ctrls))));
+            Value::Object(Arc::new(Mutex::new(obj)))
         }));
         vm.register_host_fn("vybe:gui", "addHandler", Box::new(|_ctx, _| Value::Null));
     }
@@ -219,8 +218,8 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
 #[cfg(feature = "gui")]
 pub fn register_all_with_gui(
     vm: &mut VM,
-) -> std::rc::Rc<std::cell::RefCell<crate::gui_state::GuiState>> {
-    let gui = std::rc::Rc::new(std::cell::RefCell::new(crate::gui_state::GuiState::new()));
+) -> std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>> {
+    let gui = std::sync::Arc::new(std::sync::Mutex::new(crate::gui_state::GuiState::new()));
     register_all(vm);
     gui::register(vm, gui.clone());
     // DO NOT call setup_namespaces here — callers do it after all overrides.
@@ -233,8 +232,8 @@ pub fn register_all_with_gui(
 pub fn register_with_capabilities_and_gui(
     vm: &mut VM,
     caps: &Capabilities,
-) -> std::rc::Rc<std::cell::RefCell<crate::gui_state::GuiState>> {
-    let gui = std::rc::Rc::new(std::cell::RefCell::new(crate::gui_state::GuiState::new()));
+) -> std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>> {
+    let gui = std::sync::Arc::new(std::sync::Mutex::new(crate::gui_state::GuiState::new()));
     register_with_capabilities(vm, caps);
     if caps.has(Capability::Gui) {
         gui::register(vm, gui.clone());

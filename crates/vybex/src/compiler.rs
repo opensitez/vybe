@@ -1,0 +1,3050 @@
+use std::sync::Arc;
+use std::collections::{HashSet, HashMap};
+use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::opcode::Op;
+use crate::profile::*;
+use vybe_compiler_common as common;
+use crate::ast::*;
+use crate::scope::Scope;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Loop context for break/continue patching
+// ════════════════════════════════════════════════════════════════════════════
+
+struct LoopCtx {
+    break_patches: Vec<usize>,
+    continue_target: usize,
+    label: Option<String>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Pending class bookkeeping
+// ════════════════════════════════════════════════════════════════════════════
+
+struct PendingClass {
+    parent: Option<String>,
+    fields: Vec<String>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Compiler
+// ════════════════════════════════════════════════════════════════════════════
+
+pub struct Compiler {
+    chunks: Vec<Chunk>,
+    scopes: Vec<Scope>,
+    current: usize,
+    loops: Vec<LoopCtx>,
+    line: u32,
+    defined_globals: HashSet<String>,
+    defined_functions: HashSet<String>,
+    case_sensitive: bool,
+    profile: LanguageProfile,
+    current_func_name: Option<String>,
+    current_result_slot: Option<u16>,
+    pending_classes: HashMap<String, PendingClass>,
+    current_class: Option<String>,
+}
+
+impl Compiler {
+    pub fn with_profile(profile: LanguageProfile) -> Self {
+        Self {
+            chunks: vec![Chunk::new("<script>")],
+            scopes: vec![Scope::new()],
+            current: 0,
+            loops: Vec::new(),
+            line: 1,
+            defined_globals: HashSet::new(),
+            defined_functions: HashSet::new(),
+            case_sensitive: profile.case_sensitive,
+            profile,
+            current_func_name: None,
+            current_result_slot: None,
+            pending_classes: HashMap::new(),
+            current_class: None,
+        }
+    }
+
+    /// Compile a module to bytecode chunks.
+    pub fn compile(mut self, module: &Module) -> Result<Vec<Chunk>, String> {
+        self.case_sensitive = self.profile.case_sensitive;
+
+        for stmt in &module.body {
+            self.compile_stmt(stmt)?;
+        }
+
+        // Auto-call entry point if defined
+        if let Some(ref ep) = self.profile.entry_point.clone() {
+            let has_ep = self.defined_globals.contains(ep)
+                || (!self.case_sensitive && self.defined_globals.iter().any(|g| g.eq_ignore_ascii_case(ep)));
+            if has_ep {
+                self.emit_var_get(ep);
+                self.emit_u8(Op::call_ref, 0);
+                self.emit(Op::drop);
+            }
+        }
+
+        self.emit(Op::null);
+        self.emit(Op::halt);
+        let locals = self.scope().next_slot;
+        self.chunks[0].local_count = locals;
+        common::bundle::finalize_with_stdlib(&mut self.chunks);
+        Ok(self.chunks)
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Helpers
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn scope(&self) -> &Scope { self.scopes.last().unwrap() }
+    fn scope_mut(&mut self) -> &mut Scope { self.scopes.last_mut().unwrap() }
+    fn chunk(&mut self) -> &mut Chunk { &mut self.chunks[self.current] }
+
+    fn emit(&mut self, op: Op) { let l = self.line; self.chunks[self.current].emit_op(op, l); }
+    fn emit_u16(&mut self, op: Op, v: u16) { let l = self.line; self.chunks[self.current].emit_op_u16(op, v, l); }
+    fn emit_u8(&mut self, op: Op, v: u8) { let l = self.line; self.chunks[self.current].emit_op_u8(op, v, l); }
+    fn emit_const(&mut self, val: Value) { let idx = self.chunks[self.current].add_constant(val); self.emit_u16(Op::r#const, idx); }
+    fn emit_jump(&mut self, op: Op) -> usize { let l = self.line; self.chunks[self.current].emit_jump(op, l) }
+    fn patch_jump(&mut self, o: usize) { self.chunks[self.current].patch_jump(o); }
+    fn emit_loop(&mut self, t: usize) { let l = self.line; self.chunks[self.current].emit_loop(t, l); }
+    fn current_offset(&self) -> usize { self.chunks[self.current].current_offset() }
+    fn str_const(&mut self, s: &str) -> u16 { self.chunks[self.current].add_constant(Value::String(Arc::from(s))) }
+
+    fn import(&mut self, module: &str, name: &str) -> u16 { self.chunks[0].add_import(module, name) }
+    fn emit_host_call(&mut self, idx: u16, argc: u8) {
+        let l = self.line;
+        self.chunks[self.current].emit_op_u16(Op::call_import, idx, l);
+        self.chunks[self.current].emit(argc, l);
+    }
+
+    fn canon(&self, name: &str) -> String {
+        if self.case_sensitive { name.to_string() } else { name.to_lowercase() }
+    }
+
+    fn emit_var_get(&mut self, name: &str) {
+        // Local
+        if let Some(slot) = self.scope().resolve(name) {
+            self.emit_u16(Op::local_get, slot);
+            return;
+        }
+        if !self.case_sensitive {
+            if let Some(slot) = self.scope().resolve_ci(name) {
+                self.emit_u16(Op::local_get, slot);
+                return;
+            }
+        }
+        // Upvalue (closure capture)
+        if self.scopes.len() > 1 {
+            if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
+                self.emit_u8(Op::upvalue_get, uv);
+                return;
+            }
+        }
+        // Global — canonicalize name for case-insensitive languages
+        let cname = self.canon(name);
+        let idx = self.str_const(&cname);
+        self.emit_u16(Op::global_get, idx);
+    }
+
+    fn emit_var_set(&mut self, name: &str) {
+        // Local
+        if let Some(slot) = self.scope().resolve(name) {
+            self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+            return;
+        }
+        if !self.case_sensitive {
+            if let Some(slot) = self.scope().resolve_ci(name) {
+                self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                return;
+            }
+        }
+        // Upvalue (closure capture)
+        if self.scopes.len() > 1 {
+            if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
+                self.emit_u8(Op::upvalue_set, uv);
+                return;
+            }
+        }
+        // Global — canonicalize name for case-insensitive languages
+        let cname = self.canon(name);
+        let idx = self.str_const(&cname); self.emit_u16(Op::global_set, idx); self.emit(Op::drop);
+    }
+
+    /// Walk up the scope chain to find a variable in a parent scope.
+    /// Returns the upvalue index in the current scope if found.
+    fn resolve_upvalue(&mut self, scope_idx: usize, name: &str) -> Option<u8> {
+        if scope_idx == 0 { return None; }
+        let parent = scope_idx - 1;
+        // Check parent's locals
+        let found_local = if self.case_sensitive {
+            self.scopes[parent].resolve(name)
+        } else {
+            self.scopes[parent].resolve(name).or_else(|| self.scopes[parent].resolve_ci(name))
+        };
+        if let Some(slot) = found_local {
+            self.scopes[parent].mark_captured(slot);
+            return Some(self.scopes[scope_idx].add_upvalue(slot as u8, true));
+        }
+        // Recurse up
+        if let Some(uv) = self.resolve_upvalue(parent, name) {
+            return Some(self.scopes[scope_idx].add_upvalue(uv, false));
+        }
+        None
+    }
+
+    /// Check if a name is a field of the current class (for implicit self resolution).
+    fn is_class_field(&self, name: &str) -> bool {
+        if !self.profile.implicit_self_fields { return false; }
+        if let Some(ref class_name) = self.current_class {
+            let mut current = Some(class_name.as_str());
+            while let Some(cn) = current {
+                if let Some(pc) = self.pending_classes.get(cn) {
+                    if pc.fields.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+                        return true;
+                    }
+                    current = pc.parent.as_deref();
+                } else {
+                    break;
+                }
+            }
+        }
+        false
+    }
+
+    fn flatten_member_chain(&self, expr: &Expression) -> Vec<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => vec![name.clone()],
+            ExprKind::This => vec![self.profile.self_keyword.clone()],
+            ExprKind::Super => vec![self.profile.base_keyword.clone().unwrap_or_else(|| "super".into())],
+            ExprKind::Member { object, field, .. } => {
+                let mut parts = self.flatten_member_chain(object);
+                parts.push(field.clone());
+                parts
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Extract plain expressions from Argument slice.
+    fn arg_exprs(args: &[Argument]) -> Vec<&Expression> {
+        args.iter().map(|a| &a.value).collect()
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Statement compilation
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
+        self.line = stmt.span.start_line;
+        match &stmt.kind {
+            // ── Expression statement ────────────────────────────────────
+            StmtKind::Expr(expr) => {
+                match &expr.kind {
+                    // Bare identifier that's a known function → call with 0 args
+                    ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
+                        self.emit_var_get(name);
+                        self.emit_u8(Op::call_ref, 0);
+                        self.emit(Op::drop);
+                    }
+                    // obj.method as statement → method call with 0 args
+                    ExprKind::Member { object, field, .. } => {
+                        self.compile_expr(object)?;
+                        let field_name = self.canon(field);
+                        let prop = self.str_const(&field_name);
+                        self.emit(Op::dup);
+                        self.emit_u16(Op::struct_get, prop);
+                        let fn_tmp = self.scope_mut().define("__fn");
+                        self.emit_u16(Op::local_set, fn_tmp); self.emit(Op::drop);
+                        let obj_tmp = self.scope_mut().define("__obj");
+                        self.emit_u16(Op::local_set, obj_tmp); self.emit(Op::drop);
+                        self.emit_u16(Op::local_get, fn_tmp);
+                        self.emit_u16(Op::local_get, obj_tmp);
+                        self.emit_u8(Op::call_ref, 1);
+                        self.emit(Op::drop);
+                    }
+                    _ => {
+                        self.compile_expr(expr)?;
+                        self.emit(Op::drop);
+                    }
+                }
+            }
+
+            // ── Block ───────────────────────────────────────────────────
+            StmtKind::Block(stmts) => {
+                let all_decls = stmts.iter().all(|s| matches!(s.kind,
+                    StmtKind::VarDecl { .. } | StmtKind::FunctionDecl { .. } |
+                    StmtKind::ClassDecl { .. } | StmtKind::EnumDecl { .. }
+                ));
+                if !all_decls { self.scope_mut().begin_scope(); }
+                for s in stmts { self.compile_stmt(s)?; }
+                if !all_decls { self.scope_mut().end_scope(); }
+            }
+
+            // ── Variable declarations ───────────────────────────────────
+            StmtKind::VarDecl { declarations, kind } => {
+                for decl in declarations {
+                    self.compile_var_declarator(decl, kind)?;
+                }
+            }
+
+            // ── Assignment ──────────────────────────────────────────────
+            StmtKind::Assign { targets, value } => {
+                self.compile_expr(value)?;
+                for (i, target) in targets.iter().enumerate() {
+                    if i < targets.len() - 1 { self.emit(Op::dup); }
+                    self.compile_assign_target(target)?;
+                }
+            }
+
+            StmtKind::CompoundAssign { target, op, value } => {
+                // Load current value
+                self.compile_expr(target)?;
+                self.compile_expr(value)?;
+                self.compile_compound_op(op);
+                self.compile_assign_target(target)?;
+            }
+
+            // ── If / Elif / Else ────────────────────────────────────────
+            StmtKind::If { cond, then_body, elifs, else_body } => {
+                self.compile_expr(cond)?;
+                self.emit(Op::dyn_to_bool);
+                let else_j = self.emit_jump(Op::br_if_false);
+                for s in then_body { self.compile_stmt(s)?; }
+                let mut end_jumps = vec![];
+                if !elifs.is_empty() || else_body.is_some() {
+                    end_jumps.push(self.emit_jump(Op::br));
+                }
+                self.patch_jump(else_j);
+                for (elif_cond, elif_body) in elifs {
+                    self.compile_expr(elif_cond)?;
+                    self.emit(Op::dyn_to_bool);
+                    let skip = self.emit_jump(Op::br_if_false);
+                    for s in elif_body { self.compile_stmt(s)?; }
+                    end_jumps.push(self.emit_jump(Op::br));
+                    self.patch_jump(skip);
+                }
+                if let Some(else_stmts) = else_body {
+                    for s in else_stmts { self.compile_stmt(s)?; }
+                }
+                for j in end_jumps { self.patch_jump(j); }
+            }
+
+            // ── While (compiler_common::loops) ─────────────────────────
+            StmtKind::While { cond, body, else_body } => {
+                let start = common::loops::emit_loop_start(self.chunk());
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: start, label: None });
+                self.compile_expr(cond)?;
+                let line = self.line;
+                let exit = common::loops::emit_loop_cond(self.chunk(), line);
+                for s in body { self.compile_stmt(s)?; }
+                let line = self.line;
+                common::loops::emit_loop_end(self.chunk(), start, exit, line);
+                if let Some(else_stmts) = else_body {
+                    for s in else_stmts { self.compile_stmt(s)?; }
+                }
+                let ctx = self.loops.pop().unwrap();
+                for p in ctx.break_patches { self.patch_jump(p); }
+            }
+
+            // ── For C-style (compiler_common::loops) ────────────────────
+            StmtKind::For { init, cond, update, body } => {
+                self.scope_mut().begin_scope();
+                if let Some(init_stmt) = init { self.compile_stmt(init_stmt)?; }
+                let start = common::loops::emit_loop_start(self.chunk());
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: start, label: None });
+                if let Some(c) = cond {
+                    self.compile_expr(c)?;
+                } else {
+                    self.emit(Op::r#true);
+                }
+                let line = self.line;
+                let exit = common::loops::emit_loop_cond(self.chunk(), line);
+                for s in body { self.compile_stmt(s)?; }
+                if let Some(u) = update { self.compile_expr(u)?; self.emit(Op::drop); }
+                let line = self.line;
+                common::loops::emit_loop_end(self.chunk(), start, exit, line);
+                let ctx = self.loops.pop().unwrap();
+                for p in ctx.break_patches { self.patch_jump(p); }
+                self.scope_mut().end_scope();
+            }
+
+            // ── ForIn / ForOf ───────────────────────────────────────────
+            StmtKind::ForIn { var, iter, body, else_body, .. } => {
+                self.compile_expr(iter)?;
+                let arr_slot = self.scope_mut().define("__forin_arr");
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                let idx_slot = self.scope_mut().define("__forin_idx");
+                let line = self.line;
+                let (loop_start, exit_jump) = common::loops::emit_for_in_start(
+                    &mut self.chunks[self.current], arr_slot, idx_slot, line,
+                );
+                // Define loop variable and set it
+                let var_slot = self.scope_mut().define(var);
+                self.emit_u16(Op::local_set, var_slot); self.emit(Op::drop);
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: loop_start, label: None });
+                for s in body { self.compile_stmt(s)?; }
+                let ctx = self.loops.pop().unwrap();
+                common::loops::emit_for_in_end(
+                    &mut self.chunks[self.current], idx_slot, loop_start, exit_jump, line,
+                );
+                if let Some(else_stmts) = else_body {
+                    for s in else_stmts { self.compile_stmt(s)?; }
+                }
+                for p in ctx.break_patches { self.patch_jump(p); }
+            }
+
+            // ── DoWhile / Do Until ──────────────────────────────────────
+            // ── DoWhile (compiler_common::loops) ────────────────────────
+            StmtKind::DoWhile { body, cond, until } => {
+                let start = common::loops::emit_do_loop_start(self.chunk());
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: start, label: None });
+                for s in body { self.compile_stmt(s)?; }
+                self.compile_expr(cond)?;
+                let line = self.line;
+                common::loops::emit_do_loop_end(self.chunk(), start, *until, line);
+                let ctx = self.loops.pop().unwrap();
+                for p in ctx.break_patches { self.patch_jump(p); }
+            }
+
+            // ── Switch / Select Case ────────────────────────────────────
+            StmtKind::Switch { expr, cases, default } => {
+                self.compile_expr(expr)?;
+                let mut end_patches = Vec::new();
+                for case in cases {
+                    let mut match_patches = Vec::new();
+                    for cond in &case.conditions {
+                        match cond {
+                            CaseCondition::Value(val) => {
+                                self.emit(Op::dup);
+                                self.compile_expr(val)?;
+                                self.emit(Op::dyn_eq);
+                                match_patches.push(self.emit_jump(Op::br_if_true));
+                            }
+                            CaseCondition::Range { from, to } => {
+                                // val >= from && val <= to
+                                self.emit(Op::dup);
+                                self.compile_expr(from)?;
+                                self.emit(Op::dyn_ge);
+                                let first = self.emit_jump(Op::br_if_false);
+                                self.emit(Op::dup);
+                                self.compile_expr(to)?;
+                                self.emit(Op::dyn_le);
+                                match_patches.push(self.emit_jump(Op::br_if_true));
+                                self.patch_jump(first);
+                            }
+                            CaseCondition::Comparison { op, expr: cmp_expr } => {
+                                self.emit(Op::dup);
+                                self.compile_expr(cmp_expr)?;
+                                match op {
+                                    ComparisonOp::Eq => self.emit(Op::dyn_eq),
+                                    ComparisonOp::NotEq => self.emit(Op::dyn_ne),
+                                    ComparisonOp::Lt => self.emit(Op::dyn_lt),
+                                    ComparisonOp::LtEq => self.emit(Op::dyn_le),
+                                    ComparisonOp::Gt => self.emit(Op::dyn_gt),
+                                    ComparisonOp::GtEq => self.emit(Op::dyn_ge),
+                                }
+                                match_patches.push(self.emit_jump(Op::br_if_true));
+                            }
+                        }
+                    }
+                    let skip = self.emit_jump(Op::br);
+                    for p in match_patches { self.patch_jump(p); }
+                    for s in &case.body { self.compile_stmt(s)?; }
+                    end_patches.push(self.emit_jump(Op::br));
+                    self.patch_jump(skip);
+                }
+                if let Some(def) = default {
+                    for s in def { self.compile_stmt(s)?; }
+                }
+                for p in end_patches { self.patch_jump(p); }
+                self.emit(Op::drop); // drop the switch expression
+            }
+
+            // ── Try / Catch / Finally ───────────────────────────────────
+            StmtKind::Try { body, catches, else_body, finally } => {
+                let line = self.line;
+                let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                for s in body { self.compile_stmt(s)?; }
+                common::errors::emit_try_end(&mut self.chunks[self.current], line);
+                // Python else: runs if no exception
+                if let Some(else_stmts) = else_body {
+                    for s in else_stmts { self.compile_stmt(s)?; }
+                }
+                let skip = self.emit_jump(Op::br);
+                common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
+                if catches.is_empty() {
+                    self.emit(Op::drop);
+                } else {
+                    for c in catches {
+                        if let Some(ref var) = c.var_name {
+                            let slot = self.scope_mut().define(var);
+                            self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                        } else {
+                            self.emit(Op::drop);
+                        }
+                        for s in &c.body { self.compile_stmt(s)?; }
+                    }
+                }
+                self.patch_jump(skip);
+                if let Some(fin) = finally {
+                    for s in fin { self.compile_stmt(s)?; }
+                }
+            }
+
+            // ── Return ──────────────────────────────────────────────────
+            StmtKind::Return(val) => {
+                if let Some(v) = val {
+                    self.compile_expr(v)?;
+                } else if let Some(rs) = self.current_result_slot {
+                    // ResultSlot return: return the result slot value
+                    self.emit_u16(Op::local_get, rs);
+                } else {
+                    self.emit(Op::null);
+                }
+                self.emit(Op::r#return);
+            }
+
+            // ── Break ───────────────────────────────────────────────────
+            StmtKind::Break(target) => {
+                match target {
+                    BreakTarget::Implicit | BreakTarget::Kind(_) | BreakTarget::Level(_) => {
+                        let p = self.emit_jump(Op::br);
+                        if let Some(ctx) = self.loops.last_mut() { ctx.break_patches.push(p); }
+                    }
+                    BreakTarget::Label(label) => {
+                        let p = self.emit_jump(Op::br);
+                        // Find labeled loop
+                        for ctx in self.loops.iter_mut().rev() {
+                            if ctx.label.as_deref() == Some(label.as_str()) {
+                                ctx.break_patches.push(p);
+                                break;
+                            }
+                        }
+                    }
+                    BreakTarget::Value(expr) => {
+                        // Ruby: break value — emit value then break
+                        self.compile_expr(expr)?;
+                        self.emit(Op::r#return);
+                    }
+                }
+            }
+
+            // ── Continue ────────────────────────────────────────────────
+            StmtKind::Continue(target) => {
+                match target {
+                    ContinueTarget::Implicit | ContinueTarget::Kind(_) | ContinueTarget::Level(_) => {
+                        if let Some(ctx) = self.loops.last() {
+                            let t = ctx.continue_target;
+                            self.emit_loop(t);
+                        }
+                    }
+                    ContinueTarget::Label(label) => {
+                        for ctx in self.loops.iter().rev() {
+                            if ctx.label.as_deref() == Some(label.as_str()) {
+                                let t = ctx.continue_target;
+                                self.emit_loop(t);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Throw ───────────────────────────────────────────────────
+            StmtKind::Throw { expr, cause: _ } => {
+                if let Some(v) = expr { self.compile_expr(v)?; } else { self.emit(Op::null); }
+                let line = self.line;
+                common::errors::emit_throw(&mut self.chunks[self.current], line);
+            }
+
+            // ── Function declaration ────────────────────────────────────
+            StmtKind::FunctionDecl { name, params, return_type, body, modifiers: _, handles, is_async: _, is_generator: _, is_sub } => {
+                self.compile_function_decl(name, params, return_type, body, *is_sub, handles)?;
+            }
+
+            // ── Class declaration ───────────────────────────────────────
+            StmtKind::ClassDecl { name, parents, members, .. } => {
+                let cname = self.canon(name);
+                self.defined_globals.insert(cname.clone());
+                let parent = parents.first().map(|p| self.canon(p));
+                self.compile_class(&cname, &parent, members)?;
+            }
+
+            // ── Interface declaration ───────────────────────────────────
+            StmtKind::InterfaceDecl { .. } => {
+                // No-op — interfaces are type-level only
+            }
+
+            // ── Enum declaration ────────────────────────────────────────
+            StmtKind::EnumDecl { name: _, members, .. } => {
+                if self.profile.enum_as_ordinals {
+                    for (i, m) in members.iter().enumerate() {
+                        if let Some(ref val) = m.value {
+                            self.compile_expr(val)?;
+                        } else {
+                            self.emit_const(Value::F64(i as f64));
+                        }
+                        let cn = self.canon(&m.name);
+                        let idx = self.str_const(&cn);
+                        self.emit_u16(Op::global_set, idx);
+                        self.emit(Op::drop);
+                        self.defined_globals.insert(cn);
+                    }
+                }
+            }
+
+            // ── Struct declaration (same as class) ──────────────────────
+            StmtKind::StructDecl { name, interfaces: _, members, .. } => {
+                let cn = self.canon(name);
+                self.defined_globals.insert(cn.clone());
+                self.compile_class(&cn, &None, members)?;
+            }
+
+            // ── Module declaration (VB) ─────────────────────────────────
+            StmtKind::ModuleDecl { name: _, members, .. } => {
+                // Compile module members — become globals
+                for m in members {
+                    match m {
+                        ClassMember::Method(stmt) => { self.compile_stmt(stmt)?; }
+                        ClassMember::Field { name: fname, init, .. } => {
+                            if let Some(init_expr) = init {
+                                self.compile_expr(init_expr)?;
+                            } else {
+                                self.emit(Op::null);
+                            }
+                            let cname = self.canon(fname);
+                            let idx = self.str_const(&cname);
+                            self.emit_u16(Op::global_set, idx);
+                            self.emit(Op::drop);
+                            self.defined_globals.insert(cname);
+                        }
+                        ClassMember::Const { name: cname, value, .. } => {
+                            self.compile_expr(value)?;
+                            let cn = self.canon(cname);
+                            let idx = self.str_const(&cn);
+                            self.emit_u16(Op::global_set, idx);
+                            self.emit(Op::drop);
+                            self.defined_globals.insert(cn);
+                        }
+                        ClassMember::NestedType(stmt) => {
+                            self.compile_stmt(stmt)?;
+                        }
+                        ClassMember::Constructor { params, body, base_args, .. } => {
+                            // Module-level constructor — rare but handle it
+                            let ctor_stmt = Statement::new(StmtKind::FunctionDecl {
+                                name: self.profile.constructor_name.clone(),
+                                params: params.clone(),
+                                return_type: None,
+                                body: body.clone(),
+                                modifiers: Modifiers::default(),
+                                handles: Vec::new(),
+                                is_async: false,
+                                is_generator: false,
+                                is_sub: true,
+                            });
+                            self.compile_stmt(&ctor_stmt)?;
+                        }
+                        _ => {}
+                    }
+                }
+                // Don't auto-call Main here — compile() does it via entry_point
+            }
+
+            // ── Namespace declaration ───────────────────────────────────
+            StmtKind::NamespaceDecl { body, .. } => {
+                for s in body { self.compile_stmt(s)?; }
+            }
+
+            // ── Delegate declaration ────────────────────────────────────
+            StmtKind::DelegateDecl { .. } => {
+                // No-op — delegates are type-level
+            }
+
+            // ── With ────────────────────────────────────────────────────
+            StmtKind::With { items, body, .. } => {
+                // Simplified: compile the first item (if any) and just run the body
+                if let Some(first) = items.first() {
+                    self.compile_expr(&first.expr)?;
+                    if let Some(ref var) = first.var {
+                        let slot = self.scope_mut().define(var);
+                        self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                    } else {
+                        self.emit(Op::drop);
+                    }
+                }
+                for s in body { self.compile_stmt(s)?; }
+            }
+
+            // ── Using ───────────────────────────────────────────────────
+            StmtKind::Using { var, resource, body } => {
+                self.compile_expr(resource)?;
+                let slot = self.scope_mut().define(var);
+                self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                for s in body { self.compile_stmt(s)?; }
+                // Dispose is a no-op in our VM
+            }
+
+            // ── Lock ────────────────────────────────────────────────────
+            StmtKind::Lock { body, .. } => {
+                // No real locking in our VM — just compile body
+                for s in body { self.compile_stmt(s)?; }
+            }
+
+            // ── ReDim ───────────────────────────────────────────────────
+            StmtKind::ReDim { array, bounds, preserve: _ } => {
+                if let Some(size_expr) = bounds.first() {
+                    self.compile_expr(size_expr)?;
+                    self.emit_const(Value::F64(1.0));
+                    self.emit(Op::dyn_add);
+                    self.emit(Op::array_new_default);
+                    self.emit_var_set(array);
+                }
+            }
+
+            // ── Events ──────────────────────────────────────────────────
+            StmtKind::AddHandler { event_target, handler } => {
+                // Parse event_target as "ctrl.Event"
+                let parts: Vec<&str> = event_target.splitn(2, '.').collect();
+                if parts.len() == 2 {
+                    self.emit_var_get(parts[0]);
+                    let name_key = self.str_const("__control_name");
+                    self.emit_u16(Op::struct_get, name_key);
+                    let ev = parts[1].to_lowercase();
+                    self.emit_const(Value::String(Arc::from(ev.as_str())));
+                    self.emit_var_get(handler);
+                    let idx = self.import("vybe:gui", "onEvent");
+                    self.emit_host_call(idx, 3);
+                    self.emit(Op::drop);
+                }
+            }
+
+            StmtKind::RemoveHandler { event_target, handler } => {
+                let parts: Vec<&str> = event_target.splitn(2, '.').collect();
+                if parts.len() == 2 {
+                    self.emit_var_get(parts[0]);
+                    let name_key = self.str_const("__control_name");
+                    self.emit_u16(Op::struct_get, name_key);
+                    let ev = parts[1].to_lowercase();
+                    self.emit_const(Value::String(Arc::from(ev.as_str())));
+                    self.emit_var_get(handler);
+                    let idx = self.import("vybe:gui", "removeEvent");
+                    self.emit_host_call(idx, 3);
+                    self.emit(Op::drop);
+                }
+            }
+
+            StmtKind::RaiseEvent { event_name, args } => {
+                for a in args { self.compile_expr(a)?; }
+                let idx = self.import("vybe:gui", "raiseEvent");
+                self.emit_const(Value::String(Arc::from(event_name.as_str())));
+                self.emit_host_call(idx, (args.len() + 1) as u8);
+                self.emit(Op::drop);
+            }
+
+            // ── VB legacy error handling ────────────────────────────────
+            StmtKind::OnErrorResumeNext => { /* no-op in bytecode VM */ }
+            StmtKind::OnErrorGoTo(_) => { /* no-op */ }
+            StmtKind::GoTo(_) => { /* no-op — structured bytecode doesn't support arbitrary gotos */ }
+            StmtKind::Label(_) => { /* no-op */ }
+
+            // ── VB legacy file I/O ──────────────────────────────────────
+            StmtKind::OpenFile { path, mode: _, file_number } => {
+                self.compile_expr(path)?;
+                self.compile_expr(file_number)?;
+                let idx = self.import("vybe:io", "openFile");
+                self.emit_host_call(idx, 2);
+                self.emit(Op::drop);
+            }
+            StmtKind::CloseFile(file_num) => {
+                if let Some(fnum) = file_num {
+                    self.compile_expr(fnum)?;
+                } else {
+                    self.emit(Op::null);
+                }
+                let idx = self.import("vybe:io", "closeFile");
+                self.emit_host_call(idx, 1);
+                self.emit(Op::drop);
+            }
+            StmtKind::PrintFile { file_number, items } => {
+                self.compile_expr(file_number)?;
+                for item in items { self.compile_expr(item)?; }
+                let idx = self.import("vybe:io", "printFile");
+                self.emit_host_call(idx, (items.len() + 1) as u8);
+                self.emit(Op::drop);
+            }
+            StmtKind::WriteFile { file_number, items } => {
+                self.compile_expr(file_number)?;
+                for item in items { self.compile_expr(item)?; }
+                let idx = self.import("vybe:io", "writeFile");
+                self.emit_host_call(idx, (items.len() + 1) as u8);
+                self.emit(Op::drop);
+            }
+            StmtKind::InputFile { file_number, variables } => {
+                self.compile_expr(file_number)?;
+                let idx = self.import("vybe:io", "inputFile");
+                self.emit_host_call(idx, 1);
+                // Assign result to each variable (simplified: assign to first)
+                if let Some(first) = variables.first() {
+                    self.emit_var_set(first);
+                } else {
+                    self.emit(Op::drop);
+                }
+            }
+            StmtKind::LineInput { file_number, variable } => {
+                self.compile_expr(file_number)?;
+                let idx = self.import("vybe:io", "lineInput");
+                self.emit_host_call(idx, 1);
+                self.emit_var_set(variable);
+            }
+
+            // ── Export ──────────────────────────────────────────────────
+            StmtKind::Export { declaration, default, .. } => {
+                if let Some(decl) = declaration {
+                    self.compile_stmt(decl)?;
+                }
+                if let Some(expr) = default {
+                    self.compile_expr(expr)?;
+                    let idx = self.str_const("default");
+                    self.emit_u16(Op::global_set, idx);
+                    self.emit(Op::drop);
+                }
+            }
+
+            // ── Labeled statement ───────────────────────────────────────
+            StmtKind::Labeled { label, body } => {
+                // Push label onto the next loop context if the body is a loop
+                // For non-loop bodies, just compile
+                if let Some(ctx) = self.loops.last_mut() {
+                    ctx.label = Some(label.clone());
+                }
+                self.compile_stmt(body)?;
+            }
+
+            // ── Echo (PHP/debug print) ──────────────────────────────────
+            StmtKind::Echo(exprs) => {
+                let line = self.line;
+                let idx = self.import("wasi:cli", "log");
+                for expr in exprs {
+                    self.compile_expr(expr)?;
+                    common::io::emit_print_with_import(self.chunk(), idx, 1, line);
+                }
+            }
+
+            // ── Delete ──────────────────────────────────────────────────
+            StmtKind::Delete(exprs) => {
+                for expr in exprs {
+                    match &expr.kind {
+                        ExprKind::Member { object, field, .. } => {
+                            self.compile_expr(object)?;
+                            self.emit(Op::null);
+                            let field_name = self.canon(field);
+                            let idx = self.str_const(&field_name);
+                            self.emit_u16(Op::struct_set, idx);
+                            self.emit(Op::drop);
+                        }
+                        _ => {
+                            // Delete on non-member is a no-op
+                        }
+                    }
+                }
+            }
+
+            // ── Assert ──────────────────────────────────────────────────
+            StmtKind::Assert { test, msg } => {
+                self.compile_expr(test)?;
+                self.emit(Op::dyn_to_bool);
+                let ok = self.emit_jump(Op::br_if_true);
+                if let Some(m) = msg {
+                    self.compile_expr(m)?;
+                } else {
+                    self.emit_const(Value::String(Arc::from("Assertion failed")));
+                }
+                let line = self.line;
+                common::errors::emit_throw(&mut self.chunks[self.current], line);
+                self.patch_jump(ok);
+            }
+
+            // ── Scope declarations (Python global/nonlocal) ─────────────
+            StmtKind::ScopeDecl { .. } => {
+                // Handled at parse time for variable resolution — no-op at compile time
+            }
+
+            // ── Match statement (Python) ────────────────────────────────
+            StmtKind::MatchStatement { subject, cases } => {
+                self.compile_expr(subject)?;
+                let subject_slot = self.scope_mut().define("__match_subject");
+                self.emit_u16(Op::local_set, subject_slot); self.emit(Op::drop);
+                let mut end_patches = Vec::new();
+                for case in cases {
+                    // Simplified: match on value patterns only, wildcard always matches
+                    let skip = match &case.pattern {
+                        Pattern::Value(val) => {
+                            self.emit_u16(Op::local_get, subject_slot);
+                            self.compile_expr(val)?;
+                            self.emit(Op::dyn_eq);
+                            Some(self.emit_jump(Op::br_if_false))
+                        }
+                        Pattern::Wildcard => None,
+                        Pattern::As { name: Some(name), .. } => {
+                            // Bind subject to name
+                            self.emit_u16(Op::local_get, subject_slot);
+                            let slot = self.scope_mut().define(name);
+                            self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                            None
+                        }
+                        _ => None, // Other patterns: always match (simplified)
+                    };
+                    if let Some(guard) = &case.guard {
+                        self.compile_expr(guard)?;
+                        self.emit(Op::dyn_to_bool);
+                        let guard_skip = self.emit_jump(Op::br_if_false);
+                        for s in &case.body { self.compile_stmt(s)?; }
+                        end_patches.push(self.emit_jump(Op::br));
+                        self.patch_jump(guard_skip);
+                    } else {
+                        for s in &case.body { self.compile_stmt(s)?; }
+                        end_patches.push(self.emit_jump(Op::br));
+                    }
+                    if let Some(s) = skip { self.patch_jump(s); }
+                }
+                for p in end_patches { self.patch_jump(p); }
+            }
+
+            // ── Empty ───────────────────────────────────────────────────
+            StmtKind::Empty => {}
+        }
+        Ok(())
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Variable declarator compilation
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_var_declarator(&mut self, decl: &VarDeclarator, kind: &VarDeclKind) -> Result<(), String> {
+        match &decl.pattern {
+            BindingPattern::Ident(name) => {
+                if let Some(ref init_expr) = decl.init {
+                    self.compile_expr(init_expr)?;
+                } else if let Some(ref bounds) = decl.array_bounds {
+                    // Array with bounds: Dim arr(N)
+                    if let Some(size_expr) = bounds.first() {
+                        self.compile_expr(size_expr)?;
+                        self.emit_const(Value::F64(1.0));
+                        self.emit(Op::dyn_add);
+                        self.emit(Op::array_new_default);
+                    } else {
+                        self.emit(Op::null);
+                    }
+                } else {
+                    // Default values based on type hint
+                    match decl.type_hint.as_deref().map(|s| s.to_lowercase()).as_deref() {
+                        Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => {
+                            self.emit(Op::f64_const_0);
+                        }
+                        Some("boolean") | Some("bool") => self.emit(Op::r#false),
+                        Some("string") => self.emit_const(Value::String(Arc::from(""))),
+                        _ => self.emit(Op::null),
+                    }
+                }
+                // Top-level / hoisted vars → globals
+                let is_toplevel = self.scopes.len() == 1;
+                let is_hoisted = *kind == VarDeclKind::Var && self.profile.hoist_var;
+                if is_toplevel || (is_hoisted && self.scopes.len() <= 2) {
+                    let cn = self.canon(name);
+                    let idx = self.str_const(&cn);
+                    self.emit_u16(Op::global_set, idx);
+                    self.emit(Op::drop);
+                    self.defined_globals.insert(cn);
+                } else {
+                    let slot = self.scope_mut().define(name);
+                    self.emit_u16(Op::local_set, slot);
+                    self.emit(Op::drop);
+                }
+            }
+            BindingPattern::Object(props) => {
+                // Destructuring: let { a, b } = expr
+                if let Some(ref init_expr) = decl.init {
+                    self.compile_expr(init_expr)?;
+                    let obj_slot = self.scope_mut().define("__destruct_obj");
+                    self.emit_u16(Op::local_set, obj_slot); self.emit(Op::drop);
+                    for prop in props {
+                        self.emit_u16(Op::local_get, obj_slot);
+                        let key = self.str_const(&prop.key);
+                        self.emit_u16(Op::struct_get, key);
+                        if let Some(ref default) = prop.default {
+                            // If value is null, use default
+                            self.emit(Op::dup);
+                            self.emit(Op::ref_is_null);
+                            let has_val = self.emit_jump(Op::br_if_false);
+                            self.emit(Op::drop);
+                            self.compile_expr(default)?;
+                            self.patch_jump(has_val);
+                        }
+                        let bind_name = if let Some(BindingPattern::Ident(ref n)) = prop.value {
+                            n.as_str()
+                        } else {
+                            &prop.key
+                        };
+                        let slot = self.scope_mut().define(bind_name);
+                        self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                    }
+                }
+            }
+            BindingPattern::Array(elems) => {
+                // Destructuring: let [a, b] = expr
+                if let Some(ref init_expr) = decl.init {
+                    self.compile_expr(init_expr)?;
+                    let arr_slot = self.scope_mut().define("__destruct_arr");
+                    self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                    for (i, elem) in elems.iter().enumerate() {
+                        match elem {
+                            ArrayPatternElem::Pattern(BindingPattern::Ident(name), default) => {
+                                self.emit_u16(Op::local_get, arr_slot);
+                                self.emit_const(Value::F64(i as f64));
+                                self.emit(Op::array_get);
+                                if let Some(def) = default {
+                                    self.emit(Op::dup);
+                                    self.emit(Op::ref_is_null);
+                                    let has_val = self.emit_jump(Op::br_if_false);
+                                    self.emit(Op::drop);
+                                    self.compile_expr(def)?;
+                                    self.patch_jump(has_val);
+                                }
+                                let slot = self.scope_mut().define(name);
+                                self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                            }
+                            ArrayPatternElem::Rest(name) => {
+                                // ...rest: slice from current index
+                                self.emit_u16(Op::local_get, arr_slot);
+                                self.emit_const(Value::F64(i as f64));
+                                let idx = self.import("vybe:array", "slice");
+                                self.emit_host_call(idx, 2);
+                                let slot = self.scope_mut().define(name);
+                                self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                            }
+                            ArrayPatternElem::Hole => { /* skip */ }
+                            _ => { /* nested patterns — simplified as no-op */ }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Assignment target
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_assign_target(&mut self, target: &Expression) -> Result<(), String> {
+        match &target.kind {
+            ExprKind::Ident(name) => {
+                // FuncName := value assigns to Result slot (Pascal/VB)
+                if let Some(ref fn_name) = self.current_func_name.clone() {
+                    let matches = if self.case_sensitive { name == fn_name } else { name.eq_ignore_ascii_case(fn_name) };
+                    if matches {
+                        if let Some(rs) = self.current_result_slot {
+                            self.emit_u16(Op::local_set, rs);
+                            self.emit(Op::drop);
+                            return Ok(());
+                        }
+                    }
+                }
+                // Implicit self field write
+                if self.is_class_field(name) {
+                    let self_kw = self.profile.self_keyword.clone();
+                    if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                        let tmp = self.scope_mut().define("__field_tmp");
+                        self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
+                        self.emit_u16(Op::local_get, slot);
+                        self.emit_u16(Op::local_get, tmp);
+                        let field_name = self.canon(name);
+                        let idx = self.str_const(&field_name);
+                        self.emit_u16(Op::struct_set, idx);
+                        self.emit(Op::drop);
+                        return Ok(());
+                    }
+                }
+                self.emit_var_set(name);
+            }
+            ExprKind::Member { object, field, .. } => {
+                let tmp = self.scope_mut().define("__tmp");
+                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
+                self.compile_expr(object)?;
+                self.emit_u16(Op::local_get, tmp);
+                let field_name = self.canon(field);
+                let idx = self.str_const(&field_name);
+                self.emit_u16(Op::struct_set, idx);
+                self.emit(Op::drop);
+            }
+            ExprKind::Index { object, index } => {
+                let tmp = self.scope_mut().define("__tmp");
+                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
+                self.compile_expr(object)?;
+                self.compile_expr(index)?;
+                self.emit_u16(Op::local_get, tmp);
+                self.emit(Op::array_set);
+                self.emit(Op::drop);
+            }
+            // VB: arr(idx) = val — Call used as index because () is both call and index
+            ExprKind::Call { callee, args, .. } if args.len() == 1 => {
+                let tmp = self.scope_mut().define("__tmp");
+                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
+                self.compile_expr(callee)?;
+                self.compile_expr(&args[0].value)?;
+                self.emit_u16(Op::local_get, tmp);
+                self.emit(Op::array_set);
+                self.emit(Op::drop);
+            }
+            ExprKind::Destructure(pattern) => {
+                // Destructuring assignment
+                match pattern {
+                    DestructurePattern::Object(props) => {
+                        let obj_slot = self.scope_mut().define("__destruct_obj");
+                        self.emit_u16(Op::local_set, obj_slot); self.emit(Op::drop);
+                        for prop in props {
+                            self.emit_u16(Op::local_get, obj_slot);
+                            let key = self.str_const(&prop.key);
+                            self.emit_u16(Op::struct_get, key);
+                            let bind_name = if let Some(BindingPattern::Ident(ref n)) = prop.value {
+                                n.clone()
+                            } else {
+                                prop.key.clone()
+                            };
+                            self.emit_var_set(&bind_name);
+                        }
+                    }
+                    DestructurePattern::Array(elems) => {
+                        let arr_slot = self.scope_mut().define("__destruct_arr");
+                        self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                        for (i, elem) in elems.iter().enumerate() {
+                            match elem {
+                                ArrayPatternElem::Pattern(BindingPattern::Ident(name), _) => {
+                                    self.emit_u16(Op::local_get, arr_slot);
+                                    self.emit_const(Value::F64(i as f64));
+                                    self.emit(Op::array_get);
+                                    self.emit_var_set(name);
+                                }
+                                ArrayPatternElem::Rest(name) => {
+                                    self.emit_u16(Op::local_get, arr_slot);
+                                    self.emit_const(Value::F64(i as f64));
+                                    let idx = self.import("vybe:array", "slice");
+                                    self.emit_host_call(idx, 2);
+                                    self.emit_var_set(name);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Function declaration compilation
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_function_decl(
+        &mut self, name: &str, params: &[Param], return_type: &Option<String>,
+        body: &[Statement], is_sub: bool, handles: &[String],
+    ) -> Result<(), String> {
+        let cname = self.canon(name);
+        self.defined_globals.insert(cname.clone());
+        self.defined_functions.insert(cname.clone());
+        let name = &cname;
+
+        let arity: u8 = params.len() as u8;
+        let func_idx = self.chunks.len();
+        let chunk = common::functions::create_function_chunk(name, arity);
+        self.chunks.push(chunk);
+        self.scopes.push(Scope::new_function());
+        let saved = self.current;
+        self.current = func_idx;
+
+        // Define params
+        for p in params {
+            self.scope_mut().define(&p.name);
+            // Default parameters
+            if let Some(ref default) = p.default {
+                let slot = self.scope().resolve(&p.name).unwrap();
+                self.emit_u16(Op::local_get, slot);
+                self.emit(Op::ref_is_null);
+                let has_val = self.emit_jump(Op::br_if_false);
+                self.compile_expr(default)?;
+                self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                self.patch_jump(has_val);
+            }
+        }
+
+        // Result slot for functions with return type (Pascal/VB Function)
+        let result_slot = if return_type.is_some() && self.profile.function_return == ReturnStyle::ResultSlot {
+            let rs = self.scope_mut().define("Result");
+            self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
+            Some(rs)
+        } else {
+            None
+        };
+
+        let saved_fn = self.current_func_name.take();
+        let saved_rs = self.current_result_slot.take();
+        self.current_func_name = Some(name.to_string());
+        self.current_result_slot = result_slot;
+
+        for s in body { self.compile_stmt(s)?; }
+
+        self.current_func_name = saved_fn;
+        self.current_result_slot = saved_rs;
+
+        if let Some(rs) = result_slot {
+            self.emit_u16(Op::local_get, rs);
+            self.emit(Op::r#return);
+        } else {
+            let line = self.line;
+            common::functions::emit_function_epilogue(&mut self.chunks[func_idx], line);
+        }
+
+        let locals = self.scope().next_slot;
+        self.chunks[func_idx].local_count = locals;
+        let uvs = self.scopes.last().unwrap().upvalues.clone();
+        self.scopes.pop();
+        self.current = saved;
+
+        let line = self.line;
+        common::functions::emit_ref_func(&mut self.chunks[self.current], func_idx, uvs.len() as u8, line);
+        for uv in &uvs {
+            self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
+            self.chunks[self.current].emit(uv.index, line);
+        }
+        let idx = self.str_const(name);
+        self.emit_u16(Op::global_set, idx);
+        self.emit(Op::drop);
+
+        // VB Handles clause: register event handlers
+        for handle in handles {
+            let parts: Vec<&str> = handle.splitn(2, '.').collect();
+            if parts.len() == 2 {
+                self.emit_var_get(parts[0]);
+                let name_key = self.str_const("__control_name");
+                self.emit_u16(Op::struct_get, name_key);
+                let ev = parts[1].to_lowercase();
+                self.emit_const(Value::String(Arc::from(ev.as_str())));
+                self.emit_var_get(name);
+                let hi = self.import("vybe:gui", "onEvent");
+                self.emit_host_call(hi, 3);
+                self.emit(Op::drop);
+            }
+        }
+
+        Ok(())
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Class compilation
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_class(&mut self, name: &str, parent: &Option<String>, members: &[ClassMember]) -> Result<(), String> {
+        let self_kw = self.profile.self_keyword.clone();
+        let ctor_name = self.profile.constructor_name.clone();
+        let result_style = self.profile.function_return.clone();
+
+        // Collect fields and initializers
+        let mut fields = Vec::new();
+        let mut field_inits: Vec<(String, Option<Expression>)> = Vec::new();
+        for m in members {
+            if let ClassMember::Field { name: fname, init, .. } = m {
+                let fname = self.canon(fname);
+                fields.push(fname.clone());
+                field_inits.push((fname, init.clone()));
+            }
+        }
+
+        // Store field list for implicit self resolution
+        self.pending_classes.insert(name.to_string(), PendingClass {
+            parent: parent.clone(),
+            fields: fields.clone(),
+        });
+
+        // Compile methods (including constructor body)
+        let mut method_chunks: Vec<(String, usize, bool)> = Vec::new();
+        let saved_class = self.current_class.take();
+        self.current_class = Some(name.to_string());
+
+        for m in members {
+            match m {
+                ClassMember::Method(stmt) => {
+                    if let StmtKind::FunctionDecl { name: mname, params, return_type, body, modifiers, is_sub, .. } = &stmt.kind {
+                        if body.is_empty() { continue; }
+
+                        let is_ctor = mname.eq_ignore_ascii_case(&ctor_name)
+                            || modifiers.is_static && mname.eq_ignore_ascii_case("new");
+
+                        let user_params: Vec<&Param> = if self.profile.explicit_self_param {
+                            params.iter().skip(1).collect()
+                        } else {
+                            params.iter().collect()
+                        };
+                        let arity = (user_params.len() + 1) as u8; // +1 for self
+
+                        let ci = self.chunks.len();
+                        let chunk = common::functions::create_function_chunk(mname, arity);
+                        self.chunks.push(chunk);
+                        self.scopes.push(Scope::new_function());
+                        let saved = self.current;
+                        self.current = ci;
+
+                        self.scope_mut().define(&self_kw);
+                        for p in &user_params { self.scope_mut().define(&p.name); }
+
+                        if is_ctor {
+                            for s in body { self.compile_stmt(s)?; }
+                            if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                                self.emit_u16(Op::local_get, slot);
+                                self.emit(Op::r#return);
+                            }
+                        } else if return_type.is_some() && result_style == ReturnStyle::ResultSlot {
+                            let rs = self.scope_mut().define("Result");
+                            self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
+                            let saved_fn = self.current_func_name.take();
+                            let saved_rs = self.current_result_slot.take();
+                            self.current_func_name = Some(mname.clone());
+                            self.current_result_slot = Some(rs);
+                            for s in body { self.compile_stmt(s)?; }
+                            self.current_func_name = saved_fn;
+                            self.current_result_slot = saved_rs;
+                            self.emit_u16(Op::local_get, rs);
+                            self.emit(Op::r#return);
+                        } else {
+                            for s in body { self.compile_stmt(s)?; }
+                            let line = self.line;
+                            common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
+                        }
+
+                        let locals = self.scope().next_slot;
+                        self.chunks[ci].local_count = locals;
+                        self.scopes.pop();
+                        self.current = saved;
+
+                        let bound_name = self.canon(mname);
+                        method_chunks.push((bound_name, ci, is_ctor));
+                    }
+                }
+                ClassMember::Constructor { params, body, base_args, .. } => {
+                    let user_params = params;
+                    let arity = (user_params.len() + 1) as u8;
+
+                    let ci = self.chunks.len();
+                    let chunk = common::functions::create_function_chunk("constructor", arity);
+                    self.chunks.push(chunk);
+                    self.scopes.push(Scope::new_function());
+                    let saved = self.current;
+                    self.current = ci;
+
+                    self.scope_mut().define(&self_kw);
+                    for p in user_params { self.scope_mut().define(&p.name); }
+
+                    // Base constructor call
+                    if let Some(args) = base_args {
+                        if let Some(ref parent_name) = parent {
+                            let pidx = self.str_const(parent_name);
+                            self.emit_u16(Op::global_get, pidx);
+                            for a in args { self.compile_expr(a)?; }
+                            self.emit_u8(Op::call_ref, args.len() as u8);
+                            if let Some(slot) = self.scope().resolve(&self_kw) {
+                                self.emit(Op::dup);
+                                self.emit_u16(Op::local_set, slot);
+                                self.emit(Op::drop);
+                            }
+                            self.emit(Op::drop);
+                        }
+                    }
+
+                    for s in body { self.compile_stmt(s)?; }
+
+                    if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                        self.emit_u16(Op::local_get, slot);
+                        self.emit(Op::r#return);
+                    }
+
+                    let locals = self.scope().next_slot;
+                    self.chunks[ci].local_count = locals;
+                    self.scopes.pop();
+                    self.current = saved;
+
+                    method_chunks.push(("constructor".to_string(), ci, true));
+                }
+                ClassMember::Property { name: pname, getter, setter, .. } => {
+                    let pname_canon = self.canon(pname);
+
+                    // Getter → __get_<prop>
+                    if let Some(getter_body) = getter {
+                        let get_name = format!("__get_{}", pname_canon);
+                        let ci = self.chunks.len();
+                        let chunk = common::functions::create_function_chunk(&get_name, 1); // self
+                        self.chunks.push(chunk);
+                        self.scopes.push(Scope::new_function());
+                        let saved = self.current;
+                        self.current = ci;
+                        self.scope_mut().define(&self_kw);
+
+                        if getter_body.is_empty() {
+                            // Auto-property getter: return backing field
+                            if let Some(slot) = self.scope().resolve(&self_kw) {
+                                self.emit_u16(Op::local_get, slot);
+                                let backing = self.str_const(&format!("__{}", pname_canon));
+                                self.emit_u16(Op::struct_get, backing);
+                                self.emit(Op::r#return);
+                            }
+                        } else {
+                            let rs = self.scope_mut().define("Result");
+                            self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
+                            let saved_fn = self.current_func_name.take();
+                            let saved_rs = self.current_result_slot.take();
+                            self.current_func_name = Some(pname.clone());
+                            self.current_result_slot = Some(rs);
+                            for s in getter_body { self.compile_stmt(s)?; }
+                            self.current_func_name = saved_fn;
+                            self.current_result_slot = saved_rs;
+                            self.emit_u16(Op::local_get, rs);
+                            self.emit(Op::r#return);
+                        }
+
+                        let locals = self.scope().next_slot;
+                        self.chunks[ci].local_count = locals;
+                        self.scopes.pop();
+                        self.current = saved;
+                        method_chunks.push((get_name, ci, false));
+                    }
+
+                    // Setter → __set_<prop>
+                    if let Some(setter_info) = setter {
+                        let set_name = format!("__set_{}", pname_canon);
+                        let ci = self.chunks.len();
+                        let chunk = common::functions::create_function_chunk(&set_name, 2); // self, value
+                        self.chunks.push(chunk);
+                        self.scopes.push(Scope::new_function());
+                        let saved = self.current;
+                        self.current = ci;
+                        self.scope_mut().define(&self_kw);
+                        self.scope_mut().define(&setter_info.param.name);
+
+                        if setter_info.body.is_empty() {
+                            // Auto-property setter: set backing field
+                            if let Some(self_slot) = self.scope().resolve(&self_kw) {
+                                self.emit_u16(Op::local_get, self_slot);
+                                if let Some(val_slot) = self.scope().resolve(&setter_info.param.name) {
+                                    self.emit_u16(Op::local_get, val_slot);
+                                }
+                                let backing = self.str_const(&format!("__{}", pname_canon));
+                                self.emit_u16(Op::struct_set, backing);
+                                self.emit(Op::drop);
+                            }
+                        } else {
+                            for s in &setter_info.body { self.compile_stmt(s)?; }
+                        }
+
+                        let line = self.line;
+                        common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
+                        let locals = self.scope().next_slot;
+                        self.chunks[ci].local_count = locals;
+                        self.scopes.pop();
+                        self.current = saved;
+                        method_chunks.push((set_name, ci, false));
+                    }
+                }
+                ClassMember::Const { name: cname, value, .. } => {
+                    // Class-level constant → global
+                    self.compile_expr(value)?;
+                    let global_name = self.canon(&format!("{}.{}", name, cname));
+                    let idx = self.str_const(&global_name);
+                    self.emit_u16(Op::global_set, idx);
+                    self.emit(Op::drop);
+                    self.defined_globals.insert(global_name);
+                }
+                ClassMember::Event { .. } => { /* type-level only */ }
+                ClassMember::NestedType(stmt) => { self.compile_stmt(stmt)?; }
+                _ => {}
+            }
+        }
+
+        self.current_class = saved_class;
+
+        // Find constructor
+        let ctor = method_chunks.iter().find(|(_, _, is_ctor)| *is_ctor);
+        let user_arity = ctor.map(|(_, ci, _)| {
+            let a = self.chunks[*ci].arity;
+            if a > 0 { a - 1 } else { 0 }
+        }).unwrap_or(0);
+
+        // Build constructor wrapper
+        let wrapper_idx = self.chunks.len();
+        let wrapper = common::functions::create_function_chunk(&format!("{}_ctor", name), user_arity);
+        self.chunks.push(wrapper);
+        let line = self.line;
+        let this_slot = (user_arity as u16) + 1;
+        self.chunks[wrapper_idx].local_count = this_slot + 1;
+
+        let is_child = parent.is_some();
+        if is_child {
+            if let Some(parent_name) = parent {
+                let pidx = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from(parent_name.as_str())));
+                self.chunks[wrapper_idx].emit_op_u16(Op::global_get, pidx, line);
+                for i in 0..user_arity {
+                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+                }
+                self.chunks[wrapper_idx].emit_op_u8(Op::call_ref, user_arity as u8, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::local_set, this_slot, line);
+            } else {
+                self.chunks[wrapper_idx].emit_op(Op::null, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::local_set, this_slot, line);
+            }
+            if let Some((_, init_ci, _)) = ctor {
+                common::functions::emit_ref_func(&mut self.chunks[wrapper_idx], *init_ci, 0, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
+                for i in 0..user_arity {
+                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+                }
+                self.chunks[wrapper_idx].emit_op_u8(Op::call_ref, (user_arity + 1) as u8, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::local_set, this_slot, line);
+            }
+            for (mname, mci, is_ctor) in &method_chunks {
+                if *is_ctor { continue; }
+                common::classes::emit_bind_method_with_aliases(&mut self.chunks[wrapper_idx], this_slot, mname, *mci, line);
+            }
+            common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, name, line);
+            self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
+            let ts = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from(name)));
+            let tk = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from("__type")));
+            self.chunks[wrapper_idx].emit_op_u16(Op::r#const, ts, line);
+            self.chunks[wrapper_idx].emit_op_u16(Op::struct_set, tk, line);
+            self.chunks[wrapper_idx].emit_op(Op::drop, line);
+        } else {
+            common::classes::emit_new_typed_object(&mut self.chunks[wrapper_idx], this_slot, name, line);
+            for (fname, init) in &field_inits {
+                if let Some(init_expr) = init {
+                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
+                    let saved_cur = self.current;
+                    self.current = wrapper_idx;
+                    self.compile_expr(init_expr)?;
+                    self.current = saved_cur;
+                    let fk = self.chunks[wrapper_idx].add_constant(Value::String(Arc::from(fname.as_str())));
+                    self.chunks[wrapper_idx].emit_op_u16(Op::struct_set, fk, line);
+                    self.chunks[wrapper_idx].emit_op(Op::drop, line);
+                } else {
+                    common::classes::emit_init_field_null(&mut self.chunks[wrapper_idx], this_slot, fname, line);
+                }
+            }
+            for (mname, mci, is_ctor) in &method_chunks {
+                if *is_ctor { continue; }
+                common::classes::emit_bind_method_with_aliases(&mut self.chunks[wrapper_idx], this_slot, mname, *mci, line);
+            }
+            if let Some((_, init_ci, _)) = ctor {
+                common::functions::emit_ref_func(&mut self.chunks[wrapper_idx], *init_ci, 0, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
+                for i in 0..user_arity {
+                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+                }
+                self.chunks[wrapper_idx].emit_op_u8(Op::call_ref, (user_arity + 1) as u8, line);
+                self.chunks[wrapper_idx].emit_op(Op::drop, line);
+            }
+            common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, name, line);
+        }
+        common::classes::emit_constructor_return(&mut self.chunks[wrapper_idx], this_slot, line);
+
+        let ctor_local = self.scope_mut().define(&format!("__{}_ctor", name));
+        common::classes::emit_store_constructor(&mut self.chunks[self.current], name, wrapper_idx, ctor_local, line);
+
+        let all_methods: Vec<(String, usize)> = method_chunks.iter().map(|(n, c, _)| (n.clone(), *c)).collect();
+        let parent_str = parent.clone().unwrap_or_default();
+        common::classes::register_type(&mut self.chunks, name, &parent_str, fields, all_methods, false, Vec::new(), Some(wrapper_idx));
+
+        Ok(())
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Expression compilation
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_expr(&mut self, expr: &Expression) -> Result<(), String> {
+        match &expr.kind {
+            // ── Literals ────────────────────────────────────────────────
+            ExprKind::Lit(lit) => {
+                match lit {
+                    Literal::Int(n) => self.emit_const(Value::F64(*n as f64)),
+                    Literal::Float(n) => self.emit_const(Value::F64(*n)),
+                    Literal::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                    Literal::Char(c) => self.emit_const(Value::String(Arc::from(c.to_string().as_str()))),
+                    Literal::Bool(b) => if *b { self.emit(Op::r#true) } else { self.emit(Op::r#false) },
+                    Literal::Null => self.emit(Op::null),
+                    Literal::Undefined => self.emit(Op::null),
+                    Literal::Ellipsis => self.emit(Op::null),
+                }
+            }
+
+            // ── Identifier ──────────────────────────────────────────────
+            ExprKind::Ident(name) => {
+                // Well-known constants
+                match name.to_lowercase().as_str() {
+                    "maxint" => { self.emit_const(Value::F64(2147483647.0)); return Ok(()); }
+                    "pi" => { self.emit_const(Value::F64(std::f64::consts::PI)); return Ok(()); }
+                    _ => {}
+                }
+                // Implicit self field access
+                if self.is_class_field(name) {
+                    let self_kw = self.profile.self_keyword.clone();
+                    if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                        self.emit_u16(Op::local_get, slot);
+                        let field_name = self.canon(name);
+                        let idx = self.str_const(&field_name);
+                        self.emit_u16(Op::struct_get, idx);
+                        return Ok(());
+                    }
+                }
+                self.emit_var_get(name);
+            }
+
+            // ── This / Super ────────────────────────────────────────────
+            ExprKind::This => {
+                let self_kw = &self.profile.self_keyword;
+                if let Some(slot) = self.scope().resolve(self_kw)
+                    .or_else(|| self.scope().resolve_ci(self_kw))
+                    .or_else(|| self.scope().resolve("Self"))
+                    .or_else(|| self.scope().resolve("self"))
+                    .or_else(|| self.scope().resolve("this"))
+                {
+                    self.emit_u16(Op::local_get, slot);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+
+            ExprKind::Super => {
+                self.emit(Op::null); // TODO: super reference
+            }
+
+            // ── Binary ──────────────────────────────────────────────────
+            ExprKind::Binary { op, left, right } => {
+                // Short-circuit for And/Or
+                if *op == BinOp::And {
+                    self.compile_expr(left)?;
+                    let line = self.line;
+                    let skip = common::expressions::emit_and_start(&mut self.chunks[self.current], line);
+                    self.compile_expr(right)?;
+                    common::expressions::emit_short_circuit_end(&mut self.chunks[self.current], skip);
+                    return Ok(());
+                }
+                if *op == BinOp::Or {
+                    self.compile_expr(left)?;
+                    let line = self.line;
+                    let skip = common::expressions::emit_or_start(&mut self.chunks[self.current], line);
+                    self.compile_expr(right)?;
+                    common::expressions::emit_short_circuit_end(&mut self.chunks[self.current], skip);
+                    return Ok(());
+                }
+                // NullCoalesce as binary op
+                if *op == BinOp::NullCoalesce {
+                    self.compile_expr(left)?;
+                    self.emit(Op::dup);
+                    self.emit(Op::ref_is_null);
+                    let skip = self.emit_jump(Op::br_if_false);
+                    self.emit(Op::drop);
+                    self.compile_expr(right)?;
+                    self.patch_jump(skip);
+                    return Ok(());
+                }
+                self.compile_expr(left)?;
+                self.compile_expr(right)?;
+                self.compile_binop(op);
+            }
+
+            // ── Unary ───────────────────────────────────────────────────
+            ExprKind::Unary { op, expr: inner } => {
+                match op {
+                    UnaryOp::PreInc | UnaryOp::PostInc => {
+                        // ++x / x++ : load, add 1, store
+                        self.compile_expr(inner)?;
+                        if *op == UnaryOp::PostInc { self.emit(Op::dup); }
+                        self.emit_const(Value::F64(1.0));
+                        self.emit(Op::dyn_add);
+                        if *op == UnaryOp::PreInc { self.emit(Op::dup); }
+                        self.compile_assign_target(inner)?;
+                    }
+                    UnaryOp::PreDec | UnaryOp::PostDec => {
+                        self.compile_expr(inner)?;
+                        if *op == UnaryOp::PostDec { self.emit(Op::dup); }
+                        self.emit_const(Value::F64(1.0));
+                        self.emit(Op::f64_sub);
+                        if *op == UnaryOp::PreDec { self.emit(Op::dup); }
+                        self.compile_assign_target(inner)?;
+                    }
+                    _ => {
+                        self.compile_expr(inner)?;
+                        match op {
+                            UnaryOp::Neg => { let l = self.line; common::math::emit_neg(self.chunk(), l); }
+                            UnaryOp::Pos => {} // no-op
+                            UnaryOp::Not => self.emit(Op::dyn_not),
+                            UnaryOp::BitNot => self.emit(Op::i32_not),
+                            UnaryOp::Typeof => self.emit(Op::ref_typeof),
+                            UnaryOp::Void => { self.emit(Op::drop); self.emit(Op::null); }
+                            UnaryOp::Delete => { self.emit(Op::drop); self.emit(Op::r#true); }
+                            UnaryOp::Deref => { let idx = self.str_const("__value"); self.emit_u16(Op::struct_get, idx); }
+                            UnaryOp::AddrOf => {} // no-op in VM
+                            UnaryOp::Await => {} // handled below in ExprKind::Await
+                            _ => {} // PreInc etc handled above
+                        }
+                    }
+                }
+            }
+
+            // ── Ternary ─────────────────────────────────────────────────
+            ExprKind::Ternary { cond, then, else_ } => {
+                self.compile_expr(cond)?;
+                self.emit(Op::dyn_to_bool);
+                let else_j = self.emit_jump(Op::br_if_false);
+                self.compile_expr(then)?;
+                let end_j = self.emit_jump(Op::br);
+                self.patch_jump(else_j);
+                self.compile_expr(else_)?;
+                self.patch_jump(end_j);
+            }
+
+            // ── Call ────────────────────────────────────────────────────
+            ExprKind::Call { callee, args, .. } => {
+                self.compile_call(callee, args)?;
+            }
+
+            // ── Member access ───────────────────────────────────────────
+            ExprKind::Member { object, field, null_safe } => {
+                // Namespace constant check (Math.PI, etc.)
+                if let ExprKind::Ident(obj_name) = &object.kind {
+                    let compound = format!("{}.{}", obj_name, field);
+                    if let Some(cv) = self.profile.lookup_constant(&compound) {
+                        match cv {
+                            ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),
+                            ConstantValue::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                        }
+                        return Ok(());
+                    }
+                    // Constructor call with 0 args: ClassName.Create
+                    let ctor_nm = &self.profile.constructor_name;
+                    let is_ctor = if self.case_sensitive { field == ctor_nm } else { field.eq_ignore_ascii_case(ctor_nm) };
+                    if is_ctor && self.defined_globals.contains(obj_name.as_str()) {
+                        self.emit_var_get(obj_name);
+                        self.emit_u8(Op::call_ref, 0);
+                        return Ok(());
+                    }
+                }
+
+                self.compile_expr(object)?;
+
+                if *null_safe {
+                    // ?. — check null before accessing
+                    self.emit(Op::dup);
+                    self.emit(Op::ref_is_null);
+                    let skip = self.emit_jump(Op::br_if_false);
+                    // Object is null — result is null
+                    let end = self.emit_jump(Op::br);
+                    self.patch_jump(skip);
+                    let field_name = self.canon(field);
+                    let idx = self.str_const(&field_name);
+                    self.emit_u16(Op::struct_get, idx);
+                    self.patch_jump(end);
+                } else {
+                    let field_name = self.canon(field);
+                    let idx = self.str_const(&field_name);
+                    self.emit_u16(Op::struct_get, idx);
+                }
+            }
+
+            // ── Index access ────────────────────────────────────────────
+            ExprKind::Index { object, index } => {
+                self.compile_expr(object)?;
+                self.compile_expr(index)?;
+                self.emit(Op::array_get);
+            }
+
+            // ── New ─────────────────────────────────────────────────────
+            ExprKind::New { class, args } => {
+                if let ExprKind::Ident(type_name) = &class.kind {
+                    let bare = type_name.to_lowercase();
+                    let bare = bare.split('(').next().unwrap_or(&bare).trim();
+                    let bare_str = bare.rsplit('.').next().unwrap_or(bare);
+
+                    // WASM threading/async — use compiler_common, NOT host calls
+                    match bare_str {
+                        "thread" => {
+                            // New Thread(callback) → cont_new only (Start resumes)
+                            if let Some(a) = args.first() {
+                                self.compile_expr(&a.value)?;
+                            }
+                            let line = self.line;
+                            common::threading::emit_thread_new(self.chunk(), line);
+                            return Ok(());
+                        }
+                        "task" => {
+                            // New Task(callback) → cont_new only
+                            if let Some(a) = args.first() {
+                                self.compile_expr(&a.value)?;
+                            }
+                            let line = self.line;
+                            common::threading::emit_thread_new(self.chunk(), line);
+                            return Ok(());
+                        }
+                        "mutex" | "semaphore" => {
+                            // New Mutex() → allocate atomic address for lock
+                            self.emit_const(Value::I32(0)); // initial lock value
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+
+                    // Profile known types (collections, GUI controls, etc.)
+                    if let Some((module, func)) = self.profile.lookup_known_type(type_name).map(|(m, f)| (m.to_string(), f.to_string())) {
+                        for a in args { self.compile_expr(&a.value)?; }
+                        let idx = self.import(&module, &func);
+                        self.emit_host_call(idx, args.len() as u8);
+                        return Ok(());
+                    }
+                    // Dotnet known types (collections, etc.)
+                    let known = common::dotnet::known_types();
+                    if let Some(&(module, func)) = known.get(bare_str) {
+                        for a in args { self.compile_expr(&a.value)?; }
+                        let idx = self.import(module, func);
+                        self.emit_host_call(idx, args.len() as u8);
+                        return Ok(());
+                    }
+                }
+                // User-defined class constructor
+                self.compile_expr(class)?;
+                for a in args { self.compile_expr(&a.value)?; }
+                self.emit_u8(Op::call_ref, args.len() as u8);
+            }
+
+            // ── Assignment as expression ────────────────────────────────
+            ExprKind::Assign { target, value } => {
+                self.compile_expr(value)?;
+                self.emit(Op::dup);
+                self.compile_assign_target(target)?;
+            }
+
+            // ── Lambda ──────────────────────────────────────────────────
+            ExprKind::Lambda { params, body, .. } => {
+                self.compile_lambda(params, body)?;
+            }
+
+            // ── Array literal ───────────────────────────────────────────
+            ExprKind::Array(elements) => {
+                for elem in elements {
+                    if elem.spread {
+                        self.compile_expr(&elem.value)?;
+                        self.emit(Op::spread);
+                    } else {
+                        self.compile_expr(&elem.value)?;
+                    }
+                }
+                let line = self.line;
+                self.chunks[self.current].emit_op_u16(Op::array_new, elements.len() as u16, line);
+            }
+
+            // ── Tuple (Python) ──────────────────────────────────────────
+            ExprKind::Tuple(elements) => {
+                for elem in elements { self.compile_expr(elem)?; }
+                let line = self.line;
+                self.chunks[self.current].emit_op_u16(Op::array_new, elements.len() as u16, line);
+            }
+
+            // ── Set (Python) ────────────────────────────────────────────
+            ExprKind::Set(elements) => {
+                for elem in elements { self.compile_expr(elem)?; }
+                let line = self.line;
+                self.chunks[self.current].emit_op_u16(Op::array_new, elements.len() as u16, line);
+                // Convert to set via host call
+                let idx = self.import("vybe:collections", "arrayToSet");
+                self.emit_host_call(idx, 1);
+            }
+
+            // ── Object literal ──────────────────────────────────────────
+            ExprKind::Object(props) => {
+                let line = self.line;
+                common::dict::emit_new(&mut self.chunks[self.current], line);
+                for prop in props {
+                    match prop {
+                        ObjectProperty::KeyValue { key, value } => {
+                            self.emit(Op::dup);
+                            self.compile_expr(value)?;
+                            if let ExprKind::Lit(Literal::Str(k)) = &key.kind {
+                                let idx = self.str_const(k);
+                                self.emit_u16(Op::struct_set, idx);
+                            } else {
+                                self.compile_expr(key)?;
+                                self.emit(Op::array_set);
+                            }
+                            self.emit(Op::drop);
+                        }
+                        ObjectProperty::Shorthand(name) => {
+                            self.emit(Op::dup);
+                            self.emit_var_get(name);
+                            let idx = self.str_const(name);
+                            self.emit_u16(Op::struct_set, idx);
+                            self.emit(Op::drop);
+                        }
+                        ObjectProperty::Spread(expr) => {
+                            // Object spread: merge properties from expr into current object
+                            self.compile_expr(expr)?;
+                            let idx = self.import("vybe:collections", "objectMerge");
+                            self.emit_host_call(idx, 2);
+                        }
+                        ObjectProperty::Method { key, value } => {
+                            self.emit(Op::dup);
+                            if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
+                                self.compile_lambda(params, &LambdaBody::Block(body.clone()))?;
+                            } else {
+                                self.emit(Op::null);
+                            }
+                            let idx = self.str_const(key);
+                            self.emit_u16(Op::struct_set, idx);
+                            self.emit(Op::drop);
+                        }
+                        ObjectProperty::Accessor { kind, key, value } => {
+                            self.emit(Op::dup);
+                            if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
+                                self.compile_lambda(params, &LambdaBody::Block(body.clone()))?;
+                            } else {
+                                self.emit(Op::null);
+                            }
+                            let accessor_name = match kind {
+                                AccessorKind::Get => format!("__get_{}", key),
+                                AccessorKind::Set => format!("__set_{}", key),
+                            };
+                            let idx = self.str_const(&accessor_name);
+                            self.emit_u16(Op::struct_set, idx);
+                            self.emit(Op::drop);
+                        }
+                        ObjectProperty::Computed { key, value } => {
+                            self.emit(Op::dup);
+                            self.compile_expr(value)?;
+                            self.compile_expr(key)?;
+                            self.emit(Op::array_set);
+                            self.emit(Op::drop);
+                        }
+                    }
+                }
+            }
+
+            // ── String interpolation ────────────────────────────────────
+            ExprKind::Interpolation(parts) => {
+                if parts.is_empty() {
+                    self.emit_const(Value::String(Arc::from("")));
+                    return Ok(());
+                }
+                for (i, part) in parts.iter().enumerate() {
+                    match part {
+                        InterpolPart::Text(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                        InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
+                            self.compile_expr(e)?;
+                            let line = self.line;
+                            common::strings::emit_to_string(self.chunk(), line);
+                        }
+                    }
+                    if i > 0 {
+                        let line = self.line;
+                        common::strings::emit_str_concat(self.chunk(), line);
+                    }
+                }
+            }
+
+            // ── Type operations ─────────────────────────────────────────
+            ExprKind::IsType { expr: inner, type_name } => {
+                self.compile_expr(inner)?;
+                let key = self.str_const("__type");
+                self.emit_u16(Op::struct_get, key);
+                self.emit_const(Value::String(Arc::from(type_name.as_str())));
+                self.emit(Op::dyn_eq);
+            }
+
+            ExprKind::Cast { expr: inner, .. } => {
+                // Cast is a no-op in our dynamic VM
+                self.compile_expr(inner)?;
+            }
+
+            ExprKind::TypeOf(inner) => {
+                self.compile_expr(inner)?;
+                self.emit(Op::ref_typeof);
+            }
+
+            // ── NullCoalesce ────────────────────────────────────────────
+            ExprKind::NullCoalesce { left, right } => {
+                self.compile_expr(left)?;
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_null);
+                let skip = self.emit_jump(Op::br_if_false);
+                self.emit(Op::drop);
+                self.compile_expr(right)?;
+                self.patch_jump(skip);
+            }
+
+            // ── Spread ──────────────────────────────────────────────────
+            ExprKind::Spread(inner) => {
+                self.compile_expr(inner)?;
+                self.emit(Op::spread);
+            }
+
+            // ── Await ───────────────────────────────────────────────────
+            ExprKind::Await(inner) => {
+                self.compile_expr(inner)?;
+                // Await is a no-op in sync VM (JSPI handles transparent async)
+            }
+
+            // ── Yield ───────────────────────────────────────────────────
+            ExprKind::Yield(val) => {
+                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::null); }
+                self.emit_u16(Op::suspend, 0);
+            }
+
+            ExprKind::YieldFrom(inner) => {
+                self.compile_expr(inner)?;
+                // Simplified: yield from → just pass through
+            }
+
+            // ── AddressOf (VB) ──────────────────────────────────────────
+            ExprKind::AddressOf(name) => {
+                self.emit_var_get(name);
+            }
+
+            // ── SuperCall (VB/Python) ───────────────────────────────────
+            ExprKind::SuperCall { method, args } => {
+                if let Some(ref class_name) = self.current_class.clone() {
+                    let parent = self.pending_classes.get(class_name.as_str()).and_then(|c| c.parent.clone());
+                    if let Some(parent_name) = parent {
+                        let parent_idx = self.str_const(&parent_name);
+                        self.emit_u16(Op::global_get, parent_idx);
+                        for a in args { self.compile_expr(&a.value)?; }
+                        self.emit_u8(Op::call_ref, args.len() as u8);
+                        // Store result in self slot
+                        let self_kw = self.profile.self_keyword.clone();
+                        if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                            self.emit(Op::dup);
+                            self.emit_u16(Op::local_set, slot);
+                            self.emit(Op::drop);
+                        }
+                    } else {
+                        self.emit(Op::null);
+                    }
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+
+            // ── Comprehension (Python) ──────────────────────────────────
+            ExprKind::Comprehension { kind: _, element, generators } => {
+                // Simplified: compile as loop building an array
+                let line = self.line;
+                self.chunks[self.current].emit_op_u16(Op::array_new, 0, line);
+                let result_slot = self.scope_mut().define("__comp_result");
+                self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+
+                // Only handle the first generator for simplicity
+                if let Some(gen) = generators.first() {
+                    self.compile_expr(&gen.iter)?;
+                    let arr_slot = self.scope_mut().define("__comp_iter");
+                    self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                    let idx_slot = self.scope_mut().define("__comp_idx");
+                    let (loop_start, exit_jump) = common::loops::emit_for_in_start(
+                        &mut self.chunks[self.current], arr_slot, idx_slot, line,
+                    );
+                    // Bind loop var
+                    let var_name = match &gen.target.kind {
+                        ExprKind::Ident(n) => n.clone(),
+                        _ => "__comp_var".to_string(),
+                    };
+                    let var_slot = self.scope_mut().define(&var_name);
+                    self.emit_u16(Op::local_set, var_slot); self.emit(Op::drop);
+
+                    // Check conditions
+                    let mut cond_skip = None;
+                    for cond_expr in &gen.conditions {
+                        self.compile_expr(cond_expr)?;
+                        self.emit(Op::dyn_to_bool);
+                        cond_skip = Some(self.emit_jump(Op::br_if_false));
+                    }
+
+                    // Push element
+                    self.emit_u16(Op::local_get, result_slot);
+                    self.compile_expr(element)?;
+                    let push_idx = self.import("vybe:array", "push");
+                    self.emit_host_call(push_idx, 2);
+                    self.emit(Op::drop);
+
+                    if let Some(skip) = cond_skip { self.patch_jump(skip); }
+
+                    common::loops::emit_for_in_end(
+                        &mut self.chunks[self.current], idx_slot, loop_start, exit_jump, line,
+                    );
+                }
+
+                self.emit_u16(Op::local_get, result_slot);
+            }
+
+            // ── Slice (Python) ──────────────────────────────────────────
+            ExprKind::Slice { lower, upper, step } => {
+                // Emit slice parts for use by Index
+                if let Some(l) = lower { self.compile_expr(l)?; } else { self.emit(Op::null); }
+                if let Some(u) = upper { self.compile_expr(u)?; } else { self.emit(Op::null); }
+                if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::null); }
+                let idx = self.import("vybe:array", "sliceStep");
+                self.emit_host_call(idx, 4); // obj already on stack from Index parent
+            }
+
+            // ── Walrus (Python :=) ──────────────────────────────────────
+            ExprKind::Walrus { target, value } => {
+                self.compile_expr(value)?;
+                self.emit(Op::dup);
+                self.compile_assign_target(target)?;
+            }
+
+            // ── Void (JS) ───────────────────────────────────────────────
+            ExprKind::Void(inner) => {
+                self.compile_expr(inner)?;
+                self.emit(Op::drop);
+                self.emit(Op::null); // void always evaluates to undefined
+            }
+
+            // ── Delete (JS expression) ──────────────────────────────────
+            ExprKind::Delete(inner) => {
+                // Delete member: always returns true
+                if let ExprKind::Member { object, field, .. } = &inner.kind {
+                    self.compile_expr(object)?;
+                    self.emit(Op::null);
+                    let field_name = self.canon(field);
+                    let idx = self.str_const(&field_name);
+                    self.emit_u16(Op::struct_set, idx);
+                    self.emit(Op::drop);
+                } else {
+                    self.compile_expr(inner)?;
+                    self.emit(Op::drop);
+                }
+                self.emit(Op::r#true);
+            }
+
+            // ── Destructure (JS) ────────────────────────────────────────
+            ExprKind::Destructure(_) => {
+                // Destructure patterns are handled at assignment/declaration sites
+                self.emit(Op::null);
+            }
+
+            // ── Sequence (JS comma operator) ────────────────────────────
+            ExprKind::Sequence(exprs) => {
+                for (i, e) in exprs.iter().enumerate() {
+                    self.compile_expr(e)?;
+                    if i < exprs.len() - 1 { self.emit(Op::drop); }
+                }
+            }
+
+            // ── ClassExpr (JS) ──────────────────────────────────────────
+            ExprKind::ClassExpr { name, parent, members } => {
+                let class_name = name.clone().unwrap_or_else(|| "__anonymous_class".to_string());
+                let parent_name = if let Some(p) = parent {
+                    if let ExprKind::Ident(n) = &p.kind { Some(n.clone()) } else { None }
+                } else { None };
+                let class_name = self.canon(&class_name);
+                let parent_name = parent_name.map(|p| self.canon(&p));
+                self.defined_globals.insert(class_name.clone());
+                self.compile_class(&class_name, &parent_name, members)?;
+                self.emit_var_get(&class_name);
+            }
+
+            // ── FunctionExpr (JS) ───────────────────────────────────────
+            ExprKind::FunctionExpr(stmt) => {
+                if let StmtKind::FunctionDecl { name, params, return_type, body, is_sub, handles, .. } = &stmt.kind {
+                    let fn_name = if name.is_empty() { "__anon_fn" } else { name };
+                    self.compile_function_decl(fn_name, params, return_type, body, *is_sub, handles)?;
+                    self.emit_var_get(fn_name);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+
+            // ── Range ───────────────────────────────────────────────────
+            ExprKind::Range { start, end, inclusive: _ } => {
+                self.compile_expr(start)?;
+                self.compile_expr(end)?;
+                let line = self.line;
+                common::collections::emit_range(&mut self.chunks[self.current], 2, line);
+            }
+
+            // ── StaticAccess (PHP) ──────────────────────────────────────
+            ExprKind::StaticAccess { class, member } => {
+                // class::member → look up class, then get static member
+                self.compile_expr(class)?;
+                if let ExprKind::Ident(name) = &member.kind {
+                    let idx = self.str_const(name);
+                    self.emit_u16(Op::struct_get, idx);
+                } else {
+                    self.compile_expr(member)?;
+                    self.emit(Op::array_get);
+                }
+            }
+
+            // ── Match expression (PHP/Rust) ─────────────────────────────
+            ExprKind::Match { subject, arms } => {
+                self.compile_expr(subject)?;
+                let subject_slot = self.scope_mut().define("__match_subj");
+                self.emit_u16(Op::local_set, subject_slot); self.emit(Op::drop);
+                let mut end_patches = Vec::new();
+                for arm in arms {
+                    if let Some(ref conditions) = arm.conditions {
+                        let mut match_patches = Vec::new();
+                        for c in conditions {
+                            self.emit_u16(Op::local_get, subject_slot);
+                            self.compile_expr(c)?;
+                            self.emit(Op::dyn_eq);
+                            match_patches.push(self.emit_jump(Op::br_if_true));
+                        }
+                        let skip = self.emit_jump(Op::br);
+                        for p in match_patches { self.patch_jump(p); }
+                        self.compile_expr(&arm.body)?;
+                        end_patches.push(self.emit_jump(Op::br));
+                        self.patch_jump(skip);
+                    } else {
+                        // Default arm
+                        self.compile_expr(&arm.body)?;
+                        end_patches.push(self.emit_jump(Op::br));
+                    }
+                }
+                // If no arm matched, null
+                self.emit(Op::null);
+                for p in end_patches { self.patch_jump(p); }
+            }
+        }
+        Ok(())
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Call compilation
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
+        let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
+
+        // ── Builtin check: Ident("print") ───────────────────────────
+        if let ExprKind::Ident(name) = &callee.kind {
+            if self.try_compile_builtin(name, &arg_exprs)? { return Ok(()); }
+        }
+
+        // ── Builtin check: Member("Console.WriteLine") ─────────────
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if let ExprKind::Ident(obj_name) = &object.kind {
+                let compound = format!("{}.{}", obj_name, field);
+                if self.try_compile_builtin(&compound, &arg_exprs)? { return Ok(()); }
+
+                // Module alias: console.log → host call
+                if let Some(module) = self.profile.lookup_module_alias(obj_name).map(|s| s.to_string()) {
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    let idx = self.import(&module, field);
+                    self.emit_host_call(idx, arg_exprs.len() as u8);
+                    return Ok(());
+                }
+            }
+        }
+
+        // ── Dotted name resolution FIRST (uses compiler_common::dotnet when use_dotnet) ──
+        // Must run before value methods because value methods like "add" would
+        // intercept "Controls.Add" which needs special GUI handling.
+        if let ExprKind::Member { .. } = &callee.kind {
+            let parts = self.flatten_member_chain(callee);
+            if parts.len() >= 2 {
+                let lower_parts: Vec<String> = parts.iter().map(|s| self.canon(s)).collect();
+
+                // Use dotnet resolver when enabled
+                if self.profile.namespaces.use_dotnet {
+                    let imports = {
+                        let mut imp = common::dotnet::default_interface_imports();
+                        imp.extend(self.profile.namespaces.extra_imports.clone());
+                        imp
+                    };
+                    let scope = self.scope().clone();
+                    let defined_globals = self.defined_globals.clone();
+                    let field_set: std::collections::HashSet<String> = if let Some(ref cn) = self.current_class {
+                        self.pending_classes.get(cn.as_str())
+                            .map(|pc| pc.fields.iter().cloned().collect())
+                            .unwrap_or_default()
+                    } else {
+                        std::collections::HashSet::new()
+                    };
+                    let ctx = common::dotnet::ResolutionContext {
+                        is_local: &|name: &str| {
+                            scope.resolve(name).is_some()
+                            || scope.resolve_ci(name).is_some()
+                            // Also check globals — top-level Dim variables are globals, not locals
+                            || defined_globals.contains(name)
+                        },
+                        is_class_field: &|name: &str| field_set.contains(name),
+                        is_user_type: &|name: &str| defined_globals.contains(name),
+                        imports: &imports,
+                    };
+                    let refs: Vec<&str> = lower_parts.iter().map(|s| s.as_str()).collect();
+                    let resolution = common::dotnet::resolve_dotted_name(&refs, &ctx);
+
+                    match resolution {
+                        common::dotnet::DottedResolution::HostCall { module, func } => {
+                            for a in &arg_exprs { self.compile_expr(a)?; }
+                            let idx = self.import(&module, &func);
+                            self.emit_host_call(idx, arg_exprs.len() as u8);
+                            return Ok(());
+                        }
+                        common::dotnet::DottedResolution::NamespaceAccess { parts: ns_parts } => {
+                            // Intercept threading calls → WASM stack switching opcodes
+                            let dotted = ns_parts.join(".");
+                            match dotted.as_str() {
+                                "system.threading.task.run" | "task.run" => {
+                                    if let Some(a) = arg_exprs.first() { self.compile_expr(a)?; }
+                                    let line = self.line;
+                                    common::threading::emit_task_run(self.chunk(), line);
+                                    return Ok(());
+                                }
+                                "system.diagnostics.process.start" | "process.start" => {
+                                    // Process.Start(startInfo) → host call that runs the command
+                                    for a in &arg_exprs { self.compile_expr(a)?; }
+                                    let idx = self.import("vybe:types", "processStart");
+                                    self.emit_host_call(idx, arg_exprs.len() as u8);
+                                    return Ok(());
+                                }
+                                "system.threading.thread.sleep" | "thread.sleep" => {
+                                    // Thread.Sleep → wasi:clocks:sleep
+                                    if let Some(a) = arg_exprs.first() { self.compile_expr(a)?; }
+                                    let sleep_idx = self.import("wasi:clocks", "sleep");
+                                    let line = self.line;
+                                    common::threading::emit_sleep(self.chunk(), sleep_idx, line);
+                                    return Ok(());
+                                }
+                                _ => {}
+                            }
+                            let root_idx = self.str_const(&ns_parts[0]);
+                            self.emit_u16(Op::global_get, root_idx);
+                            for part in &ns_parts[1..] {
+                                let idx = self.str_const(part);
+                                self.emit_u16(Op::struct_get, idx);
+                            }
+                            let is_const = common::dotnet::is_known_constant(ns_parts.last().unwrap_or(&String::new()));
+                            if !is_const {
+                                for a in &arg_exprs { self.compile_expr(a)?; }
+                                self.emit_u8(Op::call_ref, arg_exprs.len() as u8);
+                            }
+                            return Ok(());
+                        }
+                        common::dotnet::DottedResolution::InstanceMember { local, members } => {
+                            // Intercept Controls.Add for GUI
+                            if members.len() >= 2 && members[members.len()-2] == "controls" && members[members.len()-1] == "add" {
+                                self.emit_var_get(&local);
+                                for a in &arg_exprs { self.compile_expr(a)?; }
+                                let idx = self.import("vybe:gui", "controlsAdd");
+                                self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
+                                return Ok(());
+                            }
+                            // Intercept Thread/Task methods → WASM stack switching opcodes
+                            if members.len() == 1 {
+                                let method = members[0].as_str();
+                                match method {
+                                    "start" => {
+                                        // th.Start() — thread_spawn already started it, no-op
+                                        self.emit(Op::null);
+                                        return Ok(());
+                                    }
+                                    "join" => {
+                                        // th.Join() → thread_join opcode (blocks until thread completes)
+                                        self.emit_var_get(&local);
+                                        let line = self.line;
+                                        common::threading::emit_thread_join(self.chunk(), line);
+                                        self.emit(Op::drop);
+                                        return Ok(());
+                                    }
+                                    "waitforexit" => {
+                                        // p.WaitForExit() — process ran synchronously, no-op
+                                        // Must leave a value on stack (caller drops it)
+                                        self.emit(Op::null);
+                                        return Ok(());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // Generic instance member chain → obj.prop.method(args)
+                            self.emit_var_get(&local);
+                            let last_idx = members.len() - 1;
+                            for (i, m) in members.iter().enumerate() {
+                                let idx = self.str_const(m);
+                                if i < last_idx {
+                                    self.emit_u16(Op::struct_get, idx);
+                                } else {
+                                    // Last member is the method — struct_get then call with this
+                                    self.emit(Op::dup); // keep obj for this
+                                    self.emit_u16(Op::struct_get, idx);
+                                    // Stack: [obj, method_fn] — swap so fn is first
+                                    // Reuse temp slots to avoid slot accumulation
+                                    let fn_tmp = self.scope().resolve("__dotnet_fn")
+                                        .unwrap_or_else(|| self.scope_mut().define("__dotnet_fn"));
+                                    self.emit_u16(Op::local_set, fn_tmp); self.emit(Op::drop);
+                                    let obj_tmp = self.scope().resolve("__dotnet_obj")
+                                        .unwrap_or_else(|| self.scope_mut().define("__dotnet_obj"));
+                                    self.emit_u16(Op::local_set, obj_tmp); self.emit(Op::drop);
+                                    self.emit_u16(Op::local_get, fn_tmp);
+                                    self.emit_u16(Op::local_get, obj_tmp);
+                                    for a in &arg_exprs { self.compile_expr(a)?; }
+                                    self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
+                                    return Ok(());
+                                }
+                            }
+                            // Shouldn't reach here for calls, but just in case
+                            for a in &arg_exprs { self.compile_expr(a)?; }
+                            self.emit_u8(Op::call_ref, arg_exprs.len() as u8);
+                            return Ok(());
+                        }
+                        common::dotnet::DottedResolution::NoOp => {
+                            self.emit(Op::null);
+                            return Ok(());
+                        }
+                        common::dotnet::DottedResolution::Unresolved => {
+                            // Fall through to value methods and other resolution
+                        }
+                    }
+                }
+
+                // Non-dotnet: module aliases (JS: console → wasi:cli)
+                if let Some(module) = self.profile.lookup_module_alias(&lower_parts[0]).map(|s| s.to_string()) {
+                    let func = if lower_parts.len() == 2 { lower_parts[1].clone() } else { lower_parts[1..].join(".") };
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    let idx = self.import(&module, &func);
+                    self.emit_host_call(idx, arg_exprs.len() as u8);
+                    return Ok(());
+                }
+
+                // Profile namespace roots
+                if self.profile.is_namespace_root(&lower_parts[0]) {
+                    let root_idx = self.str_const(&lower_parts[0]);
+                    self.emit_u16(Op::global_get, root_idx);
+                    for part in &lower_parts[1..] {
+                        let idx = self.str_const(part);
+                        self.emit_u16(Op::struct_get, idx);
+                    }
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::call_ref, arg_exprs.len() as u8);
+                    return Ok(());
+                }
+            }
+        }
+
+        // ── Value method: obj.toUpperCase() ─────────────────────────
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if let Some(def) = self.profile.lookup_value_method(field).cloned() {
+                // Object is first arg
+                self.compile_expr(object)?;
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                match &def.emit {
+                    BuiltinEmit::HostCall(module, func) => {
+                        let idx = self.import(module, func);
+                        self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
+                    }
+                    BuiltinEmit::Opcode(op_name) => {
+                        // value already on stack as first arg
+                        self.emit_builtin_opcode(op_name, &arg_exprs)?;
+                    }
+                    BuiltinEmit::StrLength => {
+                        let line = self.line;
+                        common::strings::emit_length(self.chunk(), line);
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+
+            // Array methods routing: arr.map(fn) → __array_map(arr, fn)
+            if let Some(target) = self.profile.lookup_array_method(field).map(|s| s.to_string()) {
+                self.compile_expr(object)?;
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                let idx = self.str_const(&target);
+                self.emit_u16(Op::global_get, idx);
+                // Reorder: func is on top, we need it after the array
+                // Actually: global_get pushed the func, but array + args are already pushed
+                // We need: func, array, args... → just call with all pushed
+                self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
+                return Ok(());
+            }
+        }
+
+        // ── Constructor call: ClassName.Create(args) ────────────────
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if let ExprKind::Ident(class_name) = &object.kind {
+                let ctor_nm = &self.profile.constructor_name.clone();
+                let is_ctor = if self.case_sensitive { field == ctor_nm } else { field.eq_ignore_ascii_case(ctor_nm) };
+                if is_ctor && self.defined_globals.contains(class_name.as_str()) {
+                    self.emit_var_get(class_name);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::call_ref, arg_exprs.len() as u8);
+                    return Ok(());
+                }
+            }
+        }
+
+        // ── Method call: obj.method(args) ───────────────────────────
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            self.compile_expr(object)?;
+            let field_name = self.canon(field);
+            let prop = self.str_const(&field_name);
+            self.emit(Op::dup);
+            self.emit_u16(Op::struct_get, prop);
+            let fn_tmp = self.scope_mut().define("__fn");
+            self.emit_u16(Op::local_set, fn_tmp); self.emit(Op::drop);
+            let obj_tmp = self.scope_mut().define("__obj");
+            self.emit_u16(Op::local_set, obj_tmp); self.emit(Op::drop);
+            self.emit_u16(Op::local_get, fn_tmp);
+            self.emit_u16(Op::local_get, obj_tmp);
+            for a in &arg_exprs { self.compile_expr(a)?; }
+            self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
+            return Ok(());
+        }
+
+        // ── Simple call: name(args) / expr(args) ────────────────────
+        if let ExprKind::Ident(name) = &callee.kind {
+            let is_known_func = self.defined_functions.contains(name)
+                || (!self.case_sensitive && self.defined_functions.iter().any(|g| g.eq_ignore_ascii_case(name)));
+            if self.try_compile_builtin(name, &arg_exprs)? { return Ok(()); }
+
+            // VB array access: arr(idx) when name is local and not known as function
+            if !is_known_func && arg_exprs.len() == 1 && self.profile.parens_for_index {
+                let is_local = self.scope().resolve(name).is_some()
+                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+                if is_local {
+                    self.emit_var_get(name);
+                    self.compile_expr(arg_exprs[0])?;
+                    self.emit(Op::array_get);
+                    return Ok(());
+                }
+            }
+
+            // Inside a class: bare method call → Me.method(args)
+            // If name isn't a local variable and we're inside a class body,
+            // resolve as Me.name() (implicit self for method calls).
+            if self.current_class.is_some() && self.profile.implicit_self_fields {
+                let is_local = self.scope().resolve(name).is_some()
+                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+                if !is_local && !is_known_func {
+                    let self_kw = self.profile.self_keyword.clone();
+                    if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                        // Me.name(args) → load Me, dup, struct_get(name), call with this
+                        self.emit_u16(Op::local_get, self_slot);
+                        let field_name = self.canon(name);
+                        let prop = self.str_const(&field_name);
+                        self.emit(Op::dup);
+                        self.emit_u16(Op::struct_get, prop);
+                        let fn_tmp = self.scope_mut().define("__bare_fn");
+                        self.emit_u16(Op::local_set, fn_tmp); self.emit(Op::drop);
+                        let obj_tmp = self.scope_mut().define("__bare_obj");
+                        self.emit_u16(Op::local_set, obj_tmp); self.emit(Op::drop);
+                        self.emit_u16(Op::local_get, fn_tmp);
+                        self.emit_u16(Op::local_get, obj_tmp);
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
+                        return Ok(());
+                    }
+                }
+            }
+
+            self.emit_var_get(name);
+            for a in &arg_exprs { self.compile_expr(a)?; }
+            self.emit_u8(Op::call_ref, arg_exprs.len() as u8);
+            return Ok(());
+        }
+
+        // ── Fallback: general expression call ───────────────────────
+        self.compile_expr(callee)?;
+        for a in &arg_exprs { self.compile_expr(a)?; }
+        self.emit_u8(Op::call_ref, arg_exprs.len() as u8);
+        Ok(())
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Lambda compilation
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_lambda(&mut self, params: &[Param], body: &LambdaBody) -> Result<(), String> {
+        let arity = params.len() as u8;
+        let ci = self.chunks.len();
+        let chunk = common::functions::create_function_chunk("<lambda>", arity);
+        self.chunks.push(chunk);
+        self.scopes.push(Scope::new_function());
+        let saved = self.current;
+        self.current = ci;
+        for p in params { self.scope_mut().define(&p.name); }
+
+        // Result slot for ResultSlot languages
+        let result_slot = if self.profile.function_return == ReturnStyle::ResultSlot {
+            let rs = self.scope_mut().define("Result");
+            self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
+            let saved_fn = self.current_func_name.take();
+            let saved_rs = self.current_result_slot.take();
+            self.current_func_name = Some("<lambda>".into());
+            self.current_result_slot = Some(rs);
+            Some((rs, saved_fn, saved_rs))
+        } else { None };
+
+        match body {
+            LambdaBody::Expr(expr) => {
+                self.compile_expr(expr)?;
+                self.emit(Op::r#return);
+            }
+            LambdaBody::Block(stmts) => {
+                for s in stmts { self.compile_stmt(s)?; }
+            }
+        }
+
+        if let Some((rs, saved_fn, saved_rs)) = result_slot {
+            self.emit_u16(Op::local_get, rs);
+            self.emit(Op::r#return);
+            self.current_func_name = saved_fn;
+            self.current_result_slot = saved_rs;
+        } else if matches!(body, LambdaBody::Block(_)) {
+            let line = self.line;
+            common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
+        }
+
+        let locals = self.scope().next_slot;
+        self.chunks[ci].local_count = locals;
+        let uvs = self.scopes.last().unwrap().upvalues.clone();
+        self.scopes.pop();
+        self.current = saved;
+        let l = self.line;
+        common::functions::emit_ref_func(&mut self.chunks[self.current], ci, uvs.len() as u8, l);
+        for uv in &uvs {
+            self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, l);
+            self.chunks[self.current].emit(uv.index, l);
+        }
+        Ok(())
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Binary operator emission
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_binop(&mut self, op: &BinOp) {
+        match op {
+            BinOp::Add => { if self.profile.dynamic_add { self.emit(Op::dyn_add); } else { self.emit(Op::dyn_add); } }
+            BinOp::Sub => self.emit(Op::f64_sub),
+            BinOp::Mul => self.emit(Op::f64_mul),
+            BinOp::Div => self.emit(Op::f64_div),
+            BinOp::IDiv | BinOp::FloorDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
+            BinOp::Mod => self.emit(Op::f64_mod),
+            BinOp::Pow => { let i = self.import("vybe:math", "pow"); self.emit_host_call(i, 2); }
+            BinOp::Eq => self.emit(Op::dyn_eq),
+            BinOp::NotEq => self.emit(Op::dyn_ne),
+            BinOp::StrictEq => self.emit(Op::dyn_eq), // strict eq is same in our VM
+            BinOp::StrictNotEq => self.emit(Op::dyn_ne),
+            BinOp::Lt => self.emit(Op::dyn_lt),
+            BinOp::Gt => self.emit(Op::dyn_gt),
+            BinOp::LtEq => self.emit(Op::dyn_le),
+            BinOp::GtEq => self.emit(Op::dyn_ge),
+            BinOp::Spaceship => {
+                // a <=> b: returns -1, 0, or 1
+                let i = self.import("vybe:math", "spaceship");
+                self.emit_host_call(i, 2);
+            }
+            BinOp::And | BinOp::Or => unreachable!(), // handled with short-circuit
+            BinOp::Xor => self.emit(Op::i32_xor),
+            BinOp::BitAnd => self.emit(Op::i32_and),
+            BinOp::BitOr => self.emit(Op::i32_or),
+            BinOp::BitXor => self.emit(Op::i32_xor),
+            BinOp::Shl => self.emit(Op::i32_shl),
+            BinOp::Shr => self.emit(Op::i32_shr_s),
+            BinOp::UShr => self.emit(Op::i32_shr_u),
+            BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
+            BinOp::In => {
+                let idx = self.import("vybe:collections", "setHas");
+                self.emit_host_call(idx, 2);
+            }
+            BinOp::NotIn => {
+                let idx = self.import("vybe:collections", "setHas");
+                self.emit_host_call(idx, 2);
+                self.emit(Op::dyn_not);
+            }
+            BinOp::InstanceOf => {
+                // a instanceof B → check __type chain
+                self.emit(Op::dyn_eq); // simplified
+            }
+            BinOp::NullCoalesce => unreachable!(), // handled in compile_expr
+            BinOp::MatMul => {
+                let i = self.import("vybe:math", "matmul");
+                self.emit_host_call(i, 2);
+            }
+            BinOp::Like => {
+                let idx = self.import("vybe:string", "like");
+                self.emit_host_call(idx, 2);
+            }
+            BinOp::Is => {
+                // Reference equality
+                self.emit(Op::dyn_eq);
+            }
+            BinOp::IsNot => {
+                self.emit(Op::dyn_eq);
+                self.emit(Op::dyn_not);
+            }
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Compound assignment operator emission
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn compile_compound_op(&mut self, op: &CompoundOp) {
+        match op {
+            CompoundOp::Add => self.emit(Op::dyn_add),
+            CompoundOp::Sub => self.emit(Op::f64_sub),
+            CompoundOp::Mul => self.emit(Op::f64_mul),
+            CompoundOp::Div => self.emit(Op::f64_div),
+            CompoundOp::IDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
+            CompoundOp::Mod => self.emit(Op::f64_mod),
+            CompoundOp::Pow => { let i = self.import("vybe:math", "pow"); self.emit_host_call(i, 2); }
+            CompoundOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
+            CompoundOp::BitAnd => self.emit(Op::i32_and),
+            CompoundOp::BitOr => self.emit(Op::i32_or),
+            CompoundOp::BitXor => self.emit(Op::i32_xor),
+            CompoundOp::Shl => self.emit(Op::i32_shl),
+            CompoundOp::Shr => self.emit(Op::i32_shr_s),
+            CompoundOp::UShr => self.emit(Op::i32_shr_u),
+            CompoundOp::And => self.emit(Op::dyn_to_bool), // simplified
+            CompoundOp::Or => self.emit(Op::dyn_to_bool),  // simplified
+            CompoundOp::NullCoalesce => {
+                // a ??= b → if a is null, a = b
+                // At this point both are on stack already — no-op, the whole compound assign handles it
+            }
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Builtins (profile-driven)
+    // ════════════════════════════════════════════════════════════════════════
+
+    fn try_compile_builtin(&mut self, name: &str, args: &[&Expression]) -> Result<bool, String> {
+        let line = self.line;
+
+        // Check common import table first
+        if let Some((module, func)) = common::imports::resolve_common_import(name) {
+            for a in args { self.compile_expr(a)?; }
+            let idx = self.import(module, func);
+            self.emit_host_call(idx, args.len() as u8);
+            return Ok(true);
+        }
+
+        // Look up in language profile
+        let builtin = self.profile.lookup_builtin(name).cloned();
+        if let Some(def) = builtin {
+            match &def.emit {
+                BuiltinEmit::Print => {
+                    for a in args { self.compile_expr(a)?; }
+                    let idx = self.import("wasi:cli", "log");
+                    common::io::emit_print_with_import(self.chunk(), idx, args.len() as u8, line);
+                }
+                BuiltinEmit::StrLength => {
+                    if !args.is_empty() {
+                        self.compile_expr(args[0])?;
+                        common::strings::emit_length(self.chunk(), line);
+                    } else {
+                        self.emit(Op::null);
+                    }
+                }
+                BuiltinEmit::HostCall(module, func) => {
+                    for a in args { self.compile_expr(a)?; }
+                    let idx = self.import(module, func);
+                    self.emit_host_call(idx, args.len() as u8);
+                }
+                BuiltinEmit::Opcode(op_name) => {
+                    self.emit_builtin_opcode(op_name, args)?;
+                }
+                BuiltinEmit::MutateVar(op) => {
+                    if let Some(first) = args.first() {
+                        if let ExprKind::Ident(var) = &first.kind {
+                            let var = var.clone();
+                            self.emit_var_get(&var);
+                            if args.len() > 1 { self.compile_expr(args[1])?; } else { self.emit_const(Value::F64(1.0)); }
+                            match op.as_str() {
+                                "add" => self.emit(Op::dyn_add),
+                                "sub" => self.emit(Op::f64_sub),
+                                _ => self.emit(Op::dyn_add),
+                            }
+                            self.emit_var_set(&var);
+                        }
+                    }
+                    self.emit(Op::null);
+                }
+                BuiltinEmit::Intrinsic(intrinsic_name) => {
+                    self.emit_intrinsic(intrinsic_name, args)?;
+                }
+                BuiltinEmit::Noop => {
+                    self.emit(Op::null);
+                }
+            }
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Emit a named opcode sequence for a builtin.
+    fn emit_builtin_opcode(&mut self, op_name: &str, args: &[&Expression]) -> Result<(), String> {
+        let line = self.line;
+        match op_name {
+            "abs" => { self.compile_expr(args[0])?; common::math::emit_abs(self.chunk(), line); }
+            "sqrt" => { self.compile_expr(args[0])?; common::math::emit_sqrt(self.chunk(), line); }
+            "round" => { self.compile_expr(args[0])?; common::math::emit_round(self.chunk(), line); }
+            "trunc" => { self.compile_expr(args[0])?; common::math::emit_trunc(self.chunk(), line); }
+            "floor" => { self.compile_expr(args[0])?; common::math::emit_floor(self.chunk(), line); }
+            "ceil" => { self.compile_expr(args[0])?; common::math::emit_ceil(self.chunk(), line); }
+            "min" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; common::math::emit_min(self.chunk(), line); } else { self.emit(Op::null); } }
+            "max" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; common::math::emit_max(self.chunk(), line); } else { self.emit(Op::null); } }
+            "sqr" => { self.compile_expr(args[0])?; self.emit(Op::dup); self.emit(Op::f64_mul); }
+            "succ" => { self.compile_expr(args[0])?; self.emit_const(Value::F64(1.0)); self.emit(Op::dyn_add); }
+            "pred" => { self.compile_expr(args[0])?; self.emit_const(Value::F64(1.0)); self.emit(Op::f64_sub); }
+            "to_upper" => { self.compile_expr(args[0])?; common::strings::emit_to_upper(self.chunk(), line); }
+            "to_lower" => { self.compile_expr(args[0])?; common::strings::emit_to_lower(self.chunk(), line); }
+            "trim" => { self.compile_expr(args[0])?; common::strings::emit_trim(self.chunk(), line); }
+            "concat" => { for a in args { self.compile_expr(a)?; } common::strings::emit_concat(self.chunk(), args.len(), line); }
+            "replace" => { if args.len() >= 3 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.compile_expr(args[2])?; common::strings::emit_replace(self.chunk(), line); } }
+            "repeat" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; common::strings::emit_repeat(self.chunk(), line); } }
+            "leftstr" => { self.compile_expr(args[0])?; self.emit_const(Value::F64(0.0)); self.compile_expr(args[1])?; common::strings::emit_substring(self.chunk(), line); }
+            "high" => { self.compile_expr(args[0])?; common::strings::emit_length(self.chunk(), line); self.emit_const(Value::F64(1.0)); self.emit(Op::f64_sub); }
+            "low" => { self.emit_const(Value::F64(0.0)); }
+            "setlength" => {
+                if let Some(first) = args.first() {
+                    if let ExprKind::Ident(var) = &first.kind {
+                        let var = var.clone();
+                        if args.len() > 1 { self.compile_expr(args[1])?; }
+                        let idx = self.import("vybe:array", "newWithLength");
+                        self.emit_host_call(idx, 1);
+                        self.emit_var_set(&var);
+                    }
+                }
+                self.emit(Op::null);
+            }
+            "trim_start" => { self.compile_expr(args[0])?; common::strings::emit_trim_start(self.chunk(), line); }
+            "trim_end" => { self.compile_expr(args[0])?; common::strings::emit_trim_end(self.chunk(), line); }
+            "pow" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; common::math::emit_pow(self.chunk(), line); } }
+            "log" => { self.compile_expr(args[0])?; common::math::emit_log(self.chunk(), line); }
+            "sin" => { self.compile_expr(args[0])?; common::math::emit_sin(self.chunk(), line); }
+            "cos" => { self.compile_expr(args[0])?; common::math::emit_cos(self.chunk(), line); }
+            "tan" => { self.compile_expr(args[0])?; common::math::emit_tan(self.chunk(), line); }
+            "exp" => { self.compile_expr(args[0])?; common::math::emit_exp(self.chunk(), line); }
+            "is_null" => { self.compile_expr(args[0])?; self.emit(Op::ref_is_null); }
+            "space" => { self.emit_const(Value::String(Arc::from(" "))); self.compile_expr(args[0])?; common::strings::emit_repeat(self.chunk(), line); }
+            "assigned" => { self.compile_expr(args[0])?; self.emit(Op::ref_is_null); self.emit(Op::dyn_not); }
+            "freeandnil" => {
+                if let Some(first) = args.first() {
+                    if let ExprKind::Ident(var) = &first.kind {
+                        let var = var.clone();
+                        self.emit(Op::null);
+                        self.emit_var_set(&var);
+                    }
+                }
+                self.emit(Op::null);
+            }
+            // Direct WASM opcode names
+            "f64_abs" => { self.compile_expr(args[0])?; self.emit(Op::f64_abs); }
+            "f64_floor" => { self.compile_expr(args[0])?; self.emit(Op::f64_floor); }
+            "f64_ceil" => { self.compile_expr(args[0])?; self.emit(Op::f64_ceil); }
+            "f64_sqrt" => { self.compile_expr(args[0])?; self.emit(Op::f64_sqrt); }
+            "f64_trunc" => { self.compile_expr(args[0])?; self.emit(Op::f64_trunc); }
+            "f64_nearest" => { self.compile_expr(args[0])?; self.emit(Op::f64_nearest); }
+            "f64_min" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::f64_min); } }
+            "f64_max" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::f64_max); } }
+            "i32_from_f64" => { self.compile_expr(args[0])?; self.emit(Op::i32_from_f64); }
+            "f64_from_i32" => { self.compile_expr(args[0])?; self.emit(Op::f64_from_i32); }
+            "dyn_to_bool" => { self.compile_expr(args[0])?; self.emit(Op::dyn_to_bool); }
+            "ref_is_null" => { self.compile_expr(args[0])?; self.emit(Op::ref_is_null); }
+            "ref_is_array" => { self.compile_expr(args[0])?; self.emit(Op::ref_is_array); }
+            "ref_typeof" => { self.compile_expr(args[0])?; self.emit(Op::ref_typeof); }
+            "str_length" => { self.compile_expr(args[0])?; self.emit(Op::str_length); }
+            "str_to_upper" => { self.compile_expr(args[0])?; self.emit(Op::str_to_upper); }
+            "str_to_lower" => { self.compile_expr(args[0])?; self.emit(Op::str_to_lower); }
+            "str_trim" => { self.compile_expr(args[0])?; self.emit(Op::str_trim); }
+            "str_trim_start" => { self.compile_expr(args[0])?; self.emit(Op::str_trim_start); }
+            "str_trim_end" => { self.compile_expr(args[0])?; self.emit(Op::str_trim_end); }
+            "str_reverse" => { self.compile_expr(args[0])?; self.emit(Op::str_reverse); }
+            "str_from_char_code" => { self.compile_expr(args[0])?; self.emit(Op::str_from_char_code); }
+            "str_compare" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::str_compare); } }
+            "str_split" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::str_split); } }
+            "str_repeat" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::str_repeat); } }
+            "array_join" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::array_join); } }
+            _ => { self.emit(Op::null); }
+        }
+        Ok(())
+    }
+
+    /// Emit a multi-opcode intrinsic sequence.
+    fn emit_intrinsic(&mut self, name: &str, args: &[&Expression]) -> Result<(), String> {
+        let line = self.line;
+        match name {
+            "cbyte" => {
+                self.compile_expr(args[0])?;
+                common::convert::emit_to_int(self.chunk(), line);
+                self.emit_const(Value::I32(0xFF));
+                self.emit(Op::i32_and);
+            }
+            "ubound" => {
+                self.compile_expr(args[0])?;
+                common::collections::emit_len(self.chunk(), line);
+                self.emit_const(Value::I32(1));
+                self.emit(Op::i32_sub);
+            }
+            "lbound" => {
+                self.emit(Op::i32_const_0);
+            }
+            "asc" => {
+                self.compile_expr(args[0])?;
+                self.emit(Op::i32_const_0);
+                self.emit(Op::str_char_code_at);
+            }
+            "space" => {
+                self.emit_const(Value::String(Arc::from(" ")));
+                self.compile_expr(args[0])?;
+                common::convert::emit_to_int(self.chunk(), line);
+                common::strings::emit_repeat(self.chunk(), line);
+            }
+            "string_repeat" => {
+                // String(n, char): VB arg order reversed
+                if args.len() >= 2 {
+                    self.compile_expr(args[1])?;
+                    self.compile_expr(args[0])?;
+                    common::strings::emit_repeat(self.chunk(), line);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "left" => {
+                // Left(s, n) → substring(s, 0, n)
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.emit(Op::i32_const_0);
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    common::strings::emit_substring(self.chunk(), line);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "mid" | "mid_1based" => {
+                // Mid(s, start[, len]) — 1-based
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::i32_sub); // start0
+                    if args.len() >= 3 {
+                        self.emit(Op::dup);
+                        self.compile_expr(args[2])?;
+                        common::convert::emit_to_int(self.chunk(), line);
+                        self.emit(Op::i32_add); // start0 + length
+                    } else {
+                        self.emit_const(Value::I32(0x7FFF_FFFF));
+                    }
+                    common::strings::emit_substring(self.chunk(), line);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "number_isnan" => {
+                self.compile_expr(args[0])?;
+                self.emit(Op::dup);
+                self.emit(Op::dyn_ne);
+            }
+            "number_isfinite" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_abs(self.chunk(), line);
+                self.emit_const(Value::F64(f64::MAX));
+                self.emit(Op::dyn_le);
+            }
+            "number_isinteger" => {
+                self.compile_expr(args[0])?;
+                self.emit(Op::dup);
+                self.emit(Op::f64_trunc);
+                self.emit(Op::dyn_eq);
+            }
+            "map_size" => {
+                self.compile_expr(args[0])?;
+                common::dict::emit_keys(self.chunk(), line);
+                common::collections::emit_len(self.chunk(), line);
+            }
+            "array_at" => {
+                if args.len() >= 1 {
+                    // Already have object from value method dispatch
+                    self.compile_expr(args[0])?;
+                    common::collections::emit_get(self.chunk(), line);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "instr" => {
+                if args.len() == 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::strings::emit_index_of(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::i32_add);
+                } else if args.len() == 3 {
+                    self.compile_expr(args[1])?;
+                    self.compile_expr(args[0])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::i32_sub);
+                    self.emit_const(Value::I32(0x7FFF_FFFF));
+                    common::strings::emit_substring(self.chunk(), line);
+                    self.compile_expr(args[2])?;
+                    common::strings::emit_index_of(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::i32_add);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "instrrev" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::strings::emit_last_index_of(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::i32_add);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "replace" => {
+                if args.len() >= 3 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.compile_expr(args[2])?;
+                    common::strings::emit_replace(self.chunk(), line);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "split" => {
+                self.compile_expr(args[0])?;
+                if args.len() >= 2 {
+                    self.compile_expr(args[1])?;
+                } else {
+                    self.emit_const(Value::String(Arc::from(" ")));
+                }
+                self.emit(Op::str_split);
+            }
+            "join" => {
+                self.compile_expr(args[0])?;
+                if args.len() >= 2 {
+                    self.compile_expr(args[1])?;
+                } else {
+                    self.emit_const(Value::String(Arc::from("")));
+                }
+                self.emit(Op::array_join);
+            }
+            _ => { self.emit(Op::null); }
+        }
+        Ok(())
+    }
+}

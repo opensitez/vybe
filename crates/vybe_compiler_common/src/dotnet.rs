@@ -479,6 +479,9 @@ pub fn known_types() -> HashMap<String, (&'static str, &'static str)> {
         ("udpclient", "vybe:net", "udpNew"),
         ("streamreader", "vybe:net", "streamReaderNew"),
         ("streamwriter", "vybe:net", "streamWriterNew"),
+        // Process
+        ("processstartinfo", "vybe:types", "processStartInfoNew"),
+        ("process", "vybe:types", "processNew"),
         // WinForms
         ("form", "vybe:gui", "newForm"),
     ] {

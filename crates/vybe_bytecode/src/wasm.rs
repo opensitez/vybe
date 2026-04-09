@@ -6,7 +6,7 @@
 
 use crate::{Chunk, Op};
 use crate::value::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6D];
 const WASM_VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
@@ -934,14 +934,14 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 let name = format!("__wasm_global_{}", idx);
-                let ci = chunk.add_constant(Value::String(Rc::from(name.as_str())));
+                let ci = chunk.add_constant(Value::String(Arc::from(name.as_str())));
                 chunk.emit_op_u16(Op::global_get, ci, 0);
             }
             0x24 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 let name = format!("__wasm_global_{}", idx);
-                let ci = chunk.add_constant(Value::String(Rc::from(name.as_str())));
+                let ci = chunk.add_constant(Value::String(Arc::from(name.as_str())));
                 chunk.emit_op_u16(Op::global_set, ci, 0);
             }
 
@@ -1233,7 +1233,7 @@ fn decode_value(data: &[u8], pos: &mut usize) -> Value {
         2 => { let n = i32::from_le_bytes([data[*pos],data[*pos+1],data[*pos+2],data[*pos+3]]); *pos += 4; Value::I32(n) }
         3 => { let n = i64::from_le_bytes([data[*pos],data[*pos+1],data[*pos+2],data[*pos+3],data[*pos+4],data[*pos+5],data[*pos+6],data[*pos+7]]); *pos += 8; Value::I64(n) }
         4 => { let n = f64::from_le_bytes([data[*pos],data[*pos+1],data[*pos+2],data[*pos+3],data[*pos+4],data[*pos+5],data[*pos+6],data[*pos+7]]); *pos += 8; Value::F64(n) }
-        5 => { let (len, read) = read_leb128_u32(&data[*pos..]); *pos += read; let s = std::str::from_utf8(&data[*pos..*pos+len as usize]).unwrap_or(""); *pos += len as usize; Value::String(Rc::from(s)) }
+        5 => { let (len, read) = read_leb128_u32(&data[*pos..]); *pos += read; let s = std::str::from_utf8(&data[*pos..*pos+len as usize]).unwrap_or(""); *pos += len as usize; Value::String(Arc::from(s)) }
         _ => Value::Null,
     }
 }

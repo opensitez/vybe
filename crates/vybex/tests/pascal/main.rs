@@ -1,0 +1,11 @@
+mod helpers;
+mod test_literals;
+mod test_operators;
+mod test_variables;
+mod test_control_flow;
+mod test_functions;
+mod test_builtins;
+mod test_classes;
+mod test_programs;
+mod test_edge_cases;
+mod test_new_features;

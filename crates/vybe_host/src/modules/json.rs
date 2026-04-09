@@ -3,7 +3,7 @@ use vybe_bytecode::value::ObjectKind;
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:json", "stringify", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::String(Rc::from(stringify(args.first().unwrap_or(&Value::Null)).as_str()))
+        Value::String(Arc::from(stringify(args.first().unwrap_or(&Value::Null)).as_str()))
     }));
 
     vm.register_host_fn("vybe:json", "parse", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
@@ -12,8 +12,7 @@ pub fn register(vm: &mut VM) {
     }));
 }
 
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::Object;
 
 fn parse_json(s: &str) -> Value {
@@ -31,23 +30,23 @@ fn parse_json(s: &str) -> Value {
             .replace("\\n", "\n")
             .replace("\\t", "\t")
             .replace("\\r", "\r");
-        return Value::String(Rc::from(unescaped.as_str()));
+        return Value::String(Arc::from(unescaped.as_str()));
     }
     // Array: [...]
     if s.starts_with('[') && s.ends_with(']') {
         let inner = &s[1..s.len()-1].trim();
         if inner.is_empty() {
-            return Value::Object(Rc::new(RefCell::new(Object::new_array(vec![]))));
+            return Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))));
         }
         let items = split_json_values(inner);
         let elems: Vec<Value> = items.iter().map(|item| parse_json(item.trim())).collect();
-        return Value::Object(Rc::new(RefCell::new(Object::new_array(elems))));
+        return Value::Object(Arc::new(Mutex::new(Object::new_array(elems))));
     }
     // Object: {...}
     if s.starts_with('{') && s.ends_with('}') {
         let inner = &s[1..s.len()-1].trim();
         if inner.is_empty() {
-            return Value::Object(Rc::new(RefCell::new(Object::new())));
+            return Value::Object(Arc::new(Mutex::new(Object::new())));
         }
         let mut obj = Object::new();
         let pairs = split_json_values(inner);
@@ -63,10 +62,10 @@ fn parse_json(s: &str) -> Value {
                 obj.properties.insert(key.to_string(), parse_json(val));
             }
         }
-        return Value::Object(Rc::new(RefCell::new(obj)));
+        return Value::Object(Arc::new(Mutex::new(obj)));
     }
     // Unknown — return as string
-    Value::String(Rc::from(s))
+    Value::String(Arc::from(s))
 }
 
 /// Split comma-separated JSON values, respecting nesting.
@@ -139,7 +138,7 @@ fn stringify(v: &Value) -> String {
         }
         Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")),
         Value::Object(obj) => {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             match &o.kind {
                 ObjectKind::Array(elems) => {
                     let parts: Vec<String> = elems.iter().map(|e| stringify(e)).collect();

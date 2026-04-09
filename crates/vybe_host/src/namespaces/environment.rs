@@ -24,7 +24,7 @@ fn register_env_methods(vm: &VM, ns: &Value) {
     set_prop(ns, "machinename", host_fn_ref(vm, "wasi:cli", "machineName"));
     set_prop(ns, "username", host_fn_ref(vm, "wasi:cli", "userName"));
     set_prop(ns, "osversion", host_fn_ref(vm, "wasi:cli", "platform"));
-    set_prop(ns, "newline", Value::String(Rc::from("\n")));
+    set_prop(ns, "newline", Value::String(Arc::from("\n")));
     set_prop(ns, "tickcount", host_fn_ref(vm, "wasi:cli", "tickCount"));
     set_prop(ns, "commandline", host_fn_ref(vm, "wasi:cli", "args"));
     set_prop(ns, "exit", host_fn_ref(vm, "wasi:cli", "exit"));

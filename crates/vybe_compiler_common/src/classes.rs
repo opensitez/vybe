@@ -18,7 +18,7 @@
 //! is left to each compiler. The `struct_set` opcode expects `[obj, val]` on stack
 //! and leaves `[val]` — callers must `drop` if they don't need the result.
 
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::chunk::TypeEntry;
@@ -37,15 +37,15 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     // Stamp __type string (untyped fallback for typeof/instanceof)
     // struct_set expects [obj, val] → leaves [val]
     chunk.emit_op_u16(Op::local_get, this_slot, line);
-    let type_str = chunk.add_constant(Value::String(Rc::from(class_name)));
-    let type_key = chunk.add_constant(Value::String(Rc::from("__type")));
+    let type_str = chunk.add_constant(Value::String(Arc::from(class_name)));
+    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_op_u16(Op::r#const, type_str, line);
     chunk.emit_op_u16(Op::struct_set, type_key, line);
     chunk.emit_op(Op::drop, line);
 
     // Stamp WASM GC type_id via __tid_ global (set at load time by TypeRegistry)
     let tid_name = chunk.add_constant(
-        Value::String(Rc::from(format!("__tid_{}", class_name.to_lowercase()).as_str()))
+        Value::String(Arc::from(format!("__tid_{}", class_name.to_lowercase()).as_str()))
     );
     chunk.emit_op_u16(Op::local_get, this_slot, line);
     chunk.emit_op_u16(Op::global_get, tid_name, line);
@@ -76,7 +76,7 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
 ///
 /// Stack: unchanged
 pub fn emit_instanceof_chain(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
-    let types_key = chunk.add_constant(Value::String(Rc::from("__types")));
+    let types_key = chunk.add_constant(Value::String(Arc::from("__types")));
 
     // [this]
     chunk.emit_op_u16(Op::local_get, this_slot, line);
@@ -101,7 +101,7 @@ pub fn emit_instanceof_chain(chunk: &mut Chunk, this_slot: u16, class_name: &str
     chunk.code[patch_pos + 2] = (offset & 0xff) as u8;
 
     // skip: [this, array]
-    let name_const = chunk.add_constant(Value::String(Rc::from(class_name)));
+    let name_const = chunk.add_constant(Value::String(Arc::from(class_name)));
     // [this, array, "class_name"]
     chunk.emit_op_u16(Op::r#const, name_const, line);
     // [this, array_with_name]
@@ -121,7 +121,7 @@ pub fn emit_bind_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, me
     chunk.emit_op_u16(Op::local_get, this_slot, line);
     chunk.emit_op_u16(Op::ref_func, method_chunk_idx as u16, line);
     chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
-    let key = chunk.add_constant(Value::String(Rc::from(method_name)));
+    let key = chunk.add_constant(Value::String(Arc::from(method_name)));
     chunk.emit_op_u16(Op::struct_set, key, line);
     chunk.emit_op(Op::drop, line);
 }
@@ -230,9 +230,9 @@ pub fn emit_save_base_method(chunk: &mut Chunk, this_slot: u16, method_name: &st
     let base_name = format!("__base_{}", method_name);
     chunk.emit_op_u16(Op::local_get, this_slot, line);  // obj for struct_set
     chunk.emit_op_u16(Op::local_get, this_slot, line);  // obj for struct_get
-    let prop_idx = chunk.add_constant(Value::String(Rc::from(method_name)));
+    let prop_idx = chunk.add_constant(Value::String(Arc::from(method_name)));
     chunk.emit_op_u16(Op::struct_get, prop_idx, line);   // val = this.method (parent version)
-    let base_idx = chunk.add_constant(Value::String(Rc::from(base_name.as_str())));
+    let base_idx = chunk.add_constant(Value::String(Arc::from(base_name.as_str())));
     chunk.emit_op_u16(Op::struct_set, base_idx, line);   // this.__base_method = val
     chunk.emit_op(Op::drop, line);
 }
@@ -241,9 +241,9 @@ pub fn emit_save_base_method(chunk: &mut Chunk, this_slot: u16, method_name: &st
 /// Stack: unchanged
 pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, line: u32) {
     chunk.emit_op_u16(Op::local_get, this_slot, line);
-    let parent_c = chunk.add_constant(Value::String(Rc::from(parent_name)));
+    let parent_c = chunk.add_constant(Value::String(Arc::from(parent_name)));
     chunk.emit_op_u16(Op::global_get, parent_c, line);
-    let super_key = chunk.add_constant(Value::String(Rc::from("__super")));
+    let super_key = chunk.add_constant(Value::String(Arc::from("__super")));
     chunk.emit_op_u16(Op::struct_set, super_key, line);
     chunk.emit_op(Op::drop, line);
 }
@@ -253,7 +253,7 @@ pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, li
 /// Stack before: [constructor]  Stack after: [constructor]
 pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
     chunk.emit_op(Op::dup, line);
-    let parent_c = chunk.add_constant(Value::String(Rc::from(parent_name)));
+    let parent_c = chunk.add_constant(Value::String(Arc::from(parent_name)));
     chunk.emit_op_u16(Op::global_get, parent_c, line);
     let assign_fn = chunk.add_import("vybe:object", "assign");
     chunk.emit_op_u16(Op::call_import, assign_fn, line);
@@ -270,7 +270,7 @@ pub fn emit_attach_static_method(chunk: &mut Chunk, ctor_local: u16, method_name
     chunk.emit_op_u16(Op::local_get, ctor_local, line);
     chunk.emit_op_u16(Op::ref_func, method_chunk_idx as u16, line);
     chunk.emit(0, line);
-    let key = chunk.add_constant(Value::String(Rc::from(method_name)));
+    let key = chunk.add_constant(Value::String(Arc::from(method_name)));
     chunk.emit_op_u16(Op::struct_set, key, line);
     chunk.emit_op(Op::drop, line);
 }
@@ -311,14 +311,14 @@ pub fn emit_store_constructor(chunk: &mut Chunk, class_name: &str, ctor_chunk_id
     chunk.emit(0, line);
     chunk.emit_op_u16(Op::local_set, local_slot, line);
     // Store under original name (case-sensitive lookup)
-    let global_name = chunk.add_constant(Value::String(Rc::from(class_name)));
+    let global_name = chunk.add_constant(Value::String(Arc::from(class_name)));
     chunk.emit_op_u16(Op::global_set, global_name, line);
     chunk.emit_op(Op::drop, line);
     // Also store under lowercase alias for cross-language lookup (VB is case-insensitive)
     let lower = class_name.to_lowercase();
     if lower != class_name {
         chunk.emit_op_u16(Op::local_get, local_slot, line);
-        let lower_name = chunk.add_constant(Value::String(Rc::from(lower.as_str())));
+        let lower_name = chunk.add_constant(Value::String(Arc::from(lower.as_str())));
         chunk.emit_op_u16(Op::global_set, lower_name, line);
         chunk.emit_op(Op::drop, line);
     }
@@ -331,7 +331,7 @@ pub fn emit_store_constructor(chunk: &mut Chunk, class_name: &str, ctor_chunk_id
 pub fn emit_init_field_null(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
     chunk.emit_op_u16(Op::local_get, this_slot, line);
     chunk.emit_op(Op::null, line);
-    let key = chunk.add_constant(Value::String(Rc::from(field_name)));
+    let key = chunk.add_constant(Value::String(Arc::from(field_name)));
     chunk.emit_op_u16(Op::struct_set, key, line);
     chunk.emit_op(Op::drop, line);
 }
@@ -425,7 +425,7 @@ pub fn register_class_with_interfaces(
 pub fn emit_auto_init_component(chunk: &mut Chunk, this_slot: u16, line: u32) {
     // Me.InitializeComponent() → struct_get + call with this as arg
     chunk.emit_op_u16(Op::local_get, this_slot, line);   // [this]
-    let name_idx = chunk.add_constant(Value::String(Rc::from("initializecomponent")));
+    let name_idx = chunk.add_constant(Value::String(Arc::from("initializecomponent")));
     chunk.emit_op_u16(Op::struct_get, name_idx, line);    // [method_ref]
     chunk.emit_op_u16(Op::local_get, this_slot, line);    // [method_ref, this]
     chunk.emit_op_u8(Op::call, 1, line);                  // call(1) → [result]

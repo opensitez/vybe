@@ -11,7 +11,7 @@
 //!
 //! All languages (Python, Dart, JS, VB, C#) use this same structure.
 
-use std::rc::Rc;
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
@@ -25,7 +25,7 @@ pub fn emit_new(chunk: &mut Chunk, line: u32) {
     // Create empty __keys array and attach it
     chunk.emit_op(Op::dup, line);
     chunk.emit_op_u16(Op::array_new, 0, line);
-    let keys_key = chunk.add_constant(Value::String(Rc::from("__keys")));
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::struct_set, keys_key, line);
     chunk.emit_op(Op::drop, line);
 }
@@ -40,14 +40,14 @@ pub fn emit_set_const_key(chunk: &mut Chunk, key: &str, line: u32) {
     // Set the property: dict.key = value (value must be pushed by caller before this)
     // Actually — caller pushes value AFTER calling this? No.
     // Convention: caller has [dict, value] on stack. We do struct_set.
-    let key_idx = chunk.add_constant(Value::String(Rc::from(key)));
+    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::struct_set, key_idx, line);
     chunk.emit_op(Op::drop, line);
     // Append key to __keys: dict.__keys.push(key)
     chunk.emit_op(Op::dup, line);
-    let keys_key = chunk.add_constant(Value::String(Rc::from("__keys")));
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::struct_get, keys_key, line);
-    let key_str = chunk.add_constant(Value::String(Rc::from(key)));
+    let key_str = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::r#const, key_str, line);
     chunk.emit_op(Op::array_push, line);
     chunk.emit_op(Op::drop, line); // drop array_push result
@@ -135,7 +135,7 @@ pub fn emit_method_set_tracked(chunk: &mut Chunk, dict_slot: u16, key_slot: u16,
 
     // Push key to __keys
     chunk.emit_op_u16(Op::local_get, dict_slot, line);
-    let keys_key = chunk.add_constant(Value::String(Rc::from("__keys")));
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::struct_get, keys_key, line);
     chunk.emit_op_u16(Op::local_get, key_slot, line);
     chunk.emit_op(Op::array_push, line);
@@ -181,7 +181,7 @@ pub fn emit_method_clear(chunk: &mut Chunk, dict_slot: u16, line: u32) {
     // Replace __keys with empty array
     chunk.emit_op_u16(Op::local_get, dict_slot, line);
     chunk.emit_op_u16(Op::array_new, 0, line);
-    let keys_key = chunk.add_constant(Value::String(Rc::from("__keys")));
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::struct_set, keys_key, line);
     chunk.emit_op(Op::drop, line);
 }
@@ -189,7 +189,7 @@ pub fn emit_method_clear(chunk: &mut Chunk, dict_slot: u16, line: u32) {
 /// map.size / len(dict) / dict.Count — number of entries.
 /// Stack before: [dict]  Stack after: [i32]
 pub fn emit_method_size(chunk: &mut Chunk, line: u32) {
-    let keys_key = chunk.add_constant(Value::String(Rc::from("__keys")));
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::struct_get, keys_key, line);
     chunk.emit_op(Op::array_length, line);
 }
@@ -209,7 +209,7 @@ pub fn emit_set_add(chunk: &mut Chunk, line: u32) {
 /// Emit bytecode to get a value from a dict by string key.
 /// Stack before: [dict]  Stack after: [value_or_null]
 pub fn emit_get_const_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Rc::from(key)));
+    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::struct_get, key_idx, line);
 }
 
@@ -224,7 +224,7 @@ pub fn emit_get_dynamic(chunk: &mut Chunk, line: u32) {
 /// Emit bytecode to get all keys as an array.
 /// Stack before: [dict]  Stack after: [array_of_keys]
 pub fn emit_keys(chunk: &mut Chunk, line: u32) {
-    let keys_key = chunk.add_constant(Value::String(Rc::from("__keys")));
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::struct_get, keys_key, line);
     // If __keys doesn't exist (legacy dict without tracking), fall back to host
     chunk.emit_op(Op::dup, line);
@@ -247,7 +247,7 @@ pub fn emit_keys(chunk: &mut Chunk, line: u32) {
 pub fn emit_values_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16, result_slot: u16, idx_slot: u16, line: u32) {
     // Get __keys array
     chunk.emit_op_u16(Op::local_get, dict_slot, line);
-    let keys_key = chunk.add_constant(Value::String(Rc::from("__keys")));
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::struct_get, keys_key, line);
     chunk.emit_op_u16(Op::local_set, keys_slot, line);
     chunk.emit_op(Op::drop, line);
@@ -291,7 +291,7 @@ pub fn emit_values_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16,
 pub fn emit_items_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16, result_slot: u16, idx_slot: u16, line: u32) {
     // Get __keys array
     chunk.emit_op_u16(Op::local_get, dict_slot, line);
-    let keys_key = chunk.add_constant(Value::String(Rc::from("__keys")));
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::struct_get, keys_key, line);
     chunk.emit_op_u16(Op::local_set, keys_slot, line);
     chunk.emit_op(Op::drop, line);

@@ -530,6 +530,16 @@ pub enum Op {
     /// [addr, count] → [i32 woken]
     memory_atomic_notify,
 
+    // -- wasi-threads (real OS thread spawning) --
+    /// Spawn a new OS thread running a function.
+    /// [func_ref] → [thread_id: i32]
+    /// The new thread gets its own VM instance sharing memory and chunks.
+    /// Returns -1 on failure.
+    thread_spawn,
+    /// Wait for a thread to complete.
+    /// [thread_id] → [result_value]
+    thread_join,
+
     // -- Memory64 (>4GB addressing) --
     // 64-bit variants for large datasets.
     i64_memory_size,  // → [i64 pages]

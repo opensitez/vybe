@@ -1,8 +1,7 @@
 //! System.Xml.Linq — XDocument, XElement (simplified)
 //! Ported from vybe_runtime/src/builtins/xml.rs
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
 
@@ -25,9 +24,9 @@ pub fn register(vm: &mut VM) {
     // Save XML object to string
     vm.register_host_fn("vybe:xml", "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
-            return Value::String(Rc::from(xml_to_string(obj).as_str()));
+            return Value::String(Arc::from(xml_to_string(obj).as_str()));
         }
-        Value::String(Rc::from(""))
+        Value::String(Arc::from(""))
     }));
 }
 
@@ -37,7 +36,7 @@ fn parse_simple_xml(xml: &str) -> Value {
     if xml.is_empty() { return Value::Null; }
 
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Rc::from("XDocument")));
+    obj.properties.insert("__type".into(), Value::String(Arc::from("XDocument")));
 
     // Find root element
     if let Some(start) = xml.find('<') {
@@ -49,8 +48,8 @@ fn parse_simple_xml(xml: &str) -> Value {
             }
         }
     }
-    obj.properties.insert("__raw".into(), Value::String(Rc::from(xml)));
-    Value::Object(Rc::new(RefCell::new(obj)))
+    obj.properties.insert("__raw".into(), Value::String(Arc::from(xml)));
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 fn parse_element(xml: &str) -> Value {
@@ -60,11 +59,11 @@ fn parse_element(xml: &str) -> Value {
     // Find opening tag
     let start = match xml.find('<') {
         Some(i) => i,
-        None => return Value::String(Rc::from(xml)),
+        None => return Value::String(Arc::from(xml)),
     };
     let end = match xml[start+1..].find('>') {
         Some(i) => start + 1 + i,
-        None => return Value::String(Rc::from(xml)),
+        None => return Value::String(Arc::from(xml)),
     };
 
     let tag_content = &xml[start+1..end];
@@ -79,20 +78,20 @@ fn parse_element(xml: &str) -> Value {
     }
 
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Rc::from("XElement")));
-    obj.properties.insert("name".into(), Value::String(Rc::from(*tag_name)));
+    obj.properties.insert("__type".into(), Value::String(Arc::from("XElement")));
+    obj.properties.insert("name".into(), Value::String(Arc::from(*tag_name)));
 
     // Parse attributes
     for part in parts.iter().skip(1) {
         if let Some(eq_pos) = part.find('=') {
             let key = &part[..eq_pos];
             let val = part[eq_pos+1..].trim_matches('"').trim_matches('\'');
-            obj.properties.insert(key.to_string(), Value::String(Rc::from(val)));
+            obj.properties.insert(key.to_string(), Value::String(Arc::from(val)));
         }
     }
 
     if self_closing {
-        obj.properties.insert("value".into(), Value::String(Rc::from("")));
+        obj.properties.insert("value".into(), Value::String(Arc::from("")));
     } else {
         // Find closing tag
         let close_tag = format!("</{}>", tag_name);
@@ -108,18 +107,18 @@ fn parse_element(xml: &str) -> Value {
                     children.push(child);
                 }
                 obj.properties.insert("elements".into(),
-                    Value::Object(Rc::new(RefCell::new(Object::new_array(children)))));
+                    Value::Object(Arc::new(Mutex::new(Object::new_array(children)))));
             } else {
-                obj.properties.insert("value".into(), Value::String(Rc::from(trimmed)));
+                obj.properties.insert("value".into(), Value::String(Arc::from(trimmed)));
             }
         }
     }
 
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
-fn xml_to_string(obj: &Rc<RefCell<Object>>) -> String {
-    let o = obj.borrow();
+fn xml_to_string(obj: &Arc<Mutex<Object>>) -> String {
+    let o = obj.lock().unwrap();
     let name = o.properties.get("name").map(|v| format!("{}", v)).unwrap_or_default();
     let value = o.properties.get("value").map(|v| format!("{}", v)).unwrap_or_default();
     if name.is_empty() {

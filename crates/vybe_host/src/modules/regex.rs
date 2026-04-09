@@ -1,5 +1,4 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
 
@@ -21,12 +20,12 @@ pub fn register(vm: &mut VM) {
         match regex::Regex::new(&pattern) {
             Ok(re) => {
                 let matches: Vec<Value> = re.find_iter(&input)
-                    .map(|m| Value::String(Rc::from(m.as_str())))
+                    .map(|m| Value::String(Arc::from(m.as_str())))
                     .collect();
                 if matches.is_empty() {
                     Value::Null
                 } else {
-                    Value::Object(Rc::new(RefCell::new(Object::new_array(matches))))
+                    Value::Object(Arc::new(Mutex::new(Object::new_array(matches))))
                 }
             }
             Err(_) => Value::Null,
@@ -39,8 +38,8 @@ pub fn register(vm: &mut VM) {
         let input = s(args, 1);
         let replacement = s(args, 2);
         match regex::Regex::new(&pattern) {
-            Ok(re) => Value::String(Rc::from(re.replace(&input, replacement.as_str()).as_ref())),
-            Err(_) => Value::String(Rc::from(input.as_str())),
+            Ok(re) => Value::String(Arc::from(re.replace(&input, replacement.as_str()).as_ref())),
+            Err(_) => Value::String(Arc::from(input.as_str())),
         }
     }));
 
@@ -50,8 +49,8 @@ pub fn register(vm: &mut VM) {
         let input = s(args, 1);
         let replacement = s(args, 2);
         match regex::Regex::new(&pattern) {
-            Ok(re) => Value::String(Rc::from(re.replace_all(&input, replacement.as_str()).as_ref())),
-            Err(_) => Value::String(Rc::from(input.as_str())),
+            Ok(re) => Value::String(Arc::from(re.replace_all(&input, replacement.as_str()).as_ref())),
+            Err(_) => Value::String(Arc::from(input.as_str())),
         }
     }));
 
@@ -62,12 +61,12 @@ pub fn register(vm: &mut VM) {
         match regex::Regex::new(&pattern) {
             Ok(re) => {
                 let parts: Vec<Value> = re.split(&input)
-                    .map(|p| Value::String(Rc::from(p)))
+                    .map(|p| Value::String(Arc::from(p)))
                     .collect();
-                Value::Object(Rc::new(RefCell::new(Object::new_array(parts))))
+                Value::Object(Arc::new(Mutex::new(Object::new_array(parts))))
             }
-            Err(_) => Value::Object(Rc::new(RefCell::new(Object::new_array(vec![
-                Value::String(Rc::from(input.as_str()))
+            Err(_) => Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                Value::String(Arc::from(input.as_str()))
             ])))),
         }
     }));
@@ -81,11 +80,11 @@ pub fn register(vm: &mut VM) {
                 if let Some(caps) = re.captures(&input) {
                     let groups: Vec<Value> = caps.iter()
                         .map(|m| match m {
-                            Some(m) => Value::String(Rc::from(m.as_str())),
+                            Some(m) => Value::String(Arc::from(m.as_str())),
                             None => Value::Null,
                         })
                         .collect();
-                    Value::Object(Rc::new(RefCell::new(Object::new_array(groups))))
+                    Value::Object(Arc::new(Mutex::new(Object::new_array(groups))))
                 } else {
                     Value::Null
                 }

@@ -1,0 +1,385 @@
+# JavaScript Compiler Profile
+# ─────────────────────────────
+# Full port of vybe_compiler_js (3624 lines) — builtins, module aliases,
+# value methods, namespace intrinsics, constructors
+
+[compiler]
+function_return = "explicit"
+self_keyword = "this"
+constructor_name = "constructor"
+separated_methods = false
+implicit_self_fields = false
+explicit_self_param = false
+enum_as_ordinals = false
+case_sensitive = true
+string_indexing = "zero_based"
+# JS-specific: `var` declarations are hoisted to function scope
+hoist_var = true
+# JS-specific: `+` is overloaded for string concatenation (dyn_add handles it)
+dynamic_add = true
+# JS-specific: support `require()` for CommonJS module loading
+commonjs_require = true
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — bare global function calls
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtins]
+
+# ── I/O ──────────────────────────────────────────────────────────────────────
+
+"console.log"       = { emit = "print",                    min_args = 0, max_args = 255 }
+"console.warn"      = { emit = "print",                    min_args = 0, max_args = 255 }
+"console.error"     = { emit = "host:wasi:cli:error",      min_args = 0, max_args = 255 }
+"console.info"      = { emit = "print",                    min_args = 0, max_args = 255 }
+"console.debug"     = { emit = "print",                    min_args = 0, max_args = 255 }
+alert               = { emit = "print",                    min_args = 1, max_args = 1 }
+prompt              = { emit = "host:wasi:cli:readLine",   min_args = 0, max_args = 1 }
+
+# ── Type conversion ──────────────────────────────────────────────────────────
+
+parseInt            = { emit = "host:vybe:convert:cint",          min_args = 1, max_args = 2 }
+parseFloat          = { emit = "host:vybe:convert:cdbl",          min_args = 1, max_args = 1 }
+isNaN               = { emit = "host:vybe:convert:isNaN",         min_args = 1, max_args = 1 }
+isFinite            = { emit = "host:vybe:convert:isFinite",      min_args = 1, max_args = 1 }
+
+# ── Encoding ─────────────────────────────────────────────────────────────────
+
+btoa                    = { emit = "host:vybe:convert:btoa",                  min_args = 1, max_args = 1 }
+atob                    = { emit = "host:vybe:convert:atob",                  min_args = 1, max_args = 1 }
+encodeURIComponent      = { emit = "host:vybe:convert:encodeURIComponent",    min_args = 1, max_args = 1 }
+decodeURIComponent      = { emit = "host:vybe:convert:decodeURIComponent",    min_args = 1, max_args = 1 }
+encodeURI               = { emit = "host:vybe:convert:encodeURIComponent",    min_args = 1, max_args = 1 }
+decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    min_args = 1, max_args = 1 }
+
+# ── Math — WASM opcodes ─────────────────────────────────────────────────────
+
+"Math.abs"          = { emit = "opcode:f64_abs",      min_args = 1, max_args = 1 }
+"Math.floor"        = { emit = "opcode:f64_floor",    min_args = 1, max_args = 1 }
+"Math.ceil"         = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
+"Math.sqrt"         = { emit = "opcode:f64_sqrt",     min_args = 1, max_args = 1 }
+"Math.trunc"        = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
+"Math.round"        = { emit = "opcode:f64_nearest",  min_args = 1, max_args = 1 }
+"Math.min"          = { emit = "opcode:f64_min",      min_args = 2, max_args = 2 }
+"Math.max"          = { emit = "opcode:f64_max",      min_args = 2, max_args = 2 }
+
+# ── Math — host calls ───────────────────────────────────────────────────────
+
+"Math.pow"          = { emit = "host:vybe:math:pow",      min_args = 2, max_args = 2 }
+"Math.sin"          = { emit = "host:vybe:math:sin",      min_args = 1, max_args = 1 }
+"Math.cos"          = { emit = "host:vybe:math:cos",      min_args = 1, max_args = 1 }
+"Math.tan"          = { emit = "host:vybe:math:tan",      min_args = 1, max_args = 1 }
+"Math.asin"         = { emit = "host:vybe:math:asin",     min_args = 1, max_args = 1 }
+"Math.acos"         = { emit = "host:vybe:math:acos",     min_args = 1, max_args = 1 }
+"Math.atan"         = { emit = "host:vybe:math:atan",     min_args = 1, max_args = 1 }
+"Math.atan2"        = { emit = "host:vybe:math:atan2",    min_args = 2, max_args = 2 }
+"Math.log"          = { emit = "host:vybe:math:log",      min_args = 1, max_args = 1 }
+"Math.log2"         = { emit = "host:vybe:math:log2",     min_args = 1, max_args = 1 }
+"Math.log10"        = { emit = "host:vybe:math:log10",    min_args = 1, max_args = 1 }
+"Math.exp"          = { emit = "host:vybe:math:exp",      min_args = 1, max_args = 1 }
+"Math.sign"         = { emit = "host:vybe:math:sign",     min_args = 1, max_args = 1 }
+"Math.random"       = { emit = "host:wasi:random:random",  min_args = 0, max_args = 0 }
+"Math.hypot"        = { emit = "host:vybe:math:hypot",    min_args = 2, max_args = 2 }
+"Math.cbrt"         = { emit = "host:vybe:math:cbrt",     min_args = 1, max_args = 1 }
+"Math.clz32"        = { emit = "host:vybe:math:clz32",    min_args = 1, max_args = 1 }
+"Math.fround"       = { emit = "host:vybe:math:fround",   min_args = 1, max_args = 1 }
+"Math.imul"         = { emit = "host:vybe:math:imul",     min_args = 2, max_args = 2 }
+
+# ── Number static methods ────────────────────────────────────────────────────
+
+"Number.parseInt"   = { emit = "host:vybe:convert:cint",          min_args = 1, max_args = 2 }
+"Number.parseFloat" = { emit = "host:vybe:convert:cdbl",          min_args = 1, max_args = 1 }
+"Number.isNaN"      = { emit = "intrinsic:number_isnan",          min_args = 1, max_args = 1 }
+"Number.isFinite"   = { emit = "intrinsic:number_isfinite",       min_args = 1, max_args = 1 }
+"Number.isInteger"  = { emit = "intrinsic:number_isinteger",      min_args = 1, max_args = 1 }
+
+# ── String static methods ────────────────────────────────────────────────────
+
+"String.fromCharCode" = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 1 }
+
+# ── Array static methods ─────────────────────────────────────────────────────
+
+"Array.isArray"     = { emit = "opcode:ref_is_array",             min_args = 1, max_args = 1 }
+"Array.from"        = { emit = "host:vybe:array:from",            min_args = 1, max_args = 1 }
+
+# ── Object static methods ────────────────────────────────────────────────────
+
+"Object.keys"        = { emit = "host:vybe:object:keys",         min_args = 1, max_args = 1 }
+"Object.values"      = { emit = "host:vybe:object:values",       min_args = 1, max_args = 1 }
+"Object.entries"     = { emit = "host:vybe:object:entries",       min_args = 1, max_args = 1 }
+"Object.assign"      = { emit = "host:vybe:object:assign",       min_args = 2, max_args = 255 }
+"Object.freeze"      = { emit = "host:vybe:object:freeze",       min_args = 1, max_args = 1 }
+"Object.fromEntries" = { emit = "host:vybe:object:fromEntries",  min_args = 1, max_args = 1 }
+"Object.hasOwn"      = { emit = "host:vybe:object:hasOwn",       min_args = 2, max_args = 2 }
+"Object.create"      = { emit = "host:vybe:object:create",       min_args = 1, max_args = 1 }
+
+# ── JSON ─────────────────────────────────────────────────────────────────────
+
+"JSON.parse"         = { emit = "host:vybe:json:parse",          min_args = 1, max_args = 1 }
+"JSON.stringify"     = { emit = "host:vybe:json:stringify",       min_args = 1, max_args = 3 }
+
+# ── Timers ───────────────────────────────────────────────────────────────────
+
+setTimeout           = { emit = "host:vybe:runtime:setTimeout",   min_args = 1, max_args = 2 }
+setInterval          = { emit = "host:vybe:runtime:setInterval",  min_args = 2, max_args = 2 }
+clearTimeout         = { emit = "host:vybe:runtime:clearTimeout", min_args = 1, max_args = 1 }
+clearInterval        = { emit = "host:vybe:runtime:clearInterval", min_args = 1, max_args = 1 }
+queueMicrotask       = { emit = "host:vybe:runtime:queueMicrotask", min_args = 1, max_args = 1 }
+
+# ── Atomics ──────────────────────────────────────────────────────────────────
+
+"Atomics.load"            = { emit = "intrinsic:atomics_load",        min_args = 2, max_args = 2 }
+"Atomics.store"           = { emit = "intrinsic:atomics_store",       min_args = 3, max_args = 3 }
+"Atomics.add"             = { emit = "intrinsic:atomics_add",         min_args = 3, max_args = 3 }
+"Atomics.sub"             = { emit = "intrinsic:atomics_sub",         min_args = 3, max_args = 3 }
+"Atomics.exchange"        = { emit = "intrinsic:atomics_exchange",    min_args = 3, max_args = 3 }
+"Atomics.compareExchange" = { emit = "intrinsic:atomics_cmpxchg",    min_args = 4, max_args = 4 }
+"Atomics.wait"            = { emit = "intrinsic:atomics_wait",       min_args = 3, max_args = 4 }
+"Atomics.notify"          = { emit = "intrinsic:atomics_notify",     min_args = 2, max_args = 3 }
+
+# ── crypto module ────────────────────────────────────────────────────────────
+
+"crypto.randomBytes" = { emit = "host:wasi:random:randomBytes",  min_args = 1, max_args = 1 }
+"crypto.randomUUID"  = { emit = "host:wasi:random:uuid",         min_args = 0, max_args = 0 }
+"crypto.createHash"  = { emit = "noop",                           min_args = 1, max_args = 1 }
+
+# ── path module ──────────────────────────────────────────────────────────────
+
+"path.join"          = { emit = "host:wasi:filesystem:pathCombine",      min_args = 1, max_args = 255 }
+"path.dirname"       = { emit = "host:wasi:filesystem:pathGetDirectory", min_args = 1, max_args = 1 }
+"path.basename"      = { emit = "host:wasi:filesystem:pathGetFileName",  min_args = 1, max_args = 1 }
+"path.extname"       = { emit = "host:wasi:filesystem:pathGetExtension", min_args = 1, max_args = 1 }
+"path.resolve"       = { emit = "host:wasi:filesystem:pathGetFullPath",  min_args = 1, max_args = 255 }
+
+# ── os module ────────────────────────────────────────────────────────────────
+
+"os.hostname"        = { emit = "host:wasi:cli:machineName",     min_args = 0, max_args = 0 }
+"os.platform"        = { emit = "host:wasi:cli:platform",        min_args = 0, max_args = 0 }
+"os.type"            = { emit = "host:wasi:cli:platform",        min_args = 0, max_args = 0 }
+"os.arch"            = { emit = "host:wasi:cli:platform",        min_args = 0, max_args = 0 }
+"os.tmpdir"          = { emit = "host:wasi:filesystem:pathGetTempPath", min_args = 0, max_args = 0 }
+"os.homedir"         = { emit = "host:wasi:cli:userName",        min_args = 0, max_args = 0 }
+
+# ── fs module ────────────────────────────────────────────────────────────────
+
+"fs.readFileSync"    = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 2 }
+"fs.writeFileSync"   = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 3 }
+"fs.existsSync"      = { emit = "host:wasi:filesystem:exists",    min_args = 1, max_args = 1 }
+"fs.mkdirSync"       = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 2 }
+"fs.readdirSync"     = { emit = "host:wasi:filesystem:listDir",   min_args = 1, max_args = 1 }
+"fs.unlinkSync"      = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
+"fs.statSync"        = { emit = "host:wasi:filesystem:stat",      min_args = 1, max_args = 1 }
+
+# ── net module ───────────────────────────────────────────────────────────────
+
+"net.createConnection" = { emit = "host:vybe:net:tcpConnect",      min_args = 1, max_args = 2 }
+"net.connect"          = { emit = "host:vybe:net:tcpConnect",      min_args = 1, max_args = 2 }
+"net.createServer"     = { emit = "host:vybe:net:tcpListenerNew",  min_args = 0, max_args = 1 }
+"dgram.createSocket"   = { emit = "host:vybe:net:udpNew",          min_args = 1, max_args = 1 }
+"dns.resolve"          = { emit = "host:vybe:net:dnsResolve",      min_args = 1, max_args = 1 }
+"dns.lookup"           = { emit = "host:vybe:net:dnsResolve",      min_args = 1, max_args = 1 }
+
+# ── child_process module ─────────────────────────────────────────────────────
+
+"child_process.execSync" = { emit = "host:vybe:types:processStart", min_args = 1, max_args = 2 }
+"child_process.exec"     = { emit = "host:vybe:types:processStart", min_args = 1, max_args = 2 }
+"child_process.spawn"    = { emit = "host:vybe:types:processStart", min_args = 1, max_args = 2 }
+
+# ── xml module ───────────────────────────────────────────────────────────────
+
+"xml.parseString"     = { emit = "host:vybe:xml:parse",   min_args = 1, max_args = 1 }
+"xml.parse"           = { emit = "host:vybe:xml:parse",   min_args = 1, max_args = 1 }
+"xml2js.parseString"  = { emit = "host:vybe:xml:parse",   min_args = 1, max_args = 1 }
+"xml2js.parse"        = { emit = "host:vybe:xml:parse",   min_args = 1, max_args = 1 }
+
+# ── Promise ──────────────────────────────────────────────────────────────────
+
+"Promise.resolve"     = { emit = "host:vybe:runtime:promiseResolve", min_args = 1, max_args = 1 }
+"Promise.reject"      = { emit = "host:vybe:runtime:promiseReject",  min_args = 1, max_args = 1 }
+"Promise.all"         = { emit = "host:vybe:runtime:promiseAll",     min_args = 1, max_args = 1 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# VALUE METHODS — instance methods called on values: str.toUpperCase(), arr.push()
+# The object is passed as first arg to the host function.
+# ────────────────────────────────────────────────────────────────────────────
+
+[value_methods]
+
+# String instance methods — direct WASM opcodes (zero overhead)
+toUpperCase   = { emit = "opcode:str_to_upper",       min_args = 0, max_args = 0 }
+toLowerCase   = { emit = "opcode:str_to_lower",       min_args = 0, max_args = 0 }
+trim          = { emit = "opcode:str_trim",            min_args = 0, max_args = 0 }
+trimStart     = { emit = "opcode:str_trim_start",      min_args = 0, max_args = 0 }
+trimEnd       = { emit = "opcode:str_trim_end",        min_args = 0, max_args = 0 }
+startsWith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 2 }
+endsWith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 2 }
+charAt        = { emit = "opcode:str_char_at",         min_args = 1, max_args = 1 }
+charCodeAt    = { emit = "opcode:str_char_code_at",    min_args = 1, max_args = 1 }
+substring     = { emit = "opcode:str_substring",       min_args = 1, max_args = 2 }
+split         = { emit = "opcode:str_split",           min_args = 1, max_args = 2 }
+replace       = { emit = "opcode:str_replace",         min_args = 2, max_args = 2 }
+replaceAll    = { emit = "opcode:str_replace",         min_args = 2, max_args = 2 }
+repeat        = { emit = "opcode:str_repeat",          min_args = 1, max_args = 1 }
+padStart      = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
+padEnd        = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
+indexOf       = { emit = "opcode:str_index_of",        min_args = 1, max_args = 2 }
+lastIndexOf   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 2 }
+includes      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
+match         = { emit = "host:vybe:string:match",     min_args = 1, max_args = 1 }
+search        = { emit = "host:vybe:string:search",    min_args = 1, max_args = 1 }
+toString      = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 0 }
+
+# Array instance methods — direct WASM opcodes
+push          = { emit = "opcode:array_push",          min_args = 1, max_args = 255 }
+pop           = { emit = "opcode:array_pop",           min_args = 0, max_args = 0 }
+shift         = { emit = "opcode:array_shift",         min_args = 0, max_args = 0 }
+reverse       = { emit = "opcode:array_reverse",       min_args = 0, max_args = 0 }
+join          = { emit = "opcode:array_join",          min_args = 0, max_args = 1 }
+concat        = { emit = "opcode:array_concat",        min_args = 1, max_args = 255 }
+fill          = { emit = "opcode:array_fill",          min_args = 1, max_args = 3 }
+
+# Array instance methods — host calls (more complex than single opcode)
+unshift       = { emit = "intrinsic:array_unshift",    min_args = 1, max_args = 255 }
+splice        = { emit = "host:vybe:array:splice",     min_args = 1, max_args = 255 }
+flat          = { emit = "host:vybe:array:flat",        min_args = 0, max_args = 1 }
+slice         = { emit = "host:vybe:array:slice",       min_args = 0, max_args = 2 }
+at            = { emit = "intrinsic:array_at",          min_args = 1, max_args = 1 }
+entries       = { emit = "host:vybe:array:enumerate",   min_args = 0, max_args = 0 }
+
+# Map/Set size property
+size          = { emit = "intrinsic:map_size",          min_args = 0, max_args = 0 }
+
+# Object methods via host
+keys          = { emit = "host:vybe:object:keys",      min_args = 0, max_args = 0 }
+values        = { emit = "host:vybe:object:values",     min_args = 0, max_args = 0 }
+
+# Array higher-order methods — routed to compiled JS builtins
+# (see [array_methods] section below)
+
+# ────────────────────────────────────────────────────────────────────────────
+# INTRINSIC DEFINITIONS — multi-opcode sequences
+# ────────────────────────────────────────────────────────────────────────────
+
+[intrinsics]
+# Number.isNaN(x) → x !== x
+number_isnan = "dup, dyn_ne"
+# Number.isFinite(x) → abs(x) <= MAX_VALUE
+number_isfinite = "f64_abs, const_f64(1.7976931348623157e308), dyn_le"
+# Number.isInteger(x) → trunc(x) === x
+number_isinteger = "dup, f64_trunc, dyn_eq"
+# Atomics — use compiler_common::threading
+atomics_load = "atomic_load"
+atomics_store = "atomic_store"
+atomics_add = "atomic_add"
+atomics_sub = "atomic_sub"
+atomics_exchange = "atomic_xchg"
+atomics_cmpxchg = "atomic_cmpxchg"
+atomics_wait = "atomic_wait"
+atomics_notify = "atomic_notify"
+# Value method intrinsics
+# arr.at(i) → array_get (supports negative indexing)
+array_at = "array_get"
+# arr.unshift(val) → splice(0, 0, val)
+array_unshift = "const_i32(0), const_i32(0), splice"
+# map.size → dict_keys, array_length
+map_size = "dict_keys, array_length"
+
+# ────────────────────────────────────────────────────────────────────────────
+# MODULE ALIASES — JS namespace objects → WASI/vybe host modules
+# ────────────────────────────────────────────────────────────────────────────
+
+[module_aliases]
+console         = "wasi:cli"
+Date            = "wasi:clocks"
+Math            = "vybe:math"
+JSON            = "vybe:json"
+Object          = "vybe:object"
+RegExp          = "vybe:regex"
+Array           = "vybe:array"
+String          = "vybe:string"
+Number          = "vybe:convert"
+Map             = "vybe:collections"
+Set             = "vybe:collections"
+fs              = "wasi:filesystem"
+clock           = "wasi:clocks"
+env             = "wasi:cli"
+random          = "wasi:random"
+http            = "wasi:http"
+https           = "wasi:http"
+crypto          = "vybe:crypto"
+net             = "vybe:net"
+tls             = "vybe:net"
+dgram           = "vybe:net"
+path            = "wasi:filesystem"
+os              = "wasi:cli"
+child_process   = "vybe:types"
+url             = "vybe:convert"
+xml             = "vybe:xml"
+xml2js          = "vybe:xml"
+gui             = "vybe:gui"
+db              = "vybe:database"
+Promise         = "vybe:runtime"
+worker_threads  = "vybe:threading"
+
+# ────────────────────────────────────────────────────────────────────────────
+# KNOWN TYPES — constructor mappings for new TypeName()
+# ────────────────────────────────────────────────────────────────────────────
+
+[known_types]
+"Map"           = ["vybe:collections", "Map"]
+"Set"           = ["vybe:collections", "Set"]
+"Error"         = ["vybe:runtime", "Error"]
+"TypeError"     = ["vybe:runtime", "TypeError"]
+"RangeError"    = ["vybe:runtime", "RangeError"]
+"ReferenceError" = ["vybe:runtime", "ReferenceError"]
+"SyntaxError"   = ["vybe:runtime", "SyntaxError"]
+"RegExp"        = ["vybe:regex", "RegExp"]
+"Date"          = ["wasi:clocks", "Date"]
+"Promise"       = ["vybe:runtime", "Promise"]
+"WeakMap"       = ["vybe:collections", "WeakMap"]
+"WeakSet"       = ["vybe:collections", "WeakSet"]
+"ArrayBuffer"   = ["vybe:types", "ArrayBuffer"]
+"SharedArrayBuffer" = ["vybe:types", "SharedArrayBuffer"]
+"Int32Array"    = ["vybe:types", "Int32Array"]
+"Float64Array"  = ["vybe:types", "Float64Array"]
+"Uint8Array"    = ["vybe:types", "Uint8Array"]
+"Worker"        = ["vybe:threading", "Worker"]
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONSTANTS — property access, NOT function call
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespace_constants]
+"Math.PI"               = 3.141592653589793
+"Math.E"                = 2.718281828459045
+"Math.LN2"              = 0.6931471805599453
+"Math.LN10"             = 2.302585092994046
+"Math.LOG2E"            = 1.4426950408889634
+"Math.LOG10E"           = 0.4342944819032518
+"Math.SQRT2"            = 1.4142135623730951
+"Math.SQRT1_2"          = 0.7071067811865476
+"Number.MAX_SAFE_INTEGER" = 9007199254740991
+"Number.MIN_SAFE_INTEGER" = -9007199254740991
+"Number.EPSILON"        = 2.220446049250313e-16
+"Number.MAX_VALUE"      = 1.7976931348623157e308
+"Number.POSITIVE_INFINITY" = "Infinity"
+"Number.NEGATIVE_INFINITY" = "-Infinity"
+"Number.NaN"            = "NaN"
+
+# ────────────────────────────────────────────────────────────────────────────
+# JS BUILTINS LIBRARY — compiled JS injected at startup
+# Array higher-order methods (map, filter, forEach, find, reduce, sort, etc.)
+# are implemented as JS functions and compiled by the parser itself.
+# The compiler recognizes arr.map(fn) and routes to __array_map.
+# ────────────────────────────────────────────────────────────────────────────
+
+[array_methods]
+map      = "__array_map"
+filter   = "__array_filter"
+forEach  = "__array_forEach"
+find     = "__array_find"
+reduce   = "__array_reduce"
+sort     = "__array_sort"
+some     = "__array_some"
+every    = "__array_every"
+flatMap  = "__array_flat_map"

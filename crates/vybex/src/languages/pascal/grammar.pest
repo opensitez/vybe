@@ -1,0 +1,597 @@
+// Pascal / Object Pascal Grammar for pest parser
+// Case-insensitive: all keywords use ^"keyword"
+// Covers every construct from vybe_parser_pascal
+
+// ── Whitespace & Comments ──────────────────────────────────────────────────────
+// Pascal uses ";" as terminator; newlines are just whitespace.
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{
+    brace_comment
+    | paren_star_comment
+    | line_comment
+}
+brace_comment = _{ "{" ~ (!"}" ~ ANY)* ~ "}" }
+paren_star_comment = _{ "(*" ~ (!"*)" ~ ANY)* ~ "*)" }
+line_comment = _{ "//" ~ (!"\n" ~ ANY)* }
+
+// ── Program ────────────────────────────────────────────────────────────────────
+
+program = { SOI ~ program_inner ~ EOI }
+
+program_inner = _{
+    program_heading? ~ uses_clause? ~
+    interface_section? ~ implementation_section? ~
+    decl_section ~
+    program_body? ~ "."?
+}
+
+program_heading = { (^"program" | ^"unit") ~ identifier ~ ";" }
+
+uses_clause = { ^"uses" ~ identifier ~ ("," ~ identifier)* ~ ";" }
+
+interface_section = { ^"interface" }
+implementation_section = { ^"implementation" }
+
+program_body = { compound_statement }
+
+// ── Declaration Sections ───────────────────────────────────────────────────────
+
+decl_section = { declaration* }
+
+declaration = _{
+    var_section
+    | const_section
+    | type_section
+    | constructor_method_impl
+    | destructor_method_impl
+    | procedure_decl_or_method
+    | function_decl_or_method
+}
+
+// ── Var Section ────────────────────────────────────────────────────────────────
+
+var_section = { ^"var" ~ var_decl+ }
+
+var_decl = { identifier_list ~ ":" ~ type_ref ~ var_init? ~ ";" }
+var_init = { "=" ~ expression }
+
+identifier_list = { identifier ~ ("," ~ identifier)* }
+
+// ── Const Section ──────────────────────────────────────────────────────────────
+
+const_section = { ^"const" ~ const_decl+ }
+
+const_decl = { identifier ~ (":" ~ type_ref)? ~ "=" ~ expression ~ ";" }
+
+// ── Type Section ───────────────────────────────────────────────────────────────
+
+type_section = { ^"type" ~ type_decl+ }
+
+type_decl = { identifier ~ "=" ~ type_def ~ ";" }
+
+type_def = {
+    record_type
+    | class_type
+    | interface_type
+    | array_type
+    | pointer_type
+    | enum_type
+    | type_alias
+}
+
+// Record
+record_type = { ^"record" ~ record_body ~ ^"end" }
+
+record_body = { record_member* }
+
+record_member = _{
+    record_visibility
+    | record_class_method
+    | record_operator_method
+    | record_method_sig
+    | field_decl
+}
+
+record_visibility = _{ public_kw | private_kw | protected_kw }
+
+record_class_method = { ^"class" ~ (^"procedure" | ^"function") ~ method_sig_body }
+
+record_operator_method = { ^"operator" ~ method_sig_body }
+
+record_method_sig = { method_kind_keyword ~ method_sig_body }
+
+// Class
+class_type = { (^"class" | ^"object") ~ class_heritage? ~ class_body? }
+
+class_heritage = { "(" ~ identifier ~ ("," ~ identifier)* ~ ")" }
+
+// If ";" follows immediately after class_heritage or ^"class" with no heritage,
+// it's a forward declaration. class_body is optional to handle that.
+class_body = { class_member* ~ ^"end" }
+
+class_member = _{
+    class_visibility
+    | class_class_member
+    | class_constructor
+    | class_destructor
+    | class_procedure
+    | class_function
+    | class_property_decl
+    | field_decl
+}
+
+class_visibility = _{ public_kw | private_kw | protected_kw | published_kw }
+public_kw = @{ ^"public" ~ !(ASCII_ALPHANUMERIC | "_") }
+private_kw = @{ ^"private" ~ !(ASCII_ALPHANUMERIC | "_") }
+protected_kw = @{ ^"protected" ~ !(ASCII_ALPHANUMERIC | "_") }
+published_kw = @{ ^"published" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+class_constructor = { ^"constructor" ~ method_sig_body }
+class_destructor = { ^"destructor" ~ method_sig_body }
+class_procedure = { ^"procedure" ~ method_sig_body }
+class_function = { ^"function" ~ method_sig_body }
+
+class_class_member = {
+    ^"class" ~ (
+        ^"procedure" ~ method_sig_body
+        | ^"function" ~ method_sig_body
+        | ^"var" ~ field_decl
+    )
+}
+
+class_property_decl = { ^"property" ~ property_def }
+
+// Interface type
+interface_type = { ^"interface" ~ interface_heritage? ~ interface_body? }
+
+interface_heritage = { "(" ~ identifier ~ ")" }
+
+interface_body = { interface_member* ~ ^"end" }
+
+interface_member = _{
+    interface_procedure
+    | interface_function
+    | interface_property_decl
+}
+
+interface_procedure = { ^"procedure" ~ method_sig_body }
+interface_function = { ^"function" ~ method_sig_body }
+interface_property_decl = { ^"property" ~ property_def }
+
+// Array type: `array[lo..hi] of Type` or `array of Type`
+array_type = { ^"array" ~ ("[" ~ expression ~ ".." ~ expression ~ "]")? ~ ^"of" ~ type_ref }
+
+// Pointer type: `^TypeName`
+pointer_type = { "^" ~ type_ref }
+
+// Enum type: `(Red, Green, Blue)` or `(Red = 0, Green = 1)`
+enum_type = { "(" ~ enum_value ~ ("," ~ enum_value)* ~ ")" }
+enum_value = { identifier ~ ("=" ~ expression)? }
+
+// Type alias: just a type reference
+type_alias = { type_ref }
+
+// ── Field Declaration ──────────────────────────────────────────────────────────
+
+field_decl = { identifier_list ~ ":" ~ type_ref ~ ";" }
+
+// ── Property Definition ────────────────────────────────────────────────────────
+
+property_def = {
+    identifier ~ property_index? ~ ":" ~ type_ref ~
+    property_specifiers* ~ ";"
+}
+
+property_index = { "[" ~ identifier ~ ":" ~ type_ref ~ "]" }
+
+property_specifiers = {
+    property_read
+    | property_write
+    | property_default
+    | property_stored
+    | property_nodefault
+}
+
+property_read = { ^"read" ~ identifier }
+property_write = { ^"write" ~ identifier }
+property_default = { ^"default" ~ (&";" | expression) }
+property_stored = { ^"stored" ~ expression? }
+property_nodefault = { ^"nodefault" ~ expression? }
+
+// ── Method Signature (inside class/record/interface body) ──────────────────────
+
+method_kind_keyword = { ^"constructor" | ^"destructor" | ^"procedure" | ^"function" }
+
+method_sig_body = {
+    identifier ~ param_clause? ~ return_type_clause? ~ ";" ~ method_directives
+}
+
+return_type_clause = { ":" ~ type_ref }
+
+method_directives = { (method_directive ~ ";")* }
+
+method_directive = {
+    ^"virtual"
+    | ^"override"
+    | ^"abstract"
+    | ^"reintroduce"
+    | ^"overload"
+    | ^"inline"
+    | ^"cdecl"
+    | ^"stdcall"
+    | ^"register"
+    | ^"dynamic"
+}
+
+// ── Procedure / Function Declarations & Method Implementations ─────────────────
+
+// Detect method impl: `procedure ClassName.MethodName`
+// vs standalone: `procedure ProcName`
+procedure_decl_or_method = { ^"procedure" ~ (method_impl_proc | standalone_procedure) }
+function_decl_or_method = { ^"function" ~ (method_impl_func | standalone_function) }
+constructor_method_impl = { ^"constructor" ~ method_impl_body_proc }
+destructor_method_impl = { ^"destructor" ~ method_impl_body_proc }
+
+// Method implementation: ClassName.MethodName
+method_impl_proc = { identifier ~ "." ~ identifier ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_func = { identifier ~ "." ~ identifier ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_body_proc = { identifier ~ "." ~ identifier ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+
+// Standalone procedure
+standalone_procedure = { identifier ~ param_clause? ~ ";" ~ (forward_directive | procedure_body) }
+procedure_body = { decl_section ~ compound_statement ~ ";"? }
+
+// Standalone function
+standalone_function = { identifier ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ (forward_directive | function_body) }
+function_body = { decl_section ~ compound_statement ~ ";"? }
+
+forward_directive = { ^"forward" ~ ";" }
+
+// ── Parameters ─────────────────────────────────────────────────────────────────
+
+param_clause = { "(" ~ param_list? ~ ")" }
+
+param_list = { param ~ (";" ~ param)* }
+
+param = { param_mode? ~ identifier_list ~ ":" ~ type_ref ~ param_default? }
+
+param_mode = { ^"var" | ^"const" | ^"out" }
+
+param_default = { "=" ~ expression }
+
+// ── Type References ────────────────────────────────────────────────────────────
+
+type_ref = {
+    procedural_type
+    | array_type_ref
+    | simple_type_ref
+}
+
+// Procedural types: `procedure(...)` or `function(...): Type`
+procedural_type = {
+    ^"function" ~ param_clause? ~ (":" ~ type_ref)?
+    | ^"procedure" ~ param_clause?
+}
+
+// Inline array of: `array[...] of Type` or `array of Type`
+array_type_ref = {
+    ^"array" ~ ("[" ~ (!"}" ~ !"]" ~ ANY)* ~ "]")? ~ ^"of" ~ type_ref
+}
+
+// Simple type ref: identifier with optional generic `<Type>`
+builtin_type_keyword = @{ builtin_type ~ !(ASCII_ALPHANUMERIC | "_") }
+
+simple_type_ref = {
+    builtin_type_keyword
+    | identifier ~ ("<" ~ type_ref ~ ">")?
+}
+
+builtin_type = {
+    ^"string"
+    | ^"integer" | ^"longint" | ^"int64" | ^"cardinal" | ^"word" | ^"byte" | ^"shortint"
+    | ^"real" | ^"double" | ^"single" | ^"extended"
+    | ^"boolean"
+    | ^"char"
+    | ^"pointer"
+}
+
+// ── Statements ─────────────────────────────────────────────────────────────────
+
+compound_statement = { ^"begin" ~ statement_list ~ ^"end" }
+
+statement_list = { (statement ~ ";")* ~ statement? }
+
+statement = {
+    compound_statement
+    | if_statement
+    | for_statement
+    | for_in_statement
+    | while_statement
+    | repeat_statement
+    | case_statement
+    | with_statement
+    | try_statement
+    | raise_statement
+    | exit_statement
+    | halt_statement
+    | break_statement
+    | continue_statement
+    | inherited_statement
+    | assign_or_call_statement
+}
+
+empty_statement = { "" }
+
+// ── If ─────────────────────────────────────────────────────────────────────────
+
+if_statement = { ^"if" ~ expression ~ ^"then" ~ statement ~ else_clause? }
+
+else_clause = { ^"else" ~ statement }
+
+// ── For ────────────────────────────────────────────────────────────────────────
+
+for_statement = {
+    ^"for" ~ identifier ~ ":=" ~ expression ~ (^"to" | ^"downto") ~ expression ~ ^"do" ~ statement
+}
+
+for_in_statement = {
+    ^"for" ~ identifier ~ ^"in" ~ expression ~ ^"do" ~ statement
+}
+
+// ── While ──────────────────────────────────────────────────────────────────────
+
+while_statement = { ^"while" ~ expression ~ ^"do" ~ statement }
+
+// ── Repeat ─────────────────────────────────────────────────────────────────────
+
+repeat_statement = { ^"repeat" ~ statement_list ~ ^"until" ~ expression }
+
+// ── Case ───────────────────────────────────────────────────────────────────────
+
+case_statement = { ^"case" ~ expression ~ ^"of" ~ case_arm* ~ case_else? ~ ^"end" }
+
+case_arm = { case_value_list ~ ":" ~ case_arm_body ~ ";"? }
+
+case_value_list = { case_value ~ ("," ~ case_value)* }
+
+case_value = { expression ~ (".." ~ expression)? }
+
+case_arm_body = { compound_statement | statement }
+
+case_else = { (^"else" | ^"otherwise") ~ ":"? ~ statement_list }
+
+// ── With ───────────────────────────────────────────────────────────────────────
+
+with_statement = { ^"with" ~ expression ~ ("," ~ expression)* ~ ^"do" ~ statement }
+
+// ── Try / Except / Finally ─────────────────────────────────────────────────────
+
+try_statement = { ^"try" ~ statement_list ~ try_handler }
+
+try_handler = {
+    except_handler
+    | finally_handler
+}
+
+except_handler = { ^"except" ~ except_body ~ ^"end" }
+
+except_body = {
+    on_clause+ ~ except_else?
+    | statement_list
+}
+
+on_clause = { ^"on" ~ on_var_binding? ~ identifier ~ ^"do" ~ statement ~ ";"? }
+on_var_binding = { identifier ~ ":" }
+
+except_else = { ^"else" ~ statement_list }
+
+finally_handler = { ^"finally" ~ statement_list ~ ^"end" }
+
+// ── Raise ──────────────────────────────────────────────────────────────────────
+
+raise_statement = { ^"raise" ~ expression? }
+
+// ── Exit / Break / Continue / Halt ─────────────────────────────────────────────
+
+exit_statement = { ^"exit" ~ ("(" ~ expression ~ ")")? }
+
+halt_statement = { ^"halt" ~ ("(" ~ expression ~ ")")? }
+
+break_statement = { ^"break" }
+
+continue_statement = { ^"continue" }
+
+// ── Inherited ──────────────────────────────────────────────────────────────────
+
+inherited_statement = { ^"inherited" ~ (identifier ~ arg_list?)? }
+
+// ── Assignment / Call ──────────────────────────────────────────────────────────
+
+assign_or_call_statement = {
+    expression ~ (
+        ":=" ~ expression
+        | "+=" ~ expression
+        | "-=" ~ expression
+        | "*=" ~ expression
+        | "/=" ~ expression
+    )?
+}
+
+// ── Expressions (precedence chain) ─────────────────────────────────────────────
+// Precedence (lowest to highest):
+//   is / as
+//   relational: = <> < > <= >= in
+//   additive: + - or xor
+//   multiplicative: * / div mod and shl shr
+//   unary: - not @
+//   postfix: . [] ^ ()
+
+expression = { is_as_expression }
+
+is_as_expression = { relational ~ (is_as_op ~ identifier)* }
+
+// Keyword operators and literals must be atomic to prevent pest's
+// auto-whitespace from breaking the word boundary check.
+// In non-atomic rules, pest skips whitespace BEFORE the !(ALNUM) check,
+// causing it to see the next token's first char instead of end-of-keyword.
+is_kw = @{ ^"is" ~ !(ASCII_ALPHANUMERIC | "_") }
+as_kw = @{ ^"as" ~ !(ASCII_ALPHANUMERIC | "_") }
+in_kw = @{ ^"in" ~ !(ASCII_ALPHANUMERIC | "_") }
+or_kw = @{ ^"or" ~ !(ASCII_ALPHANUMERIC | "_") }
+xor_kw = @{ ^"xor" ~ !(ASCII_ALPHANUMERIC | "_") }
+div_kw = @{ ^"div" ~ !(ASCII_ALPHANUMERIC | "_") }
+mod_kw = @{ ^"mod" ~ !(ASCII_ALPHANUMERIC | "_") }
+and_kw = @{ ^"and" ~ !(ASCII_ALPHANUMERIC | "_") }
+shl_kw = @{ ^"shl" ~ !(ASCII_ALPHANUMERIC | "_") }
+shr_kw = @{ ^"shr" ~ !(ASCII_ALPHANUMERIC | "_") }
+true_keyword = @{ ^"true" ~ !(ASCII_ALPHANUMERIC | "_") }
+false_keyword = @{ ^"false" ~ !(ASCII_ALPHANUMERIC | "_") }
+nil_keyword = @{ ^"nil" ~ !(ASCII_ALPHANUMERIC | "_") }
+result_keyword = @{ ^"result" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+is_as_op = { is_kw | as_kw }
+
+relational = { additive ~ (relational_op ~ additive)* }
+
+relational_op = {
+    "<>" | "<=" | ">=" | "<" | ">" | "="
+    | in_kw
+}
+
+additive = { multiplicative ~ (additive_op ~ multiplicative)* }
+
+additive_op = {
+    "+" | "-"
+    | or_kw
+    | xor_kw
+}
+
+multiplicative = { unary ~ (multiplicative_op ~ unary)* }
+
+multiplicative_op = {
+    "*" | "/"
+    | div_kw
+    | mod_kw
+    | and_kw
+    | shl_kw
+    | shr_kw
+}
+
+not_keyword = @{ ^"not" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+unary = {
+    "-" ~ unary
+    | not_keyword ~ unary
+    | "@" ~ unary
+    | postfix
+}
+
+postfix = { primary ~ postfix_op* }
+
+postfix_op = {
+    "." ~ identifier ~ arg_list        // method call: obj.Method(args)
+    | "." ~ identifier                  // field access: obj.Field
+    | "[" ~ expression ~ "]"            // index: arr[i]
+    | "^"                               // dereference: ptr^
+    | arg_list                          // function call: F(args)
+}
+
+arg_list = { "(" ~ (expression ~ ("," ~ expression)*)? ~ ")" }
+
+// ── Primary Expressions ────────────────────────────────────────────────────────
+
+primary = {
+    real_literal
+    | int_literal
+    | true_keyword
+    | false_keyword
+    | nil_keyword
+    | string_literal
+    | char_literal
+    | set_literal
+    | new_expression
+    | lambda_procedure
+    | lambda_function
+    | inherited_expression
+    | type_cast_builtin
+    | result_keyword
+    | identifier
+    | "(" ~ expression ~ ")"
+}
+
+// Inherited expression: `inherited Method(args)` or bare `inherited`
+inherited_expression = { ^"inherited" ~ (identifier ~ arg_list?)? }
+
+// New expression: `New ClassName(args)`
+new_expression = { ^"new" ~ identifier ~ arg_list? }
+
+// Type cast with builtin type name: `Integer(x)`, `String(x)`
+type_cast_builtin = { builtin_type_keyword ~ "(" ~ expression ~ ")" }
+
+// Anonymous procedure: `procedure(params) begin ... end`
+lambda_procedure = { ^"procedure" ~ param_clause? ~ compound_statement }
+
+// Anonymous function: `function(params): Type begin ... end`
+lambda_function = { ^"function" ~ param_clause? ~ (":" ~ type_ref)? ~ compound_statement }
+
+// Set literal: `[1, 2, 3]`
+set_literal = { "[" ~ (expression ~ ("," ~ expression)*)? ~ "]" }
+
+// ── Literals ───────────────────────────────────────────────────────────────────
+
+// Single-quoted string with '' escape
+string_literal = @{ "'" ~ ("''" | (!"'" ~ ANY))* ~ "'" }
+
+// Character literal: #65, #13#10, etc.
+char_literal = @{ "#" ~ ASCII_DIGIT+ }
+
+// Hex literal: $FF
+hex_literal = @{ "$" ~ ASCII_HEX_DIGIT+ }
+
+// Real literal: digits with decimal point or exponent
+real_literal = @{
+    ASCII_DIGIT+ ~ "." ~ !(".") ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    | ASCII_DIGIT+ ~ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+
+}
+
+// Integer literal: decimal digits or hex
+int_literal = @{
+    "$" ~ ASCII_HEX_DIGIT+
+    | ASCII_DIGIT+
+}
+
+// ── Identifiers ────────────────────────────────────────────────────────────────
+
+identifier = @{
+    !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
+}
+
+// ── Keywords ───────────────────────────────────────────────────────────────────
+
+keyword = _{
+    (
+        ^"program" | ^"unit" | ^"uses" | ^"interface" | ^"implementation"
+        | ^"begin" | ^"end" | ^"var" | ^"const" | ^"type"
+        | ^"procedure" | ^"function" | ^"forward"
+        | ^"if" | ^"then" | ^"else"
+        | ^"for" | ^"to" | ^"downto" | ^"do"
+        | ^"while" | ^"repeat" | ^"until"
+        | ^"case" | ^"of" | ^"otherwise"
+        | ^"record" | ^"array" | ^"set" | ^"file" | ^"object" | ^"class"
+        | ^"inherited" | ^"override" | ^"virtual" | ^"abstract"
+        | ^"with" | ^"in" | ^"is" | ^"as"
+        | ^"try" | ^"except" | ^"finally" | ^"raise" | ^"on"
+        | ^"and" | ^"or" | ^"not" | ^"xor" | ^"div" | ^"mod" | ^"shl" | ^"shr"
+        | ^"nil" | ^"true" | ^"false"
+        | ^"string" | ^"integer" | ^"real" | ^"boolean" | ^"char"
+        | ^"byte" | ^"word" | ^"longint" | ^"shortint" | ^"cardinal" | ^"int64"
+        | ^"single" | ^"double" | ^"extended"
+        | ^"pointer"
+        | ^"exit" | ^"break" | ^"continue" | ^"halt"
+        | ^"new" | ^"dispose" | ^"result"
+        | ^"constructor" | ^"destructor"
+        | ^"public" | ^"private" | ^"protected" | ^"published"
+        | ^"property" | ^"out"
+    )
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
