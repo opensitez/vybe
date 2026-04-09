@@ -54,7 +54,7 @@ statement = _{
 
 empty_statement = { ";" | NEWLINE }
 
-block_statement = { "{" ~ statement* ~ "}" }
+block_statement = { "{" ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}" }
 
 // ── Variable declarations ───────────────────────────────────────────────────
 
@@ -112,7 +112,7 @@ class_declaration = {
     "class" ~ ident_name? ~ ("extends" ~ assignment_expression)? ~ class_body
 }
 
-class_body = { "{" ~ (";"? ~ class_member)* ~ ";"? ~ "}" }
+class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
 
 class_member = {
     static_kw? ~ (getter_method | setter_method | class_method | class_property)
@@ -125,15 +125,13 @@ setter_method = { "set" ~ property_name ~ "(" ~ param ~ ")" ~ function_body }
 class_method = { async_kw? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body }
 class_property = { property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
 
-async_kw = { "async" }
-
 property_name = { computed_property_name | string_literal | numeric_literal | ident_or_keyword }
 computed_property_name = { "[" ~ assignment_expression ~ "]" }
 
 // ── If ──────────────────────────────────────────────────────────────────────
 
 if_statement = {
-    "if" ~ "(" ~ expression ~ ")" ~ statement ~ ("else" ~ statement)?
+    "if" ~ "(" ~ expression ~ ")" ~ statement ~ eat_terminators ~ ("else" ~ statement)?
 }
 
 // ── For / For-in / For-of ───────────────────────────────────────────────────
@@ -169,16 +167,16 @@ variable_declaration_no_semi = {
 
 while_statement = { "while" ~ "(" ~ expression ~ ")" ~ statement }
 
-do_while_statement = { "do" ~ statement ~ "while" ~ "(" ~ expression ~ ")" ~ terminator }
+do_while_statement = { "do" ~ statement ~ eat_terminators ~ "while" ~ "(" ~ expression ~ ")" ~ terminator }
 
 // ── Switch ──────────────────────────────────────────────────────────────────
 
 switch_statement = {
-    "switch" ~ "(" ~ expression ~ ")" ~ "{" ~ switch_case* ~ "}"
+    "switch" ~ "(" ~ expression ~ ")" ~ "{" ~ eat_terminators ~ switch_case* ~ eat_terminators ~ "}"
 }
 
 switch_case = {
-    ("case" ~ expression | "default") ~ ":" ~ statement*
+    ("case" ~ expression | "default") ~ ":" ~ eat_terminators ~ (statement ~ eat_terminators)*
 }
 
 // ── Jump statements ─────────────────────────────────────────────────────────
@@ -197,7 +195,7 @@ throw_statement = { "throw" ~ !NEWLINE ~ expression ~ terminator }
 // ── Try / Catch / Finally ───────────────────────────────────────────────────
 
 try_statement = {
-    "try" ~ block_statement ~ catch_clause? ~ finally_clause?
+    "try" ~ block_statement ~ eat_terminators ~ catch_clause? ~ eat_terminators ~ finally_clause?
 }
 
 catch_clause = { "catch" ~ ("(" ~ ident_name ~ ")")? ~ block_statement }
@@ -243,7 +241,9 @@ expression_statement = { expression ~ terminator }
 expression = { assignment_expression ~ ("," ~ assignment_expression)* }
 
 assignment_expression = {
-    conditional_expression ~ (assignment_op ~ assignment_expression)?
+    arrow_function
+    | async_arrow_function
+    | conditional_expression ~ (assignment_op ~ assignment_expression)?
 }
 
 assignment_op = {
@@ -255,38 +255,40 @@ assignment_op = {
 }
 
 conditional_expression = {
-    nullish_coalescing ~ ("?" ~ assignment_expression ~ ":" ~ assignment_expression)?
+    logical_expr ~ ("?" ~ assignment_expression ~ ":" ~ assignment_expression)?
 }
 
-nullish_coalescing = { logical_or ~ (nullish_op ~ logical_or)* }
+// Flattened to minimize recursion depth.
+// All logical/bitwise operators in one level (precedence handled by walker via op type).
+logical_expr = { comparison ~ (logical_op ~ comparison)* }
+logical_op = {
+    nullish_op | or_op | and_op | bitor_op | bitxor_op | bitand_op
+}
 nullish_op = { "??" }
-logical_or = { logical_and ~ (or_op ~ logical_and)* }
-or_op = { "||" }
-logical_and = { bitwise_or ~ (and_op ~ bitwise_or)* }
-and_op = { "&&" }
-bitwise_or = { bitwise_xor ~ (bitor_op ~ bitwise_xor)* }
+or_op = { "||" ~ !"=" }
+and_op = { "&&" ~ !"=" }
 bitor_op = { "|" ~ !("=" | "|") }
-bitwise_xor = { bitwise_and ~ (bitxor_op ~ bitwise_and)* }
 bitxor_op = { "^" ~ !"=" }
-bitwise_and = { equality ~ (bitand_op ~ equality)* }
 bitand_op = { "&" ~ !("=" | "&") }
 
-equality = { relational ~ (equality_op ~ relational)* }
+// Equality, relational, shift all in one level.
+comparison = { additive ~ (comparison_op ~ additive)* }
+comparison_op = {
+    equality_op | shift_op | relational_op
+}
 equality_op = { "===" | "!==" | "==" | "!=" }
-
-relational = { shift ~ (relational_op ~ shift)* }
-relational_op = { "<=" | ">=" | "<" ~ !"<" | ">" ~ !">" | "instanceof" | "in" ~ !(ASCII_ALPHANUMERIC | "_") }
-
-shift = { additive ~ (shift_op ~ additive)* }
+instanceof_kw = @{ "instanceof" ~ !(ASCII_ALPHANUMERIC | "_") }
+in_kw = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+relational_op = { "<=" | ">=" | "<" ~ !"<" | ">" ~ !">" | instanceof_kw | in_kw }
 shift_op = { ">>>" ~ !"=" | ">>" ~ !(">" | "=") | "<<" ~ !"=" }
 
 additive = { multiplicative ~ (additive_op ~ multiplicative)* }
 additive_op = { "+" ~ !("+" | "=") | "-" ~ !("-" | "=") }
 
-multiplicative = { exponentiation ~ (multiplicative_op ~ exponentiation)* }
-multiplicative_op = { "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
-
-exponentiation = { unary ~ (exp_op ~ exponentiation)? }
+// Multiplicative and exponentiation in one level.
+multiplicative = { unary ~ (multiplicative_op ~ unary)* }
+multiplicative_op = { exp_op | mul_op }
+mul_op = { "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
 exp_op = { "**" ~ !"=" }
 
 unary = {
@@ -294,17 +296,31 @@ unary = {
     | postfix
 }
 
+// Keyword operators/literals must be atomic to prevent pest's auto-whitespace
+// from breaking the word boundary check.
+this_kw = @{ "this" ~ !(ASCII_ALPHANUMERIC | "_") }
+super_kw = @{ "super" ~ !(ASCII_ALPHANUMERIC | "_") }
+true_kw = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
+false_kw = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
+null_kw = @{ "null" ~ !(ASCII_ALPHANUMERIC | "_") }
+undefined_kw = @{ "undefined" ~ !(ASCII_ALPHANUMERIC | "_") }
+typeof_kw = @{ "typeof" ~ !(ASCII_ALPHANUMERIC | "_") }
+void_kw = @{ "void" ~ !(ASCII_ALPHANUMERIC | "_") }
+delete_kw = @{ "delete" ~ !(ASCII_ALPHANUMERIC | "_") }
+await_kw = @{ "await" ~ !(ASCII_ALPHANUMERIC | "_") }
+async_kw = @{ "async" ~ !(ASCII_ALPHANUMERIC | "_") }
+
 unary_op = {
     "-" ~ !("-" | "=")
     | "+" ~ !("+" | "=")
     | "!" ~ !"="
     | "~"
-    | "typeof" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "void" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "delete" ~ !(ASCII_ALPHANUMERIC | "_")
+    | typeof_kw
+    | void_kw
+    | delete_kw
     | "++"
     | "--"
-    | "await" ~ !(ASCII_ALPHANUMERIC | "_")
+    | await_kw
 }
 
 postfix = { call_expression ~ postfix_op? }
@@ -316,6 +332,8 @@ call_expression = {
     (new_expression | primary) ~ call_chain*
 }
 
+new_expression = { "new" ~ primary ~ call_chain* }
+
 call_chain = {
     "?." ~ "(" ~ argument_list? ~ ")"          // optional call: obj?.()
     | "?." ~ ident_or_keyword                   // optional member: obj?.prop
@@ -324,8 +342,6 @@ call_chain = {
     | "[" ~ expression ~ "]"                    // computed: obj[expr]
 }
 
-new_expression = { "new" ~ call_expression }
-
 argument_list = { argument ~ ("," ~ argument)* ~ ","? }
 argument = { "..." ~ assignment_expression | assignment_expression }
 
@@ -333,21 +349,19 @@ argument = { "..." ~ assignment_expression | assignment_expression }
 // Arrow functions tried BEFORE grouped expression (ordered choice with backtracking)
 
 primary = {
-    arrow_function
-    | async_arrow_function
-    | "(" ~ expression ~ ")"
+    "(" ~ expression ~ ")"
     | async_function_expression
     | function_expression
     | class_expression
     | array_literal
     | object_literal
     | template_literal
-    | "this" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "super" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "true" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "false" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "null" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "undefined" ~ !(ASCII_ALPHANUMERIC | "_")
+    | this_kw
+    | super_kw
+    | true_kw
+    | false_kw
+    | null_kw
+    | undefined_kw
     | "..." ~ assignment_expression
     | numeric_literal
     | string_literal
@@ -363,7 +377,7 @@ arrow_function = {
 }
 
 async_arrow_function = {
-    "async" ~ !(ASCII_ALPHANUMERIC | "_") ~ ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ arrow_body
+    async_kw ~ ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ arrow_body
 }
 
 arrow_body = { function_body | assignment_expression }
@@ -375,7 +389,7 @@ function_expression = {
 }
 
 async_function_expression = {
-    "async" ~ !(ASCII_ALPHANUMERIC | "_") ~ "function" ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+    async_kw ~ "function" ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
 }
 
 class_expression = {
@@ -385,7 +399,7 @@ class_expression = {
 // ── Array literal ───────────────────────────────────────────────────────────
 
 array_literal = {
-    "[" ~ (array_element ~ ("," ~ array_element)*)? ~ ","? ~ "]"
+    "[" ~ eat_terminators ~ (array_element ~ eat_terminators ~ ("," ~ eat_terminators ~ array_element ~ eat_terminators)*)? ~ ","? ~ eat_terminators ~ "]"
 }
 
 array_element = { "..." ~ assignment_expression | assignment_expression }
@@ -393,7 +407,7 @@ array_element = { "..." ~ assignment_expression | assignment_expression }
 // ── Object literal ──────────────────────────────────────────────────────────
 
 object_literal = {
-    "{" ~ (object_property ~ ("," ~ object_property)*)? ~ ","? ~ "}"
+    "{" ~ eat_terminators ~ (object_property ~ eat_terminators ~ ("," ~ eat_terminators ~ object_property ~ eat_terminators)*)? ~ ","? ~ eat_terminators ~ "}"
 }
 
 object_property = {

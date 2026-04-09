@@ -14,6 +14,12 @@ use crate::scope::Scope;
 struct LoopCtx {
     break_patches: Vec<usize>,
     continue_target: usize,
+    /// Forward jumps for continue in for-in loops where continue must skip to increment.
+    /// If empty, continue uses continue_target directly (backward jump).
+    /// If non-empty, continue emits a forward jump that gets patched later.
+    continue_patches: Vec<usize>,
+    /// When true, continue emits a forward jump (patched later) instead of backward loop.
+    continue_needs_patch: bool,
     label: Option<String>,
 }
 
@@ -332,7 +338,7 @@ impl Compiler {
             // ── While (compiler_common::loops) ─────────────────────────
             StmtKind::While { cond, body, else_body } => {
                 let start = common::loops::emit_loop_start(self.chunk());
-                self.loops.push(LoopCtx { break_patches: vec![], continue_target: start, label: None });
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: start, continue_patches: vec![], continue_needs_patch: false, label: None });
                 self.compile_expr(cond)?;
                 let line = self.line;
                 let exit = common::loops::emit_loop_cond(self.chunk(), line);
@@ -351,7 +357,8 @@ impl Compiler {
                 self.scope_mut().begin_scope();
                 if let Some(init_stmt) = init { self.compile_stmt(init_stmt)?; }
                 let start = common::loops::emit_loop_start(self.chunk());
-                self.loops.push(LoopCtx { break_patches: vec![], continue_target: start, label: None });
+                let has_update = update.is_some();
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: start, continue_patches: vec![], continue_needs_patch: has_update, label: None });
                 if let Some(c) = cond {
                     self.compile_expr(c)?;
                 } else {
@@ -360,10 +367,12 @@ impl Compiler {
                 let line = self.line;
                 let exit = common::loops::emit_loop_cond(self.chunk(), line);
                 for s in body { self.compile_stmt(s)?; }
+                let ctx = self.loops.pop().unwrap();
+                // Patch continue jumps to land here (at the update expression)
+                for p in ctx.continue_patches { self.patch_jump(p); }
                 if let Some(u) = update { self.compile_expr(u)?; self.emit(Op::drop); }
                 let line = self.line;
                 common::loops::emit_loop_end(self.chunk(), start, exit, line);
-                let ctx = self.loops.pop().unwrap();
                 for p in ctx.break_patches { self.patch_jump(p); }
                 self.scope_mut().end_scope();
             }
@@ -381,9 +390,15 @@ impl Compiler {
                 // Define loop variable and set it
                 let var_slot = self.scope_mut().define(var);
                 self.emit_u16(Op::local_set, var_slot); self.emit(Op::drop);
-                self.loops.push(LoopCtx { break_patches: vec![], continue_target: loop_start, label: None });
+                // continue must jump to the increment, not the condition check.
+                // Use a placeholder — we'll set it after the body to the increment location.
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: loop_start, continue_patches: vec![], continue_needs_patch: true, label: None });
                 for s in body { self.compile_stmt(s)?; }
                 let ctx = self.loops.pop().unwrap();
+                // Patch continue forward jumps to land here (at the increment)
+                for p in ctx.continue_patches {
+                    self.patch_jump(p);
+                }
                 common::loops::emit_for_in_end(
                     &mut self.chunks[self.current], idx_slot, loop_start, exit_jump, line,
                 );
@@ -397,7 +412,7 @@ impl Compiler {
             // ── DoWhile (compiler_common::loops) ────────────────────────
             StmtKind::DoWhile { body, cond, until } => {
                 let start = common::loops::emit_do_loop_start(self.chunk());
-                self.loops.push(LoopCtx { break_patches: vec![], continue_target: start, label: None });
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: start, continue_patches: vec![], continue_needs_patch: false, label: None });
                 for s in body { self.compile_stmt(s)?; }
                 self.compile_expr(cond)?;
                 let line = self.line;
@@ -533,17 +548,35 @@ impl Compiler {
             StmtKind::Continue(target) => {
                 match target {
                     ContinueTarget::Implicit | ContinueTarget::Kind(_) | ContinueTarget::Level(_) => {
-                        if let Some(ctx) = self.loops.last() {
-                            let t = ctx.continue_target;
-                            self.emit_loop(t);
+                        let needs_patch = self.loops.last().map(|c| c.continue_needs_patch).unwrap_or(false);
+                        let target = self.loops.last().map(|c| c.continue_target).unwrap_or(0);
+                        if needs_patch {
+                            let jump = self.emit_jump(Op::br);
+                            if let Some(ctx) = self.loops.last_mut() {
+                                ctx.continue_patches.push(jump);
+                            }
+                        } else if self.loops.last().is_some() {
+                            self.emit_loop(target);
                         }
                     }
                     ContinueTarget::Label(label) => {
-                        for ctx in self.loops.iter().rev() {
+                        let mut found_idx = None;
+                        let mut needs_patch = false;
+                        let mut target = 0;
+                        for (i, ctx) in self.loops.iter().enumerate().rev() {
                             if ctx.label.as_deref() == Some(label.as_str()) {
-                                let t = ctx.continue_target;
-                                self.emit_loop(t);
+                                found_idx = Some(i);
+                                needs_patch = ctx.continue_needs_patch;
+                                target = ctx.continue_target;
                                 break;
+                            }
+                        }
+                        if let Some(idx) = found_idx {
+                            if needs_patch {
+                                let jump = self.emit_jump(Op::br);
+                                self.loops[idx].continue_patches.push(jump);
+                            } else {
+                                self.emit_loop(target);
                             }
                         }
                     }
@@ -2446,8 +2479,9 @@ impl Compiler {
                         self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
                     }
                     BuiltinEmit::Opcode(op_name) => {
-                        // value already on stack as first arg
-                        self.emit_builtin_opcode(op_name, &arg_exprs)?;
+                        // Object already on stack. Just compile remaining args and emit opcode.
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        self.emit_named_opcode(op_name);
                     }
                     BuiltinEmit::StrLength => {
                         let line = self.line;
@@ -2458,16 +2492,115 @@ impl Compiler {
                 return Ok(());
             }
 
-            // Array methods routing: arr.map(fn) → __array_map(arr, fn)
-            if let Some(target) = self.profile.lookup_array_method(field).map(|s| s.to_string()) {
+            // Array higher-order methods: arr.map(fn), arr.filter(fn), etc.
+            // Use compiler_common::loops which emits proper loop bytecode.
+            let field_lower = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
+            if self.profile.lookup_array_method(&field_lower).is_some() {
+                // Compile arr and fn(s) into local slots
                 self.compile_expr(object)?;
-                for a in &arg_exprs { self.compile_expr(a)?; }
-                let idx = self.str_const(&target);
-                self.emit_u16(Op::global_get, idx);
-                // Reorder: func is on top, we need it after the array
-                // Actually: global_get pushed the func, but array + args are already pushed
-                // We need: func, array, args... → just call with all pushed
-                self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
+                let arr_slot = self.scope_mut().define("__hof_arr");
+                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+
+                if let Some(fn_expr) = arg_exprs.first() {
+                    self.compile_expr(fn_expr)?;
+                } else {
+                    self.emit(Op::null);
+                }
+                let fn_slot = self.scope_mut().define("__hof_fn");
+                self.emit_u16(Op::local_set, fn_slot); self.emit(Op::drop);
+
+                let idx_slot = self.scope_mut().define("__hof_idx");
+                let result_slot = self.scope_mut().define("__hof_result");
+                let line = self.line;
+
+                match field_lower.as_str() {
+                    "map" => {
+                        // emit_map leaves result on stack
+                        common::loops::emit_map(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, line);
+                    }
+                    "filter" => {
+                        let elem_slot = self.scope_mut().define("__hof_elem");
+                        common::loops::emit_filter(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, elem_slot, line);
+                    }
+                    "reduce" => {
+                        // reduce(fn, initial?) — initial is second arg
+                        if let Some(init_expr) = arg_exprs.get(1) {
+                            self.compile_expr(init_expr)?;
+                            self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                        } else {
+                            self.emit(Op::i32_const_0);
+                            self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                        }
+                        common::loops::emit_reduce(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, line);
+                    }
+                    "forEach" | "foreach" => {
+                        // forEach: iterate and call fn(elem, idx) for each, return undefined
+                        let (loop_start, exit_jump) = common::loops::emit_for_in_start(
+                            self.chunk(), arr_slot, idx_slot, line);
+                        let elem_slot = self.scope_mut().define("__fe_elem");
+                        self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit_u16(Op::local_get, elem_slot);
+                        self.emit_u16(Op::local_get, idx_slot);
+                        self.emit_u8(Op::call_ref, 2);
+                        self.emit(Op::drop);
+                        common::loops::emit_for_in_end(self.chunk(), idx_slot, loop_start, exit_jump, line);
+                        self.emit(Op::null);
+                    }
+                    "find" => {
+                        // find: iterate, call fn(elem), return first truthy or null
+                        self.emit(Op::null);
+                        self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                        let (loop_start, exit_jump) = common::loops::emit_for_in_start(
+                            self.chunk(), arr_slot, idx_slot, line);
+                        let elem_slot = self.scope_mut().define("__find_elem");
+                        self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit_u16(Op::local_get, elem_slot);
+                        self.emit_u8(Op::call_ref, 1);
+                        self.emit(Op::dyn_to_bool);
+                        let skip = self.emit_jump(Op::br_if_false);
+                        self.emit_u16(Op::local_get, elem_slot);
+                        self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                        // break out of loop
+                        let brk = self.emit_jump(Op::br);
+                        self.patch_jump(skip);
+                        common::loops::emit_for_in_end(self.chunk(), idx_slot, loop_start, exit_jump, line);
+                        self.patch_jump(brk);
+                        self.emit_u16(Op::local_get, result_slot);
+                    }
+                    "includes" => {
+                        // includes(val): iterate, check === each, return bool
+                        self.emit(Op::r#false);
+                        self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                        let (loop_start, exit_jump) = common::loops::emit_for_in_start(
+                            self.chunk(), arr_slot, idx_slot, line);
+                        // elem on stack from for_in_start
+                        self.emit_u16(Op::local_get, fn_slot); // fn_slot holds the search value
+                        self.emit(Op::dyn_eq);
+                        let skip = self.emit_jump(Op::br_if_false);
+                        self.emit(Op::r#true);
+                        self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                        let brk = self.emit_jump(Op::br);
+                        self.patch_jump(skip);
+                        common::loops::emit_for_in_end(self.chunk(), idx_slot, loop_start, exit_jump, line);
+                        self.patch_jump(brk);
+                        self.emit_u16(Op::local_get, result_slot);
+                    }
+                    "sort" => {
+                        // sort with optional comparator — call host sort
+                        let sort_idx = self.import("vybe:array", "sort");
+                        self.emit_u16(Op::local_get, arr_slot);
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit_host_call(sort_idx, 2);
+                    }
+                    _ => {
+                        // Fallback: call as regular method
+                        self.emit_u16(Op::local_get, arr_slot);
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit_u8(Op::call_ref, 2);
+                    }
+                }
                 return Ok(());
             }
         }
@@ -2789,6 +2922,63 @@ impl Compiler {
     }
 
     /// Emit a named opcode sequence for a builtin.
+    /// Emit a single opcode by name. Used for value methods where args are already on stack.
+    fn emit_named_opcode(&mut self, op_name: &str) {
+        let line = self.line;
+        match op_name {
+            "f64_abs" => self.emit(Op::f64_abs),
+            "f64_floor" => self.emit(Op::f64_floor),
+            "f64_ceil" => self.emit(Op::f64_ceil),
+            "f64_sqrt" => self.emit(Op::f64_sqrt),
+            "f64_trunc" => self.emit(Op::f64_trunc),
+            "f64_nearest" => self.emit(Op::f64_nearest),
+            "f64_min" => self.emit(Op::f64_min),
+            "f64_max" => self.emit(Op::f64_max),
+            "i32_from_f64" => self.emit(Op::i32_from_f64),
+            "f64_from_i32" => self.emit(Op::f64_from_i32),
+            "dyn_to_bool" => self.emit(Op::dyn_to_bool),
+            "dyn_not" => self.emit(Op::dyn_not),
+            "ref_is_null" => self.emit(Op::ref_is_null),
+            "ref_is_array" => self.emit(Op::ref_is_array),
+            "ref_typeof" => self.emit(Op::ref_typeof),
+            "str_length" => self.emit(Op::str_length),
+            "str_to_upper" => self.emit(Op::str_to_upper),
+            "str_to_lower" => self.emit(Op::str_to_lower),
+            "str_trim" => self.emit(Op::str_trim),
+            "str_trim_start" => self.emit(Op::str_trim_start),
+            "str_trim_end" => self.emit(Op::str_trim_end),
+            "str_reverse" => self.emit(Op::str_reverse),
+            "str_from_char_code" => self.emit(Op::str_from_char_code),
+            "str_char_at" => self.emit(Op::str_char_at),
+            "str_char_code_at" => self.emit(Op::str_char_code_at),
+            "str_starts_with" => self.emit(Op::str_starts_with),
+            "str_ends_with" => self.emit(Op::str_ends_with),
+            "str_index_of" => self.emit(Op::str_index_of),
+            "str_last_index_of" => self.emit(Op::str_last_index_of),
+            "str_includes" => self.emit(Op::str_index_of), // includes → index_of (check != -1 at runtime)
+            "str_substring" => self.emit(Op::str_substring),
+            "str_split" => self.emit(Op::str_split),
+            "str_replace" => self.emit(Op::str_replace),
+            "str_repeat" => self.emit(Op::str_repeat),
+            "str_pad_start" => self.emit(Op::str_pad_start),
+            "str_pad_end" => self.emit(Op::str_pad_end),
+            "str_compare" => self.emit(Op::str_compare),
+            "str_concat" => self.emit(Op::str_concat),
+            "array_push" => self.emit(Op::array_push),
+            "array_pop" => self.emit(Op::array_pop),
+            "array_shift" => self.emit(Op::array_shift),
+            "array_reverse" => self.emit(Op::array_reverse),
+            "array_join" => self.emit(Op::array_join),
+            "array_concat" => self.emit(Op::array_concat),
+            "array_fill" => self.emit(Op::array_fill),
+            "array_length" => self.emit(Op::array_length),
+            "array_slice" => self.emit(Op::array_slice),
+            "array_get" => self.emit(Op::array_get),
+            "array_set" => self.emit(Op::array_set),
+            _ => { let c = self.str_const(op_name); self.emit_u16(Op::global_get, c); }
+        }
+    }
+
     fn emit_builtin_opcode(&mut self, op_name: &str, args: &[&Expression]) -> Result<(), String> {
         let line = self.line;
         match op_name {

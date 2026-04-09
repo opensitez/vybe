@@ -246,7 +246,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         match p.as_rule() {
             Rule::ident_name => name = p.as_str().to_string(),
             Rule::assignment_expression | Rule::conditional_expression |
-            Rule::nullish_coalescing | Rule::logical_or => {
+            Rule::logical_expr | Rule::comparison => {
                 // extends expression — extract name
                 parents.push(extract_ident_name(&p));
             }
@@ -747,6 +747,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 _ => Ok(ExprKind::Ident(name.to_string())),
             }
         }
+        Rule::true_kw => Ok(ExprKind::Lit(Literal::Bool(true))),
+        Rule::false_kw => Ok(ExprKind::Lit(Literal::Bool(false))),
+        Rule::null_kw => Ok(ExprKind::Lit(Literal::Null)),
+        Rule::undefined_kw => Ok(ExprKind::Lit(Literal::Undefined)),
+        Rule::this_kw => Ok(ExprKind::This),
+        Rule::super_kw => Ok(ExprKind::Super),
 
         // Sequence (comma expression)
         Rule::expression => {
@@ -817,10 +823,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
 
         // Binary chains
-        Rule::nullish_coalescing | Rule::logical_or | Rule::logical_and |
-        Rule::bitwise_or | Rule::bitwise_xor | Rule::bitwise_and |
-        Rule::equality | Rule::relational | Rule::shift |
-        Rule::additive | Rule::multiplicative | Rule::exponentiation => {
+        Rule::logical_expr | Rule::comparison |
+        Rule::additive | Rule::multiplicative => {
             walk_binary_chain(pair)
         }
 
@@ -1052,8 +1056,10 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
     while i + 1 < inner.len() {
         let op_pair = &inner[i];
         let op = match op_pair.as_rule() {
-            Rule::equality_op | Rule::relational_op | Rule::shift_op |
-            Rule::additive_op | Rule::multiplicative_op => op_pair.as_str().trim(),
+            Rule::logical_op | Rule::nullish_op | Rule::or_op | Rule::and_op |
+            Rule::bitor_op | Rule::bitxor_op | Rule::bitand_op |
+            Rule::comparison_op | Rule::equality_op | Rule::relational_op | Rule::shift_op |
+            Rule::additive_op | Rule::multiplicative_op | Rule::mul_op | Rule::exp_op => op_pair.as_str().trim(),
             _ => op_pair.as_str().trim(),
         };
         let right = walk_expression(inner[i + 1].clone())?;

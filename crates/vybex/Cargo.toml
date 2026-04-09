@@ -17,5 +17,13 @@ name = "vybex"
 path = "src/main.rs"
 
 [[test]]
+name = "vb"
+path = "tests/vb/main.rs"
+
+[[test]]
+name = "js"
+path = "tests/js/main.rs"
+
+[[test]]
 name = "pascal"
 path = "tests/pascal/main.rs"
