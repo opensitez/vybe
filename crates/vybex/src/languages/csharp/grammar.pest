@@ -1,0 +1,566 @@
+// C# Grammar for pest parser
+// Covers everything vybe_parser_csharp supports
+//
+// C# uses ";" terminators, so newlines are whitespace (no ASI needed).
+// Generics are recognized and stripped (no type-specific compilation).
+// Keyword operators use atomic @{} rules for word boundaries.
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ line_comment | block_comment }
+line_comment = _{ "//" ~ (!"\n" ~ ANY)* }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// ── Program ─────────────────────────────────────────────────────────────────
+
+program = { SOI ~ program_item* ~ EOI }
+
+program_item = _{
+    using_directive
+    | namespace_declaration
+    | type_declaration
+    | statement
+}
+
+// ── Using directives ────────────────────────────────────────────────────────
+
+using_directive = { "using" ~ dotted_name ~ ";" }
+
+dotted_name = @{ ident_name ~ ("." ~ ident_name)* }
+
+// ── Namespace ───────────────────────────────────────────────────────────────
+
+namespace_declaration = {
+    "namespace" ~ dotted_name ~ ("{" ~ program_item* ~ "}" | ";")
+}
+
+// ── Type declarations ───────────────────────────────────────────────────────
+
+type_declaration = _{
+    attribute_list? ~ (class_declaration | struct_declaration | interface_declaration | enum_declaration | record_declaration | delegate_declaration)
+}
+
+attribute_list = _{ "[" ~ (!"]" ~ ANY)* ~ "]" }
+
+// ── Class ───────────────────────────────────────────────────────────────────
+
+class_declaration = {
+    class_modifiers ~ "class" ~ ident_name ~ generic_params? ~ base_list? ~ class_body
+}
+
+class_modifiers = { modifier* }
+
+modifier = {
+    "public" | "private" | "protected" | "internal"
+    | static_kw | abstract_kw | sealed_kw | partial_kw
+    | virtual_kw | override_kw | readonly_kw | "new"
+    | async_kw | "const" | "volatile" | "extern"
+}
+
+static_kw = @{ "static" ~ !(ASCII_ALPHANUMERIC | "_") }
+abstract_kw = @{ "abstract" ~ !(ASCII_ALPHANUMERIC | "_") }
+sealed_kw = @{ "sealed" ~ !(ASCII_ALPHANUMERIC | "_") }
+partial_kw = @{ "partial" ~ !(ASCII_ALPHANUMERIC | "_") }
+virtual_kw = @{ "virtual" ~ !(ASCII_ALPHANUMERIC | "_") }
+override_kw = @{ "override" ~ !(ASCII_ALPHANUMERIC | "_") }
+readonly_kw = @{ "readonly" ~ !(ASCII_ALPHANUMERIC | "_") }
+async_kw = @{ "async" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+generic_params = _{ "<" ~ generic_param_list ~ ">" }
+generic_param_list = _{ ident_name ~ ("," ~ ident_name)* }
+
+base_list = { ":" ~ type_name ~ ("," ~ type_name)* }
+
+class_body = { "{" ~ class_member* ~ "}" }
+
+// ── Class members ───────────────────────────────────────────────────────────
+
+class_member = {
+    attribute_list? ~ class_modifiers ~ (
+        constructor_declaration
+        | property_declaration
+        | event_declaration
+        | method_declaration
+        | field_declaration
+    )
+}
+
+// Constructor: ClassName(params) : base/this(args) { body }
+constructor_declaration = {
+    ident_name ~ "(" ~ param_list? ~ ")" ~ constructor_initializer? ~ block_statement
+}
+
+constructor_initializer = {
+    ":" ~ (base_kw | this_kw) ~ "(" ~ argument_list? ~ ")"
+}
+
+// Property: Type Name { get; set; } or { get { } set { } }
+property_declaration = {
+    type_name ~ ident_name ~ property_body ~ ("=" ~ expression ~ ";")?
+}
+
+property_body = {
+    "{" ~ accessor+ ~ "}"
+}
+
+accessor = {
+    class_modifiers ~ ("get" | "set") ~ (block_statement | ";")
+}
+
+// Event: event EventHandler Click;
+event_declaration = {
+    "event" ~ type_name ~ ident_name ~ ";"
+}
+
+// Method: ReturnType Name(params) { body }
+method_declaration = {
+    type_name ~ ident_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~ (block_statement | ";")
+}
+
+// Field: Type name = value; or Type name;
+field_declaration = {
+    type_name ~ var_declarator_list ~ ";"
+}
+
+var_declarator_list = { var_declarator ~ ("," ~ var_declarator)* }
+
+var_declarator = { ident_name ~ ("=" ~ expression)? }
+
+// ── Struct ──────────────────────────────────────────────────────────────────
+
+struct_declaration = {
+    class_modifiers ~ "struct" ~ ident_name ~ generic_params? ~ base_list? ~ class_body
+}
+
+// ── Interface ───────────────────────────────────────────────────────────────
+
+interface_declaration = {
+    class_modifiers ~ "interface" ~ ident_name ~ generic_params? ~ base_list? ~ interface_body
+}
+
+interface_body = { "{" ~ interface_member* ~ "}" }
+
+interface_member = {
+    type_name ~ ident_name ~ (
+        "(" ~ param_list? ~ ")" ~ ";"                         // method
+        | "{" ~ ("get" ~ ";")? ~ ("set" ~ ";")? ~ "}"         // property
+    )
+}
+
+// ── Enum ────────────────────────────────────────────────────────────────────
+
+enum_declaration = {
+    class_modifiers ~ "enum" ~ ident_name ~ ("{" ~ enum_member_list? ~ ","? ~ "}")
+}
+
+enum_member_list = { enum_member ~ ("," ~ enum_member)* }
+
+enum_member = { ident_name ~ ("=" ~ expression)? }
+
+// ── Record ──────────────────────────────────────────────────────────────────
+
+record_declaration = {
+    class_modifiers ~ "record" ~ ident_name ~ ("(" ~ param_list? ~ ")")? ~ base_list? ~ (class_body | ";")
+}
+
+// ── Delegate ────────────────────────────────────────────────────────────────
+
+delegate_declaration = {
+    class_modifiers ~ "delegate" ~ type_name ~ ident_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~ ";"
+}
+
+// ── Statements ──────────────────────────────────────────────────────────────
+
+statement = _{
+    empty_statement
+    | block_statement
+    | local_var_declaration
+    | if_statement
+    | for_statement
+    | foreach_statement
+    | while_statement
+    | do_while_statement
+    | switch_statement
+    | return_statement
+    | break_statement
+    | continue_statement
+    | throw_statement
+    | try_statement
+    | using_statement
+    | lock_statement
+    | expression_statement
+}
+
+empty_statement = { ";" }
+
+block_statement = { "{" ~ statement* ~ "}" }
+
+// ── Variable declaration ────────────────────────────────────────────────────
+
+local_var_declaration = {
+    (var_kw | type_name) ~ var_declarator_list ~ ";"
+}
+
+var_kw = @{ "var" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── If ──────────────────────────────────────────────────────────────────────
+
+if_statement = {
+    "if" ~ "(" ~ expression ~ ")" ~ statement ~ (else_if_clause)* ~ else_clause?
+}
+
+else_if_clause = {
+    "else" ~ "if" ~ "(" ~ expression ~ ")" ~ statement
+}
+
+else_clause = {
+    "else" ~ statement
+}
+
+// ── For ─────────────────────────────────────────────────────────────────────
+
+for_statement = {
+    "for" ~ "(" ~ for_init? ~ ";" ~ expression? ~ ";" ~ for_update? ~ ")" ~ statement
+}
+
+for_init = { local_var_declaration_no_semi | expression_list }
+
+local_var_declaration_no_semi = {
+    (var_kw | type_name) ~ var_declarator_list
+}
+
+for_update = { expression_list }
+
+expression_list = { expression ~ ("," ~ expression)* }
+
+// ── Foreach ─────────────────────────────────────────────────────────────────
+
+foreach_statement = {
+    "foreach" ~ "(" ~ (var_kw | type_name) ~ ident_name ~ in_kw ~ expression ~ ")" ~ statement
+}
+
+// ── While / Do-while ────────────────────────────────────────────────────────
+
+while_statement = { "while" ~ "(" ~ expression ~ ")" ~ statement }
+
+do_while_statement = { "do" ~ statement ~ "while" ~ "(" ~ expression ~ ")" ~ ";" }
+
+// ── Switch ──────────────────────────────────────────────────────────────────
+
+switch_statement = {
+    "switch" ~ "(" ~ expression ~ ")" ~ "{" ~ switch_section* ~ "}"
+}
+
+switch_section = {
+    switch_label+ ~ statement+
+}
+
+switch_label = {
+    "case" ~ expression ~ ":"
+    | "default" ~ ":"
+}
+
+// ── Jump statements ─────────────────────────────────────────────────────────
+
+return_statement = { "return" ~ expression? ~ ";" }
+break_statement = { "break" ~ ";" }
+continue_statement = { "continue" ~ ";" }
+throw_statement = { "throw" ~ expression? ~ ";" }
+
+// ── Try / Catch / Finally ───────────────────────────────────────────────────
+
+try_statement = {
+    "try" ~ block_statement ~ catch_clause* ~ finally_clause?
+}
+
+catch_clause = {
+    "catch" ~ ("(" ~ type_name ~ ident_name? ~ ")")? ~ block_statement
+}
+
+finally_clause = { "finally" ~ block_statement }
+
+// ── Using statement ─────────────────────────────────────────────────────────
+
+using_statement = {
+    "using" ~ "(" ~ (var_kw | type_name) ~ ident_name ~ "=" ~ expression ~ ")" ~ statement
+}
+
+// ── Lock statement ──────────────────────────────────────────────────────────
+
+lock_statement = {
+    "lock" ~ "(" ~ expression ~ ")" ~ statement
+}
+
+// ── Expression statement ────────────────────────────────────────────────────
+
+expression_statement = { expression ~ ";" }
+
+// ── Expressions ─────────────────────────────────────────────────────────────
+
+expression = { assignment_expression }
+
+assignment_expression = {
+    lambda_expression
+    | conditional_expression ~ (assignment_op ~ assignment_expression)?
+}
+
+assignment_op = {
+    ">>=" | "<<=" |
+    "+=" | "-=" | "*=" | "/=" | "%=" |
+    "&=" | "|=" | "^=" |
+    "??=" |
+    "="
+}
+
+// Lambda: (params) => expr/body  or  x => expr/body
+lambda_expression = {
+    async_kw? ~ ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ lambda_body
+}
+
+lambda_body = { block_statement | expression }
+
+conditional_expression = {
+    null_coalesce_expr ~ ("?" ~ expression ~ ":" ~ expression)?
+}
+
+// Null coalescing
+null_coalesce_expr = { logical_or ~ (nullcoalesce_op ~ logical_or)* }
+nullcoalesce_op = { "??" ~ !"=" }
+
+// Logical OR
+logical_or = { logical_and ~ (or_op ~ logical_and)* }
+or_op = { "||" ~ !"=" }
+
+// Logical AND
+logical_and = { bitwise_or ~ (and_op ~ bitwise_or)* }
+and_op = { "&&" ~ !"=" }
+
+// Bitwise OR
+bitwise_or = { bitwise_xor ~ (bitor_op ~ bitwise_xor)* }
+bitor_op = { "|" ~ !("=" | "|") }
+
+// Bitwise XOR
+bitwise_xor = { bitwise_and ~ (bitxor_op ~ bitwise_and)* }
+bitxor_op = { "^" ~ !"=" }
+
+// Bitwise AND
+bitwise_and = { equality ~ (bitand_op ~ equality)* }
+bitand_op = { "&" ~ !("=" | "&") }
+
+// Equality
+equality = { relational ~ (equality_op ~ relational)* }
+equality_op = { "==" | "!=" }
+
+// Relational + type testing + shift
+// is/as are postfix-style (no right operand in the binary chain)
+relational = { additive ~ (type_test | binary_relational)* }
+type_test = { (is_kw | as_kw) ~ type_name }
+binary_relational = { relational_op ~ additive }
+relational_op = {
+    shift_op | "<=" | ">=" | "<" ~ !"<" | ">" ~ !">"
+}
+shift_op = { ">>" ~ !(">" | "=") | "<<" ~ !"=" }
+
+// Additive
+additive = { multiplicative ~ (additive_op ~ multiplicative)* }
+additive_op = { "+" ~ !("+" | "=") | "-" ~ !("-" | "=") }
+
+// Multiplicative
+multiplicative = { unary ~ (multiplicative_op ~ unary)* }
+multiplicative_op = { "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
+
+// Unary
+unary = {
+    unary_op ~ unary
+    | postfix
+}
+
+// Keyword operators — atomic for word boundaries
+this_kw = @{ "this" ~ !(ASCII_ALPHANUMERIC | "_") }
+base_kw = @{ "base" ~ !(ASCII_ALPHANUMERIC | "_") }
+true_kw = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
+false_kw = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
+null_kw = @{ "null" ~ !(ASCII_ALPHANUMERIC | "_") }
+typeof_kw = @{ "typeof" ~ !(ASCII_ALPHANUMERIC | "_") }
+nameof_kw = @{ "nameof" ~ !(ASCII_ALPHANUMERIC | "_") }
+default_kw = @{ "default" ~ !(ASCII_ALPHANUMERIC | "_") }
+new_kw = @{ "new" ~ !(ASCII_ALPHANUMERIC | "_") }
+is_kw = @{ "is" ~ !(ASCII_ALPHANUMERIC | "_") }
+as_kw = @{ "as" ~ !(ASCII_ALPHANUMERIC | "_") }
+in_kw = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+await_kw = @{ "await" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+unary_op = {
+    "-" ~ !("-" | "=")
+    | "+" ~ !("+" | "=")
+    | "!" ~ !"="
+    | "~"
+    | "++"
+    | "--"
+    | await_kw
+}
+
+postfix = { call_expression ~ postfix_op? }
+postfix_op = { "++" | "--" }
+
+// ── Call / Member / Index chain ─────────────────────────────────────────────
+
+call_expression = {
+    (new_expression | primary) ~ call_chain*
+}
+
+new_expression = {
+    new_kw ~ type_name_for_new ~ (
+        "[" ~ expression? ~ "]" ~ array_initializer?       // new int[5] or new[] { }
+        | "(" ~ argument_list? ~ ")" ~ object_initializer? // new Foo(args) { }
+        | array_initializer                                 // new[] { 1, 2 }
+        | object_initializer                                // new Foo { prop = val }
+    )?
+}
+
+type_name_for_new = { base_type ~ generic_type_args? }
+
+generic_type_args = _{ "<" ~ type_name ~ ("," ~ type_name)* ~ ">" }
+
+array_initializer = { "{" ~ (expression ~ ("," ~ expression)*)? ~ ","? ~ "}" }
+
+object_initializer = { "{" ~ (initializer_member ~ ("," ~ initializer_member)*)? ~ ","? ~ "}" }
+
+initializer_member = { ident_name ~ "=" ~ expression }
+
+call_chain = {
+    "?." ~ ident_or_keyword                              // null-conditional member
+    | "(" ~ argument_list? ~ ")"                          // call
+    | "." ~ ident_or_keyword ~ generic_type_args?         // member access
+    | "[" ~ expression ~ (".." ~ expression?)? ~ "]"      // index or range
+}
+
+argument_list = { argument ~ ("," ~ argument)* ~ ","? }
+
+argument = {
+    ("ref" | "out") ~ expression
+    | expression
+}
+
+// ── Primary expressions ─────────────────────────────────────────────────────
+
+primary = {
+    "(" ~ expression ~ ")"           // parenthesized
+    | typeof_expression
+    | nameof_expression
+    | default_expression
+    | checked_expression
+    | interpolated_string
+    | verbatim_string
+    | char_literal
+    | this_kw
+    | base_kw
+    | true_kw
+    | false_kw
+    | null_kw
+    | numeric_literal
+    | string_literal
+    | primitive_type_ident
+    | ident_name
+}
+
+// C# allows primitive type names as identifier prefixes for static method calls:
+// `string.Join(",", arr)`, `int.Parse("42")`, `bool.Parse("true")`, etc.
+primitive_type_ident = @{
+    ("string" | "int" | "double" | "float" | "bool" | "char" | "long" | "byte"
+    | "short" | "decimal" | "object" | "uint" | "ulong" | "ushort" | "sbyte")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+typeof_expression = { typeof_kw ~ "(" ~ type_name ~ ")" }
+nameof_expression = { nameof_kw ~ "(" ~ dotted_name ~ ")" }
+default_expression = { default_kw ~ ("(" ~ type_name ~ ")")? }
+checked_expression = { ("checked" | "unchecked") ~ "(" ~ expression ~ ")" }
+
+// ── Interpolated strings ────────────────────────────────────────────────────
+// Parsed atomically as a raw string, then split into parts in the walker.
+// This prevents pest's WHITESPACE from eating spaces between text and {expr}.
+
+interpolated_string = @{
+    "$\"" ~ interp_content* ~ "\""
+}
+
+interp_content = _{ interp_hole | interp_char }
+interp_hole = _{ "{" ~ (!"}" ~ ANY)* ~ "}" }
+interp_char = _{ !"\"" ~ !"{" ~ ANY }
+
+// ── Verbatim strings ────────────────────────────────────────────────────────
+
+verbatim_string = @{ "@\"" ~ ("\"\"" | !"\"" ~ ANY)* ~ "\"" }
+
+// ── Char literal ────────────────────────────────────────────────────────────
+
+char_literal = @{ "'" ~ ("\\" ~ ANY | !"'" ~ ANY) ~ "'" }
+
+// ── Literals ────────────────────────────────────────────────────────────────
+
+numeric_literal = @{
+    ("0x" | "0X") ~ ASCII_HEX_DIGIT+ ~ numeric_suffix?
+    | ("0b" | "0B") ~ ('0'..'1')+ ~ numeric_suffix?
+    | ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
+    | "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
+    | ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
+}
+
+numeric_suffix = @{ "UL" | "ul" | "LU" | "lu" | "f" | "F" | "d" | "D" | "m" | "M" | "L" | "l" | "U" | "u" }
+
+string_literal = @{
+    "\"" ~ ("\\\"" | "\\\\" | "\\n" | "\\t" | "\\r" | "\\0" | !"\"" ~ ANY)* ~ "\""
+}
+
+// ── Type names ──────────────────────────────────────────────────────────────
+
+type_name = {
+    base_type ~ generic_type_args? ~ nullable_marker? ~ array_rank*
+}
+
+base_type = @{
+    ("int" | "string" | "double" | "float" | "bool" | "char" | "long" | "byte"
+    | "short" | "decimal" | "object" | "void" | "dynamic" | "var"
+    | "uint" | "ulong" | "ushort" | "sbyte" | "nint" | "nuint")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+    | dotted_name
+}
+
+nullable_marker = { "?" }
+array_rank = { "[" ~ ","* ~ "]" }
+
+// ── Parameters ──────────────────────────────────────────────────────────────
+
+param_list = { param ~ ("," ~ param)* ~ ","? }
+
+param = {
+    param_modifier? ~ type_name ~ ident_name ~ ("=" ~ expression)?
+    | param_modifier? ~ ident_name ~ ("=" ~ expression)?
+}
+
+param_modifier = { "params" | "ref" | "out" | "this" }
+
+// ── Identifiers ─────────────────────────────────────────────────────────────
+
+ident_name = @{
+    !strict_keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
+}
+
+ident_or_keyword = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
+}
+
+strict_keyword = _{
+    ("abstract" | "as" | "base" | "bool" | "break" | "byte" | "case" | "catch"
+    | "char" | "checked" | "class" | "const" | "continue" | "decimal" | "default"
+    | "delegate" | "do" | "double" | "else" | "enum" | "event" | "explicit"
+    | "extern" | "false" | "finally" | "fixed" | "float" | "for" | "foreach"
+    | "goto" | "if" | "implicit" | "in" | "int" | "interface" | "internal"
+    | "is" | "lock" | "long" | "namespace" | "new" | "null" | "object"
+    | "operator" | "out" | "override" | "params" | "private" | "protected"
+    | "public" | "readonly" | "ref" | "return" | "sbyte" | "sealed" | "short"
+    | "sizeof" | "static" | "string" | "struct" | "switch" | "this" | "throw"
+    | "true" | "try" | "typeof" | "uint" | "ulong" | "unchecked" | "unsafe"
+    | "ushort" | "using" | "virtual" | "void" | "volatile" | "while")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}

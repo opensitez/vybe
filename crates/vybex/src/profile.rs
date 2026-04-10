@@ -94,7 +94,9 @@ pub struct LanguageProfile {
 
     /// Value methods: instance methods called on values (str.toUpperCase(), arr.push()).
     /// The object is passed as first arg to the host function.
-    pub value_methods: HashMap<String, BuiltinDef>,
+    /// Value methods can have multiple overloads by arity.
+    /// E.g. `Add(item)` for list (1 arg) vs `Add(key, value)` for dict (2 args).
+    pub value_methods: HashMap<String, Vec<BuiltinDef>>,
 
     /// Module aliases: JS namespace objects → host modules (console → wasi:cli, Math → vybe:math).
     pub module_aliases: HashMap<String, String>,
@@ -169,6 +171,13 @@ pub enum BuiltinEmit {
     MutateVar(String),  // "add" or "sub"
     /// Multi-opcode intrinsic: name references [intrinsics] table in profile.
     Intrinsic(String),
+    /// Dispatch to a compiler_common opcode-style emitter (args already on stack).
+    /// e.g. "dict.set_dynamic", "collections.push", "strings.length"
+    Common(String),
+    /// Call a stdlib function (e.g. __vybe_sorted) via global_get + call_ref.
+    /// Func ref is pushed BEFORE args.
+    /// Name is the operation, e.g. "sorted", "range", "sum", "min", "max"
+    Stdlib(String),
     /// Print (variadic)
     Print,
     /// String length
@@ -206,13 +215,19 @@ impl LanguageProfile {
         self.namespaces.constants.iter().any(|c| c == &key)
     }
 
-    /// Look up a value method (instance method on a value: str.toUpperCase(), arr.push()).
-    pub fn lookup_value_method(&self, name: &str) -> Option<&BuiltinDef> {
-        if self.case_sensitive {
-            self.value_methods.get(name)
-        } else {
-            self.value_methods.get(&name.to_lowercase())
-        }
+    /// Look up a value method by name + arity.
+    /// Returns the first overload whose arity range matches.
+    pub fn lookup_value_method(&self, name: &str, argc: u8) -> Option<&BuiltinDef> {
+        let key = if self.case_sensitive { name.to_string() } else { name.to_lowercase() };
+        let overloads = self.value_methods.get(&key)?;
+        overloads.iter().find(|d| argc >= d.min_args && argc <= d.max_args)
+            .or_else(|| overloads.first()) // fallback: first overload if no arity match
+    }
+
+    /// Check if a value method exists by name (any arity).
+    pub fn has_value_method(&self, name: &str) -> bool {
+        let key = if self.case_sensitive { name.to_string() } else { name.to_lowercase() };
+        self.value_methods.contains_key(&key)
     }
 
     /// Look up a module alias (JS: console → wasi:cli, Math → vybe:math).
@@ -222,7 +237,11 @@ impl LanguageProfile {
 
     /// Look up a namespace constant value (Math.PI, Number.MAX_SAFE_INTEGER).
     pub fn lookup_constant(&self, name: &str) -> Option<&ConstantValue> {
-        self.namespace_constants.get(name)
+        if self.case_sensitive {
+            self.namespace_constants.get(name)
+        } else {
+            self.namespace_constants.get(&name.to_lowercase())
+        }
     }
 
     /// Look up an array method routing (map → __array_map).
@@ -327,6 +346,8 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
             _ if s.starts_with("opcode:") => Some(BuiltinEmit::Opcode(s["opcode:".len()..].to_string())),
             _ if s.starts_with("mutate:") => Some(BuiltinEmit::MutateVar(s["mutate:".len()..].to_string())),
             _ if s.starts_with("intrinsic:") => Some(BuiltinEmit::Intrinsic(s["intrinsic:".len()..].to_string())),
+            _ if s.starts_with("common:") => Some(BuiltinEmit::Common(s["common:".len()..].to_string())),
+            _ if s.starts_with("stdlib:") => Some(BuiltinEmit::Stdlib(s["stdlib:".len()..].to_string())),
             _ => None,
         }
     }
@@ -341,8 +362,37 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         map
     }
 
+    fn parse_value_methods_table(root: &Value) -> HashMap<String, Vec<BuiltinDef>> {
+        let mut map: HashMap<String, Vec<BuiltinDef>> = HashMap::new();
+        if let Some(bt) = root.get("value_methods").and_then(|v| v.as_table()) {
+            for (name, val) in bt {
+                // Either a single inline table or an array of inline tables (overloads)
+                if let Some(arr) = val.as_array() {
+                    for entry in arr {
+                        if let Some(t) = entry.as_table() {
+                            let emit_str = t.get("emit").and_then(|v| v.as_str()).unwrap_or("noop");
+                            let min_args = t.get("min_args").and_then(|v| v.as_integer()).unwrap_or(0) as u8;
+                            let max_args = t.get("max_args").and_then(|v| v.as_integer()).unwrap_or(255) as u8;
+                            if let Some(emit) = parse_emit(emit_str) {
+                                map.entry(name.clone()).or_default().push(BuiltinDef { emit, min_args, max_args });
+                            }
+                        }
+                    }
+                } else if let Some(t) = val.as_table() {
+                    let emit_str = t.get("emit").and_then(|v| v.as_str()).unwrap_or("noop");
+                    let min_args = t.get("min_args").and_then(|v| v.as_integer()).unwrap_or(0) as u8;
+                    let max_args = t.get("max_args").and_then(|v| v.as_integer()).unwrap_or(255) as u8;
+                    if let Some(emit) = parse_emit(emit_str) {
+                        map.entry(name.clone()).or_default().push(BuiltinDef { emit, min_args, max_args });
+                    }
+                }
+            }
+        }
+        map
+    }
+
     let builtins = parse_builtin_table(&root, "builtins");
-    let value_methods = parse_builtin_table(&root, "value_methods");
+    let value_methods = parse_value_methods_table(&root);
     let intrinsics = parse_string_table(&root, "intrinsics");
     let module_aliases = parse_string_table(&root, "module_aliases");
     let array_methods = parse_string_table(&root, "array_methods");

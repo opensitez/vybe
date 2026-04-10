@@ -383,33 +383,37 @@ string_isnullorempty = "dup, ref_is_null, br_if_true, str_length, const_i32(0), 
 
 [value_methods]
 
-# String instance methods (VB strings are .NET System.String)
-toupper       = { emit = "opcode:str_to_upper",       min_args = 0, max_args = 0 }
-tolower       = { emit = "opcode:str_to_lower",       min_args = 0, max_args = 0 }
-"trim"        = { emit = "opcode:str_trim",            min_args = 0, max_args = 0 }
+# String instance methods (use compiler_common::strings)
+toupper       = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
+tolower       = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
+"trim"        = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
 trimstart     = { emit = "opcode:str_trim_start",      min_args = 0, max_args = 0 }
 trimend       = { emit = "opcode:str_trim_end",        min_args = 0, max_args = 0 }
 startswith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 1 }
 endswith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 1 }
-substring     = { emit = "opcode:str_substring",       min_args = 1, max_args = 2 }
-indexof       = { emit = "opcode:str_index_of",        min_args = 1, max_args = 1 }
+substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
+indexof       = { emit = "common:strings.index_of",    min_args = 1, max_args = 1 }
 lastindexof   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 1 }
 contains      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
-tostring      = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 0 }
+tostring      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
 padleft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
 padright      = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
 
-# Collection instance methods (.NET List(Of T), Dictionary, etc.)
-add           = { emit = "opcode:array_push",          min_args = 1, max_args = 1 }
+# Collection instance methods (use compiler_common — works for both list and dict)
+# Add has two overloads: list.Add(item) (1 arg) and dict.Add(key, value) (2 args)
+add = [
+    { emit = "common:collections.push",   min_args = 1, max_args = 1 },
+    { emit = "common:dict.set_dynamic",   min_args = 2, max_args = 2 },
+]
 remove        = { emit = "host:vybe:array:remove",     min_args = 1, max_args = 1 }
 removeat      = { emit = "host:vybe:array:removeAt",   min_args = 1, max_args = 1 }
 insert        = { emit = "host:vybe:array:insert",     min_args = 2, max_args = 2 }
 clear         = { emit = "host:vybe:array:clear",      min_args = 0, max_args = 0 }
-count         = { emit = "opcode:array_length",        min_args = 0, max_args = 0 }
-sort          = { emit = "host:vybe:array:sort",       min_args = 0, max_args = 0 }
-reverse       = { emit = "opcode:array_reverse",       min_args = 0, max_args = 0 }
+count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
+sort          = { emit = "common:collections.sorted", min_args = 0, max_args = 0 }
+reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 toarray       = { emit = "host:vybe:array:clone",      min_args = 0, max_args = 0 }
-containskey   = { emit = "host:vybe:object:hasOwn",    min_args = 1, max_args = 1 }
+containskey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
 
 # WinForms methods — no-ops in our renderer
 suspendlayout  = { emit = "noop", min_args = 0, max_args = 0 }

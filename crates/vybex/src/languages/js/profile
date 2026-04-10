@@ -209,36 +209,36 @@ queueMicrotask       = { emit = "host:vybe:runtime:queueMicrotask", min_args = 1
 
 [value_methods]
 
-# String instance methods — direct WASM opcodes (zero overhead)
-toUpperCase   = { emit = "opcode:str_to_upper",       min_args = 0, max_args = 0 }
-toLowerCase   = { emit = "opcode:str_to_lower",       min_args = 0, max_args = 0 }
-trim          = { emit = "opcode:str_trim",            min_args = 0, max_args = 0 }
+# String instance methods (use compiler_common::strings)
+toUpperCase   = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
+toLowerCase   = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
+trim          = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
 trimStart     = { emit = "opcode:str_trim_start",      min_args = 0, max_args = 0 }
 trimEnd       = { emit = "opcode:str_trim_end",        min_args = 0, max_args = 0 }
 startsWith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 2 }
 endsWith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 2 }
 charAt        = { emit = "opcode:str_char_at",         min_args = 1, max_args = 1 }
 charCodeAt    = { emit = "opcode:str_char_code_at",    min_args = 1, max_args = 1 }
-substring     = { emit = "opcode:str_substring",       min_args = 1, max_args = 2 }
-split         = { emit = "opcode:str_split",           min_args = 1, max_args = 2 }
-replace       = { emit = "opcode:str_replace",         min_args = 2, max_args = 2 }
-replaceAll    = { emit = "opcode:str_replace",         min_args = 2, max_args = 2 }
+substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
+split         = { emit = "common:strings.split",       min_args = 1, max_args = 2 }
+replace       = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
+replaceAll    = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
 repeat        = { emit = "opcode:str_repeat",          min_args = 1, max_args = 1 }
 padStart      = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
 padEnd        = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
-indexOf       = { emit = "opcode:str_index_of",        min_args = 1, max_args = 2 }
+indexOf       = { emit = "common:strings.index_of",    min_args = 1, max_args = 2 }
 lastIndexOf   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 2 }
 includes      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
 match         = { emit = "host:vybe:string:match",     min_args = 1, max_args = 1 }
 search        = { emit = "host:vybe:string:search",    min_args = 1, max_args = 1 }
-toString      = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 0 }
+toString      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
 
-# Array instance methods — direct WASM opcodes
-push          = { emit = "opcode:array_push",          min_args = 1, max_args = 255 }
-pop           = { emit = "opcode:array_pop",           min_args = 0, max_args = 0 }
+# Array instance methods (use compiler_common::collections)
+push          = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
+pop           = { emit = "common:collections.pop",     min_args = 0, max_args = 0 }
 shift         = { emit = "opcode:array_shift",         min_args = 0, max_args = 0 }
-reverse       = { emit = "opcode:array_reverse",       min_args = 0, max_args = 0 }
-join          = { emit = "opcode:array_join",          min_args = 0, max_args = 1 }
+reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
+join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
 concat        = { emit = "opcode:array_concat",        min_args = 1, max_args = 255 }
 fill          = { emit = "opcode:array_fill",          min_args = 1, max_args = 3 }
 

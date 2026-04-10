@@ -4,8 +4,8 @@
 //! Higher-level ops (range, sorted, enumerate, zip) use Vybe host imports
 //! when available, or fall back to inline WASM bytecode sequences.
 
+use std::sync::Arc;
 use vybe_bytecode::Chunk;
-#[allow(unused_imports)]
 use vybe_bytecode::Value;
 use vybe_bytecode::opcode::Op;
 #[allow(unused_imports)]
@@ -161,10 +161,24 @@ pub fn emit_range_targeted(chunk: &mut Chunk, arg_count: u8, target: &Target, li
 }
 
 /// sorted(iterable). Stack: [array] → [sorted_array]
+/// Legacy entry point — uses host import. The bundle aliases vybe:array sorted to __vybe_sorted.
+/// Prefer using `emit_sorted_push_func` + args + `emit_sorted_invoke` for pure WASM bytecode.
 pub fn emit_sorted(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:array", "sorted");
     chunk.emit_op_u16(Op::call_import, idx, line);
     chunk.emit(1, line);
+}
+
+/// Push the __vybe_sorted func ref. Use BEFORE compiling args.
+/// Pure WASM — no host import. Bundle wires __vybe_sorted to stdlib chunk.
+pub fn emit_sorted_push_func(chunk: &mut Chunk, line: u32) {
+    let name = chunk.add_constant(Value::String(Arc::from("__vybe_sorted")));
+    chunk.emit_op_u16(Op::global_get, name, line);
+}
+
+/// Invoke __vybe_sorted after func ref + array are on stack.
+pub fn emit_sorted_invoke(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op_u8(Op::call_ref, 1, line);
 }
 
 /// Target-aware sorted — Vybe host call or standard "env" import.

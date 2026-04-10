@@ -72,13 +72,13 @@ randomize     = { emit = "noop",                           min_args = 0, max_arg
 
 sqr           = { emit = "intrinsic:sqr",                  min_args = 1, max_args = 1 }
 
-# ── String functions — WASM opcodes ─────────────────────────────────────────
+# ── String functions (use compiler_common::strings) ─────────────────────────
 
-length        = { emit = "str_length",                     min_args = 1, max_args = 1 }
-upcase        = { emit = "opcode:str_to_upper",            min_args = 1, max_args = 1 }
-uppercase     = { emit = "opcode:str_to_upper",            min_args = 1, max_args = 1 }
-lowercase     = { emit = "opcode:str_to_lower",            min_args = 1, max_args = 1 }
-trim          = { emit = "opcode:str_trim",                min_args = 1, max_args = 1 }
+length        = { emit = "common:strings.length",          min_args = 1, max_args = 1 }
+upcase        = { emit = "common:strings.to_upper",        min_args = 1, max_args = 1 }
+uppercase     = { emit = "common:strings.to_upper",        min_args = 1, max_args = 1 }
+lowercase     = { emit = "common:strings.to_lower",        min_args = 1, max_args = 1 }
+trim          = { emit = "common:strings.trim",            min_args = 1, max_args = 1 }
 trimleft      = { emit = "opcode:str_trim_start",          min_args = 1, max_args = 1 }
 trimright     = { emit = "opcode:str_trim_end",            min_args = 1, max_args = 1 }
 
@@ -104,12 +104,12 @@ insert        = { emit = "host:vybe:string:insertStr",     min_args = 3, max_arg
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
-inttostr      = { emit = "host:vybe:convert:toString",     min_args = 1, max_args = 1 }
-floattostr    = { emit = "host:vybe:convert:toString",     min_args = 1, max_args = 1 }
+inttostr      = { emit = "stdlib:tostring",     min_args = 1, max_args = 1 }
+floattostr    = { emit = "stdlib:tostring",     min_args = 1, max_args = 1 }
 strtoint      = { emit = "host:vybe:convert:parseInt",     min_args = 1, max_args = 1 }
 strtointdef   = { emit = "host:vybe:convert:parseInt",     min_args = 1, max_args = 2 }
 strtofloat    = { emit = "host:vybe:convert:parseFloat",   min_args = 1, max_args = 1 }
-booltostr     = { emit = "host:vybe:convert:toString",     min_args = 1, max_args = 1 }
+booltostr     = { emit = "stdlib:tostring",     min_args = 1, max_args = 1 }
 strtobool     = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
 
 # ── Ordinal / increment / decrement ─────────────────────────────────────────
@@ -197,7 +197,7 @@ rightstr = "dup, str_length, swap, to_int, f64_sub, swap, to_int, str_substring"
 # Pascal doesn't have significant value methods — most operations are
 # free functions. But TStringList etc. may use some.
 free          = { emit = "noop",                           min_args = 0, max_args = 0 }
-tostring      = { emit = "host:vybe:convert:toString",     min_args = 0, max_args = 0 }
+tostring      = { emit = "stdlib:tostring",     min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — identifier-level constants (no function call)

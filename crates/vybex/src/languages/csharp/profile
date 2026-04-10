@@ -1,0 +1,274 @@
+# C# Compiler Profile
+# ────────────────────
+# Full port of vybe_compiler_csharp builtins — Console, Math, Convert, String,
+# collections, LINQ, GUI, threading, type operations.
+
+[info]
+name = "csharp"
+extensions = ["cs"]
+
+[compiler]
+function_return = "explicit"
+self_keyword = "this"
+base_keyword = "base"
+constructor_name = "ctor"
+separated_methods = false
+implicit_self_fields = true
+explicit_self_param = false
+enum_as_ordinals = true
+case_sensitive = true
+string_indexing = "zero_based"
+entry_point = "Main"
+partial_classes = true
+dynamic_add = true
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — bare global function calls and dotted static calls
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtins]
+
+# ── I/O ──────────────────────────────────────────────────────────────────────
+
+"Console.WriteLine"       = { emit = "print",                     min_args = 0, max_args = 255 }
+"Console.Write"           = { emit = "print",                     min_args = 0, max_args = 255 }
+"Console.ReadLine"        = { emit = "host:wasi:cli:readLine",    min_args = 0, max_args = 0 }
+"Console.Error"           = { emit = "host:wasi:cli:error",       min_args = 0, max_args = 255 }
+
+# ── Math — WASM opcodes ─────────────────────────────────────────────────────
+
+"Math.Abs"          = { emit = "opcode:f64_abs",      min_args = 1, max_args = 1 }
+"Math.Floor"        = { emit = "opcode:f64_floor",    min_args = 1, max_args = 1 }
+"Math.Ceiling"      = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
+"Math.Ceil"         = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
+"Math.Sqrt"         = { emit = "opcode:f64_sqrt",     min_args = 1, max_args = 1 }
+"Math.Truncate"     = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
+"Math.Trunc"        = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
+"Math.Round"        = { emit = "opcode:f64_nearest",  min_args = 1, max_args = 1 }
+"Math.Min"          = { emit = "opcode:f64_min",      min_args = 2, max_args = 2 }
+"Math.Max"          = { emit = "opcode:f64_max",      min_args = 2, max_args = 2 }
+
+# ── Math — host calls ───────────────────────────────────────────────────────
+
+"Math.Pow"          = { emit = "host:vybe:math:pow",      min_args = 2, max_args = 2 }
+"Math.Sin"          = { emit = "host:vybe:math:sin",      min_args = 1, max_args = 1 }
+"Math.Cos"          = { emit = "host:vybe:math:cos",      min_args = 1, max_args = 1 }
+"Math.Tan"          = { emit = "host:vybe:math:tan",      min_args = 1, max_args = 1 }
+"Math.Asin"         = { emit = "host:vybe:math:asin",     min_args = 1, max_args = 1 }
+"Math.Acos"         = { emit = "host:vybe:math:acos",     min_args = 1, max_args = 1 }
+"Math.Atan"         = { emit = "host:vybe:math:atan",     min_args = 1, max_args = 1 }
+"Math.Atan2"        = { emit = "host:vybe:math:atan2",    min_args = 2, max_args = 2 }
+"Math.Log"          = { emit = "host:vybe:math:log",      min_args = 1, max_args = 1 }
+"Math.Log10"        = { emit = "host:vybe:math:log10",    min_args = 1, max_args = 1 }
+"Math.Exp"          = { emit = "host:vybe:math:exp",      min_args = 1, max_args = 1 }
+"Math.Sign"         = { emit = "host:vybe:math:sign",     min_args = 1, max_args = 1 }
+"Math.Clamp"        = { emit = "host:vybe:math:clamp",    min_args = 3, max_args = 3 }
+
+# ── Type conversion ──────────────────────────────────────────────────────────
+
+"Convert.ToInt32"    = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
+"Convert.ToDouble"   = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
+"Convert.ToString"   = { emit = "stdlib:tostring",               min_args = 1, max_args = 1 }
+"Convert.ToBoolean"  = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
+"Convert.ToChar"     = { emit = "host:vybe:convert:cchar",        min_args = 1, max_args = 1 }
+"Convert.ToByte"     = { emit = "host:vybe:convert:cbyte",        min_args = 1, max_args = 1 }
+"Convert.ToInt64"    = { emit = "host:vybe:convert:clng",         min_args = 1, max_args = 1 }
+"Convert.ToSingle"   = { emit = "host:vybe:convert:csng",         min_args = 1, max_args = 1 }
+"Convert.ToDecimal"  = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
+"int.Parse"          = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
+"double.Parse"       = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
+"bool.Parse"         = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
+"Int32.Parse"        = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
+"Double.Parse"       = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
+"Int32.TryParse"     = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 2 }
+
+# ── String static methods ────────────────────────────────────────────────────
+
+"String.Join"         = { emit = "common:collections.join",      min_args = 2, max_args = 2 }
+"String.IsNullOrEmpty" = { emit = "host:vybe:string:isNullOrEmpty", min_args = 1, max_args = 1 }
+"String.Format"       = { emit = "host:vybe:string:format",       min_args = 1, max_args = 255 }
+"String.Concat"       = { emit = "opcode:str_concat",             min_args = 2, max_args = 255 }
+"string.IsNullOrEmpty" = { emit = "host:vybe:string:isNullOrEmpty", min_args = 1, max_args = 1 }
+"string.Join"         = { emit = "common:collections.join",      min_args = 2, max_args = 2 }
+
+# ── Array static methods ────────────────────────────────────────────────────
+
+"Array.Sort"          = { emit = "opcode:array_sort",             min_args = 1, max_args = 1 }
+"Array.Reverse"       = { emit = "opcode:array_reverse",          min_args = 1, max_args = 1 }
+"Array.IndexOf"       = { emit = "opcode:str_index_of",           min_args = 2, max_args = 2 }
+"Array.Copy"          = { emit = "host:vybe:array:copy",          min_args = 3, max_args = 3 }
+
+# ── Object static methods ───────────────────────────────────────────────────
+
+"Object.Equals"       = { emit = "opcode:dyn_eq",                 min_args = 2, max_args = 2 }
+"Object.ReferenceEquals" = { emit = "opcode:ref_eq",              min_args = 2, max_args = 2 }
+
+# ── JSON ─────────────────────────────────────────────────────────────────────
+
+"JsonSerializer.Serialize"     = { emit = "host:vybe:json:stringify", min_args = 1, max_args = 1 }
+"JsonSerializer.Deserialize"   = { emit = "host:vybe:json:parse",    min_args = 1, max_args = 1 }
+
+# ── Environment ──────────────────────────────────────────────────────────────
+
+"Environment.NewLine"          = { emit = "host:vybe:convert:newline",  min_args = 0, max_args = 0 }
+"Environment.GetEnvironmentVariable" = { emit = "host:wasi:cli:getEnv", min_args = 1, max_args = 1 }
+
+# ── Threading ────────────────────────────────────────────────────────────────
+
+"Task.Run"                     = { emit = "host:vybe:threading:spawn",      min_args = 1, max_args = 1 }
+"Task.Delay"                   = { emit = "host:vybe:threading:sleep",      min_args = 1, max_args = 1 }
+"Thread.Sleep"                 = { emit = "host:vybe:threading:sleep",      min_args = 1, max_args = 1 }
+"Interlocked.Add"              = { emit = "host:vybe:threading:atomicAdd",  min_args = 2, max_args = 2 }
+"Interlocked.Exchange"         = { emit = "host:vybe:threading:atomicXchg", min_args = 2, max_args = 2 }
+"Interlocked.CompareExchange"  = { emit = "host:vybe:threading:atomicCmpXchg", min_args = 3, max_args = 3 }
+
+# ── GUI (Windows Forms) ─────────────────────────────────────────────────────
+
+"Application.Run"              = { emit = "host:vybe:gui:runApplication",   min_args = 1, max_args = 1 }
+"Application.Exit"             = { emit = "host:vybe:gui:appExit",          min_args = 0, max_args = 0 }
+"MessageBox.Show"              = { emit = "host:vybe:gui:msgBox",           min_args = 1, max_args = 3 }
+
+# ── Layout no-ops ────────────────────────────────────────────────────────────
+
+"SuspendLayout"   = { emit = "noop", min_args = 0, max_args = 0 }
+"ResumeLayout"    = { emit = "noop", min_args = 0, max_args = 1 }
+"PerformLayout"   = { emit = "noop", min_args = 0, max_args = 0 }
+"InitializeComponent" = { emit = "noop", min_args = 0, max_args = 0 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# VALUE METHODS — instance methods called on values
+# ────────────────────────────────────────────────────────────────────────────
+
+[value_methods]
+
+# String instance methods
+ToUpper       = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
+ToLower       = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
+Trim          = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
+TrimStart     = { emit = "opcode:str_trim_start",      min_args = 0, max_args = 0 }
+TrimEnd       = { emit = "opcode:str_trim_end",        min_args = 0, max_args = 0 }
+StartsWith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 1 }
+EndsWith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 1 }
+Contains      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
+Replace       = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
+Split         = { emit = "common:strings.split",       min_args = 1, max_args = 2 }
+Substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
+IndexOf       = { emit = "common:strings.index_of",    min_args = 1, max_args = 2 }
+LastIndexOf   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 2 }
+PadLeft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
+PadRight      = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
+ToString      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
+ToCharArray   = { emit = "opcode:str_split",           min_args = 0, max_args = 0 }
+Insert        = { emit = "host:vybe:string:insert",    min_args = 2, max_args = 2 }
+Remove        = { emit = "host:vybe:string:remove",    min_args = 1, max_args = 2 }
+
+# Array/List instance methods
+# Add has two overloads: list.Add(item) (1 arg) and dict.Add(key, value) (2 args)
+Add           = [
+    { emit = "common:collections.push", min_args = 1, max_args = 1 },
+    { emit = "common:dict.set_dynamic", min_args = 2, max_args = 2 },
+]
+Clear         = { emit = "host:vybe:array:clear",      min_args = 0, max_args = 0 }
+Reverse       = { emit = "opcode:array_reverse",       min_args = 0, max_args = 0 }
+Sort          = { emit = "stdlib:sorted",             min_args = 0, max_args = 0 }
+Count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
+ToArray       = { emit = "noop",                       min_args = 0, max_args = 0 }
+ToList        = { emit = "noop",                       min_args = 0, max_args = 0 }
+GetType       = { emit = "host:vybe:convert:getType",  min_args = 0, max_args = 0 }
+Equals        = { emit = "opcode:dyn_eq",              min_args = 1, max_args = 1 }
+
+# LINQ methods — removed (use [array_methods] below for HOFs)
+
+# Dictionary methods
+ContainsKey   = { emit = "host:vybe:runtime:callMethod", min_args = 1, max_args = 1 }
+ContainsValue = { emit = "host:vybe:runtime:callMethod", min_args = 1, max_args = 1 }
+TryGetValue   = { emit = "host:vybe:runtime:callMethod", min_args = 1, max_args = 2 }
+
+# Queue/Stack methods
+Enqueue       = { emit = "opcode:array_push",          min_args = 1, max_args = 1 }
+Dequeue       = { emit = "opcode:array_shift",         min_args = 0, max_args = 0 }
+Push          = { emit = "opcode:array_push",          min_args = 1, max_args = 1 }
+Pop           = { emit = "opcode:array_pop",           min_args = 0, max_args = 0 }
+Peek          = { emit = "host:vybe:runtime:callMethod", min_args = 0, max_args = 0 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# MODULE ALIASES — C# namespace objects → host modules
+# ────────────────────────────────────────────────────────────────────────────
+
+[module_aliases]
+Console       = "wasi:cli"
+Math          = "vybe:math"
+Convert       = "vybe:convert"
+Environment   = "wasi:cli"
+Array         = "vybe:array"
+String        = "vybe:string"
+Object        = "vybe:object"
+Task          = "vybe:threading"
+Thread        = "vybe:threading"
+Interlocked   = "vybe:threading"
+Application   = "vybe:gui"
+MessageBox    = "vybe:gui"
+File          = "wasi:filesystem"
+Directory     = "wasi:filesystem"
+Path          = "wasi:filesystem"
+
+# ────────────────────────────────────────────────────────────────────────────
+# KNOWN TYPES — constructor mappings for new TypeName()
+# ────────────────────────────────────────────────────────────────────────────
+
+[known_types]
+# Collections — use compiler_common (no host functions)
+"List"            = ["common", "collections.new"]
+"Dictionary"      = ["common", "dict.new"]
+"Queue"           = ["common", "collections.new"]
+"Stack"           = ["common", "collections.new"]
+"HashSet"         = ["common", "collections.new"]
+"SortedList"      = ["common", "dict.new"]
+"LinkedList"      = ["common", "collections.new"]
+# Exceptions
+"Exception"       = ["vybe:types", "exceptionNew"]
+"ArgumentException" = ["vybe:types", "exceptionNew"]
+"InvalidOperationException" = ["vybe:types", "exceptionNew"]
+"NotImplementedException" = ["vybe:types", "exceptionNew"]
+"NullReferenceException" = ["vybe:types", "exceptionNew"]
+"IndexOutOfRangeException" = ["vybe:types", "exceptionNew"]
+# Other types
+"StringBuilder"   = ["vybe:types", "stringBuilderNew"]
+"Regex"           = ["vybe:regex", "RegExp"]
+"Random"          = ["wasi:random", "Random"]
+"Stopwatch"       = ["vybe:types", "dateTimeNew"]
+"Timer"           = ["vybe:types", "timerNew"]
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONSTANTS — property access, NOT function call
+# ────────────────────────────────────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────────────────
+# ARRAY METHODS — higher-order methods routed to compiler_common::loops
+# ────────────────────────────────────────────────────────────────────────────
+
+[array_methods]
+Where     = "__array_filter"
+Select    = "__array_map"
+ForEach   = "__array_forEach"
+Any       = "__array_some"
+All       = "__array_every"
+Aggregate = "__array_reduce"
+OrderBy   = "__array_sort"
+
+[namespace_constants]
+"Math.PI"               = 3.141592653589793
+"Math.E"                = 2.718281828459045
+"int.MaxValue"          = 2147483647
+"int.MinValue"          = -2147483648
+"double.MaxValue"       = 1.7976931348623157e308
+"double.MinValue"       = -1.7976931348623157e308
+"double.NaN"            = "NaN"
+"double.PositiveInfinity" = "Infinity"
+"double.NegativeInfinity" = "-Infinity"
+"float.MaxValue"        = 3.4028235e38
+"float.MinValue"        = -3.4028235e38
+"char.MaxValue"         = 65535
+"char.MinValue"         = 0
+"bool.TrueString"       = "True"
+"bool.FalseString"      = "False"

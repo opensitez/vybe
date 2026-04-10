@@ -1,3 +1,4 @@
+pub mod csharp;
 pub mod js;
 pub mod pascal;
 pub mod vb;
@@ -19,6 +20,7 @@ pub fn all() -> Vec<Language> {
         Language { parse: vb::parse, profile_source: vb::profile_source },
         Language { parse: js::parse, profile_source: js::profile_source },
         Language { parse: pascal::parse, profile_source: pascal::profile_source },
+        Language { parse: csharp::parse, profile_source: csharp::profile_source },
     ]
 }
 

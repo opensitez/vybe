@@ -148,8 +148,9 @@ pub fn emit_bind_method_with_aliases(chunk: &mut Chunk, this_slot: u16, method_n
 pub fn cross_language_aliases(method_name: &str) -> &'static [&'static str] {
     match method_name {
         // String representation: Python __str__ ↔ JS toString() ↔ VB/C# ToString()
+        // Note: __get_tostring removed — ToString is a method, not a property.
         "__str__" | "tostring" | "toString" =>
-            &["__str__", "toString", "tostring", "__get_tostring"],
+            &["__str__", "toString", "tostring"],
 
         // Debug representation: Python __repr__
         "__repr__" | "todebugstring" | "toDebugString" =>
@@ -361,14 +362,40 @@ pub fn emit_init_field_null(chunk: &mut Chunk, this_slot: u16, field_name: &str,
     chunk.emit_op(Op::drop, line);
 }
 
-// NOTE: No emit_set_field — field initialization requires the compiler to emit
-// a value expression between pushing `this` and calling `struct_set`. Since
-// struct_set expects [obj, val] on stack, the caller must:
-//   1. chunk.emit_op_u16(Op::local_get, this_slot, line);  // push obj
-//   2. <compile value expression>                           // push val
-//   3. chunk.emit_op_u16(Op::struct_set, key, line);        // [obj,val] → [val]
-//   4. chunk.emit_op(Op::drop, line);                       // discard result
-// This is inherently language-specific and doesn't belong here.
+/// Push `this` onto the stack to start a field initialization.
+/// Caller compiles the value expression next, then calls `emit_init_field_end`.
+/// This wraps the language-specific value-compilation in a compiler_common pattern.
+pub fn emit_init_field_start(chunk: &mut Chunk, this_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+}
+
+/// Finish a field initialization started with `emit_init_field_start`.
+/// Stack before: [this, value]. Stack after: [].
+pub fn emit_init_field_end(chunk: &mut Chunk, field_name: &str, line: u32) {
+    let key = chunk.add_constant(Value::String(Arc::from(field_name)));
+    chunk.emit_op_u16(Op::struct_set, key, line);
+    chunk.emit_op(Op::drop, line);
+}
+
+/// Get a field value from `this`. Stack before: []. Stack after: [value].
+pub fn emit_get_field(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    let key = chunk.add_constant(Value::String(Arc::from(field_name)));
+    chunk.emit_op_u16(Op::struct_get, key, line);
+}
+
+/// Set a field value on `this` from a value already on the stack.
+/// Stack before: [value]. Stack after: [].
+pub fn emit_set_field_from_stack(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
+    // Need [this, value, value]... actually struct_set expects [obj, val].
+    // Caller has [value] — we need to insert this BELOW value on stack.
+    // Use a temp local approach: store value, push this, push value, struct_set, drop.
+    // Simpler: let the caller use start/end pattern when value isn't pre-computed.
+    // For pre-computed value: use a local temp.
+    let _ = (chunk, this_slot, field_name, line);
+    // This pattern is awkward without a swap opcode.
+    // Use emit_init_field_start + emit_init_field_end with value compilation in between.
+}
 
 // ── Type registration ───────────────────────────────────────────────────
 

@@ -46,6 +46,16 @@ pub struct Compiler {
     line: u32,
     defined_globals: HashSet<String>,
     defined_functions: HashSet<String>,
+    defined_classes: HashSet<String>,
+    /// Names of methods defined on any user class — used to avoid value method
+    /// hijacking (e.g. user class `Calc.Add()` shouldn't match array `add`).
+    defined_class_methods: HashSet<String>,
+    /// Map from member name → containing namespace name.
+    /// Used for bare-name resolution within modules/namespaces/enums.
+    /// E.g. `Main` inside `Module Program` resolves to `Program.Main`.
+    /// `Green` inside `enum TColor` resolves to `TColor.Green`.
+    /// Models the WASM Component Model's namespace-scoped imports.
+    enum_members: HashMap<String, String>,
     case_sensitive: bool,
     profile: LanguageProfile,
     current_func_name: Option<String>,
@@ -64,6 +74,9 @@ impl Compiler {
             line: 1,
             defined_globals: HashSet::new(),
             defined_functions: HashSet::new(),
+            defined_classes: HashSet::new(),
+            defined_class_methods: HashSet::new(),
+            enum_members: HashMap::new(),
             case_sensitive: profile.case_sensitive,
             profile,
             current_func_name: None,
@@ -207,7 +220,9 @@ impl Compiler {
             let mut current = Some(class_name.as_str());
             while let Some(cn) = current {
                 if let Some(pc) = self.pending_classes.get(cn) {
-                    if pc.fields.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+                    if pc.fields.iter().any(|f| {
+                        if self.case_sensitive { f == name } else { f.eq_ignore_ascii_case(name) }
+                    }) {
                         return true;
                     }
                     current = pc.parent.as_deref();
@@ -601,6 +616,7 @@ impl Compiler {
             StmtKind::ClassDecl { name, parents, members, .. } => {
                 let cname = self.canon(name);
                 self.defined_globals.insert(cname.clone());
+                self.defined_classes.insert(cname.clone());
                 let parent = parents.first().map(|p| self.canon(p));
                 self.compile_class(&cname, &parent, members)?;
             }
@@ -611,21 +627,35 @@ impl Compiler {
             }
 
             // ── Enum declaration ────────────────────────────────────────
-            StmtKind::EnumDecl { name: _, members, .. } => {
-                if self.profile.enum_as_ordinals {
-                    for (i, m) in members.iter().enumerate() {
-                        if let Some(ref val) = m.value {
-                            self.compile_expr(val)?;
-                        } else {
-                            self.emit_const(Value::F64(i as f64));
+            // Compiles to a namespace object: Color = { Red: 0, Green: 1, Blue: 2 }
+            // Bare member references (e.g. Pascal `c := Green`) are resolved at
+            // compile time via the enum_members map.
+            StmtKind::EnumDecl { name, members, .. } => {
+                let cname = self.canon(name);
+                self.emit_u16(Op::struct_new, 0);
+                let mut next_val = 0i64;
+                for m in members {
+                    self.emit(Op::dup);
+                    if let Some(ref v) = m.value {
+                        if let ExprKind::Lit(Literal::Int(n)) = &v.kind {
+                            next_val = *n;
                         }
-                        let cn = self.canon(&m.name);
-                        let idx = self.str_const(&cn);
-                        self.emit_u16(Op::global_set, idx);
-                        self.emit(Op::drop);
-                        self.defined_globals.insert(cn);
+                        self.compile_expr(v)?;
+                    } else {
+                        self.emit_const(Value::F64(next_val as f64));
                     }
+                    next_val += 1;
+                    let mname = self.canon(&m.name);
+                    let key = self.str_const(&mname);
+                    self.emit_u16(Op::struct_set, key);
+                    self.emit(Op::drop);
+                    // Register member → enum type for bare-name resolution
+                    self.enum_members.insert(mname, cname.clone());
                 }
+                let gidx = self.str_const(&cname);
+                self.emit_u16(Op::global_set, gidx);
+                self.emit(Op::drop);
+                self.defined_globals.insert(cname);
             }
 
             // ── Struct declaration (same as class) ──────────────────────
@@ -636,11 +666,24 @@ impl Compiler {
             }
 
             // ── Module declaration (VB) ─────────────────────────────────
-            StmtKind::ModuleDecl { name: _, members, .. } => {
-                // Compile module members — become globals
+            // Models WASM Component Model: members are exports of the module.
+            // - Members compile as globals (so call_ref works)
+            // - Bare member names register in enum_members map → resolve to Module.Member
+            // - A namespace struct is built so qualified `Module.Member` works too
+            StmtKind::ModuleDecl { name, members, .. } => {
+                let module_name = self.canon(name);
+                let mut member_names: Vec<String> = Vec::new();
+
+                // First pass: compile all members as globals + collect names
                 for m in members {
                     match m {
-                        ClassMember::Method(stmt) => { self.compile_stmt(stmt)?; }
+                        ClassMember::Method(stmt) => {
+                            if let StmtKind::FunctionDecl { name: mname, .. } = &stmt.kind {
+                                let mn = self.canon(mname);
+                                self.compile_stmt(stmt)?;
+                                member_names.push(mn);
+                            }
+                        }
                         ClassMember::Field { name: fname, init, .. } => {
                             if let Some(init_expr) = init {
                                 self.compile_expr(init_expr)?;
@@ -651,7 +694,8 @@ impl Compiler {
                             let idx = self.str_const(&cname);
                             self.emit_u16(Op::global_set, idx);
                             self.emit(Op::drop);
-                            self.defined_globals.insert(cname);
+                            self.defined_globals.insert(cname.clone());
+                            member_names.push(cname);
                         }
                         ClassMember::Const { name: cname, value, .. } => {
                             self.compile_expr(value)?;
@@ -659,13 +703,19 @@ impl Compiler {
                             let idx = self.str_const(&cn);
                             self.emit_u16(Op::global_set, idx);
                             self.emit(Op::drop);
-                            self.defined_globals.insert(cn);
+                            self.defined_globals.insert(cn.clone());
+                            member_names.push(cn);
                         }
                         ClassMember::NestedType(stmt) => {
+                            // Nested class — gets its own global; also attach to module
+                            if let StmtKind::ClassDecl { name: cname, .. } = &stmt.kind {
+                                let cn = self.canon(cname);
+                                member_names.push(cn);
+                            }
                             self.compile_stmt(stmt)?;
                         }
-                        ClassMember::Constructor { params, body, base_args, .. } => {
-                            // Module-level constructor — rare but handle it
+                        ClassMember::Constructor { params, body, .. } => {
+                            // Module-level constructor — compile as a function named after constructor_name
                             let ctor_stmt = Statement::new(StmtKind::FunctionDecl {
                                 name: self.profile.constructor_name.clone(),
                                 params: params.clone(),
@@ -678,16 +728,67 @@ impl Compiler {
                                 is_sub: true,
                             });
                             self.compile_stmt(&ctor_stmt)?;
+                            member_names.push(self.canon(&self.profile.constructor_name));
                         }
                         _ => {}
                     }
                 }
-                // Don't auto-call Main here — compile() does it via entry_point
+
+                // Second pass: build namespace struct { member1: global, member2: global, ... }
+                self.emit_u16(Op::struct_new, 0);
+                for mn in &member_names {
+                    self.emit(Op::dup);
+                    let gidx = self.str_const(mn);
+                    self.emit_u16(Op::global_get, gidx);
+                    let key = self.str_const(mn);
+                    self.emit_u16(Op::struct_set, key);
+                    self.emit(Op::drop);
+                    // Register bare member → module name for qualified resolution
+                    self.enum_members.insert(mn.clone(), module_name.clone());
+                }
+                let mod_idx = self.str_const(&module_name);
+                self.emit_u16(Op::global_set, mod_idx);
+                self.emit(Op::drop);
+                self.defined_globals.insert(module_name);
             }
 
             // ── Namespace declaration ───────────────────────────────────
-            StmtKind::NamespaceDecl { body, .. } => {
-                for s in body { self.compile_stmt(s)?; }
+            // C#/VB namespace: container of types. Compiles members as top-level globals
+            // (matches .NET behavior — within the same compilation unit, bare type access
+            // works without import). Also builds namespace struct for qualified access.
+            StmtKind::NamespaceDecl { name, body } => {
+                let ns_name = self.canon(name);
+                let mut member_names: Vec<String> = Vec::new();
+                for s in body {
+                    // Track top-level type/function names declared in this namespace
+                    match &s.kind {
+                        StmtKind::ClassDecl { name: cn, .. }
+                        | StmtKind::StructDecl { name: cn, .. }
+                        | StmtKind::EnumDecl { name: cn, .. }
+                        | StmtKind::InterfaceDecl { name: cn, .. }
+                        | StmtKind::ModuleDecl { name: cn, .. }
+                        | StmtKind::FunctionDecl { name: cn, .. } => {
+                            member_names.push(self.canon(cn));
+                        }
+                        _ => {}
+                    }
+                    self.compile_stmt(s)?;
+                }
+
+                // Build namespace struct
+                self.emit_u16(Op::struct_new, 0);
+                for mn in &member_names {
+                    self.emit(Op::dup);
+                    let gidx = self.str_const(mn);
+                    self.emit_u16(Op::global_get, gidx);
+                    let key = self.str_const(mn);
+                    self.emit_u16(Op::struct_set, key);
+                    self.emit(Op::drop);
+                }
+                let ns_idx = self.str_const(&ns_name);
+                self.emit_u16(Op::global_set, ns_idx);
+                self.emit(Op::drop);
+                self.defined_globals.insert(ns_name);
             }
 
             // ── Delegate declaration ────────────────────────────────────
@@ -1087,8 +1188,12 @@ impl Compiler {
                         }
                     }
                 }
-                // Implicit self field write
-                if self.is_class_field(name) {
+                // Local variable / parameter takes priority over implicit self field
+                let is_local = self.scope().resolve(name).is_some()
+                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+
+                // Implicit self field write (only if NOT a local)
+                if !is_local && self.is_class_field(name) {
                     let self_kw = self.profile.self_keyword.clone();
                     if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
                         let tmp = self.scope_mut().define("__field_tmp");
@@ -1290,6 +1395,7 @@ impl Compiler {
         let result_style = self.profile.function_return.clone();
 
         // Collect fields and initializers (separate instance vs static)
+        // Auto-properties are treated as plain fields (matches old C# compiler).
         let mut fields = Vec::new();
         let mut field_inits: Vec<(String, Option<Expression>)> = Vec::new();
         let mut static_field_inits: Vec<(String, Option<Expression>)> = Vec::new();
@@ -1301,6 +1407,19 @@ impl Compiler {
                 } else {
                     fields.push(fname.clone());
                     field_inits.push((fname, init.clone()));
+                }
+            }
+            if let ClassMember::Property { name: pname, is_auto, modifiers, .. } = m {
+                if *is_auto {
+                    let pname_canon = self.canon(pname);
+                    if modifiers.is_static {
+                        if !static_field_inits.iter().any(|(n, _)| n == &pname_canon) {
+                            static_field_inits.push((pname_canon, None));
+                        }
+                    } else if !fields.contains(&pname_canon) {
+                        fields.push(pname_canon.clone());
+                        field_inits.push((pname_canon, None));
+                    }
                 }
             }
         }
@@ -1318,14 +1437,31 @@ impl Compiler {
         let saved_class = self.current_class.take();
         self.current_class = Some(name.to_string());
 
+        // Pre-register all method names to avoid value-method hijacking
+        for m in members {
+            if let ClassMember::Method(stmt) = m {
+                if let StmtKind::FunctionDecl { name: mname, .. } = &stmt.kind {
+                    self.defined_class_methods.insert(self.canon(mname));
+                }
+            }
+            if let ClassMember::Property { name: pname, .. } = m {
+                self.defined_class_methods.insert(self.canon(pname));
+            }
+        }
+
+
         for m in members {
             match m {
                 ClassMember::Method(stmt) => {
                     if let StmtKind::FunctionDecl { name: mname, params, return_type, body, modifiers, is_sub, .. } = &stmt.kind {
                         if body.is_empty() { continue; }
 
-                        let is_ctor = mname.eq_ignore_ascii_case(&ctor_name)
-                            || modifiers.is_static && mname.eq_ignore_ascii_case("new");
+                        let is_ctor = if self.case_sensitive {
+                            mname == &ctor_name || (modifiers.is_static && mname == "new")
+                        } else {
+                            mname.eq_ignore_ascii_case(&ctor_name)
+                            || modifiers.is_static && mname.eq_ignore_ascii_case("new")
+                        };
 
                         let user_params: Vec<&Param> = if self.profile.explicit_self_param {
                             params.iter().skip(1).collect()
@@ -1377,51 +1513,13 @@ impl Compiler {
                         method_chunks.push((bound_name, ci, is_ctor, modifiers.is_static));
                     }
                 }
-                ClassMember::Constructor { params, body, base_args, .. } => {
-                    let user_params = params;
-                    let arity = (user_params.len() + 1) as u8;
-
-                    let ci = self.chunks.len();
-                    let chunk = common::functions::create_function_chunk("constructor", arity);
-                    self.chunks.push(chunk);
-                    self.scopes.push(Scope::new_function());
-                    let saved = self.current;
-                    self.current = ci;
-
-                    self.scope_mut().define(&self_kw);
-                    for p in user_params { self.scope_mut().define(&p.name); }
-
-                    // Base constructor call
-                    if let Some(args) = base_args {
-                        if let Some(ref parent_name) = parent {
-                            let pidx = self.str_const(parent_name);
-                            self.emit_u16(Op::global_get, pidx);
-                            for a in args { self.compile_expr(a)?; }
-                            self.emit_u8(Op::call_ref, args.len() as u8);
-                            if let Some(slot) = self.scope().resolve(&self_kw) {
-                                self.emit(Op::dup);
-                                self.emit_u16(Op::local_set, slot);
-                                self.emit(Op::drop);
-                            }
-                            self.emit(Op::drop);
-                        }
-                    }
-
-                    for s in body { self.compile_stmt(s)?; }
-
-                    if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
-                        self.emit_u16(Op::local_get, slot);
-                        self.emit(Op::r#return);
-                    }
-
-                    let locals = self.scope().next_slot;
-                    self.chunks[ci].local_count = locals;
-                    self.scopes.pop();
-                    self.current = saved;
-
-                    method_chunks.push(("constructor".to_string(), ci, true, false));
+                ClassMember::Constructor { .. } => {
+                    // Constructor body is handled by the main constructor flow below
+                    // (extracted via ctor_body). No separate chunk needed.
                 }
-                ClassMember::Property { name: pname, getter, setter, .. } => {
+                ClassMember::Property { name: pname, getter, setter, is_auto, .. } => {
+                    // Auto-properties are handled as plain fields above — skip getter/setter compilation
+                    if *is_auto { continue; }
                     let pname_canon = self.canon(pname);
 
                     // Getter → __get_<prop>
@@ -1519,22 +1617,26 @@ impl Compiler {
 
         // Find constructor body and its user arity
         let ctor = method_chunks.iter().find(|(_, _, is_ctor, _)| *is_ctor);
-        let ctor_body: Option<(&Vec<Statement>, &Vec<Param>)> = members.iter().find_map(|m| {
+        let ctor_body: Option<(&Vec<Statement>, &Vec<Param>, Option<&Vec<Expression>>)> = members.iter().find_map(|m| {
             match m {
                 ClassMember::Method(stmt) => {
                     if let StmtKind::FunctionDecl { name: mname, params, body, modifiers, .. } = &stmt.kind {
-                        let is_ctor = mname.eq_ignore_ascii_case(&ctor_name)
-                            || modifiers.is_static && mname.eq_ignore_ascii_case("new");
-                        if is_ctor && !body.is_empty() { return Some((body, params)); }
+                        let is_ctor = if self.case_sensitive {
+                            mname == &ctor_name || (modifiers.is_static && mname == "new")
+                        } else {
+                            mname.eq_ignore_ascii_case(&ctor_name)
+                            || modifiers.is_static && mname.eq_ignore_ascii_case("new")
+                        };
+                        if is_ctor && !body.is_empty() { return Some((body, params, None)); }
                     }
                     None
                 }
-                ClassMember::Constructor { params, body, .. } => Some((body, params)),
+                ClassMember::Constructor { params, body, base_args, .. } => Some((body, params, base_args.as_ref())),
                 _ => None,
             }
         });
 
-        let user_params: Vec<String> = ctor_body.map(|(_, params)| {
+        let user_params: Vec<String> = ctor_body.map(|(_, params, _)| {
             if self.profile.explicit_self_param {
                 params.iter().skip(1).map(|p| p.name.clone()).collect()
             } else {
@@ -1582,13 +1684,29 @@ impl Compiler {
             // This works for both explicit super (JS) and implicit (VB/C#)
             // because super() stores the result in this_slot.
 
-            // Start with null this — super() will set it
+            // ── Step 1: Call parent constructor to get the object ────────
             self.emit(Op::null);
             self.emit_u16(Op::local_set, this_slot);
             self.emit(Op::drop);
 
-            // If no explicit constructor body, auto-call parent with user args
-            if ctor_body.is_none() {
+            if let Some((_, _, base_args)) = &ctor_body {
+                // Explicit constructor with : base(args) (C#/VB)
+                // Only auto-call parent if base_args is explicitly provided.
+                // If base_args is None, the constructor body handles super() itself (JS pattern).
+                if let Some(bargs) = base_args {
+                    if let Some(parent_name) = parent {
+                        let pname = self.canon(parent_name);
+                        let pidx = self.str_const(&pname);
+                        self.emit_u16(Op::global_get, pidx);
+                        for a in *bargs { self.compile_expr(a)?; }
+                        self.emit_u8(Op::call, bargs.len() as u8);
+                        self.emit_u16(Op::local_set, this_slot);
+                        self.emit(Op::drop);
+                    }
+                }
+                // If base_args is None, body will call super() which sets this_slot
+            } else {
+                // No explicit constructor — auto-call parent with user args
                 if let Some(parent_name) = parent {
                     let pname = self.canon(parent_name);
                     let pidx = self.str_const(&pname);
@@ -1596,49 +1714,90 @@ impl Compiler {
                     for i in 0..user_arity {
                         self.emit_u16(Op::local_get, (i as u16) + 1);
                     }
-                    self.emit_u8(Op::call_ref, user_arity);
+                    self.emit_u8(Op::call, user_arity);
                     self.emit_u16(Op::local_set, this_slot);
                     self.emit(Op::drop);
                 }
+            }
+
+            // Check if this is a C#-style constructor (base_args provided explicitly)
+            // vs JS/VB-style (super() called inside body)
+            let has_explicit_base = ctor_body.as_ref().map_or(false, |(_, _, ba)| ba.is_some());
+
+            if has_explicit_base || ctor_body.is_none() {
+                // C#-style: base call already done above, or no-ctor auto-call done above.
+                // Order: fields → save base → bind methods → body (matches old C# compiler)
+
+                for (fname, init) in &field_inits {
+                    if let Some(init_expr) = init {
+                        common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                        self.compile_expr(init_expr)?;
+                        common::classes::emit_init_field_end(self.chunk(), fname, line);
+                    } else {
+                        common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
+                    }
+                }
+
+                if let Some(parent_name) = parent {
+                    let pname = self.canon(parent_name);
+                    for method_name in &instance_method_names {
+                        common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
+                    }
+                    common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
+                }
+
+                for (mname, mci, _, _) in &instance_methods {
+                    if mname.starts_with("__get_") {
+                        let prop = mname.strip_prefix("__get_").unwrap_or(mname);
+                        common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
+                    } else if mname.starts_with("__set_") {
+                        let prop = mname.strip_prefix("__set_").unwrap_or(mname);
+                        common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
+                    } else {
+                        common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                    }
+                }
+
+                if let Some((body, _, _)) = ctor_body {
+                    for s in body { self.compile_stmt(s)?; }
+                }
             } else {
-                // Run constructor body — super() inside sets this_slot
-                let (body, _) = ctor_body.unwrap();
-                for s in body { self.compile_stmt(s)?; }
-            }
+                // JS/VB-style: constructor body calls super() which sets this_slot.
+                // Order: body first (sets this_slot via super()), then save base → bind methods
+                // This is the original order that worked for JS/VB.
 
-            // After super() ran, save base methods that child will override
-            if let Some(parent_name) = parent {
-                let pname = self.canon(parent_name);
-                let child_refs: Vec<&str> = instance_method_names.iter().map(|s| s.as_str()).collect();
-                for method_name in &child_refs {
-                    common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
+                if let Some((body, _, _)) = ctor_body {
+                    for s in body { self.compile_stmt(s)?; }
                 }
-                common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
-            }
 
-            // Initialize child's own fields
-            for (fname, init) in &field_inits {
-                if let Some(init_expr) = init {
-                    self.emit_u16(Op::local_get, this_slot);
-                    self.compile_expr(init_expr)?;
-                    let fk = self.str_const(fname);
-                    self.emit_u16(Op::struct_set, fk);
-                    self.emit(Op::drop);
-                } else {
-                    common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
+                if let Some(parent_name) = parent {
+                    let pname = self.canon(parent_name);
+                    for method_name in &instance_method_names {
+                        common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
+                    }
+                    common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
                 }
-            }
 
-            // Bind child methods (overwrite parent's)
-            for (mname, mci, _, _) in &instance_methods {
-                if mname.starts_with("__get_") {
-                    let prop = mname.strip_prefix("__get_").unwrap_or(mname);
-                    common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
-                } else if mname.starts_with("__set_") {
-                    let prop = mname.strip_prefix("__set_").unwrap_or(mname);
-                    common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
-                } else {
-                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                for (fname, init) in &field_inits {
+                    if let Some(init_expr) = init {
+                        common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                        self.compile_expr(init_expr)?;
+                        common::classes::emit_init_field_end(self.chunk(), fname, line);
+                    } else {
+                        common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
+                    }
+                }
+
+                for (mname, mci, _, _) in &instance_methods {
+                    if mname.starts_with("__get_") {
+                        let prop = mname.strip_prefix("__get_").unwrap_or(mname);
+                        common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
+                    } else if mname.starts_with("__set_") {
+                        let prop = mname.strip_prefix("__set_").unwrap_or(mname);
+                        common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
+                    } else {
+                        common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                    }
                 }
             }
         } else {
@@ -1648,11 +1807,9 @@ impl Compiler {
             // Initialize fields
             for (fname, init) in &field_inits {
                 if let Some(init_expr) = init {
-                    self.emit_u16(Op::local_get, this_slot);
+                    common::classes::emit_init_field_start(self.chunk(), this_slot, line);
                     self.compile_expr(init_expr)?;
-                    let fk = self.str_const(fname);
-                    self.emit_u16(Op::struct_set, fk);
-                    self.emit(Op::drop);
+                    common::classes::emit_init_field_end(self.chunk(), fname, line);
                 } else {
                     common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
                 }
@@ -1672,7 +1829,7 @@ impl Compiler {
             }
 
             // Run user constructor body
-            if let Some((body, _)) = ctor_body {
+            if let Some((body, _, _)) = ctor_body {
                 for s in body { self.compile_stmt(s)?; }
             }
         }
@@ -1773,14 +1930,12 @@ impl Compiler {
 
             // ── Identifier ──────────────────────────────────────────────
             ExprKind::Ident(name) => {
-                // Well-known constants
-                match name.to_lowercase().as_str() {
-                    "maxint" => { self.emit_const(Value::F64(2147483647.0)); return Ok(()); }
-                    "pi" => { self.emit_const(Value::F64(std::f64::consts::PI)); return Ok(()); }
-                    _ => {}
-                }
-                // Implicit self field access
-                if self.is_class_field(name) {
+                // Local variable / parameter takes priority over implicit self field
+                let is_local = self.scope().resolve(name).is_some()
+                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+
+                // Implicit self field access (only if NOT a local)
+                if !is_local && self.is_class_field(name) {
                     let self_kw = self.profile.self_keyword.clone();
                     if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
                         self.emit_u16(Op::local_get, slot);
@@ -1790,6 +1945,30 @@ impl Compiler {
                         return Ok(());
                     }
                 }
+
+                // Bare enum member: `Green` → `TColor.Green`
+                if !is_local {
+                    let canon_name = self.canon(name);
+                    if let Some(enum_type) = self.enum_members.get(&canon_name).cloned() {
+                        let type_idx = self.str_const(&enum_type);
+                        self.emit_u16(Op::global_get, type_idx);
+                        let mem_idx = self.str_const(&canon_name);
+                        self.emit_u16(Op::struct_get, mem_idx);
+                        return Ok(());
+                    }
+                }
+
+                // Bare profile namespace constant (e.g. Pascal `MaxInt`, `Pi`)
+                if !is_local && !self.defined_globals.contains(&self.canon(name)) {
+                    if let Some(cv) = self.profile.lookup_constant(name) {
+                        match cv {
+                            ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),
+                            ConstantValue::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                        }
+                        return Ok(());
+                    }
+                }
+
                 self.emit_var_get(name);
             }
 
@@ -1968,6 +2147,17 @@ impl Compiler {
             // ── New ─────────────────────────────────────────────────────
             ExprKind::New { class, args } => {
                 if let ExprKind::Ident(type_name) = &class.kind {
+                    // User-defined classes take priority over all built-in type mappings.
+                    // This ensures `class Point { ... }` followed by `new Point()` calls
+                    // the user constructor, not vybe:drawing::pointNew.
+                    let canon_type = self.canon(type_name);
+                    if self.defined_classes.contains(&canon_type) {
+                        self.compile_expr(class)?;
+                        for a in args { self.compile_expr(&a.value)?; }
+                        self.emit_u8(Op::call_ref, args.len() as u8);
+                        return Ok(());
+                    }
+
                     let bare = type_name.to_lowercase();
                     let bare = bare.split('(').next().unwrap_or(&bare).trim();
                     let bare_str = bare.rsplit('.').next().unwrap_or(bare);
@@ -1997,14 +2187,38 @@ impl Compiler {
                             self.emit_const(Value::I32(0)); // initial lock value
                             return Ok(());
                         }
+                        // Built-in exception types — create struct with `message` field
+                        "exception" | "argumentexception" | "invalidoperationexception"
+                        | "notimplementedexception" | "notsupportedexception"
+                        | "nullreferenceexception" | "indexoutofrangeexception"
+                        | "argumentnullexception" | "error" | "typeerror" | "rangeerror"
+                        | "syntaxerror" | "referenceerror" => {
+                            self.emit_u16(Op::struct_new, 0);
+                            self.emit(Op::dup);
+                            if let Some(msg_arg) = args.first() {
+                                self.compile_expr(&msg_arg.value)?;
+                            } else {
+                                self.emit_const(Value::String(Arc::from("")));
+                            }
+                            let msg_idx = self.str_const("message");
+                            self.emit_u16(Op::struct_set, msg_idx);
+                            self.emit(Op::drop);
+                            return Ok(());
+                        }
                         _ => {}
                     }
 
                     // Profile known types (collections, GUI controls, etc.)
                     if let Some((module, func)) = self.profile.lookup_known_type(type_name).map(|(m, f)| (m.to_string(), f.to_string())) {
                         for a in args { self.compile_expr(&a.value)?; }
-                        let idx = self.import(&module, &func);
-                        self.emit_host_call(idx, args.len() as u8);
+                        // Special module "common" → use compiler_common emitter (no host call)
+                        if module == "common" {
+                            let line = self.line;
+                            self.emit_common(&func, line);
+                        } else {
+                            let idx = self.import(&module, &func);
+                            self.emit_host_call(idx, args.len() as u8);
+                        }
                         return Ok(());
                     }
                     // Dotnet known types (collections, etc.)
@@ -2012,6 +2226,15 @@ impl Compiler {
                     if let Some(&(module, func)) = known.get(bare_str) {
                         for a in args { self.compile_expr(&a.value)?; }
                         let idx = self.import(module, func);
+                        self.emit_host_call(idx, args.len() as u8);
+                        return Ok(());
+                    }
+                    // WinForms control: Button, TextBox, Label, etc. → vybe:gui::new_<Type>
+                    let capitalized = common::dotnet::capitalize_control_name(bare_str);
+                    if !capitalized.is_empty() && capitalized != bare_str {
+                        for a in args { self.compile_expr(&a.value)?; }
+                        let host_name = format!("new_{}", capitalized);
+                        let idx = self.import("vybe:gui", &host_name);
                         self.emit_host_call(idx, args.len() as u8);
                         return Ok(());
                     }
@@ -2233,9 +2456,13 @@ impl Compiler {
             ExprKind::SuperCall { method, args } => {
                 let self_kw = self.profile.self_keyword.clone();
                 let ctor_name = self.profile.constructor_name.clone();
-                let is_ctor_call = method.is_none() || method.as_ref().map_or(false, |m|
-                    m.eq_ignore_ascii_case(&ctor_name) || m.eq_ignore_ascii_case("new") || m.eq_ignore_ascii_case("__init__")
-                );
+                let is_ctor_call = method.is_none() || method.as_ref().map_or(false, |m| {
+                    if self.case_sensitive {
+                        m == &ctor_name || m == "new" || m == "__init__"
+                    } else {
+                        m.eq_ignore_ascii_case(&ctor_name) || m.eq_ignore_ascii_case("new") || m.eq_ignore_ascii_case("__init__")
+                    }
+                });
 
                 if is_ctor_call {
                     // super() / MyBase.New(args) → call parent constructor
@@ -2556,7 +2783,6 @@ impl Compiler {
                         is_local: &|name: &str| {
                             scope.resolve(name).is_some()
                             || scope.resolve_ci(name).is_some()
-                            // Also check globals — top-level Dim variables are globals, not locals
                             || defined_globals.contains(name)
                         },
                         is_class_field: &|name: &str| field_set.contains(name),
@@ -2660,7 +2886,6 @@ impl Compiler {
                                     self.emit(Op::dup); // keep obj for this
                                     self.emit_u16(Op::struct_get, idx);
                                     // Stack: [obj, method_fn] — swap so fn is first
-                                    // Reuse temp slots to avoid slot accumulation
                                     let fn_tmp = self.scope().resolve("__dotnet_fn")
                                         .unwrap_or_else(|| self.scope_mut().define("__dotnet_fn"));
                                     self.emit_u16(Op::local_set, fn_tmp); self.emit(Op::drop);
@@ -2713,9 +2938,56 @@ impl Compiler {
             }
         }
 
-        // ── Value method: obj.toUpperCase() ─────────────────────────
+        // ── Static method call on user class: ClassName.Method(args) ─
+        // Must run BEFORE value methods so user class names like MathUtils.Add
+        // don't get hijacked by the array Add value method.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
-            if let Some(def) = self.profile.lookup_value_method(field).cloned() {
+            if let ExprKind::Ident(obj_name) = &object.kind {
+                let canon = self.canon(obj_name);
+                let is_class = self.defined_classes.contains(&canon)
+                    && self.scope().resolve(obj_name).is_none();
+                if is_class {
+                    // Push class, dup, struct_get(method) → [class, fn]
+                    // Then swap so fn is first, class is second (as this)
+                    let cls_idx = self.str_const(&canon);
+                    self.emit_u16(Op::global_get, cls_idx);
+                    self.emit(Op::dup);
+                    let m = self.canon(field);
+                    let method_idx = self.str_const(&m);
+                    self.emit_u16(Op::struct_get, method_idx);
+                    // Stack: [class, fn] — swap so we have [fn, class, ...args]
+                    let fn_tmp = self.scope().resolve("__static_fn")
+                        .unwrap_or_else(|| self.scope_mut().define("__static_fn"));
+                    self.emit_u16(Op::local_set, fn_tmp); self.emit(Op::drop);
+                    let cls_tmp = self.scope().resolve("__static_cls")
+                        .unwrap_or_else(|| self.scope_mut().define("__static_cls"));
+                    self.emit_u16(Op::local_set, cls_tmp); self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, fn_tmp);
+                    self.emit_u16(Op::local_get, cls_tmp);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
+                    return Ok(());
+                }
+            }
+        }
+
+        // ── Value method: obj.toUpperCase() ─────────────────────────
+        // Skip if the method name is defined on a user class — that takes priority.
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            let canon_field = self.canon(field);
+            if self.defined_class_methods.contains(&canon_field) {
+                // Fall through — let the generic call path handle it
+            } else if let Some(def) = self.profile.lookup_value_method(field, arg_exprs.len() as u8).cloned() {
+                // For Stdlib calls, push func ref BEFORE args (call_ref expects [func, args...])
+                if let BuiltinEmit::Stdlib(stdlib_name) = &def.emit {
+                    let global_name = format!("__vybe_{}", stdlib_name);
+                    let name_idx = self.str_const(&global_name);
+                    self.emit_u16(Op::global_get, name_idx);
+                    self.compile_expr(object)?;
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
+                    return Ok(());
+                }
                 // Object is first arg, then explicit args
                 self.compile_expr(object)?;
                 for a in &arg_exprs { self.compile_expr(a)?; }
@@ -2732,15 +3004,34 @@ impl Compiler {
                         let line = self.line;
                         common::strings::emit_length(self.chunk(), line);
                     }
+                    BuiltinEmit::Common(name) => {
+                        let line = self.line;
+                        let name = name.clone();
+                        self.emit_common(&name, line);
+                    }
                     _ => {}
                 }
                 return Ok(());
             }
 
+
             // Array higher-order methods: arr.map(fn), arr.filter(fn), etc.
             // Use compiler_common::loops which emits proper loop bytecode.
             let field_lower = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
-            if self.profile.lookup_array_method(&field_lower).is_some() {
+            if let Some(stdlib_name) = self.profile.lookup_array_method(&field_lower).map(|s| s.to_string()) {
+                // Normalize to the JS-style method name used in match below
+                let field_lower = match stdlib_name.as_str() {
+                    "__array_map" => "map".to_string(),
+                    "__array_filter" => "filter".to_string(),
+                    "__array_forEach" => "forEach".to_string(),
+                    "__array_reduce" => "reduce".to_string(),
+                    "__array_find" => "find".to_string(),
+                    "__array_sort" => "sort".to_string(),
+                    "__array_some" => "some".to_string(),
+                    "__array_every" => "every".to_string(),
+                    "__array_flat_map" => "flatMap".to_string(),
+                    _ => field_lower,
+                };
                 // Compile arr and fn(s) into local slots
                 self.compile_expr(object)?;
                 let arr_slot = self.scope_mut().define("__hof_arr");
@@ -3152,6 +3443,20 @@ impl Compiler {
                 BuiltinEmit::Intrinsic(intrinsic_name) => {
                     self.emit_intrinsic(intrinsic_name, args)?;
                 }
+                BuiltinEmit::Common(name) => {
+                    // Compile args, then dispatch to compiler_common emitter
+                    for a in args { self.compile_expr(a)?; }
+                    let line = self.line;
+                    self.emit_common(name.as_str(), line);
+                }
+                BuiltinEmit::Stdlib(stdlib_name) => {
+                    // Push func ref FIRST, then args, then call_ref
+                    let global_name = format!("__vybe_{}", stdlib_name);
+                    let name_idx = self.str_const(&global_name);
+                    self.emit_u16(Op::global_get, name_idx);
+                    for a in args { self.compile_expr(a)?; }
+                    self.emit_u8(Op::call_ref, args.len() as u8);
+                }
                 BuiltinEmit::Noop => {
                     self.emit(Op::null);
                 }
@@ -3160,6 +3465,50 @@ impl Compiler {
         }
 
         Ok(false)
+    }
+
+    /// Emit a compiler_common operation by namespaced name.
+    /// Used by both `BuiltinEmit::Common` paths.
+    fn emit_common(&mut self, name: &str, line: u32) {
+        match name {
+            // Dict ops
+            "dict.set_dynamic" => {
+                common::dict::emit_set_dynamic(self.chunk(), line);
+                self.emit(Op::null); // void return
+            }
+            "dict.get_dynamic" => common::dict::emit_get_dynamic(self.chunk(), line),
+            "dict.has" => common::dict::emit_method_has(self.chunk(), line),
+            "dict.size" => common::dict::emit_method_size(self.chunk(), line),
+            "dict.keys" => common::dict::emit_keys(self.chunk(), line),
+            "dict.values" => common::dict::emit_values(self.chunk(), line),
+            "dict.new" => common::dict::emit_new(self.chunk(), line),
+            // Collection ops
+            "collections.push" => common::collections::emit_push(self.chunk(), line),
+            "collections.pop" => common::collections::emit_pop(self.chunk(), line),
+            "collections.length" => common::collections::emit_len(self.chunk(), line),
+            "collections.get" => common::collections::emit_get(self.chunk(), line),
+            "collections.set" => common::collections::emit_set(self.chunk(), line),
+            "collections.contains" => common::collections::emit_contains(self.chunk(), line),
+            "collections.index_of" => common::collections::emit_index_of(self.chunk(), line),
+            "collections.sorted" => common::collections::emit_sorted(self.chunk(), line),
+            "collections.reverse" => common::collections::emit_reverse(self.chunk(), line),
+            "collections.join" => common::collections::emit_join(self.chunk(), line),
+            "collections.slice" => common::collections::emit_slice(self.chunk(), line),
+            "collections.new" => common::collections::emit_array_new(self.chunk(), 0, line),
+            // String ops
+            "strings.length" => common::strings::emit_length(self.chunk(), line),
+            "strings.to_upper" => common::strings::emit_to_upper(self.chunk(), line),
+            "strings.to_lower" => common::strings::emit_to_lower(self.chunk(), line),
+            "strings.trim" => common::strings::emit_trim(self.chunk(), line),
+            "strings.substring" => common::strings::emit_substring(self.chunk(), line),
+            "strings.replace" => common::strings::emit_replace(self.chunk(), line),
+            "strings.split" => common::strings::emit_split(self.chunk(), line),
+            "strings.index_of" => common::strings::emit_index_of(self.chunk(), line),
+            "strings.concat" => common::strings::emit_concat(self.chunk(), 2, line),
+            _ => {
+                eprintln!("Unknown common emit: {}", name);
+            }
+        }
     }
 
     /// Emit a named opcode sequence for a builtin.
