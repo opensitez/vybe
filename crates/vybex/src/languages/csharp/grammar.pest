@@ -444,7 +444,8 @@ argument = {
 // ── Primary expressions ─────────────────────────────────────────────────────
 
 primary = {
-    "(" ~ expression ~ ")"           // parenthesized
+    tuple_literal                    // (a, b, c) — must come before paren_expr
+    | "(" ~ expression ~ ")"           // parenthesized
     | typeof_expression
     | nameof_expression
     | default_expression
@@ -462,6 +463,9 @@ primary = {
     | primitive_type_ident
     | ident_name
 }
+
+// C# tuple literal: (1, "x", true) — at least 2 elements (1-element is just paren_expr).
+tuple_literal = { "(" ~ expression ~ ("," ~ expression)+ ~ ","? ~ ")" }
 
 // C# allows primitive type names as identifier prefixes for static method calls:
 // `string.Join(",", arr)`, `int.Parse("42")`, `bool.Parse("true")`, etc.
@@ -501,7 +505,10 @@ char_literal = @{ "'" ~ ("\\" ~ ANY | !"'" ~ ANY) ~ "'" }
 numeric_literal = @{
     ("0x" | "0X") ~ ASCII_HEX_DIGIT+ ~ numeric_suffix?
     | ("0b" | "0B") ~ ('0'..'1')+ ~ numeric_suffix?
-    | ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
+    // Decimal: a `.` followed by another `.` is NOT a decimal point — it's a
+    // range operator (`1..3`). Negative lookahead prevents the literal from
+    // greedily eating the first `.` of a range.
+    | ASCII_DIGIT+ ~ "." ~ !"." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
     | "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
     | ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
 }

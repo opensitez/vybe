@@ -441,6 +441,9 @@ impl Compiler {
             // ── Switch / Select Case ────────────────────────────────────
             StmtKind::Switch { expr, cases, default } => {
                 self.compile_expr(expr)?;
+                // Push a loop context so `break;` inside case bodies collects its
+                // jump patch and we can resolve it to the end of the switch.
+                self.loops.push(LoopCtx { break_patches: vec![], continue_target: 0, continue_patches: vec![], continue_needs_patch: false, label: None });
                 let mut end_patches = Vec::new();
                 for case in cases {
                     let mut match_patches = Vec::new();
@@ -489,6 +492,8 @@ impl Compiler {
                     for s in def { self.compile_stmt(s)?; }
                 }
                 for p in end_patches { self.patch_jump(p); }
+                let ctx = self.loops.pop().unwrap();
+                for p in ctx.break_patches { self.patch_jump(p); }
                 self.emit(Op::drop); // drop the switch expression
             }
 
@@ -1726,7 +1731,15 @@ impl Compiler {
 
             if has_explicit_base || ctor_body.is_none() {
                 // C#-style: base call already done above, or no-ctor auto-call done above.
-                // Order: fields → save base → bind methods → body (matches old C# compiler)
+                // Order: re-stamp __type → fields → save base → bind methods → body
+                //
+                // The parent ctor stamped __type with the parent name. Re-stamp with
+                // the child name so `obj is ChildType` returns true.
+                self.emit_u16(Op::local_get, this_slot);
+                self.emit_const(Value::String(Arc::from(name)));
+                let type_key = self.str_const("__type");
+                self.emit_u16(Op::struct_set, type_key);
+                self.emit(Op::drop);
 
                 for (fname, init) in &field_inits {
                     if let Some(init_expr) = init {
@@ -1762,13 +1775,27 @@ impl Compiler {
                     for s in body { self.compile_stmt(s)?; }
                 }
             } else {
-                // JS/VB-style: constructor body calls super() which sets this_slot.
-                // Order: body first (sets this_slot via super()), then save base → bind methods
-                // This is the original order that worked for JS/VB.
+                // JS/VB/Pascal-style: constructor body contains the super() call which
+                // sets this_slot. Order: body first (sets this_slot via super()), then
+                // save base → bind methods → field inits.
+                //
+                // We skip null-init for fields with no explicit initializer because
+                // the body may have already assigned them (Pascal pattern:
+                // `inherited Create(X); FY := Y;`) — and a no-op null-init would
+                // clobber that assignment. Fields default to null on dynamic structs
+                // anyway, so this is safe.
 
                 if let Some((body, _, _)) = ctor_body {
                     for s in body { self.compile_stmt(s)?; }
                 }
+
+                // Re-stamp __type with the child name (the body's super call stamped
+                // it with the parent name).
+                self.emit_u16(Op::local_get, this_slot);
+                self.emit_const(Value::String(Arc::from(name)));
+                let type_key2 = self.str_const("__type");
+                self.emit_u16(Op::struct_set, type_key2);
+                self.emit(Op::drop);
 
                 if let Some(parent_name) = parent {
                     let pname = self.canon(parent_name);
@@ -1783,8 +1810,6 @@ impl Compiler {
                         common::classes::emit_init_field_start(self.chunk(), this_slot, line);
                         self.compile_expr(init_expr)?;
                         common::classes::emit_init_field_end(self.chunk(), fname, line);
-                    } else {
-                        common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
                     }
                 }
 
@@ -2139,9 +2164,22 @@ impl Compiler {
 
             // ── Index access ────────────────────────────────────────────
             ExprKind::Index { object, index } => {
-                self.compile_expr(object)?;
-                self.compile_expr(index)?;
-                self.emit(Op::array_get);
+                // A Range used as the index is a slice operation
+                // (C# `arr[1..3]` / `s[0..5]`, Python `arr[1:3]` / `s[0:5]`).
+                // Route through compiler_common's polymorphic slice helper so
+                // strings and arrays both work uniformly.
+                if let ExprKind::Range { start, end, .. } = &index.kind {
+                    let line = self.line;
+                    common::collections::emit_slice_push_func(self.chunk(), line);
+                    self.compile_expr(object)?;
+                    self.compile_expr(start)?;
+                    self.compile_expr(end)?;
+                    common::collections::emit_slice_invoke(self.chunk(), line);
+                } else {
+                    self.compile_expr(object)?;
+                    self.compile_expr(index)?;
+                    self.emit(Op::array_get);
+                }
             }
 
             // ── New ─────────────────────────────────────────────────────
@@ -2399,10 +2437,13 @@ impl Compiler {
 
             // ── Type operations ─────────────────────────────────────────
             ExprKind::IsType { expr: inner, type_name } => {
+                // Compare against canonicalized class name (case-insensitive
+                // languages like VB/Pascal store class __type lowercased).
+                let canon_type = self.canon(type_name);
                 self.compile_expr(inner)?;
                 let key = self.str_const("__type");
                 self.emit_u16(Op::struct_get, key);
-                self.emit_const(Value::String(Arc::from(type_name.as_str())));
+                self.emit_const(Value::String(Arc::from(canon_type.as_str())));
                 self.emit(Op::dyn_eq);
             }
 
@@ -3849,6 +3890,133 @@ impl Compiler {
                 }
                 self.emit(Op::array_join);
             }
+
+            // ── Pascal ordinal/array intrinsics (canonical compiler_common ops) ──
+
+            "high" => {
+                // High(arr) → __len__(arr) - 1
+                self.compile_expr(args[0])?;
+                common::collections::emit_len(self.chunk(), line);
+                self.emit_const(Value::I32(1));
+                self.emit(Op::i32_sub);
+            }
+            "low" => {
+                // Low(arr) → 0 (always 0 for dynamic arrays in our VM)
+                self.emit(Op::i32_const_0);
+            }
+            "succ" => {
+                // Succ(x) → x + 1
+                self.compile_expr(args[0])?;
+                self.emit_const(Value::F64(1.0));
+                self.emit(Op::dyn_add);
+            }
+            "pred" => {
+                // Pred(x) → x - 1
+                self.compile_expr(args[0])?;
+                self.emit_const(Value::F64(1.0));
+                self.emit(Op::f64_sub);
+            }
+            "sqr" => {
+                // Sqr(x) → x * x (square, NOT square root)
+                self.compile_expr(args[0])?;
+                self.emit(Op::dup);
+                self.emit(Op::f64_mul);
+            }
+            "assigned" => {
+                // Assigned(x) → x is not null
+                self.compile_expr(args[0])?;
+                self.emit(Op::null);
+                self.emit(Op::dyn_ne);
+            }
+            "sizeof" => {
+                // SizeOf(x) → 4 (boxed value)
+                self.compile_expr(args[0])?;
+                self.emit(Op::drop);
+                self.emit_const(Value::I32(4));
+            }
+            "classname" => {
+                // ClassName(obj) → obj.__type
+                self.compile_expr(args[0])?;
+                let idx = self.str_const("__type");
+                self.emit_u16(Op::struct_get, idx);
+            }
+            "pos" => {
+                // Pos(substr, s) → IndexOf(s, substr) + 1 (Pascal 1-based)
+                if args.len() == 2 {
+                    self.compile_expr(args[1])?;
+                    self.compile_expr(args[0])?;
+                    common::strings::emit_index_of(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::i32_add);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "copy" => {
+                // Copy(s, start, len) → substring(s, start-1, start-1+len) — Pascal 1-based
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::i32_sub);
+                    if args.len() >= 3 {
+                        self.emit(Op::dup);
+                        self.compile_expr(args[2])?;
+                        common::convert::emit_to_int(self.chunk(), line);
+                        self.emit(Op::i32_add);
+                    } else {
+                        self.emit_const(Value::I32(0x7FFF_FFFF));
+                    }
+                    common::strings::emit_substring(self.chunk(), line);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "leftstr" => {
+                // LeftStr(s, n) → substring(s, 0, n)
+                if args.len() == 2 {
+                    self.compile_expr(args[0])?;
+                    self.emit(Op::i32_const_0);
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    common::strings::emit_substring(self.chunk(), line);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+            "str_concat" => {
+                // Concat(a, b, c, ...) → a + b + c + ... using compiler_common::strings
+                if args.is_empty() {
+                    self.emit_const(Value::String(Arc::from("")));
+                } else {
+                    self.compile_expr(args[0])?;
+                    for a in &args[1..] {
+                        self.compile_expr(a)?;
+                        common::strings::emit_str_concat(self.chunk(), line);
+                    }
+                }
+            }
+            "rightstr" => {
+                // RightStr(s, n) → substring(s, len(s)-n, len(s))
+                if args.len() == 2 {
+                    self.compile_expr(args[0])?;
+                    let s_slot = self.scope_mut().define("__rs_s");
+                    self.emit_u16(Op::local_set, s_slot); self.emit(Op::drop);
+                    self.emit_u16(Op::local_get, s_slot);
+                    self.emit_u16(Op::local_get, s_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit(Op::i32_sub);
+                    self.emit_u16(Op::local_get, s_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    common::strings::emit_substring(self.chunk(), line);
+                } else {
+                    self.emit(Op::null);
+                }
+            }
+
             _ => { self.emit(Op::null); }
         }
         Ok(())

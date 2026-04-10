@@ -89,11 +89,11 @@ copy          = { emit = "intrinsic:copy",                 min_args = 2, max_arg
 
 # ── String functions — host calls ───────────────────────────────────────────
 
-concat        = { emit = "host:vybe:string:concat",        min_args = 1, max_args = 255 }
+concat        = { emit = "intrinsic:str_concat",            min_args = 1, max_args = 255 }
 chr           = { emit = "host:vybe:string:chr",           min_args = 1, max_args = 1 }
 ord           = { emit = "host:vybe:string:charCodeAt",    min_args = 1, max_args = 1 }
 format        = { emit = "host:vybe:string:format",        min_args = 1, max_args = 255 }
-stringreplace = { emit = "opcode:str_replace",             min_args = 3, max_args = 4 }
+stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
 stringofchar  = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
 leftstr       = { emit = "intrinsic:leftstr",              min_args = 2, max_args = 2 }
 rightstr      = { emit = "intrinsic:rightstr",             min_args = 2, max_args = 2 }
@@ -132,7 +132,7 @@ typename      = { emit = "intrinsic:classname",            min_args = 1, max_arg
 
 setlength     = { emit = "host:vybe:array:newWithLength",  min_args = 2, max_args = 2 }
 append        = { emit = "host:vybe:array:push",           min_args = 2, max_args = 2 }
-sort          = { emit = "host:vybe:array:sort",           min_args = 1, max_args = 1 }
+sort          = { emit = "stdlib:sort_in_place",          min_args = 1, max_args = 1 }
 reverse       = { emit = "host:vybe:array:reverse",        min_args = 1, max_args = 1 }
 
 # ── Object lifecycle ─────────────────────────────────────────────────────────

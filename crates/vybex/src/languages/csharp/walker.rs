@@ -1337,6 +1337,14 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             walk_expr_kind(inner)
         }
 
+        // C# tuple literal: (1, "x", true) → canonical Tuple AST node
+        Rule::tuple_literal => {
+            let elems: Vec<Expression> = pair.into_inner()
+                .map(walk_expression)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ExprKind::Tuple(elems))
+        }
+
         other => Err(format!("Unexpected expression rule: {:?}", other)),
     }
 }
@@ -1508,12 +1516,32 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // Canonicalize C# property accessors: Length, Count → __len__
             expr = canonicalize_member_access(expr, &name);
         } else if chain_src.starts_with("[") {
-            // Index or range
-            let mut exprs: Vec<Pair<Rule>> = chain_inner.into_iter().collect();
-            if exprs.len() >= 1 {
-                let index = walk_expression(exprs.remove(0))?;
-                // Check for range (..)
-                // For now just plain indexing
+            // Index or range slice. The grammar is `[ expression (".." expression?)? ]`.
+            // If `..` is present in the source, build an Index over a Range so the
+            // compiler emits a slice via array_slice (standard WASM opcode).
+            let exprs: Vec<Pair<Rule>> = chain_inner.into_iter().collect();
+            let has_range = chain_src.contains("..");
+            if has_range {
+                let mut iter = exprs.into_iter();
+                let start = iter.next()
+                    .map(walk_expression)
+                    .transpose()?
+                    .unwrap_or_else(Expression::null);
+                let end = iter.next()
+                    .map(walk_expression)
+                    .transpose()?
+                    .unwrap_or_else(|| Expression::int(i32::MAX as i64));
+                let range = Expression::new(ExprKind::Range {
+                    start: Box::new(start),
+                    end: Box::new(end),
+                    inclusive: false,
+                });
+                expr = Expression::new(ExprKind::Index {
+                    object: Box::new(expr),
+                    index: Box::new(range),
+                });
+            } else if let Some(idx_pair) = exprs.into_iter().next() {
+                let index = walk_expression(idx_pair)?;
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr), index: Box::new(index),
                 });
@@ -1690,7 +1718,34 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
 // regular method calls and let the compiler dispatch via the class method binding.
 // Only true builtin property accessors like .Length, .Count (handled in
 // canonicalize_member_access) are normalized to canonical builtins.
+//
+// Static helper rewrites are different — `string.Join(sep, arr)` is C# surface
+// syntax for what other languages express as `arr.join(sep)`. We rewrite it to
+// the canonical instance-method form so the compiler dispatches it through the
+// shared value-method path with the correct `this` arg ordering.
 fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expression {
+    // Static method rewrites to canonical instance form
+    if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if let ExprKind::Ident(obj_name) = &object.kind {
+            // string.Join(sep, arr) → arr.join(sep)
+            if obj_name.eq_ignore_ascii_case("string")
+               && field.eq_ignore_ascii_case("Join")
+               && args.len() == 2
+            {
+                let sep = args[0].value.clone();
+                let arr = args[1].value.clone();
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(arr),
+                        field: "join".to_string(),
+                        null_safe: false,
+                    })),
+                    args: vec![Argument::positional(sep)],
+                    optional: false,
+                });
+            }
+        }
+    }
     Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,

@@ -410,7 +410,7 @@ removeat      = { emit = "host:vybe:array:removeAt",   min_args = 1, max_args = 
 insert        = { emit = "host:vybe:array:insert",     min_args = 2, max_args = 2 }
 clear         = { emit = "host:vybe:array:clear",      min_args = 0, max_args = 0 }
 count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
-sort          = { emit = "common:collections.sorted", min_args = 0, max_args = 0 }
+sort          = { emit = "stdlib:sort_in_place",       min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 toarray       = { emit = "host:vybe:array:clone",      min_args = 0, max_args = 0 }
 containskey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }

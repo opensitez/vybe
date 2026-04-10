@@ -58,12 +58,323 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
+    // Pascal allows method bodies to be implemented outside the class declaration
+    // (e.g. `constructor TFoo.Create(...) begin ... end;`). Merge those standalone
+    // FunctionDecls back into the matching ClassDecl so the compiler sees them as
+    // ordinary class members.
+    merge_separated_methods(&mut body);
+
+    // Now that class declarations are stable, rewrite `TFoo.Create(args)` (Pascal's
+    // constructor invocation syntax) into the canonical `New { class: TFoo, args }`
+    // AST so every language ends up with the same instantiation node.
+    let class_names: std::collections::HashSet<String> = body.iter().filter_map(|s| {
+        if let StmtKind::ClassDecl { name, .. } = &s.kind {
+            Some(name.to_lowercase())
+        } else { None }
+    }).collect();
+    for stmt in body.iter_mut() {
+        rewrite_constructor_calls_stmt(stmt, &class_names);
+    }
+
     Ok(Module {
         name,
         language: Lang::Pascal,
         body,
         imports,
     })
+}
+
+/// Walk a statement and rewrite `ClassName.Create(args)` into `New { class, args }`
+/// when `ClassName` matches a class declared in the same module.
+fn rewrite_constructor_calls_stmt(stmt: &mut Statement, classes: &std::collections::HashSet<String>) {
+    match &mut stmt.kind {
+        StmtKind::Expr(e) => rewrite_constructor_calls_expr(e, classes),
+        StmtKind::Block(stmts) => for s in stmts { rewrite_constructor_calls_stmt(s, classes); },
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations {
+                if let Some(e) = &mut d.init { rewrite_constructor_calls_expr(e, classes); }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } => for s in body { rewrite_constructor_calls_stmt(s, classes); },
+        StmtKind::ClassDecl { members, .. } => {
+            for m in members { rewrite_constructor_calls_member(m, classes); }
+        }
+        StmtKind::StructDecl { members, .. } | StmtKind::ModuleDecl { members, .. } => {
+            for m in members { rewrite_constructor_calls_member(m, classes); }
+        }
+        StmtKind::NamespaceDecl { body, .. } => for s in body { rewrite_constructor_calls_stmt(s, classes); },
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_constructor_calls_expr(cond, classes);
+            for s in then_body { rewrite_constructor_calls_stmt(s, classes); }
+            for (c, b) in elifs {
+                rewrite_constructor_calls_expr(c, classes);
+                for s in b { rewrite_constructor_calls_stmt(s, classes); }
+            }
+            if let Some(b) = else_body { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(i) = init { rewrite_constructor_calls_stmt(i, classes); }
+            if let Some(c) = cond { rewrite_constructor_calls_expr(c, classes); }
+            if let Some(u) = update { rewrite_constructor_calls_expr(u, classes); }
+            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_constructor_calls_expr(iter, classes);
+            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+            if let Some(b) = else_body { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_constructor_calls_expr(cond, classes);
+            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+            if let Some(b) = else_body { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+            rewrite_constructor_calls_expr(cond, classes);
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            rewrite_constructor_calls_expr(expr, classes);
+            for c in cases { for s in &mut c.body { rewrite_constructor_calls_stmt(s, classes); } }
+            if let Some(b) = default { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+            for c in catches { for s in &mut c.body { rewrite_constructor_calls_stmt(s, classes); } }
+            if let Some(b) = else_body { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+            if let Some(b) = finally { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+        }
+        StmtKind::With { items, body, .. } => {
+            for it in items { rewrite_constructor_calls_expr(&mut it.expr, classes); }
+            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+        }
+        StmtKind::Return(Some(e)) => rewrite_constructor_calls_expr(e, classes),
+        StmtKind::Throw { expr: Some(e), .. } => rewrite_constructor_calls_expr(e, classes),
+        StmtKind::Assign { targets, value } => {
+            for t in targets { rewrite_constructor_calls_expr(t, classes); }
+            rewrite_constructor_calls_expr(value, classes);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_constructor_calls_expr(target, classes);
+            rewrite_constructor_calls_expr(value, classes);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_constructor_calls_member(m: &mut ClassMember, classes: &std::collections::HashSet<String>) {
+    match m {
+        ClassMember::Field { init: Some(e), .. } => rewrite_constructor_calls_expr(e, classes),
+        ClassMember::Method(stmt) => rewrite_constructor_calls_stmt(stmt, classes),
+        ClassMember::Constructor { body, .. } => {
+            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(g) = getter { for s in g { rewrite_constructor_calls_stmt(s, classes); } }
+            if let Some(set) = setter { for s in &mut set.body { rewrite_constructor_calls_stmt(s, classes); } }
+        }
+        ClassMember::Const { value, .. } => rewrite_constructor_calls_expr(value, classes),
+        ClassMember::NestedType(stmt) => rewrite_constructor_calls_stmt(stmt, classes),
+        _ => {}
+    }
+}
+
+fn rewrite_constructor_calls_expr(expr: &mut Expression, classes: &std::collections::HashSet<String>) {
+    // Check Call(Member(ClassName, "Create"), args) BEFORE descending so the
+    // Member-only rewrite below doesn't fire on the callee position first and
+    // turn `TFoo.Create(42)` into a call on a New expression.
+    if let ExprKind::Call { callee, args, .. } = &expr.kind {
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if let ExprKind::Ident(class_name) = &object.kind {
+                if classes.contains(&class_name.to_lowercase())
+                   && field.eq_ignore_ascii_case("Create")
+                {
+                    let new_class = Box::new(Expression::ident(class_name));
+                    let mut new_args = args.clone();
+                    for a in new_args.iter_mut() { rewrite_constructor_calls_expr(&mut a.value, classes); }
+                    expr.kind = ExprKind::New { class: new_class, args: new_args };
+                    return;
+                }
+            }
+        }
+    }
+
+    // First descend into children, then check this node so deeply-nested
+    // patterns are also normalized.
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_constructor_calls_expr(left, classes);
+            rewrite_constructor_calls_expr(right, classes);
+        }
+        ExprKind::Unary { expr: e, .. } => rewrite_constructor_calls_expr(e, classes),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_constructor_calls_expr(cond, classes);
+            rewrite_constructor_calls_expr(then, classes);
+            rewrite_constructor_calls_expr(else_, classes);
+        }
+        ExprKind::Member { object, .. } => rewrite_constructor_calls_expr(object, classes),
+        ExprKind::Index { object, index } => {
+            rewrite_constructor_calls_expr(object, classes);
+            rewrite_constructor_calls_expr(index, classes);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_constructor_calls_expr(callee, classes);
+            for a in args.iter_mut() { rewrite_constructor_calls_expr(&mut a.value, classes); }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_constructor_calls_expr(class, classes);
+            for a in args.iter_mut() { rewrite_constructor_calls_expr(&mut a.value, classes); }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_constructor_calls_expr(target, classes);
+            rewrite_constructor_calls_expr(value, classes);
+        }
+        ExprKind::Array(elems) => for el in elems {
+            rewrite_constructor_calls_expr(&mut el.value, classes);
+        },
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for e in items { rewrite_constructor_calls_expr(e, classes); }
+        }
+        ExprKind::Object(props) => {
+            for p in props {
+                if let ObjectProperty::KeyValue { value, .. } = p {
+                    rewrite_constructor_calls_expr(value, classes);
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for p in parts {
+                match p {
+                    InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => rewrite_constructor_calls_expr(e, classes),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_constructor_calls_expr(left, classes);
+            rewrite_constructor_calls_expr(right, classes);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_constructor_calls_expr(start, classes);
+            rewrite_constructor_calls_expr(end, classes);
+        }
+        ExprKind::IsType { expr: e, .. } | ExprKind::Cast { expr: e, .. } => rewrite_constructor_calls_expr(e, classes),
+        _ => {}
+    }
+
+    // Pascal allows zero-arg constructor calls without parens: `f := TFoo.Create;`
+    // Detect bare `ClassName.Create` member access on a known class and rewrite
+    // it to a zero-arg `New { class, [] }`.
+    if let ExprKind::Member { object, field, .. } = &expr.kind {
+        if let ExprKind::Ident(class_name) = &object.kind {
+            if classes.contains(&class_name.to_lowercase())
+               && field.eq_ignore_ascii_case("Create")
+            {
+                expr.kind = ExprKind::New {
+                    class: Box::new(Expression::ident(class_name)),
+                    args: Vec::new(),
+                };
+            }
+        }
+    }
+}
+
+/// Pascal post-processing: attach `ClassName.Method` standalone FunctionDecls
+/// to their matching ClassDecl members. The constructor (`ClassName.Create`)
+/// fills in `ClassMember::Constructor`. Other methods fill the body of the
+/// matching `ClassMember::Method`.
+fn merge_separated_methods(body: &mut Vec<Statement>) {
+    use std::collections::HashMap;
+
+    // Collect class indices by canonicalized (lowercase) name
+    let mut class_idx: HashMap<String, usize> = HashMap::new();
+    for (i, s) in body.iter().enumerate() {
+        if let StmtKind::ClassDecl { name, .. } = &s.kind {
+            class_idx.insert(name.to_lowercase(), i);
+        }
+    }
+
+    // Walk in reverse so removals don't shift earlier indices
+    let mut to_remove: Vec<usize> = Vec::new();
+    for i in 0..body.len() {
+        let (class_name, method_name, params, ret, mods, body_stmts, is_sub) = {
+            let stmt = &body[i];
+            let StmtKind::FunctionDecl { name, params, return_type, body: b, modifiers, is_sub, .. } = &stmt.kind else { continue };
+            let Some((cls, mth)) = name.split_once('.') else { continue };
+            (cls.to_string(), mth.to_string(), params.clone(), return_type.clone(), modifiers.clone(), b.clone(), *is_sub)
+        };
+
+        let Some(&ci) = class_idx.get(&class_name.to_lowercase()) else { continue };
+        let StmtKind::ClassDecl { members, .. } = &mut body[ci].kind else { continue };
+
+        // Try constructor first: any ClassMember::Constructor whose params arity matches,
+        // when the method name is "Create" (Pascal convention) — fall back to first ctor.
+        let is_create = method_name.eq_ignore_ascii_case("Create");
+        let mut attached = false;
+        if is_create {
+            for m in members.iter_mut() {
+                if let ClassMember::Constructor { params: cp, body: cb, base_args: ba, .. } = m {
+                    if cb.is_empty() {
+                        *cp = params.clone();
+                        let mut new_body = body_stmts.clone();
+                        // Pascal pattern: `inherited Create(args)` as the FIRST statement
+                        // is the base-constructor invocation. Lift it into `base_args`
+                        // so the compiler runs the canonical C#-style path
+                        // (parent ctor → field inits → method bindings → body).
+                        // This keeps the AST uniform across languages.
+                        if let Some(first) = new_body.first() {
+                            let extracted = match &first.kind {
+                                StmtKind::Expr(e) => match &e.kind {
+                                    ExprKind::SuperCall { method, args } => {
+                                        let is_ctor = method.is_none()
+                                            || method.as_ref().map_or(false, |m| m.eq_ignore_ascii_case("Create"));
+                                        if is_ctor {
+                                            Some(args.iter().map(|a| a.value.clone()).collect::<Vec<_>>())
+                                        } else { None }
+                                    }
+                                    _ => None,
+                                },
+                                _ => None,
+                            };
+                            if let Some(extracted_args) = extracted {
+                                *ba = Some(extracted_args);
+                                new_body.remove(0);
+                            }
+                        }
+                        *cb = new_body;
+                        attached = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !attached {
+            // Find a Method with matching name and empty body
+            for m in members.iter_mut() {
+                if let ClassMember::Method(stmt) = m {
+                    if let StmtKind::FunctionDecl { name: mn, params: mp, body: mb, return_type: mr, modifiers: mm, is_sub: ms, .. } = &mut stmt.kind {
+                        if mn.eq_ignore_ascii_case(&method_name) && mb.is_empty() {
+                            *mp = params.clone();
+                            *mb = body_stmts.clone();
+                            *mr = ret.clone();
+                            *mm = mods.clone();
+                            *ms = is_sub;
+                            attached = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if attached {
+            to_remove.push(i);
+        }
+    }
+
+    for i in to_remove.into_iter().rev() {
+        body.remove(i);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1683,6 +1994,39 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if parts.len() == 1 {
         // Pure expression used as statement (procedure call, etc.)
         let expr = walk_expression(parts.into_iter().next().unwrap())?;
+
+        // Pascal `FreeAndNil(x)` is sugar for `x := nil` — we have GC, so the
+        // free is a no-op but the variable still needs to be cleared so that
+        // `Assigned(x)` returns false afterwards. Rewrite at the walker.
+        if let ExprKind::Call { callee, args, .. } = &expr.kind {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name.eq_ignore_ascii_case("FreeAndNil") && args.len() == 1 {
+                    return Ok(StmtKind::Assign {
+                        targets: vec![args[0].value.clone()],
+                        value: Expression::null(),
+                    });
+                }
+            }
+        }
+
+        // Pascal allows zero-arg procedure calls without parens: `Hello;` means
+        // `Hello();`. At statement level, a bare identifier or member access
+        // that isn't already a Call is implicitly a zero-arg invocation.
+        let expr = match expr.kind {
+            ExprKind::Call { .. }
+            | ExprKind::New { .. }
+            | ExprKind::Assign { .. }
+            | ExprKind::Lit(_) => expr,
+            ExprKind::Ident(_) | ExprKind::Member { .. } => Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(expr.clone()),
+                    args: Vec::new(),
+                    optional: false,
+                },
+                expr.span,
+            ),
+            _ => expr,
+        };
         return Ok(StmtKind::Expr(expr));
     }
 
@@ -1824,29 +2168,25 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
 
         Rule::unary => {
+            // Pest does not include literal token matches (like "-", "@") as inner
+            // pairs — they're consumed silently. Inspect the source text to decide
+            // whether this unary node carries a prefix operator.
+            let src = pair.as_str().trim_start();
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
-            if inner.len() == 1 {
-                let first = inner.remove(0);
-                if first.as_rule() == Rule::postfix {
-                    return walk_expr_kind(first);
-                }
-                return walk_expr_kind(first);
-            }
-            // Operator + operand: the grammar is  "-" ~ unary | "not" ~ unary | "@" ~ unary | postfix
-            // Since postfix is the last alternative and has no prefix, if we get 2 items
-            // the first is the operator text and second is the operand.
-            let op_str = inner[0].as_str().trim().to_lowercase();
-            // The operand is the last item
-            let operand = walk_expression(inner.pop().unwrap())?;
+            // Always exactly one inner pair: either the inner `unary` (when there's
+            // a prefix) or the `postfix` (no prefix).
+            let operand_pair = inner.pop().ok_or("Empty unary")?;
+            let operand = walk_expression(operand_pair)?;
 
-            if op_str == "-" {
+            if src.starts_with('-') {
                 Ok(ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(operand) })
-            } else if op_str.starts_with("not") {
+            } else if src.len() >= 3 && src[..3].eq_ignore_ascii_case("not")
+                && !src.chars().nth(3).map_or(false, |c| c.is_alphanumeric() || c == '_')
+            {
                 Ok(ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(operand) })
-            } else if op_str == "@" {
+            } else if src.starts_with('@') {
                 Ok(ExprKind::Unary { op: UnaryOp::AddrOf, expr: Box::new(operand) })
             } else {
-                // Fallback: treat as the operand itself
                 Ok(operand.kind)
             }
         }

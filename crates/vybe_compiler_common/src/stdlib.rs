@@ -34,6 +34,9 @@ pub fn build_stdlib() -> StdLib {
     chunks.push(build_sorted());
     exports.push("__stdlib_sorted");
 
+    chunks.push(build_sort_in_place());
+    exports.push("__stdlib_sort_in_place");
+
     chunks.push(build_reversed());
     exports.push("__stdlib_reversed");
 
@@ -271,6 +274,116 @@ fn build_sorted() -> Chunk {
     c.patch_jump(outer_exit);
 
     c.emit_op_u16(Op::local_get, result, 0);
+    c.emit_op(Op::r#return, 0);
+    c
+}
+
+// ── sort_in_place(array) → same array, mutated ──────────────
+// In-place insertion sort. Used by every language whose surface syntax for
+// sorting is in-place: C# `list.Sort()`, VB `list.Sort()`, JS `arr.sort()`,
+// Python `list.sort()`, Pascal `Sort(arr)`. The walker normalizes each form
+// into a canonical builtin call which routes here through compiler_common.
+//
+// Insertion sort is O(n²) but small and works on arbitrary value comparisons
+// via dyn_gt. Higher-perf algorithms can be added behind the same name later.
+fn build_sort_in_place() -> Chunk {
+    let mut c = Chunk::new("__stdlib_sort_in_place");
+    c.arity = 1;
+    c.local_count = 6; // callee(0) + arr(1) + i(2) + j(3) + len(4) + key(5)
+    let arr = 1u16;
+    let i = 2;
+    let j = 3;
+    let len = 4;
+    let key = 5;
+
+    // len = arr.length
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op(Op::array_length, 0);
+    c.emit_op_u16(Op::local_set, len, 0);
+    c.emit_op(Op::drop, 0);
+
+    // i = 1
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op_u16(Op::local_set, i, 0);
+    c.emit_op(Op::drop, 0);
+
+    let outer_loop = c.current_offset();
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op_u16(Op::local_get, len, 0);
+    c.emit_op(Op::dyn_lt, 0);
+    let outer_exit = c.emit_jump(Op::br_if_false, 0);
+
+    // key = arr[i]
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op_u16(Op::local_set, key, 0);
+    c.emit_op(Op::drop, 0);
+
+    // j = i - 1
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_sub, 0);
+    c.emit_op_u16(Op::local_set, j, 0);
+    c.emit_op(Op::drop, 0);
+
+    // while j >= 0 && arr[j] > key
+    let inner_loop = c.current_offset();
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_0, 0);
+    c.emit_op(Op::dyn_ge, 0);
+    let inner_exit = c.emit_jump(Op::br_if_false, 0);
+
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op_u16(Op::local_get, key, 0);
+    c.emit_op(Op::dyn_gt, 0);
+    let inner_exit2 = c.emit_jump(Op::br_if_false, 0);
+
+    // arr[j+1] = arr[j]
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op(Op::array_set, 0);
+    c.emit_op(Op::drop, 0);
+
+    // j -= 1
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_sub, 0);
+    c.emit_op_u16(Op::local_set, j, 0);
+    c.emit_op(Op::drop, 0);
+
+    c.emit_loop(inner_loop, 0);
+    c.patch_jump(inner_exit);
+    c.patch_jump(inner_exit2);
+
+    // arr[j+1] = key
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_get, key, 0);
+    c.emit_op(Op::array_set, 0);
+    c.emit_op(Op::drop, 0);
+
+    // i += 1
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_set, i, 0);
+    c.emit_op(Op::drop, 0);
+
+    c.emit_loop(outer_loop, 0);
+    c.patch_jump(outer_exit);
+
+    // return arr (same reference, now sorted in place)
+    c.emit_op_u16(Op::local_get, arr, 0);
     c.emit_op(Op::r#return, 0);
     c
 }
@@ -819,12 +932,37 @@ fn build_floor() -> Chunk {
 
 // ── slice(arr, start, end) → array — wraps array_slice opcode
 fn build_slice() -> Chunk {
+    // Polymorphic slice: handles BOTH strings and arrays. The walker doesn't
+    // know whether `obj[1..3]` operates on a string or an array, so the
+    // canonical slice helper does a runtime type check via `ref_is_string`
+    // and dispatches to `str_substring` or `array_slice` accordingly.
+    //
+    // Used by every language whose surface syntax for slicing is `[start..end]`:
+    // C# `arr[1..3]` / `s[0..5]`, Python `arr[1:3]` / `s[0:5]`, etc.
     let mut c = Chunk::new("__stdlib_slice");
     c.arity = 3;
-    c.local_count = 4;
-    c.emit_op_u16(Op::local_get, 1, 0); // arr
-    c.emit_op_u16(Op::local_get, 2, 0); // start
-    c.emit_op_u16(Op::local_get, 3, 0); // end
+    c.local_count = 4; // callee + obj + start + end
+    let obj = 1u16;
+    let start = 2u16;
+    let end = 3u16;
+
+    // if ref_is_string(obj) → str_substring; else → array_slice
+    c.emit_op_u16(Op::local_get, obj, 0);
+    c.emit_op(Op::ref_is_string, 0);
+    let to_array = c.emit_jump(Op::br_if_false, 0);
+
+    // String branch: [obj, start, end] → str_substring
+    c.emit_op_u16(Op::local_get, obj, 0);
+    c.emit_op_u16(Op::local_get, start, 0);
+    c.emit_op_u16(Op::local_get, end, 0);
+    c.emit_op(Op::str_substring, 0);
+    c.emit_op(Op::r#return, 0);
+
+    // Array branch
+    c.patch_jump(to_array);
+    c.emit_op_u16(Op::local_get, obj, 0);
+    c.emit_op_u16(Op::local_get, start, 0);
+    c.emit_op_u16(Op::local_get, end, 0);
     c.emit_op(Op::array_slice, 0);
     c.emit_op(Op::r#return, 0);
     c

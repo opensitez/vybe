@@ -170,7 +170,8 @@ Add           = [
 ]
 Clear         = { emit = "host:vybe:array:clear",      min_args = 0, max_args = 0 }
 Reverse       = { emit = "opcode:array_reverse",       min_args = 0, max_args = 0 }
-Sort          = { emit = "stdlib:sorted",             min_args = 0, max_args = 0 }
+Sort          = { emit = "stdlib:sort_in_place",       min_args = 0, max_args = 0 }
+join          = { emit = "common:collections.join",    min_args = 1, max_args = 1 }
 Count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
 ToArray       = { emit = "noop",                       min_args = 0, max_args = 0 }
 ToList        = { emit = "noop",                       min_args = 0, max_args = 0 }

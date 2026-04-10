@@ -246,6 +246,15 @@ pub fn emit_reduce(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, acc_slot: u16
 /// `is_any=true` for any(), `is_any=false` for every().
 /// Stack after: [bool]
 pub fn emit_any_every(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: u16, is_any: bool, line: u32) {
+    // Implements: arr.any(fn) / arr.every(fn) as INLINE bytecode that leaves
+    // a single bool on the stack — must NOT use Op::return because that
+    // aborts the enclosing user function.
+    //
+    // Pattern:
+    //   for elem in arr:
+    //     if fn(elem) (any) → push true, jump to end
+    //     if !fn(elem) (every) → push false, jump to end
+    //   (loop fell through with no match) → push false (any) or true (every)
     let (loop_start, exit_jump) = emit_for_in_start(chunk, arr_slot, idx_slot, line);
 
     // Drop element from for_in_start, call fn(arr[i]) directly
@@ -258,22 +267,27 @@ pub fn emit_any_every(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: 
     chunk.emit_op_u8(Op::call_ref, 1, line);
     chunk.emit_op(Op::dyn_to_bool, line);
 
+    // Patches that jump to the "found a match — leave result on stack" arm.
+    let mut early_exit_patches: Vec<usize> = Vec::new();
     if is_any {
-        // any: if true → return true early
-        let skip = chunk.emit_jump(Op::br_if_false, line);
+        // any: if true → break out with `true`
+        let no_match = chunk.emit_jump(Op::br_if_false, line);
         chunk.emit_op(Op::r#true, line);
-        chunk.emit_op(Op::r#return, line);
-        chunk.patch_jump(skip);
+        early_exit_patches.push(chunk.emit_jump(Op::br, line));
+        chunk.patch_jump(no_match);
     } else {
-        // every: if false → return false early
-        let skip = chunk.emit_jump(Op::br_if_true, line);
+        // every: if false → break out with `false`
+        let still_ok = chunk.emit_jump(Op::br_if_true, line);
         chunk.emit_op(Op::r#false, line);
-        chunk.emit_op(Op::r#return, line);
-        chunk.patch_jump(skip);
+        early_exit_patches.push(chunk.emit_jump(Op::br, line));
+        chunk.patch_jump(still_ok);
     }
 
     emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
 
-    // No early return → any=false, every=true
+    // Loop completed with no early exit → any=false, every=true
     if is_any { chunk.emit_op(Op::r#false, line); } else { chunk.emit_op(Op::r#true, line); }
+
+    // Land here from the early-exit branch with the result already on the stack.
+    for p in early_exit_patches { chunk.patch_jump(p); }
 }

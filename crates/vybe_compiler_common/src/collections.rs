@@ -43,9 +43,27 @@ pub fn emit_set(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::array_set, line);
 }
 
-/// Array slice. Stack: [array, start, end] → [array]
+/// Raw array slice opcode. Stack: [array, start, end] → [array]
+/// Only handles arrays. For polymorphic slicing (string OR array), prefer
+/// `emit_slice_push_func` + args + `emit_slice_invoke`, which routes through
+/// the stdlib `__vybe_slice` chunk that runtime-dispatches on the value type.
 pub fn emit_slice(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::array_slice, line);
+}
+
+/// Push the __vybe_slice func ref. Use BEFORE compiling the object/start/end.
+/// Pure WASM — bundle wires `__vybe_slice` to `build_slice` stdlib chunk,
+/// which dispatches at runtime to either `str_substring` or `array_slice`
+/// depending on the operand type. Works uniformly across every language whose
+/// surface syntax is `obj[start..end]`.
+pub fn emit_slice_push_func(chunk: &mut Chunk, line: u32) {
+    let name = chunk.add_constant(Value::String(Arc::from("__vybe_slice")));
+    chunk.emit_op_u16(Op::global_get, name, line);
+}
+
+/// Invoke __vybe_slice after [func, obj, start, end] are on the stack.
+pub fn emit_slice_invoke(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op_u8(Op::call_ref, 3, line);
 }
 
 /// Array join. Stack: [array, delimiter] → [string]
@@ -178,6 +196,21 @@ pub fn emit_sorted_push_func(chunk: &mut Chunk, line: u32) {
 
 /// Invoke __vybe_sorted after func ref + array are on stack.
 pub fn emit_sorted_invoke(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op_u8(Op::call_ref, 1, line);
+}
+
+/// Push the __vybe_sort_in_place func ref. Use BEFORE compiling the array.
+/// Pure WASM — no host import. Bundle wires __vybe_sort_in_place to the
+/// `build_sort_in_place` stdlib chunk. At runtime, Vybe VM may overwrite
+/// the global with an optimized native sort (polyfill pattern).
+pub fn emit_sort_in_place_push_func(chunk: &mut Chunk, line: u32) {
+    let name = chunk.add_constant(Value::String(Arc::from("__vybe_sort_in_place")));
+    chunk.emit_op_u16(Op::global_get, name, line);
+}
+
+/// Invoke __vybe_sort_in_place after func ref + array are on stack.
+/// Stack: [func, array] → [array] (same reference, mutated in place).
+pub fn emit_sort_in_place_invoke(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u8(Op::call_ref, 1, line);
 }
 
