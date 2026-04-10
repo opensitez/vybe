@@ -121,6 +121,28 @@ fn try_parse_declaration(pair: Pair<Rule>) -> Result<Option<Statement>, String> 
     }
 }
 
+/// Canonicalize VB property access to unified AST representation.
+/// VB is case-insensitive: `arr.Length`, `arr.length`, `list.Count` → `Call(__len__, [obj])`
+fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
+    let canonical = match name.to_lowercase().as_str() {
+        "length" | "count" => Some("__len__"),
+        _ => None,
+    };
+    if let Some(canonical_name) = canonical {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(canonical_name)),
+            args: vec![Argument::positional(object)],
+            optional: false,
+        })
+    } else {
+        Expression::new(ExprKind::Member {
+            object: Box::new(object),
+            field: name.to_string(),
+            null_safe: false,
+        })
+    }
+}
+
 fn parse_dim_variable(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
     let inner = pair.into_inner();
     let mut name = String::new();
@@ -1645,11 +1667,8 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             let mut expr = Expression::with_span(ExprKind::Ident(first.as_str().to_string()), to_span(&first));
 
             for p in inner {
-                expr = Expression::new(ExprKind::Member {
-                    object: Box::new(expr),
-                    field: p.as_str().to_string(),
-                    null_safe: false,
-                });
+                let field_name = p.as_str().to_string();
+                expr = canonicalize_member_access(expr, &field_name);
             }
 
             return Ok(expr);

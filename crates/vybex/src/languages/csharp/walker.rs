@@ -1494,22 +1494,19 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 object: Box::new(expr), field: name, null_safe: true,
             });
         } else if chain_src.starts_with("(") {
-            // Call
+            // Call — normalize known method calls to canonical builtins
             let args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
                 walk_arguments(arg_pair)?
             } else { Vec::new() };
-            expr = Expression::new(ExprKind::Call {
-                callee: Box::new(expr), args, optional: false,
-            });
+            expr = canonicalize_method_call(expr, args);
         } else if chain_src.starts_with(".") {
-            // Member access
+            // Member access — normalize known property accessors to canonical builtins
             let name = chain_inner.into_iter()
                 .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name)
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
-            expr = Expression::new(ExprKind::Member {
-                object: Box::new(expr), field: name, null_safe: false,
-            });
+            // Canonicalize C# property accessors: Length, Count → __len__
+            expr = canonicalize_member_access(expr, &name);
         } else if chain_src.starts_with("[") {
             // Index or range
             let mut exprs: Vec<Pair<Rule>> = chain_inner.into_iter().collect();
@@ -1660,6 +1657,45 @@ fn unquote(s: &str) -> String {
     inner.replace("\\\"", "\"").replace("\\\\", "\\")
         .replace("\\n", "\n").replace("\\t", "\t")
         .replace("\\r", "\r").replace("\\0", "\0")
+}
+
+/// Canonicalize C# property/member access to unified AST representation.
+/// Normalizes language-specific names to canonical builtin calls so the compiler
+/// dispatches uniformly across all languages.
+///
+/// `arr.Length` → `Call(__len__, [arr])`
+/// `list.Count` → `Call(__len__, [list])`
+fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
+    let canonical = match name {
+        "Length" | "Count" => Some("__len__"),
+        _ => None,
+    };
+    if let Some(canonical_name) = canonical {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(canonical_name)),
+            args: vec![Argument::positional(object)],
+            optional: false,
+        })
+    } else {
+        Expression::new(ExprKind::Member {
+            object: Box::new(object),
+            field: name.to_string(),
+            null_safe: false,
+        })
+    }
+}
+
+// C# method call canonicalization is intentionally minimal:
+// Methods like .ToString() may be overridden on user classes, so we leave them as
+// regular method calls and let the compiler dispatch via the class method binding.
+// Only true builtin property accessors like .Length, .Count (handled in
+// canonicalize_member_access) are normalized to canonical builtins.
+fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(callee),
+        args,
+        optional: false,
+    })
 }
 
 /// Parse interpolated string parts from the raw content between $" and "

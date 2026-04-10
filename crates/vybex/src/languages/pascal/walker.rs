@@ -1987,6 +1987,19 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
             }
         }
 
+        // Canonicalize property-style access for builtins (e.g. arr.Length →
+        // __len__(arr)) so the compiler dispatches via compiler_common::canonical.
+        // Only when there are no parens — `obj.Length(...)` is a real method call.
+        if arg_list.is_none() {
+            if let Some(canonical) = canonicalize_pascal_member(&ident) {
+                return Ok(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(canonical)),
+                    args: vec![Argument::positional(expr)],
+                    optional: false,
+                }));
+            }
+        }
+
         let member = Expression::new(ExprKind::Member {
             object: Box::new(expr),
             field: ident,
@@ -2026,6 +2039,19 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
             .transpose()?
             .unwrap_or_default();
 
+        // Canonicalize Pascal's function-style builtins to canonical names so the
+        // compiler can dispatch them via compiler_common::canonical regardless of
+        // source language. Pascal is case-insensitive.
+        if let ExprKind::Ident(name) = &expr.kind {
+            if let Some(canonical) = canonicalize_pascal_builtin(name, args.len()) {
+                return Ok(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(canonical)),
+                    args,
+                    optional: false,
+                }));
+            }
+        }
+
         // Check if the callee is an identifier that looks like a type cast
         // (e.g. Integer(x), String(x)) — the grammar handles builtin type casts via
         // type_cast_builtin, but identifier-based type casts (e.g. TMyType(x))
@@ -2039,6 +2065,26 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
 
     // Fallback
     Ok(expr)
+}
+
+// ── Canonical builtin normalization ────────────────────────────────────────
+
+/// Normalize Pascal's function-style builtins to canonical names so the compiler
+/// can dispatch them through `compiler_common::canonical`. This keeps language
+/// surface syntax in the walker; the compiler stays language-agnostic.
+fn canonicalize_pascal_builtin(name: &str, argc: usize) -> Option<&'static str> {
+    match (name.to_lowercase().as_str(), argc) {
+        ("length", 1) => Some("__len__"),
+        _ => None,
+    }
+}
+
+/// Pascal property-style member access canonicalization (case-insensitive).
+fn canonicalize_pascal_member(name: &str) -> Option<&'static str> {
+    match name.to_lowercase().as_str() {
+        "length" | "count" => Some("__len__"),
+        _ => None,
+    }
 }
 
 // ── Argument list ──────────────────────────────────────────────────────────

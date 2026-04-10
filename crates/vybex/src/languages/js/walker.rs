@@ -1155,14 +1155,12 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 callee: Box::new(expr), args, optional: false,
             });
         } else if chain_src.starts_with(".") {
-            // Member access
+            // Member access — normalize JS .length to canonical __len__
             let name = chain_inner.into_iter()
                 .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name)
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
-            expr = Expression::new(ExprKind::Member {
-                object: Box::new(expr), field: name, null_safe: false,
-            });
+            expr = canonicalize_member_access(expr, &name);
         } else if chain_src.starts_with("[") {
             // Computed / index
             let index_expr = chain_inner.into_iter()
@@ -1178,6 +1176,36 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
     Ok(expr.kind)
 }
+
+/// Canonicalize JS property access to unified AST representation.
+/// `arr.length` → `Call(__len__, [arr])`
+///
+/// Note: only `.length` is normalized — `.size` is too generic in JS (could be a custom property).
+fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
+    let canonical = match name {
+        "length" => Some("__len__"),
+        _ => None,
+    };
+    if let Some(canonical_name) = canonical {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(canonical_name)),
+            args: vec![Argument::positional(object)],
+            optional: false,
+        })
+    } else {
+        Expression::new(ExprKind::Member {
+            object: Box::new(object),
+            field: name.to_string(),
+            null_safe: false,
+        })
+    }
+}
+
+// JS method call canonicalization is intentionally minimal:
+// Methods like .toString() may be overridden on user classes, so we leave them as
+// regular method calls and let the compiler dispatch via the class method binding.
+// Only true builtin operations like .length (handled in canonicalize_member_access)
+// are normalized to canonical builtins.
 
 fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
     pair.into_inner()

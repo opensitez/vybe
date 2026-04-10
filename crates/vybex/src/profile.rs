@@ -230,6 +230,7 @@ impl LanguageProfile {
         self.value_methods.contains_key(&key)
     }
 
+
     /// Look up a module alias (JS: console → wasi:cli, Math → vybe:math).
     pub fn lookup_module_alias(&self, name: &str) -> Option<&str> {
         self.module_aliases.get(name).map(|s| s.as_str())

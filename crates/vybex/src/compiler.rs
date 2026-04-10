@@ -2378,13 +2378,16 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from("")));
                     return Ok(());
                 }
+                // Use stdlib __vybe_tostring (pure WASM, populated by bundle::finalize_with_stdlib)
+                let tostring_global = self.str_const("__vybe_tostring");
                 for (i, part) in parts.iter().enumerate() {
                     match part {
                         InterpolPart::Text(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
                         InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
+                            // Push func ref FIRST, then the value, then call_ref
+                            self.emit_u16(Op::global_get, tostring_global);
                             self.compile_expr(e)?;
-                            let line = self.line;
-                            common::strings::emit_to_string(self.chunk(), line);
+                            self.emit_u8(Op::call_ref, 1);
                         }
                     }
                     if i > 0 {
@@ -3390,6 +3393,29 @@ impl Compiler {
 
     fn try_compile_builtin(&mut self, name: &str, args: &[&Expression]) -> Result<bool, String> {
         let line = self.line;
+
+        // Canonical builtins — language-agnostic dispatch via compiler_common::canonical.
+        // Walkers normalize language-specific syntax (arr.Length, len(arr), Length(arr),
+        // arr.size, etc.) to canonical dunder names (__len__, __str__, etc.).
+        // The compiler doesn't know about language-specific names — it just looks up
+        // the canonical name in compiler_common's registry.
+        if let Some(canonical_op) = common::canonical::CanonicalOp::from_name(name) {
+            // Special case: __str__ uses stdlib via global, not host import
+            if matches!(canonical_op, common::canonical::CanonicalOp::Str) {
+                if let Some(arg) = args.first() {
+                    let tostring_global = self.str_const("__vybe_tostring");
+                    self.emit_u16(Op::global_get, tostring_global);
+                    self.compile_expr(arg)?;
+                    self.emit_u8(Op::call_ref, 1);
+                    return Ok(true);
+                }
+            } else {
+                // Compile args, then dispatch to canonical emitter
+                for a in args { self.compile_expr(a)?; }
+                common::canonical::emit_canonical(canonical_op, self.chunk(), line);
+                return Ok(true);
+            }
+        }
 
         // Check common import table first
         if let Some((module, func)) = common::imports::resolve_common_import(name) {

@@ -1,0 +1,93 @@
+//! Canonical builtin operations — the language-agnostic API surface.
+//!
+//! Walkers normalize language-specific syntax to these canonical names.
+//! The compiler looks up canonical names in this module to get the bytecode emitter.
+//!
+//! ## Naming convention (Python-style dunders)
+//!
+//! - `__len__`      — length/size of collection or string
+//! - `__str__`      — string representation
+//! - `__upper__`    — uppercase string
+//! - `__lower__`    — lowercase string
+//! - `__trim__`     — trim whitespace
+//! - `__contains__` — membership test
+//!
+//! ## Why dunders?
+//!
+//! Python pioneered this convention. Using consistent canonical names across all languages
+//! makes cross-language interop trivial: a method bound under `__len__` is callable from
+//! any language regardless of its surface syntax (Python `len()`, JS `.length`, C# `.Length`,
+//! VB `Length()`, Pascal `Length()`, Ruby `.size`).
+//!
+//! ## Adding a new canonical builtin
+//!
+//! 1. Add the canonical name to the [`CanonicalOp`] enum below
+//! 2. Add the dispatch arm to [`emit_canonical`]
+//! 3. Update walker(s) to map the language-specific syntax to the canonical name
+//!
+//! No changes needed in the language-agnostic compiler.
+
+use vybe_bytecode::Chunk;
+use crate::{collections, strings};
+
+/// A canonical builtin operation. Walkers normalize language-specific syntax to these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalOp {
+    /// Length/size of collection or string. Stack: [obj] → [int]
+    Len,
+    /// String representation. Stack: [obj] → [string]
+    /// Uses stdlib __vybe_tostring (pure WASM, no host dependency).
+    Str,
+    /// Uppercase string. Stack: [str] → [str]
+    Upper,
+    /// Lowercase string. Stack: [str] → [str]
+    Lower,
+    /// Trim whitespace. Stack: [str] → [str]
+    Trim,
+}
+
+impl CanonicalOp {
+    /// Look up a canonical operation by its dunder name.
+    pub fn from_name(name: &str) -> Option<CanonicalOp> {
+        match name {
+            "__len__" => Some(CanonicalOp::Len),
+            "__str__" => Some(CanonicalOp::Str),
+            "__upper__" => Some(CanonicalOp::Upper),
+            "__lower__" => Some(CanonicalOp::Lower),
+            "__trim__" => Some(CanonicalOp::Trim),
+            _ => None,
+        }
+    }
+
+    /// How many args does this operation take?
+    pub fn arity(&self) -> u8 {
+        match self {
+            CanonicalOp::Len
+            | CanonicalOp::Str
+            | CanonicalOp::Upper
+            | CanonicalOp::Lower
+            | CanonicalOp::Trim => 1,
+        }
+    }
+}
+
+/// Emit the bytecode for a canonical operation.
+/// The args must already be on the stack in the correct order.
+///
+/// For ops that need stdlib globals (like `__str__`), this emits direct compiler_common
+/// calls — no host dependencies, pure WASM bytecode.
+pub fn emit_canonical(op: CanonicalOp, chunk: &mut Chunk, line: u32) {
+    match op {
+        CanonicalOp::Len => collections::emit_len(chunk, line),
+        CanonicalOp::Str => {
+            // __vybe_tostring is populated by bundle::finalize_with_stdlib.
+            // Caller is responsible for ensuring func ref is on stack BEFORE arg.
+            // Since this emitter is called AFTER args are pushed, we use the host import
+            // path which the bundler aliases to the stdlib chunk for pure WASM.
+            strings::emit_to_string(chunk, line);
+        }
+        CanonicalOp::Upper => strings::emit_to_upper(chunk, line),
+        CanonicalOp::Lower => strings::emit_to_lower(chunk, line),
+        CanonicalOp::Trim => strings::emit_trim(chunk, line),
+    }
+}
