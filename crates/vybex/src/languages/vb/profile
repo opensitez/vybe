@@ -8,6 +8,10 @@ extensions = ["vb"]
 
 [compiler]
 function_return = "result_slot"        # VB uses FunctionName = value AND Return
+result_slot_name = "__result__"        # internal — not user-visible (VB users
+                                       # write `FunctionName := X`, not
+                                       # `Result := X`). Keeps user classes
+                                       # named `Result` from being shadowed.
 self_keyword = "me"
 base_keyword = "mybase"
 constructor_name = "New"               # Sub New()
@@ -494,9 +498,10 @@ extra_imports = [
 "httpclient"     = ["wasi:http", "fetch"]
 "task"           = ["vybe:types", "taskNew"]
 "thread"         = ["vybe:types", "threadNew"]
-"timer"          = ["vybe:types", "timerNew"]
+# Timer / BindingSource are GUI controls — they route through the canonical
+# `compiler_common::gui` emitter (vybe:gui::new_Timer, etc.), NOT the .NET
+# host bridge. Keep them OUT of known_types so the GUI control branch wins.
 "process"        = ["vybe:types", "processNew"]
 "datatable"      = ["vybe:types", "dataTableNew"]
 "datarow"        = ["vybe:types", "dataRowNew"]
-"bindingsource"  = ["vybe:types", "bindingSourceNew"]
 "dataadapter"    = ["vybe:types", "dataAdapterNew"]

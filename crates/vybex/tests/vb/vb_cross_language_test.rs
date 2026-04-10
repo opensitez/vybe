@@ -162,6 +162,7 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
 
     LanguageProfile {
         function_return: ReturnStyle::Explicit,
+        result_slot_name: "Result".into(),
         self_keyword: "this".into(),
         base_keyword: Some("super".into()),
         constructor_name: "constructor".into(),

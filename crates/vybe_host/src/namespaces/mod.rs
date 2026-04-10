@@ -39,6 +39,12 @@ pub fn setup_namespaces(vm: &mut VM) {
     types::register(vm);
     threading::register(vm);
     data::register(vm);
+
+    // Polyfill: now that all host fns are registered (including any test
+    // overrides), point each `__vybe_*` global at its native equivalent so
+    // calls compiled as `global_get __vybe_pow + call_ref` execute the
+    // optimized native version instead of the bundled stdlib bytecode.
+    crate::modules::override_stdlib_globals_with_host_fns(vm);
 }
 
 // ---- Shared helpers used by all sub-modules ----

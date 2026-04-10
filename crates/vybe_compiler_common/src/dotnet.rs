@@ -63,6 +63,63 @@ pub enum DottedResolution {
     Unresolved,
 }
 
+/// The result of resolving a `target.field = value` member assignment.
+///
+/// Languages produce a uniform `Assign { target: Member { … } }` AST. The
+/// compiler classifies the target's ROOT into a `TargetRoot` and hands it
+/// to the resolver. The resolver returns one of the enum variants below;
+/// the compiler emits the corresponding bytecode without any of its own
+/// detection logic.
+///
+/// Different framework frontends provide different resolvers:
+/// - `dotnet::resolve_member_assign` — Windows Forms semantics
+/// - Future `maui::resolve_member_assign`, `flutter::resolve_member_assign`,
+///   etc. would return the same enum variants for their conventions.
+///
+/// The resolver does NOT handle field-name casing — that's the compiler's
+/// job via its profile-aware `canon()` helper. The resolver only decides
+/// WHAT KIND of assignment this is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AssignResolution {
+    /// Plain in-memory write — emit `struct_set` on the resolved object.
+    Plain,
+    /// .NET WinForms / generic GUI control property write. The compiler
+    /// emits BOTH the in-memory `struct_set` (using the canonical-cased
+    /// field key) AND a host mirror via
+    /// `compiler_common::gui::emit_set_control_property`.
+    ControlProperty,
+    /// Resolver doesn't recognize the shape — caller falls back to plain
+    /// struct_set.
+    Unresolved,
+}
+
+/// Classification of the ROOT of an assignment target's member chain.
+///
+/// The compiler walks the target Expression once, determines what kind of
+/// root it has (`Me` keyword, a class field, a plain local/global, etc.),
+/// and passes this typed enum to the resolver. This is structurally cleaner
+/// than handing in a flattened list of strings — the resolver can look at
+/// the variant directly without re-running scope checks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TargetRoot<'a> {
+    /// The target is rooted at the language's self keyword: `Me` (VB),
+    /// `this` (C#/JS), `self` (Python), `MyBase` (VB super), etc. The
+    /// resolver doesn't care about which spelling — the compiler maps the
+    /// AST `ExprKind::This` / `Super` node here.
+    SelfKeyword,
+    /// The root is an identifier whose name is a known field of the
+    /// enclosing class. The compiler resolved this against its symbol
+    /// table before calling the resolver.
+    ClassField,
+    /// The root is some other identifier (local variable, parameter, or
+    /// global). Used by the resolver as a "this is a generic object
+    /// property write" signal.
+    Identifier,
+    /// The root is something the compiler couldn't classify (an arbitrary
+    /// expression like a function call result). Resolver returns Plain.
+    Other,
+}
+
 /// Context provided by the compiler for name resolution.
 /// This abstracts over VB/C# differences (different AST types, different scoping).
 pub struct ResolutionContext<'a> {
@@ -197,6 +254,47 @@ pub fn resolve_dotted_name(parts: &[&str], ctx: &ResolutionContext) -> DottedRes
 /// Check if a name is a known .NET namespace root.
 pub fn is_namespace_root(name: &str) -> bool {
     NAMESPACE_ROOTS.contains(name)
+}
+
+/// Resolve `target.field = value` assignments according to .NET semantics.
+///
+/// `target_chain` is the canonicalized member chain LEADING to the field —
+/// the COMPILER applies its own `canon` (lowercase for case-insensitive
+/// languages, exact for case-sensitive ones) before handing it in. The
+/// resolver does no string mangling of its own.
+///
+/// Rule for .NET / WinForms:
+/// - Any write to `Me.<X>` (or `<class_field>.<X>`) inside a class method
+///   is treated as a control-property write and routed through the GUI host
+///   mirror.
+/// - Everything else is plain in-memory `struct_set`.
+///
+/// This is the only place where the .NET frontend decides "is this a GUI
+/// property write?". The compiler dispatches on the returned enum without
+/// any of its own detection logic.
+pub fn resolve_member_assign(
+    target_chain: &[&str],
+    ctx: &ResolutionContext,
+) -> AssignResolution {
+    if target_chain.is_empty() {
+        return AssignResolution::Unresolved;
+    }
+    let first = target_chain[0];
+
+    // Self-rooted writes (Me.X / This.X / MyBase.X). The compiler passes
+    // the canonical form (whatever its language uses for `self`) so we
+    // accept the lowercase canonical names as well as the standard self
+    // keywords for case-sensitive frontends.
+    let is_self = matches!(first, "me" | "this" | "self" | "mybase" | "Me" | "This" | "Self" | "MyBase");
+    // Class-field-rooted writes (`btn1.Text = X` where `btn1` is a field of
+    // the enclosing class) → also control property.
+    let is_class_field = (ctx.is_class_field)(first);
+
+    if is_self || is_class_field {
+        AssignResolution::ControlProperty
+    } else {
+        AssignResolution::Plain
+    }
 }
 
 /// Try to resolve a fully-qualified chain against the imports list.
@@ -402,13 +500,17 @@ pub fn map_host_func(module: &str, func: &str) -> String {
         ("vybe:threading", "startnew") => "stopwatchNew".into(),
 
         // ── GUI / WinForms ──
-        ("vybe:gui", "application.run") => "runApplication".into(),
-        ("vybe:gui", "run") => "runApplication".into(),
-        ("vybe:gui", "exit") => "appExit".into(),
+        // The .NET surface uses Application.Run / Application.Exit, but the
+        // canonical host fn names live in `compiler_common::gui`. Frontends
+        // that aren't .NET-shaped (Tkinter `mainloop`, Flutter `runApp`, etc.)
+        // will resolve to the SAME host fn names through their own frontend.
+        ("vybe:gui", "application.run") => crate::gui::HOST_FN_RUN_APPLICATION.into(),
+        ("vybe:gui", "run") => crate::gui::HOST_FN_RUN_APPLICATION.into(),
+        ("vybe:gui", "exit") => crate::gui::HOST_FN_APP_EXIT.into(),
         ("vybe:gui", f) => {
-            let cap = capitalize_control_name(f);
-            if !cap.is_empty() && cap != f {
-                format!("new_{}", cap)
+            let canonical = crate::gui::canonical_control_name(f);
+            if !canonical.is_empty() && canonical != f {
+                crate::gui::host_fn_new_control(&canonical)
             } else {
                 f.to_string()
             }
@@ -547,61 +649,33 @@ pub fn namespace_roots() -> HashSet<String> {
 }
 
 // ─── WinForms control name capitalisation ────────────────────────────────────
+//
+// .NET surface — `System.Windows.Forms.Button`, `System.Windows.Forms.TextBox`,
+// etc. — is just one frontend on top of the canonical GUI vocabulary in
+// `compiler_common::gui`. The .NET frontend's job is name resolution: take a
+// .NET-shaped identifier and return the canonical control name. The actual
+// emit (host fn naming, calling convention) lives in `gui.rs`.
 
 /// Capitalise a lowercase WinForms control name to its proper casing.
 /// Returns an empty string if the name is not a known control.
+///
+/// This is a thin wrapper over `compiler_common::gui::canonical_control_name`,
+/// kept for backward compatibility with .NET-specific call sites. New code
+/// should call into `gui.rs` directly. The .NET frontend assumes the source
+/// uses .NET PascalCase, but the canonical name returned matches what the
+/// other frontends (MAUI, Flutter, Tkinter, …) would also produce.
 pub fn capitalize_control_name(name: &str) -> String {
+    crate::gui::canonical_control_name(name)
+}
+
+/// Data table / DataSet / DataAdapter — these are .NET BCL data types, NOT
+/// GUI controls. They live in dotnet.rs because they're .NET-specific
+/// (other frontends won't have them). Returns empty for non-data types.
+pub fn capitalize_data_type(name: &str) -> String {
     match name {
-        "button" => "Button",
-        "label" => "Label",
-        "textbox" => "TextBox",
-        "checkbox" => "CheckBox",
-        "radiobutton" => "RadioButton",
-        "combobox" => "ComboBox",
-        "listbox" => "ListBox",
-        "panel" => "Panel",
-        "groupbox" => "GroupBox",
-        "tabcontrol" => "TabControl",
-        "tabpage" => "TabPage",
-        "datagridview" => "DataGridView",
-        "progressbar" => "ProgressBar",
-        "trackbar" => "TrackBar",
-        "numericupdown" => "NumericUpDown",
-        "datetimepicker" => "DateTimePicker",
-        "richtextbox" => "RichTextBox",
-        "picturebox" => "PictureBox",
-        "menustrip" => "MenuStrip",
-        "toolstrip" => "ToolStrip",
-        "statusstrip" => "StatusStrip",
-        "splitcontainer" => "SplitContainer",
-        "flowlayoutpanel" => "FlowLayoutPanel",
-        "tablelayoutpanel" => "TableLayoutPanel",
-        "linklabel" => "LinkLabel",
-        "maskedtextbox" => "MaskedTextBox",
-        "listview" => "ListView",
-        "webbrowser" => "WebBrowser",
-        "monthcalendar" => "MonthCalendar",
-        "contextmenustrip" => "ContextMenuStrip",
-        "timer" => "Timer",
-        "bindingsource" => "BindingSource",
-        "tooltip" => "ToolTip",
-        "imagelist" => "ImageList",
-        "openfiledialog" => "OpenFileDialog",
-        "savefiledialog" => "SaveFileDialog",
-        "folderbrowserdialog" => "FolderBrowserDialog",
-        "colordialog" => "ColorDialog",
-        "fontdialog" => "FontDialog",
-        "treeview" => "TreeView",
-        "hscrollbar" => "HScrollBar",
-        "vscrollbar" => "VScrollBar",
-        "bindingnavigator" => "BindingNavigator",
         "dataset" => "DataSet",
         "datatable" => "DataTable",
         "dataadapter" => "DataAdapter",
-        "notifyicon" => "NotifyIcon",
-        "errorprovider" => "ErrorProvider",
-        "helpprovider" => "HelpProvider",
-        "backgroundworker" => "BackgroundWorker",
         _ => return String::new(),
     }
     .to_string()

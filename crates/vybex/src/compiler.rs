@@ -90,7 +90,18 @@ impl Compiler {
     pub fn compile(mut self, module: &Module) -> Result<Vec<Chunk>, String> {
         self.case_sensitive = self.profile.case_sensitive;
 
-        for stmt in &module.body {
+        // Pre-pass: merge `Partial Class` declarations sharing the same name
+        // when the language profile enables it. After merging, the body has
+        // exactly one ClassDecl per class name with all fields/methods/etc.
+        // pooled together. This is a language-agnostic transform — every
+        // language that sets `partial_classes = true` (VB, C#) gets it.
+        let merged_body = if self.profile.partial_classes {
+            merge_partial_classes(&module.body, self.case_sensitive)
+        } else {
+            module.body.clone()
+        };
+
+        for stmt in &merged_body {
             self.compile_stmt(stmt)?;
         }
 
@@ -138,6 +149,55 @@ impl Compiler {
         self.chunks[self.current].emit(argc, l);
     }
 
+    /// Push the canonical event-registry key for a control expression.
+    /// Used by AddHandler / RemoveHandler so the GUI host indexes handlers by
+    /// the source-stable identifier (field name, class name for `Me`, etc.)
+    /// rather than the runtime `.Name` property — renaming a control after
+    /// the handler is wired must NOT break dispatch.
+    ///
+    /// Static cases (push a string constant):
+    ///   - `Ident("btn")`        → "btn"
+    ///   - `Me` / `This`         → current class name (lowercased)
+    ///   - `Member { Me, "btn" }` → "btn"
+    ///
+    /// Dynamic fallback (runtime lookup):
+    ///   - any other expression  → compile expr, struct_get __control_name
+    fn emit_event_control_key(&mut self, control: &Expression, line: u32) -> Result<(), String> {
+        let is_self_ident = |c: &Compiler, n: &str| {
+            let cn = c.canon(n);
+            cn == c.profile.self_keyword || cn == "me" || cn == "this" || cn == "mybase"
+        };
+        let key: Option<String> = match &control.kind {
+            // `Me` / `This` / `MyBase` as identifier or as keyword node →
+            // the enclosing class is the control. Used for `Handles Me.Load`,
+            // `Handles MyBase.Load`, `this.Click += h`, etc.
+            ExprKind::This | ExprKind::Super => self.current_class.clone().map(|c| self.canon(&c)),
+            ExprKind::Ident(name) if is_self_ident(self, name) =>
+                self.current_class.clone().map(|c| self.canon(&c)),
+            // Plain identifier → it's a field name (class field) or local
+            // variable name. The source-stable identifier IS the key.
+            ExprKind::Ident(name) => Some(self.canon(name)),
+            // `Me.btn` / `this.btn` → the field name on the form/class.
+            ExprKind::Member { object, field, .. } => {
+                let is_self = matches!(&object.kind, ExprKind::This | ExprKind::Super)
+                    || matches!(&object.kind, ExprKind::Ident(n) if is_self_ident(self, n));
+                if is_self {
+                    Some(self.canon(field))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(k) = key {
+            self.emit_const(Value::String(Arc::from(k.as_str())));
+        } else {
+            self.compile_expr(control)?;
+            common::gui::emit_get_control_name(self.chunk(), line);
+        }
+        Ok(())
+    }
+
     fn canon(&self, name: &str) -> String {
         if self.case_sensitive { name.to_string() } else { name.to_lowercase() }
     }
@@ -158,6 +218,23 @@ impl Compiler {
         if self.scopes.len() > 1 {
             if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
                 self.emit_u8(Op::upvalue_get, uv);
+                return;
+            }
+        }
+        // Implicit self field — when inside a class method and the name is a
+        // field of the current class, read from `me.<name>`. This is what
+        // languages like VB do for unqualified field access. Without this,
+        // dotted-name resolution that returns InstanceMember { local: "field" }
+        // would fall through to global_get and read null.
+        if self.profile.implicit_self_fields && self.is_class_field(name) {
+            let self_kw = self.profile.self_keyword.clone();
+            if let Some(self_slot) = self.scope().resolve(&self_kw)
+                .or_else(|| self.scope().resolve_ci(&self_kw))
+            {
+                self.emit_u16(Op::local_get, self_slot);
+                let cname = self.canon(name);
+                let idx = self.str_const(&cname);
+                self.emit_u16(Op::struct_get, idx);
                 return;
             }
         }
@@ -832,54 +909,119 @@ impl Compiler {
             }
 
             // ── ReDim ───────────────────────────────────────────────────
-            StmtKind::ReDim { array, bounds, preserve: _ } => {
+            // VB `ReDim arr(N)` allocates a fresh array of N+1 elements;
+            // `ReDim Preserve arr(N)` allocates a new array AND copies the
+            // old elements over (extending with defaults if growing). The
+            // upper bound is inclusive (N → N+1 length).
+            StmtKind::ReDim { array, bounds, preserve } => {
                 if let Some(size_expr) = bounds.first() {
-                    self.compile_expr(size_expr)?;
-                    self.emit_const(Value::F64(1.0));
-                    self.emit(Op::dyn_add);
-                    self.emit(Op::array_new_default);
-                    self.emit_var_set(array);
+                    let line = self.line;
+                    if *preserve {
+                        // Allocate new array of N+1, then iterate the OLD
+                        // array via compiler_common::loops::emit_for_in_start
+                        // and copy each element into new[i] (bounded by
+                        // new_len). This reuses the canonical for-in loop
+                        // emit pattern that every other iteration site uses.
+                        let old_slot = self.scope_mut().define("__redim_old");
+                        let new_slot = self.scope_mut().define("__redim_new");
+                        let new_len_slot = self.scope_mut().define("__redim_nlen");
+                        let idx_slot = self.scope_mut().define("__redim_idx");
+
+                        // old = arr
+                        self.emit_var_get(array);
+                        self.emit_u16(Op::local_set, old_slot); self.emit(Op::drop);
+                        // new_len = N + 1
+                        self.compile_expr(size_expr)?;
+                        self.emit_const(Value::F64(1.0));
+                        self.emit(Op::dyn_add);
+                        self.emit_u16(Op::local_set, new_len_slot); self.emit(Op::drop);
+                        // new = array_new_default(new_len)
+                        self.emit_u16(Op::local_get, new_len_slot);
+                        self.emit(Op::array_new_default);
+                        self.emit_u16(Op::local_set, new_slot); self.emit(Op::drop);
+
+                        // Iterate old array with the canonical for-in helper.
+                        // The helper leaves [element] on the stack each pass
+                        // and exposes the index in `idx_slot`.
+                        let (loop_start, exit_jump) = common::loops::emit_for_in_start(
+                            self.chunk(), old_slot, idx_slot, line);
+                        // Stack: [element]. If idx >= new_len, drop and break
+                        // (don't write past the new array). Otherwise
+                        // new[idx] = element.
+                        self.emit_u16(Op::local_get, idx_slot);
+                        self.emit_u16(Op::local_get, new_len_slot);
+                        self.emit(Op::dyn_lt);
+                        let in_bounds = self.emit_jump(Op::br_if_true);
+                        // out of bounds: drop the element from for_in_start
+                        self.emit(Op::drop);
+                        let after = self.emit_jump(Op::br);
+                        self.patch_jump(in_bounds);
+                        // in bounds: new[idx] = element
+                        // Stack currently has [element]. Build [new, idx, element].
+                        let elem_slot = self.scope_mut().define("__redim_el");
+                        self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
+                        self.emit_u16(Op::local_get, new_slot);
+                        self.emit_u16(Op::local_get, idx_slot);
+                        self.emit_u16(Op::local_get, elem_slot);
+                        self.emit(Op::array_set);
+                        self.emit(Op::drop);
+                        self.patch_jump(after);
+
+                        common::loops::emit_for_in_end(
+                            self.chunk(), idx_slot, loop_start, exit_jump, line);
+
+                        // arr = new
+                        self.emit_u16(Op::local_get, new_slot);
+                        self.emit_var_set(array);
+                    } else {
+                        self.compile_expr(size_expr)?;
+                        self.emit_const(Value::F64(1.0));
+                        self.emit(Op::dyn_add);
+                        self.emit(Op::array_new_default);
+                        self.emit_var_set(array);
+                    }
                 }
             }
 
             // ── Events ──────────────────────────────────────────────────
-            StmtKind::AddHandler { event_target, handler } => {
-                // Parse event_target as "ctrl.Event"
-                let parts: Vec<&str> = event_target.splitn(2, '.').collect();
-                if parts.len() == 2 {
-                    self.emit_var_get(parts[0]);
-                    let name_key = self.str_const("__control_name");
-                    self.emit_u16(Op::struct_get, name_key);
-                    let ev = parts[1].to_lowercase();
-                    self.emit_const(Value::String(Arc::from(ev.as_str())));
-                    self.emit_var_get(handler);
-                    let idx = self.import("vybe:gui", "onEvent");
-                    self.emit_host_call(idx, 3);
-                    self.emit(Op::drop);
-                }
+            // AddHandler/RemoveHandler are language-agnostic statements; the
+            // canonical AST holds the control + handler as Expressions, so any
+            // frontend (.NET, MAUI, Flutter, …) can produce the same node by
+            // mapping its surface syntax (`Handles X.Y`, `obj.Y += h`, etc.).
+            //
+            // The handler is registered under the SOURCE-CODE-STABLE control
+            // identifier (field name, class name for `Me`/`This`, or runtime
+            // `__control_name` for general expressions). This decouples the
+            // registry key from the runtime `.Name` property — renaming a
+            // control via `btn.Name = "x"` doesn't break wired-up handlers.
+            StmtKind::AddHandler { control, event, handler } => {
+                let line = self.line;
+                let bind_idx = self.import("vybe:gui", common::gui::HOST_FN_BIND_EVENT);
+                // Stack: [control_name, event_name, handler_fn]
+                self.emit_event_control_key(control, line)?;
+                self.emit_const(Value::String(Arc::from(event.as_str())));
+                self.compile_expr(handler)?;
+                common::gui::emit_bind_event(self.chunk(), bind_idx, line);
+                self.emit(Op::drop); // statement: discard host call result
             }
 
-            StmtKind::RemoveHandler { event_target, handler } => {
-                let parts: Vec<&str> = event_target.splitn(2, '.').collect();
-                if parts.len() == 2 {
-                    self.emit_var_get(parts[0]);
-                    let name_key = self.str_const("__control_name");
-                    self.emit_u16(Op::struct_get, name_key);
-                    let ev = parts[1].to_lowercase();
-                    self.emit_const(Value::String(Arc::from(ev.as_str())));
-                    self.emit_var_get(handler);
-                    let idx = self.import("vybe:gui", "removeEvent");
-                    self.emit_host_call(idx, 3);
-                    self.emit(Op::drop);
-                }
+            StmtKind::RemoveHandler { control, event, handler } => {
+                let line = self.line;
+                let unbind_idx = self.import("vybe:gui", common::gui::HOST_FN_UNBIND_EVENT);
+                self.emit_event_control_key(control, line)?;
+                self.emit_const(Value::String(Arc::from(event.as_str())));
+                self.compile_expr(handler)?;
+                common::gui::emit_unbind_event(self.chunk(), unbind_idx, line);
+                self.emit(Op::drop); // statement: discard host call result
             }
 
             StmtKind::RaiseEvent { event_name, args } => {
+                let line = self.line;
+                let raise_idx = self.import("vybe:gui", common::gui::HOST_FN_RAISE_EVENT);
                 for a in args { self.compile_expr(a)?; }
-                let idx = self.import("vybe:gui", "raiseEvent");
                 self.emit_const(Value::String(Arc::from(event_name.as_str())));
-                self.emit_host_call(idx, (args.len() + 1) as u8);
-                self.emit(Op::drop);
+                common::gui::emit_raise_event(self.chunk(), raise_idx, (args.len() + 1) as u8, line);
+                self.emit(Op::drop); // statement: discard host call result
             }
 
             // ── VB legacy error handling ────────────────────────────────
@@ -1328,9 +1470,13 @@ impl Compiler {
             }
         }
 
-        // Result slot for functions with return type (Pascal/VB Function)
+        // Result slot for functions with return type (Pascal/VB Function).
+        // The slot name is profile-driven so VB can keep it internal
+        // (`__result__`) and avoid shadowing user classes named `Result`,
+        // while Pascal keeps it as `Result` (user-visible per Pascal idiom).
         let result_slot = if return_type.is_some() && self.profile.function_return == ReturnStyle::ResultSlot {
-            let rs = self.scope_mut().define("Result");
+            let slot_name = self.profile.result_slot_name.clone();
+            let rs = self.scope_mut().define(&slot_name);
             self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
             Some(rs)
         } else {
@@ -1371,19 +1517,21 @@ impl Compiler {
         self.emit_u16(Op::global_set, idx);
         self.emit(Op::drop);
 
-        // VB Handles clause: register event handlers
+        // VB `Handles ctrl.Event` clause on a top-level Sub: register the
+        // event handler with the canonical GUI binding. The same canonical
+        // emit path serves C# `+=`, JS `addEventListener`, etc.
         for handle in handles {
             let parts: Vec<&str> = handle.splitn(2, '.').collect();
             if parts.len() == 2 {
+                let line = self.line;
+                let bind_idx = self.import("vybe:gui", common::gui::HOST_FN_BIND_EVENT);
                 self.emit_var_get(parts[0]);
-                let name_key = self.str_const("__control_name");
-                self.emit_u16(Op::struct_get, name_key);
+                common::gui::emit_get_control_name(self.chunk(), line);
                 let ev = parts[1].to_lowercase();
                 self.emit_const(Value::String(Arc::from(ev.as_str())));
                 self.emit_var_get(name);
-                let hi = self.import("vybe:gui", "onEvent");
-                self.emit_host_call(hi, 3);
-                self.emit(Op::drop);
+                common::gui::emit_bind_event(self.chunk(), bind_idx, line);
+                self.emit(Op::drop); // statement: discard host call result
             }
         }
 
@@ -1459,7 +1607,13 @@ impl Compiler {
             match m {
                 ClassMember::Method(stmt) => {
                     if let StmtKind::FunctionDecl { name: mname, params, return_type, body, modifiers, is_sub, .. } = &stmt.kind {
-                        if body.is_empty() { continue; }
+                        // NOTE: do NOT skip empty-body methods. They still need
+                        // a chunk + binding so that callers (e.g. an explicit
+                        // constructor calling `InitializeComponent()`) can
+                        // dispatch through `me.<method>`. Skipping here is what
+                        // caused VB Forms tests to fail with "null is not
+                        // callable" — the empty `Sub InitializeComponent` was
+                        // never bound on `me`.
 
                         let is_ctor = if self.case_sensitive {
                             mname == &ctor_name || (modifiers.is_static && mname == "new")
@@ -1492,7 +1646,8 @@ impl Compiler {
                                 self.emit(Op::r#return);
                             }
                         } else if return_type.is_some() && result_style == ReturnStyle::ResultSlot {
-                            let rs = self.scope_mut().define("Result");
+                            let slot_name = self.profile.result_slot_name.clone();
+                            let rs = self.scope_mut().define(&slot_name);
                             self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
                             let saved_fn = self.current_func_name.take();
                             let saved_rs = self.current_result_slot.take();
@@ -1547,7 +1702,8 @@ impl Compiler {
                                 self.emit(Op::r#return);
                             }
                         } else {
-                            let rs = self.scope_mut().define("Result");
+                            let slot_name = self.profile.result_slot_name.clone();
+                            let rs = self.scope_mut().define(&slot_name);
                             self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
                             let saved_fn = self.current_func_name.take();
                             let saved_rs = self.current_result_slot.take();
@@ -2058,6 +2214,16 @@ impl Compiler {
                     self.patch_jump(skip);
                     return Ok(());
                 }
+                // Pow → canonical stdlib path: push func ref BEFORE operands
+                // so [func, base, exponent] is on the stack for call_ref.
+                if *op == BinOp::Pow {
+                    let line = self.line;
+                    common::math::emit_pow_push_func(self.chunk(), line);
+                    self.compile_expr(left)?;
+                    self.compile_expr(right)?;
+                    common::math::emit_pow_invoke(self.chunk(), line);
+                    return Ok(());
+                }
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
                 self.compile_binop(op);
@@ -2190,7 +2356,14 @@ impl Compiler {
                     // the user constructor, not vybe:drawing::pointNew.
                     let canon_type = self.canon(type_name);
                     if self.defined_classes.contains(&canon_type) {
-                        self.compile_expr(class)?;
+                        // Bypass compile_expr to avoid the implicit-self-field
+                        // shadowing path: in case-insensitive languages a field
+                        // named `inner` and a class named `Inner` both
+                        // canonicalize to "inner", and the implicit-self-field
+                        // check would mis-route to `me.inner` instead of the
+                        // class global. Type names always come from globals.
+                        let idx = self.str_const(&canon_type);
+                        self.emit_u16(Op::global_get, idx);
                         for a in args { self.compile_expr(&a.value)?; }
                         self.emit_u8(Op::call_ref, args.len() as u8);
                         return Ok(());
@@ -2259,20 +2432,27 @@ impl Compiler {
                         }
                         return Ok(());
                     }
-                    // Dotnet known types (collections, etc.)
+                    // GUI control: Button, TextBox, Label, Timer, etc.
+                    // Checked BEFORE dotnet known_types so GUI controls always
+                    // route through the canonical gui emitter regardless of
+                    // whether they overlap with .NET BCL types (Timer is both
+                    // a GUI control and a System.Threading.Timer — the GUI
+                    // form takes priority because we're in `New X()` syntax).
+                    let canonical = common::gui::canonical_control_name(bare_str);
+                    if !canonical.is_empty() {
+                        let host_name = common::gui::host_fn_new_control(&canonical);
+                        let new_idx = self.import("vybe:gui", &host_name);
+                        for a in args { self.compile_expr(&a.value)?; }
+                        let line = self.line;
+                        common::gui::emit_new_control(self.chunk(), new_idx, args.len() as u8, line);
+                        return Ok(());
+                    }
+                    // Dotnet known types (collections, etc.) — fallback after
+                    // GUI so .NET-only types like Dictionary still work.
                     let known = common::dotnet::known_types();
                     if let Some(&(module, func)) = known.get(bare_str) {
                         for a in args { self.compile_expr(&a.value)?; }
                         let idx = self.import(module, func);
-                        self.emit_host_call(idx, args.len() as u8);
-                        return Ok(());
-                    }
-                    // WinForms control: Button, TextBox, Label, etc. → vybe:gui::new_<Type>
-                    let capitalized = common::dotnet::capitalize_control_name(bare_str);
-                    if !capitalized.is_empty() && capitalized != bare_str {
-                        for a in args { self.compile_expr(&a.value)?; }
-                        let host_name = format!("new_{}", capitalized);
-                        let idx = self.import("vybe:gui", &host_name);
                         self.emit_host_call(idx, args.len() as u8);
                         return Ok(());
                     }
@@ -2844,13 +3024,16 @@ impl Compiler {
                             return Ok(());
                         }
                         common::dotnet::DottedResolution::NamespaceAccess { parts: ns_parts } => {
-                            // Intercept threading calls → WASM stack switching opcodes
+                            // Intercept threading calls. The actual emit goes
+                            // through compiler_common::dispatch so the bytecode
+                            // shape is identical to what the C# profile's
+                            // `common:threading.*` entries produce.
                             let dotted = ns_parts.join(".");
                             match dotted.as_str() {
                                 "system.threading.task.run" | "task.run" => {
                                     if let Some(a) = arg_exprs.first() { self.compile_expr(a)?; }
                                     let line = self.line;
-                                    common::threading::emit_task_run(self.chunk(), line);
+                                    self.emit_common("threading.task_run", line);
                                     return Ok(());
                                 }
                                 "system.diagnostics.process.start" | "process.start" => {
@@ -2861,11 +3044,9 @@ impl Compiler {
                                     return Ok(());
                                 }
                                 "system.threading.thread.sleep" | "thread.sleep" => {
-                                    // Thread.Sleep → wasi:clocks:sleep
                                     if let Some(a) = arg_exprs.first() { self.compile_expr(a)?; }
-                                    let sleep_idx = self.import("wasi:clocks", "sleep");
                                     let line = self.line;
-                                    common::threading::emit_sleep(self.chunk(), sleep_idx, line);
+                                    self.emit_common("threading.sleep", line);
                                     return Ok(());
                                 }
                                 _ => {}
@@ -2884,12 +3065,16 @@ impl Compiler {
                             return Ok(());
                         }
                         common::dotnet::DottedResolution::InstanceMember { local, members } => {
-                            // Intercept Controls.Add for GUI
+                            // Intercept `parent.Controls.Add(child)` for GUI.
+                            // The .NET WinForms surface is `Form.Controls.Add(ctrl)`,
+                            // MAUI is `parent.Children.Add(ctrl)`, etc. — all
+                            // resolve to the canonical gui emitter.
                             if members.len() >= 2 && members[members.len()-2] == "controls" && members[members.len()-1] == "add" {
+                                let line = self.line;
+                                let add_idx = self.import("vybe:gui", common::gui::HOST_FN_ADD_CHILD);
                                 self.emit_var_get(&local);
                                 for a in &arg_exprs { self.compile_expr(a)?; }
-                                let idx = self.import("vybe:gui", "controlsAdd");
-                                self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
+                                common::gui::emit_add_child(self.chunk(), add_idx, line);
                                 return Ok(());
                             }
                             // Intercept Thread/Task methods → WASM stack switching opcodes
@@ -3208,11 +3393,22 @@ impl Compiler {
                 || (!self.case_sensitive && self.defined_functions.iter().any(|g| g.eq_ignore_ascii_case(name)));
             if self.try_compile_builtin(name, &arg_exprs)? { return Ok(()); }
 
-            // VB array access: arr(idx) when name is local and not known as function
+            // VB array access: `arr(idx)` when `arr` is a known data variable
+            // (local OR top-level global from `Dim arr(5)`) and is NOT a
+            // declared function or class. VB syntactically overloads `()` for
+            // both calls and indexing — the disambiguator is whether the head
+            // is a callable function or a value. We must exclude both
+            // `defined_functions` and `defined_classes` from the "looks like
+            // a variable" set, otherwise `GetResult()` (function call) and
+            // `New Result()` (class) would be mis-identified as indexing.
             if !is_known_func && arg_exprs.len() == 1 && self.profile.parens_for_index {
+                let canon_name = self.canon(name);
                 let is_local = self.scope().resolve(name).is_some()
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
-                if is_local {
+                let is_global_var = self.defined_globals.contains(&canon_name)
+                    && !self.defined_classes.contains(&canon_name)
+                    && !self.defined_functions.contains(&canon_name);
+                if is_local || is_global_var {
                     self.emit_var_get(name);
                     self.compile_expr(arg_exprs[0])?;
                     self.emit(Op::array_get);
@@ -3537,44 +3733,25 @@ impl Compiler {
     /// Emit a compiler_common operation by namespaced name.
     /// Used by both `BuiltinEmit::Common` paths.
     fn emit_common(&mut self, name: &str, line: u32) {
-        match name {
-            // Dict ops
-            "dict.set_dynamic" => {
-                common::dict::emit_set_dynamic(self.chunk(), line);
-                self.emit(Op::null); // void return
-            }
-            "dict.get_dynamic" => common::dict::emit_get_dynamic(self.chunk(), line),
-            "dict.has" => common::dict::emit_method_has(self.chunk(), line),
-            "dict.size" => common::dict::emit_method_size(self.chunk(), line),
-            "dict.keys" => common::dict::emit_keys(self.chunk(), line),
-            "dict.values" => common::dict::emit_values(self.chunk(), line),
-            "dict.new" => common::dict::emit_new(self.chunk(), line),
-            // Collection ops
-            "collections.push" => common::collections::emit_push(self.chunk(), line),
-            "collections.pop" => common::collections::emit_pop(self.chunk(), line),
-            "collections.length" => common::collections::emit_len(self.chunk(), line),
-            "collections.get" => common::collections::emit_get(self.chunk(), line),
-            "collections.set" => common::collections::emit_set(self.chunk(), line),
-            "collections.contains" => common::collections::emit_contains(self.chunk(), line),
-            "collections.index_of" => common::collections::emit_index_of(self.chunk(), line),
-            "collections.sorted" => common::collections::emit_sorted(self.chunk(), line),
-            "collections.reverse" => common::collections::emit_reverse(self.chunk(), line),
-            "collections.join" => common::collections::emit_join(self.chunk(), line),
-            "collections.slice" => common::collections::emit_slice(self.chunk(), line),
-            "collections.new" => common::collections::emit_array_new(self.chunk(), 0, line),
-            // String ops
-            "strings.length" => common::strings::emit_length(self.chunk(), line),
-            "strings.to_upper" => common::strings::emit_to_upper(self.chunk(), line),
-            "strings.to_lower" => common::strings::emit_to_lower(self.chunk(), line),
-            "strings.trim" => common::strings::emit_trim(self.chunk(), line),
-            "strings.substring" => common::strings::emit_substring(self.chunk(), line),
-            "strings.replace" => common::strings::emit_replace(self.chunk(), line),
-            "strings.split" => common::strings::emit_split(self.chunk(), line),
-            "strings.index_of" => common::strings::emit_index_of(self.chunk(), line),
-            "strings.concat" => common::strings::emit_concat(self.chunk(), 2, line),
-            _ => {
-                eprintln!("Unknown common emit: {}", name);
-            }
+        // First try the import-needing dispatch (sleep, etc.). It needs a
+        // closure into the compiler to resolve imports against chunk[0].
+        // We use a raw pointer to break the borrow of self.
+        {
+            let self_ptr = self as *mut Self;
+            let chunk = self.chunk();
+            let handled = common::dispatch::emit_common_with_imports(
+                name,
+                chunk,
+                line,
+                |module, fname| unsafe { (*self_ptr).import(module, fname) },
+            );
+            if handled { return; }
+        }
+        // Then the pure (chunk + line) common ops.
+        let line2 = line;
+        let handled = common::dispatch::emit_common(name, self.chunk(), line2);
+        if !handled {
+            eprintln!("Unknown common emit: {}", name);
         }
     }
 
@@ -3774,6 +3951,32 @@ impl Compiler {
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
                     self.emit(Op::null);
+                }
+            }
+            "string_isnullorempty" => {
+                // String.IsNullOrEmpty(s) → s is null OR str_length(s) == 0.
+                // Compile s, dup, ref_is_null → if true return true, else
+                // str_length == 0.
+                if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    // [s]
+                    self.emit(Op::dup);
+                    // [s, s]
+                    self.emit(Op::ref_is_null);
+                    // [s, is_null]
+                    let if_null = self.emit_jump(Op::br_if_true);
+                    // not null branch: [s] → str_length → cmp 0
+                    common::strings::emit_length(self.chunk(), line);
+                    self.emit(Op::i32_const_0);
+                    self.emit(Op::dyn_eq);
+                    let end = self.emit_jump(Op::br);
+                    // null branch: drop [s], push true
+                    self.patch_jump(if_null);
+                    self.emit(Op::drop);
+                    self.emit(Op::r#true);
+                    self.patch_jump(end);
+                } else {
+                    self.emit(Op::r#true);
                 }
             }
             "mid" | "mid_1based" => {
@@ -4021,4 +4224,133 @@ impl Compiler {
         }
         Ok(())
     }
+}
+
+/// Flatten the target object of a member assignment into a string chain
+/// the framework resolver can inspect. Returns true on success.
+///
+/// Strings are kept in their source case — the compiler canonicalizes them
+/// later via `self.canon` so case-sensitive languages stay case-sensitive.
+///
+/// Examples:
+///   `Me`              → `["Me"]`
+///   `Me.btn1`         → `["Me", "btn1"]`
+///   `myVar.inner.x`   → `["myVar", "inner", "x"]`
+///
+/// `ExprKind::This` is normalized to `"this"` so the resolver can match it
+/// regardless of which language keyword (`me`, `this`, `self`) the source
+/// originally used.
+///
+/// Returns false for shapes the resolver doesn't model (calls, indexing,
+/// arbitrary expressions) — caller falls back to plain struct_set.
+fn flatten_target_chain(expr: &Expression, out: &mut Vec<String>) -> bool {
+    match &expr.kind {
+        ExprKind::This | ExprKind::Super => {
+            out.push("this".to_string());
+            true
+        }
+        ExprKind::Ident(name) => {
+            out.push(name.clone());
+            true
+        }
+        ExprKind::Member { object, field, .. } => {
+            if !flatten_target_chain(object, out) { return false; }
+            out.push(field.clone());
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Capitalize the first ASCII character of a string. Used to convert a
+/// canonical lowercase field name into the PascalCase form the GUI host's
+/// `controlSetProperty` expects.
+fn capitalize_first_ascii(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
+    }
+}
+
+/// Merge `Partial Class` declarations sharing the same name into one.
+/// Used by VB and C# (any language whose profile sets `partial_classes = true`).
+///
+/// The first declaration of a class name keeps its position in the body and
+/// receives all subsequent partials' members appended in source order.
+/// Subsequent partials are removed. Non-class statements pass through
+/// unchanged.
+///
+/// This is intentionally a pure AST transform — no compiler state, no
+/// language-specific quirks. The merged class compiles via the standard
+/// compile_class path.
+fn merge_partial_classes(body: &[Statement], case_sensitive: bool) -> Vec<Statement> {
+    let key = |name: &str| -> String {
+        if case_sensitive { name.to_string() } else { name.to_lowercase() }
+    };
+
+    // First pass: collect (name → first_index)
+    let mut first_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, stmt) in body.iter().enumerate() {
+        if let StmtKind::ClassDecl { name, .. } = &stmt.kind {
+            first_index.entry(key(name)).or_insert(i);
+        }
+    }
+
+    // Second pass: build merged body. For each class, only keep the first
+    // declaration but append later partials' members into it.
+    let mut result: Vec<Statement> = Vec::with_capacity(body.len());
+    let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (i, stmt) in body.iter().enumerate() {
+        match &stmt.kind {
+            StmtKind::ClassDecl { name, .. } => {
+                let k = key(name);
+                if first_index.get(&k) != Some(&i) {
+                    // Not the first declaration — skip; its members were
+                    // (or will be) merged into the first one.
+                    continue;
+                }
+                if emitted.contains(&k) {
+                    continue;
+                }
+                emitted.insert(k.clone());
+
+                // Clone the first declaration; we'll mutate its members.
+                let mut merged = stmt.clone();
+                if let StmtKind::ClassDecl {
+                    members: ref mut m,
+                    parents: ref mut p,
+                    interfaces: ref mut iface,
+                    ..
+                } = &mut merged.kind {
+                    // Append members from every later declaration of this name.
+                    for later in body.iter().skip(i + 1) {
+                        if let StmtKind::ClassDecl {
+                            name: ln, members: lm, parents: lp, interfaces: li, ..
+                        } = &later.kind {
+                            if key(ln) == k {
+                                m.extend(lm.iter().cloned());
+                                // Merge unique parents / interfaces
+                                for parent in lp {
+                                    if !p.iter().any(|existing| key(existing) == key(parent)) {
+                                        p.push(parent.clone());
+                                    }
+                                }
+                                for it in li {
+                                    if !iface.iter().any(|e| key(e) == key(it)) {
+                                        iface.push(it.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                result.push(merged);
+            }
+            _ => result.push(stmt.clone()),
+        }
+    }
+
+    result
 }

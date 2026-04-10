@@ -719,12 +719,35 @@ fn build_max() -> Chunk {
 
 // ── pow(base, exp) → number (integer exponent by repeated mul) ──
 fn build_pow() -> Chunk {
+    // Bytecode-only fallback for `pow(base, exp)`. Handles INTEGER exponents
+    // (positive, zero, negative) using a multiply loop. Fractional exponents
+    // require floating-point exp/log which WASM doesn't have as standard
+    // opcodes — Vybe overrides `__vybe_pow` with a native f64.powf at runtime
+    // (polyfill pattern), so this fallback only runs on non-Vybe runtimes
+    // and only needs to be correct for the common integer-exp case.
     let mut c = Chunk::new("__stdlib_pow");
     c.arity = 2;
-    c.local_count = 4; // callee(0) + base(1) + exp(2) + result(3)
+    c.local_count = 5; // callee(0) + base(1) + exp(2) + result(3) + n(4)
     let base = 1u16;
     let exp = 2;
     let result = 3;
+    let n = 4;
+
+    // n = abs(exp) — branchless via select would need both values; use a flag
+    // We compute n = (exp < 0) ? -exp : exp
+    c.emit_op_u16(Op::local_get, exp, 0);
+    c.emit_op_u16(Op::local_set, n, 0);
+    c.emit_op(Op::drop, 0);
+    // if n < 0 then n = -n
+    c.emit_op_u16(Op::local_get, n, 0);
+    c.emit_op(Op::i32_const_0, 0);
+    c.emit_op(Op::dyn_lt, 0);
+    let positive = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::local_get, n, 0);
+    c.emit_op(Op::f64_neg, 0);
+    c.emit_op_u16(Op::local_set, n, 0);
+    c.emit_op(Op::drop, 0);
+    c.patch_jump(positive);
 
     // result = 1.0
     let one = c.add_constant(Value::F64(1.0));
@@ -732,9 +755,9 @@ fn build_pow() -> Chunk {
     c.emit_op_u16(Op::local_set, result, 0);
     c.emit_op(Op::drop, 0);
 
-    // while exp > 0: result *= base; exp -= 1
+    // while n > 0: result *= base; n -= 1
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, exp, 0);
+    c.emit_op_u16(Op::local_get, n, 0);
     c.emit_op(Op::i32_const_0, 0);
     c.emit_op(Op::dyn_gt, 0);
     let exit = c.emit_jump(Op::br_if_false, 0);
@@ -745,14 +768,26 @@ fn build_pow() -> Chunk {
     c.emit_op_u16(Op::local_set, result, 0);
     c.emit_op(Op::drop, 0);
 
-    c.emit_op_u16(Op::local_get, exp, 0);
+    c.emit_op_u16(Op::local_get, n, 0);
     c.emit_op(Op::i32_const_1, 0);
     c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, exp, 0);
+    c.emit_op_u16(Op::local_set, n, 0);
     c.emit_op(Op::drop, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
+
+    // If original exp was negative, take reciprocal: result = 1.0 / result
+    c.emit_op_u16(Op::local_get, exp, 0);
+    c.emit_op(Op::i32_const_0, 0);
+    c.emit_op(Op::dyn_lt, 0);
+    let no_reciprocal = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::r#const, one, 0);
+    c.emit_op_u16(Op::local_get, result, 0);
+    c.emit_op(Op::f64_div, 0);
+    c.emit_op_u16(Op::local_set, result, 0);
+    c.emit_op(Op::drop, 0);
+    c.patch_jump(no_reciprocal);
 
     c.emit_op_u16(Op::local_get, result, 0);
     c.emit_op(Op::r#return, 0);

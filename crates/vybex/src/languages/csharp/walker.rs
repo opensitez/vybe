@@ -115,14 +115,62 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     Ok(Statement::with_span(kind, span))
 }
 
-/// Classify an expression statement — detect assignment, compound assignment, event +=
+/// Classify an expression statement — detect assignment, compound assignment,
+/// and event `+=` / `-=` patterns. Event subscription becomes the canonical
+/// `AddHandler` / `RemoveHandler` AST node so the compiler routes it through
+/// `compiler_common::gui::emit_bind_event` (the same path VB `Handles`,
+/// JS `addEventListener`, Python `bind`, etc. resolve to).
 fn classify_expr_stmt(expr: Expression) -> StmtKind {
+    // Detect `obj.Event += handler` (compound add on a member access). The
+    // walker rewrote `+=` as `target = target + value`, so the shape is:
+    //   Assign { target: Member { obj, "Event" },
+    //            value: Binary { Add, Member { obj, "Event" }, handler } }
+    //
+    // We only treat this as event subscription when the right-hand side is
+    // function-shaped (an identifier, member access, or lambda). A literal,
+    // arithmetic expression, etc. means the user is doing genuine numeric
+    // compound assignment on a property and we leave it alone.
+    if let ExprKind::Assign { target, value } = &expr.kind {
+        if let ExprKind::Member { object: ev_obj, field: ev_field, .. } = &target.kind {
+            if let ExprKind::Binary { op, left, right } = &value.kind {
+                let same_target = matches!(&left.kind, ExprKind::Member { object, field, .. }
+                    if member_eq(object, field, ev_obj, ev_field));
+                let handler_shape = matches!(&right.kind,
+                    ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Lambda { .. }
+                );
+                if same_target && handler_shape && (matches!(op, BinOp::Add) || matches!(op, BinOp::Sub)) {
+                    let event_name = ev_field.to_lowercase();
+                    let control = (**ev_obj).clone();
+                    let handler = (**right).clone();
+                    return if matches!(op, BinOp::Add) {
+                        StmtKind::AddHandler { control, event: event_name, handler }
+                    } else {
+                        StmtKind::RemoveHandler { control, event: event_name, handler }
+                    };
+                }
+            }
+        }
+    }
+
     match expr.kind {
         ExprKind::Assign { target, value } => {
             // Check for compound assignment patterns
             StmtKind::Assign { targets: vec![*target], value: *value }
         }
         _ => StmtKind::Expr(expr),
+    }
+}
+
+/// Compare two member access targets for structural equality. Used to detect
+/// the `+=`/`-=` shape where the LHS and the LHS-of-the-compound-binary are
+/// the same control event (e.g. `btn.Click += h` desugared to
+/// `btn.Click = btn.Click + h`).
+fn member_eq(obj_a: &Expression, field_a: &str, obj_b: &Expression, field_b: &str) -> bool {
+    if !field_a.eq_ignore_ascii_case(field_b) { return false; }
+    match (&obj_a.kind, &obj_b.kind) {
+        (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
+        (ExprKind::This, ExprKind::This) => true,
+        _ => false,
     }
 }
 

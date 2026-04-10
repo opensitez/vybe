@@ -14,6 +14,15 @@ pub struct LanguageProfile {
     /// How functions return values.
     pub function_return: ReturnStyle,
 
+    /// Local slot name for the result of a function in `ResultSlot` mode.
+    /// Pascal uses `"Result"` because user code writes `Result := X`.
+    /// VB uses an internal name like `"__result__"` because user code writes
+    /// `FunctionName := X` (matched via current_func_name in the compiler) —
+    /// keeping the slot name internal lets users declare a class called
+    /// `Result` without it being shadowed by the function's return slot.
+    /// Defaults to `"Result"` for backward compatibility.
+    pub result_slot_name: String,
+
     /// The keyword used for `self`/`this` in methods.
     pub self_keyword: String,
 
@@ -268,6 +277,9 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         _ => ReturnStyle::Explicit,
     };
 
+    let result_slot_name = compiler.get("result_slot_name")
+        .and_then(|v| v.as_str()).unwrap_or("Result").to_string();
+
     let self_keyword = compiler.get("self_keyword")
         .and_then(|v| v.as_str()).unwrap_or("this").to_string();
     let base_keyword = compiler.get("base_keyword")
@@ -450,7 +462,8 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
     }
 
     Ok(LanguageProfile {
-        function_return, self_keyword, base_keyword, constructor_name,
+        function_return, result_slot_name,
+        self_keyword, base_keyword, constructor_name,
         separated_methods, implicit_self_fields, explicit_self_param,
         enum_as_ordinals, case_sensitive, string_indexing,
         array_upper_bound_inclusive, parens_for_index, entry_point,

@@ -269,15 +269,32 @@ pub enum StmtKind {
     },
 
     // ── Events ───────────────────────────────────────────────────────────
+    //
+    // Canonical event binding. Every language frontend produces this for its
+    // own surface syntax:
+    //   VB:     `Sub Click_Btn() Handles btn1.Click` (injected at end of New)
+    //           `AddHandler btn1.Click, AddressOf Click_Btn`
+    //   C#:     `btn1.Click += Click_Btn;`
+    //   JS:     `btn1.addEventListener("click", click_btn)`
+    //   Python: `btn1.bind("<Button-1>", click_btn)`
+    //
+    // The compiler routes these through `compiler_common::gui::emit_bind_event`
+    // so the bytecode is identical regardless of source language.
 
     AddHandler {
-        event_target: String,
-        handler: String,
+        /// Control instance — any expression that evaluates to a GUI object.
+        control: Expression,
+        /// Event name (e.g. "click", "textchanged") — already lowercased.
+        event: String,
+        /// Handler — any expression that evaluates to a function reference
+        /// (a global function, a method on `me`, a lambda, etc.).
+        handler: Expression,
     },
 
     RemoveHandler {
-        event_target: String,
-        handler: String,
+        control: Expression,
+        event: String,
+        handler: Expression,
     },
 
     RaiseEvent {

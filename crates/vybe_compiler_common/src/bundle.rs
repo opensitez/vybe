@@ -75,20 +75,31 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
 /// Emit the stdlib preamble at the START of a script chunk.
 /// This must be called BEFORE any user code is emitted.
 ///
-/// The preamble emits `ref_func + global_set` for each stdlib function,
-/// storing function refs in globals that call sites can use.
+/// The preamble emits, for each stdlib function:
+///   `if globals[name] is null { globals[name] = ref_func(stdlib_chunk) }`
 ///
-/// Returns (stdlib_base_idx, mapping) so the caller can append stdlib chunks later.
+/// This is the polyfill pattern: if the host (Vybe VM) has already populated
+/// `__vybe_*` globals with optimized native fns BEFORE running the script,
+/// the preamble leaves those alone. On non-Vybe runtimes the globals start
+/// null and the preamble installs the bundled stdlib bytecode chunks.
 pub fn emit_stdlib_preamble(script: &mut Chunk, stdlib_base: usize) {
-    for (i, &(chunk_name, global_name)) in MAPPINGS.iter().enumerate() {
+    for (i, &(_chunk_name, global_name)) in MAPPINGS.iter().enumerate() {
         let ci = stdlib_base + i;
-        // ref_func creates a Function object from chunk index
+        let name_c = script.add_constant(Value::String(Arc::from(global_name)));
+
+        // Check if global is already set: global_get + ref_is_null
+        script.emit_op_u16(Op::global_get, name_c, 0);
+        script.emit_op(Op::ref_is_null, 0);
+        // br_if_false skip — if NOT null, skip the install
+        let skip = script.emit_jump(Op::br_if_false, 0);
+
+        // Install: ref_func + global_set + drop
         script.emit_op_u16(Op::ref_func, ci as u16, 0);
         script.emit(0, 0); // 0 upvalues
-        // global_set stores it under the __vybe_* name
-        let name_c = script.add_constant(Value::String(Arc::from(global_name)));
         script.emit_op_u16(Op::global_set, name_c, 0);
         script.emit_op(Op::drop, 0);
+
+        script.patch_jump(skip);
     }
 }
 

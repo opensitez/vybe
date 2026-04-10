@@ -211,6 +211,27 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // Set up namespace objects, type registry
     crate::namespaces::setup_namespaces(vm);
     crate::builtin_types::register_all(vm);
+
+    // Polyfill: override stdlib `__vybe_*` globals with the just-registered
+    // native host fns. After this, code that emits `global_get __vybe_pow +
+    // call_ref` calls the native pow instead of the bundled stdlib bytecode
+    // fallback. This is the runtime half of the polyfill pattern: stdlib
+    // provides a portable WASM implementation, Vybe replaces it with a fast
+    // native one. Non-Vybe runtimes simply keep the stdlib version.
+    override_stdlib_globals_with_host_fns(vm);
+}
+
+/// Walk `IMPORT_ALIASES` and overwrite each `__vybe_*` global with the
+/// corresponding registered host fn (if any). Idempotent — safe to call
+/// multiple times.
+pub fn override_stdlib_globals_with_host_fns(vm: &mut VM) {
+    for &(module, name, global_name) in vybe_compiler_common::bundle::IMPORT_ALIASES {
+        if let Some(&idx) = vm.host_registry.get(&(module.to_string(), name.to_string())) {
+            if let Some(host_val) = vm.func_table.get(idx).cloned() {
+                vm.globals.insert(global_name.to_string(), host_val);
+            }
+        }
+    }
 }
 
 /// Register all standard VSI modules + GUI module.

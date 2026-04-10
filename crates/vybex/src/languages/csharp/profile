@@ -114,13 +114,17 @@ dynamic_add = true
 "Environment.GetEnvironmentVariable" = { emit = "host:wasi:cli:getEnv", min_args = 1, max_args = 1 }
 
 # ── Threading ────────────────────────────────────────────────────────────────
+# Routes through compiler_common::threading which uses real WASM threading
+# opcodes (thread_spawn, thread_join, atomic_*) — NOT Vybe-specific host calls.
+# Standard WASM runtimes that support the threads proposal get proper threading
+# without needing the Vybe host. Sleep uses the standard `wasi:clocks` import.
 
-"Task.Run"                     = { emit = "host:vybe:threading:spawn",      min_args = 1, max_args = 1 }
-"Task.Delay"                   = { emit = "host:vybe:threading:sleep",      min_args = 1, max_args = 1 }
-"Thread.Sleep"                 = { emit = "host:vybe:threading:sleep",      min_args = 1, max_args = 1 }
-"Interlocked.Add"              = { emit = "host:vybe:threading:atomicAdd",  min_args = 2, max_args = 2 }
-"Interlocked.Exchange"         = { emit = "host:vybe:threading:atomicXchg", min_args = 2, max_args = 2 }
-"Interlocked.CompareExchange"  = { emit = "host:vybe:threading:atomicCmpXchg", min_args = 3, max_args = 3 }
+"Task.Run"                     = { emit = "common:threading.task_run",       min_args = 1, max_args = 1 }
+"Task.Delay"                   = { emit = "common:threading.sleep",          min_args = 1, max_args = 1 }
+"Thread.Sleep"                 = { emit = "common:threading.sleep",          min_args = 1, max_args = 1 }
+"Interlocked.Add"              = { emit = "common:threading.atomic_add",     min_args = 2, max_args = 2 }
+"Interlocked.Exchange"         = { emit = "common:threading.atomic_xchg",    min_args = 2, max_args = 2 }
+"Interlocked.CompareExchange"  = { emit = "common:threading.atomic_cmpxchg", min_args = 3, max_args = 3 }
 
 # ── GUI (Windows Forms) ─────────────────────────────────────────────────────
 

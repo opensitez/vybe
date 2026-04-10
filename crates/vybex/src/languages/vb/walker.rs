@@ -844,6 +844,14 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
+    // Inject canonical AddHandler statements at the END of the constructor
+    // body for every class method that has a `Handles` clause. This is the
+    // walker normalization that turns VB-specific `Handles ctrl.Event` into
+    // the same canonical `StmtKind::AddHandler` that C# `+=` (and JS / Dart /
+    // Python frontends) will produce. The compiler then has a single emit
+    // path for events regardless of source language.
+    inject_handles_into_constructor(&mut members);
+
     Ok(Statement::with_span(StmtKind::ClassDecl {
         name,
         parents,
@@ -857,6 +865,64 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             is_static: false,
         },
     }, span))
+}
+
+/// Walk the class members; for every Method with `handles: ["ctrl.Event", ...]`,
+/// build a canonical `AddHandler { control, event, handler: Me.method_name }`
+/// statement and append it to the constructor body. If no constructor exists,
+/// inject an empty one. Strips the `handles` field from the method afterward
+/// so the compiler doesn't double-process it.
+fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
+    // First pass: collect (handler_method_name, handles_list) and clear them
+    // off the methods so the compile_function_decl path doesn't re-emit.
+    let mut to_inject: Vec<(String, Vec<String>)> = Vec::new();
+    for m in members.iter_mut() {
+        if let ClassMember::Method(stmt) = m {
+            if let StmtKind::FunctionDecl { name: mname, handles, modifiers, .. } = &mut stmt.kind {
+                if !handles.is_empty() && !modifiers.is_static {
+                    to_inject.push((mname.clone(), std::mem::take(handles)));
+                }
+            }
+        }
+    }
+    if to_inject.is_empty() { return; }
+
+    // Build the AddHandler statements.
+    let mut new_stmts: Vec<Statement> = Vec::new();
+    for (method_name, handles) in &to_inject {
+        for h in handles {
+            let (control, event) = split_event_target(h);
+            // The handler is `Me.<method>` — a Member access on the class self.
+            let handler = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("Me")),
+                field: method_name.clone(),
+                null_safe: false,
+            });
+            new_stmts.push(Statement::new(StmtKind::AddHandler {
+                control,
+                event,
+                handler,
+            }));
+        }
+    }
+
+    // Find the constructor (or create one) and append the new statements.
+    let has_ctor = members.iter().any(|m| matches!(m, ClassMember::Constructor { .. }));
+    if !has_ctor {
+        members.push(ClassMember::Constructor {
+            params: Vec::new(),
+            body: new_stmts,
+            base_args: None,
+            visibility: Visibility::Public,
+        });
+    } else {
+        for m in members.iter_mut() {
+            if let ClassMember::Constructor { body, .. } = m {
+                body.extend(new_stmts.drain(..));
+                break;
+            }
+        }
+    }
 }
 
 fn parse_property_decl_to_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
@@ -1274,17 +1340,27 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
         Rule::addhandler_statement => {
             let mut inner = pair.into_inner();
-            let event_target = inner.next().unwrap().as_str().to_string();
+            let event_target_str = inner.next().unwrap().as_str().to_string();
             let addressof = inner.next().unwrap(); // addressof_expr
-            let handler = addressof.into_inner().next().unwrap().as_str().to_string();
-            StmtKind::AddHandler { event_target, handler }
+            let handler_str = addressof.into_inner().next().unwrap().as_str().to_string();
+            let (control, event) = split_event_target(&event_target_str);
+            StmtKind::AddHandler {
+                control,
+                event,
+                handler: build_dotted_expr(&handler_str),
+            }
         }
         Rule::removehandler_statement => {
             let mut inner = pair.into_inner();
-            let event_target = inner.next().unwrap().as_str().to_string();
+            let event_target_str = inner.next().unwrap().as_str().to_string();
             let addressof = inner.next().unwrap(); // addressof_expr
-            let handler = addressof.into_inner().next().unwrap().as_str().to_string();
-            StmtKind::RemoveHandler { event_target, handler }
+            let handler_str = addressof.into_inner().next().unwrap().as_str().to_string();
+            let (control, event) = split_event_target(&event_target_str);
+            StmtKind::RemoveHandler {
+                control,
+                event,
+                handler: build_dotted_expr(&handler_str),
+            }
         }
         Rule::static_statement => {
             let mut name = String::new();
@@ -3318,6 +3394,36 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 }
 
 // ── Helper functions ──
+
+/// Split a `ctrl.Event` (or `obj.Sub.Event`) string into a control expression
+/// and a lowercase event name. The last segment is the event; everything
+/// before becomes the control expression (member chain).
+fn split_event_target(s: &str) -> (Expression, String) {
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() < 2 {
+        return (Expression::ident(s), String::new());
+    }
+    let event = parts[parts.len() - 1].to_lowercase();
+    let control = build_dotted_expr(&parts[..parts.len() - 1].join("."));
+    (control, event)
+}
+
+/// Build an Expression from a dotted name like `me.btn1` or `obj.field.method`.
+/// The first segment becomes an Ident; subsequent segments become Member access.
+fn build_dotted_expr(s: &str) -> Expression {
+    let parts: Vec<&str> = s.split('.').collect();
+    let mut iter = parts.into_iter();
+    let first = iter.next().unwrap_or("");
+    let mut expr = Expression::ident(first);
+    for seg in iter {
+        expr = Expression::new(ExprKind::Member {
+            object: Box::new(expr),
+            field: seg.to_string(),
+            null_safe: false,
+        });
+    }
+    expr
+}
 
 fn parse_visibility(s: &str) -> Visibility {
     match s.to_lowercase().as_str() {

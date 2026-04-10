@@ -26,8 +26,19 @@ use vybe_bytecode::chunk::TypeEntry;
 // ── Object creation ─────────────────────────────────────────────────────
 
 /// Create a new empty object and stamp it with type info.
-/// Emits: struct_new 0 → local, __type string stamp, set_type_id via __tid_ global.
+/// Emits: struct_new 0 → local, __type string stamp, __control_name stamp,
+/// set_type_id via __tid_ global.
+///
 /// Stack: unchanged (object stored in this_slot)
+///
+/// `__control_name` is set to the lowercased class name. For form classes
+/// (a user `Class Form1` in any framework — WinForms, MAUI, etc.) this is
+/// the key the GUI host's property registry uses, so `Me.Text = "X"` ends
+/// up under `("form1", "text")` and `gui.get_property("form1", "text")`
+/// reflects the assignment. For non-form classes the field is dead metadata
+/// that nothing reads. Stamping it unconditionally keeps the compiler and
+/// the resolver from having to detect "is this class a form?" — the same
+/// canonical AST and bytecode shape works for both.
 pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
     // Create empty object → store in this_slot
     chunk.emit_op_u16(Op::struct_new, 0, line);
@@ -41,6 +52,16 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_op_u16(Op::r#const, type_str, line);
     chunk.emit_op_u16(Op::struct_set, type_key, line);
+    chunk.emit_op(Op::drop, line);
+
+    // Stamp __control_name = lowercased class name (canonical control identity).
+    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    let cname_str = chunk.add_constant(
+        Value::String(Arc::from(class_name.to_lowercase().as_str()))
+    );
+    let cname_key = chunk.add_constant(Value::String(Arc::from("__control_name")));
+    chunk.emit_op_u16(Op::r#const, cname_str, line);
+    chunk.emit_op_u16(Op::struct_set, cname_key, line);
     chunk.emit_op(Op::drop, line);
 
     // Stamp WASM GC type_id via __tid_ global (set at load time by TypeRegistry)
