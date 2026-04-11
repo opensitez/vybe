@@ -687,8 +687,10 @@ Public Class Form1
 End Class
 Dim f As New Form1()
 "#);
-    // Timer properties are set via GuiState; if we get here without error, it compiled correctly.
-    // The old test checked for SideEffect::PropertyChange for Interval; now we just verify no panic.
+    // Timer properties are mirrored into GuiState by the canvas/property
+    // setters; we just verify the program compiles and runs without
+    // panicking. (Asserting on the actual mirrored Interval value
+    // belongs in a Timer-specific test, not here.)
     let _g = gui.lock().unwrap();
 }
 

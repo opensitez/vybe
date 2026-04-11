@@ -232,7 +232,16 @@ impl PanelWidget for ListView {
     fn focusable(&self) -> bool { true }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetSelectedIndex(i) => { self.selected_index = Some(*i); CommandValue::None }
+            WidgetCommand::SetSelectedIndex(i) => {
+                if *i < self.items.len() && self.selected_index != Some(*i) {
+                    self.selected_index = Some(*i);
+                    self.pending_events.push(WidgetEvent::ListViewSelected(
+                        self.name.clone(),
+                        *i,
+                    ));
+                }
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Index(self.selected_index.unwrap_or(0)),
             WidgetCommand::AddItem(s) => { self.items.push(s.clone()); CommandValue::None }
             WidgetCommand::RemoveItem(i) => { if *i < self.items.len() { self.items.remove(*i); } CommandValue::None }

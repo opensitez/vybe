@@ -159,9 +159,10 @@ impl<'a> TinySkiaCanvas<'a> {
         }
     }
 
-    /// Measure the logical width of `text` in the current font. Returns
-    /// 0.0 if no text context is attached. Used by the host bridge's
-    /// `canvasMeasureText` and (eventually) by `Graphics.MeasureString`.
+    /// Measure the logical width and height of `text` in the current
+    /// font. Returns `(0.0, 0.0)` if no text context is attached. Used
+    /// by the host bridge's `canvasMeasureText` to back any
+    /// framework-side `MeasureText` API.
     pub fn measure_text(&mut self, text: &str) -> (f32, f32) {
         let Some(tc) = self.text_ctx.as_mut() else { return (0.0, 0.0); };
         let size = self.state.font.size;

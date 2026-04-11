@@ -190,7 +190,17 @@ impl PanelWidget for Slider {
     fn focusable(&self) -> bool { !self.disabled }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetValue(v) => { self.value = *v as f32; CommandValue::None }
+            WidgetCommand::SetValue(v) => {
+                let new_v = *v as f32;
+                if (self.value - new_v).abs() > f32::EPSILON {
+                    self.value = new_v;
+                    self.pending_events.push(WidgetEvent::SliderChanged(
+                        self.name.clone(),
+                        self.actual_value(),
+                    ));
+                }
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Number(self.value as f64),
             WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
             _ => CommandValue::None,

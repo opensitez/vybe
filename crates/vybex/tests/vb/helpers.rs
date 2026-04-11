@@ -73,3 +73,42 @@ pub fn load_vb_profile() -> vybex::profile::LanguageProfile {
     vybex::profile::parse_profile(vybex::languages::vb::profile_source())
         .expect("Failed to parse VB profile")
 }
+
+/// Run VB source and capture every `MsgBox(...)` invocation as a
+/// `(text, title)` tuple. Returns `(VM, GuiState, msgbox_log)`.
+///
+/// Production msgbox shows a native dialog inline via
+/// `vybe_widgets::dialogs::MessageBox::info` — there's no queue to
+/// inspect after the fact. To assert on msgbox calls in headless
+/// tests, we override the `vybe:gui::msgBox` host fn AFTER all the
+/// real registrations are done, swapping the native-dialog impl for
+/// one that pushes onto a captured `Vec`. The override is per-test
+/// (not global) so production behaviour is unaffected.
+pub fn run_vb_gui_capture_msgbox(
+    src: &str,
+) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<(String, String)>>>) {
+    let module = vybex::languages::vb::parse(src).expect("VB parse failed");
+    let profile = load_vb_profile();
+    let chunks = vybex::compiler::Compiler::with_profile(profile)
+        .compile(&module).expect("VB compile failed");
+
+    let mut vm = VM::new();
+    let _output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let gui = vybe_host::register_all_with_gui(&mut vm);
+
+    // Capture msgbox calls. Must be registered AFTER
+    // `register_all_with_gui` (which installs the production msgBox)
+    // so this override wins.
+    let msgboxes: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let mb_clone = msgboxes.clone();
+    vm.register_host_fn("vybe:gui", "msgBox", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let text = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        let title = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+        mb_clone.lock().unwrap().push((text, title));
+        Value::Null
+    }));
+
+    vybe_host::setup_namespaces(&mut vm);
+    vm.run(chunks).expect("VB run failed");
+    (vm, gui, msgboxes)
+}

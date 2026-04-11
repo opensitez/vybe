@@ -147,7 +147,16 @@ impl PanelWidget for Radio {
         match cmd {
             WidgetCommand::SetText(t) => { self.label = t.clone(); CommandValue::None }
             WidgetCommand::GetText => CommandValue::Text(self.label.clone()),
-            WidgetCommand::SetChecked(c) => { self.selected = *c; CommandValue::None }
+            WidgetCommand::SetChecked(c) => {
+                if self.selected != *c {
+                    self.selected = *c;
+                    self.pending_events.push(WidgetEvent::RadioSelected(
+                        self.name.clone(),
+                        self.selected,
+                    ));
+                }
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Bool(self.selected),
             WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
             WidgetCommand::Custom(key, CommandValue::Text(g)) if key == "SetGroup" => {

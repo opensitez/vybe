@@ -10,13 +10,17 @@
 //!
 //! ## How a canvas call lands
 //!
-//! 1. User code does `g.DrawLine(p, x1, y1, x2, y2)`.
-//! 2. The .NET wrapper layer compiles this into a sequence of
+//! 1. User code makes some framework-specific drawing call (e.g.
+//!    `g.DrawLine(p, x1, y1, x2, y2)` in .NET).
+//! 2. The matching framework wrapper compiles this into a sequence of
 //!    `vybe:gui::canvas*` host calls (set stroke colour, set width,
-//!    begin path, move to, line to, stroke). Each call passes the
-//!    Graphics handle as its first arg.
-//! 3. The Graphics handle is an Object stamped with `__control_name`
-//!    (the source control's name, set by `createGraphics`).
+//!    begin path, move to, line to, stroke). Each call passes a
+//!    canvas-context handle as its first arg.
+//! 3. The canvas-context handle is an Object stamped with
+//!    `__control_name` (the source control's name, set by
+//!    `getContext`). Framework wrappers may also stamp their own
+//!    `__type` (`"Graphics"`, `"CanvasContext2D"`, etc.) for downcast
+//!    purposes — the bridge doesn't care about the type tag.
 //! 4. Each canvas host fn here reads the name out of the handle, asks
 //!    `GuiState::find_canvas_mut` for the target canvas, and forwards.
 //!
@@ -32,6 +36,15 @@
 //!
 //! Both flow through the same trait — only the storage location
 //! differs.
+//!
+//! ## Naming
+//!
+//! The constructor is `getContext` (HTML5-canvas naming —
+//! `element.getContext('2d')`). All paint/path/draw methods are
+//! prefixed `canvas*`. The bridge is intentionally framework-neutral:
+//! no `Pen`, `Brush`, `Graphics`, or other framework-specific concepts
+//! leak in. Wrappers (`.NET System.Drawing.Graphics`, Flutter
+//! `Canvas`, JS `getContext('2d')`) live OUTSIDE this module.
 
 #[cfg(feature = "gui")]
 mod canvas_impl {
@@ -43,11 +56,17 @@ use vybe_widgets::canvas::{Canvas, Color, LineCap, LineJoin, Font, FontWeight, F
 use crate::gui_state::GuiState;
 
 pub fn register(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
-    // ── Constructor: vybe:gui::createGraphics(controlName) ─────────────
+    // ── Constructor: vybe:gui::getContext(controlName) ─────────────────
     //
-    // Returns a small Object stamped `__type = "Graphics"` and
+    // Returns a small Object stamped `__type = "CanvasContext"` and
     // `__control_name = controlName`. Subsequent canvas host fns read
     // the name out of the handle to find the target canvas.
+    //
+    // Framework wrappers (the .NET `Control.CreateGraphics` body, the
+    // future JS `Canvas.getContext('2d')`, the future Flutter
+    // `RenderObject.canvas` bridge) call this and re-stamp `__type`
+    // with their own framework-specific tag (`"Graphics"`,
+    // `"CanvasRenderingContext2D"`, etc.) so user code can downcast.
     //
     // Side effect: ensures a `RecordingCanvas` exists for the control,
     // either as a Canvas widget's internal recording (if the widget is
@@ -55,13 +74,13 @@ pub fn register(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
     // the form's render loop knows to replay it through `paint_overlay`).
     {
         let gui = gui.clone();
-        vm.register_host_fn("vybe:gui", "createGraphics", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        vm.register_host_fn("vybe:gui", "getContext", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let ctrl_name = args.first().map(|v| format!("{}", v)).unwrap_or_default();
             // Touch find_canvas_mut to ensure storage exists.
             { let _ = gui.lock().unwrap().find_canvas_mut(&ctrl_name); }
             let mut o = Object::new();
-            o.properties.insert("__type".into(), Value::String(Arc::from("Graphics")));
-            o.properties.insert("__control_type".into(), Value::String(Arc::from("Graphics")));
+            o.properties.insert("__type".into(), Value::String(Arc::from("CanvasContext")));
+            o.properties.insert("__control_type".into(), Value::String(Arc::from("CanvasContext")));
             o.properties.insert("__control_name".into(), Value::String(Arc::from(ctrl_name.to_lowercase().as_str())));
             Value::Object(Arc::new(Mutex::new(o)))
         }));
@@ -132,11 +151,11 @@ pub fn register(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
     // ── Convenience composites ─────────────────────────────────────────
     //
     // These bundle a few canvas trait calls into one host fn. They're
-    // useful for framework wrappers (`.NET Graphics.DrawEllipse` takes a
-    // bounding rect, not centre+radii) that would otherwise need
-    // arithmetic in the body DSL. Each one is still expressible as a
-    // pure-trait sequence — it's just packaged as a single host call so
-    // body authors don't have to push-and-multiply.
+    // useful for framework wrappers that take a bounding rect rather
+    // than centre+radii (and would otherwise need arithmetic in the
+    // body DSL). Each one is still expressible as a pure-trait
+    // sequence — it's just packaged as a single host call so body
+    // authors don't have to push-and-multiply.
     bind4_f32(vm, &gui, "canvasFillEllipseInRect",   |c, x, y, w, h| {
         let cx = x + w * 0.5;
         let cy = y + h * 0.5;
@@ -151,6 +170,93 @@ pub fn register(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
         c.ellipse(cx, cy, w * 0.5, h * 0.5);
         c.stroke();
     });
+
+    // canvasStrokeArcInRect(handle, x, y, w, h, startDeg, sweepDeg)
+    // — bounding-rect arc with degree-based start/sweep. Wraps the
+    // canvas trait's centre-based `arc` op, which uses radians and
+    // start/end (not start/sweep). The conversion is: cx = x + w/2,
+    // cy = y + h/2, r = avg(w, h)/2 (true elliptic arcs need
+    // separate rx/ry — we approximate with a circular arc when
+    // w == h, and a stretched circular arc otherwise).
+    {
+        let gui = gui.clone();
+        vm.register_host_fn("vybe:gui", "canvasStrokeArcInRect", Box::new(move |_ctx, args| {
+            let h = handle_name(args.first());
+            let x = f32_arg(args, 1);
+            let y = f32_arg(args, 2);
+            let w = f32_arg(args, 3);
+            let height = f32_arg(args, 4);
+            let start_deg = f32_arg(args, 5);
+            let sweep_deg = f32_arg(args, 6);
+            let cx = x + w * 0.5;
+            let cy = y + height * 0.5;
+            let r = (w + height) * 0.25;
+            let start = start_deg.to_radians();
+            let end = (start_deg + sweep_deg).to_radians();
+            let mut state = gui.lock().unwrap();
+            let canvas = state.find_canvas_mut(&h);
+            canvas.begin_path();
+            canvas.arc(cx, cy, r, start, end, false);
+            canvas.stroke();
+            Value::Null
+        }));
+    }
+    // canvasFillPieInRect(handle, x, y, w, h, startDeg, sweepDeg)
+    // — same shape but builds a closed wedge (move to centre, arc,
+    // close) and fills it.
+    {
+        let gui = gui.clone();
+        vm.register_host_fn("vybe:gui", "canvasFillPieInRect", Box::new(move |_ctx, args| {
+            let h = handle_name(args.first());
+            let x = f32_arg(args, 1);
+            let y = f32_arg(args, 2);
+            let w = f32_arg(args, 3);
+            let height = f32_arg(args, 4);
+            let start_deg = f32_arg(args, 5);
+            let sweep_deg = f32_arg(args, 6);
+            let cx = x + w * 0.5;
+            let cy = y + height * 0.5;
+            let r = (w + height) * 0.25;
+            let start = start_deg.to_radians();
+            let end = (start_deg + sweep_deg).to_radians();
+            let mut state = gui.lock().unwrap();
+            let canvas = state.find_canvas_mut(&h);
+            canvas.begin_path();
+            canvas.move_to(cx, cy);
+            canvas.line_to(cx + r * start.cos(), cy + r * start.sin());
+            canvas.arc(cx, cy, r, start, end, false);
+            canvas.close_path();
+            canvas.fill();
+            Value::Null
+        }));
+    }
+    // canvasStrokePieInRect — same as fill but stroke.
+    {
+        let gui = gui.clone();
+        vm.register_host_fn("vybe:gui", "canvasStrokePieInRect", Box::new(move |_ctx, args| {
+            let h = handle_name(args.first());
+            let x = f32_arg(args, 1);
+            let y = f32_arg(args, 2);
+            let w = f32_arg(args, 3);
+            let height = f32_arg(args, 4);
+            let start_deg = f32_arg(args, 5);
+            let sweep_deg = f32_arg(args, 6);
+            let cx = x + w * 0.5;
+            let cy = y + height * 0.5;
+            let r = (w + height) * 0.25;
+            let start = start_deg.to_radians();
+            let end = (start_deg + sweep_deg).to_radians();
+            let mut state = gui.lock().unwrap();
+            let canvas = state.find_canvas_mut(&h);
+            canvas.begin_path();
+            canvas.move_to(cx, cy);
+            canvas.line_to(cx + r * start.cos(), cy + r * start.sin());
+            canvas.arc(cx, cy, r, start, end, false);
+            canvas.close_path();
+            canvas.stroke();
+            Value::Null
+        }));
+    }
     // canvasClearAll(handle, r, g, b, a) — fill the entire canvas
     // bounds with the given colour. We don't actually know the
     // canvas's bounding rect at this layer (the canvas is a free
@@ -211,6 +317,98 @@ pub fn register(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
         }));
     }
 
+    // ── Dashed strokes ─────────────────────────────────────────────────
+    //
+    // Framework wrappers may want to pass variable-length dash
+    // arrays. Rather than introduce an array-encoding convention
+    // through the host bridge, we expose a small set of fixed-arity
+    // setters: 0 (solid), 2 (simple dash), 4 (dash-dot), 6 (dash-dot-dot).
+    // Wrappers like .NET's `DashStyle` enum map their value to one
+    // of these. Body sequences calling these don't need to know the
+    // length encoding.
+    {
+        let gui = gui.clone();
+        vm.register_host_fn("vybe:gui", "canvasSetLineDashSolid", Box::new(move |_ctx, args| {
+            let h = handle_name(args.first());
+            gui.lock().unwrap().find_canvas_mut(&h).set_line_dash(&[]);
+            Value::Null
+        }));
+    }
+    {
+        let gui = gui.clone();
+        vm.register_host_fn("vybe:gui", "canvasSetLineDash2", Box::new(move |_ctx, args| {
+            let h = handle_name(args.first());
+            let d0 = f32_arg(args, 1);
+            let d1 = f32_arg(args, 2);
+            gui.lock().unwrap().find_canvas_mut(&h).set_line_dash(&[d0, d1]);
+            Value::Null
+        }));
+    }
+    {
+        let gui = gui.clone();
+        vm.register_host_fn("vybe:gui", "canvasSetLineDash4", Box::new(move |_ctx, args| {
+            let h = handle_name(args.first());
+            let d0 = f32_arg(args, 1);
+            let d1 = f32_arg(args, 2);
+            let d2 = f32_arg(args, 3);
+            let d3 = f32_arg(args, 4);
+            gui.lock().unwrap().find_canvas_mut(&h).set_line_dash(&[d0, d1, d2, d3]);
+            Value::Null
+        }));
+    }
+    {
+        let gui = gui.clone();
+        vm.register_host_fn("vybe:gui", "canvasSetLineDash6", Box::new(move |_ctx, args| {
+            let h = handle_name(args.first());
+            let mut intervals = [0.0f32; 6];
+            for i in 0..6 {
+                intervals[i] = f32_arg(args, 1 + i);
+            }
+            gui.lock().unwrap().find_canvas_mut(&h).set_line_dash(&intervals);
+            Value::Null
+        }));
+    }
+    bind1_f32(vm, &gui, "canvasSetLineDashOffset", |c, o| c.set_line_dash_offset(o));
+
+    // canvasApplyPenDashStyle(handle, enumValue)
+    //
+    // Convenience for framework wrappers that have a `DashStyle` enum.
+    // Maps the .NET `System.Drawing.Drawing2D.DashStyle` integer values
+    // to a fixed dash pattern, and applies it to the canvas state. The
+    // .NET DashStyle enum is used as-is by other framework wrappers
+    // (Flutter, JS canvas API on the web side, …) — they pass the same
+    // integer values.
+    //
+    // Mapping (matches .NET):
+    //   0 = Solid       → []
+    //   1 = Dash        → [6, 4]
+    //   2 = Dot         → [2, 4]
+    //   3 = DashDot     → [6, 4, 2, 4]
+    //   4 = DashDotDot  → [6, 4, 2, 4, 2, 4]
+    //   5 = Custom      → no-op (pattern is already on the canvas via
+    //                     SetLineDashN)
+    {
+        let gui = gui.clone();
+        vm.register_host_fn("vybe:gui", "canvasApplyPenDashStyle", Box::new(move |_ctx, args| {
+            let h = handle_name(args.first());
+            let style = f32_arg(args, 1) as i32;
+            let pattern: &[f32] = match style {
+                0 => &[],
+                1 => &[6.0, 4.0],
+                2 => &[2.0, 4.0],
+                3 => &[6.0, 4.0, 2.0, 4.0],
+                4 => &[6.0, 4.0, 2.0, 4.0, 2.0, 4.0],
+                _ => return Value::Null,
+            };
+            gui.lock().unwrap().find_canvas_mut(&h).set_line_dash(pattern);
+            Value::Null
+        }));
+    }
+
+    // ── Clipping ───────────────────────────────────────────────────────
+    bind0(vm, &gui, "canvasClip", |c| c.clip());
+    bind0(vm, &gui, "canvasResetClip", |c| c.reset_clip());
+
     // ── State stack ────────────────────────────────────────────────────
     bind0(vm, &gui, "canvasSave", |c| c.save());
     bind0(vm, &gui, "canvasRestore", |c| c.restore());
@@ -218,6 +416,9 @@ pub fn register(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
     // ── Transforms ─────────────────────────────────────────────────────
     bind2_f32(vm, &gui, "canvasTranslate", |c, x, y| c.translate(x, y));
     bind1_f32(vm, &gui, "canvasRotate",    |c, rad| c.rotate(rad));
+    // Convenience: rotate by degrees instead of radians. Saves the
+    // dotnet body sequences from doing the *π/180 conversion.
+    bind1_f32(vm, &gui, "canvasRotateDegrees", |c, deg| c.rotate(deg.to_radians()));
     bind2_f32(vm, &gui, "canvasScale",     |c, sx, sy| c.scale(sx, sy));
     bind6_f32(vm, &gui, "canvasTransform", |c, m11, m12, m21, m22, dx, dy|
         c.transform(m11, m12, m21, m22, dx, dy));

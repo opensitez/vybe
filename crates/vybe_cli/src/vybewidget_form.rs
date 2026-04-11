@@ -295,7 +295,6 @@ impl FormApp {
                 eprintln!("[LOAD] Error: {e}");
             }
             drop(vm);
-            self.drain_side_effects();
             self.sync_widgets_from_vm();
         }
     }
@@ -326,17 +325,7 @@ impl FormApp {
             eprintln!("Event handler error: {e}");
         }
         drop(vm);
-        self.drain_side_effects();
         self.sync_widgets_from_vm();
-    }
-
-    fn drain_side_effects(&mut self) {
-        let dialogs: Vec<(String, String)> = self.gui.lock().unwrap().pending_dialogs.drain(..).collect();
-        for (text, title) in dialogs {
-            rfd::MessageDialog::new()
-                .set_title(&title).set_description(&text)
-                .set_level(rfd::MessageLevel::Info).show();
-        }
     }
 
     /// Push VM object properties into form widgets via `send_command`.
@@ -553,22 +542,44 @@ fn fn_arity(val: &vybe_bytecode::Value) -> usize {
 }
 
 // ── Dialog registration ────────────────────────────────────────────────
+//
+// `register_dialog_fns` overrides the host stubs registered by
+// `vybe_host` with real native-dialog implementations. The actual
+// dialog work goes through `vybe_widgets::dialogs::*` (which wraps
+// `rfd`) — vybe_cli no longer talks to `rfd` directly. The CLI's job
+// is glue: it owns the VM, registers host fns, dispatches events.
+// All GUI primitives — including dialogs — live in `vybe_widgets`.
+//
+// `msgBox` is now registered by `vybe_host::modules::gui` directly so
+// we don't override it here. Same for `__dlg_show`'s wider semantics
+// — but `__dlg_show` here also has the per-control-type branching for
+// `OpenFileDialog` / `SaveFileDialog` / `FolderBrowserDialog`, which
+// the host can't easily express because it needs to mutate the dialog
+// object on the VM stack. So we keep `__dlg_show` here for the dialog
+// classes specifically, and forward the actual native UI through
+// `vybe_widgets::dialogs`.
 
 fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
     use vybe_bytecode::Value;
     use vybe_bytecode::value::{Object, ObjectKind};
     use std::sync::{Arc, Mutex};
+    use vybe_widgets::dialogs::{FileDialog, FolderDialog};
 
     vm.register_host_fn("vybe:gui", "__dlg_show", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let dialog_type = if let Some(Value::Object(obj)) = args.first() {
+        let (dialog_type, title) = if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();
-            o.properties.get("__control_type").map(|v| format!("{}", v)).unwrap_or_default()
-        } else { String::new() };
+            let dt = o.properties.get("__control_type").map(|v| format!("{}", v)).unwrap_or_default();
+            let t = o.properties.get("title")
+                .or_else(|| o.properties.get("text"))
+                .map(|v| format!("{}", v))
+                .unwrap_or_default();
+            (dt, t)
+        } else { (String::new(), String::new()) };
 
         match dialog_type.as_str() {
             "OpenFileDialog" => {
-                let result = rfd::FileDialog::new().set_title("Open File").pick_file();
-                if let Some(path) = result {
+                let dlg_title = if title.is_empty() { "Open File".into() } else { title };
+                if let Some(path) = FileDialog::new(dlg_title).open() {
                     if let Some(Value::Object(obj)) = args.first() {
                         obj.lock().unwrap().properties.insert("filename".into(),
                             Value::String(Arc::from(path.to_string_lossy().as_ref())));
@@ -577,8 +588,8 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
                 } else { Value::I32(0) }
             }
             "SaveFileDialog" => {
-                let result = rfd::FileDialog::new().set_title("Save File").save_file();
-                if let Some(path) = result {
+                let dlg_title = if title.is_empty() { "Save File".into() } else { title };
+                if let Some(path) = FileDialog::new(dlg_title).save() {
                     if let Some(Value::Object(obj)) = args.first() {
                         obj.lock().unwrap().properties.insert("filename".into(),
                             Value::String(Arc::from(path.to_string_lossy().as_ref())));
@@ -587,8 +598,8 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
                 } else { Value::I32(0) }
             }
             "FolderBrowserDialog" => {
-                let result = rfd::FileDialog::new().set_title("Select Folder").pick_folder();
-                if let Some(path) = result {
+                let dlg_title = if title.is_empty() { "Select Folder".into() } else { title };
+                if let Some(path) = FolderDialog::new(dlg_title).pick() {
                     if let Some(Value::Object(obj)) = args.first() {
                         obj.lock().unwrap().properties.insert("selectedpath".into(),
                             Value::String(Arc::from(path.to_string_lossy().as_ref())));
@@ -596,20 +607,21 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
                     Value::I32(1)
                 } else { Value::I32(0) }
             }
+            // ColorDialog / FontDialog are placeholders — rfd doesn't
+            // ship native colour/font pickers. Returning OK without
+            // doing anything matches the old stub behaviour. Real
+            // colour/font pickers should live in
+            // `vybe_widgets::dialogs` (using the toolkit's own
+            // ColorPicker / FontPicker widgets in a modal popover).
             "ColorDialog" | "FontDialog" => Value::I32(1),
             _ => Value::I32(0),
         }
     }));
 
-    vm.register_host_fn("vybe:gui", "msgBox", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let text = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        let title = args.get(1).map(|v| format!("{}", v)).unwrap_or_else(|| "Message".into());
-        rfd::MessageDialog::new()
-            .set_title(&title).set_description(&text)
-            .set_level(rfd::MessageLevel::Info).show();
-        Value::Null
-    }));
-
+    // `inputBox` — VB6 InputBox(prompt, title, default). rfd has no
+    // single-line text input dialog, so we currently echo the default
+    // back. A real implementation would pop a small custom modal form
+    // built with vybe_widgets::TextInput.
     vm.register_host_fn("vybe:gui", "inputBox", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let default = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
         Value::String(Arc::from(default.as_str()))

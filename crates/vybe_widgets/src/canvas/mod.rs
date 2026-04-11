@@ -11,8 +11,10 @@
 //! [`Canvas`] is HTML5-canvas-shaped. Every operation has a 1:1
 //! counterpart in tiny-skia, Cairo, GDI, web canvas, Flutter canvas,
 //! etc. — this is the primitive set every drawing backend converges on.
-//! Higher-level framework wrappers (.NET `System.Drawing`, Flutter
-//! `Canvas`, JS `getContext('2d')`) all translate to the same trait.
+//! Higher-level framework façades that need to expose a different API
+//! shape live OUTSIDE this crate; this trait stays the canonical
+//! generic surface and never leaks framework-specific concepts (no
+//! `Pen`, no `Brush`, no `Graphics`).
 //!
 //! ## Two impls
 //!

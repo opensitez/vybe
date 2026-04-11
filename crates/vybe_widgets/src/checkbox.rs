@@ -191,7 +191,14 @@ impl PanelWidget for Checkbox {
             WidgetCommand::SetText(t) => { self.label = t.clone(); CommandValue::None }
             WidgetCommand::GetText => CommandValue::Text(self.label.clone()),
             WidgetCommand::SetChecked(c) => {
-                self.check_state = if *c { CheckState::Checked } else { CheckState::Unchecked };
+                let new_state = if *c { CheckState::Checked } else { CheckState::Unchecked };
+                if self.check_state != new_state {
+                    self.check_state = new_state;
+                    self.pending_events.push(WidgetEvent::CheckboxToggled(
+                        self.name.clone(),
+                        self.check_state.is_checked(),
+                    ));
+                }
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Bool(self.check_state.is_checked()),
@@ -200,11 +207,18 @@ impl PanelWidget for Checkbox {
                 match key.as_str() {
                     "SetCheckState" => {
                         if let CommandValue::Text(s) = val {
-                            self.check_state = match s.as_str() {
+                            let new_state = match s.as_str() {
                                 "checked" => CheckState::Checked,
                                 "indeterminate" => CheckState::Indeterminate,
                                 _ => CheckState::Unchecked,
                             };
+                            if self.check_state != new_state {
+                                self.check_state = new_state;
+                                self.pending_events.push(WidgetEvent::CheckboxToggled(
+                                    self.name.clone(),
+                                    self.check_state.is_checked(),
+                                ));
+                            }
                         }
                         CommandValue::None
                     }

@@ -151,7 +151,16 @@ impl PanelWidget for MaskedTextBox {
     fn focusable(&self) -> bool { !self.disabled }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetText(t) => { self.value = t.clone(); CommandValue::None }
+            WidgetCommand::SetText(t) => {
+                if self.value != *t {
+                    self.value = t.clone();
+                    self.pending_events.push(WidgetEvent::TextChanged(
+                        self.name.clone(),
+                        self.value.clone(),
+                    ));
+                }
+                CommandValue::None
+            }
             WidgetCommand::GetText => CommandValue::Text(self.value.clone()),
             WidgetCommand::GetValue => CommandValue::Text(self.value.clone()),
             WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }

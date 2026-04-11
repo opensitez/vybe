@@ -37,8 +37,6 @@ pub struct GuiState {
     pub form_object: Option<Value>,
     /// Pending close request.
     pub close_requested: bool,
-    /// Pending MsgBox dialogs: (text, title). Drained by the runner after each VM invocation.
-    pub pending_dialogs: Vec<(String, String)>,
     /// Property store: every `set_property` write is mirrored here keyed by
     /// `(lowercased control name, lowercased property)`. Used both as the
     /// authoritative source for `get_property` (so callers see what was
@@ -83,7 +81,6 @@ impl GuiState {
             should_run: false,
             form_object: None,
             close_requested: false,
-            pending_dialogs: Vec::new(),
             properties: HashMap::new(),
             needs_repaint: false,
             front_requested: false,

@@ -197,15 +197,15 @@ pub fn register_all(vm: &mut VM) {
         // happened use `register_all_with_gui` which installs the real
         // impls that record into `GuiState.overlay_canvases`.
         //
-        // The constructor `vybe:gui::createGraphics` returns a real
-        // Graphics handle (a small Object stamped with __control_name)
-        // so dotnet ctor identity-copy still works.
-        vm.register_host_fn("vybe:gui", "createGraphics", Box::new(|_ctx, args| {
+        // The constructor `vybe:gui::getContext` returns a real canvas
+        // context handle (a small Object stamped with __control_name)
+        // so framework wrapper ctors can identity-copy off it.
+        vm.register_host_fn("vybe:gui", "getContext", Box::new(|_ctx, args| {
             use vybe_bytecode::value::Object;
             let ctrl_name = args.first().map(|v| format!("{}", v)).unwrap_or_default();
             let mut o = Object::new();
-            o.properties.insert("__type".into(), Value::String(Arc::from("Graphics")));
-            o.properties.insert("__control_type".into(), Value::String(Arc::from("Graphics")));
+            o.properties.insert("__type".into(), Value::String(Arc::from("CanvasContext")));
+            o.properties.insert("__control_type".into(), Value::String(Arc::from("CanvasContext")));
             o.properties.insert("__control_name".into(), Value::String(Arc::from(ctrl_name.to_lowercase().as_str())));
             Value::Object(Arc::new(Mutex::new(o)))
         }));
@@ -225,10 +225,17 @@ pub fn register_all(vm: &mut VM) {
             // State stack
             "canvasSave", "canvasRestore",
             // Transforms
-            "canvasTranslate", "canvasRotate", "canvasScale",
+            "canvasTranslate", "canvasRotate", "canvasRotateDegrees", "canvasScale",
             "canvasTransform", "canvasResetTransform",
             // Convenience composites
             "canvasFillEllipseInRect", "canvasStrokeEllipseInRect", "canvasClearAll",
+            "canvasStrokeArcInRect", "canvasFillPieInRect", "canvasStrokePieInRect",
+            // Dashed strokes (fixed-arity setters)
+            "canvasSetLineDashSolid", "canvasSetLineDash2",
+            "canvasSetLineDash4", "canvasSetLineDash6",
+            "canvasSetLineDashOffset", "canvasApplyPenDashStyle",
+            // Clipping
+            "canvasClip", "canvasResetClip",
         ] {
             vm.register_host_fn("vybe:gui", fn_name, Box::new(|_ctx, _| Value::Null));
         }

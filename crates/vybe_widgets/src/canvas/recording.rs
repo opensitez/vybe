@@ -5,10 +5,12 @@
 //! 1. **Tests.** Asserting on `recording.commands` is exact-shape and
 //!    deterministic — no flaky pixel comparisons.
 //!
-//! 2. **Persistent draws.** .NET `Graphics` / VB6 graphics / HTML5 canvas
-//!    semantics are "drawings persist between paint cycles". Recording
-//!    is the natural shape for this — the form's render loop replays
-//!    the recording onto a fresh `TinySkiaCanvas` each frame.
+//! 2. **Persistent draws.** Most retained-mode drawing models (HTML5
+//!    canvas, immediate-mode UIs that need redraw on resize, framework
+//!    `Graphics` objects, …) want "drawings persist between paint
+//!    cycles". Recording is the natural shape for this — the form's
+//!    render loop replays the recording onto a fresh `TinySkiaCanvas`
+//!    each frame.
 //!
 //! `replay(&mut other)` walks the captured commands and dispatches each
 //! one to another `Canvas` impl. The dispatch is mechanical — one

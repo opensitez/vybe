@@ -318,7 +318,13 @@ impl PanelWidget for ListBox {
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
             WidgetCommand::SetSelectedIndex(i) => {
-                self.select_single(*i);
+                if *i < self.items.len() && self.selected_index != Some(*i) {
+                    self.select_single(*i);
+                    self.pending_events.push(WidgetEvent::ListBoxSelected(
+                        self.name.clone(),
+                        *i,
+                    ));
+                }
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Index(self.selected_index.unwrap_or(0)),

@@ -772,7 +772,11 @@ impl FocusManager {
                 use crate::canvas::Canvas as _CanvasTrait;
                 let r = w.rect();
                 let scale = ctx.scale;
-                let mut overlay = crate::canvas::TinySkiaCanvas::new(&mut ctx.pixmap);
+                let mut overlay = crate::canvas::TinySkiaCanvas::with_text(
+                    &mut ctx.pixmap,
+                    ctx.font_system,
+                    ctx.swash_cache,
+                );
                 overlay.translate(r.x * scale, r.y * scale);
                 if (scale - 1.0).abs() > f32::EPSILON {
                     overlay.scale(scale, scale);

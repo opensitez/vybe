@@ -204,7 +204,16 @@ impl PanelWidget for NumericUpDown {
     fn focusable(&self) -> bool { true }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetValue(v) => { self.value = *v; CommandValue::None }
+            WidgetCommand::SetValue(v) => {
+                if (self.value - *v).abs() > f64::EPSILON {
+                    self.value = *v;
+                    self.pending_events.push(WidgetEvent::NumericChanged(
+                        self.name.clone(),
+                        self.value,
+                    ));
+                }
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Number(self.value),
             _ => CommandValue::None,
         }

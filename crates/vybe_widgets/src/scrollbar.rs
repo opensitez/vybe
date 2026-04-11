@@ -366,7 +366,17 @@ impl PanelWidget for ScrollBar {
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetValue(v) => { self.pos = *v as f32; CommandValue::None }
+            WidgetCommand::SetValue(v) => {
+                let new_pos = *v as f32;
+                if (self.pos - new_pos).abs() > f32::EPSILON {
+                    self.pos = new_pos;
+                    self.pending_events.push(WidgetEvent::ScrollChanged(
+                        self.name.clone(),
+                        self.pos,
+                    ));
+                }
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Number(self.pos as f64),
             _ => CommandValue::None,
         }

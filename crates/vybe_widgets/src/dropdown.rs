@@ -171,7 +171,16 @@ impl PanelWidget for Dropdown {
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetSelectedIndex(i) => { if *i < self.items.len() { self.selected_idx = *i; } CommandValue::None }
+            WidgetCommand::SetSelectedIndex(i) => {
+                if *i < self.items.len() && self.selected_idx != *i {
+                    self.selected_idx = *i;
+                    self.pending_events.push(WidgetEvent::DropdownSelected(
+                        self.name.clone(),
+                        *i,
+                    ));
+                }
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Index(self.selected_idx),
             WidgetCommand::AddItem(s) => { self.items.push(s.clone()); CommandValue::None }
             WidgetCommand::RemoveItem(i) => { if *i < self.items.len() { self.items.remove(*i); } CommandValue::None }

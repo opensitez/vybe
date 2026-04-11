@@ -1,10 +1,10 @@
 //! `Canvas` — a first-class drawable widget.
 //!
 //! Drop a `Canvas` into a Form like any other control. It owns a
-//! [`RecordingCanvas`] that user code (or the host bridge) appends
-//! drawing commands to via [`Canvas::with_canvas`] or
-//! [`Canvas::canvas_mut`]. The widget's [`PanelWidget::render`] impl
-//! replays the recording onto the active `tiny_skia::Pixmap` each frame.
+//! [`RecordingCanvas`] that user code appends drawing commands to via
+//! [`Canvas::with_canvas`] or [`Canvas::canvas_mut`]. The widget's
+//! [`PanelWidget::render`] impl replays the recording onto the active
+//! `tiny_skia::Pixmap` each frame.
 //!
 //! ## Why a separate widget vs. just `paint_overlay` on every widget
 //!
@@ -127,6 +127,11 @@ impl Canvas {
     }
 }
 
+// Persistence semantics: drawings stay across frames until the caller
+// invokes `clear()`. This matches retained-mode drawing models like
+// HTML5 canvas — replay every frame, the recording is the source of
+// truth.
+
 impl Default for Canvas {
     fn default() -> Self {
         Self::new()
@@ -156,15 +161,21 @@ impl PanelWidget for Canvas {
             }
         }
 
-        // 2. Replay the recording onto a TinySkiaCanvas.
+        // 2. Replay the recording onto a text-enabled TinySkiaCanvas.
         //
-        // The canvas is constructed with the widget's origin pre-applied
-        // as a translate so user-supplied coordinates are widget-relative.
-        // (If the user opted out via `with_relative_coords(false)`, the
-        // recording is in absolute pixmap coordinates and we leave the
-        // transform at identity.)
+        // The canvas is constructed with `with_text(...)` so text
+        // commands captured in the recording (FillText/StrokeText)
+        // render through cosmic-text. The widget's origin is
+        // pre-applied as a translate so user-supplied coordinates are
+        // widget-relative. (If the user opted out via
+        // `with_relative_coords(false)`, the recording is in absolute
+        // pixmap coordinates and we leave the transform at identity.)
         if !self.recording.is_empty() {
-            let mut canvas = TinySkiaCanvas::new(&mut ctx.pixmap);
+            let mut canvas = TinySkiaCanvas::with_text(
+                &mut ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+            );
             if self.relative_coords {
                 canvas.translate(r.x * ctx.scale, r.y * ctx.scale);
             }

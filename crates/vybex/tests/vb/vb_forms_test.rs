@@ -1288,12 +1288,17 @@ Dim f As New Form1()
 }
 
 // ============================================================
-// G. PROPERTY SIDE EFFECTS AND PROPAGATION (8 tests)
+// G. PROPERTY MIRRORING TO GUI STATE (8 tests)
 // ============================================================
+//
+// Programmatic property writes from VB code (`btn.Text = "OK"`)
+// flow through the canvas/property mirror in `GuiState::set_property`
+// and land in the property store. These tests assert on the mirror
+// — they don't observe events.
 
-/// G01. Setting Text on a control emits PropertyChange.
+/// G01. Setting Text on a control mirrors into the gui-state property store.
 #[test]
-fn g01_text_property_emits_side_effect() {
+fn g01_text_property_mirrors_to_gui_state() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
 Public Class Form1
@@ -1451,32 +1456,32 @@ Dim f As New Form1()
 // H. MSGBOX, CLOSE, SHOW, DIALOGS (8 tests)
 // ============================================================
 
-/// H01. MsgBox emits a pending dialog.
+/// H01. MsgBox calls the host fn.
 #[test]
-fn h01_msgbox_emits_side_effect() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+fn h01_msgbox_emits_call() {
+    let (_vm, _gui, msgs) = super::helpers::run_vb_gui_capture_msgbox(r#"
 MsgBox("Hello!")
 "#);
-    let g = gui.lock().unwrap();
-    let has_msg = g.pending_dialogs.iter().any(|(text, _)| text == "Hello!");
-    assert!(has_msg, "Expected MsgBox dialog, got {:?}", g.pending_dialogs);
+    let msgs = msgs.lock().unwrap();
+    let has_msg = msgs.iter().any(|(text, _)| text == "Hello!");
+    assert!(has_msg, "Expected MsgBox call, got {:?}", *msgs);
 }
 
 /// H02. MsgBox with title.
 #[test]
 fn h02_msgbox_with_title() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, _gui, msgs) = super::helpers::run_vb_gui_capture_msgbox(r#"
 MsgBox("Are you sure?", "Confirm")
 "#);
-    let g = gui.lock().unwrap();
-    let has_msg = g.pending_dialogs.iter().any(|(text, title)| text == "Are you sure?" && title == "Confirm");
-    assert!(has_msg, "Expected MsgBox with title, got {:?}", g.pending_dialogs);
+    let msgs = msgs.lock().unwrap();
+    let has_msg = msgs.iter().any(|(text, title)| text == "Are you sure?" && title == "Confirm");
+    assert!(has_msg, "Expected MsgBox with title, got {:?}", *msgs);
 }
 
 /// H03. MsgBox called from a class method.
 #[test]
 fn h03_msgbox_from_method() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, _gui, msgs) = super::helpers::run_vb_gui_capture_msgbox(r#"
 Public Class Form1
     Public Sub New()
         ShowMessage()
@@ -1487,9 +1492,9 @@ Public Class Form1
 End Class
 Dim f As New Form1()
 "#);
-    let g = gui.lock().unwrap();
-    let has_msg = g.pending_dialogs.iter().any(|(text, _)| text == "From method");
-    assert!(has_msg, "Expected MsgBox from method, got {:?}", g.pending_dialogs);
+    let msgs = msgs.lock().unwrap();
+    let has_msg = msgs.iter().any(|(text, _)| text == "From method");
+    assert!(has_msg, "Expected MsgBox from method, got {:?}", *msgs);
 }
 
 /// H04. Form.Close called from method.
@@ -1549,25 +1554,25 @@ Console.WriteLine("Done")
 /// H07. MsgBox with string concatenation.
 #[test]
 fn h07_msgbox_string_concat() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, _gui, msgs) = super::helpers::run_vb_gui_capture_msgbox(r#"
 Dim name As String = "World"
 MsgBox("Hello " & name)
 "#);
-    let g = gui.lock().unwrap();
-    let has_msg = g.pending_dialogs.iter().any(|(text, _)| text == "Hello World");
-    assert!(has_msg, "Expected MsgBox 'Hello World', got {:?}", g.pending_dialogs);
+    let msgs = msgs.lock().unwrap();
+    let has_msg = msgs.iter().any(|(text, _)| text == "Hello World");
+    assert!(has_msg, "Expected MsgBox 'Hello World', got {:?}", *msgs);
 }
 
-/// H08. Multiple MsgBox calls produce multiple pending dialogs.
+/// H08. Multiple MsgBox calls produce multiple host fn invocations.
 #[test]
 fn h08_multiple_msgbox() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, _gui, msgs) = super::helpers::run_vb_gui_capture_msgbox(r#"
 MsgBox("First")
 MsgBox("Second")
 MsgBox("Third")
 "#);
-    let g = gui.lock().unwrap();
-    assert_eq!(g.pending_dialogs.len(), 3, "Expected 3 MsgBox dialogs, got {}", g.pending_dialogs.len());
+    let msgs = msgs.lock().unwrap();
+    assert_eq!(msgs.len(), 3, "Expected 3 MsgBox calls, got {}", msgs.len());
 }
 
 // ============================================================

@@ -256,16 +256,21 @@ pub fn register(
         })
     });
 
-    // MsgBox — push to GuiState pending_dialogs; runner drains and shows dialog
-    vm.register_host_fn("vybe:gui", "msgBox", {
-        let gui = gui.clone();
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let text = str_arg(args, 0, "");
-            let title = str_arg(args, 1, "");
-            gui.lock().unwrap().pending_dialogs.push((text, title));
-            Value::Null
-        })
-    });
+    // MsgBox — show a native message dialog inline via vybe_widgets.
+    //
+    // Blocks the calling thread (and therefore the VM) until the user
+    // dismisses the dialog. The previous implementation queued the
+    // request on `GuiState::pending_dialogs` for the form runner to
+    // drain — that queue is gone now: the host fn calls
+    // `vybe_widgets::dialogs::MessageBox` directly, the OS handles
+    // modality, and the VM resumes when the user clicks OK. Same
+    // semantics as a native blocking call.
+    vm.register_host_fn("vybe:gui", "msgBox", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let text = str_arg(args, 0, "");
+        let title = str_arg(args, 1, "Message");
+        vybe_widgets::dialogs::MessageBox::info(text, title);
+        Value::Null
+    }));
 
     vm.register_host_fn("vybe:gui", "noop", Box::new(|_ctx, _| Value::Null));
 

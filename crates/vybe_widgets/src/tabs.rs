@@ -145,7 +145,16 @@ impl PanelWidget for Tabs {
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetSelectedIndex(i) => { if *i < self.tabs.len() { self.selected = *i; } CommandValue::None }
+            WidgetCommand::SetSelectedIndex(i) => {
+                if *i < self.tabs.len() && self.selected != *i {
+                    self.selected = *i;
+                    self.pending_events.push(WidgetEvent::TabControlChanged(
+                        self.name.clone(),
+                        *i,
+                    ));
+                }
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Index(self.selected),
             WidgetCommand::AddItem(s) => { self.tabs.push(s.clone()); CommandValue::None }
             WidgetCommand::RemoveItem(i) => { if *i < self.tabs.len() { self.tabs.remove(*i); } CommandValue::None }

@@ -27,7 +27,6 @@ commonjs_require = false
 partial_classes = false
 byref_boxing = false
 with_block = true                      # with obj do begin ... end
-event_side_effects = false
 new_with_initializer = false
 new_from_initializer = false
 linq_queries = false

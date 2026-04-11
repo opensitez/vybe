@@ -181,7 +181,6 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
         partial_classes: false,
         byref_boxing: false,
         with_block: false,
-        event_side_effects: false,
         new_with_initializer: false,
         new_from_initializer: false,
         linq_queries: false,

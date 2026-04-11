@@ -157,7 +157,16 @@ impl PanelWidget for Select {
     fn focusable(&self) -> bool { !self.disabled }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetSelectedIndex(i) => { self.select_index(*i); CommandValue::None }
+            WidgetCommand::SetSelectedIndex(i) => {
+                if *i < self.options.len() && self.selected_index != *i {
+                    self.select_index(*i);
+                    self.pending_events.push(WidgetEvent::SelectChanged(
+                        self.name.clone(),
+                        self.selected_index,
+                    ));
+                }
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Index(self.selected_index),
             WidgetCommand::AddItem(s) => { self.options.push(s.clone()); CommandValue::None }
             WidgetCommand::RemoveItem(i) => { if *i < self.options.len() { self.options.remove(*i); } CommandValue::None }

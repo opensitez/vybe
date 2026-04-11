@@ -77,9 +77,6 @@ pub struct LanguageProfile {
     /// VB: With obj ... End With — bare .Member resolves to With target.
     pub with_block: bool,
 
-    /// VB: member assignment on controls triggers property change side effects.
-    pub event_side_effects: bool,
-
     /// VB: New Foo() With { .Prop = val } initializer syntax.
     pub new_with_initializer: bool,
 
@@ -319,8 +316,6 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let with_block = compiler.get("with_block")
         .and_then(|v| v.as_bool()).unwrap_or(false);
-    let event_side_effects = compiler.get("event_side_effects")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
     let new_with_initializer = compiler.get("new_with_initializer")
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let new_from_initializer = compiler.get("new_from_initializer")
@@ -469,7 +464,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         array_upper_bound_inclusive, parens_for_index, entry_point,
         hoist_var, dynamic_add, commonjs_require,
         partial_classes, byref_boxing, with_block,
-        event_side_effects, new_with_initializer, new_from_initializer, linq_queries,
+        new_with_initializer, new_from_initializer, linq_queries,
         builtins, intrinsics, namespaces, known_types,
         value_methods, module_aliases, namespace_constants, array_methods,
     })

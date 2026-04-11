@@ -105,6 +105,14 @@ pub fn register(vm: &mut VM) {
     }));
 
     // New Pen(color, width)
+    //
+    // The pen state shape is `{ color, width, dashstyle, dashoffset }`.
+    // Stroke methods on the framework wrapper layer (`Graphics.DrawLine`,
+    // `Graphics.DrawRectangle`, …) read these fields via `PushArgField`
+    // and forward them to canvas state mutations. `dashstyle` defaults
+    // to 0 (Solid) and `dashoffset` to 0.0 — the framework wrapper's
+    // setters mutate them in place when user code does
+    // `pen.DashStyle = ...`.
     vm.register_host_fn("vybe:drawing", "penNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let color = args.first().cloned().unwrap_or(Value::Null);
         let width = args.get(1).map(|v| v.as_f64()).unwrap_or(1.0);
@@ -112,6 +120,8 @@ pub fn register(vm: &mut VM) {
         obj.properties.insert("__type".into(), Value::String(Arc::from("Pen")));
         obj.properties.insert("color".into(), color);
         obj.properties.insert("width".into(), Value::F64(width));
+        obj.properties.insert("dashstyle".into(), Value::F64(0.0));
+        obj.properties.insert("dashoffset".into(), Value::F64(0.0));
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 

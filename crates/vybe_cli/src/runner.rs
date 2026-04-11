@@ -73,13 +73,10 @@ fn run_js_file(path: &Path) {
         }
     }
 
-    // Drain any pending MsgBox dialogs (before GUI window opens)
-    {
-        let dialogs: Vec<(String, String)> = gui.lock().unwrap().pending_dialogs.drain(..).collect();
-        for (text, title) in dialogs {
-            println!("[MsgBox] {title}: {text}");
-        }
-    }
+    // (MsgBox dialogs no longer queue — `vybe:gui::msgBox` shows the
+    // dialog inline via `vybe_widgets::dialogs::MessageBox::info`. The
+    // VM call blocks until the user dismisses the dialog. No queue, no
+    // drain.)
 
     // If runApplication was called, GuiState already has the real widgets
     if gui.lock().unwrap().should_run {
@@ -227,14 +224,6 @@ pub fn launch_vm_form(
     gui: std::sync::Arc<std::sync::Mutex<vybe_host::GuiState>>,
     initial_form: Option<vybe_forms::Form>,
 ) {
-    // Drain any pending MsgBox dialogs produced before the window opens
-    {
-        let dialogs: Vec<(String, String)> = gui.lock().unwrap().pending_dialogs.drain(..).collect();
-        for (text, title) in dialogs {
-            println!("[MsgBox] {title}: {text}");
-        }
-    }
-
     let should_launch = gui.lock().unwrap().should_run || initial_form.is_some();
 
     if should_launch {

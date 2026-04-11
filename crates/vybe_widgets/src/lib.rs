@@ -66,6 +66,7 @@ pub mod form;
 pub mod app_window;
 pub mod canvas;
 pub mod canvas_widget;
+pub mod dialogs;
 
 pub use checkbox::Checkbox;
 pub use radio::Radio;
