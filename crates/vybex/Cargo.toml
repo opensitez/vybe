@@ -12,6 +12,9 @@ vybe_host = { workspace = true }
 vybe_cli = { workspace = true }
 toml = "0.8"
 
+[dev-dependencies]
+vybe_widgets = { path = "../vybe_widgets" }
+
 [[bin]]
 name = "vybex"
 path = "src/main.rs"

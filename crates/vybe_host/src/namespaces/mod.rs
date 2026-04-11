@@ -17,6 +17,7 @@ mod json;
 mod types;
 mod threading;
 mod data;
+mod vb_globals;
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind};
@@ -39,6 +40,7 @@ pub fn setup_namespaces(vm: &mut VM) {
     types::register(vm);
     threading::register(vm);
     data::register(vm);
+    vb_globals::register(vm);
 
     // Polyfill: now that all host fns are registered (including any test
     // overrides), point each `__vybe_*` global at its native equivalent so

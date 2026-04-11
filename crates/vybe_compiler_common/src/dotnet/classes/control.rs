@@ -18,20 +18,104 @@
 //! `__set_text`. The two casings are kept consistent by
 //! [`super::builder::build_setter_chunk`].
 
-use super::{DotnetClass, DotnetMethod, MethodTarget};
+use super::{DotnetClass, DotnetMethod, MethodTarget, MethodOp};
+
+/// `Control.CreateGraphics()` body.
+///
+/// Translation:
+///
+/// ```text
+/// vybe:gui::createGraphics(this.__control_name) → Graphics handle
+/// ```
+///
+/// The handle is a small Object stamped with `__type = "Graphics"` and
+/// `__control_name = <this control's name>`. Subsequent canvas calls
+/// (issued by Graphics method bodies) read the name out of the handle
+/// to find the target `RecordingCanvas` on `GuiState`.
+///
+/// Note: the returned handle is NOT a fully-bound dotnet `Graphics`
+/// instance — it doesn't have the `DrawLine`/`FillRectangle` method
+/// thunks bound on it. That's intentional and correct: the dotnet
+/// method dispatch path looks up `Graphics` methods on the inheritance
+/// chain via type registry / __tid_, not via per-instance struct field
+/// reads. The handle just needs to carry the canvas's identity.
+///
+/// (Wait, that's wrong — methods ARE bound per-instance via struct_set
+/// in the ctor. We need to either go through the Graphics dotnet ctor
+/// OR bind the methods on the handle here. Going through the dotnet
+/// ctor IS the cleanest solution, and we already have a `NewDotnet`
+/// op... but it discards args. Need to think again.)
+///
+/// Resolution: emit `NewDotnet { class: "Graphics", argc: 0 }` to
+/// produce a fully-bound Graphics instance, THEN stamp its
+/// `__control_name` field with `this.__control_name`. This way the
+/// returned instance has all the method thunks (DrawLine etc.) AND
+/// carries the source control's identity for canvas routing.
+///
+/// Stack trace:
+/// ```text
+///   PushThis
+///   PushThisField "__control_name"     ; [this, name]
+///   NewDotnet Graphics 0               ; [this, name, graphics]
+///   ; need to swap graphics and name to do struct_set graphics.__control_name = name
+///   ; ... but the DSL doesn't have swap.
+/// ```
+///
+/// Workaround: stash `name` in a host-side intermediate via
+/// `createGraphics`. The `vybe:gui::createGraphics` host fn returns a
+/// pre-stamped Graphics-shaped Object. Then copy its `__control_name`
+/// onto a fresh `NewDotnet Graphics` instance via struct_set.
+///
+/// Actually simpler: just emit `NewDotnet Graphics 0` then `SetField
+/// __control_name` with `this.__control_name` on the stack ABOVE the
+/// graphics instance. struct_set takes [obj, val] — so we need
+/// graphics on the bottom, name on top. Build it as:
+///
+/// ```text
+///   NewDotnet Graphics 0          ; [graphics]
+///   PushThisField "__control_name" ; [graphics, name]
+///   SetField "__control_name"      ; [name]   (struct_set leaves the val)
+///   Drop                           ; []
+///   NewDotnet Graphics 0           ; ... wait, we need to return the stamped graphics
+/// ```
+///
+/// The struct_set leaves `val` on the stack, not `obj`. To return the
+/// graphics with its stamped name, we need to dup it before
+/// stamping:
+///
+/// ```text
+///   NewDotnet Graphics 0          ; [graphics]
+///   Dup                           ; [graphics, graphics]
+///   PushThisField "__control_name" ; [graphics, graphics, name]
+///   SetField "__control_name"      ; [graphics, name]
+///   Drop                           ; [graphics]
+///   Return                        ; returns graphics
+/// ```
+///
+/// This works.
+const CONTROL_CREATE_GRAPHICS: &[MethodOp] = &[
+    // graphics = New Graphics()
+    MethodOp::NewDotnet { class: "Graphics", argc: 0 },
+    // Stamp graphics.__control_name = this.__control_name so subsequent
+    // canvas calls route to this control's RecordingCanvas.
+    MethodOp::Dup,
+    MethodOp::PushThisField("__control_name"),
+    MethodOp::SetField("__control_name"),
+    MethodOp::Drop,
+    MethodOp::Return,
+];
 
 /// Methods owned by `Control` (inherited by every concrete control,
-/// including `Form`). Each entry maps to either a host fn or, when the
-/// method returns another .NET class instance, to that class's ctor.
+/// including `Form`). Each entry maps to a host fn or, for compound
+/// methods like `CreateGraphics`, to a [`MethodTarget::Body`] sequence.
 ///
 /// - `Show`/`Hide`/`Focus`/`Refresh`/… → host fns in `vybe:gui` (no-ops
-///   in non-display contexts, real implementations under a future GUI
-///   backend)
-/// - `CreateGraphics` → calls the `Graphics` dotnet class ctor so the
-///   returned instance has all `Graphics` methods (`DrawLine`, etc.)
-///   bound on it. Going through the raw `vybe:drawing::graphicsNew`
-///   host fn would skip method binding and break user code that does
-///   `g.DrawLine(...)`.
+///   in non-display contexts, real implementations under a GUI backend)
+/// - `CreateGraphics` → a Body that constructs a `Graphics` dotnet
+///   instance and stamps `__control_name` from `this`. The returned
+///   instance has all `Graphics` methods bound (via the standard dotnet
+///   ctor) AND carries the source control's identity, so subsequent
+///   `g.DrawLine(...)` calls route to the right `RecordingCanvas`.
 ///
 /// Methods specific to `Form` (`Close`, `ShowDialog`, `Activate`,
 /// `CenterToScreen`) live on the `Form` class so subclasses inherit them
@@ -47,7 +131,7 @@ const CONTROL_METHODS: &[DotnetMethod] = &[
     DotnetMethod { name: "SendToBack",     arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_send_to_back") },
     DotnetMethod { name: "Select",         arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_focus") },
     DotnetMethod { name: "Dispose",        arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_dispose") },
-    DotnetMethod { name: "CreateGraphics", arity: 1, target: MethodTarget::dotnet_ctor("Graphics") },
+    DotnetMethod { name: "CreateGraphics", arity: 1, target: MethodTarget::body(CONTROL_CREATE_GRAPHICS) },
 ];
 
 pub fn classes() -> &'static [DotnetClass] {

@@ -13,3 +13,4 @@ mod vb_interop_test;
 mod vb_namespace_test;
 mod vb_objects_collections_test;
 mod vb_threading_test;
+mod vb_canvas_test;

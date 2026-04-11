@@ -31,6 +31,7 @@ pub mod xml;
 pub mod threading;
 pub mod data;
 pub mod drawing;
+pub mod canvas;
 pub mod rt;
 
 use vybe_bytecode::{VM, Value, HostContext};
@@ -171,6 +172,67 @@ pub fn register_all(vm: &mut VM) {
         }));
         vm.register_host_fn("vybe:gui", "addHandler", Box::new(|_ctx, _| Value::Null));
 
+        // ── Control / Form method stubs for the dotnet class wrappers ──
+        // These are bound by `compiler_common::dotnet::classes::control::CONTROL_METHODS`
+        // and `form::FORM_METHODS` as method thunks. Without the host
+        // import target the VM would trap on unresolved import even
+        // though no test actually exercises window lifecycle.
+        for fn_name in &[
+            "__ctrl_show", "__ctrl_hide", "__ctrl_focus", "__ctrl_close",
+            "__ctrl_refresh", "__ctrl_invalidate", "__ctrl_update",
+            "__ctrl_bring_to_front", "__ctrl_send_to_back", "__ctrl_dispose",
+            "__form_activate", "__form_center_to_screen",
+            "__dlg_showdialog", "__dlg_show",
+        ] {
+            vm.register_host_fn("vybe:gui", fn_name, Box::new(|_ctx, _| Value::Null));
+        }
+
+        // ── Canvas host fn stubs for the dotnet drawing wrappers ────────
+        // The dotnet `Graphics` class compiles `DrawLine` etc. into
+        // method thunks that call `vybe:gui::canvas*`. Tests run
+        // through `register_all` (without `register_with_gui`), so the
+        // real canvas impls in `modules::canvas` aren't installed —
+        // these stubs let imports resolve and let drawing code run
+        // without trapping. Tests that actually want to verify drawing
+        // happened use `register_all_with_gui` which installs the real
+        // impls that record into `GuiState.overlay_canvases`.
+        //
+        // The constructor `vybe:gui::createGraphics` returns a real
+        // Graphics handle (a small Object stamped with __control_name)
+        // so dotnet ctor identity-copy still works.
+        vm.register_host_fn("vybe:gui", "createGraphics", Box::new(|_ctx, args| {
+            use vybe_bytecode::value::Object;
+            let ctrl_name = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let mut o = Object::new();
+            o.properties.insert("__type".into(), Value::String(Arc::from("Graphics")));
+            o.properties.insert("__control_type".into(), Value::String(Arc::from("Graphics")));
+            o.properties.insert("__control_name".into(), Value::String(Arc::from(ctrl_name.to_lowercase().as_str())));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }));
+        for fn_name in &[
+            // Paint state
+            "canvasSetFillColor", "canvasSetStrokeColor",
+            "canvasSetLineWidth", "canvasSetMiterLimit", "canvasSetGlobalAlpha",
+            "canvasSetLineCap", "canvasSetLineJoin", "canvasSetFont",
+            // Path building
+            "canvasBeginPath", "canvasClosePath",
+            "canvasMoveTo", "canvasLineTo", "canvasQuadTo", "canvasBezierTo",
+            "canvasArc", "canvasRect", "canvasEllipse",
+            // Drawing
+            "canvasFill", "canvasStroke",
+            "canvasFillRect", "canvasStrokeRect", "canvasClearRect",
+            "canvasFillText", "canvasStrokeText", "canvasDrawImage",
+            // State stack
+            "canvasSave", "canvasRestore",
+            // Transforms
+            "canvasTranslate", "canvasRotate", "canvasScale",
+            "canvasTransform", "canvasResetTransform",
+            // Convenience composites
+            "canvasFillEllipseInRect", "canvasStrokeEllipseInRect", "canvasClearAll",
+        ] {
+            vm.register_host_fn("vybe:gui", fn_name, Box::new(|_ctx, _| Value::Null));
+        }
+
         // ── Per-control `new_<Type>` stubs for the dotnet class wrappers ──
         // The compiler_common::dotnet::classes layer emits ctor chunks that
         // call `vybe:gui::new_<ClassName>` for every concrete leaf. In test
@@ -207,6 +269,8 @@ pub fn register_all(vm: &mut VM) {
             // Dialogs
             "OpenFileDialog", "SaveFileDialog", "FontDialog", "ColorDialog",
             "FolderBrowserDialog",
+            // Drawing
+            "Canvas",
         ];
         for ct in dotnet_concrete_controls {
             let type_name = ct.to_string();
@@ -316,6 +380,7 @@ pub fn register_all_with_gui(
     let gui = std::sync::Arc::new(std::sync::Mutex::new(crate::gui_state::GuiState::new()));
     register_all(vm);
     gui::register(vm, gui.clone());
+    canvas::register(vm, gui.clone());
     // DO NOT call setup_namespaces here — callers do it after all overrides.
     gui
 }
@@ -331,6 +396,7 @@ pub fn register_with_capabilities_and_gui(
     register_with_capabilities(vm, caps);
     if caps.has(Capability::Gui) {
         gui::register(vm, gui.clone());
+        canvas::register(vm, gui.clone());
         crate::namespaces::setup_namespaces(vm);
     }
     gui

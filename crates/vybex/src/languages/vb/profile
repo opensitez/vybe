@@ -207,7 +207,7 @@ strdup         = { emit = "host:vybe:convert:toString", min_args = 1, max_args =
 ubound  = { emit = "intrinsic:ubound",            min_args = 1, max_args = 1 }
 lbound  = { emit = "intrinsic:lbound",            min_args = 0, max_args = 1 }
 array   = { emit = "host:vybe:array:from",         min_args = 0, max_args = 255 }
-erase   = { emit = "noop",                         min_args = 1, max_args = 1 }
+erase   = { emit = "intrinsic:erase",              min_args = 1, max_args = 1 }
 
 # ── Date/Time functions ──────────────────────────────────────────────────────
 

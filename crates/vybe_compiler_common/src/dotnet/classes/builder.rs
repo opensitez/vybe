@@ -31,7 +31,7 @@ use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
 use crate::functions::create_function_chunk;
-use super::{DotnetClass, DotnetMethod, MethodTarget};
+use super::{DotnetClass, DotnetMethod, MethodTarget, MethodOp};
 
 // ─── Setter chunk ───────────────────────────────────────────────────────────
 
@@ -146,6 +146,7 @@ pub fn build_method_thunk_chunk(
     class_name: &str,
     method: &DotnetMethod,
     import_idx: u16,
+    body_imports: &[u16],
 ) -> Chunk {
     let chunk_name = format!("{}::{}", class_name, method.name);
     let mut chunk = create_function_chunk(&chunk_name, method.arity);
@@ -178,10 +179,194 @@ pub fn build_method_thunk_chunk(
             chunk.emit_op_u8(Op::call, method.arity - 1, line);
             chunk.emit_op(Op::r#return, line);
         }
+        MethodTarget::Body(ops) => {
+            compile_body(&mut chunk, ops, body_imports, method.arity, line);
+        }
     }
 
     chunk.local_count = method.arity as u16;
     chunk
+}
+
+/// Compile a `MethodTarget::Body` sequence into bytecode.
+///
+/// `body_imports` is the per-`CallHost`-op import index, in the order
+/// the ops appear in `ops`. The orchestrator pre-resolves them via
+/// [`super::collect_body_imports`] and `chunks[0].add_import` so the
+/// builder doesn't have to touch the imports vec.
+///
+/// Slot layout (matches the rest of the builder):
+/// - slot 0 = closure ref (reserved by the VM)
+/// - slot 1 = `this`
+/// - slots 2..=arity = user args
+fn compile_body(
+    chunk: &mut Chunk,
+    ops: &[MethodOp],
+    body_imports: &[u16],
+    arity: u8,
+    line: u32,
+) {
+    let mut import_cursor = 0usize;
+    let mut returned = false;
+
+    for op in ops {
+        match *op {
+            MethodOp::PushThis => {
+                chunk.emit_op_u16(Op::local_get, 1, line);
+            }
+            MethodOp::PushArg(n) => {
+                debug_assert!(n >= 1 && n <= arity - 1,
+                    "PushArg({}) out of range for method arity {} (this + {} args)",
+                    n, arity, arity - 1);
+                // arg N (1-indexed after `this`) lives in slot 1 + N.
+                chunk.emit_op_u16(Op::local_get, (1 + n) as u16, line);
+            }
+            MethodOp::PushThisField(field) => {
+                chunk.emit_op_u16(Op::local_get, 1, line);
+                let key = chunk.add_constant(Value::String(Arc::from(field)));
+                chunk.emit_op_u16(Op::struct_get, key, line);
+            }
+            MethodOp::PushArgField(n, field) => {
+                debug_assert!(n >= 1 && n <= arity - 1,
+                    "PushArgField({}, _) out of range for method arity {}",
+                    n, arity);
+                chunk.emit_op_u16(Op::local_get, (1 + n) as u16, line);
+                let key = chunk.add_constant(Value::String(Arc::from(field)));
+                chunk.emit_op_u16(Op::struct_get, key, line);
+            }
+            MethodOp::PushArgFieldField(n, f1, f2) => {
+                debug_assert!(n >= 1 && n <= arity - 1,
+                    "PushArgFieldField({}, _, _) out of range for method arity {}",
+                    n, arity);
+                chunk.emit_op_u16(Op::local_get, (1 + n) as u16, line);
+                let k1 = chunk.add_constant(Value::String(Arc::from(f1)));
+                chunk.emit_op_u16(Op::struct_get, k1, line);
+                let k2 = chunk.add_constant(Value::String(Arc::from(f2)));
+                chunk.emit_op_u16(Op::struct_get, k2, line);
+            }
+            MethodOp::PushConstInt(v) => {
+                let c = chunk.add_constant(Value::F64(v as f64));
+                chunk.emit_op_u16(Op::r#const, c, line);
+            }
+            MethodOp::PushConstFloat(v) => {
+                let c = chunk.add_constant(Value::F64(v));
+                chunk.emit_op_u16(Op::r#const, c, line);
+            }
+            MethodOp::PushConstStr(s) => {
+                let c = chunk.add_constant(Value::String(Arc::from(s)));
+                chunk.emit_op_u16(Op::r#const, c, line);
+            }
+            MethodOp::PushConstBool(b) => {
+                if b { chunk.emit_op(Op::r#true, line); }
+                else { chunk.emit_op(Op::r#false, line); }
+            }
+            MethodOp::PushConstNull => {
+                chunk.emit_op(Op::null, line);
+            }
+            MethodOp::CallHost { argc, .. } => {
+                debug_assert!(import_cursor < body_imports.len(),
+                    "compile_body: ran out of pre-resolved import indices");
+                let idx = body_imports[import_cursor];
+                import_cursor += 1;
+                chunk.emit_op_u16(Op::call_import, idx, line);
+                chunk.emit(argc, line);
+            }
+            MethodOp::NewDotnet { class, argc } => {
+                let global_const = chunk.add_constant(Value::String(Arc::from(class)));
+                chunk.emit_op_u16(Op::global_get, global_const, line);
+                // Note: global_get pushes the ctor; the args are
+                // expected to already be on the stack BELOW it from
+                // earlier `Push*` ops. Real .NET ctor convention here
+                // expects [args..., ctor], but the VM's `call` op
+                // expects [ctor, args...]. Body authors must order
+                // their ops accordingly: emit the ctor (`NewDotnet`)
+                // FIRST, then the args, then... wait, that's not how
+                // we have it.
+                //
+                // Actually re-reading: most languages put the callee
+                // first then args. The simpler convention is for body
+                // authors to emit args first, then NewDotnet, and have
+                // NewDotnet do the work of pushing the ctor and
+                // calling. But that means the ctor goes ABOVE the args
+                // on the stack, which is wrong for `call`.
+                //
+                // The `call` opcode expects: stack = [callee, arg0, arg1, ..., argN-1]
+                // and `argc` operand = N. So we need callee BELOW the args.
+                //
+                // Resolution: NewDotnet pushes the ctor, then issues
+                // call(argc) ASSUMING the args are not yet on the
+                // stack. Body authors must emit NewDotnet first, then
+                // the user args, then nothing else — NewDotnet is the
+                // call boundary.
+                //
+                // Wait — that means NewDotnet can't be emitted in the
+                // middle of a sequence; it'd have to be the last op.
+                // That's too restrictive.
+                //
+                // Better: NewDotnet emits the ctor push only, and a
+                // separate explicit `Call(argc)` op handles the call.
+                // But we don't have that in the enum.
+                //
+                // For now: emit ctor + call(argc) as a unit, and
+                // require body authors to push args BEFORE NewDotnet.
+                // The implementation has to swap them, which on a
+                // stack VM means using temporaries.
+                //
+                // To avoid the temp dance, emit the simplest form: a
+                // `call_indirect`-style global_get + call sequence
+                // assuming args are already on the stack ABOVE the
+                // ctor push location. The cleanest fix is to require
+                // body authors to use NewDotnet AS the entire call
+                // (no args) — and use `Body` ops for ctor calls only
+                // when arity = 0 OR push args via locals.
+                //
+                // Pragmatic: NewDotnet supports arity-0 only for now.
+                // The two known callers (CreateGraphics → Graphics(),
+                // and any other "factory of arity 0") work fine. When
+                // we need arity-N factory methods we'll add a `Call`
+                // op or restructure.
+                debug_assert_eq!(argc, 0,
+                    "MethodOp::NewDotnet currently only supports argc=0; \
+                     for arity-N factories, switch to a Host target or extend the DSL");
+                chunk.emit_op_u8(Op::call, 0, line);
+            }
+            MethodOp::SetField(field) => {
+                let key = chunk.add_constant(Value::String(Arc::from(field)));
+                chunk.emit_op_u16(Op::struct_set, key, line);
+            }
+            MethodOp::Drop => {
+                chunk.emit_op(Op::drop, line);
+            }
+            MethodOp::Dup => {
+                chunk.emit_op(Op::dup, line);
+            }
+            MethodOp::Return => {
+                chunk.emit_op(Op::r#return, line);
+                returned = true;
+                break;
+            }
+        }
+    }
+
+    // Safety net: if the body didn't end in `Return`, emit `null + return`.
+    if !returned {
+        chunk.emit_op(Op::null, line);
+        chunk.emit_op(Op::r#return, line);
+    }
+}
+
+/// Walk a `Body` op sequence and return every unique `(module, fn_name)`
+/// pair referenced by `CallHost` ops, in encounter order. The
+/// orchestrator uses this to pre-resolve import indices via
+/// `chunks[0].add_import` before calling `build_method_thunk_chunk`.
+pub fn collect_body_call_targets(ops: &[MethodOp]) -> Vec<(&'static str, &'static str)> {
+    let mut targets = Vec::new();
+    for op in ops {
+        if let MethodOp::CallHost { module, fn_name, .. } = op {
+            targets.push((*module, *fn_name));
+        }
+    }
+    targets
 }
 
 // ─── Constructor chunk ──────────────────────────────────────────────────────

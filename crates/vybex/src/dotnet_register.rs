@@ -28,8 +28,8 @@
 
 use crate::compiler::Compiler;
 use vybe_compiler_common as common;
-use common::dotnet::classes::{dotnet_classes, builder, DotnetClass};
-use common::dotnet::classes::builder::SetterBinding;
+use common::dotnet::classes::{dotnet_classes, builder, DotnetClass, MethodTarget};
+use common::dotnet::classes::builder::{SetterBinding, MethodBinding};
 
 impl Compiler {
     /// Register every `.NET` class wrapper as a callable global on the
@@ -55,32 +55,89 @@ impl Compiler {
         set_prop_idx: u16,
     ) -> Result<(), String> {
         // ── Step 1: build & push setter chunks for this class's properties ──
-        let mut bindings: Vec<SetterBinding<'static>> = Vec::with_capacity(class.properties.len());
+        let mut setter_bindings: Vec<SetterBinding<'static>> =
+            Vec::with_capacity(class.properties.len());
         for prop in class.properties {
             let setter_chunk = builder::build_setter_chunk(class.name, prop, set_prop_idx);
             self.chunks_mut().push(setter_chunk);
             let setter_idx = self.chunks_mut().len() - 1;
-            bindings.push(SetterBinding {
+            setter_bindings.push(SetterBinding {
                 prop_pascal: *prop,
                 setter_chunk_idx: setter_idx,
             });
         }
 
-        // ── Step 2: import vybe:gui::new_<Type> if this is a concrete leaf ──
+        // ── Step 2: build & push method thunk chunks for this class ────────
+        //
+        // Each method thunk forwards `(this, args...)` to either a host
+        // import or a dotnet class ctor, depending on `method.target`. For
+        // `Host` targets we pre-resolve the import index here so the
+        // builder doesn't need to touch the imports vec. For `DotnetCtor`
+        // targets the builder uses `global_get` directly and the import
+        // index is unused (we pass 0 as a dummy).
+        //
+        // Method bindings are stored under their lowercased name because
+        // that's what the canonical AST emits for `obj.MethodName(...)`.
+        // Use a `String` for the lowercased method name (the lifetime of
+        // the static `&str` doesn't survive the lowercasing) and store it
+        // alongside the binding so the borrow stays alive while we build
+        // the constructor chunk.
+        let mut method_lowered_names: Vec<String> = Vec::with_capacity(class.methods.len());
+        let mut method_thunk_indices: Vec<usize> = Vec::with_capacity(class.methods.len());
+        for method in class.methods {
+            let (import_idx, body_imports) = match method.target {
+                MethodTarget::Host { module, fn_name } => {
+                    (self.chunks_mut()[0].add_import(module, fn_name), Vec::new())
+                }
+                MethodTarget::DotnetCtor { .. } => (0u16, Vec::new()),
+                MethodTarget::Body(ops) => {
+                    // Pre-resolve every CallHost target's import index
+                    // in encounter order. The builder consumes them via
+                    // a cursor as it walks the body ops.
+                    let targets = builder::collect_body_call_targets(ops);
+                    let mut imports = Vec::with_capacity(targets.len());
+                    for (module, fn_name) in targets {
+                        imports.push(self.chunks_mut()[0].add_import(module, fn_name));
+                    }
+                    (0u16, imports)
+                }
+            };
+            let thunk = builder::build_method_thunk_chunk(
+                class.name, method, import_idx, &body_imports,
+            );
+            self.chunks_mut().push(thunk);
+            method_thunk_indices.push(self.chunks_mut().len() - 1);
+            method_lowered_names.push(method.name.to_lowercase());
+        }
+        let method_bindings: Vec<MethodBinding> = method_lowered_names
+            .iter()
+            .zip(method_thunk_indices.iter())
+            .map(|(name, idx)| MethodBinding {
+                method_name: name.as_str(),
+                thunk_chunk_idx: *idx,
+            })
+            .collect();
+
+        // ── Step 3: import the backing host fn if this is a concrete leaf ──
         let widget_new_idx = class.widget_host_fn.map(|host_fn| {
-            self.chunks_mut()[0].add_import(common::gui::GUI_MODULE, host_fn)
+            self.chunks_mut()[0].add_import(class.widget_host_module, host_fn)
         });
 
-        // ── Step 3: build & push the constructor chunk ─────────────────────
-        let ctor_chunk = builder::build_constructor_chunk(class, &bindings, widget_new_idx);
+        // ── Step 4: build & push the constructor chunk ─────────────────────
+        let ctor_chunk = builder::build_constructor_chunk(
+            class,
+            &setter_bindings,
+            &method_bindings,
+            widget_new_idx,
+        );
         self.chunks_mut().push(ctor_chunk);
         let ctor_idx = self.chunks_mut().len() - 1;
 
-        // ── Step 4: install as a callable global in the script chunk ──────
+        // ── Step 5: install as a callable global in the script chunk ──────
         let line = self.current_line();
         builder::emit_install_class_global(&mut self.chunks_mut()[0], class.name, ctor_idx, line);
 
-        // ── Step 5: register the class in the compiler's bookkeeping ──────
+        // ── Step 6: register the class in the compiler's bookkeeping ──────
         // The lowercase form is what the canonical AST uses for identifier
         // lookups in case-insensitive languages (VB, Pascal). The
         // PascalCase form is what case-sensitive languages (C#, Dart) use.

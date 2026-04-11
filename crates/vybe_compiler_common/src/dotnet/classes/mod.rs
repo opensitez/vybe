@@ -188,22 +188,27 @@ pub struct DotnetMethod {
 
 /// What a `DotnetMethod` thunk forwards to.
 ///
-/// Two cases:
+/// Three cases:
 ///
 /// - **`Host`** — the method's implementation is a registered host fn.
 ///   The thunk does `call_import <module>::<fn>` with `(this, arg0, ...)`
-///   on the stack. This is the common case for property-style operations
-///   on a control or value type (`Show`, `Hide`, `DrawLine`, …).
+///   on the stack. The common case for one-shot forwarders (`Show`,
+///   `Hide`, `__ctrl_show`, …).
 ///
 /// - **`DotnetCtor`** — the method returns a fresh instance of another
 ///   .NET class. The thunk does `global_get <class> ; call(N-1)` —
 ///   passing the user args (NOT `this`) to the target class's ctor.
-///   Used by methods like `Control.CreateGraphics()` which return a
-///   `Graphics` object that itself needs all of `Graphics`'s methods
-///   bound on it. We can't use the raw host fn (`graphicsNew`) here
-///   because that returns a bare `Object` with no method bindings; we
-///   need to go through the dotnet class ctor so the returned instance
-///   inherits the full method surface.
+///   Used for factory-style methods that DON'T need `this`.
+///
+/// - **`Body`** — a small declarative bytecode template ([`MethodOp`]
+///   sequence) the builder compiles to real opcodes. Used wherever the
+///   .NET API doesn't map 1:1 onto a single host fn — e.g.
+///   `Graphics.DrawLine(pen, x1, y1, x2, y2)` reads `pen.color` /
+///   `pen.width` from `this`'s args, then makes ~5 sequential canvas
+///   host calls. The body is a static slice that lives next to the
+///   class definition; the builder handles all the lowering. There's
+///   no interpreter at runtime — `Body` compiles to identical bytecode
+///   to what hand-written ops would emit.
 #[derive(Debug, Clone, Copy)]
 pub enum MethodTarget {
     Host {
@@ -213,6 +218,7 @@ pub enum MethodTarget {
     DotnetCtor {
         class: &'static str,
     },
+    Body(&'static [MethodOp]),
 }
 
 impl MethodTarget {
@@ -225,6 +231,89 @@ impl MethodTarget {
     pub const fn dotnet_ctor(class: &'static str) -> Self {
         MethodTarget::DotnetCtor { class }
     }
+
+    /// Convenience constructor for `Body` variant.
+    pub const fn body(ops: &'static [MethodOp]) -> Self {
+        MethodTarget::Body(ops)
+    }
+}
+
+/// One operation in a [`MethodTarget::Body`] template.
+///
+/// `Body` sequences are small declarative bytecode templates: each op
+/// lowers to one or two real opcodes via
+/// [`super::builder::build_method_thunk_chunk`]. The lowering is
+/// mechanical — the same opcodes you'd write by hand, just generated
+/// from the slice.
+///
+/// ## Stack discipline
+///
+/// Each op documents its stack effect. The builder doesn't statically
+/// verify them — sequences are written by hand and tested via
+/// integration. Standard convention:
+///
+/// - `Push*` ops add to the stack
+/// - `CallHost` / `NewDotnet` consume their args and leave the result
+/// - `Drop` removes the top of the stack
+/// - `SetField` consumes `[obj, val]` and leaves nothing
+/// - `Return` returns top-of-stack (or null if the stack is empty)
+///
+/// Method args are 1-indexed: arg `1` is the first user-supplied arg
+/// AFTER `this`. So `Graphics.DrawLine(pen, x1, y1, x2, y2)` has `pen`
+/// at `PushArg(1)`, `x1` at `PushArg(2)`, etc.
+#[derive(Debug, Clone, Copy)]
+pub enum MethodOp {
+    /// Push `this` (slot 1 in the call frame, after the closure ref at
+    /// slot 0).
+    PushThis,
+    /// Push user arg `n` (1-indexed). Arg 1 is the first user arg
+    /// AFTER `this`.
+    PushArg(u8),
+    /// Push `this.<field>`.
+    PushThisField(&'static str),
+    /// Push `argN.<field>`.
+    PushArgField(u8, &'static str),
+    /// Push `argN.<f1>.<f2>` (two-level field access). Convenience op
+    /// for the common case of reading a sub-field on a value-type
+    /// argument — e.g. `pen.color.r` from `Graphics.DrawLine(pen, ...)`.
+    /// Equivalent to `PushArgField(n, f1)` followed by a struct_get on
+    /// `f2`, but expressed as a single declarative op.
+    PushArgFieldField(u8, &'static str, &'static str),
+    /// Push a constant integer.
+    PushConstInt(i32),
+    /// Push a constant float.
+    PushConstFloat(f64),
+    /// Push a constant string.
+    PushConstStr(&'static str),
+    /// Push a constant boolean.
+    PushConstBool(bool),
+    /// Push the `null` constant.
+    PushConstNull,
+    /// Call `<module>::<fn_name>` with `argc` arguments popped from
+    /// the stack. Result is left on the stack.
+    CallHost {
+        module: &'static str,
+        fn_name: &'static str,
+        argc: u8,
+    },
+    /// Call the dotnet class `class`'s ctor with `argc` arguments
+    /// popped from the stack (no implicit `this`). The class's
+    /// constructor global must already be installed by an earlier
+    /// `register_dotnet_classes` iteration. Result is left on the stack.
+    NewDotnet {
+        class: &'static str,
+        argc: u8,
+    },
+    /// `struct_set` — pops `[obj, val]`, stores `val` into `obj.<field>`,
+    /// leaves the stored value on the stack. (Mirrors the existing
+    /// VM `struct_set` semantics.)
+    SetField(&'static str),
+    /// Drop top of stack.
+    Drop,
+    /// Duplicate top of stack.
+    Dup,
+    /// Return top of stack. If the stack is empty, returns null.
+    Return,
 }
 
 impl DotnetClass {

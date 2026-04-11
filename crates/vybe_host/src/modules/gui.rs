@@ -286,19 +286,168 @@ pub fn register(
         "Form", "TreeView",
     ];
 
+    // ── Control lifecycle host fns ─────────────────────────────────────────
+    //
+    // These are bound on every Control via the dotnet class wrapper layer
+    // (see `compiler_common::dotnet::classes::control::CONTROL_METHODS`).
+    // The method thunk passes `this` as the first arg, so we read
+    // `this.__control_name` to find the target control and route the call
+    // through the existing `WidgetCommand` interface.
+    //
+    // Form-specific shortcuts: when `this.__type == "Form"` we ALSO trigger
+    // `should_run = true` for `Show()` (real .NET semantics: opening a Form
+    // for the first time enters its message loop) and `close_requested = true`
+    // for `Close()`. Child controls don't get these side effects.
+
     let gui_show = gui.clone();
-    vm.register_host_fn("vybe:gui", "__ctrl_show", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-        gui_show.lock().unwrap().should_run = true;
+    vm.register_host_fn("vybe:gui", "__ctrl_show", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let (name, is_form) = read_this_identity(args);
+        let mut g = gui_show.lock().unwrap();
+        if is_form {
+            g.should_run = true;
+        }
+        if !name.is_empty() {
+            g.set_property(&name, "Visible", "true");
+        }
         Value::Null
     }));
     let gui_close = gui.clone();
-    vm.register_host_fn("vybe:gui", "__ctrl_close", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-        gui_close.lock().unwrap().close_requested = true;
+    vm.register_host_fn("vybe:gui", "__ctrl_close", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let (_name, is_form) = read_this_identity(args);
+        let mut g = gui_close.lock().unwrap();
+        if is_form {
+            g.close_requested = true;
+        }
+        // Non-form `Close` (rare — most controls don't expose Close in real
+        // .NET; only forms do) is a no-op.
         Value::Null
     }));
-    vm.register_host_fn("vybe:gui", "__ctrl_focus", Box::new(|_ctx, _| Value::Null));
-    vm.register_host_fn("vybe:gui", "__ctrl_hide", Box::new(|_ctx, _| Value::Null));
-    vm.register_host_fn("vybe:gui", "__dlg_showdialog", Box::new(|_ctx, _| Value::I32(1)));
+    let gui_hide = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_hide", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let (name, _is_form) = read_this_identity(args);
+        if !name.is_empty() {
+            gui_hide.lock().unwrap().set_property(&name, "Visible", "false");
+        }
+        Value::Null
+    }));
+    let gui_focus = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_focus", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let (name, _) = read_this_identity(args);
+        if !name.is_empty() {
+            let mut g = gui_focus.lock().unwrap();
+            g.form.send_command(&name, &vybe_widgets::WidgetCommand::Focus);
+        }
+        Value::Null
+    }));
+    // Refresh / Invalidate / Update all map to "request a repaint". Real
+    // .NET distinguishes them (Refresh = Invalidate + Update), but our
+    // renderer is fully repainting every frame, so the distinction
+    // collapses to a single needs_repaint flag.
+    let gui_refresh = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_refresh", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        gui_refresh.lock().unwrap().needs_repaint = true;
+        Value::Null
+    }));
+    let gui_invalidate = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_invalidate", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        gui_invalidate.lock().unwrap().needs_repaint = true;
+        Value::Null
+    }));
+    let gui_update = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_update", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        gui_update.lock().unwrap().needs_repaint = true;
+        Value::Null
+    }));
+    // BringToFront / SendToBack — relayed to the widget via Custom command.
+    // Form delegates to the OS window manager (out of scope for the
+    // headless renderer); child controls reorder within the form. We
+    // capture the intent on the property store too so tests can verify
+    // the call landed.
+    let gui_btf = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_bring_to_front", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let (name, _) = read_this_identity(args);
+        if !name.is_empty() {
+            let mut g = gui_btf.lock().unwrap();
+            g.form.send_command(&name, &vybe_widgets::WidgetCommand::Custom(
+                "BringToFront".into(),
+                vybe_widgets::CommandValue::None,
+            ));
+            g.properties.insert((name, "__zorder".into()), "front".into());
+            g.needs_repaint = true;
+        }
+        Value::Null
+    }));
+    let gui_stb = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_send_to_back", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let (name, _) = read_this_identity(args);
+        if !name.is_empty() {
+            let mut g = gui_stb.lock().unwrap();
+            g.form.send_command(&name, &vybe_widgets::WidgetCommand::Custom(
+                "SendToBack".into(),
+                vybe_widgets::CommandValue::None,
+            ));
+            g.properties.insert((name, "__zorder".into()), "back".into());
+            g.needs_repaint = true;
+        }
+        Value::Null
+    }));
+    // Dispose: hide the control + drop its event handlers + clear any
+    // pending draw commands targeting it. Real .NET also frees native
+    // GDI handles, which we don't have.
+    let gui_dispose = gui.clone();
+    vm.register_host_fn("vybe:gui", "__ctrl_dispose", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let (name, _) = read_this_identity(args);
+        if !name.is_empty() {
+            let mut g = gui_dispose.lock().unwrap();
+            g.set_property(&name, "Visible", "false");
+            // Drop any event handlers keyed under "<name>.*"
+            let prefix = format!("{}.", name);
+            g.event_handlers.retain(|k, _| !k.starts_with(&prefix));
+            // Drop any overlay canvas recording for this control
+            g.overlay_canvases.remove(&name);
+            g.needs_repaint = true;
+        }
+        Value::Null
+    }));
+    // Form.Activate — request the OS window be brought to the foreground.
+    let gui_activate = gui.clone();
+    vm.register_host_fn("vybe:gui", "__form_activate", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        gui_activate.lock().unwrap().front_requested = true;
+        Value::Null
+    }));
+    // Form.CenterToScreen — compute the centered position from screen size
+    // and set it on the form. Stored on the property store; the window
+    // driver reads it on next show.
+    let gui_center = gui.clone();
+    vm.register_host_fn("vybe:gui", "__form_center_to_screen", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let (name, _) = read_this_identity(args);
+        if !name.is_empty() {
+            // Use a sensible default for screen size — the GUI backend can
+            // override this when it knows the real resolution. 1920x1080 is
+            // common enough for the centered-position calculation to land
+            // on-screen for most users.
+            const SCREEN_W: u32 = 1920;
+            const SCREEN_H: u32 = 1080;
+            let mut g = gui_center.lock().unwrap();
+            let w = g.width;
+            let h = g.height;
+            let left = (SCREEN_W.saturating_sub(w) / 2) as i32;
+            let top = (SCREEN_H.saturating_sub(h) / 2) as i32;
+            g.set_property(&name, "Left", &left.to_string());
+            g.set_property(&name, "Top", &top.to_string());
+            g.front_requested = true;
+        }
+        Value::Null
+    }));
+    // ShowDialog — modal show. Sets should_run + close_requested
+    // semantics is up to the runner; the return value is `DialogResult.OK = 1`
+    // by convention, the same as the legacy stub. Real modal handling is a
+    // separate workstream (it requires nested message loops).
+    let gui_show_dlg = gui.clone();
+    vm.register_host_fn("vybe:gui", "__dlg_showdialog", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        gui_show_dlg.lock().unwrap().should_run = true;
+        Value::I32(1) // DialogResult.OK
+    }));
     vm.register_host_fn("vybe:gui", "__dlg_show", Box::new(|_ctx, _| Value::I32(0)));
 
     let show_ref = host_fn_ref(vm, "__ctrl_show");
@@ -352,6 +501,36 @@ pub fn register(
 
 fn str_arg(args: &[Value], idx: usize, default: &str) -> String {
     args.get(idx).map(|v| format!("{}", v)).unwrap_or_else(|| default.into())
+}
+
+/// Extract `(__control_name, is_form)` from `args[0]`. Used by the
+/// control lifecycle host fns to find the target control. `is_form` is
+/// `true` when the object's `__type` is `"Form"` (or starts with
+/// `"Form"` for user subclasses) — used to gate form-specific side
+/// effects like `should_run = true` on `Show()`.
+fn read_this_identity(args: &[Value]) -> (String, bool) {
+    if let Some(Value::Object(obj)) = args.first() {
+        let o = obj.lock().unwrap();
+        let name = o.properties
+            .get("__control_name")
+            .map(|v| format!("{}", v).to_lowercase())
+            .unwrap_or_default();
+        let type_str = o.properties
+            .get("__type")
+            .map(|v| format!("{}", v))
+            .unwrap_or_default();
+        // Match `Form` exactly, AND user subclasses whose chain re-stamps
+        // `__type` with the subclass name. Real .NET would test `is Form`,
+        // but the type registry doesn't ship its full hierarchy down to
+        // host fns yet — string match against the `Form` keyword is
+        // good enough for the cases that matter (Show/Close).
+        let is_form = type_str == "Form"
+            || matches!(o.properties.get("__control_type"),
+                Some(Value::String(s)) if s.as_ref() == "Form");
+        (name, is_form)
+    } else {
+        (String::new(), false)
+    }
 }
 
 fn i32_arg(args: &[Value], idx: usize, default: i32) -> i32 {

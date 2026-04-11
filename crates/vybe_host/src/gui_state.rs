@@ -15,7 +15,9 @@ use vybe_widgets::{
     MenuStrip, ContextMenu, StatusStrip, ToolStrip,
     SplitContainer, FlowLayoutPanel, TableLayoutPanel,
     BindingNavigator, PanelWidget, WidgetCommand, CommandValue,
+    Canvas as CanvasWidget,
 };
+use vybe_widgets::canvas::RecordingCanvas;
 
 /// Holds the live widget form + event callbacks.
 /// Created before VM runs, shared with host fns via `Arc<Mutex<>>`.
@@ -44,6 +46,30 @@ pub struct GuiState {
     /// the form itself) and to handle form-level properties without needing
     /// to hand-craft a separate widget for the form.
     pub properties: HashMap<(String, String), String>,
+    /// Set by `Control.Refresh()` / `Invalidate()` / `Update()`. The form
+    /// runner clears this each frame and triggers a repaint when set. The
+    /// underlying tiny-skia renderer doesn't need explicit invalidation
+    /// (it repaints every frame), but tracking the flag lets us skip
+    /// redundant work in headless tests and mirrors the .NET semantics
+    /// for callers that check repaint state.
+    pub needs_repaint: bool,
+    /// Set by `Form.Activate()`. The CLI window driver checks this on
+    /// each frame and brings the OS window to the foreground.
+    pub front_requested: bool,
+    /// Per-control overlay recordings — keyed by lowercased control
+    /// name. Populated by the `vybe:gui::canvas*` host fns when user
+    /// code calls `Graphics.DrawLine` etc. against a `Graphics` handle
+    /// created from a non-Canvas-widget control (e.g.
+    /// `Me.CreateGraphics()` on a Form, or `btn.CreateGraphics()` on a
+    /// Button). The form's render loop replays each entry through the
+    /// matching widget's `paint_overlay` hook each frame.
+    ///
+    /// Canvas WIDGETS (`vybe_widgets::Canvas`) carry their own
+    /// `RecordingCanvas` inside the widget itself — those don't need an
+    /// entry here. The host bridge looks at the form's child widgets
+    /// FIRST, falls back to this overlay map only when no Canvas widget
+    /// matches the requested control name.
+    pub overlay_canvases: HashMap<String, RecordingCanvas>,
 }
 
 impl GuiState {
@@ -59,7 +85,63 @@ impl GuiState {
             close_requested: false,
             pending_dialogs: Vec::new(),
             properties: HashMap::new(),
+            needs_repaint: false,
+            front_requested: false,
+            overlay_canvases: HashMap::new(),
         }
+    }
+
+    /// Find a `RecordingCanvas` for `control`. Resolution order:
+    ///
+    /// 1. **Canvas widget on the form** — if a `vybe_widgets::Canvas`
+    ///    widget with the requested name exists, return its own
+    ///    recording. This is the canonical case for explicit Canvas
+    ///    widgets the user added to the form.
+    ///
+    /// 2. **Overlay recording** — for any other control (Button, Label,
+    ///    Form, …), an entry is created in `overlay_canvases` on first
+    ///    access. The form's render loop replays this overlay through
+    ///    the widget's `paint_overlay` hook each frame, drawing on top
+    ///    of the standard widget chrome.
+    ///
+    /// Returns a `&mut RecordingCanvas` borrowed from one of the two
+    /// sources. Always succeeds — for an unknown control name, the
+    /// overlay map gains a new entry.
+    pub fn find_canvas_mut(&mut self, control: &str) -> &mut RecordingCanvas {
+        let name = control.to_lowercase();
+        // Step 1: search child widgets for a Canvas widget with this name.
+        // We use a raw-pointer trick to avoid the borrow-checker complaining
+        // about returning a borrow that depends on a temporary closure
+        // result. The lifetimes are sound — the &mut comes from
+        // `self.form.controls`, which `self` owns, and we hand it back to
+        // the caller as `&mut self.???`-flavoured.
+        //
+        // Walk the form's controls and downcast each one. If we find a
+        // matching Canvas widget, return its inner recording.
+        let canvas_ptr: Option<*mut RecordingCanvas> = {
+            let widgets = self.form.controls_mut();
+            let mut found: Option<*mut RecordingCanvas> = None;
+            for w in widgets.iter_mut() {
+                if w.name() == name {
+                    if let Some(any) = w.as_any_mut() {
+                        if let Some(c) = any.downcast_mut::<CanvasWidget>() {
+                            let p: *mut RecordingCanvas = c.canvas_mut();
+                            found = Some(p);
+                            break;
+                        }
+                    }
+                }
+            }
+            found
+        };
+        if let Some(p) = canvas_ptr {
+            // Safety: the pointer borrows from `self.form.controls`. The
+            // borrow is valid for as long as `self` lives because no
+            // subsequent code in this function modifies the controls vec.
+            return unsafe { &mut *p };
+        }
+        // Step 2: fall through to the overlay map.
+        self.overlay_canvases.entry(name).or_default()
     }
 
     /// Register an event handler: key = "controlname.eventname" (both lowercased).
@@ -166,6 +248,17 @@ fn capitalize_first(s: &str) -> String {
 /// Create a boxed PanelWidget from a type name string.
 fn make_widget(type_name: &str, name: &str, text: &str, w: f32, h: f32) -> Box<dyn PanelWidget> {
     match type_name.to_lowercase().as_str() {
+        "canvas" | "paintbox" => {
+            // The Canvas widget is the bare drawable surface. PaintBox
+            // is the .NET BCL/FCL alias the dotnet wrapper uses.
+            use vybe_widgets::layout::LayoutRect;
+            let mut c = vybe_widgets::Canvas::new().with_name(name);
+            <vybe_widgets::Canvas as PanelWidget>::set_rect(
+                &mut c,
+                LayoutRect::new(0.0, 0.0, w, h),
+            );
+            Box::new(c)
+        }
         "button" => {
             let mut b = Button::new(text).with_name(name);
             b.width = w;

@@ -4025,6 +4025,23 @@ impl Compiler {
             "lbound" => {
                 self.emit(Op::i32_const_0);
             }
+            "erase" => {
+                // VB `Erase arr` — releases / clears the array contents. For
+                // dynamic arrays, real VB frees the storage and leaves the
+                // variable referring to an uninitialised array; for
+                // fixed-size arrays, it re-zeros each element. We return a
+                // fresh empty array, which satisfies both reads (`.Length`
+                // works, yields 0) and assignment (`arr = Erase(arr)`).
+                //
+                // The arg is still compiled for any side effects and then
+                // dropped — matches the VB semantic that the old binding is
+                // released.
+                if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    self.emit(Op::drop);
+                }
+                self.emit_u16(Op::array_new, 0);
+            }
             "asc" => {
                 self.compile_expr(args[0])?;
                 self.emit(Op::i32_const_0);
