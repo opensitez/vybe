@@ -1,0 +1,500 @@
+// Ruby grammar for pest parser
+// Covers constructs from vybe_parser_ruby / vybe_compiler_ruby.
+//
+// Ruby uses `end` keywords for blocks — no preprocessor needed.
+// Newlines are significant statement terminators.
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\\" ~ NEWLINE }
+COMMENT    = _{ "#" ~ (!NEWLINE ~ ANY)* }
+NEWLINE    = { "\n" | "\r\n" }
+
+// ── Terminators ────────────────────────────────────────────────────────────
+terminator  = _{ ";" | NEWLINE | &"end" | &"}" | &EOI }
+eat_term    = _{ (";" | NEWLINE)* }
+eat_newlines = _{ NEWLINE* }
+
+// ── Program ────────────────────────────────────────────────────────────────
+program = { SOI ~ eat_term ~ (statement ~ eat_term)* ~ EOI }
+
+// ── Statements ─────────────────────────────────────────────────────────────
+statement = _{
+    class_def
+    | module_def
+    | method_def
+    | alias_stmt
+    | undef_stmt
+    | if_stmt
+    | unless_stmt
+    | while_stmt
+    | until_stmt
+    | for_stmt
+    | case_stmt
+    | begin_stmt
+    | loop_stmt
+    | return_stmt
+    | break_stmt
+    | next_stmt
+    | raise_stmt
+    | retry_stmt
+    | redo_stmt
+    | require_stmt
+    | at_exit_stmt
+    | catch_throw_stmt
+    | access_modifier_stmt
+    | multi_assign_stmt
+    | expr_or_assign_stmt
+}
+
+// ── Method Definition ──────────────────────────────────────────────────────
+method_def = {
+    "def" ~ method_name ~ method_params? ~ eat_term ~ body ~ "end"
+}
+
+method_name = {
+    "self" ~ "." ~ method_name_id
+    | method_name_id
+}
+
+method_name_id = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("?" | "!" | "=")?
+    | operator_method_name
+}
+
+operator_method_name = @{
+    "<=>" | "==" | "!=" | "<=" | ">=" | "<<" | ">>" | "<=>"
+    | "+" | "-" | "*" | "/" | "%" | "**" | "&" | "|" | "^" | "~"
+    | "[]=" | "[]"
+}
+
+method_params = {
+    "(" ~ param_list? ~ ")"
+    | param_list
+}
+
+param_list = { param_item ~ ("," ~ param_item)* ~ ","? }
+
+param_item = {
+    block_param
+    | double_splat_param
+    | splat_param
+    | keyword_param
+    | optional_param
+    | normal_param
+}
+
+block_param       = { "&" ~ identifier }
+double_splat_param = { "**" ~ identifier }
+splat_param       = { "*" ~ identifier }
+keyword_param     = { identifier ~ ":" ~ expression? }
+optional_param    = { identifier ~ "=" ~ expression }
+normal_param      = { identifier }
+
+// ── Class Definition ───────────────────────────────────────────────────────
+class_def = {
+    "class" ~ constant ~ ("<" ~ constant_path)? ~ eat_term ~ class_body ~ "end"
+}
+
+class_body = { (class_member ~ eat_term)* }
+
+class_member = _{
+    method_def
+    | attr_decl
+    | include_stmt
+    | extend_stmt
+    | access_modifier_stmt
+    | alias_stmt
+    | class_def
+    | module_def
+    | statement
+}
+
+attr_decl = { attr_kind ~ symbol_list }
+attr_kind = @{ ("attr_accessor" | "attr_reader" | "attr_writer") ~ !(ASCII_ALPHANUMERIC | "_") }
+symbol_list = { ((":" ~ identifier) | string_literal) ~ ("," ~ ((":" ~ identifier) | string_literal))* }
+
+include_stmt = { "include" ~ constant_path ~ terminator }
+extend_stmt  = { "extend" ~ constant_path ~ terminator }
+
+// ── Module Definition ──────────────────────────────────────────────────────
+module_def = {
+    "module" ~ constant ~ eat_term ~ class_body ~ "end"
+}
+
+// ── If / Elsif / Else ──────────────────────────────────────────────────────
+if_stmt = {
+    "if" ~ expression ~ then_kw? ~ eat_term ~ body ~ elsif_clause* ~ else_clause? ~ "end"
+}
+
+elsif_clause = { "elsif" ~ expression ~ then_kw? ~ eat_term ~ body }
+else_clause  = { "else" ~ eat_term ~ body }
+
+// ── Unless ─────────────────────────────────────────────────────────────────
+unless_stmt = {
+    "unless" ~ expression ~ then_kw? ~ eat_term ~ body ~ else_clause? ~ "end"
+}
+
+// ── While ──────────────────────────────────────────────────────────────────
+while_stmt = {
+    "while" ~ expression ~ do_kw? ~ eat_term ~ body ~ "end"
+}
+
+// ── Until ──────────────────────────────────────────────────────────────────
+until_stmt = {
+    "until" ~ expression ~ do_kw? ~ eat_term ~ body ~ "end"
+}
+
+// ── For ────────────────────────────────────────────────────────────────────
+for_stmt = {
+    "for" ~ identifier ~ ("," ~ identifier)* ~ in_kw ~ expression ~ do_kw? ~ eat_term ~ body ~ "end"
+}
+
+// ── Case / When ────────────────────────────────────────────────────────────
+case_stmt = {
+    "case" ~ expression? ~ eat_term ~ when_clause+ ~ else_clause? ~ "end"
+}
+
+when_clause = { "when" ~ expression_list ~ then_kw? ~ eat_term ~ body }
+
+// ── Begin / Rescue / Ensure ────────────────────────────────────────────────
+begin_stmt = {
+    "begin" ~ eat_term ~ body ~ rescue_clause* ~ else_clause? ~ ensure_clause? ~ "end"
+}
+
+rescue_clause = {
+    "rescue" ~ (constant_path ~ ("," ~ constant_path)*)? ~ ("=>" ~ identifier)? ~ eat_term ~ body
+}
+
+ensure_clause = { "ensure" ~ eat_term ~ body }
+
+// ── Loop ───────────────────────────────────────────────────────────────────
+loop_stmt = { "loop" ~ do_block }
+
+// ── Return / Break / Next / Raise ──────────────────────────────────────────
+// The `stmt_value` prevents consuming `if`/`unless`/`while`/`until` as part of the value expression,
+// since those belong to modifier_suffix.
+stmt_value = _{ !modifier_kw ~ expression }
+modifier_kw = _{ if_kw | unless_kw | while_kw | until_kw }
+
+return_stmt = { "return" ~ (!NEWLINE ~ stmt_value ~ ("," ~ stmt_value)*)? ~ modifier_suffix? ~ terminator }
+break_stmt  = { "break" ~ (!NEWLINE ~ stmt_value)? ~ modifier_suffix? ~ terminator }
+next_stmt   = { "next" ~ (!NEWLINE ~ stmt_value)? ~ modifier_suffix? ~ terminator }
+raise_stmt  = { "raise" ~ (!NEWLINE ~ stmt_value)? ~ modifier_suffix? ~ terminator }
+retry_stmt  = { "retry" ~ terminator }
+redo_stmt   = { "redo" ~ terminator }
+
+// ── Require ────────────────────────────────────────────────────────────────
+require_stmt = { ("require_relative" | "require") ~ expression ~ terminator }
+
+// ── At-exit ────────────────────────────────────────────────────────────────
+at_exit_stmt = { "at_exit" ~ block_literal ~ terminator }
+
+// ── Catch/throw ────────────────────────────────────────────────────────────
+catch_throw_stmt = { "catch" ~ "(" ~ expression ~ ")" ~ do_block }
+
+// ── Access modifier ────────────────────────────────────────────────────────
+access_modifier_stmt = { access_modifier ~ terminator }
+access_modifier = @{ ("private" | "protected" | "public") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Alias ──────────────────────────────────────────────────────────────────
+alias_stmt = { "alias" ~ method_name_id ~ method_name_id ~ terminator }
+
+// ── Undef ──────────────────────────────────────────────────────────────────
+undef_stmt = { "undef" ~ method_name_id ~ ("," ~ method_name_id)* ~ terminator }
+
+// ── Multi-assign ───────────────────────────────────────────────────────────
+multi_assign_stmt = {
+    target ~ ("," ~ target)+ ~ "=" ~ expression_list ~ terminator
+}
+
+// ── Expression or assignment (includes command-style calls) ────────────────
+expr_or_assign_stmt = {
+    postfix ~ command_args ~ block_literal? ~ modifier_suffix? ~ terminator  // command call: puts 'hello'
+    | expression ~ aug_assign_op ~ expression ~ modifier_suffix? ~ terminator  // augmented: x += 1
+    | expression ~ "=" ~ expression_list ~ modifier_suffix? ~ terminator       // assign: x = 5
+    | expression ~ modifier_suffix? ~ terminator                               // expr stmt
+}
+
+// Command-style bare arguments (no parens)
+command_args = {
+    !(aug_assign_op | "=" ~ !("=" | "~")) ~ &primary_start ~ call_arg ~ ("," ~ call_arg)*
+}
+
+// Lookahead: next token starts a value (not an operator)
+primary_start = _{
+    "\"" | "'" | ASCII_DIGIT | "[" | "{" | "("
+    | ":" ~ !(":") | "~" | "->" | "$" | "@@" | "@"
+    | "!" ~ !("=")
+    | &neg_num_start
+    | ASCII_ALPHA_UPPER    | &true_kw | &false_kw | &nil_kw | &self_kw    | !keyword ~ (ASCII_ALPHA | "_")
+}
+
+neg_num_start = @{ ("-" | "+") ~ ASCII_DIGIT }
+
+// Modifier suffix for any statement form
+modifier_suffix = {
+    if_kw ~ expression
+    | unless_kw ~ expression
+    | while_kw ~ expression
+    | until_kw ~ expression
+}
+
+aug_assign_op = {
+    "**=" | "<<=" | ">>=" |
+    "&&=" | "||=" |
+    "+=" | "-=" | "*=" | "/=" | "%=" |
+    "|=" | "&=" | "^="
+}
+
+// ── Body (list of statements) ──────────────────────────────────────────────
+body = { (statement ~ eat_term)* }
+
+// ── Expressions ────────────────────────────────────────────────────────────
+expression_list = { expression ~ ("," ~ expression)* ~ ","? }
+
+expression = { ternary_expr ~ inline_rescue? }
+
+inline_rescue = { "rescue" ~ ternary_expr }
+
+ternary_expr = { or_expr ~ ("?" ~ expression ~ ":" ~ expression)? }
+
+// ── Logical ────────────────────────────────────────────────────────────────
+or_expr  = { and_expr ~ ((or_kw | "||") ~ and_expr)* }
+and_expr = { not_expr ~ ((and_kw | "&&") ~ not_expr)* }
+not_expr = { (not_kw | "!") ~ not_expr | comparison }
+
+// ── Comparison ─────────────────────────────────────────────────────────────
+comparison = { bitor_expr ~ (comparison_op ~ bitor_expr)* }
+comparison_op = {
+    "<=>" | "===" | "==" | "!=" | "<=" | ">=" | "<" | ">"
+}
+
+// ── Bitwise ────────────────────────────────────────────────────────────────
+bitor_expr  = { bitxor_expr ~ ("|" ~ !("=" | "|") ~ bitxor_expr)* }
+bitxor_expr = { bitand_expr ~ ("^" ~ !"=" ~ bitand_expr)* }
+bitand_expr = { shift_expr ~ ("&" ~ !("=" | "&") ~ shift_expr)* }
+shift_expr  = { range_expr ~ (shift_op ~ range_expr)* }
+shift_op    = { "<<" ~ !"=" | ">>" ~ !"=" }
+
+// ── Range ──────────────────────────────────────────────────────────────────
+range_expr = { additive ~ (range_op ~ additive)? }
+range_op   = { "..." | ".." }
+
+// ── Arithmetic ─────────────────────────────────────────────────────────────
+additive       = { multiplicative ~ (additive_op ~ multiplicative)* }
+additive_op    = { "+" ~ !"=" | "-" ~ !"=" }
+multiplicative = { unary ~ (multiplicative_op ~ unary)* }
+multiplicative_op = { "**" ~ !"=" | "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
+
+// ── Unary ──────────────────────────────────────────────────────────────────
+unary    = { unary_op ~ unary | postfix }
+unary_op = { "-" ~ !"=" | "+" ~ !"=" | "~" }
+
+// ── Postfix (call, member, subscript, block) ───────────────────────────────
+postfix = { primary ~ postfix_chain* }
+
+postfix_chain = {
+    "&." ~ method_name_id ~ ("(" ~ call_args? ~ ")")? ~ block_literal?   // safe navigation
+    | "." ~ method_name_id ~ ("(" ~ call_args? ~ ")")? ~ block_literal?  // method call
+    | "::" ~ constant                                                     // scope resolution
+    | "[" ~ expression_list? ~ "]"                                        // subscript
+    | "(" ~ call_args? ~ ")"                                              // bare call
+    | block_literal                                                       // trailing block
+}
+
+call_args = { call_arg ~ ("," ~ call_arg)* ~ ","? }
+
+call_arg = {
+    "**" ~ expression                    // double splat
+    | "*" ~ expression                   // splat
+    | "&" ~ expression                   // block arg (&:sym or &proc)
+    | identifier ~ ":" ~ expression      // keyword arg
+    | expression
+}
+
+// ── Block literal ──────────────────────────────────────────────────────────
+block_literal = {
+    do_block
+    | brace_block
+}
+
+do_block    = { "do" ~ block_params? ~ eat_term ~ body ~ "end" }
+brace_block = { "{" ~ block_params? ~ eat_term ~ (statement ~ eat_term)* ~ "}" }
+
+block_params = { "|" ~ block_param_list? ~ "|" }
+block_param_list = { block_param_item ~ ("," ~ block_param_item)* }
+block_param_item = { splat_param | identifier }
+
+// ── Primary ────────────────────────────────────────────────────────────────
+primary = {
+    "(" ~ expression ~ ")"                      // grouping
+    | "[" ~ array_inner? ~ "]"                   // array literal
+    | "{" ~ hash_inner? ~ "}"                    // hash literal
+    | lambda_literal
+    | proc_literal
+    | heredoc
+    | percent_literal
+    | regex_literal
+    | interpolated_string
+    | string_literal
+    | float_literal
+    | integer_literal
+    | symbol
+    | self_kw
+    | nil_kw
+    | true_kw
+    | false_kw
+    | yield_expr
+    | defined_expr
+    | super_expr
+    | block_given_expr
+    | begin_expr
+    | if_expr
+    | unless_expr
+    | global_var
+    | class_var
+    | instance_var
+    | constant
+    | identifier
+}
+
+// ── Array inner ────────────────────────────────────────────────────────────
+array_inner = { expression ~ ("," ~ expression)* ~ ","? }
+
+// ── Hash inner ─────────────────────────────────────────────────────────────
+hash_inner = { hash_pair ~ ("," ~ hash_pair)* ~ ","? }
+hash_pair  = {
+    expression ~ "=>" ~ expression           // hash rocket
+    | identifier ~ ":" ~ expression          // symbol shorthand key: val
+    | "**" ~ expression                      // double splat
+}
+
+// ── Lambda ─────────────────────────────────────────────────────────────────
+lambda_literal = {
+    "->" ~ ("(" ~ param_list? ~ ")")? ~ "{" ~ eat_term ~ (statement ~ eat_term)* ~ "}"
+    | "->" ~ ("(" ~ param_list? ~ ")")? ~ "do" ~ eat_term ~ body ~ "end"
+}
+
+// ── Proc literal ───────────────────────────────────────────────────────────
+proc_literal = {
+    "proc" ~ block_literal
+}
+
+// ── Yield ──────────────────────────────────────────────────────────────────
+yield_expr = { "yield" ~ ("(" ~ expression_list? ~ ")")? }
+
+// ── Defined? ───────────────────────────────────────────────────────────────
+defined_expr = { "defined?" ~ "(" ~ expression ~ ")" }
+
+// ── Super ──────────────────────────────────────────────────────────────────
+super_expr = { "super" ~ ("(" ~ call_args? ~ ")")? }
+
+// ── block_given? ───────────────────────────────────────────────────────────
+block_given_expr = { "block_given?" }
+
+// ── Begin as expression ────────────────────────────────────────────────────
+begin_expr = {
+    "begin" ~ eat_term ~ body ~ rescue_clause* ~ else_clause? ~ ensure_clause? ~ "end"
+}
+
+// ── If/Unless as expression ────────────────────────────────────────────────
+if_expr = { "if" ~ expression ~ then_kw? ~ eat_term ~ body ~ elsif_clause* ~ else_clause? ~ "end" }
+unless_expr = { "unless" ~ expression ~ then_kw? ~ eat_term ~ body ~ else_clause? ~ "end" }
+
+// ── String Interpolation ───────────────────────────────────────────────────
+interpolated_string = ${ interp_start ~ (interp_escape | interp_expr | interp_text)* ~ interp_end }
+interp_start = @{ "\"" }
+interp_end   = @{ "\"" }
+interp_escape = @{ "\\" ~ ANY }
+interp_expr   = !{ "#{" ~ expression ~ "}" }
+interp_text   = @{ (!("\"" | "\\" | "#{") ~ ANY)+ }
+
+// ── String literal (single-quoted, no interpolation) ───────────────────────
+string_literal = @{
+    "'''" ~ (!"'''" ~ ANY)* ~ "'''"
+    | "'" ~ ("\\'" | "\\\\" | (!"'" ~ !NEWLINE ~ ANY))* ~ "'"
+}
+
+// ── Heredoc ────────────────────────────────────────────────────────────────
+heredoc = @{
+    "<<~" ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* ~ NEWLINE ~ (!NEWLINE ~ ANY)* ~ (NEWLINE ~ (!NEWLINE ~ ANY)*)* ~ NEWLINE
+    | "<<" ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* ~ NEWLINE ~ (!NEWLINE ~ ANY)* ~ (NEWLINE ~ (!NEWLINE ~ ANY)*)* ~ NEWLINE
+}
+
+// ── Percent literals ───────────────────────────────────────────────────────
+percent_literal = @{
+    "%w" ~ percent_delim_body
+    | "%i" ~ percent_delim_body
+    | "%q" ~ percent_delim_body
+    | "%Q" ~ percent_delim_body
+    | "%" ~ percent_delim_body
+}
+
+percent_delim_body = _{
+    "[" ~ (!"]" ~ ANY)* ~ "]"
+    | "(" ~ (!")" ~ ANY)* ~ ")"
+    | "{" ~ (!"}" ~ ANY)* ~ "}"
+    | "<" ~ (!">" ~ ANY)* ~ ">"
+}
+
+// ── Regex ──────────────────────────────────────────────────────────────────
+regex_literal = @{ "/" ~ (!"/" ~ ("\\" ~ ANY | ANY))* ~ "/" ~ ('a'..'z')* }
+
+// ── Numeric literals ───────────────────────────────────────────────────────
+float_literal = @{
+    ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+
+}
+
+integer_literal = @{
+    "0x" ~ (ASCII_HEX_DIGIT | "_")+
+    | "0o" ~ ('0'..'7' | "_")+
+    | "0b" ~ ('0'..'1' | "_")+
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")*
+}
+
+// ── Symbol ─────────────────────────────────────────────────────────────────
+symbol = @{ ":" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("?" | "!")? }
+
+// ── Variables ──────────────────────────────────────────────────────────────
+global_var   = @{ "$" ~ (ASCII_ALPHANUMERIC | "_")+ }
+class_var    = @{ "@@" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+instance_var = @{ "@" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+constant     = @{ ASCII_ALPHA_UPPER ~ (ASCII_ALPHANUMERIC | "_")* }
+constant_path = @{ constant ~ ("::" ~ constant)* }
+
+identifier = @{
+    !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("?" | "!")?
+}
+
+// ── Keywords ───────────────────────────────────────────────────────────────
+keyword = _{
+    ("BEGIN" | "END" | "alias" | "and" | "begin" | "break" | "case" | "class"
+    | "def" | "defined?" | "do" | "else" | "elsif" | "end" | "ensure" | "false"
+    | "for" | "if" | "in" | "module" | "next" | "nil" | "not" | "or" | "redo"
+    | "rescue" | "retry" | "return" | "self" | "super" | "then" | "true"
+    | "undef" | "unless" | "until" | "when" | "while" | "yield"
+    | "__FILE__" | "__LINE__" | "__dir__" | "__method__")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+// ── Keyword atoms ──────────────────────────────────────────────────────────
+true_kw    = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
+false_kw   = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
+nil_kw     = @{ "nil" ~ !(ASCII_ALPHANUMERIC | "_") }
+self_kw    = @{ "self" ~ !(ASCII_ALPHANUMERIC | "_") }
+and_kw     = @{ "and" ~ !(ASCII_ALPHANUMERIC | "_") }
+or_kw      = @{ "or" ~ !(ASCII_ALPHANUMERIC | "_") }
+not_kw     = @{ "not" ~ !(ASCII_ALPHANUMERIC | "_") }
+in_kw      = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+do_kw      = @{ "do" ~ !(ASCII_ALPHANUMERIC | "_") }
+then_kw    = @{ "then" ~ !(ASCII_ALPHANUMERIC | "_") }
+if_kw      = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
+unless_kw  = @{ "unless" ~ !(ASCII_ALPHANUMERIC | "_") }
+while_kw   = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
+until_kw   = @{ "until" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Target for assignment ──────────────────────────────────────────────────
+target = {
+    "*" ~ postfix
+    | postfix
+}
