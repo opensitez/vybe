@@ -1,0 +1,165 @@
+# PHP Compiler Profile
+# ─────────────────────
+# Phase 1: minimal surface to get hello-world and basic programs running.
+# All ~200 PHP builtins from vybe_compiler_php will be added incrementally
+# as test files are ported.
+
+[info]
+name = "php"
+extensions = ["php", "phtml"]
+
+[compiler]
+function_return = "explicit"
+self_keyword = "this"
+constructor_name = "__construct"
+case_sensitive = true              # PHP function/class names are case-INSENSITIVE,
+                                    # but variables are case-sensitive. We treat
+                                    # the language as case-sensitive overall and
+                                    # rely on user-side normalization.
+string_indexing = "zero_based"
+# PHP-specific
+dynamic_add = false                 # `+` is numeric only; `.` is concat
+implicit_self_fields = false        # PHP requires `$this->field`
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — bare global function calls
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Phase 1 covers the most common ~80 builtins. Phase 2 will fill in the
+# remaining ~120 from vybe_compiler_php's try_compile_builtin table.
+
+[builtins]
+
+# ── I/O ──────────────────────────────────────────────────────────────────────
+
+echo                = { emit = "print",                      min_args = 0, max_args = 255 }
+print               = { emit = "print",                      min_args = 1, max_args = 1 }
+print_r             = { emit = "print",                      min_args = 1, max_args = 2 }
+var_dump            = { emit = "print",                      min_args = 1, max_args = 255 }
+printf              = { emit = "print",                      min_args = 1, max_args = 255 }
+readline            = { emit = "host:wasi:cli:readLine",     min_args = 0, max_args = 1 }
+error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_args = 4 }
+
+# ── String functions ─────────────────────────────────────────────────────────
+
+strlen              = { emit = "opcode:str_length",          min_args = 1, max_args = 1 }
+strtolower          = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 1 }
+strtoupper          = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 1 }
+trim                = { emit = "opcode:str_trim",            min_args = 1, max_args = 2 }
+ltrim               = { emit = "opcode:str_trim_start",      min_args = 1, max_args = 2 }
+rtrim               = { emit = "opcode:str_trim_end",        min_args = 1, max_args = 2 }
+str_contains        = { emit = "opcode:str_contains",        min_args = 2, max_args = 2 }
+str_starts_with     = { emit = "opcode:str_starts_with",     min_args = 2, max_args = 2 }
+str_ends_with       = { emit = "opcode:str_ends_with",       min_args = 2, max_args = 2 }
+str_repeat          = { emit = "opcode:str_repeat",          min_args = 2, max_args = 2 }
+chr                 = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
+ord                 = { emit = "host:vybe:string:charCodeAt", min_args = 1, max_args = 1 }
+
+# ── Math functions ───────────────────────────────────────────────────────────
+
+abs                 = { emit = "opcode:f64_abs",             min_args = 1, max_args = 1 }
+ceil                = { emit = "opcode:f64_ceil",            min_args = 1, max_args = 1 }
+floor               = { emit = "opcode:f64_floor",           min_args = 1, max_args = 1 }
+sqrt                = { emit = "opcode:f64_sqrt",            min_args = 1, max_args = 1 }
+round               = { emit = "opcode:f64_nearest",         min_args = 1, max_args = 2 }
+pow                 = { emit = "host:vybe:math:pow",         min_args = 2, max_args = 2 }
+sin                 = { emit = "host:vybe:math:sin",         min_args = 1, max_args = 1 }
+cos                 = { emit = "host:vybe:math:cos",         min_args = 1, max_args = 1 }
+tan                 = { emit = "host:vybe:math:tan",         min_args = 1, max_args = 1 }
+asin                = { emit = "host:vybe:math:asin",        min_args = 1, max_args = 1 }
+acos                = { emit = "host:vybe:math:acos",        min_args = 1, max_args = 1 }
+atan                = { emit = "host:vybe:math:atan",        min_args = 1, max_args = 1 }
+atan2               = { emit = "host:vybe:math:atan2",       min_args = 2, max_args = 2 }
+exp                 = { emit = "host:vybe:math:exp",         min_args = 1, max_args = 1 }
+log                 = { emit = "host:vybe:math:log",         min_args = 1, max_args = 2 }
+log2                = { emit = "host:vybe:math:log2",        min_args = 1, max_args = 1 }
+log10               = { emit = "host:vybe:math:log10",       min_args = 1, max_args = 1 }
+rand                = { emit = "host:wasi:random:random",    min_args = 0, max_args = 2 }
+mt_rand             = { emit = "host:wasi:random:random",    min_args = 0, max_args = 2 }
+intdiv              = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
+fmod                = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
+fdiv                = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
+pi                  = { emit = "host:vybe:math:PI",          min_args = 0, max_args = 0 }
+M_PI                = { emit = "host:vybe:math:PI",          min_args = 0, max_args = 0 }
+
+# ── Type conversion ─────────────────────────────────────────────────────────
+
+intval              = { emit = "host:vybe:convert:cint",     min_args = 1, max_args = 2 }
+floatval            = { emit = "host:vybe:convert:cdbl",     min_args = 1, max_args = 1 }
+doubleval           = { emit = "host:vybe:convert:cdbl",     min_args = 1, max_args = 1 }
+strval              = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+boolval             = { emit = "host:vybe:convert:cbool",    min_args = 1, max_args = 1 }
+is_numeric          = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_args = 1 }
+is_finite           = { emit = "host:vybe:convert:isFinite", min_args = 1, max_args = 1 }
+is_nan              = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_args = 1 }
+
+# ── Array functions ─────────────────────────────────────────────────────────
+
+count               = { emit = "opcode:array_length",        min_args = 1, max_args = 2 }
+sizeof              = { emit = "opcode:array_length",        min_args = 1, max_args = 2 }
+array_push          = { emit = "opcode:array_push",          min_args = 2, max_args = 255 }
+array_pop           = { emit = "opcode:array_pop",           min_args = 1, max_args = 1 }
+array_shift         = { emit = "opcode:array_shift",         min_args = 1, max_args = 1 }
+array_reverse       = { emit = "opcode:array_reverse",       min_args = 1, max_args = 1 }
+in_array            = { emit = "opcode:array_contains",      min_args = 2, max_args = 3 }
+array_search        = { emit = "opcode:array_index_of",      min_args = 2, max_args = 3 }
+array_slice         = { emit = "opcode:array_slice",         min_args = 2, max_args = 4 }
+array_merge         = { emit = "opcode:array_concat",        min_args = 1, max_args = 255 }
+
+# ── JSON ────────────────────────────────────────────────────────────────────
+
+json_encode         = { emit = "host:vybe:json:stringify",   min_args = 1, max_args = 3 }
+json_decode         = { emit = "host:vybe:json:parse",       min_args = 1, max_args = 4 }
+
+# ── Date / Time ─────────────────────────────────────────────────────────────
+
+time                = { emit = "host:wasi:clocks:now",       min_args = 0, max_args = 0 }
+microtime           = { emit = "host:wasi:clocks:hrtime",    min_args = 0, max_args = 1 }
+date                = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 2 }
+sleep               = { emit = "host:wasi:clocks:sleep",     min_args = 1, max_args = 1 }
+
+# ── File I/O ────────────────────────────────────────────────────────────────
+
+file_get_contents   = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 5 }
+file_put_contents   = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 4 }
+file_exists         = { emit = "host:wasi:filesystem:exists",    min_args = 1, max_args = 1 }
+is_file             = { emit = "host:wasi:filesystem:isFile",    min_args = 1, max_args = 1 }
+is_dir              = { emit = "host:wasi:filesystem:isDir",     min_args = 1, max_args = 1 }
+mkdir               = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 4 }
+unlink              = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 2 }
+
+# ── Environment / CLI ───────────────────────────────────────────────────────
+
+getenv              = { emit = "host:wasi:cli:getEnv",       min_args = 1, max_args = 1 }
+phpversion          = { emit = "noop",                        min_args = 0, max_args = 1 }
+php_sapi_name       = { emit = "noop",                        min_args = 0, max_args = 0 }
+getcwd              = { emit = "host:wasi:cli:cwd",          min_args = 0, max_args = 0 }
+gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_args = 0 }
+
+# ── Miscellaneous ───────────────────────────────────────────────────────────
+
+# `defined` / `define` are runtime queries; for now define returns true
+# and defined returns whether the global is set.
+defined             = { emit = "noop",                        min_args = 1, max_args = 1 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# VALUE METHODS — instance method calls on intrinsic types
+# ────────────────────────────────────────────────────────────────────────────
+#
+# PHP's standard library is mostly bare functions, not methods. The handful
+# of object-oriented APIs (DateTime, ArrayObject, SplStack, …) are wired
+# up as instance methods here. The compiler routes them through the
+# value_methods table the same way JS / VB do.
+
+[value_methods]
+
+# Empty for Phase 1 — to be filled in as test files demand.
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACES — none. PHP namespaces are flattened by the walker.
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespaces]
+use_dotnet = false
+roots = []
+extra_imports = []

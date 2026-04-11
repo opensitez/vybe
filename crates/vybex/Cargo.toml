@@ -38,3 +38,7 @@ path = "tests/csharp/main.rs"
 [[test]]
 name = "python"
 path = "tests/python/main.rs"
+
+[[test]]
+name = "php"
+path = "tests/php/main.rs"

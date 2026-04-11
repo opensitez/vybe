@@ -1,6 +1,7 @@
 pub mod csharp;
 pub mod js;
 pub mod pascal;
+pub mod php;
 pub mod python;
 pub mod vb;
 
@@ -23,6 +24,7 @@ pub fn all() -> Vec<Language> {
         Language { parse: pascal::parse, profile_source: pascal::profile_source },
         Language { parse: csharp::parse, profile_source: csharp::profile_source },
         Language { parse: python::parse, profile_source: python::profile_source },
+        Language { parse: php::parse, profile_source: php::profile_source },
     ]
 }
 

@@ -6,9 +6,8 @@ use super::helpers::*;
 
 #[test]
 fn escape_newline() {
-    let out = run_python("print('hello\\nworld')\n");
-    assert_eq!(out[0], "hello");
-    assert_eq!(out[1], "world");
+    let out = run_python_one("print('hello\\nworld')\n");
+    assert_eq!(out, "hello\nworld");
 }
 
 #[test]

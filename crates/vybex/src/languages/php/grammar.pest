@@ -1,0 +1,637 @@
+// PHP grammar for pest — full PHP 8 surface.
+//
+// Notes:
+// - PHP terminates statements with `;` (no ASI). NEWLINE is whitespace.
+// - The lexer/parser strips the optional `<?php`/`?>` open/close tags.
+//   For now we accept either an `<?php` prefix OR a script with no tag at
+//   all. Mixed-mode (HTML between tags) is NOT supported.
+// - `$variable` is a distinct token shape from a bare `Identifier` —
+//   identifiers without `$` are function names, class names, constants.
+// - Heredoc / nowdoc / interpolated double-quoted strings: NOT yet
+//   handled at the grammar level. Single-quoted and plain double-quoted
+//   work.
+// - Keyword operators (`and`, `or`, `xor`, `instanceof`, `new`, `clone`,
+//   `not`-style `!`) need atomic-rule word-boundary checks in pest's
+//   non-atomic context. Defined below as `*_keyword` atomic rules.
+// - Expression chain is intentionally flat (~12 levels) per skill MD.
+
+// ── Whitespace and comments ──────────────────────────────────────────────────
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ line_comment | hash_comment | block_comment }
+line_comment  = _{ "//" ~ (!("\n" | "\r") ~ ANY)* }
+hash_comment  = _{ "#" ~ !"[" ~ (!("\n" | "\r") ~ ANY)* }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// ── Program ──────────────────────────────────────────────────────────────────
+
+program = {
+    SOI
+    ~ open_tag?
+    ~ (statement)*
+    ~ close_tag?
+    ~ EOI
+}
+
+open_tag  = _{ "<?php" | "<?=" | "<?" }
+close_tag = _{ "?>" }
+
+// ── Keywords (atomic rules for word-boundary safety) ─────────────────────────
+
+// Keywords that participate in expressions or need word-boundary lookahead
+// MUST be atomic. PHP keywords are case-insensitive.
+
+kw_if = @{ ^"if"          ~ !ident_cont }
+kw_elseif = @{ ^"elseif"      ~ !ident_cont }
+kw_else_if = @{ ^"else" ~ WHITESPACE+ ~ ^"if" ~ !ident_cont }
+kw_else = @{ ^"else"        ~ !ident_cont }
+kw_while = @{ ^"while"       ~ !ident_cont }
+kw_do = @{ ^"do"          ~ !ident_cont }
+kw_for = @{ ^"for"         ~ !ident_cont }
+kw_foreach = @{ ^"foreach"     ~ !ident_cont }
+kw_as = @{ ^"as"          ~ !ident_cont }
+kw_switch = @{ ^"switch"      ~ !ident_cont }
+kw_case = @{ ^"case"        ~ !ident_cont }
+kw_default = @{ ^"default"     ~ !ident_cont }
+kw_break = @{ ^"break"       ~ !ident_cont }
+kw_continue = @{ ^"continue"    ~ !ident_cont }
+kw_return = @{ ^"return"      ~ !ident_cont }
+kw_function = @{ ^"function"    ~ !ident_cont }
+kw_class = @{ ^"class"       ~ !ident_cont }
+kw_extends = @{ ^"extends"     ~ !ident_cont }
+kw_implements = @{ ^"implements"  ~ !ident_cont }
+kw_interface = @{ ^"interface"   ~ !ident_cont }
+kw_trait = @{ ^"trait"       ~ !ident_cont }
+kw_enum = @{ ^"enum"        ~ !ident_cont }
+kw_new = @{ ^"new"         ~ !ident_cont }
+kw_clone = @{ ^"clone"       ~ !ident_cont }
+kw_echo = @{ ^"echo"        ~ !ident_cont }
+kw_print = @{ ^"print"       ~ !ident_cont }
+kw_null = @{ ^"null"        ~ !ident_cont }
+kw_true = @{ ^"true"        ~ !ident_cont }
+kw_false = @{ ^"false"       ~ !ident_cont }
+kw_instanceof = @{ ^"instanceof"  ~ !ident_cont }
+kw_throw = @{ ^"throw"       ~ !ident_cont }
+kw_try = @{ ^"try"         ~ !ident_cont }
+kw_catch = @{ ^"catch"       ~ !ident_cont }
+kw_finally = @{ ^"finally"     ~ !ident_cont }
+kw_static = @{ ^"static"      ~ !ident_cont }
+kw_public = @{ ^"public"      ~ !ident_cont }
+kw_private = @{ ^"private"     ~ !ident_cont }
+kw_protected = @{ ^"protected"   ~ !ident_cont }
+kw_abstract = @{ ^"abstract"    ~ !ident_cont }
+kw_final = @{ ^"final"       ~ !ident_cont }
+kw_const = @{ ^"const"       ~ !ident_cont }
+kw_match = @{ ^"match"       ~ !ident_cont }
+kw_fn = @{ ^"fn"          ~ !ident_cont }
+kw_use = @{ ^"use"         ~ !ident_cont }
+kw_namespace = @{ ^"namespace"   ~ !ident_cont }
+kw_yield_from = @{ ^"yield" ~ WHITESPACE+ ~ ^"from" ~ !ident_cont }
+kw_yield = @{ ^"yield"       ~ !ident_cont }
+kw_list = @{ ^"list"        ~ !ident_cont }
+kw_global = @{ ^"global"      ~ !ident_cont }
+kw_readonly = @{ ^"readonly"    ~ !ident_cont }
+kw_and = @{ ^"and"         ~ !ident_cont }
+kw_or = @{ ^"or"          ~ !ident_cont }
+kw_xor = @{ ^"xor"         ~ !ident_cont }
+kw_self = @{ ^"self"        ~ !ident_cont }
+kw_parent = @{ ^"parent"      ~ !ident_cont }
+kw_isset = @{ ^"isset"       ~ !ident_cont }
+kw_empty = @{ ^"empty"       ~ !ident_cont }
+kw_unset = @{ ^"unset"       ~ !ident_cont }
+kw_endif = @{ ^"endif"       ~ !ident_cont }
+kw_endwhile = @{ ^"endwhile"    ~ !ident_cont }
+kw_endfor = @{ ^"endfor"      ~ !ident_cont }
+kw_endforeach = @{ ^"endforeach"  ~ !ident_cont }
+kw_endswitch = @{ ^"endswitch"   ~ !ident_cont }
+
+// Word-boundary lookahead character class
+ident_cont = _{ ASCII_ALPHANUMERIC | "_" }
+
+// Cast keywords (inside parens for `(int) $x`, `(string) $y`, …)
+cast_kw = @{
+    (^"int" | ^"integer" | ^"float" | ^"double" | ^"real"
+     | ^"string" | ^"bool" | ^"boolean" | ^"array" | ^"object")
+    ~ !ident_cont
+}
+
+// Reserved word predicate — used in `identifier` to reject reserved
+// words from being parsed as identifiers.
+reserved = _{
+    kw_if | kw_elseif | kw_else_if | kw_else | kw_while | kw_do | kw_for
+    | kw_foreach | kw_as | kw_switch | kw_case | kw_default | kw_break
+    | kw_continue | kw_return | kw_function | kw_class | kw_extends
+    | kw_implements | kw_interface | kw_trait | kw_enum | kw_new | kw_clone
+    | kw_echo | kw_print | kw_null | kw_true | kw_false | kw_instanceof
+    | kw_throw | kw_try | kw_catch | kw_finally | kw_static | kw_public
+    | kw_private | kw_protected | kw_abstract | kw_final | kw_const
+    | kw_match | kw_fn | kw_use | kw_namespace | kw_yield_from | kw_yield
+    | kw_list | kw_global | kw_readonly | kw_and | kw_or | kw_xor
+    | kw_self | kw_parent | kw_isset | kw_empty | kw_unset
+    | kw_endif | kw_endwhile | kw_endfor | kw_endforeach | kw_endswitch
+}
+
+// ── Identifiers, variables, literals ─────────────────────────────────────────
+
+identifier = @{ !reserved ~ (ASCII_ALPHA | "_") ~ ident_cont* }
+
+// `$varname`. The dollar prefix distinguishes variables from
+// identifiers (function names, class names, constants).
+variable = @{ "$" ~ (ASCII_ALPHA | "_") ~ ident_cont* }
+
+// PHP allows backslash-qualified names: \Foo\Bar\Baz, Foo\Bar
+qualified_name = @{ "\\"? ~ identifier ~ ("\\" ~ identifier)* }
+
+number_lit = @{
+    "0x" ~ ASCII_HEX_DIGIT+
+    | "0b" ~ ('0'..'1')+
+    | "0o" ~ ('0'..'7')+
+    | ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    | "." ~ ASCII_DIGIT+ ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}
+
+// Single-quoted: literal, supports `\'` and `\\`. No interpolation.
+sq_string = @{ "'" ~ ("\\'" | "\\\\" | (!"'" ~ ANY))* ~ "'" }
+
+// Double-quoted: literal with `\n`/`\t`/`\"`/`\\`/`\$` escapes. NO
+// interpolation in Phase 1 — recognised as a flat string body.
+dq_string = @{ "\"" ~ ("\\\"" | "\\\\" | "\\$" | "\\" ~ ANY | (!"\"" ~ ANY))* ~ "\"" }
+
+string_lit = { sq_string | dq_string }
+
+// ── Statements ───────────────────────────────────────────────────────────────
+
+statement = _{
+    empty_statement
+    | block_statement
+    | const_statement
+    | global_statement
+    | namespace_statement
+    | use_statement
+    | function_declaration
+    | class_declaration
+    | interface_declaration
+    | trait_declaration
+    | enum_declaration
+    | if_statement
+    | while_statement
+    | do_while_statement
+    | for_statement
+    | foreach_statement
+    | switch_statement
+    | return_statement
+    | break_statement
+    | continue_statement
+    | throw_statement
+    | try_statement
+    | echo_statement
+    | print_statement
+    | expression_statement
+}
+
+empty_statement = { ";" }
+
+block_statement = { "{" ~ statement* ~ "}" }
+
+// `namespace Foo\Bar;` and `namespace Foo { ... }` — both forms accepted,
+// content effectively flattened (we ignore the namespace prefix).
+namespace_statement = {
+    kw_namespace ~ qualified_name? ~ (";" | block_statement)
+}
+
+// `use Foo\Bar;` / `use Foo\Bar as Baz;` / `use function Foo\bar;` etc.
+use_statement = {
+    kw_use ~ (kw_function | kw_const)? ~ use_item ~ ("," ~ use_item)* ~ ";"
+}
+
+use_item = { qualified_name ~ (kw_as ~ identifier)? }
+
+const_statement = {
+    kw_const ~ identifier ~ "=" ~ expression ~ ";"
+}
+
+global_statement = {
+    kw_global ~ variable ~ ("," ~ variable)* ~ ";"
+}
+
+// ── Function declarations ────────────────────────────────────────────────────
+
+function_declaration = {
+    kw_function ~ "&"? ~ identifier
+    ~ "(" ~ param_list? ~ ")"
+    ~ return_type_annotation?
+    ~ block_statement
+}
+
+param_list = { param ~ ("," ~ param)* ~ ","? }
+
+param = {
+    param_modifier* ~ type_annotation? ~ "&"? ~ "..."? ~ variable ~ ("=" ~ expression)?
+}
+
+// PHP 8 promoted constructor parameters: `public int $foo`, `private $bar`
+param_modifier = { kw_public | kw_private | kw_protected | kw_readonly }
+
+// Type annotations are accepted but the walker discards them (we don't
+// type-check). Supports `?Foo`, `int|string`, `Foo&Bar`, `array`, etc.
+type_annotation = {
+    "?"? ~ type_atom ~ (("|" | "&") ~ type_atom)*
+}
+
+return_type_annotation = { ":" ~ type_annotation }
+
+type_atom = {
+    qualified_name
+    | "(" ~ type_annotation ~ ")"
+}
+
+// ── Class declarations ───────────────────────────────────────────────────────
+
+class_declaration = {
+    class_modifier* ~ kw_class ~ identifier
+    ~ (kw_extends ~ qualified_name)?
+    ~ (kw_implements ~ qualified_name ~ ("," ~ qualified_name)*)?
+    ~ "{" ~ class_member* ~ "}"
+}
+
+class_modifier = { kw_abstract | kw_final | kw_readonly }
+
+interface_declaration = {
+    kw_interface ~ identifier
+    ~ (kw_extends ~ qualified_name ~ ("," ~ qualified_name)*)?
+    ~ "{" ~ class_member* ~ "}"
+}
+
+trait_declaration = {
+    kw_trait ~ identifier
+    ~ "{" ~ class_member* ~ "}"
+}
+
+class_member = _{
+    use_trait
+    | class_constant
+    | property_declaration
+    | method_declaration
+    | empty_statement
+}
+
+// `use TraitName, OtherTrait;` inside a class body
+use_trait = {
+    kw_use ~ qualified_name ~ ("," ~ qualified_name)* ~ ";"
+}
+
+class_constant = {
+    member_modifier* ~ kw_const ~ identifier ~ "=" ~ expression ~ ";"
+}
+
+property_declaration = {
+    member_modifier* ~ type_annotation? ~ variable ~ ("=" ~ expression)? ~ ";"
+}
+
+method_declaration = {
+    member_modifier* ~ kw_function ~ "&"? ~ identifier
+    ~ "(" ~ param_list? ~ ")"
+    ~ return_type_annotation?
+    ~ (block_statement | ";")  // ; for abstract / interface methods
+}
+
+member_modifier = {
+    kw_public | kw_private | kw_protected | kw_static | kw_abstract
+    | kw_final | kw_readonly
+}
+
+// ── Enum (PHP 8.1+) ──────────────────────────────────────────────────────────
+
+enum_declaration = {
+    kw_enum ~ identifier ~ (":" ~ identifier)?
+    ~ (kw_implements ~ qualified_name ~ ("," ~ qualified_name)*)?
+    ~ "{" ~ enum_member* ~ "}"
+}
+
+enum_member = _{
+    enum_case
+    | class_constant
+    | method_declaration
+    | use_trait
+    | empty_statement
+}
+
+enum_case = {
+    kw_case ~ identifier ~ ("=" ~ expression)? ~ ";"
+}
+
+// ── Control flow ─────────────────────────────────────────────────────────────
+
+if_statement = {
+    kw_if ~ "(" ~ expression ~ ")"
+    ~ statement
+    ~ elseif_clause*
+    ~ else_clause?
+}
+
+elseif_clause = { (kw_elseif | kw_else_if) ~ "(" ~ expression ~ ")" ~ statement }
+else_clause   = { kw_else ~ statement }
+
+while_statement = {
+    kw_while ~ "(" ~ expression ~ ")" ~ statement
+}
+
+do_while_statement = {
+    kw_do ~ statement ~ kw_while ~ "(" ~ expression ~ ")" ~ ";"
+}
+
+for_statement = {
+    kw_for ~ "("
+    ~ for_init? ~ ";"
+    ~ expression? ~ ";"
+    ~ for_update?
+    ~ ")"
+    ~ statement
+}
+
+for_init   = { expression ~ ("," ~ expression)* }
+for_update = { expression ~ ("," ~ expression)* }
+
+foreach_statement = {
+    kw_foreach ~ "("
+    ~ expression ~ kw_as
+    ~ foreach_target
+    ~ ")"
+    ~ statement
+}
+
+// `as $value` or `as $key => $value`
+foreach_target = {
+    variable ~ "=>" ~ "&"? ~ variable
+    | "&"? ~ variable
+}
+
+switch_statement = {
+    kw_switch ~ "(" ~ expression ~ ")"
+    ~ "{" ~ switch_case* ~ "}"
+}
+
+switch_case = {
+    (kw_case ~ expression | kw_default) ~ ":" ~ statement*
+}
+
+return_statement = { kw_return ~ expression? ~ ";" }
+break_statement  = { kw_break ~ expression? ~ ";" }
+continue_statement = { kw_continue ~ expression? ~ ";" }
+throw_statement = { kw_throw ~ expression ~ ";" }
+
+try_statement = {
+    kw_try ~ block_statement
+    ~ catch_clause*
+    ~ finally_clause?
+}
+
+catch_clause = {
+    kw_catch ~ "(" ~ catch_type ~ variable? ~ ")" ~ block_statement
+}
+
+// `Foo` or `Foo|Bar|Baz`
+catch_type = {
+    qualified_name ~ ("|" ~ qualified_name)*
+}
+
+finally_clause = { kw_finally ~ block_statement }
+
+echo_statement  = { kw_echo ~ expression ~ ("," ~ expression)* ~ ";" }
+print_statement = { kw_print ~ expression ~ ";" }
+
+expression_statement = { expression ~ ";" }
+
+// ── Expression precedence (flat ~12 levels) ──────────────────────────────────
+//
+// PHP operator precedence (high to low). We collapse some adjacent
+// levels into a single rule with named operator alternatives, per the
+// skill MD's "keep it flat" advice.
+
+expression = { assignment_expression }
+
+assignment_expression = {
+    yield_expression
+    | logical_or_expression ~ (assign_op ~ assignment_expression)?
+}
+
+assign_op = {
+    "=" | "+=" | "-=" | "*=" | "/=" | "%=" | ".=" | "**="
+    | "<<=" | ">>=" | "&=" | "|=" | "^="
+    | "&&=" | "||=" | "??="
+}
+
+yield_expression = {
+    kw_yield_from ~ assignment_expression
+    | kw_yield ~ (assignment_expression ~ ("=>" ~ assignment_expression)?)?
+}
+
+// `or` (lowest), `xor`, `and` — PHP word operators bind LOWER than `=`,
+// but we put them just above ternary for simplicity. They're rarely
+// used in mixed-precedence contexts.
+logical_or_expression = {
+    ternary_expression ~ ((kw_or | kw_xor | kw_and) ~ ternary_expression)*
+}
+
+ternary_expression = {
+    null_coalesce_expression
+    ~ ("?" ~ expression? ~ ":" ~ ternary_expression)?
+}
+
+null_coalesce_expression = {
+    logic_or_expression ~ ("??" ~ null_coalesce_expression)?
+}
+
+logic_or_expression = {
+    logic_and_expression ~ ("||" ~ logic_and_expression)*
+}
+
+logic_and_expression = {
+    bit_or_expression ~ ("&&" ~ bit_or_expression)*
+}
+
+// Bitwise OR / XOR / AND collapsed to one level (like JS)
+bit_or_expression = {
+    equality_expression ~ (bitwise_op ~ equality_expression)*
+}
+
+bitwise_op = { "|" | "^" | bit_and_op }
+// `&` would clash with reference-by-`&` in arg lists if used loose;
+// pest disambiguates by context here.
+bit_and_op = { "&" }
+
+equality_expression = {
+    comparison_expression ~ (eq_op ~ comparison_expression)*
+}
+
+eq_op = { "===" | "!==" | "==" | "!=" | "<>" }
+
+comparison_expression = {
+    shift_expression ~ (cmp_op ~ shift_expression)*
+}
+
+cmp_op = { "<=>" | "<=" | ">=" | "<" | ">" | kw_instanceof }
+
+shift_expression = {
+    additive_expression ~ (shift_op ~ additive_expression)*
+}
+
+shift_op = { "<<" | ">>" }
+
+additive_expression = {
+    multiplicative_expression ~ (additive_op ~ multiplicative_expression)*
+}
+
+additive_op = { "+" | "-" | "." }
+
+multiplicative_expression = {
+    unary_expression ~ (mul_op ~ unary_expression)*
+}
+
+mul_op = { "**" | "*" | "/" | "%" }
+
+unary_expression = {
+    unary_op ~ unary_expression
+    | cast_expression
+    | postfix_expression
+}
+
+unary_op = { "!" | "~" | "-" | "+" | "++" | "--" | "@" }
+
+cast_expression = {
+    "(" ~ cast_kw ~ ")" ~ unary_expression
+}
+
+postfix_expression = {
+    primary_expression ~ postfix_op*
+}
+
+postfix_op = {
+    method_call_op
+    | property_access_op
+    | static_access_op
+    | array_index_op
+    | call_op
+    | inc_dec_op
+}
+
+method_call_op    = { ("?->" | "->") ~ member_name ~ "(" ~ arg_list? ~ ")" }
+property_access_op = { ("?->" | "->") ~ member_name }
+static_access_op  = { "::" ~ member_name }
+array_index_op    = { "[" ~ expression? ~ "]" }
+call_op           = { "(" ~ arg_list? ~ ")" }
+inc_dec_op        = { "++" | "--" }
+
+// `member_name` is what comes after `->` or `::` — usually an identifier,
+// can also be a `$variable` (variable property access) or `{expr}` (dynamic).
+member_name = {
+    identifier
+    | variable
+    | "{" ~ expression ~ "}"
+}
+
+arg_list = { argument ~ ("," ~ argument)* ~ ","? }
+
+argument = {
+    // Named arg: `name: value`
+    identifier ~ ":" ~ !":" ~ expression
+    | "..." ~ expression
+    | "&" ~ expression
+    | expression
+}
+
+// ── Primary expressions ──────────────────────────────────────────────────────
+
+primary_expression = {
+    literal
+    | variable
+    | new_expression
+    | clone_expression
+    | match_expression
+    | isset_expression
+    | empty_expression
+    | unset_expression
+    | list_expression
+    | array_expression
+    | short_array_expression
+    | closure_expression
+    | arrow_function
+    | parenthesized_expression
+    | qualified_name
+    | kw_self
+    | kw_parent
+    | kw_static
+}
+
+literal = {
+    number_lit
+    | string_lit
+    | kw_null
+    | kw_true
+    | kw_false
+}
+
+new_expression = {
+    kw_new ~ (qualified_name | variable | "(" ~ expression ~ ")") ~ ("(" ~ arg_list? ~ ")")?
+}
+
+clone_expression = {
+    kw_clone ~ unary_expression
+}
+
+match_expression = {
+    kw_match ~ "(" ~ expression ~ ")"
+    ~ "{" ~ (match_arm ~ ("," ~ match_arm)* ~ ","?)? ~ "}"
+}
+
+match_arm = {
+    (kw_default | match_conditions) ~ "=>" ~ expression
+}
+
+match_conditions = { expression ~ ("," ~ expression)* }
+
+isset_expression = { kw_isset ~ "(" ~ expression ~ ("," ~ expression)* ~ ")" }
+empty_expression = { kw_empty ~ "(" ~ expression ~ ")" }
+unset_expression = { kw_unset ~ "(" ~ expression ~ ("," ~ expression)* ~ ")" }
+
+list_expression = {
+    kw_list ~ "(" ~ list_element ~ ("," ~ list_element)* ~ ")"
+}
+
+list_element = { expression? }
+
+// `array(1, 2, 'key' => $val, ...$rest)`
+array_expression = {
+    "array" ~ "(" ~ (array_element ~ ("," ~ array_element)* ~ ","?)? ~ ")"
+}
+
+// `[1, 2, 'key' => $val, ...$rest]`
+short_array_expression = {
+    "[" ~ (array_element ~ ("," ~ array_element)* ~ ","?)? ~ "]"
+}
+
+array_element = {
+    "..." ~ expression
+    | expression ~ "=>" ~ "&"? ~ expression
+    | "&"? ~ expression
+}
+
+closure_expression = {
+    kw_static? ~ kw_function ~ "&"? ~ "(" ~ param_list? ~ ")"
+    ~ closure_use?
+    ~ return_type_annotation?
+    ~ block_statement
+}
+
+closure_use = {
+    kw_use ~ "(" ~ closure_use_var ~ ("," ~ closure_use_var)* ~ ")"
+}
+
+closure_use_var = { "&"? ~ variable }
+
+arrow_function = {
+    kw_static? ~ kw_fn ~ "(" ~ param_list? ~ ")" ~ return_type_annotation?
+    ~ "=>" ~ expression
+}
+
+parenthesized_expression = { "(" ~ expression ~ ")" }
