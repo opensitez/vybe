@@ -257,59 +257,6 @@ pub fn emit_raise_event(chunk: &mut Chunk, import_idx: u16, total_args: u8, line
     chunk.emit(total_args, line);
 }
 
-/// Emit a control-property assignment that mirrors to the GUI host registry.
-///
-/// This is the canonical pattern for `Me.Text = "X"` (and any
-/// `<control>.<Property> = value` inside a class method): writes to BOTH
-/// the in-memory struct AND the GUI host's property table so that
-/// `gui.get_property(control_name, "Text")` reflects the new value.
-///
-/// Caller arranges:
-///   - The OBJECT in `obj_slot` (a temp local already populated)
-///   - The VALUE in `val_slot` (a temp local already populated)
-///
-/// Caller passes:
-///   - `field_lower`  — canonical (lowercased) field key for the in-memory
-///     struct_set, e.g. `"text"`
-///   - `field_pascal` — PascalCase form for the host fn (matches widget
-///     property names), e.g. `"Text"`
-///   - `set_property_import_idx` — pre-resolved index for
-///     `vybe:gui::controlSetProperty` from the compiler's import table
-///
-/// Stack on entry: []
-/// Stack on exit:  [] (both side effects performed)
-///
-/// All language frontends (.NET WinForms, future MAUI, Flutter, Tkinter, …)
-/// share this single emit path so a property write looks identical to the
-/// host regardless of the source language.
-pub fn emit_set_control_property(
-    chunk: &mut Chunk,
-    obj_slot: u16,
-    val_slot: u16,
-    field_lower: &str,
-    field_pascal: &str,
-    set_property_import_idx: u16,
-    line: u32,
-) {
-    // 1. In-memory: obj.<field> = value
-    let field_key = chunk.add_constant(Value::String(Arc::from(field_lower)));
-    chunk.emit_op_u16(Op::local_get, obj_slot, line);
-    chunk.emit_op_u16(Op::local_get, val_slot, line);
-    chunk.emit_op_u16(Op::struct_set, field_key, line);
-    chunk.emit_op(Op::drop, line);
-
-    // 2. Host mirror: vybe:gui::controlSetProperty(obj, "Field", value)
-    //    The host fn keys the GUI registry by obj.__control_name, so user
-    //    classes whose `emit_new_typed_object` stamped __control_name = the
-    //    lowercased class name are reachable via `gui.get_property(name, ...)`.
-    chunk.emit_op_u16(Op::local_get, obj_slot, line);
-    let prop_str = chunk.add_constant(Value::String(Arc::from(field_pascal)));
-    chunk.emit_op_u16(Op::r#const, prop_str, line);
-    chunk.emit_op_u16(Op::local_get, val_slot, line);
-    chunk.emit_op_u16(Op::call_import, set_property_import_idx, line);
-    chunk.emit(3, line);
-    chunk.emit_op(Op::drop, line);
-}
 
 /// Push a string constant onto the stack (helper used when assembling
 /// arguments for the GUI host calls above).

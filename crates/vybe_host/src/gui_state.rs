@@ -37,6 +37,13 @@ pub struct GuiState {
     pub close_requested: bool,
     /// Pending MsgBox dialogs: (text, title). Drained by the runner after each VM invocation.
     pub pending_dialogs: Vec<(String, String)>,
+    /// Property store: every `set_property` write is mirrored here keyed by
+    /// `(lowercased control name, lowercased property)`. Used both as the
+    /// authoritative source for `get_property` (so callers see what was
+    /// written even when the control isn't a child widget on the form, e.g.
+    /// the form itself) and to handle form-level properties without needing
+    /// to hand-craft a separate widget for the form.
+    pub properties: HashMap<(String, String), String>,
 }
 
 impl GuiState {
@@ -51,6 +58,7 @@ impl GuiState {
             form_object: None,
             close_requested: false,
             pending_dialogs: Vec::new(),
+            properties: HashMap::new(),
         }
     }
 
@@ -81,10 +89,16 @@ impl GuiState {
         self.control_names.push(name_lower);
     }
 
-    /// Set a property on a control by name — directly updates the widget.
+    /// Set a property on a control by name — directly updates the widget
+    /// AND mirrors to the property store. The mirror lets callers query
+    /// `get_property` for any control (including the form itself, which
+    /// isn't represented as a child widget).
     pub fn set_property(&mut self, control: &str, property: &str, value: &str) {
         let name = control.to_lowercase();
-        match property.to_lowercase().as_str() {
+        let prop_lower = property.to_lowercase();
+        // Always mirror to the property store first.
+        self.properties.insert((name.clone(), prop_lower.clone()), value.to_string());
+        match prop_lower.as_str() {
             "text" => {
                 self.form.send_command(&name, &WidgetCommand::SetText(value.to_string()));
             }
@@ -109,10 +123,17 @@ impl GuiState {
         }
     }
 
-    /// Get a property from a control by name.
+    /// Get a property from a control by name. Reads from the property store
+    /// first (covers form-level properties and any prior set_property write),
+    /// falling back to a widget query for properties that are managed by
+    /// the live widget rather than the store.
     pub fn get_property(&mut self, control: &str, property: &str) -> String {
         let name = control.to_lowercase();
-        match property.to_lowercase().as_str() {
+        let prop_lower = property.to_lowercase();
+        if let Some(v) = self.properties.get(&(name.clone(), prop_lower.clone())) {
+            return v.clone();
+        }
+        match prop_lower.as_str() {
             "text" => {
                 let result = self.form.send_command(&name, &WidgetCommand::GetText);
                 match result {

@@ -741,7 +741,15 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::not_inheritable_keyword => is_not_inheritable = true,
             Rule::inherits_statement => {
                 if let Some(type_pair) = p.into_inner().next() {
-                    parents.push(type_pair.as_str().to_string());
+                    // Strip qualification: `System.Windows.Forms.Form` → `Form`.
+                    // The canonical AST stores unqualified parent names because
+                    // the compiler resolves them via globals (where dotnet
+                    // classes are installed by `register_dotnet_classes`). User
+                    // classes live in the same flat global namespace, so this
+                    // matches both .NET BCL parents and user-defined parents.
+                    let qualified = type_pair.as_str().to_string();
+                    let unqualified = qualified.rsplit('.').next().unwrap_or(&qualified).to_string();
+                    parents.push(unqualified);
                 }
             }
             Rule::implements_statement => {
@@ -852,6 +860,28 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     // path for events regardless of source language.
     inject_handles_into_constructor(&mut members);
 
+    // Inject implicit `MyBase.New()` at the START of every constructor body
+    // when this class has an `Inherits` clause and the body doesn't already
+    // start with an explicit `MyBase.New(...)`. This matches real VB.NET
+    // semantics: the runtime implicitly calls the parameterless parent ctor
+    // before the body runs, and the VB compiler errors if no parameterless
+    // parent ctor is accessible. By doing this here we keep the canonical
+    // AST uniform — compile_class sees a body that always starts with the
+    // base call, the same as Pascal `inherited Create(...)` and JS
+    // `super(...)`. The compiler-side logic doesn't need a VB-specific
+    // case.
+    //
+    // Also stamp `Me.__control_name = "<lowercased class name>"` immediately
+    // after the base call, so any subsequent property writes (e.g.
+    // `Me.Text = "X"`) mirror to the gui state under the user-meaningful
+    // key. The base ctor (e.g. `Form()`) wires the underlying widget which
+    // has its own auto-generated `__control_name`; this re-stamp overrides
+    // it with the canonical "lowercased subclass name" form that real
+    // WinForms users (and the existing Vybe form runner) expect.
+    if !parents.is_empty() {
+        inject_implicit_mybase_new(&mut members, &name);
+    }
+
     Ok(Statement::with_span(StmtKind::ClassDecl {
         name,
         parents,
@@ -865,6 +895,82 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             is_static: false,
         },
     }, span))
+}
+
+/// Inject `MyBase.New()` at the start of every constructor body that doesn't
+/// already start with an explicit base call. Matches real VB.NET semantics
+/// for `Inherits` classes.
+///
+/// "Already starts with one" is checked structurally — only the FIRST
+/// statement is examined, because that's the only legal position for an
+/// explicit `MyBase.New(...)` in VB. (VB.NET errors if `MyBase.New` appears
+/// anywhere else in the body.)
+///
+/// If the class has no constructor at all, a default one is synthesized
+/// containing just the `MyBase.New()` call.
+fn inject_implicit_mybase_new(members: &mut Vec<ClassMember>, class_name: &str) {
+    let lowered = class_name.to_lowercase();
+
+    let mybase_new = || -> Statement {
+        // SuperCall { method: Some("New"), args: [] } — same shape the
+        // mybase_member_call walker arm produces for explicit `MyBase.New()`.
+        Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::SuperCall { method: Some("New".to_string()), args: Vec::new() },
+        )))
+    };
+
+    // Me.__control_name = "<lowercased class name>"
+    // This is the .NET-canonical "self identity" stamp. The base ctor (e.g.
+    // `Form()`) wired up the underlying widget with its own auto-generated
+    // name; we override it here so user property writes mirror to gui state
+    // under the subclass name the rest of the system uses.
+    let stamp_control_name = || -> Statement {
+        let target = Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident("Me")),
+            field: "__control_name".to_string(),
+            null_safe: false,
+        });
+        let value = Expression::string(&lowered);
+        Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value,
+        })
+    };
+
+    let starts_with_mybase_new = |body: &[Statement]| -> bool {
+        match body.first().map(|s| &s.kind) {
+            Some(StmtKind::Expr(e)) => matches!(
+                &e.kind,
+                ExprKind::SuperCall { .. }
+            ),
+            _ => false,
+        }
+    };
+
+    let has_ctor = members.iter().any(|m| matches!(m, ClassMember::Constructor { .. }));
+    if !has_ctor {
+        // Synthesize a default ctor that just calls MyBase.New() and stamps
+        // the canonical control name.
+        members.push(ClassMember::Constructor {
+            params: Vec::new(),
+            body: vec![mybase_new(), stamp_control_name()],
+            base_args: None,
+            visibility: Visibility::Public,
+        });
+        return;
+    }
+    for m in members.iter_mut() {
+        if let ClassMember::Constructor { body, .. } = m {
+            if !starts_with_mybase_new(body) {
+                body.insert(0, mybase_new());
+                body.insert(1, stamp_control_name());
+            } else {
+                // Body already starts with MyBase.New() — insert the stamp
+                // immediately after it.
+                body.insert(1, stamp_control_name());
+            }
+        }
+    }
 }
 
 /// Walk the class members; for every Method with `handles: ["ctrl.Event", ...]`,

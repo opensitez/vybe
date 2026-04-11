@@ -128,7 +128,26 @@ pub fn register_all(vm: &mut VM) {
     // Register no-op GUI stubs so compiled code that emits controlSetProperty/showForm/closeForm
     // doesn't fail with "Unresolved import" in non-GUI contexts.
     if vm.host_registry.get(&("vybe:gui".to_string(), "controlSetProperty".to_string())).is_none() {
-        vm.register_host_fn("vybe:gui", "controlSetProperty", Box::new(|_ctx, _| Value::Null));
+        // Non-GUI stub that still mirrors the property write onto the object's
+        // properties dict — this is essential because the dotnet class wrappers
+        // emit setter chunks that call this fn, and user code (and tests) read
+        // back the values via `obj.field`. The real GUI version of this fn
+        // (`vybe_host::modules::gui::register::controlSetProperty`) ALSO writes
+        // to a separate gui_state property store, which we skip here because
+        // we have no `GuiState` to write into.
+        vm.register_host_fn("vybe:gui", "controlSetProperty", Box::new(|_ctx, args| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let property = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+                let val = args.get(2).cloned().unwrap_or(Value::Null);
+                let prop_lower = property.to_lowercase();
+                let mut o = obj.lock().unwrap();
+                o.properties.insert(prop_lower.clone(), val.clone());
+                if prop_lower == "name" {
+                    o.properties.insert("__control_name".into(), val);
+                }
+            }
+            Value::Null
+        }));
         vm.register_host_fn("vybe:gui", "setProperty", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "showForm", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "closeForm", Box::new(|_ctx, _| Value::Null));
@@ -151,6 +170,60 @@ pub fn register_all(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(obj)))
         }));
         vm.register_host_fn("vybe:gui", "addHandler", Box::new(|_ctx, _| Value::Null));
+
+        // ── Per-control `new_<Type>` stubs for the dotnet class wrappers ──
+        // The compiler_common::dotnet::classes layer emits ctor chunks that
+        // call `vybe:gui::new_<ClassName>` for every concrete leaf. In test
+        // / non-GUI contexts the real `gui::register` isn't called, so we
+        // install no-op stubs that return a minimally-populated control
+        // object — enough for the dotnet ctor's "transfer widget identity"
+        // step to succeed without panicking.
+        let dotnet_concrete_controls: &[&str] = &[
+            "Form",
+            // Buttons family
+            "Button", "CheckBox", "RadioButton",
+            // Text family
+            "TextBox", "RichTextBox", "MaskedTextBox",
+            // Labels
+            "Label", "LinkLabel",
+            // Lists
+            "ComboBox", "ListBox", "ListView", "TreeView",
+            // Containers
+            "Panel", "GroupBox", "TabControl", "TabPage", "SplitContainer",
+            "FlowLayoutPanel", "TableLayoutPanel",
+            // Progress
+            "ProgressBar", "TrackBar", "NumericUpDown",
+            // Dates
+            "DateTimePicker", "MonthCalendar",
+            // Media
+            "PictureBox", "WebBrowser",
+            // Grids
+            "DataGridView",
+            // Strips
+            "ToolStrip", "MenuStrip", "StatusStrip", "ContextMenuStrip",
+            // Non-visual
+            "Timer", "BindingSource", "ImageList", "ToolTip",
+            "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",
+            // Dialogs
+            "OpenFileDialog", "SaveFileDialog", "FontDialog", "ColorDialog",
+            "FolderBrowserDialog",
+        ];
+        for ct in dotnet_concrete_controls {
+            let type_name = ct.to_string();
+            vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_ctx, _args| {
+                use vybe_bytecode::value::Object;
+                use std::sync::atomic::{AtomicU32, Ordering};
+                static COUNTER: AtomicU32 = AtomicU32::new(1);
+                let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+                let name = format!("{}_{}", type_name.to_lowercase(), id);
+                let mut obj = Object::new();
+                obj.properties.insert("__control_type".into(), Value::String(Arc::from(type_name.as_str())));
+                obj.properties.insert("__control_name".into(), Value::String(Arc::from(name.as_str())));
+                obj.properties.insert("__type".into(), Value::String(Arc::from(type_name.as_str())));
+                obj.properties.insert("name".into(), Value::String(Arc::from(name.as_str())));
+                Value::Object(Arc::new(Mutex::new(obj)))
+            }));
+        }
     }
     // DO NOT call setup_namespaces here — tests override host fns after register_all.
     // setup_namespaces must be called AFTER all host fn registrations.

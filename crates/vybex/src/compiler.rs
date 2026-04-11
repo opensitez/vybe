@@ -90,6 +90,15 @@ impl Compiler {
     pub fn compile(mut self, module: &Module) -> Result<Vec<Chunk>, String> {
         self.case_sensitive = self.profile.case_sensitive;
 
+        // Register the .NET BCL class wrappers (Object → … → Form, Button, …)
+        // before walking the user body, so user code that writes
+        // `Inherits Form` finds a real `Form` class with a real ctor chain.
+        // Gated on `profile.namespaces.use_dotnet` so non-.NET languages
+        // don't get the names installed in their global scope.
+        if self.profile.namespaces.use_dotnet {
+            self.register_dotnet_classes()?;
+        }
+
         // Pre-pass: merge `Partial Class` declarations sharing the same name
         // when the language profile enables it. After merging, the body has
         // exactly one ClassDecl per class name with all fields/methods/etc.
@@ -147,6 +156,28 @@ impl Compiler {
         let l = self.line;
         self.chunks[self.current].emit_op_u16(Op::call_import, idx, l);
         self.chunks[self.current].emit(argc, l);
+    }
+
+    // ── Crate-private accessors used by `dotnet_register` ──────────────
+    //
+    // The .NET class registration logic lives in a sibling file
+    // (`dotnet_register.rs`) but operates on Compiler internals. These
+    // helpers expose just the bits that registration needs without
+    // making the underlying fields `pub`.
+    pub(crate) fn chunks_mut(&mut self) -> &mut Vec<Chunk> { &mut self.chunks }
+    pub(crate) fn current_line(&self) -> u32 { self.line }
+    pub(crate) fn note_defined_global(&mut self, name: &str) {
+        self.defined_globals.insert(name.to_string());
+    }
+    pub(crate) fn note_defined_class(&mut self, name: &str) {
+        self.defined_classes.insert(name.to_string());
+    }
+    pub(crate) fn note_pending_class(&mut self, name: &str, parent: Option<String>) {
+        self.pending_classes.insert(name.to_string(), PendingClass {
+            parent,
+            fields: Vec::new(),
+            statics: Vec::new(),
+        });
     }
 
     /// Push the canonical event-registry key for a control expression.
@@ -1932,21 +1963,90 @@ impl Compiler {
                 }
             } else {
                 // JS/VB/Pascal-style: constructor body contains the super() call which
-                // sets this_slot. Order: body first (sets this_slot via super()), then
-                // save base → bind methods → field inits.
+                // sets this_slot.
+                //
+                // Order matters for VB.NET / Pascal correctness: real .NET binds the
+                // class's instance methods on `this` BEFORE the user-visible body
+                // runs, so that user body code can call its own methods (e.g.
+                // `InitializeComponent()` inside `New()`). The catch is that
+                // method binding can only happen AFTER `this` exists, which in
+                // this branch means after the super/inherited call.
+                //
+                // We split the body at the super call:
+                //   body[..=super_idx]   — "preamble": runs to set up `this`
+                //   bind methods + save base + field inits + re-stamp __type
+                //   body[super_idx+1..]  — "main": user code that can now call
+                //                          methods on `this`
+                //
+                // The walker normalization for each language is responsible for
+                // putting a super call in the body for `Inherits` classes:
+                //   - VB: walker injects `MyBase.New()` (and an
+                //     `Me.__control_name = "<lower class name>"` stamp) at the
+                //     top of every ctor body for `Inherits` classes — real
+                //     VB.NET semantics where the runtime implicitly calls the
+                //     parameterless parent ctor.
+                //   - C#: walker sets `base_args = Some(_)` (handled by the
+                //     C#-style branch above, not this one).
+                //   - Pascal: user writes `inherited Create(...)`.
+                //   - JS: user writes `super(...)`.
                 //
                 // We skip null-init for fields with no explicit initializer because
                 // the body may have already assigned them (Pascal pattern:
                 // `inherited Create(X); FY := Y;`) — and a no-op null-init would
-                // clobber that assignment. Fields default to null on dynamic structs
-                // anyway, so this is safe.
+                // clobber that assignment. Fields default to null on dynamic
+                // structs anyway, so this is safe.
 
-                if let Some((body, _, _)) = ctor_body {
-                    for s in body { self.compile_stmt(s)?; }
+                let body_stmts: &[Statement] = ctor_body
+                    .as_ref()
+                    .map(|(b, _, _)| b.as_slice())
+                    .unwrap_or(&[]);
+
+                // Find the index of the first super-call statement in the body.
+                // This is the "this exists" boundary. Different walkers emit
+                // the super call as different node shapes:
+                //   - VB walker: `Expr(SuperCall { method: Some("New"), args })`
+                //   - C# walker (when not using : base): same shape
+                //   - JS walker: `Expr(Call { callee: Super, args })`
+                //   - Pascal walker: `Expr(SuperCall { method: Some("Create"), args })`
+                //     OR an `inherited Create(...)` that lowers to a Super call.
+                // We match all of them to keep this branch language-agnostic.
+                //
+                // The walker normalization for VB also injects
+                // `Me.__control_name = "..."` immediately after; we include it
+                // in the preamble so methods bind onto a fully-stamped `this`.
+                let is_super_call = |s: &Statement| -> bool {
+                    if let StmtKind::Expr(e) = &s.kind {
+                        match &e.kind {
+                            ExprKind::SuperCall { .. } => true,
+                            ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::Super),
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    }
+                };
+                let super_idx = body_stmts.iter().position(is_super_call);
+                let preamble_end = match super_idx {
+                    Some(i) => {
+                        // Extend through any immediately-following identity stamps
+                        // (Me.__control_name = ..., Me.__type = ..., etc.) so the
+                        // method binding sees the canonical control name.
+                        let mut end = i + 1;
+                        while end < body_stmts.len() && is_identity_stamp(&body_stmts[end]) {
+                            end += 1;
+                        }
+                        end
+                    }
+                    None => 0,
+                };
+
+                // Compile preamble (super call + any identity stamps).
+                for s in &body_stmts[..preamble_end] {
+                    self.compile_stmt(s)?;
                 }
 
-                // Re-stamp __type with the child name (the body's super call stamped
-                // it with the parent name).
+                // Re-stamp __type with the child name (the body's super call
+                // stamped it with the parent name).
                 self.emit_u16(Op::local_get, this_slot);
                 self.emit_const(Value::String(Arc::from(name)));
                 let type_key2 = self.str_const("__type");
@@ -1979,6 +2079,11 @@ impl Compiler {
                     } else {
                         common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
                     }
+                }
+
+                // Compile the main body (everything after the preamble).
+                for s in &body_stmts[preamble_end..] {
+                    self.compile_stmt(s)?;
                 }
             }
         } else {
@@ -4226,56 +4331,35 @@ impl Compiler {
     }
 }
 
-/// Flatten the target object of a member assignment into a string chain
-/// the framework resolver can inspect. Returns true on success.
-///
-/// Strings are kept in their source case — the compiler canonicalizes them
-/// later via `self.canon` so case-sensitive languages stay case-sensitive.
-///
-/// Examples:
-///   `Me`              → `["Me"]`
-///   `Me.btn1`         → `["Me", "btn1"]`
-///   `myVar.inner.x`   → `["myVar", "inner", "x"]`
-///
-/// `ExprKind::This` is normalized to `"this"` so the resolver can match it
-/// regardless of which language keyword (`me`, `this`, `self`) the source
-/// originally used.
-///
-/// Returns false for shapes the resolver doesn't model (calls, indexing,
-/// arbitrary expressions) — caller falls back to plain struct_set.
-fn flatten_target_chain(expr: &Expression, out: &mut Vec<String>) -> bool {
-    match &expr.kind {
-        ExprKind::This | ExprKind::Super => {
-            out.push("this".to_string());
-            true
-        }
-        ExprKind::Ident(name) => {
-            out.push(name.clone());
-            true
-        }
-        ExprKind::Member { object, field, .. } => {
-            if !flatten_target_chain(object, out) { return false; }
-            out.push(field.clone());
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Capitalize the first ASCII character of a string. Used to convert a
-/// canonical lowercase field name into the PascalCase form the GUI host's
-/// `controlSetProperty` expects.
-fn capitalize_first_ascii(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
-    }
-}
-
 /// Merge `Partial Class` declarations sharing the same name into one.
 /// Used by VB and C# (any language whose profile sets `partial_classes = true`).
 ///
+/// Detect statements of the form `Me.__<identifier> = <literal>` so the
+/// child-class JS/VB/Pascal-style ctor flow can include them in the
+/// "preamble" that runs before method binding. The walker normalization
+/// for VB injects `Me.__control_name = "<lower class name>"` immediately
+/// after the implicit `MyBase.New()` so the canonical control name is
+/// stamped before any property writes mirror to gui state.
+fn is_identity_stamp(stmt: &Statement) -> bool {
+    if let StmtKind::Assign { targets, .. } = &stmt.kind {
+        if targets.len() == 1 {
+            if let ExprKind::Member { object, field, .. } = &targets[0].kind {
+                let obj_is_self = matches!(
+                    &object.kind,
+                    ExprKind::This | ExprKind::Super
+                ) || matches!(
+                    &object.kind,
+                    ExprKind::Ident(n) if matches!(n.to_lowercase().as_str(), "me" | "this" | "self")
+                );
+                if obj_is_self && field.starts_with("__") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// The first declaration of a class name keeps its position in the body and
 /// receives all subsequent partials' members appended in source order.
 /// Subsequent partials are removed. Non-class statements pass through

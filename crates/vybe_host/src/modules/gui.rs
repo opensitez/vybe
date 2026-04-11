@@ -301,29 +301,11 @@ pub fn register(
     vm.register_host_fn("vybe:gui", "__dlg_showdialog", Box::new(|_ctx, _| Value::I32(1)));
     vm.register_host_fn("vybe:gui", "__dlg_show", Box::new(|_ctx, _| Value::I32(0)));
 
-    // `__set_name` setter — invoked by the VM whenever code does `ctrl.Name = X`
-    // (any language). The VM's struct_set opcode dispatches `__set_<field>`
-    // setters automatically, so this fires for `btn.Name = "btn1"` (VB),
-    // `btn.name = "btn1"` (C#/JS), `btn.name = "btn1"` (Python tkinter), etc.
-    // Mirrors the new name into `__control_name` so the GUI host registry,
-    // event binding (vybe:gui::onEvent), and any control_name lookup keep
-    // working when the user renames a control after construction.
-    vm.register_host_fn("vybe:gui", "__set_name", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let val = args.get(1).cloned().unwrap_or(Value::Null);
-            let mut o = obj.lock().unwrap();
-            o.properties.insert("name".into(), val.clone());
-            o.properties.insert("__control_name".into(), val);
-        }
-        Value::Null
-    }));
-
     let show_ref = host_fn_ref(vm, "__ctrl_show");
     let close_ref = host_fn_ref(vm, "__ctrl_close");
     let focus_ref = host_fn_ref(vm, "__ctrl_focus");
     let hide_ref = host_fn_ref(vm, "__ctrl_hide");
     let dlg_ref = host_fn_ref(vm, "__dlg_showdialog");
-    let set_name_ref = host_fn_ref(vm, "__set_name");
 
     for ct in control_types {
         let type_name = ct.to_string();
@@ -332,8 +314,14 @@ pub fn register(
         let focus = focus_ref.clone();
         let hide = hide_ref.clone();
         let dlg = dlg_ref.clone();
-        let set_name = set_name_ref.clone();
         vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+            // The vybe_widgets backing object. The dotnet class wrappers in
+            // `compiler_common::dotnet::classes` consume this from inside the
+            // ctor of `Form`/`Button`/etc. and copy `__control_name`,
+            // `__control_type`, `show`, `close`, `focus`, `hide` onto the
+            // class instance. Property setters (`__set_text`, `__set_name`,
+            // `__set_width`, etc.) live in compiled bytecode chunks generated
+            // by the dotnet class layer — they are NOT installed here.
             use std::sync::atomic::{AtomicU32, Ordering};
             static COUNTER: AtomicU32 = AtomicU32::new(1);
             let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -351,9 +339,6 @@ pub fn register(
             obj.properties.insert("close".into(), close.clone());
             obj.properties.insert("focus".into(), focus.clone());
             obj.properties.insert("hide".into(), hide.clone());
-            // Property setter that mirrors `name → __control_name`. The VM's
-            // struct_set opcode dispatches `__set_<field>` automatically.
-            obj.properties.insert("__set_name".into(), set_name.clone());
             if matches!(type_name.as_str(),
                 "OpenFileDialog" | "SaveFileDialog" | "FontDialog" | "ColorDialog"
                 | "FolderBrowserDialog" | "PrintDialog" | "PrintPreviewDialog"

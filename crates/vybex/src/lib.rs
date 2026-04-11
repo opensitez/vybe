@@ -8,6 +8,7 @@
 
 pub mod ast;
 pub mod compiler;
+pub mod dotnet_register;
 pub mod languages;
 pub mod profile;
 pub mod scope;

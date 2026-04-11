@@ -91,6 +91,7 @@ fn a05_form_custom_title_via_me_text() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
 Public Class Form1
+    Inherits Form
     Public Sub New()
         Me.Text = "My Application"
     End Sub
@@ -98,7 +99,12 @@ End Class
 Dim f As New Form1()
 "#);
     let mut g = gui.lock().unwrap();
-    let text = g.get_property("form1", "text");
+    // The form's runtime control name is the lowercased child class name
+    // (`form1`), stamped by `compile_class` after the `Form` parent ctor runs.
+    // The setter chain: Me.Text → __set_text (inherited from Control) →
+    // controlSetProperty(this, "Text", "My Application") → gui state under
+    // ("form1", "Text").
+    let text = g.get_property("form1", "Text");
     assert_eq!(text, "My Application", "Expected Text='My Application', got '{}'", text);
 }
 
@@ -866,6 +872,7 @@ fn e02_initialize_component_sets_form_text() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
 Public Class Form1
+    Inherits Form
     Public Sub New()
         InitializeComponent()
     End Sub
@@ -876,7 +883,7 @@ End Class
 Dim f As New Form1()
 "#);
     let mut g = gui.lock().unwrap();
-    let text = g.get_property("form1", "text");
+    let text = g.get_property("form1", "Text");
     assert_eq!(text, "Login Form", "Expected form text 'Login Form', got '{}'", text);
 }
 
@@ -974,6 +981,7 @@ fn e06_initialize_component_form_size() {
 Imports System.Windows.Forms
 Imports System.Drawing
 Public Class Form1
+    Inherits Form
     Public Sub New()
         InitializeComponent()
     End Sub
@@ -985,7 +993,7 @@ End Class
 Dim f As New Form1()
 "#);
     let mut g = gui.lock().unwrap();
-    let text = g.get_property("form1", "text");
+    let text = g.get_property("form1", "Text");
     assert_eq!(text, "Sized Form", "Expected Text='Sized Form'");
 }
 

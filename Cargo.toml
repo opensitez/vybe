@@ -35,6 +35,7 @@ members = [
     "crates/vybe_lsp",
     "crates/vybe_parser_generic",
     "crates/vybe_compiler_generic",
+    "crates/vybex",
 ]
 
 [workspace.package]
