@@ -615,22 +615,63 @@ impl Compiler {
                 if let Some(else_stmts) = else_body {
                     for s in else_stmts { self.compile_stmt(s)?; }
                 }
-                let skip = self.emit_jump(Op::br);
+                let skip_to_finally = self.emit_jump(Op::br);
                 common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
                 if catches.is_empty() {
                     self.emit(Op::drop);
                 } else {
+                    // Multi-catch dispatch: each arm tests the exception's
+                    // canonical __exception_type field. If it matches one of
+                    // the arm's types, run the body; otherwise fall through
+                    // to the next arm. The exception object is on TOS at
+                    // every step. A catch-all arm (empty types or "Exception")
+                    // catches everything. After all arms, any unmatched
+                    // exception is re-thrown.
+                    let mut end_patches: Vec<usize> = Vec::new();
                     for c in catches {
+                        let types: Vec<&str> = c.types.iter()
+                            .map(|t| common::errors::canonical_exception_name(t))
+                            .collect();
+                        let is_catch_all = types.is_empty()
+                            || types.iter().any(|t| *t == "Exception");
+
+                        let mut skip_arm: Option<usize> = None;
+                        if !is_catch_all {
+                            let mut to_body: Vec<usize> = Vec::new();
+                            for ty in &types {
+                                self.emit(Op::dup);
+                                let line = self.line;
+                                let key = self.str_const("__exception_type");
+                                self.chunks[self.current]
+                                    .emit_op_u16(Op::struct_get, key, line);
+                                let v = self.str_const(ty);
+                                self.chunks[self.current]
+                                    .emit_op_u16(Op::r#const, v, line);
+                                self.emit(Op::dyn_eq);
+                                to_body.push(self.emit_jump(Op::br_if_true));
+                            }
+                            skip_arm = Some(self.emit_jump(Op::br));
+                            for p in to_body { self.patch_jump(p); }
+                        }
+
                         if let Some(ref var) = c.var_name {
                             let slot = self.scope_mut().define(var);
-                            self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                            self.emit_u16(Op::local_set, slot);
+                            self.emit(Op::drop);
                         } else {
                             self.emit(Op::drop);
                         }
                         for s in &c.body { self.compile_stmt(s)?; }
+                        end_patches.push(self.emit_jump(Op::br));
+
+                        if let Some(p) = skip_arm { self.patch_jump(p); }
                     }
+                    // Fallthrough = no arm matched. Re-throw the exception.
+                    let line = self.line;
+                    common::errors::emit_throw(self.chunk(), line);
+                    for p in end_patches { self.patch_jump(p); }
                 }
-                self.patch_jump(skip);
+                self.patch_jump(skip_to_finally);
                 if let Some(fin) = finally {
                     for s in fin { self.compile_stmt(s)?; }
                 }
@@ -2503,25 +2544,29 @@ impl Compiler {
                             self.emit_const(Value::I32(0)); // initial lock value
                             return Ok(());
                         }
-                        // Built-in exception types — create struct with `message` field
-                        "exception" | "argumentexception" | "invalidoperationexception"
-                        | "notimplementedexception" | "notsupportedexception"
-                        | "nullreferenceexception" | "indexoutofrangeexception"
-                        | "argumentnullexception" | "error" | "typeerror" | "rangeerror"
-                        | "syntaxerror" | "referenceerror" => {
-                            self.emit_u16(Op::struct_new, 0);
-                            self.emit(Op::dup);
-                            if let Some(msg_arg) = args.first() {
-                                self.compile_expr(&msg_arg.value)?;
-                            } else {
-                                self.emit_const(Value::String(Arc::from("")));
-                            }
-                            let msg_idx = self.str_const("message");
-                            self.emit_u16(Op::struct_set, msg_idx);
-                            self.emit(Op::drop);
-                            return Ok(());
-                        }
                         _ => {}
+                    }
+
+                    // Built-in exception types — route through compiler_common
+                    // so that every language produces the canonical 4-field
+                    // shape and the type name is normalized. PHP `RuntimeException`,
+                    // Python `RuntimeError`, JS `Error`, etc. all produce identical
+                    // bytecode and can catch each other cross-language.
+                    if common::errors::is_exception_type(bare_str) {
+                        self.emit_u16(Op::struct_new, 0);
+                        self.emit(Op::dup);
+                        if let Some(msg_arg) = args.first() {
+                            self.compile_expr(&msg_arg.value)?;
+                        } else {
+                            self.emit_const(Value::String(Arc::from("")));
+                        }
+                        let line = self.line;
+                        common::errors::emit_exception_new_finalize(
+                            self.chunk(),
+                            bare_str,
+                            line,
+                        );
+                        return Ok(());
                     }
 
                     // Profile known types (collections, GUI controls, etc.)

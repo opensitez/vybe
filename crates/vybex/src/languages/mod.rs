@@ -3,6 +3,7 @@ pub mod js;
 pub mod pascal;
 pub mod php;
 pub mod python;
+pub mod ruby;
 pub mod vb;
 
 use crate::ast::Module;
@@ -25,6 +26,7 @@ pub fn all() -> Vec<Language> {
         Language { parse: csharp::parse, profile_source: csharp::profile_source },
         Language { parse: python::parse, profile_source: python::profile_source },
         Language { parse: php::parse, profile_source: php::profile_source },
+        Language { parse: ruby::parse, profile_source: ruby::profile_source },
     ]
 }
 

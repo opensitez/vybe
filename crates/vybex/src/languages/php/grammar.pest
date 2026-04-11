@@ -142,12 +142,14 @@ variable = @{ "$" ~ (ASCII_ALPHA | "_") ~ ident_cont* }
 // PHP allows backslash-qualified names: \Foo\Bar\Baz, Foo\Bar
 qualified_name = @{ "\\"? ~ identifier ~ ("\\" ~ identifier)* }
 
+// PHP 7.4 numeric separators: 1_000_000, 0xFF_FF, etc. The walker
+// strips underscores before parsing.
 number_lit = @{
-    "0x" ~ ASCII_HEX_DIGIT+
-    | "0b" ~ ('0'..'1')+
-    | "0o" ~ ('0'..'7')+
-    | ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
-    | "." ~ ASCII_DIGIT+ ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    "0x" ~ ASCII_HEX_DIGIT ~ (ASCII_HEX_DIGIT | "_")*
+    | "0b" ~ ('0'..'1') ~ ('0'..'1' | "_")*
+    | "0o" ~ ('0'..'7') ~ ('0'..'7' | "_")*
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ ("." ~ (ASCII_DIGIT | "_")*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    | "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
 }
 
 // Single-quoted: literal, supports `\'` and `\\`. No interpolation.
@@ -157,7 +159,18 @@ sq_string = @{ "'" ~ ("\\'" | "\\\\" | (!"'" ~ ANY))* ~ "'" }
 // interpolation in Phase 1 — recognised as a flat string body.
 dq_string = @{ "\"" ~ ("\\\"" | "\\\\" | "\\$" | "\\" ~ ANY | (!"\"" ~ ANY))* ~ "\"" }
 
-string_lit = { sq_string | dq_string }
+// Heredoc / nowdoc — `<<<TAG ... TAG`. Nowdoc is `<<<'TAG'`. Same
+// shape, the only difference is that nowdoc doesn't interpolate (we
+// don't interpolate either form yet). PUSH/POP threads the closing tag
+// through the parser stack so we can match it on the closing line.
+heredoc_str = ${
+    "<<<" ~ ("\""? ~ "'"?) ~ PUSH(heredoc_tag) ~ ("\""? ~ "'"?) ~ ("\r"? ~ "\n")
+    ~ (!(("\r"? ~ "\n") ~ PEEK ~ (";" | "," | ")" | "\r" | "\n")) ~ ANY)*
+    ~ ("\r"? ~ "\n") ~ POP
+}
+heredoc_tag = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
+
+string_lit = { sq_string | dq_string | heredoc_str }
 
 // ── Statements ───────────────────────────────────────────────────────────────
 
@@ -200,11 +213,21 @@ namespace_statement = {
 }
 
 // `use Foo\Bar;` / `use Foo\Bar as Baz;` / `use function Foo\bar;` etc.
+// Also accepts PHP 7 group use: `use Foo\{Bar, Baz as B, function fn};`
 use_statement = {
-    kw_use ~ (kw_function | kw_const)? ~ use_item ~ ("," ~ use_item)* ~ ";"
+    kw_use ~ (kw_function | kw_const)? ~ use_group_or_item
+    ~ ("," ~ use_group_or_item)* ~ ","? ~ ";"
 }
 
-use_item = { qualified_name ~ (kw_as ~ identifier)? }
+use_group_or_item = { use_group | use_item }
+
+use_group = {
+    qualified_name ~ "\\" ~ "{"
+    ~ use_item ~ ("," ~ use_item)* ~ ","?
+    ~ "}"
+}
+
+use_item = { (kw_function | kw_const)? ~ qualified_name ~ (kw_as ~ identifier)? }
 
 const_statement = {
     kw_const ~ identifier ~ "=" ~ expression ~ ";"
@@ -214,10 +237,20 @@ global_statement = {
     kw_global ~ variable ~ ("," ~ variable)* ~ ";"
 }
 
+// ── Attributes (PHP 8.0+) ────────────────────────────────────────────────────
+//
+// `#[Attribute]`, `#[Attr('arg', key: 'val')]`, multiple attributes per
+// group: `#[A, B]`. Attributes precede class/function/method/property/
+// param declarations and are discarded by the walker.
+
+attribute_group = { "#[" ~ attribute ~ ("," ~ attribute)* ~ ","? ~ "]" }
+attribute = { qualified_name ~ ("(" ~ arg_list? ~ ")")? }
+
 // ── Function declarations ────────────────────────────────────────────────────
 
 function_declaration = {
-    kw_function ~ "&"? ~ identifier
+    attribute_group*
+    ~ kw_function ~ "&"? ~ identifier
     ~ "(" ~ param_list? ~ ")"
     ~ return_type_annotation?
     ~ block_statement
@@ -226,7 +259,7 @@ function_declaration = {
 param_list = { param ~ ("," ~ param)* ~ ","? }
 
 param = {
-    param_modifier* ~ type_annotation? ~ "&"? ~ "..."? ~ variable ~ ("=" ~ expression)?
+    attribute_group* ~ param_modifier* ~ type_annotation? ~ "&"? ~ "..."? ~ variable ~ ("=" ~ expression)?
 }
 
 // PHP 8 promoted constructor parameters: `public int $foo`, `private $bar`
@@ -240,15 +273,20 @@ type_annotation = {
 
 return_type_annotation = { ":" ~ type_annotation }
 
+// PHP 8.0+ allows `null`, `false`, `true` as standalone type atoms.
+// PHP 8.2 added `false`/`null` as types and `true` followed in 8.2.
 type_atom = {
-    qualified_name
+    kw_null
+    | kw_true
+    | kw_false
+    | qualified_name
     | "(" ~ type_annotation ~ ")"
 }
 
 // ── Class declarations ───────────────────────────────────────────────────────
 
 class_declaration = {
-    class_modifier* ~ kw_class ~ identifier
+    attribute_group* ~ class_modifier* ~ kw_class ~ identifier
     ~ (kw_extends ~ qualified_name)?
     ~ (kw_implements ~ qualified_name ~ ("," ~ qualified_name)*)?
     ~ "{" ~ class_member* ~ "}"
@@ -257,13 +295,13 @@ class_declaration = {
 class_modifier = { kw_abstract | kw_final | kw_readonly }
 
 interface_declaration = {
-    kw_interface ~ identifier
+    attribute_group* ~ kw_interface ~ identifier
     ~ (kw_extends ~ qualified_name ~ ("," ~ qualified_name)*)?
     ~ "{" ~ class_member* ~ "}"
 }
 
 trait_declaration = {
-    kw_trait ~ identifier
+    attribute_group* ~ kw_trait ~ identifier
     ~ "{" ~ class_member* ~ "}"
 }
 
@@ -281,15 +319,15 @@ use_trait = {
 }
 
 class_constant = {
-    member_modifier* ~ kw_const ~ identifier ~ "=" ~ expression ~ ";"
+    attribute_group* ~ member_modifier* ~ kw_const ~ type_annotation? ~ identifier ~ "=" ~ expression ~ ";"
 }
 
 property_declaration = {
-    member_modifier* ~ type_annotation? ~ variable ~ ("=" ~ expression)? ~ ";"
+    attribute_group* ~ member_modifier* ~ type_annotation? ~ variable ~ ("=" ~ expression)? ~ ";"
 }
 
 method_declaration = {
-    member_modifier* ~ kw_function ~ "&"? ~ identifier
+    attribute_group* ~ member_modifier* ~ kw_function ~ "&"? ~ identifier
     ~ "(" ~ param_list? ~ ")"
     ~ return_type_annotation?
     ~ (block_statement | ";")  // ; for abstract / interface methods
@@ -303,7 +341,7 @@ member_modifier = {
 // ── Enum (PHP 8.1+) ──────────────────────────────────────────────────────────
 
 enum_declaration = {
-    kw_enum ~ identifier ~ (":" ~ identifier)?
+    attribute_group* ~ kw_enum ~ identifier ~ (":" ~ identifier)?
     ~ (kw_implements ~ qualified_name ~ ("," ~ qualified_name)*)?
     ~ "{" ~ enum_member* ~ "}"
 }
@@ -515,17 +553,32 @@ postfix_op = {
     | inc_dec_op
 }
 
-method_call_op    = { ("?->" | "->") ~ member_name ~ "(" ~ arg_list? ~ ")" }
+// PHP 8.1 first-class callable syntax: `strlen(...)`, `$obj->method(...)`,
+// `Foo::bar(...)`. The `(...)` is a literal three-dot ellipsis, not args.
+first_class_callable_op = { "(" ~ "..." ~ ")" }
+
+method_call_op    = { ("?->" | "->") ~ member_name ~ (first_class_callable_op | "(" ~ arg_list? ~ ")") }
 property_access_op = { ("?->" | "->") ~ member_name }
-static_access_op  = { "::" ~ member_name }
+static_access_op  = { "::" ~ class_member_name }
 array_index_op    = { "[" ~ expression? ~ "]" }
-call_op           = { "(" ~ arg_list? ~ ")" }
+call_op           = { first_class_callable_op | "(" ~ arg_list? ~ ")" }
 inc_dec_op        = { "++" | "--" }
 
-// `member_name` is what comes after `->` or `::` — usually an identifier,
-// can also be a `$variable` (variable property access) or `{expr}` (dynamic).
+// `member_name` is what comes after `->` — usually an identifier, can also
+// be a `$variable` (variable property access) or `{expr}` (dynamic).
 member_name = {
     identifier
+    | variable
+    | "{" ~ expression ~ "}"
+}
+
+// `class_member_name` is what comes after `::` — `member_name` plus the
+// PHP `class` keyword for `Foo::class` (PHP 5.5+). We also accept `kw_class`
+// here so that `Foo::class` is parsed instead of treating `class` as the
+// start of a declaration.
+class_member_name = {
+    kw_class
+    | identifier
     | variable
     | "{" ~ expression ~ "}"
 }
@@ -547,6 +600,7 @@ primary_expression = {
     | variable
     | new_expression
     | clone_expression
+    | throw_expression
     | match_expression
     | isset_expression
     | empty_expression
@@ -562,6 +616,10 @@ primary_expression = {
     | kw_parent
     | kw_static
 }
+
+// PHP 8.0: throw is now an expression as well as a statement.
+// `$x ?? throw new Exception('oops')`, etc.
+throw_expression = { kw_throw ~ expression }
 
 literal = {
     number_lit
@@ -624,7 +682,7 @@ closure_expression = {
 }
 
 closure_use = {
-    kw_use ~ "(" ~ closure_use_var ~ ("," ~ closure_use_var)* ~ ")"
+    kw_use ~ "(" ~ closure_use_var ~ ("," ~ closure_use_var)* ~ ","? ~ ")"
 }
 
 closure_use_var = { "&"? ~ variable }

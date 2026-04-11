@@ -42,3 +42,7 @@ path = "tests/python/main.rs"
 [[test]]
 name = "php"
 path = "tests/php/main.rs"
+
+[[test]]
+name = "ruby"
+path = "tests/ruby/main.rs"
