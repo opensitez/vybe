@@ -12,12 +12,64 @@ use crate::ast::*;
 //   ⇤ (U+21E4) = DEDENT
 
 fn preprocess_indentation(source: &str) -> String {
+    // Phase 1: Resolve physical lines into logical lines.
+    // Handles explicit continuation (backslash) and implicit continuation (unclosed brackets).
+    let mut logical_lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut bracket_depth: i32 = 0;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+
+        // During continuation, skip blank/comment lines
+        if !current.is_empty() && (trimmed.is_empty() || trimmed.starts_with('#')) {
+            continue;
+        }
+
+        if current.is_empty() {
+            current.push_str(line);
+        } else {
+            // Continuation: join with space + trimmed content
+            current.push(' ');
+            current.push_str(trimmed);
+        }
+
+        // Update bracket depth (skip chars after # comment marker)
+        for c in line.chars() {
+            match c {
+                '(' | '[' | '{' => bracket_depth += 1,
+                ')' | ']' | '}' => bracket_depth -= 1,
+                '#' => break,
+                _ => {}
+            }
+        }
+
+        // Explicit continuation: backslash at end of line
+        if line.trim_end().ends_with('\\') {
+            if let Some(pos) = current.rfind('\\') {
+                current.truncate(pos);
+            }
+            continue;
+        }
+
+        // Implicit continuation: unclosed brackets
+        if bracket_depth > 0 {
+            continue;
+        }
+
+        logical_lines.push(std::mem::take(&mut current));
+        bracket_depth = 0;
+    }
+    if !current.is_empty() {
+        logical_lines.push(current);
+    }
+
+    // Phase 2: Process indentation on logical lines
     let mut result = String::with_capacity(source.len() * 2);
     let mut indent_stack: Vec<usize> = vec![0];
-    let mut lines = source.lines().peekable();
     let mut first = true;
 
-    while let Some(line) = lines.next() {
+    for line in &logical_lines {
         // Count leading spaces (expand tabs to 8)
         let mut indent = 0;
         let mut chars = line.chars().peekable();
@@ -45,9 +97,9 @@ fn preprocess_indentation(source: &str) -> String {
         }
         first = false;
 
-        let current = *indent_stack.last().unwrap();
+        let current_indent = *indent_stack.last().unwrap();
 
-        if indent > current {
+        if indent > current_indent {
             indent_stack.push(indent);
             result.push('\u{21E5}'); // INDENT
         } else {
@@ -596,7 +648,7 @@ fn walk_with(pair: Pair<Rule>, is_async: bool) -> Result<StmtKind, String> {
                 for wp in p.into_inner() {
                     match wp.as_rule() {
                         Rule::as_kw => {}
-                        Rule::target_list => var = Some(wp.as_str().trim().to_string()),
+                        Rule::target | Rule::target_list => var = Some(wp.as_str().trim().to_string()),
                         _ => {
                             if expr.is_none() {
                                 expr = Some(walk_expression(wp)?);
@@ -681,6 +733,15 @@ fn walk_pattern(pair: Pair<Rule>) -> Result<Pattern, String> {
             let inner = pair.into_inner().next().ok_or("Empty single_pattern")?;
             walk_pattern(inner)
         }
+        Rule::as_pattern => {
+            // pattern as name
+            let mut inner = pair.into_inner();
+            let sub_pattern = walk_pattern(inner.next().ok_or("Missing as_pattern sub-pattern")?)?;
+            // skip as_kw
+            let name = inner.filter(|p| p.as_rule() == Rule::identifier)
+                .next().map(|p| p.as_str().to_string());
+            Ok(Pattern::As { pattern: Some(Box::new(sub_pattern)), name })
+        }
         Rule::wildcard_pattern => Ok(Pattern::Wildcard),
         Rule::capture_pattern => {
             let name = pair.as_str().to_string();
@@ -731,16 +792,35 @@ fn walk_pattern(pair: Pair<Rule>) -> Result<Pattern, String> {
         Rule::class_pattern => {
             let mut cls_name = String::new();
             let mut patterns = Vec::new();
+            let mut kw_patterns = Vec::new();
             for cp in pair.into_inner() {
                 match cp.as_rule() {
                     Rule::identifier => cls_name = cp.as_str().to_string(),
+                    Rule::class_pattern_arg => {
+                        let mut ai = cp.into_inner();
+                        let first = ai.next().ok_or("Empty class_pattern_arg")?;
+                        if first.as_rule() == Rule::identifier {
+                            // Could be keyword=pattern or just a capture pattern
+                            if let Some(second) = ai.next() {
+                                // keyword = pattern
+                                let name = first.as_str().to_string();
+                                let pat = walk_pattern(second)?;
+                                kw_patterns.push((name, pat));
+                            } else {
+                                // Just a pattern (identifier is capture or wildcard)
+                                patterns.push(walk_pattern(first)?);
+                            }
+                        } else {
+                            patterns.push(walk_pattern(first)?);
+                        }
+                    }
                     _ => patterns.push(walk_pattern(cp)?),
                 }
             }
             Ok(Pattern::Class {
                 cls: Expression::new(ExprKind::Ident(cls_name)),
                 patterns,
-                kw_patterns: Vec::new(),
+                kw_patterns,
             })
         }
         Rule::true_kw => Ok(Pattern::Singleton(Expression::bool(true))),
@@ -1002,6 +1082,22 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // ── Literals ────────────────────────────────────────────────────
         Rule::numeric_literal => parse_number(pair.as_str()),
         Rule::string_literal => Ok(ExprKind::Lit(Literal::Str(parse_python_string(pair.as_str())))),
+        Rule::string_concat => {
+            // Implicit string concatenation: "a" "b" → "ab"
+            let mut result = String::new();
+            for p in pair.into_inner() {
+                match p.as_rule() {
+                    Rule::string_literal => result.push_str(&parse_python_string(p.as_str())),
+                    Rule::fstring => {
+                        // Can't statically concat f-strings; return as interpolation
+                        // For now just treat the whole concat as the first piece that's non-trivial
+                        return walk_fstring(p);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(ExprKind::Lit(Literal::Str(result)))
+        },
         Rule::true_kw => Ok(ExprKind::Lit(Literal::Bool(true))),
         Rule::false_kw => Ok(ExprKind::Lit(Literal::Bool(false))),
         Rule::none_kw => Ok(ExprKind::Lit(Literal::Null)),
@@ -1601,26 +1697,17 @@ fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::fstring_start | Rule::fstring_end => {}
-            Rule::fstring_part => {
+            Rule::fstring_text => {
+                parts.push(InterpolPart::Text(p.as_str().to_string()));
+            }
+            Rule::fstring_escaped_brace => {
+                let text = if p.as_str().starts_with('{') { "{" } else { "}" };
+                parts.push(InterpolPart::Text(text.into()));
+            }
+            Rule::fstring_expr => {
                 for fp in p.into_inner() {
-                    match fp.as_rule() {
-                        Rule::fstring_text => {
-                            parts.push(InterpolPart::Text(fp.as_str().to_string()));
-                        }
-                        Rule::fstring_format_spec => {
-                            // Already captured with expression
-                        }
-                        _ if is_expression_rule(fp.as_rule()) => {
-                            parts.push(InterpolPart::Expr(walk_expression(fp)?));
-                        }
-                        _ => {
-                            let text = fp.as_str();
-                            if text == "{{" {
-                                parts.push(InterpolPart::Text("{".into()));
-                            } else if text == "}}" {
-                                parts.push(InterpolPart::Text("}".into()));
-                            }
-                        }
+                    if is_expression_rule(fp.as_rule()) {
+                        parts.push(InterpolPart::Expr(walk_expression(fp)?));
                     }
                 }
             }
@@ -1720,7 +1807,7 @@ fn is_expression_rule(rule: Rule) -> bool {
         Rule::multiplicative | Rule::unary | Rule::power | Rule::await_expr |
         Rule::postfix | Rule::primary | Rule::lambda_expr | Rule::yield_expr |
         Rule::star_expr | Rule::fstring | Rule::numeric_literal |
-        Rule::string_literal | Rule::identifier | Rule::true_kw | Rule::false_kw |
+        Rule::string_literal | Rule::string_concat | Rule::identifier | Rule::true_kw | Rule::false_kw |
         Rule::none_kw | Rule::ellipsis_lit | Rule::subscript | Rule::subscript_item |
         Rule::comp_for_arg
     )
@@ -1756,8 +1843,8 @@ fn parse_number(s: &str) -> Result<ExprKind, String> {
 
 fn parse_python_string(s: &str) -> String {
     let mut s = s;
-    // Strip prefix (r, b, rb, etc.)
-    let prefixes = ["rb", "Rb", "rB", "RB", "br", "bR", "Br", "BR", "r", "R", "b", "B"];
+    // Strip prefix (r, b, rb, u, etc.)
+    let prefixes = ["rb", "Rb", "rB", "RB", "br", "bR", "Br", "BR", "r", "R", "b", "B", "u", "U"];
     for prefix in &prefixes {
         if s.starts_with(prefix) {
             s = &s[prefix.len()..];

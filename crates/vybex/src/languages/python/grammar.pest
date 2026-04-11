@@ -120,7 +120,7 @@ with_stmt = {
     "with" ~ with_item ~ ("," ~ with_item)* ~ block
 }
 
-with_item = { expression ~ (as_kw ~ target_list)? }
+with_item = { expression ~ (as_kw ~ target)? }
 
 // ── Match / Case ───────────────────────────────────────────────────────────────
 match_stmt = {
@@ -133,7 +133,8 @@ pattern = { or_pattern }
 or_pattern = { single_pattern ~ ("|" ~ single_pattern)* }
 
 single_pattern = {
-    star_pattern
+    as_pattern
+    | star_pattern
     | sequence_pattern
     | mapping_pattern
     | class_pattern
@@ -144,6 +145,8 @@ single_pattern = {
     | literal_pattern
 }
 
+as_pattern = { (sequence_pattern | mapping_pattern | class_pattern | value_pattern | singleton_pattern | capture_pattern | wildcard_pattern | literal_pattern) ~ as_kw ~ identifier }
+
 star_pattern = { "*" ~ identifier? }
 wildcard_pattern = { "_" ~ !(ASCII_ALPHANUMERIC | "_") }
 capture_pattern = { identifier }
@@ -151,7 +154,8 @@ singleton_pattern = { none_kw | true_kw | false_kw }
 literal_pattern = { numeric_literal | string_literal | "-" ~ numeric_literal }
 
 value_pattern = { identifier ~ ("." ~ identifier)+ }
-class_pattern = { identifier ~ "(" ~ (pattern ~ ("," ~ pattern)*)? ~ ","? ~ ")" }
+class_pattern = { identifier ~ "(" ~ (class_pattern_arg ~ ("," ~ class_pattern_arg)*)? ~ ","? ~ ")" }
+class_pattern_arg = { identifier ~ "=" ~ pattern | pattern }
 sequence_pattern = { "[" ~ (pattern ~ ("," ~ pattern)*)? ~ ","? ~ "]" }
 mapping_pattern = { "{" ~ (mapping_pair ~ ("," ~ mapping_pair)*)? ~ ","? ~ "}" }
 mapping_pair = { expression ~ ":" ~ pattern }
@@ -168,16 +172,20 @@ import_stmt = {
 }
 
 import_from_stmt = {
-    "from" ~ import_dots? ~ dotted_name? ~ "import" ~ import_names ~ terminator
+    "from" ~ import_dots ~ "import" ~ import_names ~ terminator
+    | "from" ~ import_dots ~ dotted_name ~ "import" ~ import_names ~ terminator
+    | "from" ~ dotted_name ~ "import" ~ import_names ~ terminator
 }
 
-import_dots = { ("..." | ".")+ }
+import_dots = @{ ("." | "...")+ }
 
 import_names = {
     "*"
-    | "(" ~ import_as_name ~ ("," ~ import_as_name)* ~ ","? ~ ")"
+    | "(" ~ eat_newlines ~ import_as_name ~ (eat_newlines ~ "," ~ eat_newlines ~ import_as_name)* ~ eat_newlines ~ ","? ~ eat_newlines ~ ")"
     | import_as_name ~ ("," ~ import_as_name)*
 }
+
+eat_newlines = _{ (NEWLINE | INDENT | DEDENT)* }
 
 import_as_name = { identifier ~ (as_kw ~ identifier)? }
 dotted_as_name = { dotted_name ~ (as_kw ~ identifier)? }
@@ -343,6 +351,7 @@ primary = {
     | false_kw
     | none_kw
     | numeric_literal
+    | string_concat
     | string_literal
     | identifier
 }
@@ -401,16 +410,14 @@ target = {
 }
 
 // ── F-strings ──────────────────────────────────────────────────────────────────
-fstring = { fstring_start ~ fstring_part* ~ fstring_end }
-fstring_start = @{ ("f" | "F") ~ ("'" | "\"" | "'''" | "\"\"\"") }
-fstring_end = @{ "'" | "\"" | "'''" | "\"\"\"" }
-fstring_part = {
-    fstring_text
-    | "{" ~ expression ~ (":" ~ fstring_format_spec)? ~ "}"
-    | "{{" | "}}"
-}
+fstring = ${ fstring_start ~ (fstring_escaped_brace | fstring_expr | fstring_text)* ~ fstring_end }
+fstring_start = @{ ("rf" | "Rf" | "rF" | "RF" | "fr" | "fR" | "Fr" | "FR" | "f" | "F") ~ ("'''" | "\"\"\"" | "'" | "\"") }
+fstring_end = @{ "'''" | "\"\"\"" | "'" | "\"" }
+fstring_escaped_brace = @{ "{{" | "}}" }
+fstring_expr = !{ "{" ~ expression ~ fstring_conversion? ~ (":" ~ fstring_format_spec)? ~ "}" }
+fstring_conversion = @{ "!" ~ ("r" | "s" | "a") }
 fstring_text = @{ (!("{" | "}" | "'" | "\"") ~ ANY)+ }
-fstring_format_spec = @{ (!("}" | "{") ~ ANY)+ }
+fstring_format_spec = @{ (!("}") ~ ANY)+ }
 
 // ── Keyword atoms — all atomic for word boundary ──────────────────────────────
 true_kw = @{ "True" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -445,14 +452,19 @@ numeric_literal = @{
     | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ (ASCII_DIGIT | "_")+)? ~ ("j" | "J")? ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
+// Implicit string concatenation: adjacent string literals are concatenated
+string_concat = { (fstring | string_literal) ~ (fstring | string_literal)+ }
+
 string_literal = @{
     // Triple-quoted strings (must be before single-quoted)
-    ("r" | "R" | "b" | "B" | "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR")? ~ "\"\"\"" ~ (!"\"\"\"" ~ ANY)* ~ "\"\"\""
-    | ("r" | "R" | "b" | "B" | "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR")? ~ "'''" ~ (!("'''") ~ ANY)* ~ "'''"
+    string_prefix? ~ "\"\"\"" ~ (!"\"\"\"" ~ ANY)* ~ "\"\"\""
+    | string_prefix? ~ "'''" ~ (!("'''") ~ ANY)* ~ "'''"
     // Single-quoted strings
-    | ("r" | "R" | "b" | "B" | "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR")? ~ "'" ~ ("\\'" | "\\\\" | (!"'" ~ !NEWLINE ~ ANY))* ~ "'"
-    | ("r" | "R" | "b" | "B" | "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR")? ~ "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ !NEWLINE ~ ANY))* ~ "\""
+    | string_prefix? ~ "'" ~ ("\\'" | "\\\\" | (!("'") ~ !NEWLINE ~ ANY))* ~ "'"
+    | string_prefix? ~ "\"" ~ ("\\\"" | "\\\\" | (!("\"" ) ~ !NEWLINE ~ ANY))* ~ "\""
 }
+
+string_prefix = _{ "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR" | "r" | "R" | "b" | "B" | "u" | "U" }
 
 // ── Identifiers ────────────────────────────────────────────────────────────────
 
@@ -465,7 +477,7 @@ keyword = _{
     ("False" | "None" | "True" | "and" | "as" | "assert" | "async" | "await"
     | "break" | "class" | "continue" | "def" | "del" | "elif" | "else"
     | "except" | "finally" | "for" | "from" | "global" | "if" | "import"
-    | "in" | "is" | "lambda" | "match" | "case" | "nonlocal" | "not"
+    | "in" | "is" | "lambda" | "nonlocal" | "not"
     | "or" | "pass" | "raise" | "return" | "try" | "while" | "with" | "yield")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
