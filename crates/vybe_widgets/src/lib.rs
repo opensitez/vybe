@@ -64,6 +64,8 @@ pub mod output_panel;
 pub mod properties_panel;
 pub mod form;
 pub mod app_window;
+pub mod canvas;
+pub mod canvas_widget;
 
 pub use checkbox::Checkbox;
 pub use radio::Radio;
@@ -117,6 +119,7 @@ pub use output_panel::{OutputPanel, OutputPanelEvent, OutputTab, ProblemEntry, P
 pub use properties_panel::{PropertiesPanel, EditingProp, PropTab};
 pub use form::Form;
 pub use app_window::{Application, run_app};
+pub use canvas_widget::Canvas;
 pub use winit::window::CursorIcon;
 
 // ── Re-exports from cosmic-text (so consumers don't need cosmic_text directly) ──
