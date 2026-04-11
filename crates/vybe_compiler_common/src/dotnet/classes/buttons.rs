@@ -31,7 +31,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "AutoEllipsis",
                 "IsDefault",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "Button",
@@ -40,7 +43,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "DialogResult",
                 "AutoSizeMode",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_Button"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "CheckBox",
@@ -53,7 +59,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "CheckState",
                 "ThreeState",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_CheckBox"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "RadioButton",
@@ -64,7 +73,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "CheckAlign",
                 "Checked",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_RadioButton"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

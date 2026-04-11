@@ -16,7 +16,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "SizeMode",
                 "WaitOnLoad",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_PictureBox"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "WebBrowser",
@@ -44,7 +47,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "Version",
                 "WebBrowserShortcutsEnabled",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_WebBrowser"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

@@ -20,7 +20,17 @@
 //! Properties listed here are **only** the ones .NET adds at the `Form`
 //! class level (per MSDN's `Form` class members page).
 
-use super::DotnetClass;
+use super::{DotnetClass, DotnetMethod, MethodTarget};
+
+/// Methods owned by `Form`. `Show`/`Hide`/`Focus` are inherited from
+/// `Control` and don't need to be re-listed here. `Close`/`ShowDialog`/
+/// `Activate`/`CenterToScreen` are form-specific.
+const FORM_METHODS: &[DotnetMethod] = &[
+    DotnetMethod { name: "Close",          arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_close") },
+    DotnetMethod { name: "ShowDialog",     arity: 1, target: MethodTarget::host("vybe:gui", "__dlg_showdialog") },
+    DotnetMethod { name: "Activate",       arity: 1, target: MethodTarget::host("vybe:gui", "__form_activate") },
+    DotnetMethod { name: "CenterToScreen", arity: 1, target: MethodTarget::host("vybe:gui", "__form_center_to_screen") },
+];
 
 pub fn classes() -> &'static [DotnetClass] {
     &[
@@ -61,7 +71,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 // Misc
                 "TransparencyKey",
             ],
+            methods: FORM_METHODS,
+            ctor_arity: 0,
             widget_host_fn: Some("new_Form"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

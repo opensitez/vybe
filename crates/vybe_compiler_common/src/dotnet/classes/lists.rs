@@ -21,7 +21,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "SelectedValue",
                 "ValueMember",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "ComboBox",
@@ -48,7 +51,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "SelectionStart",
                 "Sorted",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_ComboBox"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "ListBox",
@@ -75,7 +81,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "TopIndex",
                 "UseTabStops",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_ListBox"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "ListView",
@@ -119,7 +128,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "VirtualListSize",
                 "VirtualMode",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_ListView"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "TreeView",
@@ -154,7 +166,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "TreeViewNodeSorter",
                 "VisibleCount",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_TreeView"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

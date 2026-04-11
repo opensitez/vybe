@@ -14,7 +14,10 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &[
                 "Tag",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "FileDialog",
@@ -38,7 +41,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "Title",
                 "ValidateNames",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "OpenFileDialog",
@@ -50,7 +56,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "SafeFileNames",
                 "ShowReadOnly",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_OpenFileDialog"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "SaveFileDialog",
@@ -59,7 +68,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "CreatePrompt",
                 "OverwritePrompt",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_SaveFileDialog"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "FontDialog",
@@ -81,7 +93,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "ShowEffects",
                 "ShowHelp",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_FontDialog"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "ColorDialog",
@@ -95,7 +110,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "ShowHelp",
                 "SolidColorOnly",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_ColorDialog"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "FolderBrowserDialog",
@@ -106,7 +124,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "SelectedPath",
                 "ShowNewFolderButton",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_FolderBrowserDialog"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

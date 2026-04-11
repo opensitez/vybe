@@ -36,7 +36,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "TabStop",
                 "TextDirection",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_ToolStrip"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "MenuStrip",
@@ -46,7 +49,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "ShowItemToolTips",
                 "Stretch",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_MenuStrip"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "StatusStrip",
@@ -57,7 +63,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "SizingGrip",
                 "Stretch",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_StatusStrip"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "ContextMenuStrip",
@@ -69,7 +78,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "OwnerItem",
                 "SourceControl",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_ContextMenuStrip"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

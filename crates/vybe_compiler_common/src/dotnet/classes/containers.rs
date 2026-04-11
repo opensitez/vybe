@@ -17,7 +17,10 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &[
                 "BorderStyle",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_Panel"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "GroupBox",
@@ -26,7 +29,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "FlatStyle",
                 "UseCompatibleTextRendering",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_GroupBox"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "TabControl",
@@ -48,7 +54,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "TabCount",
                 "TabPages",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_TabControl"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "TabPage",
@@ -59,7 +68,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "ToolTipText",
                 "UseVisualStyleBackColor",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_TabPage"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "SplitContainer",
@@ -80,7 +92,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "SplitterRectangle",
                 "SplitterWidth",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_SplitContainer"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "FlowLayoutPanel",
@@ -89,7 +104,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "FlowDirection",
                 "WrapContents",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_FlowLayoutPanel"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "TableLayoutPanel",
@@ -103,7 +121,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "RowCount",
                 "RowStyles",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_TableLayoutPanel"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

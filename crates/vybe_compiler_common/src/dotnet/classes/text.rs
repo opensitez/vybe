@@ -29,7 +29,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "TextLength",
                 "WordWrap",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "TextBox",
@@ -45,7 +48,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "TextAlign",
                 "UseSystemPasswordChar",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_TextBox"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "RichTextBox",
@@ -67,7 +73,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "ShowSelectionMargin",
                 "ZoomFactor",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_RichTextBox"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "MaskedTextBox",
@@ -92,7 +101,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "TextMaskFormat",
                 "ValidatingType",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_MaskedTextBox"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

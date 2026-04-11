@@ -31,7 +31,7 @@ use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
 use crate::functions::create_function_chunk;
-use super::DotnetClass;
+use super::{DotnetClass, DotnetMethod, MethodTarget};
 
 // ─── Setter chunk ───────────────────────────────────────────────────────────
 
@@ -92,6 +92,98 @@ pub fn build_setter_chunk(
     chunk
 }
 
+// ─── Method thunk chunk ─────────────────────────────────────────────────────
+
+/// Build the thunk chunk that bridges a `.NET` instance method call to
+/// either a host import or a dotnet class constructor, depending on
+/// `method.target`.
+///
+/// **`MethodTarget::Host`** — the chunk forwards `(this, arg0, ..., argN-1)`
+/// to the host import:
+///
+/// ```text
+/// fn <ClassName>::<MethodName>(this, arg0, ..., argN-1):
+///     call_import <host_module>::<host_fn> with [this, arg0, ..., argN-1]
+///     return result
+/// ```
+///
+/// Host implementations that don't care about `this` (conceptually static
+/// methods) just ignore `args[0]`. Implementations that DO care (like
+/// `Graphics::DrawLine`) read `args[0]` to find the target and `args[1..]`
+/// for the user's arguments.
+///
+/// **`MethodTarget::DotnetCtor`** — the chunk discards `this` and calls
+/// the target dotnet class's ctor with the user args:
+///
+/// ```text
+/// fn <ClassName>::<MethodName>(this, arg0, ..., argN-1):
+///     global_get <target_class>
+///     local_get arg0 ; local_get arg1 ; ... ; local_get argN-1
+///     call (N-1)
+///     return
+/// ```
+///
+/// Used by methods like `Control.CreateGraphics()` which return a fresh
+/// `Graphics` instance — going through the dotnet ctor (rather than the
+/// raw `vybe:drawing::graphicsNew` host fn) ensures the returned object
+/// has all `Graphics` methods bound on it via the standard registration
+/// flow.
+///
+/// `arity` is the total arity including `this` (so `Show()` has
+/// `arity = 1`; `DrawLine(p, x1, y1, x2, y2)` is `arity = 6`).
+///
+/// `import_idx` is only consulted for the `Host` variant — the
+/// orchestrator pre-resolves the import via `chunks[0].add_import(...)`
+/// and passes the resulting index in. For `DotnetCtor` the chunk uses
+/// `global_get` instead and `import_idx` is ignored.
+///
+/// ## Local layout
+///
+/// - slot 0 = closure ref (reserved by the VM call frame)
+/// - slot 1 = `this`
+/// - slot 2..=arity = user args
+pub fn build_method_thunk_chunk(
+    class_name: &str,
+    method: &DotnetMethod,
+    import_idx: u16,
+) -> Chunk {
+    let chunk_name = format!("{}::{}", class_name, method.name);
+    let mut chunk = create_function_chunk(&chunk_name, method.arity);
+    let line = 0u32;
+
+    match method.target {
+        MethodTarget::Host { .. } => {
+            // Push this + each user arg in order, then call_import.
+            for slot in 1..=method.arity as u16 {
+                chunk.emit_op_u16(Op::local_get, slot, line);
+            }
+            chunk.emit_op_u16(Op::call_import, import_idx, line);
+            chunk.emit(method.arity, line);
+            // Result of the host call is on the stack — return it. For
+            // void methods (most setters / `Show` / `DrawLine`) the host
+            // fn returns `Value::Null`, which is fine.
+            chunk.emit_op(Op::r#return, line);
+        }
+        MethodTarget::DotnetCtor { class: target_class } => {
+            // Discard `this` (slot 1) — factory-style methods don't pass
+            // it to the target ctor. Push the target class global, then
+            // the user args (slots 2..=arity), then call.
+            let target_const = chunk.add_constant(Value::String(Arc::from(target_class)));
+            chunk.emit_op_u16(Op::global_get, target_const, line);
+            // User args only — skip slot 1 (this).
+            for slot in 2..=method.arity as u16 {
+                chunk.emit_op_u16(Op::local_get, slot, line);
+            }
+            // arity - 1 because we dropped `this`.
+            chunk.emit_op_u8(Op::call, method.arity - 1, line);
+            chunk.emit_op(Op::r#return, line);
+        }
+    }
+
+    chunk.local_count = method.arity as u16;
+    chunk
+}
+
 // ─── Constructor chunk ──────────────────────────────────────────────────────
 
 /// Per-property setter binding info supplied to [`build_constructor_chunk`].
@@ -105,51 +197,66 @@ pub struct SetterBinding<'a> {
     pub setter_chunk_idx: usize,
 }
 
+/// Per-method thunk binding info supplied to [`build_constructor_chunk`].
+///
+/// `method_name` is the lowercased instance-side key (`"createGraphics"`
+/// → `"creategraphics"`) — written by the user as `obj.MethodName(...)`,
+/// looked up by the VM via the lowercased canonical AST.
+#[derive(Debug, Clone, Copy)]
+pub struct MethodBinding<'a> {
+    pub method_name: &'a str,
+    pub thunk_chunk_idx: usize,
+}
+
 /// Build the constructor chunk for one .NET class.
 ///
 /// The chunk implements:
 ///
 /// ```text
-/// fn <ClassName>():                              # arity 0
-///     this = <Parent>()                          # if parent is Some
-///     this.__type = "<ClassName>"                # re-stamp
-///     this.__set_<prop1> = ref_func(setter1)     # for each property
-///     this.__set_<prop2> = ref_func(setter2)
+/// fn <ClassName>(arg0, arg1, ..., argN-1):        # arity = class.ctor_arity
+///     this = <Parent>()                            # arity-0 parent call
+///     this.__type = "<ClassName>"                  # re-stamp
+///     this.__set_<prop1> = ref_func(setter1)       # for each property
+///     ...
+///     this.<method1> = ref_func(thunk1)            # for each method
 ///     ...
 ///     # If concrete leaf:
-///     widget = vybe:gui::new_<ClassName>()
+///     widget = <host_module>::<host_fn>(arg0, ..., argN-1)
 ///     this.__control_name = widget.__control_name
 ///     this.__control_type = widget.__control_type
-///     this.name           = widget.name
-///     this.show           = widget.show
-///     this.close          = widget.close
-///     this.focus          = widget.focus
-///     this.hide           = widget.hide
 ///     return this
 /// ```
 ///
 /// For the root class (`Object`, `parent = None`) the body starts with
 /// `struct_new 0; local_set this; drop` instead of a parent ctor call.
 ///
+/// The parent ctor is ALWAYS called with 0 args. When `class.ctor_arity > 0`
+/// the user-supplied args are forwarded to the leaf widget host fn — they
+/// are NOT propagated up the inheritance chain (abstract bases like
+/// `Object` / `Component` / `Brush` take no args at this layer).
+///
 /// ## Local layout
 ///
 /// VM call frames reserve slot 0 for the closure ref; locals start at
-/// slot 1. So for an arity-0 ctor:
+/// slot 1. For a `ctor_arity = N` ctor:
 /// - slot 0 = closure ref (reserved by the VM)
-/// - slot 1 = `this`
-/// - slot 2 = `widget` (only when wiring a concrete widget host fn)
+/// - slots 1..=N = user-supplied ctor args
+/// - slot N+1 = `this`
+/// - slot N+2 = `widget` (only when wiring a concrete widget host fn)
 ///
 /// `widget_new_import_idx` (when class is concrete) is the chunk[0] import
-/// index for `vybe:gui::new_<ClassName>`.
+/// index for the configured `widget_host_module::widget_host_fn`.
 pub fn build_constructor_chunk(
     class: &DotnetClass,
     setter_bindings: &[SetterBinding],
+    method_bindings: &[MethodBinding],
     widget_new_import_idx: Option<u16>,
 ) -> Chunk {
-    let mut chunk = create_function_chunk(class.name, 0);
+    let mut chunk = create_function_chunk(class.name, class.ctor_arity);
     let line = 0u32;
-    let this_slot: u16 = 1;
-    let widget_slot: u16 = 2;
+    let arity = class.ctor_arity as u16;
+    let this_slot: u16 = arity + 1;
+    let widget_slot: u16 = arity + 2;
 
     // ── Step 1: get `this` ──────────────────────────────────────────────────
     if let Some(parent_name) = class.parent {
@@ -191,61 +298,82 @@ pub fn build_constructor_chunk(
         chunk.emit_op(Op::drop, line);
     }
 
-    // ── Step 4: concrete leaf — wire vybe_widgets backing ──────────────────
+    // ── Step 4: bind methods for THIS class ────────────────────────────────
     //
-    // Calls `vybe:gui::new_<ClassName>()`, then copies the widget identity
-    // fields onto `this`. The inherited setters stay intact because we
-    // never overwrite them.
+    // Each method thunk was pre-built and pushed by the orchestrator. The
+    // method is bound under its lowercased name to match the canonical AST
+    // shape produced by every walker.
+    //
+    // Inheritance order matters: parents are registered first, so a child
+    // re-binding the same method name overwrites the parent's binding via
+    // the same `struct_set` — exactly how virtual override works in .NET.
+    for binding in method_bindings {
+        chunk.emit_op_u16(Op::local_get, this_slot, line);
+        chunk.emit_op_u16(Op::ref_func, binding.thunk_chunk_idx as u16, line);
+        chunk.emit(0, line); // 0 upvalues
+        let key = chunk.add_constant(Value::String(Arc::from(binding.method_name)));
+        chunk.emit_op_u16(Op::struct_set, key, line);
+        chunk.emit_op(Op::drop, line);
+    }
+
+    // ── Step 5: concrete leaf — wire backing object ────────────────────────
+    //
+    // Calls `<widget_host_module>::<widget_host_fn>(args...)`, then copies
+    // the backing object's identity fields onto `this`. The inherited
+    // setters and methods stay intact because we never overwrite their
+    // keys here.
+    //
+    // Args: for `class.ctor_arity > 0` we forward the user-supplied ctor
+    // args (slots 1..=arity) to the host fn. For arity-0 classes the host
+    // fn is called with no args.
     if let Some(import_idx) = widget_new_import_idx {
-        // widget = vybe:gui::new_<ClassName>()
+        for i in 1..=arity {
+            chunk.emit_op_u16(Op::local_get, i, line);
+        }
         chunk.emit_op_u16(Op::call_import, import_idx, line);
-        chunk.emit(0, line); // 0 args
+        chunk.emit(arity as u8, line);
         chunk.emit_op_u16(Op::local_set, widget_slot, line);
         chunk.emit_op(Op::drop, line);
 
-        // Copy each identity field: this.<f> = widget.<f>
+        // Copy backing identity fields: this.<f> = widget.<f>.
         //
-        // NB: `name` is intentionally NOT copied here. The vybe_widgets
-        // host fn pre-stamps `name` with an auto-generated id (e.g.
-        // "Form_3"), and `Control` has `__set_name` bound — so a
-        // `struct_set "name"` would dispatch to `__set_name` which calls
+        // NB: `name` is intentionally NOT copied. The backing host fn
+        // pre-stamps `name` with an auto-generated id (e.g. "Form_3"), and
+        // `Control` has a `__set_name` setter bound — so a
+        // `struct_set "name"` would dispatch to that setter which calls
         // `controlSetProperty(this, "Name", widget.name)`. That writes the
-        // widget's auto-id into the gui state registry under the user's
-        // not-yet-set canonical control name (which is empty at this
-        // point), polluting the registry with a `("", "Name")` entry. The
-        // canonical control name is stamped later by user code or by the
-        // VB walker normalization (`Me.__control_name = "<lower class
-        // name>"`), and any subsequent `Me.Name = "..."` does the right
-        // thing through the same setter dispatch.
-        for field in &[
-            "__control_name",
-            "__control_type",
-            "show",
-            "close",
-            "focus",
-            "hide",
-        ] {
+        // auto-id into the gui state registry under whatever
+        // `__control_name` `this` had at that moment, polluting the
+        // registry. The canonical control name is stamped later by user
+        // code or by the walker normalization (`Me.__control_name = "..."`).
+        //
+        // We also no longer copy `show`/`close`/`focus`/`hide` here. Those
+        // used to be host-stamped on the backing object, but they're now
+        // installed via real method thunks bound at this class's level
+        // (or inherited from `Control`).
+        for field in &["__control_name", "__control_type"] {
             let key_idx = chunk.add_constant(Value::String(Arc::from(*field)));
-            // [this]
             chunk.emit_op_u16(Op::local_get, this_slot, line);
-            // [this, widget]
             chunk.emit_op_u16(Op::local_get, widget_slot, line);
-            // [this, widget_field_value]
             chunk.emit_op_u16(Op::struct_get, key_idx, line);
-            // struct_set this.<field> = widget_field_value → [field_value]
             chunk.emit_op_u16(Op::struct_set, key_idx, line);
             chunk.emit_op(Op::drop, line);
         }
     }
 
-    // ── Step 5: return this ─────────────────────────────────────────────────
+    // ── Step 6: return this ─────────────────────────────────────────────────
     chunk.emit_op_u16(Op::local_get, this_slot, line);
     chunk.emit_op(Op::r#return, line);
 
     // Locals beyond the closure ref slot 0:
-    //   slot 1 = this  (always present)
-    //   slot 2 = widget (only when wiring a concrete widget host fn)
-    chunk.local_count = if widget_new_import_idx.is_some() { 2 } else { 1 };
+    //   slots 1..=ctor_arity = ctor args
+    //   slot ctor_arity+1     = this   (always present)
+    //   slot ctor_arity+2     = widget (only when wiring a backing host fn)
+    chunk.local_count = if widget_new_import_idx.is_some() {
+        arity + 2
+    } else {
+        arity + 1
+    };
     chunk
 }
 

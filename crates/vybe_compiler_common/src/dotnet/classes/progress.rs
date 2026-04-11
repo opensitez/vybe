@@ -21,7 +21,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "Style",
                 "Value",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_ProgressBar"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "TrackBar",
@@ -37,7 +40,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "TickStyle",
                 "Value",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_TrackBar"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "NumericUpDown",
@@ -54,7 +60,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "UpDownAlign",
                 "Value",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_NumericUpDown"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

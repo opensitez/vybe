@@ -39,6 +39,12 @@ pub fn namespace_roots() -> HashSet<String> {
         "dialogresult", "messageboxbuttons", "messageboxicon",
         "keys", "dockstyle", "anchorstyles", "formstartposition",
         "formwindowstate",
+        // VB6 legacy globals — registered by vybe_host::namespaces::vb_globals
+        // with pre-computed Path/EXEName/Title/Width/Height etc. The resolver
+        // must see them as namespace roots so `App.Path` / `Screen.Width`
+        // resolve as `global_get app` + `struct_get path` instead of being
+        // treated as undefined locals.
+        "app", "screen",
         // System.Diagnostics types
         "stopwatch", "debug", "trace",
         // System.IO types

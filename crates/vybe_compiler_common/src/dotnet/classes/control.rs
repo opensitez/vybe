@@ -18,7 +18,37 @@
 //! `__set_text`. The two casings are kept consistent by
 //! [`super::builder::build_setter_chunk`].
 
-use super::DotnetClass;
+use super::{DotnetClass, DotnetMethod, MethodTarget};
+
+/// Methods owned by `Control` (inherited by every concrete control,
+/// including `Form`). Each entry maps to either a host fn or, when the
+/// method returns another .NET class instance, to that class's ctor.
+///
+/// - `Show`/`Hide`/`Focus`/`Refresh`/… → host fns in `vybe:gui` (no-ops
+///   in non-display contexts, real implementations under a future GUI
+///   backend)
+/// - `CreateGraphics` → calls the `Graphics` dotnet class ctor so the
+///   returned instance has all `Graphics` methods (`DrawLine`, etc.)
+///   bound on it. Going through the raw `vybe:drawing::graphicsNew`
+///   host fn would skip method binding and break user code that does
+///   `g.DrawLine(...)`.
+///
+/// Methods specific to `Form` (`Close`, `ShowDialog`, `Activate`,
+/// `CenterToScreen`) live on the `Form` class so subclasses inherit them
+/// only when inheriting from `Form`.
+const CONTROL_METHODS: &[DotnetMethod] = &[
+    DotnetMethod { name: "Show",           arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_show") },
+    DotnetMethod { name: "Hide",           arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_hide") },
+    DotnetMethod { name: "Focus",          arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_focus") },
+    DotnetMethod { name: "Refresh",        arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_refresh") },
+    DotnetMethod { name: "Invalidate",     arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_invalidate") },
+    DotnetMethod { name: "Update",         arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_update") },
+    DotnetMethod { name: "BringToFront",   arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_bring_to_front") },
+    DotnetMethod { name: "SendToBack",     arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_send_to_back") },
+    DotnetMethod { name: "Select",         arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_focus") },
+    DotnetMethod { name: "Dispose",        arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_dispose") },
+    DotnetMethod { name: "CreateGraphics", arity: 1, target: MethodTarget::dotnet_ctor("Graphics") },
+];
 
 pub fn classes() -> &'static [DotnetClass] {
     &[
@@ -72,7 +102,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "AccessibleDescription",
                 "AccessibleRole",
             ],
+            methods: CONTROL_METHODS,
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
         // ── ScrollableControl ──────────────────────────────────────────────
         // Adds the autoscroll surface used by Form, Panel, …
@@ -87,7 +120,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "HScroll",
                 "VScroll",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
         // ── ContainerControl ───────────────────────────────────────────────
         // Adds the active-control / parent-form tracking used by Form,
@@ -100,7 +136,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "ParentForm",
                 "AutoValidate",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
     ]
 }

@@ -27,7 +27,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "ShowUpDown",
                 "Value",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_DateTimePicker"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "MonthCalendar",
@@ -54,7 +57,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "TodayDateSet",
                 "TrailingForeColor",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_MonthCalendar"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }

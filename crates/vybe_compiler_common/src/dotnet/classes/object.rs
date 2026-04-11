@@ -26,19 +26,28 @@ pub fn classes() -> &'static [DotnetClass] {
             name: "Object",
             parent: None,
             properties: &[],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "MarshalByRefObject",
             parent: Some("Object"),
             properties: &[],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "Component",
             parent: Some("MarshalByRefObject"),
             properties: &[],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
+            widget_host_module: "vybe:gui",
         },
     ]
 }

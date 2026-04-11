@@ -27,7 +27,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "UseCompatibleTextRendering",
                 "UseMnemonic",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_Label"),
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "LinkLabel",
@@ -43,7 +46,10 @@ pub fn classes() -> &'static [DotnetClass] {
                 "OverrideCursor",
                 "VisitedLinkColor",
             ],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: Some("new_LinkLabel"),
+            widget_host_module: "vybe:gui",
         },
     ]
 }
