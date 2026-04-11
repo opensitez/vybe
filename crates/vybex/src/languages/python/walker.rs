@@ -209,6 +209,136 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     Ok(Statement::with_span(kind, span))
 }
 
+// ── Generator → eager collection helpers ────────────────────────────────────
+
+/// Recursively check if a statement list contains any Yield expressions.
+fn body_has_yield(stmts: &[Statement]) -> bool {
+    stmts.iter().any(|s| stmt_has_yield(s))
+}
+
+fn stmt_has_yield(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(e) => expr_has_yield(e),
+        StmtKind::Return(Some(e)) => expr_has_yield(e),
+        StmtKind::Assign { value, .. } => expr_has_yield(value),
+        StmtKind::If { cond, then_body, else_body, .. } => {
+            expr_has_yield(cond) || body_has_yield(then_body) || else_body.as_ref().map_or(false, |eb| body_has_yield(eb))
+        }
+        StmtKind::While { cond, body, .. } => expr_has_yield(cond) || body_has_yield(body),
+        StmtKind::ForIn { body, .. } => body_has_yield(body),
+        StmtKind::Try { body, catches, finally, .. } => {
+            body_has_yield(body)
+                || catches.iter().any(|cb| body_has_yield(&cb.body))
+                || finally.as_ref().map_or(false, |fb| body_has_yield(fb))
+        }
+        StmtKind::With { body, .. } => body_has_yield(body),
+        _ => false,
+    }
+}
+
+fn expr_has_yield(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Yield(_) | ExprKind::YieldFrom(_) => true,
+        ExprKind::Call { args, .. } => args.iter().any(|a| expr_has_yield(&a.value)),
+        ExprKind::Binary { left, right, .. } => expr_has_yield(left) || expr_has_yield(right),
+        ExprKind::Unary { expr: e, .. } => expr_has_yield(e),
+        ExprKind::Index { object, index, .. } => expr_has_yield(object) || expr_has_yield(index),
+        _ => false,
+    }
+}
+
+/// Rewrite a generator body: prepend `__gen_result = []`, replace `yield X` with
+/// `__gen_result.push(X)`, append `return __gen_result`.
+fn rewrite_generator_body(stmts: Vec<Statement>) -> Vec<Statement> {
+    let gen_var = "__gen_result";
+    let mut out = Vec::new();
+
+    // __gen_result = []
+    out.push(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(gen_var)],
+        value: Expression::new(ExprKind::Array(Vec::new())),
+    }));
+
+    // Transform body
+    for stmt in stmts {
+        out.extend(rewrite_stmt_yields(stmt, gen_var));
+    }
+
+    // return __gen_result
+    out.push(Statement::new(StmtKind::Return(Some(Expression::ident(gen_var)))));
+
+    out
+}
+
+fn rewrite_stmt_yields(stmt: Statement, gen_var: &str) -> Vec<Statement> {
+    match stmt.kind {
+        // Bare `yield X` as expression statement → __gen_result.push(X)
+        StmtKind::Expr(ref e) => {
+            if let ExprKind::Yield(Some(val)) = &e.kind {
+                return vec![make_push(gen_var, *val.clone())];
+            }
+            if let ExprKind::Yield(None) = &e.kind {
+                return vec![make_push(gen_var, Expression::null())];
+            }
+            vec![stmt]
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            vec![Statement::new(StmtKind::If {
+                cond,
+                then_body: then_body.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect(),
+                elifs: elifs.into_iter().map(|(c, b)| {
+                    (c, b.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect())
+                }).collect(),
+                else_body: else_body.map(|eb| eb.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect()),
+            })]
+        }
+        StmtKind::While { cond, body, else_body } => {
+            vec![Statement::new(StmtKind::While {
+                cond,
+                body: body.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect(),
+                else_body,
+            })]
+        }
+        StmtKind::ForIn { var, key, iter, body, of, else_body, is_async } => {
+            vec![Statement::new(StmtKind::ForIn {
+                var, key, iter, of, is_async,
+                body: body.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect(),
+                else_body: else_body.map(|eb| eb.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect()),
+            })]
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            vec![Statement::new(StmtKind::Try {
+                body: body.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect(),
+                catches: catches.into_iter().map(|cb| CatchClause {
+                    body: cb.body.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect(),
+                    ..cb
+                }).collect(),
+                else_body,
+                finally: finally.map(|fb| fb.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect()),
+            })]
+        }
+        StmtKind::With { items, body, is_async } => {
+            vec![Statement::new(StmtKind::With {
+                items, is_async,
+                body: body.into_iter().flat_map(|s| rewrite_stmt_yields(s, gen_var)).collect(),
+            })]
+        }
+        _ => vec![stmt],
+    }
+}
+
+fn make_push(gen_var: &str, val: Expression) -> Statement {
+    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(gen_var)),
+            field: "append".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(val)],
+        optional: false,
+    })))
+}
+
 // ── Function def ────────────────────────────────────────────────────────────
 
 fn walk_func_def(pair: Pair<Rule>, is_async: bool, decorators: Vec<Expression>) -> Result<StmtKind, String> {
@@ -233,6 +363,12 @@ fn walk_func_def(pair: Pair<Rule>, is_async: bool, decorators: Vec<Expression>) 
             }
             _ => {}
         }
+    }
+
+    // Generator function: transform yield statements into eager collection.
+    // def gen(): yield 1; yield 2 → def gen(): __gen_result = []; __gen_result.append(1); ...; return __gen_result
+    if body_has_yield(&body) {
+        body = rewrite_generator_body(body);
     }
 
     Ok(StmtKind::FunctionDecl {
@@ -405,14 +541,16 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
                 }
             }
             StmtKind::Assign { targets, value } => {
-                // Class-level assignment → Field
+                // Class-level assignment → static Field (Python class variables)
                 for target in targets {
                     if let ExprKind::Ident(field_name) = &target.kind {
+                        let mut mods = Modifiers::default();
+                        mods.is_static = true; // Python class-level vars are class attributes
                         members.push(ClassMember::Field {
                             name: field_name.clone(),
                             type_hint: None,
                             init: Some(value.clone()),
-                            modifiers: Modifiers::default(),
+                            modifiers: mods,
                             with_events: false,
                             array_bounds: None,
                         });
@@ -537,10 +675,10 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
 // ── For ─────────────────────────────────────────────────────────────────────
 
 fn walk_for(pair: Pair<Rule>, is_async: bool) -> Result<StmtKind, String> {
-    let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+    let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     // Find target_list, expression_list, block, else_clause
-    let mut var = String::new();
+    let mut var_names: Vec<String> = Vec::new();
     let mut iter_expr = None;
     let mut body = Vec::new();
     let mut else_body = None;
@@ -548,9 +686,8 @@ fn walk_for(pair: Pair<Rule>, is_async: bool) -> Result<StmtKind, String> {
     for p in inner {
         match p.as_rule() {
             Rule::target_list => {
-                // For simple case: single identifier
                 let text = p.as_str().trim().to_string();
-                var = text;
+                var_names = text.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             }
             Rule::expression_list => {
                 if iter_expr.is_none() {
@@ -566,6 +703,28 @@ fn walk_for(pair: Pair<Rule>, is_async: bool) -> Result<StmtKind, String> {
             _ => {}
         }
     }
+
+    // If multiple targets (tuple unpacking: `for i, v in enumerate(...)`),
+    // use a temp var and prepend destructuring assignments to the body.
+    let var = if var_names.len() > 1 {
+        let tmp = "__forin_element".to_string();
+        let mut destructure_stmts: Vec<Statement> = Vec::new();
+        for (i, name) in var_names.iter().enumerate() {
+            // name = __forin_element[i]
+            destructure_stmts.push(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::new(ExprKind::Ident(name.clone()))],
+                value: Expression::new(ExprKind::Index {
+                    object: Box::new(Expression::new(ExprKind::Ident(tmp.clone()))),
+                    index: Box::new(Expression::new(ExprKind::Lit(Literal::Int(i as i64)))),
+                }),
+            }));
+        }
+        destructure_stmts.extend(body);
+        body = destructure_stmts;
+        tmp
+    } else {
+        var_names.into_iter().next().unwrap_or_default()
+    };
 
     Ok(StmtKind::ForIn {
         var,
@@ -947,7 +1106,22 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     if all_exprs.len() >= 2 {
         let value = all_exprs.pop().unwrap();
-        Ok(StmtKind::Assign { targets: all_exprs, value })
+        // Convert Tuple targets to Destructure for tuple unpacking (x, y = ...)
+        let targets = all_exprs.into_iter().map(|t| {
+            if let ExprKind::Tuple(elems) = &t.kind {
+                let patterns = elems.iter().map(|e| {
+                    if let ExprKind::Ident(name) = &e.kind {
+                        ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
+                    } else {
+                        ArrayPatternElem::Hole
+                    }
+                }).collect();
+                Expression::new(ExprKind::Destructure(DestructurePattern::Array(patterns)))
+            } else {
+                t
+            }
+        }).collect();
+        Ok(StmtKind::Assign { targets, value })
     } else if all_exprs.len() == 1 {
         Ok(StmtKind::Expr(all_exprs.remove(0)))
     } else {
@@ -1235,7 +1409,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::bitand_expr => walk_binary_chain(inner, |_| BinOp::BitAnd),
         Rule::shift_expr => walk_binary_chain_with_ops(inner),
         Rule::additive => walk_binary_chain_with_ops(inner),
-        Rule::multiplicative => walk_binary_chain_with_ops(inner),
+        Rule::multiplicative => walk_python_multiplicative(inner),
         Rule::unary => {
             // unary_op ~ unary
             let op_str = inner[0].as_str().trim();
@@ -1288,6 +1462,57 @@ fn walk_binary_chain(mut items: Vec<Pair<Rule>>, op_fn: impl Fn(&str) -> BinOp) 
             left = Expression::new(ExprKind::Binary {
                 op, left: Box::new(left), right: Box::new(right),
             });
+        }
+    }
+    Ok(left.kind)
+}
+
+/// Python-specific: `*` is dynamic (str repeat OR numeric mul).
+/// Emits Call(__vybe_dynmul, [a, b]) for `*`, delegates others to normal BinOp.
+fn walk_python_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let mut left = walk_expression(items.remove(0))?;
+    let mut i = 0;
+    while i < items.len() {
+        let p = &items[i];
+        if is_op_rule(p.as_rule()) {
+            let op_str = p.as_str().trim();
+            i += 1;
+            if i < items.len() {
+                let right = walk_expression(items[i].clone())?;
+                i += 1;
+                if op_str == "*" {
+                    // Dynamic multiply via stdlib
+                    let callee = Expression::new(ExprKind::Ident("__vybe_dynmul".into()));
+                    left = Expression::new(ExprKind::Call {
+                        callee: Box::new(callee),
+                        args: vec![
+                            Argument::positional(left),
+                            Argument::positional(right),
+                        ],
+                        optional: false,
+                    });
+                } else if op_str == "//" {
+                    // Python floor division: floor(a / b)
+                    let div = Expression::new(ExprKind::Binary {
+                        op: BinOp::Div,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    });
+                    let callee = Expression::new(ExprKind::Ident("__vybe_floor".into()));
+                    left = Expression::new(ExprKind::Call {
+                        callee: Box::new(callee),
+                        args: vec![Argument::positional(div)],
+                        optional: false,
+                    });
+                } else {
+                    let op = parse_binop(op_str);
+                    left = Expression::new(ExprKind::Binary {
+                        op, left: Box::new(left), right: Box::new(right),
+                    });
+                }
+            }
+        } else {
+            i += 1;
         }
     }
     Ok(left.kind)
@@ -1349,6 +1574,24 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 match first_child.as_rule() {
                     Rule::call_args => {
                         let args = walk_call_args(children.into_iter().next().unwrap())?;
+                        // Python-specific: `delim.join(array)` → swap receiver/arg
+                        // so the common compiler sees `array.join(delim)` convention.
+                        if let ExprKind::Member { object, field, null_safe } = &expr.kind {
+                            if field == "join" && args.len() == 1 {
+                                let delim = object.clone();
+                                let array_arg = args.into_iter().next().unwrap().value;
+                                expr = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::new(ExprKind::Member {
+                                        object: Box::new(array_arg),
+                                        field: "join".into(),
+                                        null_safe: *null_safe,
+                                    })),
+                                    args: vec![Argument::positional(*delim)],
+                                    optional: false,
+                                });
+                                continue;
+                            }
+                        }
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(expr),
                             args,

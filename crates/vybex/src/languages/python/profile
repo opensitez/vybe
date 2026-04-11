@@ -35,9 +35,9 @@ input           = { emit = "host:wasi:cli:readLine",        min_args = 0, max_ar
 int             = { emit = "host:vybe:convert:cint",        min_args = 1, max_args = 2 }
 float           = { emit = "host:vybe:convert:cdbl",        min_args = 1, max_args = 1 }
 str             = { emit = "host:vybe:convert:cstr",        min_args = 1, max_args = 1 }
-bool            = { emit = "host:vybe:convert:cbool",       min_args = 1, max_args = 1 }
+bool            = { emit = "opcode:dyn_to_bool",            min_args = 1, max_args = 1 }
 chr             = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 1 }
-ord             = { emit = "opcode:str_char_code_at",       min_args = 1, max_args = 1 }
+ord             = { emit = "intrinsic:asc",                  min_args = 1, max_args = 1 }
 hex             = { emit = "host:vybe:convert:toHex",       min_args = 1, max_args = 1 }
 oct             = { emit = "host:vybe:convert:toOct",       min_args = 1, max_args = 1 }
 bin             = { emit = "host:vybe:convert:toBin",       min_args = 1, max_args = 1 }

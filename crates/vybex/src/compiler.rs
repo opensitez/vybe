@@ -3631,7 +3631,8 @@ impl Compiler {
             BinOp::Sub => self.emit(Op::f64_sub),
             BinOp::Mul => self.emit(Op::f64_mul),
             BinOp::Div => self.emit(Op::f64_div),
-            BinOp::IDiv | BinOp::FloorDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
+            BinOp::IDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
+            BinOp::FloorDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_floor(self.chunk(), l); }
             BinOp::Mod => self.emit(Op::f64_mod),
             BinOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             BinOp::Eq => self.emit(Op::dyn_eq),
@@ -3657,22 +3658,10 @@ impl Compiler {
             BinOp::UShr => self.emit(Op::i32_shr_u),
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In => {
-                // `x in arr` → contains(arr, x). Stack has [x, arr], need [arr, x].
-                let tmp = self.scope_mut().define("__in_tmp");
-                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop); // save arr
-                let tmp2 = self.scope_mut().define("__in_val");
-                self.emit_u16(Op::local_set, tmp2); self.emit(Op::drop); // save x
-                self.emit_u16(Op::local_get, tmp);  // push arr
-                self.emit_u16(Op::local_get, tmp2); // push x
+                // `x in arr` → contains(arr, x). Stack: [needle, haystack] (correct for VM).
                 let l = self.line; common::collections::emit_contains(self.chunk(), l);
             }
             BinOp::NotIn => {
-                let tmp = self.scope_mut().define("__notin_tmp");
-                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
-                let tmp2 = self.scope_mut().define("__notin_val");
-                self.emit_u16(Op::local_set, tmp2); self.emit(Op::drop);
-                self.emit_u16(Op::local_get, tmp);
-                self.emit_u16(Op::local_get, tmp2);
                 let l = self.line; common::collections::emit_contains(self.chunk(), l);
                 self.emit(Op::dyn_not);
             }
