@@ -1,0 +1,10 @@
+mod helpers;
+mod test_basics;
+mod test_control_flow;
+mod test_functions;
+mod test_classes;
+mod test_builtins;
+mod test_exceptions;
+mod test_programs;
+mod test_new_features;
+mod test_stdlib_modules;

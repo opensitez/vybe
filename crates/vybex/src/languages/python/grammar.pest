@@ -1,0 +1,471 @@
+// Python 3.x Grammar for pest parser
+// Covers every construct from vybe_parser_python.
+//
+// Indentation: Python uses INDENT/DEDENT for blocks. pest cannot track
+// indentation state, so we use a pre-processing step in the walker that
+// inserts explicit INDENT/DEDENT markers (⇥ and ⇤) before parsing.
+// Newlines are visible tokens (not whitespace).
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\\" ~ NEWLINE }   // line continuation
+COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
+NEWLINE = { "\n" | "\r\n" }
+
+// Indent / dedent markers (injected by preprocessor)
+INDENT = { "\u{21E5}" }   // ⇥
+DEDENT = { "\u{21E4}" }   // ⇤
+
+// ── Terminators ────────────────────────────────────────────────────────────────
+terminator = _{ ";" | NEWLINE | &EOI }
+eat_terminators = _{ (";" | NEWLINE)* }
+
+// ── Program ────────────────────────────────────────────────────────────────────
+program = { SOI ~ eat_terminators ~ (statement ~ eat_terminators)* ~ EOI }
+
+// ── Statements ─────────────────────────────────────────────────────────────────
+statement = _{
+    decorated_def
+    | async_stmt
+    | function_def
+    | class_def
+    | if_stmt
+    | while_stmt
+    | for_stmt
+    | try_stmt
+    | with_stmt
+    | match_stmt
+    | return_stmt
+    | raise_stmt
+    | import_from_stmt
+    | import_stmt
+    | global_stmt
+    | nonlocal_stmt
+    | del_stmt
+    | assert_stmt
+    | break_stmt
+    | continue_stmt
+    | pass_stmt
+    | expr_or_assign_stmt
+}
+
+break_stmt = { "break" ~ terminator }
+continue_stmt = { "continue" ~ terminator }
+pass_stmt = { "pass" ~ terminator }
+
+// ── Async ──────────────────────────────────────────────────────────────────────
+async_stmt = { async_kw ~ (function_def | for_stmt | with_stmt) }
+
+// ── Function Definition ────────────────────────────────────────────────────────
+function_def = {
+    "def" ~ identifier ~ "(" ~ param_list? ~ ")" ~ ("->" ~ expression)? ~ block
+}
+
+param_list = { param_item ~ ("," ~ param_item)* ~ ","? }
+
+param_item = {
+    double_star_param
+    | star_param
+    | bare_star
+    | normal_param
+}
+
+double_star_param = { "**" ~ identifier ~ (":" ~ expression)? }
+star_param = { "*" ~ identifier ~ (":" ~ expression)? }
+bare_star = { "*" ~ &"," }
+normal_param = { identifier ~ (":" ~ expression)? ~ ("=" ~ expression)? }
+
+// ── Class Definition ───────────────────────────────────────────────────────────
+class_def = {
+    "class" ~ identifier ~ ("(" ~ class_arg_list? ~ ")")? ~ block
+}
+
+class_arg_list = { class_arg ~ ("," ~ class_arg)* ~ ","? }
+
+class_arg = {
+    "**" ~ expression
+    | identifier ~ "=" ~ expression
+    | expression
+}
+
+// ── Decorated ──────────────────────────────────────────────────────────────────
+decorated_def = { decorator+ ~ (async_stmt | function_def | class_def) }
+decorator = { "@" ~ expression ~ NEWLINE ~ eat_terminators }
+
+// ── If / Elif / Else ───────────────────────────────────────────────────────────
+if_stmt = {
+    "if" ~ expression ~ block ~ elif_clause* ~ else_clause?
+}
+elif_clause = { "elif" ~ expression ~ block }
+else_clause = { "else" ~ block }
+
+// ── While ──────────────────────────────────────────────────────────────────────
+while_stmt = {
+    "while" ~ expression ~ block ~ else_clause?
+}
+
+// ── For ────────────────────────────────────────────────────────────────────────
+for_stmt = {
+    "for" ~ target_list ~ in_kw ~ expression_list ~ block ~ else_clause?
+}
+
+// ── Try / Except / Finally ─────────────────────────────────────────────────────
+try_stmt = {
+    "try" ~ block ~ except_clause* ~ else_clause? ~ finally_clause?
+}
+
+except_clause = { "except" ~ (expression ~ (as_kw ~ identifier)?)? ~ block }
+finally_clause = { "finally" ~ block }
+
+// ── With ───────────────────────────────────────────────────────────────────────
+with_stmt = {
+    "with" ~ with_item ~ ("," ~ with_item)* ~ block
+}
+
+with_item = { expression ~ (as_kw ~ target_list)? }
+
+// ── Match / Case ───────────────────────────────────────────────────────────────
+match_stmt = {
+    "match" ~ expression_list ~ ":" ~ NEWLINE ~ INDENT ~ case_clause+ ~ eat_terminators ~ DEDENT
+}
+
+case_clause = { "case" ~ pattern ~ ("if" ~ expression)? ~ block }
+
+pattern = { or_pattern }
+or_pattern = { single_pattern ~ ("|" ~ single_pattern)* }
+
+single_pattern = {
+    star_pattern
+    | sequence_pattern
+    | mapping_pattern
+    | class_pattern
+    | value_pattern
+    | singleton_pattern
+    | capture_pattern
+    | wildcard_pattern
+    | literal_pattern
+}
+
+star_pattern = { "*" ~ identifier? }
+wildcard_pattern = { "_" ~ !(ASCII_ALPHANUMERIC | "_") }
+capture_pattern = { identifier }
+singleton_pattern = { none_kw | true_kw | false_kw }
+literal_pattern = { numeric_literal | string_literal | "-" ~ numeric_literal }
+
+value_pattern = { identifier ~ ("." ~ identifier)+ }
+class_pattern = { identifier ~ "(" ~ (pattern ~ ("," ~ pattern)*)? ~ ","? ~ ")" }
+sequence_pattern = { "[" ~ (pattern ~ ("," ~ pattern)*)? ~ ","? ~ "]" }
+mapping_pattern = { "{" ~ (mapping_pair ~ ("," ~ mapping_pair)*)? ~ ","? ~ "}" }
+mapping_pair = { expression ~ ":" ~ pattern }
+
+// ── Return ─────────────────────────────────────────────────────────────────────
+return_stmt = { "return" ~ (!NEWLINE ~ expression_list)? ~ terminator }
+
+// ── Raise ──────────────────────────────────────────────────────────────────────
+raise_stmt = { "raise" ~ (!NEWLINE ~ expression ~ (from_kw ~ expression)?)? ~ terminator }
+
+// ── Import ─────────────────────────────────────────────────────────────────────
+import_stmt = {
+    "import" ~ dotted_as_name ~ ("," ~ dotted_as_name)* ~ terminator
+}
+
+import_from_stmt = {
+    "from" ~ import_dots? ~ dotted_name? ~ "import" ~ import_names ~ terminator
+}
+
+import_dots = { ("..." | ".")+ }
+
+import_names = {
+    "*"
+    | "(" ~ import_as_name ~ ("," ~ import_as_name)* ~ ","? ~ ")"
+    | import_as_name ~ ("," ~ import_as_name)*
+}
+
+import_as_name = { identifier ~ (as_kw ~ identifier)? }
+dotted_as_name = { dotted_name ~ (as_kw ~ identifier)? }
+dotted_name = @{ identifier_raw ~ ("." ~ identifier_raw)* }
+
+// ── Global / Nonlocal ──────────────────────────────────────────────────────────
+global_stmt = { "global" ~ identifier ~ ("," ~ identifier)* ~ terminator }
+nonlocal_stmt = { "nonlocal" ~ identifier ~ ("," ~ identifier)* ~ terminator }
+
+// ── Del ────────────────────────────────────────────────────────────────────────
+del_stmt = { "del" ~ expression ~ ("," ~ expression)* ~ terminator }
+
+// ── Assert ─────────────────────────────────────────────────────────────────────
+assert_stmt = { "assert" ~ expression ~ ("," ~ expression)? ~ terminator }
+
+// ── Expression or assignment ───────────────────────────────────────────────────
+expr_or_assign_stmt = {
+    expression_list ~ (
+        aug_assign_op ~ expression_list     // augmented assign: x += 1
+        | ":" ~ expression ~ ("=" ~ expression_list)?   // annotated assign: x: int = 1
+        | ("=" ~ expression_list)+          // regular assign: a = b = c
+    )? ~ terminator
+}
+
+aug_assign_op = {
+    "**=" | "//=" | "<<=" | ">>=" |
+    "+=" | "-=" | "*=" | "/=" | "%=" | "@=" |
+    "|=" | "&=" | "^="
+}
+
+// ── Block (colon + body) ──────────────────────────────────────────────────────
+// Two forms: indented block or single-line after colon
+block = {
+    ":" ~ NEWLINE ~ INDENT ~ (statement ~ eat_terminators)+ ~ DEDENT
+    | ":" ~ simple_stmt_list ~ terminator
+}
+
+simple_stmt_list = { simple_stmt ~ (";" ~ simple_stmt)* }
+
+simple_stmt = _{
+    return_inline
+    | raise_inline
+    | break_inline
+    | continue_inline
+    | pass_inline
+    | expr_or_assign_inline
+}
+
+return_inline = { "return" ~ expression_list? }
+raise_inline = { "raise" ~ (expression ~ (from_kw ~ expression)?)? }
+break_inline = { "break" }
+continue_inline = { "continue" }
+pass_inline = { "pass" }
+expr_or_assign_inline = {
+    expression_list ~ (
+        aug_assign_op ~ expression_list
+        | ("=" ~ expression_list)+
+    )?
+}
+
+// ── Expressions ────────────────────────────────────────────────────────────────
+
+expression_list = { expression ~ ("," ~ expression)* ~ ","? }
+
+expression = {
+    lambda_expr
+    | named_expr
+}
+
+lambda_expr = {
+    "lambda" ~ lambda_params? ~ ":" ~ expression
+}
+
+lambda_params = { lambda_param ~ ("," ~ lambda_param)* ~ ","? }
+
+lambda_param = {
+    "**" ~ identifier
+    | "*" ~ identifier?
+    | identifier ~ ("=" ~ expression)?
+}
+
+named_expr = { ternary_expr ~ (":=" ~ named_expr)? }
+
+// Python ternary: body if test else orelse
+ternary_expr = { or_expr ~ (if_kw ~ or_expr ~ else_kw ~ ternary_expr)? }
+
+// ── Logical ────────────────────────────────────────────────────────────────────
+or_expr = { and_expr ~ (or_kw ~ and_expr)* }
+and_expr = { not_expr ~ (and_kw ~ not_expr)* }
+not_expr = { not_kw ~ not_expr | comparison }
+
+// ── Comparison (chained) ───────────────────────────────────────────────────────
+comparison = { bitor_expr ~ (comparison_op ~ bitor_expr)* }
+comparison_op = {
+    "==" | "!=" | "<=" | ">=" | "<" | ">"
+    | not_in_kw | in_kw | is_not_kw | is_kw
+}
+
+// ── Bitwise / Shift / Arithmetic — flattened ───────────────────────────────────
+bitor_expr = { bitxor_expr ~ ("|" ~ !("=" | "|") ~ bitxor_expr)* }
+bitxor_expr = { bitand_expr ~ ("^" ~ !"=" ~ bitand_expr)* }
+bitand_expr = { shift_expr ~ ("&" ~ !"=" ~ shift_expr)* }
+shift_expr = { additive ~ (shift_op ~ additive)* }
+shift_op = { "<<" ~ !"=" | ">>" ~ !"=" }
+
+additive = { multiplicative ~ (additive_op ~ multiplicative)* }
+additive_op = { "+" ~ !"=" | "-" ~ !"=" }
+
+multiplicative = { unary ~ (multiplicative_op ~ unary)* }
+multiplicative_op = { "**" ~ !"=" | "*" ~ !("*" | "=") | "/" ~ !("/" | "=") | "//" ~ !"=" | "%" ~ !"=" | "@" ~ !"=" }
+
+// ── Unary ──────────────────────────────────────────────────────────────────────
+unary = { unary_op ~ unary | power }
+unary_op = { "-" ~ !"=" | "+" ~ !"=" | "~" }
+
+// ── Power (right-associative) ──────────────────────────────────────────────────
+power = { await_expr ~ ("**" ~ !"=" ~ unary)? }
+
+// ── Await ──────────────────────────────────────────────────────────────────────
+await_expr = { await_kw ~ unary | postfix }
+
+// ── Postfix (call, member, subscript) ──────────────────────────────────────────
+postfix = { primary ~ postfix_chain* }
+
+postfix_chain = {
+    "(" ~ call_args? ~ ")"       // call
+    | "." ~ identifier             // attribute
+    | "[" ~ subscript ~ "]"        // subscript
+}
+
+call_args = { call_arg ~ ("," ~ call_arg)* ~ ","? }
+
+call_arg = {
+    "**" ~ expression                                  // **kwargs
+    | "*" ~ expression                                 // *args
+    | identifier ~ "=" ~ expression                    // keyword=value
+    | comp_for_arg                                     // generator expression
+    | expression
+}
+
+// Generator expression as function arg: f(x for x in y)
+comp_for_arg = { expression ~ comp_clause+ }
+
+subscript = {
+    subscript_item ~ ("," ~ subscript_item)* ~ ","?
+}
+
+subscript_item = {
+    expression? ~ ":" ~ expression? ~ (":" ~ expression?)?   // slice
+    | expression
+}
+
+// ── Primary ────────────────────────────────────────────────────────────────────
+primary = {
+    "(" ~ expression_list? ~ ")"        // tuple/grouping/empty tuple
+    | "[" ~ list_inner ~ "]"             // list or list comprehension
+    | "{" ~ dict_or_set_inner? ~ "}"      // dict, set, or comprehension (empty = empty dict)
+    | fstring
+    | yield_expr
+    | star_expr
+    | ellipsis_lit
+    | true_kw
+    | false_kw
+    | none_kw
+    | numeric_literal
+    | string_literal
+    | identifier
+}
+
+// Yield expression
+yield_expr = { yield_from_kw ~ expression | yield_kw ~ expression_list? }
+
+// Star expression (unpacking)
+star_expr = { "*" ~ expression }
+
+// ── List inner ─────────────────────────────────────────────────────────────────
+list_inner = {
+    expression ~ comp_clause+                  // list comprehension
+    | (expression ~ ("," ~ expression)*)? ~ ","?   // list literal
+}
+
+// ── Dict / Set inner ───────────────────────────────────────────────────────────
+dict_or_set_inner = {
+    "**" ~ expression ~ dict_rest                        // dict starting with **
+    | expression ~ ":" ~ expression ~ dict_comp_or_rest    // dict starting with key:value
+    | expression ~ set_comp_or_rest                        // set or set comprehension
+}
+
+dict_comp_or_rest = {
+    comp_clause+                                           // dict comprehension
+    | ("," ~ dict_entry)* ~ ","?                           // dict literal rest
+}
+
+dict_entry = {
+    "**" ~ expression
+    | expression ~ ":" ~ expression
+}
+
+dict_rest = { ("," ~ dict_entry)* ~ ","? }
+
+set_comp_or_rest = {
+    comp_clause+                                           // set comprehension
+    | ("," ~ expression)* ~ ","?                           // set literal rest
+}
+
+// ── Comprehension clauses ──────────────────────────────────────────────────────
+comp_clause = {
+    async_kw? ~ "for" ~ target_list ~ in_kw ~ or_expr ~ comp_if*
+}
+
+comp_if = { "if" ~ or_expr }
+
+// ── Target list (for assignments, for loops) ────────────────────────────────────
+target_list = { target ~ ("," ~ target)* ~ ","? }
+
+target = {
+    "*" ~ postfix            // starred
+    | "(" ~ target_list ~ ")"   // parenthesized
+    | "[" ~ target_list ~ "]"   // list target
+    | postfix                   // name, attr, subscript
+}
+
+// ── F-strings ──────────────────────────────────────────────────────────────────
+fstring = { fstring_start ~ fstring_part* ~ fstring_end }
+fstring_start = @{ ("f" | "F") ~ ("'" | "\"" | "'''" | "\"\"\"") }
+fstring_end = @{ "'" | "\"" | "'''" | "\"\"\"" }
+fstring_part = {
+    fstring_text
+    | "{" ~ expression ~ (":" ~ fstring_format_spec)? ~ "}"
+    | "{{" | "}}"
+}
+fstring_text = @{ (!("{" | "}" | "'" | "\"") ~ ANY)+ }
+fstring_format_spec = @{ (!("}" | "{") ~ ANY)+ }
+
+// ── Keyword atoms — all atomic for word boundary ──────────────────────────────
+true_kw = @{ "True" ~ !(ASCII_ALPHANUMERIC | "_") }
+false_kw = @{ "False" ~ !(ASCII_ALPHANUMERIC | "_") }
+none_kw = @{ "None" ~ !(ASCII_ALPHANUMERIC | "_") }
+and_kw = @{ "and" ~ !(ASCII_ALPHANUMERIC | "_") }
+or_kw = @{ "or" ~ !(ASCII_ALPHANUMERIC | "_") }
+not_kw = @{ "not" ~ !(ASCII_ALPHANUMERIC | "_") }
+in_kw = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+not_in_kw = @{ "not" ~ WHITESPACE+ ~ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+is_kw = @{ "is" ~ !(ASCII_ALPHANUMERIC | "_") }
+is_not_kw = @{ "is" ~ WHITESPACE+ ~ "not" ~ !(ASCII_ALPHANUMERIC | "_") }
+as_kw = @{ "as" ~ !(ASCII_ALPHANUMERIC | "_") }
+if_kw = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
+else_kw = @{ "else" ~ !(ASCII_ALPHANUMERIC | "_") }
+from_kw = @{ "from" ~ !(ASCII_ALPHANUMERIC | "_") }
+async_kw = @{ "async" ~ !(ASCII_ALPHANUMERIC | "_") }
+await_kw = @{ "await" ~ !(ASCII_ALPHANUMERIC | "_") }
+yield_kw = @{ "yield" ~ !(ASCII_ALPHANUMERIC | "_") }
+yield_from_kw = @{ "yield" ~ WHITESPACE+ ~ "from" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+ellipsis_lit = { "..." }
+
+// ── Literals ───────────────────────────────────────────────────────────────────
+
+numeric_literal = @{
+    ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0o" | "0O") ~ ('0'..'7' | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0b" | "0B") ~ ('0'..'1' | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ (ASCII_DIGIT | "_")+)? ~ ("j" | "J")? ~ !(ASCII_ALPHANUMERIC | "_")
+    | "." ~ (ASCII_DIGIT | "_")+ ~ (("e" | "E") ~ ("+" | "-")? ~ (ASCII_DIGIT | "_")+)? ~ ("j" | "J")? ~ !(ASCII_ALPHANUMERIC | "_")
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ (ASCII_DIGIT | "_")+)? ~ ("j" | "J")? ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+string_literal = @{
+    // Triple-quoted strings (must be before single-quoted)
+    ("r" | "R" | "b" | "B" | "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR")? ~ "\"\"\"" ~ (!"\"\"\"" ~ ANY)* ~ "\"\"\""
+    | ("r" | "R" | "b" | "B" | "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR")? ~ "'''" ~ (!("'''") ~ ANY)* ~ "'''"
+    // Single-quoted strings
+    | ("r" | "R" | "b" | "B" | "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR")? ~ "'" ~ ("\\'" | "\\\\" | (!"'" ~ !NEWLINE ~ ANY))* ~ "'"
+    | ("r" | "R" | "b" | "B" | "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR")? ~ "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ !NEWLINE ~ ANY))* ~ "\""
+}
+
+// ── Identifiers ────────────────────────────────────────────────────────────────
+
+identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// Raw identifier for use in dotted_name atomic rule
+identifier_raw = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+keyword = _{
+    ("False" | "None" | "True" | "and" | "as" | "assert" | "async" | "await"
+    | "break" | "class" | "continue" | "def" | "del" | "elif" | "else"
+    | "except" | "finally" | "for" | "from" | "global" | "if" | "import"
+    | "in" | "is" | "lambda" | "match" | "case" | "nonlocal" | "not"
+    | "or" | "pass" | "raise" | "return" | "try" | "while" | "with" | "yield")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
