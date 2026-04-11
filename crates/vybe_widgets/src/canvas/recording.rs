@@ -32,6 +32,8 @@ pub enum DrawCmd {
     SetMiterLimit(f32),
     SetGlobalAlpha(f32),
     SetFont(Font),
+    SetLineDash(Vec<f32>),
+    SetLineDashOffset(f32),
 
     // Path building
     BeginPath,
@@ -53,6 +55,8 @@ pub enum DrawCmd {
     FillText { text: String, x: f32, y: f32 },
     StrokeText { text: String, x: f32, y: f32 },
     DrawImage { image: Image, x: f32, y: f32, w: f32, h: f32 },
+    Clip,
+    ResetClip,
 
     // State stack
     Save,
@@ -99,6 +103,8 @@ impl RecordingCanvas {
                 DrawCmd::SetMiterLimit(l)       => target.set_miter_limit(*l),
                 DrawCmd::SetGlobalAlpha(a)      => target.set_global_alpha(*a),
                 DrawCmd::SetFont(f)             => target.set_font(f),
+                DrawCmd::SetLineDash(intervals) => target.set_line_dash(intervals),
+                DrawCmd::SetLineDashOffset(o)   => target.set_line_dash_offset(*o),
 
                 // Path building
                 DrawCmd::BeginPath              => target.begin_path(),
@@ -124,6 +130,8 @@ impl RecordingCanvas {
                 DrawCmd::StrokeText { text, x, y } => target.stroke_text(text, *x, *y),
                 DrawCmd::DrawImage { image, x, y, w, h } =>
                     target.draw_image(image, *x, *y, *w, *h),
+                DrawCmd::Clip                   => target.clip(),
+                DrawCmd::ResetClip              => target.reset_clip(),
 
                 // State stack
                 DrawCmd::Save                   => target.save(),
@@ -161,6 +169,8 @@ impl Canvas for RecordingCanvas {
     fn set_miter_limit(&mut self, limit: f32)       { self.commands.push(DrawCmd::SetMiterLimit(limit)); }
     fn set_global_alpha(&mut self, alpha: f32)      { self.commands.push(DrawCmd::SetGlobalAlpha(alpha)); }
     fn set_font(&mut self, font: &Font)             { self.commands.push(DrawCmd::SetFont(font.clone())); }
+    fn set_line_dash(&mut self, intervals: &[f32])  { self.commands.push(DrawCmd::SetLineDash(intervals.to_vec())); }
+    fn set_line_dash_offset(&mut self, offset: f32) { self.commands.push(DrawCmd::SetLineDashOffset(offset)); }
 
     // Path building
     fn begin_path(&mut self)                        { self.commands.push(DrawCmd::BeginPath); }
@@ -204,6 +214,8 @@ impl Canvas for RecordingCanvas {
     fn draw_image(&mut self, img: &Image, x: f32, y: f32, w: f32, h: f32) {
         self.commands.push(DrawCmd::DrawImage { image: img.clone(), x, y, w, h });
     }
+    fn clip(&mut self)                              { self.commands.push(DrawCmd::Clip); }
+    fn reset_clip(&mut self)                        { self.commands.push(DrawCmd::ResetClip); }
 
     // State stack
     fn save(&mut self)                              { self.commands.push(DrawCmd::Save); }

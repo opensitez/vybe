@@ -148,4 +148,35 @@ impl Image {
         );
         Self { width, height, pixels: Arc::new(pixels) }
     }
+
+    /// Decode an image from a file path. Supports PNG, JPEG, GIF, and BMP.
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
+        let img = image::open(path.as_ref())
+            .map_err(|e| format!("Image::from_file: {}", e))?
+            .to_rgba8();
+        let (width, height) = img.dimensions();
+        Ok(Self::from_rgba(width, height, img.into_raw()))
+    }
+
+    /// Decode an image from in-memory bytes (auto-detects format from
+    /// content). Supports PNG, JPEG, GIF, and BMP.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let img = image::load_from_memory(bytes)
+            .map_err(|e| format!("Image::from_bytes: {}", e))?
+            .to_rgba8();
+        let (width, height) = img.dimensions();
+        Ok(Self::from_rgba(width, height, img.into_raw()))
+    }
+
+    /// Save the image as a PNG file.
+    pub fn save_png(&self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
+        image::save_buffer(
+            path.as_ref(),
+            &self.pixels,
+            self.width,
+            self.height,
+            image::ColorType::Rgba8,
+        )
+        .map_err(|e| format!("Image::save_png: {}", e))
+    }
 }

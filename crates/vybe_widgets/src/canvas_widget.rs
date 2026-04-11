@@ -177,4 +177,11 @@ impl PanelWidget for Canvas {
 
     fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
     fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+
+    /// Used by the host bridge to find this widget by name and pull
+    /// out its underlying `RecordingCanvas`. See
+    /// `vybe_host::gui_state::GuiState::find_canvas_mut`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self as &mut dyn std::any::Any)
+    }
 }

@@ -102,6 +102,15 @@ pub trait Canvas {
     /// Set the font used by `fill_text` / `stroke_text`.
     fn set_font(&mut self, font: &Font);
 
+    /// Set the dash pattern used by subsequent `stroke*` operations.
+    /// Each f32 is alternating on/off in pixel units, matching HTML5
+    /// canvas's `setLineDash`. Empty slice (the default) means solid.
+    fn set_line_dash(&mut self, intervals: &[f32]);
+
+    /// Set the dash phase offset used by subsequent `stroke*` ops.
+    /// Default is 0.
+    fn set_line_dash_offset(&mut self, offset: f32);
+
     // ─── Path building ──────────────────────────────────────────────────
 
     /// Reset the current path. Subsequent `move_to`, `line_to`, `arc`,
@@ -169,6 +178,17 @@ pub trait Canvas {
 
     /// Draw an image scaled into the rectangle `(x, y, w, h)`.
     fn draw_image(&mut self, img: &Image, x: f32, y: f32, w: f32, h: f32);
+
+    // ─── Clipping ───────────────────────────────────────────────────────
+
+    /// Use the current path as the clip region for subsequent draw
+    /// operations. The path is consumed (matches HTML5 `clip()`).
+    /// `save` / `restore` push/pop the clip along with the rest of the
+    /// paint state.
+    fn clip(&mut self);
+
+    /// Reset the clip to the entire canvas.
+    fn reset_clip(&mut self);
 
     // ─── State stack ────────────────────────────────────────────────────
 

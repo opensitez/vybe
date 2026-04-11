@@ -532,6 +532,15 @@ pub trait PanelWidget: Send + Sync {
     /// user code.
     fn paint_overlay(&mut self, _canvas: &mut dyn crate::canvas::Canvas) {}
 
+    /// Downcast hook for the host bridge.
+    ///
+    /// Returns `Some(&mut dyn Any)` so callers can `downcast_mut` to a
+    /// specific widget type. Default-`None` so existing widgets don't
+    /// need updating; widgets the host bridge needs to look up
+    /// (currently just `Canvas`) override this to return
+    /// `Some(self as &mut dyn Any)`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { None }
+
     /// Handle a mouse event. Returns `true` if the event was consumed.
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool;
 

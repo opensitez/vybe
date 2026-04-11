@@ -126,7 +126,12 @@ pub fn draw_mono(
 }
 
 /// Draw a pre-shaped cosmic-text buffer at physical pixel position (px, py).
-fn draw_buffer(
+///
+/// Used by `crate::canvas::tinyskia::TinySkiaCanvas::fill_text` to share
+/// the same glyph rasterisation path the rest of the toolkit's text
+/// rendering uses. Public to the crate so the canvas module can call
+/// it without re-implementing the swash-cache walk.
+pub(crate) fn draw_buffer(
     pix: &mut Pixmap,
     fs: &mut FontSystem,
     sc: &mut SwashCache,

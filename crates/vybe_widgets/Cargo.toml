@@ -14,3 +14,4 @@ vybe_forms = { path = "../vybe_forms" }
 winit = "0.30"
 arboard = "3.4"
 softbuffer = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }

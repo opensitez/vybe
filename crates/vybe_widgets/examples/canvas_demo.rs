@@ -88,6 +88,57 @@ fn main() {
         recording.replay(&mut canvas);
     }
 
+    // ── Path 1.5: text + dashes + clip on the same pixmap ──────────────
+    //
+    // Exercises the rest of Layer 1: cosmic-text rendering through
+    // TinySkiaCanvas, dashed strokes via set_line_dash, and clipping
+    // via clip + reset_clip. Text needs a FontSystem; we construct
+    // one inline (the form runner uses RenderContext's shared one).
+    {
+        use vybe_widgets::{FontSystem, SwashCache, canvas::Font};
+        let mut fs = FontSystem::new();
+        let mut sc = SwashCache::new();
+        let mut canvas = TinySkiaCanvas::with_text(&mut pixmap, &mut fs, &mut sc);
+
+        // Dashed stroke around an area on the right.
+        canvas.set_stroke_color(Color::rgb(120, 120, 120));
+        canvas.set_line_width(2.0);
+        canvas.set_line_dash(&[8.0, 4.0]);
+        canvas.stroke_rect(450.0, 420.0, 320.0, 140.0);
+        canvas.set_line_dash(&[]); // back to solid
+
+        // Clip to a circle in the lower-left, draw a grid that gets
+        // masked.
+        canvas.save();
+        canvas.begin_path();
+        canvas.ellipse(140.0, 480.0, 90.0, 70.0);
+        canvas.clip();
+        canvas.set_stroke_color(Color::rgb(180, 60, 220));
+        canvas.set_line_width(1.5);
+        for i in 0..20 {
+            let p = i as f32 * 12.0;
+            canvas.begin_path();
+            canvas.move_to(40.0 + p, 400.0);
+            canvas.line_to(40.0 + p, 580.0);
+            canvas.stroke();
+            canvas.begin_path();
+            canvas.move_to(40.0, 400.0 + p * 0.6);
+            canvas.line_to(280.0, 400.0 + p * 0.6);
+            canvas.stroke();
+        }
+        canvas.restore(); // pops clip too
+
+        // Text via cosmic-text. fill_text uses (x, y) as the top-left
+        // of the first line.
+        canvas.set_fill_color(Color::rgb(20, 20, 20));
+        canvas.set_font(&Font::new("sans-serif", 24.0));
+        canvas.fill_text("vybe canvas — text via cosmic-text", 280.0, 460.0);
+
+        canvas.set_fill_color(Color::rgb(80, 80, 80));
+        canvas.set_font(&Font::new("sans-serif", 14.0).with_italic(true));
+        canvas.fill_text("dashed strokes • clipped grid • italic font", 280.0, 500.0);
+    }
+
     // ── Save the trait-direct demo ──────────────────────────────────────
     let out_path = "target/canvas_demo.png";
     pixmap.save_png(out_path).expect("save png");

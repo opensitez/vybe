@@ -113,6 +113,18 @@ impl Form {
         }
     }
 
+    /// Mutable access to the form's child controls slice. Used by the
+    /// host bridge to walk widgets and downcast them when looking up a
+    /// `Canvas` widget by name.
+    pub fn controls_mut(&mut self) -> &mut [Box<dyn PanelWidget>] {
+        &mut self.controls
+    }
+
+    /// Read-only access to the form's child controls slice.
+    pub fn controls(&self) -> &[Box<dyn PanelWidget>] {
+        &self.controls
+    }
+
     /// Move focus to the next focusable control (Tab key).
     pub fn focus_next(&mut self) {
         self.focus.focus_next(&mut self.controls);

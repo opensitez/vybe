@@ -40,21 +40,57 @@
 use tiny_skia::{
     Paint, FillRule, Stroke as TsStroke, LineCap as TsLineCap, LineJoin as TsLineJoin,
     Transform, PathBuilder, Path, Pixmap, PixmapPaint, FilterQuality,
-    PixmapRef,
+    PixmapRef, Mask,
 };
 
-use super::{Canvas, Color, LineCap, LineJoin, Font, Image};
+use cosmic_text::{
+    Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics, SwashCache,
+    Shaping,
+};
+
+use super::{Canvas, Color, LineCap, LineJoin, Font, FontWeight, FontStyle, Image};
 
 /// `Canvas` impl that paints into a `tiny_skia::Pixmap`.
 ///
 /// Holds a mutable borrow of the target pixmap for its lifetime, plus
 /// the current paint state. Constructed each frame by the form's render
 /// loop and dropped at end-of-frame.
+///
+/// Optionally borrows a `FontSystem + SwashCache` from the caller to
+/// support text rendering. When no font system is provided (e.g. when
+/// constructed inline by tests that don't need text), `fill_text` /
+/// `stroke_text` are no-ops. The form's render loop always provides one
+/// — `RenderContext` already carries them — so live rendering of
+/// recordings with text just works.
 pub struct TinySkiaCanvas<'a> {
     pixmap: &'a mut Pixmap,
     state: PaintState,
-    state_stack: Vec<PaintState>,
+    state_stack: Vec<PaintFrame>,
     path: PathBuilder,
+    text_ctx: Option<TextCtx<'a>>,
+    /// Active clip mask (if `clip` was called). Combined with the
+    /// current transform when issuing draw ops. None = no clipping.
+    clip_mask: Option<Mask>,
+}
+
+/// One entry on the `save`/`restore` stack — paint state + a snapshot
+/// of the active clip mask. Cloning the `Mask` is the only way to
+/// preserve clipping across `save`/`restore`; tiny-skia masks are just
+/// alpha buffers, so the clone is a `Vec<u8>` copy of pixmap-sized
+/// bytes — fine for typical UI usage.
+#[derive(Clone)]
+struct PaintFrame {
+    state: PaintState,
+    clip_mask: Option<Mask>,
+}
+
+/// Borrowed cosmic-text resources used for text rendering. Shared with
+/// the rest of the toolkit via `RenderContext::font_system /
+/// swash_cache`. Optional so callers that don't need text don't have
+/// to set up cosmic-text.
+struct TextCtx<'a> {
+    font_system: &'a mut FontSystem,
+    swash_cache: &'a mut SwashCache,
 }
 
 #[derive(Clone)]
@@ -68,6 +104,8 @@ struct PaintState {
     global_alpha: f32,
     font: Font,
     transform: Transform,
+    dash_intervals: Vec<f32>,
+    dash_offset: f32,
 }
 
 impl Default for PaintState {
@@ -82,20 +120,63 @@ impl Default for PaintState {
             global_alpha: 1.0,
             font: Font::default(),
             transform: Transform::identity(),
+            dash_intervals: Vec::new(),
+            dash_offset: 0.0,
         }
     }
 }
 
 impl<'a> TinySkiaCanvas<'a> {
     /// Wrap a pixmap as a canvas. The canvas borrows the pixmap until
-    /// it's dropped.
+    /// it's dropped. Text rendering is disabled (no font system).
     pub fn new(pixmap: &'a mut Pixmap) -> Self {
         Self {
             pixmap,
             state: PaintState::default(),
             state_stack: Vec::new(),
             path: PathBuilder::new(),
+            text_ctx: None,
+            clip_mask: None,
         }
+    }
+
+    /// Wrap a pixmap as a canvas with text rendering enabled. The
+    /// `FontSystem` and `SwashCache` are borrowed for the lifetime of
+    /// the canvas. The form's render loop constructs canvases this way
+    /// using `RenderContext::font_system / swash_cache`.
+    pub fn with_text(
+        pixmap: &'a mut Pixmap,
+        font_system: &'a mut FontSystem,
+        swash_cache: &'a mut SwashCache,
+    ) -> Self {
+        Self {
+            pixmap,
+            state: PaintState::default(),
+            state_stack: Vec::new(),
+            path: PathBuilder::new(),
+            text_ctx: Some(TextCtx { font_system, swash_cache }),
+            clip_mask: None,
+        }
+    }
+
+    /// Measure the logical width of `text` in the current font. Returns
+    /// 0.0 if no text context is attached. Used by the host bridge's
+    /// `canvasMeasureText` and (eventually) by `Graphics.MeasureString`.
+    pub fn measure_text(&mut self, text: &str) -> (f32, f32) {
+        let Some(tc) = self.text_ctx.as_mut() else { return (0.0, 0.0); };
+        let size = self.state.font.size;
+        let metrics = Metrics::new(size, size * 1.3);
+        let mut buf = Buffer::new(tc.font_system, metrics);
+        let attrs = build_attrs(&self.state.font);
+        buf.set_text(tc.font_system, text, &attrs, Shaping::Advanced, None);
+        buf.shape_until_scroll(tc.font_system, false);
+        let mut max_w = 0.0f32;
+        let mut total_h = 0.0f32;
+        for run in buf.layout_runs() {
+            max_w = max_w.max(run.line_w);
+            total_h = total_h.max(run.line_y + run.line_height);
+        }
+        (max_w, total_h)
     }
 
     /// Build a `tiny_skia::Paint` from the current fill colour and
@@ -109,19 +190,25 @@ impl<'a> TinySkiaCanvas<'a> {
     }
 
     /// Build a `tiny_skia::Paint` + `Stroke` from the current stroke
-    /// colour, line width, caps, joins, and global alpha.
+    /// colour, line width, caps, joins, miter limit, dash, and global alpha.
     fn stroke_paint(&self) -> (Paint<'static>, TsStroke) {
         let mut p = Paint::default();
         let c = apply_alpha(self.state.stroke, self.state.global_alpha);
         p.set_color_rgba8(c.r, c.g, c.b, c.a);
         p.anti_alias = true;
-        let stroke = TsStroke {
+        let mut stroke = TsStroke {
             width: self.state.line_width,
             line_cap: line_cap_to_ts(self.state.line_cap),
             line_join: line_join_to_ts(self.state.line_join),
             miter_limit: self.state.miter_limit,
             ..TsStroke::default()
         };
+        if !self.state.dash_intervals.is_empty() {
+            stroke.dash = tiny_skia::StrokeDash::new(
+                self.state.dash_intervals.clone(),
+                self.state.dash_offset,
+            );
+        }
         (p, stroke)
     }
 
@@ -144,6 +231,12 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
     fn set_miter_limit(&mut self, limit: f32) { self.state.miter_limit = limit.max(1.0); }
     fn set_global_alpha(&mut self, alpha: f32) { self.state.global_alpha = alpha.clamp(0.0, 1.0); }
     fn set_font(&mut self, font: &Font) { self.state.font = font.clone(); }
+    fn set_line_dash(&mut self, intervals: &[f32]) {
+        self.state.dash_intervals = intervals.to_vec();
+    }
+    fn set_line_dash_offset(&mut self, offset: f32) {
+        self.state.dash_offset = offset;
+    }
 
     // ─── Path building ──────────────────────────────────────────────────
 
@@ -220,14 +313,16 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
     fn fill(&mut self) {
         if let Some(path) = self.take_path() {
             let paint = self.fill_paint();
-            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.state.transform, None);
+            let mask = self.clip_mask.as_ref();
+            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
         }
     }
 
     fn stroke(&mut self) {
         if let Some(path) = self.take_path() {
             let (paint, stroke) = self.stroke_paint();
-            self.pixmap.stroke_path(&path, &paint, &stroke, self.state.transform, None);
+            let mask = self.clip_mask.as_ref();
+            self.pixmap.stroke_path(&path, &paint, &stroke, self.state.transform, mask);
         }
     }
 
@@ -240,7 +335,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         pb.close();
         if let Some(path) = pb.finish() {
             let paint = self.fill_paint();
-            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.state.transform, None);
+            let mask = self.clip_mask.as_ref();
+            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
         }
     }
 
@@ -253,7 +349,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         pb.close();
         if let Some(path) = pb.finish() {
             let (paint, stroke) = self.stroke_paint();
-            self.pixmap.stroke_path(&path, &paint, &stroke, self.state.transform, None);
+            let mask = self.clip_mask.as_ref();
+            self.pixmap.stroke_path(&path, &paint, &stroke, self.state.transform, mask);
         }
     }
 
@@ -269,25 +366,86 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
             let mut paint = Paint::default();
             paint.set_color_rgba8(0, 0, 0, 0);
             paint.blend_mode = tiny_skia::BlendMode::Source;
-            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.state.transform, None);
+            let mask = self.clip_mask.as_ref();
+            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
         }
     }
 
-    fn fill_text(&mut self, _text: &str, _x: f32, _y: f32) {
-        // Text rendering is intentionally a no-op at the canvas-trait
-        // level — cosmic-text wants a `&mut FontSystem` borrowed from
-        // the application's `TextContext`, which we don't have access
-        // to from this signature. The form's render loop is responsible
-        // for replaying text commands through its own text-renderer
-        // path. (Recording captures `FillText` cmds; the runner
-        // pattern-matches and dispatches them through cosmic-text.)
-        //
-        // For pure tinyskia-only usage (no cosmic-text dependency in
-        // the toolkit consumer's app), this no-op is the safe default.
+    fn fill_text(&mut self, text: &str, x: f32, y: f32) {
+        // Real text rendering through cosmic-text. Requires a font
+        // context — without one, this is a no-op (used by tests that
+        // construct a TinySkiaCanvas without text support).
+        let Some(tc) = self.text_ctx.as_mut() else { return; };
+
+        // Build a buffer for the text, shape it, and rasterise each
+        // glyph through the swash cache. The pixel data lands on the
+        // pixmap via the existing `ide_text::draw_buffer` machinery —
+        // we replicate the relevant bits inline so this module
+        // doesn't depend on `super::super::ide_text` (which would
+        // create a circular module dependency).
+        let size = self.state.font.size;
+        let metrics = Metrics::new(size, size * 1.3);
+        let mut buf = Buffer::new(tc.font_system, metrics);
+        let attrs = build_attrs(&self.state.font);
+        buf.set_text(tc.font_system, text, &attrs, Shaping::Advanced, None);
+        buf.shape_until_scroll(tc.font_system, false);
+
+        let fill = apply_alpha(self.state.fill, self.state.global_alpha);
+        let cosmic_color = CosmicColor::rgba(fill.r, fill.g, fill.b, fill.a);
+
+        // cosmic-text positions glyphs relative to the buffer's
+        // top-left. .NET (and HTML5 canvas) `fill_text(x, y)` positions
+        // text by its baseline, but for our purposes we treat (x, y)
+        // as the top-left of the first line — that's the simplest
+        // mapping and matches how the rest of the toolkit's text
+        // helpers work.
+        crate::ide_text::draw_buffer(
+            self.pixmap,
+            tc.font_system,
+            tc.swash_cache,
+            &buf,
+            x,
+            y,
+            cosmic_color,
+        );
     }
 
-    fn stroke_text(&mut self, _text: &str, _x: f32, _y: f32) {
-        // Same reasoning as `fill_text` — handled by the runner.
+    fn stroke_text(&mut self, text: &str, x: f32, y: f32) {
+        // tiny-skia doesn't have outline-stroked glyphs out of the box.
+        // For now, fall back to filled text in the stroke colour. This
+        // matches what most lightweight canvas libs do; a real
+        // implementation would tessellate each glyph's outline and
+        // stroke the resulting path.
+        let saved_fill = self.state.fill;
+        self.state.fill = self.state.stroke;
+        self.fill_text(text, x, y);
+        self.state.fill = saved_fill;
+    }
+
+    fn clip(&mut self) {
+        if let Some(path) = self.take_path() {
+            // Rasterise the path into a fresh Mask the size of the
+            // pixmap, then store it as the active clip. Subsequent
+            // draws use the mask as a coverage modulator.
+            let w = self.pixmap.width();
+            let h = self.pixmap.height();
+            let mut mask = match Mask::new(w, h) {
+                Some(m) => m,
+                None => return,
+            };
+            mask.fill_path(&path, FillRule::Winding, true, self.state.transform);
+            // If there's already a clip mask, intersect them. tiny-skia's
+            // Mask::intersect_path is the natural primitive for this.
+            if let Some(existing) = self.clip_mask.as_mut() {
+                existing.intersect_path(&path, FillRule::Winding, true, self.state.transform);
+            } else {
+                self.clip_mask = Some(mask);
+            }
+        }
+    }
+
+    fn reset_clip(&mut self) {
+        self.clip_mask = None;
     }
 
     fn draw_image(&mut self, img: &Image, x: f32, y: f32, w: f32, h: f32) {
@@ -312,12 +470,16 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
     // ─── State stack ────────────────────────────────────────────────────
 
     fn save(&mut self) {
-        self.state_stack.push(self.state.clone());
+        self.state_stack.push(PaintFrame {
+            state: self.state.clone(),
+            clip_mask: self.clip_mask.clone(),
+        });
     }
 
     fn restore(&mut self) {
         if let Some(prev) = self.state_stack.pop() {
-            self.state = prev;
+            self.state = prev.state;
+            self.clip_mask = prev.clip_mask;
         }
     }
 
@@ -369,4 +531,35 @@ fn line_join_to_ts(join: LineJoin) -> TsLineJoin {
         LineJoin::Round => TsLineJoin::Round,
         LineJoin::Bevel => TsLineJoin::Bevel,
     }
+}
+
+/// Build a `cosmic_text::Attrs` from a canvas `Font`.
+///
+/// Maps our `FontWeight` / `FontStyle` to cosmic-text's equivalents and
+/// resolves the family name. Family is owned by the `Font` so we can
+/// borrow it for the lifetime of the returned `Attrs`. The `'static`
+/// hack via `Family::Name(&str)` means the borrow lifetime tracks the
+/// `Font`'s — fine because `Attrs` doesn't escape this function.
+fn build_attrs<'f>(font: &'f Font) -> Attrs<'f> {
+    let family = if font.family.is_empty() || font.family == "sans-serif" {
+        Family::SansSerif
+    } else if font.family == "monospace" {
+        Family::Monospace
+    } else if font.family == "serif" {
+        Family::Serif
+    } else {
+        Family::Name(&font.family)
+    };
+    let weight = match font.weight {
+        FontWeight::Normal => cosmic_text::Weight::NORMAL,
+        FontWeight::Bold => cosmic_text::Weight::BOLD,
+    };
+    let style = match font.style {
+        FontStyle::Normal => cosmic_text::Style::Normal,
+        FontStyle::Italic => cosmic_text::Style::Italic,
+    };
+    Attrs::new()
+        .family(family)
+        .weight(weight)
+        .style(style)
 }
