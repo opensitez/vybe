@@ -2607,7 +2607,7 @@ fn parse_for_each_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         key: None,
         iter: collection.ok_or_else(|| "For Each missing collection".to_string())?,
         body,
-        of: false,
+        of: true, // VB For Each iterates values, like JS for...of
         else_body: None,
         is_async: false,
     }, span))

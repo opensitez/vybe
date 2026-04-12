@@ -184,6 +184,7 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
         new_with_initializer: false,
         new_from_initializer: false,
         linq_queries: false,
+        switch_fallthrough: true,
         builtins: {
             let mut b = HashMap::new();
             b.insert("console.log".into(), BuiltinDef { emit: BuiltinEmit::Print, min_args: 0, max_args: 255 });

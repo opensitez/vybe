@@ -503,8 +503,15 @@ impl Compiler {
             }
 
             // ── ForIn / ForOf ───────────────────────────────────────────
-            StmtKind::ForIn { var, iter, body, else_body, .. } => {
+            StmtKind::ForIn { var, iter, body, else_body, of, .. } => {
                 self.compile_expr(iter)?;
+                // JS for-in: iterate object property names (strings).
+                // for-of: iterate array elements directly.
+                // Convert for-in targets to key arrays via Object.keys.
+                if !of {
+                    let idx = self.import("vybe:object", "keys");
+                    self.emit_host_call(idx, 1);
+                }
                 let arr_slot = self.scope_mut().define("__forin_arr");
                 self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
                 let idx_slot = self.scope_mut().define("__forin_idx");
@@ -548,35 +555,41 @@ impl Compiler {
 
             // ── Switch / Select Case ────────────────────────────────────
             StmtKind::Switch { expr, cases, default } => {
+                // Save switch expression to a local so checks can read it
+                // without leaving it on the stack during body execution.
                 self.compile_expr(expr)?;
-                // Push a loop context so `break;` inside case bodies collects its
-                // jump patch and we can resolve it to the end of the switch.
+                let sw_slot = self.scope_mut().define("__sw_expr");
+                self.emit_u16(Op::local_set, sw_slot); self.emit(Op::drop);
+
                 self.loops.push(LoopCtx { break_patches: vec![], continue_target: 0, continue_patches: vec![], continue_needs_patch: false, label: None });
-                let mut end_patches = Vec::new();
-                for case in cases {
+
+                // Phase 1: emit condition checks. Each matching condition
+                // jumps to the corresponding body. Non-matching falls through
+                // to the next check. After all checks, jump to default/end.
+                let mut body_jumps: Vec<Vec<usize>> = Vec::new();
+                for case in cases.iter() {
                     let mut match_patches = Vec::new();
                     for cond in &case.conditions {
                         match cond {
                             CaseCondition::Value(val) => {
-                                self.emit(Op::dup);
+                                self.emit_u16(Op::local_get, sw_slot);
                                 self.compile_expr(val)?;
                                 self.emit(Op::dyn_eq);
                                 match_patches.push(self.emit_jump(Op::br_if_true));
                             }
                             CaseCondition::Range { from, to } => {
-                                // val >= from && val <= to
-                                self.emit(Op::dup);
+                                self.emit_u16(Op::local_get, sw_slot);
                                 self.compile_expr(from)?;
                                 self.emit(Op::dyn_ge);
                                 let first = self.emit_jump(Op::br_if_false);
-                                self.emit(Op::dup);
+                                self.emit_u16(Op::local_get, sw_slot);
                                 self.compile_expr(to)?;
                                 self.emit(Op::dyn_le);
                                 match_patches.push(self.emit_jump(Op::br_if_true));
                                 self.patch_jump(first);
                             }
                             CaseCondition::Comparison { op, expr: cmp_expr } => {
-                                self.emit(Op::dup);
+                                self.emit_u16(Op::local_get, sw_slot);
                                 self.compile_expr(cmp_expr)?;
                                 match op {
                                     ComparisonOp::Eq => self.emit(Op::dyn_eq),
@@ -590,19 +603,42 @@ impl Compiler {
                             }
                         }
                     }
-                    let skip = self.emit_jump(Op::br);
-                    for p in match_patches { self.patch_jump(p); }
-                    for s in &case.body { self.compile_stmt(s)?; }
-                    end_patches.push(self.emit_jump(Op::br));
-                    self.patch_jump(skip);
+                    body_jumps.push(match_patches);
                 }
+                // No case matched → jump to default or end
+                let no_match = self.emit_jump(Op::br);
+
+                // Phase 2: emit all case bodies in order.
+                // C/JS: execution falls through to the next case unless
+                // there's an explicit `break`. VB/Pascal/other: each case
+                // is independent — auto-insert a break-to-end after each
+                // case body that doesn't already end with a break.
+                let body_has_break = |body: &[Statement]| -> bool {
+                    body.iter().any(|s| matches!(s.kind, StmtKind::Break(_)))
+                };
+                for (i, case) in cases.iter().enumerate() {
+                    for p in &body_jumps[i] { self.patch_jump(*p); }
+                    for s in &case.body { self.compile_stmt(s)?; }
+                    // Auto-break for non-fallthrough languages: if no
+                    // explicit break in the body, emit a jump to end. JS/C
+                    // have `switch_fallthrough = true` so they skip this.
+                    if !self.profile.switch_fallthrough
+                        && !body_has_break(&case.body)
+                        && !case.body.is_empty()
+                    {
+                        let p = self.emit_jump(Op::br);
+                        if let Some(ctx) = self.loops.last_mut() {
+                            ctx.break_patches.push(p);
+                        }
+                    }
+                }
+                // Default body
+                self.patch_jump(no_match);
                 if let Some(def) = default {
                     for s in def { self.compile_stmt(s)?; }
                 }
-                for p in end_patches { self.patch_jump(p); }
                 let ctx = self.loops.pop().unwrap();
                 for p in ctx.break_patches { self.patch_jump(p); }
-                self.emit(Op::drop); // drop the switch expression
             }
 
             // ── Try / Catch / Finally ───────────────────────────────────
@@ -2250,7 +2286,7 @@ impl Compiler {
                     Literal::Char(c) => self.emit_const(Value::String(Arc::from(c.to_string().as_str()))),
                     Literal::Bool(b) => if *b { self.emit(Op::r#true) } else { self.emit(Op::r#false) },
                     Literal::Null => self.emit(Op::null),
-                    Literal::Undefined => self.emit(Op::null),
+                    Literal::Undefined => self.emit(Op::undefined),
                     Literal::Ellipsis => self.emit(Op::null),
                 }
             }
@@ -2627,16 +2663,50 @@ impl Compiler {
 
             // ── Array literal ───────────────────────────────────────────
             ExprKind::Array(elements) => {
-                for elem in elements {
-                    if elem.spread {
-                        self.compile_expr(&elem.value)?;
-                        self.emit(Op::spread);
-                    } else {
+                let has_spread = elements.iter().any(|e| e.spread);
+                if !has_spread {
+                    // Simple case: no spread, all elements go into array_new
+                    for elem in elements {
                         self.compile_expr(&elem.value)?;
                     }
+                    let line = self.line;
+                    self.chunks[self.current].emit_op_u16(Op::array_new, elements.len() as u16, line);
+                } else {
+                    // Spread case: build segments and concat.
+                    // Collect non-spread elements into an array_new, then
+                    // for each spread, concat with the spread array.
+                    let line = self.line;
+                    let mut pending_non_spread: usize = 0;
+                    let mut have_result = false;
+                    for elem in elements {
+                        if elem.spread {
+                            // Flush pending non-spread elements
+                            if pending_non_spread > 0 {
+                                self.chunks[self.current].emit_op_u16(Op::array_new, pending_non_spread as u16, line);
+                                if have_result { self.emit(Op::array_concat); }
+                                have_result = true;
+                                pending_non_spread = 0;
+                            }
+                            // Compile the spread value (an array)
+                            self.compile_expr(&elem.value)?;
+                            if have_result { self.emit(Op::array_concat); }
+                            have_result = true;
+                        } else {
+                            self.compile_expr(&elem.value)?;
+                            pending_non_spread += 1;
+                        }
+                    }
+                    // Flush remaining non-spread elements
+                    if pending_non_spread > 0 {
+                        self.chunks[self.current].emit_op_u16(Op::array_new, pending_non_spread as u16, line);
+                        if have_result { self.emit(Op::array_concat); }
+                        have_result = true;
+                    }
+                    if !have_result {
+                        // Empty array
+                        self.chunks[self.current].emit_op_u16(Op::array_new, 0, line);
+                    }
                 }
-                let line = self.line;
-                self.chunks[self.current].emit_op_u16(Op::array_new, elements.len() as u16, line);
             }
 
             // ── Tuple (Python) ──────────────────────────────────────────
@@ -2657,6 +2727,10 @@ impl Compiler {
             }
 
             // ── Object literal ──────────────────────────────────────────
+            // Uses dict::emit_new to create the object WITH __keys tracking.
+            // Each key is set via struct_set AND appended to __keys so that
+            // Object.keys/values/entries (which read __keys) return the
+            // right answer.
             ExprKind::Object(props) => {
                 let line = self.line;
                 common::dict::emit_new(&mut self.chunks[self.current], line);
@@ -2668,17 +2742,32 @@ impl Compiler {
                             if let ExprKind::Lit(Literal::Str(k)) = &key.kind {
                                 let idx = self.str_const(k);
                                 self.emit_u16(Op::struct_set, idx);
+                                self.emit(Op::drop);
+                                // Track key in __keys
+                                self.emit(Op::dup);
+                                let keys_key = self.str_const("__keys");
+                                self.emit_u16(Op::struct_get, keys_key);
+                                self.emit_const(Value::String(Arc::from(k.as_str())));
+                                self.emit(Op::array_push);
+                                self.emit(Op::drop);
                             } else {
                                 self.compile_expr(key)?;
                                 self.emit(Op::array_set);
+                                self.emit(Op::drop);
                             }
-                            self.emit(Op::drop);
                         }
                         ObjectProperty::Shorthand(name) => {
                             self.emit(Op::dup);
                             self.emit_var_get(name);
                             let idx = self.str_const(name);
                             self.emit_u16(Op::struct_set, idx);
+                            self.emit(Op::drop);
+                            // Track key in __keys
+                            self.emit(Op::dup);
+                            let keys_key = self.str_const("__keys");
+                            self.emit_u16(Op::struct_get, keys_key);
+                            self.emit_const(Value::String(Arc::from(name.as_str())));
+                            self.emit(Op::array_push);
                             self.emit(Op::drop);
                         }
                         ObjectProperty::Spread(expr) => {
@@ -2951,19 +3040,23 @@ impl Compiler {
 
             // ── Delete (JS expression) ──────────────────────────────────
             ExprKind::Delete(inner) => {
-                // Delete member: always returns true
+                // delete obj.prop → call vybe:object::deleteProperty(obj, key)
+                // which removes the property and returns true.
                 if let ExprKind::Member { object, field, .. } = &inner.kind {
                     self.compile_expr(object)?;
-                    self.emit(Op::null);
-                    let field_name = self.canon(field);
-                    let idx = self.str_const(&field_name);
-                    self.emit_u16(Op::struct_set, idx);
-                    self.emit(Op::drop);
+                    self.emit_const(Value::String(Arc::from(field.as_str())));
+                    let idx = self.import("vybe:object", "deleteProperty");
+                    self.emit_host_call(idx, 2);
+                } else if let ExprKind::Index { object, index } = &inner.kind {
+                    self.compile_expr(object)?;
+                    self.compile_expr(index)?;
+                    let idx = self.import("vybe:object", "deleteProperty");
+                    self.emit_host_call(idx, 2);
                 } else {
                     self.compile_expr(inner)?;
                     self.emit(Op::drop);
+                    self.emit(Op::r#true);
                 }
-                self.emit(Op::r#true);
             }
 
             // ── Destructure (JS) ────────────────────────────────────────
@@ -3350,11 +3443,72 @@ impl Compiler {
             }
         }
 
-        // ── Value method: obj.toUpperCase() ─────────────────────────
-        // Skip if the method name is defined on a user class — that takes priority.
+        // ── Function.prototype.call / .apply ────────────────────────
+        // `fn.call(thisArg, a, b, ...)` → call `fn` with `[a, b, ...]`
+        // `fn.apply(thisArg, [a, b, ...])` → same; the array form is
+        // unwrapped at runtime via the spread opcode.
+        //
+        // We can't route this through value_methods because the standard
+        // dispatch path pushes the receiver + ALL args, but here we need
+        // to drop arg[0] (`thisArg`) from the middle of the stack. Skip
+        // when the field is defined on a user class so user methods
+        // named `call`/`apply` keep working.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             let canon_field = self.canon(field);
-            if self.defined_class_methods.contains(&canon_field) {
+            if !self.defined_class_methods.contains(&canon_field)
+                && (field == "call" || field == "apply")
+            {
+                self.compile_expr(object)?;                       // [fn]
+                if field == "call" {
+                    // Skip thisArg, compile rest as positional args.
+                    for a in arg_exprs.iter().skip(1) {
+                        self.compile_expr(a)?;
+                    }
+                    let n = arg_exprs.len().saturating_sub(1);
+                    self.emit_u8(Op::call_ref, n as u8);
+                } else {
+                    // apply(thisArg, argsArray) — spread the array.
+                    if let Some(args_expr) = arg_exprs.get(1) {
+                        self.compile_expr(args_expr)?;
+                        self.emit(Op::spread);
+                    }
+                    // Use call_ref with 0 — the spread opcode pushes
+                    // each array element and bumps the call arity at
+                    // runtime via Op::call_spread if available, else
+                    // we fall back here. The current VM uses Op::spread
+                    // before call_ref to flatten the top array.
+                    self.emit_u8(Op::call_ref, 0);
+                }
+                return Ok(());
+            }
+        }
+
+        // ── Value method: obj.toUpperCase() ─────────────────────────
+        //
+        // Method name shadowing rule: a value method (e.g. `Array.push`,
+        // `String.toUpperCase`) is the default for *member-access*
+        // receivers like `this.items.push(x)` — the receiver is
+        // structurally a property, almost certainly a built-in collection.
+        //
+        // For *direct* receivers (`this`, `super`, or a local variable
+        // by name), if the field is a known user-class method, prefer
+        // the user method via the generic call path. That preserves
+        // user overrides like `class Stack { push(x) { ... } }` and
+        // `class Holder { size() { ... } }` against built-in
+        // `Array.push`/`map_size` shadowing.
+        //
+        // This is a heuristic — the cleaner fix is per-class method sets
+        // plus receiver-type inference, tracked in the user's pending
+        // "JS/C# compilers don't use common::classes" migration.
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            let canon_field = self.canon(field);
+            let receiver_is_direct = matches!(
+                object.kind,
+                ExprKind::This | ExprKind::Super | ExprKind::Ident(_)
+            );
+            let user_method_shadow = receiver_is_direct
+                && self.defined_class_methods.contains(&canon_field);
+            if user_method_shadow {
                 // Fall through — let the generic call path handle it
             } else if let Some(def) = self.profile.lookup_value_method(field, arg_exprs.len() as u8).cloned() {
                 // For Stdlib calls, push func ref BEFORE args (call_ref expects [func, args...])
@@ -3682,8 +3836,55 @@ impl Compiler {
             BinOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             BinOp::Eq => self.emit(Op::dyn_eq),
             BinOp::NotEq => self.emit(Op::dyn_ne),
-            BinOp::StrictEq => self.emit(Op::dyn_eq), // strict eq is same in our VM
-            BinOp::StrictNotEq => self.emit(Op::dyn_ne),
+            BinOp::StrictEq => {
+                // JS ===: no type coercion. Emit ref_typeof compare first,
+                // then dyn_eq only if types match.
+                // Stack: [a, b] → check types, then value equality.
+                // Simplest: dup both, compare typeof, if different → false,
+                // else dyn_eq. Using temp locals to avoid deep stack ops.
+                let a_slot = self.scope_mut().define("__seq_a");
+                let b_slot = self.scope_mut().define("__seq_b");
+                self.emit_u16(Op::local_set, b_slot); self.emit(Op::drop);
+                self.emit_u16(Op::local_set, a_slot); self.emit(Op::drop);
+                // Compare types
+                self.emit_u16(Op::local_get, a_slot);
+                self.emit(Op::ref_typeof);
+                self.emit_u16(Op::local_get, b_slot);
+                self.emit(Op::ref_typeof);
+                self.emit(Op::dyn_eq);
+                let types_match = self.emit_jump(Op::br_if_true);
+                // Types differ → false
+                self.emit_const(Value::Bool(false));
+                let done = self.emit_jump(Op::br);
+                // Types match → dyn_eq
+                self.patch_jump(types_match);
+                self.emit_u16(Op::local_get, a_slot);
+                self.emit_u16(Op::local_get, b_slot);
+                self.emit(Op::dyn_eq);
+                self.patch_jump(done);
+            }
+            BinOp::StrictNotEq => {
+                // JS !==: same as !(===)
+                let a_slot = self.scope_mut().define("__sne_a");
+                let b_slot = self.scope_mut().define("__sne_b");
+                self.emit_u16(Op::local_set, b_slot); self.emit(Op::drop);
+                self.emit_u16(Op::local_set, a_slot); self.emit(Op::drop);
+                self.emit_u16(Op::local_get, a_slot);
+                self.emit(Op::ref_typeof);
+                self.emit_u16(Op::local_get, b_slot);
+                self.emit(Op::ref_typeof);
+                self.emit(Op::dyn_eq);
+                let types_match = self.emit_jump(Op::br_if_true);
+                // Types differ → true
+                self.emit_const(Value::Bool(true));
+                let done = self.emit_jump(Op::br);
+                // Types match → dyn_ne
+                self.patch_jump(types_match);
+                self.emit_u16(Op::local_get, a_slot);
+                self.emit_u16(Op::local_get, b_slot);
+                self.emit(Op::dyn_ne);
+                self.patch_jump(done);
+            }
             BinOp::Lt => self.emit(Op::dyn_lt),
             BinOp::Gt => self.emit(Op::dyn_gt),
             BinOp::LtEq => self.emit(Op::dyn_le),
@@ -3711,8 +3912,9 @@ impl Compiler {
                 self.emit(Op::dyn_not);
             }
             BinOp::InstanceOf => {
-                // a instanceof B → check __type chain
-                self.emit(Op::dyn_eq); // simplified
+                // a instanceof B → check __type chain via host fn
+                let idx = self.import("vybe:object", "instanceOf");
+                self.emit_host_call(idx, 2);
             }
             BinOp::NullCoalesce => unreachable!(), // handled in compile_expr
             BinOp::MatMul => {
@@ -3928,7 +4130,12 @@ impl Compiler {
             "str_ends_with" => self.emit(Op::str_ends_with),
             "str_index_of" => self.emit(Op::str_index_of),
             "str_last_index_of" => self.emit(Op::str_last_index_of),
-            "str_includes" => self.emit(Op::str_index_of), // includes → index_of (check != -1 at runtime)
+            "str_includes" => {
+                // includes → indexOf then check >= 0
+                self.emit(Op::str_index_of);
+                self.emit(Op::i32_const_0);
+                self.emit(Op::dyn_ge);
+            }
             "str_substring" => self.emit(Op::str_substring),
             "str_split" => self.emit(Op::str_split),
             "str_replace" => self.emit(Op::str_replace),
@@ -4035,6 +4242,23 @@ impl Compiler {
             "str_split" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::str_split); } }
             "str_repeat" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::str_repeat); } }
             "array_join" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::array_join); } }
+            // setTimeout/setInterval — emit Op::set_timer directly. Old JS
+            // compiler did this inline; the profile now routes through
+            // `opcode:set_timer` so the dispatch lives here.
+            // Stack: [callback, ms] → [timer_id]
+            "set_timer" => {
+                if let Some(cb) = args.first() {
+                    self.compile_expr(cb)?;
+                } else {
+                    self.emit(Op::null);
+                }
+                if args.len() >= 2 {
+                    self.compile_expr(args[1])?;
+                } else {
+                    self.emit(Op::i32_const_0);
+                }
+                self.emit(Op::set_timer);
+            }
             _ => { self.emit(Op::null); }
         }
         Ok(())

@@ -125,8 +125,11 @@ setter_method = { "set" ~ property_name ~ "(" ~ param ~ ")" ~ function_body }
 class_method = { async_kw? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body }
 class_property = { property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
 
-property_name = { computed_property_name | string_literal | numeric_literal | ident_or_keyword }
+property_name = { computed_property_name | string_literal | numeric_literal | private_name | ident_or_keyword }
 computed_property_name = { "[" ~ assignment_expression ~ "]" }
+// PHP/JS class private fields: #name. Lexed as a single token so the
+// "#" cannot be eaten as a comment marker (JS has no `#` comment).
+private_name = @{ "#" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // ── If ──────────────────────────────────────────────────────────────────────
 
@@ -334,12 +337,21 @@ call_expression = {
 
 new_expression = { "new" ~ primary ~ call_chain* }
 
+// `chain_lead` lets a method/property access continue across newlines:
+//   arr
+//     .filter(x => ...)
+//     .map(x => ...)
+// JS practice: if a line begins with `.` or `?.`, the parser absorbs the
+// preceding newline into the chain instead of triggering ASI.
+chain_lead = _{ NEWLINE* }
+
 call_chain = {
-    "?." ~ "(" ~ argument_list? ~ ")"          // optional call: obj?.()
-    | "?." ~ ident_or_keyword                   // optional member: obj?.prop
-    | "(" ~ argument_list? ~ ")"                // call: f(args)
-    | "." ~ ident_or_keyword                    // member: obj.prop
-    | "[" ~ expression ~ "]"                    // computed: obj[expr]
+    chain_lead ~ "?." ~ "(" ~ argument_list? ~ ")"          // optional call: obj?.()
+    | chain_lead ~ "?." ~ ident_or_keyword                   // optional member: obj?.prop
+    | "(" ~ argument_list? ~ ")"                              // call: f(args)
+    | chain_lead ~ "." ~ private_name                         // private member: this.#x
+    | chain_lead ~ "." ~ ident_or_keyword                     // member: obj.prop
+    | "[" ~ expression ~ "]"                                  // computed: obj[expr]
 }
 
 argument_list = { argument ~ ("," ~ argument)* ~ ","? }

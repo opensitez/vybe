@@ -421,7 +421,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
         key,
         iter: iter.ok_or("foreach: missing iterable")?,
         body,
-        of: false,
+        of: true, // PHP foreach iterates values, like JS for...of
         else_body: None,
         is_async: false,
     })

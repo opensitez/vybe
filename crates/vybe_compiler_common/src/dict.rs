@@ -186,6 +186,20 @@ pub fn emit_method_clear(chunk: &mut Chunk, dict_slot: u16, line: u32) {
     chunk.emit_op(Op::drop, line);
 }
 
+/// Stack-based variant of `emit_method_clear`. Takes the dict from TOS,
+/// clears its `__keys`, leaves `null` on TOS so the call site can use the
+/// uniform "method returns void → leaves a value to drop" convention.
+/// Stack before: [dict]  Stack after: [null]
+pub fn emit_method_clear_stack(chunk: &mut Chunk, line: u32) {
+    // [dict] → set __keys = []
+    chunk.emit_op_u16(Op::array_new, 0, line);
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
+    // struct_set pops [obj, val], pushes [val]
+    chunk.emit_op_u16(Op::struct_set, keys_key, line);
+    chunk.emit_op(Op::drop, line);
+    chunk.emit_op(Op::null, line);
+}
+
 /// map.size / len(dict) / dict.Count — number of entries.
 /// Stack before: [dict]  Stack after: [i32]
 pub fn emit_method_size(chunk: &mut Chunk, line: u32) {

@@ -23,6 +23,8 @@ hoist_var = true
 dynamic_add = true
 # JS-specific: support `require()` for CommonJS module loading
 commonjs_require = true
+# JS switch statements fall through unless there's an explicit break
+switch_fallthrough = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls
@@ -124,11 +126,15 @@ decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    mi
 
 # ── Timers ───────────────────────────────────────────────────────────────────
 
-setTimeout           = { emit = "host:vybe:runtime:setTimeout",   min_args = 1, max_args = 2 }
-setInterval          = { emit = "host:vybe:runtime:setInterval",  min_args = 2, max_args = 2 }
-clearTimeout         = { emit = "host:vybe:runtime:clearTimeout", min_args = 1, max_args = 1 }
-clearInterval        = { emit = "host:vybe:runtime:clearInterval", min_args = 1, max_args = 1 }
-queueMicrotask       = { emit = "host:vybe:runtime:queueMicrotask", min_args = 1, max_args = 1 }
+# setTimeout/setInterval emit Op::set_timer directly (no host call needed —
+# the VM event loop owns the timer queue). The vybe:runtime host module
+# never had matching exports so the old `host:vybe:runtime:*` mapping
+# was a dead route that surfaced as "Unresolved import" at runtime.
+setTimeout           = { emit = "opcode:set_timer",              min_args = 1, max_args = 2 }
+setInterval          = { emit = "opcode:set_timer",              min_args = 1, max_args = 2 }
+clearTimeout         = { emit = "noop",                          min_args = 1, max_args = 1 }
+clearInterval        = { emit = "noop",                          min_args = 1, max_args = 1 }
+queueMicrotask       = { emit = "noop",                          min_args = 1, max_args = 1 }
 
 # ── Atomics ──────────────────────────────────────────────────────────────────
 
@@ -251,7 +257,15 @@ at            = { emit = "intrinsic:array_at",          min_args = 1, max_args =
 entries       = { emit = "host:vybe:array:enumerate",   min_args = 0, max_args = 0 }
 
 # Map/Set size property
-size          = { emit = "intrinsic:map_size",          min_args = 0, max_args = 0 }
+size              = { emit = "intrinsic:map_size",       min_args = 0, max_args = 0 }
+
+# JS plain-object instance method `obj.hasOwnProperty(k)`. NB: only the
+# `hasOwnProperty` name is wired here — bare `has`/`delete`/`clear` are
+# Map/Set instance methods and the VM's runtime type-aware dispatch
+# (via `Map.__type → vybe:collections::mapHas` etc.) already handles
+# them correctly. Adding generic profile entries here would intercept
+# Map/Set calls at compile time and route them through the wrong storage.
+hasOwnProperty    = { emit = "common:dict.has",          min_args = 1, max_args = 1 }
 
 # Object methods via host
 keys          = { emit = "host:vybe:object:keys",      min_args = 0, max_args = 0 }

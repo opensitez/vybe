@@ -514,15 +514,22 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut default = None;
     for p in inner {
         if p.as_rule() == Rule::switch_case {
+            // Grammar: switch_case = { ("case" expression | "default") ~ ":" ~ statements }
+            // The literal `case`/`default` strings are silent, so for `case
+            // X: ...` the first child is `expression` and for `default: ...`
+            // the first child is the first statement (or none if empty).
+            // Detect default by looking at the source slice instead of
+            // trying to read a non-existent keyword token.
+            let is_default = p.as_str().trim_start().starts_with("default");
             let mut case_inner = p.into_inner();
-            let first = case_inner.next().ok_or("Empty switch case")?;
-            if first.as_str() == "default" {
+            if is_default {
                 let stmts: Vec<Statement> = case_inner
                     .filter(|p| p.as_rule() != Rule::NEWLINE)
                     .map(walk_statement)
                     .collect::<Result<Vec<_>, _>>()?;
                 default = Some(stmts);
             } else {
+                let first = case_inner.next().ok_or("Empty switch case")?;
                 let val = walk_expression(first)?;
                 let stmts: Vec<Statement> = case_inner
                     .filter(|p| p.as_rule() != Rule::NEWLINE)

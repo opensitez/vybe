@@ -83,6 +83,10 @@ pub struct LanguageProfile {
     /// VB: New List(Of T) From { items } initializer syntax.
     pub new_from_initializer: bool,
 
+    /// C/JS: switch statements fall through to the next case unless there's
+    /// an explicit `break`. VB/Pascal/Python: each case is independent.
+    pub switch_fallthrough: bool,
+
     /// VB: LINQ query syntax compiled to method chains.
     pub linq_queries: bool,
 
@@ -322,6 +326,8 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let linq_queries = compiler.get("linq_queries")
         .and_then(|v| v.as_bool()).unwrap_or(false);
+    let switch_fallthrough = compiler.get("switch_fallthrough")
+        .and_then(|v| v.as_bool()).unwrap_or(false);
 
     fn parse_builtin_table(root: &Value, section: &str) -> HashMap<String, BuiltinDef> {
         let mut map = HashMap::new();
@@ -464,7 +470,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         array_upper_bound_inclusive, parens_for_index, entry_point,
         hoist_var, dynamic_add, commonjs_require,
         partial_classes, byref_boxing, with_block,
-        new_with_initializer, new_from_initializer, linq_queries,
+        new_with_initializer, new_from_initializer, linq_queries, switch_fallthrough,
         builtins, intrinsics, namespaces, known_types,
         value_methods, module_aliases, namespace_constants, array_methods,
     })

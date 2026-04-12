@@ -36,6 +36,8 @@ pub fn emit_common(name: &str, chunk: &mut Chunk, line: u32) -> bool {
         }
         "dict.get_dynamic" => dict::emit_get_dynamic(chunk, line),
         "dict.has" => dict::emit_method_has(chunk, line),
+        "dict.delete" => dict::emit_method_delete(chunk, line),
+        "dict.clear" => dict::emit_method_clear_stack(chunk, line),
         "dict.size" => dict::emit_method_size(chunk, line),
         "dict.keys" => dict::emit_keys(chunk, line),
         "dict.values" => dict::emit_values(chunk, line),

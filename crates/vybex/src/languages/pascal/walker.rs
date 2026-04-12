@@ -1662,7 +1662,7 @@ fn walk_for_in_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         key: None,
         iter: iter_expr,
         body: flatten_stmt(body_stmt),
-        of: false,
+        of: true, // Pascal for-in iterates values, like JS for...of
         else_body: None,
         is_async: false,
     })

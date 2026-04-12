@@ -167,6 +167,9 @@ pub fn is_exception_type(name: &str) -> bool {
 /// can therefore catch each other across language boundaries.
 pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32) {
     let canon = canonical_exception_name(exc_name);
+    // Preserve the original name for the `name` property (JS expects
+    // `Error`, `RangeError`, etc. — not the canonical cross-language form).
+    let original = exc_name.trim();
 
     // [obj, obj, msg] → [obj, msg_val] via struct_set "message"
     let m_key = chunk.add_constant(Value::String(Arc::from("message")));
@@ -174,12 +177,12 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     // [obj, msg_val] → [obj]
     chunk.emit_op(Op::drop, line);
 
-    // Stamp __type, __exception_type, name with the canonical name. Each
-    // step: dup obj, push name const, struct_set (pops obj+val, pushes
-    // val), drop the val. Net: [obj] → [obj].
-    for key in ["__type", "__exception_type", "name"] {
+    // __type and __exception_type use the canonical name (for cross-language
+    // catch dispatch). `name` uses the original (language-specific) name
+    // so `err.name` returns what the language expects.
+    for (key, val) in [("__type", canon), ("__exception_type", canon), ("name", original)] {
         chunk.emit_op(Op::dup, line);
-        let v = chunk.add_constant(Value::String(Arc::from(canon)));
+        let v = chunk.add_constant(Value::String(Arc::from(val)));
         chunk.emit_op_u16(Op::r#const, v, line);
         let k = chunk.add_constant(Value::String(Arc::from(key)));
         chunk.emit_op_u16(Op::struct_set, k, line);
