@@ -160,6 +160,37 @@ pub fn register(vm: &mut VM) {
         Value::Bool(false)
     }));
 
+    // Map.prototype.clear() — drop all entries from __data and reset size.
+    // The type registry in builtin_types.rs already advertises `mapClear`
+    // as the host fn for `Map.clear`, so wiring it here completes the path.
+    vm.register_host_fn("vybe:collections", "mapClear", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            if let Some(Value::Object(data)) = o.properties.get("__data") {
+                data.lock().unwrap().properties.clear();
+            }
+            drop(o);
+            obj.lock().unwrap().properties.insert("size".into(), Value::F64(0.0));
+        }
+        Value::Null
+    }));
+
+    // Set.prototype.clear() — drop all elements from __items and reset size.
+    vm.register_host_fn("vybe:collections", "setClear", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            if let Some(Value::Object(items)) = o.properties.get("__items") {
+                let mut items_ref = items.lock().unwrap();
+                if let ObjectKind::Array(ref mut elems) = items_ref.kind {
+                    elems.clear();
+                }
+            }
+            drop(o);
+            obj.lock().unwrap().properties.insert("size".into(), Value::F64(0.0));
+        }
+        Value::Null
+    }));
+
     // Set.prototype.values()
     vm.register_host_fn("vybe:collections", "setValues", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {

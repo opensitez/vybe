@@ -779,11 +779,20 @@ impl VM {
 
         // Evaluate global initializers (Extended Const Expressions).
         // These are computed at load time before any code runs.
+        //
+        // Polyfill rule: if the host has already populated a global before
+        // run() is called (e.g. Vybe overriding `__vybe_pow` with native f64
+        // pow), do NOT clobber it with the bundled stdlib fallback. The
+        // stdlib chunks installed via global_inits are the portable
+        // implementation that runs on standard WASM VMs; on Vybe they yield
+        // to the optimized native version.
         {
             let inits = self.chunks[script_idx].global_inits.clone();
             for gi in &inits {
-                let val = self.eval_const_expr(&gi.init);
-                self.globals.insert(gi.name.clone(), val);
+                if matches!(self.globals.get(&gi.name), None | Some(Value::Null)) {
+                    let val = self.eval_const_expr(&gi.init);
+                    self.globals.insert(gi.name.clone(), val);
+                }
             }
         }
 

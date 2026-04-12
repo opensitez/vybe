@@ -163,7 +163,15 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:object", "instanceOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         // Extract target type name from the constructor object (args[1])
         let target_name = if let Some(Value::Object(ctor)) = args.get(1) {
-            ctor.lock().unwrap().properties.get("name").map(|v| format!("{}", v)).unwrap_or_default()
+            let ob = ctor.lock().unwrap();
+            // Try properties["name"] first, then Function.name
+            ob.properties.get("name").map(|v| format!("{}", v))
+                .or_else(|| {
+                    if let ObjectKind::Function(ref f) = ob.kind {
+                        f.name.clone()
+                    } else { None }
+                })
+                .unwrap_or_default()
         } else if let Some(Value::String(s)) = args.get(1) {
             // Allow passing type name directly as string (for ref_test fallback)
             s.to_string()

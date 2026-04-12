@@ -129,13 +129,14 @@ pub fn emit_map(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16
     // Drop element from for_in_start — we'll re-fetch inline
     chunk.emit_op(Op::drop, line);
 
-    // result.push(fn(arr[i]))
+    // result.push(fn(arr[i], i))
     chunk.emit_op_u16(Op::local_get, result_slot, line);
     chunk.emit_op_u16(Op::local_get, fn_slot, line);
     chunk.emit_op_u16(Op::local_get, arr_slot, line);
     chunk.emit_op_u16(Op::local_get, idx_slot, line);
     chunk.emit_op(Op::array_get, line);
-    chunk.emit_op_u8(Op::call_ref, 1, line);
+    chunk.emit_op_u16(Op::local_get, idx_slot, line);  // pass index as 2nd arg
+    chunk.emit_op_u8(Op::call_ref, 2, line);
     chunk.emit_op(Op::array_push, line);
     chunk.emit_op(Op::drop, line);
 
