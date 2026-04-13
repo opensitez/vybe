@@ -50,3 +50,7 @@ path = "tests/ruby/main.rs"
 [[test]]
 name = "dart"
 path = "tests/dart/main.rs"
+
+[[test]]
+name = "cobol"
+path = "tests/cobol/main.rs"
