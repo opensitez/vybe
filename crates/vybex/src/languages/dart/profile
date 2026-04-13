@@ -1,0 +1,188 @@
+# Dart Compiler Profile
+# ─────────────────────
+# Covers dart:core, dart:math, dart:io, dart:convert, dart:async.
+# Collection HOF methods (map, where, forEach, reduce) go through
+# [array_methods] for proper compiler_common loop emission.
+
+[info]
+name = "dart"
+extensions = ["dart"]
+
+[compiler]
+function_return = "explicit"
+self_keyword = "this"
+base_keyword = "super"
+constructor_name = "__init__"    # Dart unnamed constructors handled by walker
+separated_methods = false
+implicit_self_fields = false
+explicit_self_param = false
+enum_as_ordinals = false
+case_sensitive = true
+string_indexing = "zero_based"
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — bare global function calls
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtins]
+
+# ── I/O ──────────────────────────────────────────────────────────────────────
+
+print               = { emit = "print",                          min_args = 1, max_args = 255 }
+
+# ── String functions ─────────────────────────────────────────────────────────
+
+"int.parse"         = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
+"double.parse"      = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
+"num.parse"         = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
+
+# ── Math functions (dart:math) ───────────────────────────────────────────────
+
+"math.sqrt"         = { emit = "opcode:f64_sqrt",                min_args = 1, max_args = 1 }
+"math.min"          = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
+"math.max"          = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
+"math.pow"          = { emit = "host:vybe:math:pow",             min_args = 2, max_args = 2 }
+"math.sin"          = { emit = "host:vybe:math:sin",             min_args = 1, max_args = 1 }
+"math.cos"          = { emit = "host:vybe:math:cos",             min_args = 1, max_args = 1 }
+"math.tan"          = { emit = "host:vybe:math:tan",             min_args = 1, max_args = 1 }
+"math.asin"         = { emit = "host:vybe:math:asin",            min_args = 1, max_args = 1 }
+"math.acos"         = { emit = "host:vybe:math:acos",            min_args = 1, max_args = 1 }
+"math.atan"         = { emit = "host:vybe:math:atan",            min_args = 1, max_args = 1 }
+"math.atan2"        = { emit = "host:vybe:math:atan2",           min_args = 2, max_args = 2 }
+"math.exp"          = { emit = "host:vybe:math:exp",             min_args = 1, max_args = 1 }
+"math.log"          = { emit = "host:vybe:math:log",             min_args = 1, max_args = 1 }
+
+# ── Type conversion ─────────────────────────────────────────────────────────
+
+"int.tryParse"      = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
+"double.tryParse"   = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
+
+# ── JSON (dart:convert) ─────────────────────────────────────────────────────
+
+jsonEncode          = { emit = "host:vybe:json:stringify",        min_args = 1, max_args = 1 }
+jsonDecode          = { emit = "host:vybe:json:parse",            min_args = 1, max_args = 1 }
+
+# ── Date / Time ─────────────────────────────────────────────────────────────
+
+"DateTime.now"      = { emit = "host:vybe:types:dateTimeNow",    min_args = 0, max_args = 0 }
+
+# ── File I/O (dart:io) ──────────────────────────────────────────────────────
+
+"File.readAsString"     = { emit = "host:wasi:filesystem:readFile",   min_args = 1, max_args = 1 }
+"File.writeAsString"    = { emit = "host:wasi:filesystem:writeFile",  min_args = 2, max_args = 2 }
+
+# ── Environment ─────────────────────────────────────────────────────────────
+
+"Platform.environment"  = { emit = "host:wasi:cli:getEnv",       min_args = 1, max_args = 1 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# VALUE METHODS — instance method calls on values
+# ────────────────────────────────────────────────────────────────────────────
+
+[value_methods]
+
+# String instance methods
+toUpperCase   = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
+toLowerCase   = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
+trim          = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
+trimLeft      = { emit = "opcode:str_trim_start",      min_args = 0, max_args = 0 }
+trimRight     = { emit = "opcode:str_trim_end",        min_args = 0, max_args = 0 }
+startsWith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 1 }
+endsWith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 1 }
+contains      = { emit = "opcode:str_contains",        min_args = 1, max_args = 1 }
+indexOf       = { emit = "common:strings.index_of",    min_args = 1, max_args = 2 }
+lastIndexOf   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 2 }
+replaceAll    = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
+split         = { emit = "common:strings.split",       min_args = 1, max_args = 1 }
+substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
+padLeft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
+padRight      = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
+toString      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
+codeUnitAt    = { emit = "opcode:str_char_code_at",    min_args = 1, max_args = 1 }
+
+# Array/List instance methods
+add           = { emit = "common:collections.push",    min_args = 1, max_args = 1 }
+removeLast    = { emit = "common:collections.pop",     min_args = 0, max_args = 0 }
+insert        = { emit = "host:vybe:array:splice",     min_args = 2, max_args = 2 }
+sublist       = { emit = "host:vybe:array:slice",      min_args = 1, max_args = 2 }
+join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
+reversed      = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
+toList        = { emit = "noop",                       min_args = 0, max_args = 0 }
+toSet         = { emit = "host:vybe:array:pyset",      min_args = 0, max_args = 0 }
+
+# Map methods
+putIfAbsent   = { emit = "host:vybe:runtime:callMethod", min_args = 2, max_args = 2 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# ARRAY METHODS — higher-order functions routed to compiler_common::loops
+# ────────────────────────────────────────────────────────────────────────────
+
+[array_methods]
+map       = "__array_map"
+where     = "__array_filter"
+forEach   = "__array_forEach"
+reduce    = "__array_reduce"
+any       = "__array_some"
+every     = "__array_every"
+sort      = "__array_sort"
+
+# ────────────────────────────────────────────────────────────────────────────
+# MODULE ALIASES — Dart library prefixes → host modules
+# ────────────────────────────────────────────────────────────────────────────
+
+[module_aliases]
+math            = "vybe:math"
+Math            = "vybe:math"
+json            = "vybe:json"
+JSON            = "vybe:json"
+http            = "wasi:http"
+File            = "wasi:filesystem"
+Directory       = "wasi:filesystem"
+Map             = "vybe:collections"
+Set             = "vybe:collections"
+DateTime        = "vybe:types"
+StringBuffer    = "vybe:types"
+Duration        = "vybe:types"
+Random          = "vybe:threading"
+Stopwatch       = "vybe:threading"
+RegExp          = "vybe:regex"
+Future          = "vybe:runtime"
+Stream          = "vybe:runtime"
+Process         = "vybe:types"
+Isolate         = "vybe:threading"
+utf8            = "vybe:convert"
+base64          = "vybe:convert"
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONSTANTS
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespace_constants]
+"math.pi"               = 3.141592653589793
+"math.e"                = 2.718281828459045
+"math.ln2"              = 0.6931471805599453
+"math.ln10"             = 2.302585092994046
+"math.sqrt2"            = 1.4142135623730951
+"double.infinity"       = "Infinity"
+"double.nan"            = "NaN"
+"double.maxFinite"      = 1.7976931348623157e308
+
+# ────────────────────────────────────────────────────────────────────────────
+# KNOWN TYPES — constructor resolution for `new X()` / `X()`
+# ────────────────────────────────────────────────────────────────────────────
+
+[known_types]
+DateTime        = ["vybe:types", "dateTimeNew"]
+StringBuffer    = ["vybe:types", "stringBuilderNew"]
+Random          = ["vybe:threading", "randomNew"]
+Stopwatch       = ["vybe:threading", "stopwatchNew"]
+RegExp          = ["vybe:regex", "test"]
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACES
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespaces]
+use_dotnet = false
+roots = []
+extra_imports = []

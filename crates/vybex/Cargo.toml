@@ -46,3 +46,7 @@ path = "tests/php/main.rs"
 [[test]]
 name = "ruby"
 path = "tests/ruby/main.rs"
+
+[[test]]
+name = "dart"
+path = "tests/dart/main.rs"

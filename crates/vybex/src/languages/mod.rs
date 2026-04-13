@@ -1,4 +1,5 @@
 pub mod csharp;
+pub mod dart;
 pub mod js;
 pub mod pascal;
 pub mod php;
@@ -27,6 +28,7 @@ pub fn all() -> Vec<Language> {
         Language { parse: python::parse, profile_source: python::profile_source },
         Language { parse: php::parse, profile_source: php::profile_source },
         Language { parse: ruby::parse, profile_source: ruby::profile_source },
+        Language { parse: dart::parse, profile_source: dart::profile_source },
     ]
 }
 
