@@ -1,0 +1,105 @@
+# COBOL Compiler Profile
+# ──────────────────────
+# Maps COBOL intrinsic functions to compiler_common / host builtins.
+
+[info]
+name = "cobol"
+extensions = ["cob", "cbl", "cobol"]
+
+[compiler]
+function_return = "explicit"
+self_keyword = "SELF"
+constructor_name = "NEW"
+case_sensitive = false
+string_indexing = "one_based"
+dynamic_add = true
+implicit_self_fields = false
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — COBOL intrinsic functions (FUNCTION xxx)
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtins]
+
+# ── String ───────────────────────────────────────────────────────────────────
+
+LENGTH              = { emit = "opcode:str_length",          min_args = 1, max_args = 1 }
+UPPER-CASE          = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 1 }
+LOWER-CASE          = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 1 }
+TRIM                = { emit = "opcode:str_trim",            min_args = 1, max_args = 1 }
+REVERSE             = { emit = "opcode:array_reverse",       min_args = 1, max_args = 1 }
+CONCATENATE         = { emit = "opcode:str_concat",          min_args = 2, max_args = 255 }
+SUBSTITUTE          = { emit = "opcode:str_replace",         min_args = 3, max_args = 3 }
+ORD                 = { emit = "host:vybe:string:charCodeAt", min_args = 1, max_args = 1 }
+CHAR                = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
+
+# ── Math ─────────────────────────────────────────────────────────────────────
+
+SQRT                = { emit = "opcode:f64_sqrt",            min_args = 1, max_args = 1 }
+ABS                 = { emit = "opcode:f64_abs",             min_args = 1, max_args = 1 }
+FLOOR               = { emit = "opcode:f64_floor",           min_args = 1, max_args = 1 }
+CEILING             = { emit = "opcode:f64_ceil",            min_args = 1, max_args = 1 }
+MOD                 = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
+REM                 = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
+POWER               = { emit = "host:vybe:math:pow",         min_args = 2, max_args = 2 }
+LOG                 = { emit = "host:vybe:math:log",         min_args = 1, max_args = 1 }
+LOG10               = { emit = "host:vybe:math:log10",       min_args = 1, max_args = 1 }
+EXP                 = { emit = "host:vybe:math:exp",         min_args = 1, max_args = 1 }
+SIN                 = { emit = "host:vybe:math:sin",         min_args = 1, max_args = 1 }
+COS                 = { emit = "host:vybe:math:cos",         min_args = 1, max_args = 1 }
+TAN                 = { emit = "host:vybe:math:tan",         min_args = 1, max_args = 1 }
+ASIN                = { emit = "host:vybe:math:asin",        min_args = 1, max_args = 1 }
+ACOS                = { emit = "host:vybe:math:acos",        min_args = 1, max_args = 1 }
+ATAN                = { emit = "host:vybe:math:atan",        min_args = 1, max_args = 1 }
+RANDOM              = { emit = "host:wasi:random:random",    min_args = 0, max_args = 0 }
+
+# ── Numeric conversion ──────────────────────────────────────────────────────
+
+NUMVAL              = { emit = "host:vybe:convert:cdbl",     min_args = 1, max_args = 1 }
+NUMVAL-C            = { emit = "host:vybe:convert:cdbl",     min_args = 1, max_args = 1 }
+INTEGER             = { emit = "host:vybe:convert:cint",     min_args = 1, max_args = 1 }
+TEST-NUMVAL         = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_args = 1 }
+
+# ── Aggregate ────────────────────────────────────────────────────────────────
+
+MAX                 = { emit = "host:vybe:math:max",         min_args = 2, max_args = 255 }
+MIN                 = { emit = "host:vybe:math:min",         min_args = 2, max_args = 255 }
+SUM                 = { emit = "host:vybe:math:sum",         min_args = 1, max_args = 255 }
+MEAN                = { emit = "host:vybe:math:mean",        min_args = 1, max_args = 255 }
+MEDIAN              = { emit = "host:vybe:math:median",      min_args = 1, max_args = 255 }
+VARIANCE            = { emit = "host:vybe:math:variance",    min_args = 1, max_args = 255 }
+
+# ── Date ─────────────────────────────────────────────────────────────────────
+
+CURRENT-DATE        = { emit = "host:wasi:clocks:toISOString", min_args = 0, max_args = 0 }
+DATE-OF-INTEGER     = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 1 }
+INTEGER-OF-DATE     = { emit = "host:wasi:clocks:now",       min_args = 1, max_args = 1 }
+DAY-OF-INTEGER      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 1 }
+WHEN-COMPILED       = { emit = "host:wasi:clocks:toISOString", min_args = 0, max_args = 0 }
+FORMATTED-DATE      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 2 }
+FORMATTED-TIME      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 2 }
+
+# ── Financial ────────────────────────────────────────────────────────────────
+
+ANNUITY             = { emit = "host:vybe:math:annuity",     min_args = 2, max_args = 2 }
+PRESENT-VALUE       = { emit = "host:vybe:math:presentValue", min_args = 2, max_args = 255 }
+
+# ── Type checks (walker emits as calls, profile routes them) ────────────────
+
+__is_numeric        = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_args = 1 }
+__is_alphabetic     = { emit = "noop",                        min_args = 1, max_args = 1 }
+__refmod            = { emit = "opcode:str_substring",       min_args = 3, max_args = 3 }
+
+# ── EXEC blocks (walker emits as calls) ─────────────────────────────────────
+
+__exec_sql          = { emit = "host:vybe:database:execRaw", min_args = 1, max_args = 1 }
+__exec_cics         = { emit = "noop",                        min_args = 1, max_args = 1 }
+__exec_dli          = { emit = "noop",                        min_args = 1, max_args = 1 }
+
+[value_methods]
+# COBOL does not have instance methods in the conventional sense.
+
+[namespaces]
+use_dotnet = false
+roots = []
+extra_imports = []

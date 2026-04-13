@@ -1,0 +1,13 @@
+// COBOL Grammar for pest parser
+// Covers everything vybe_parser_cobol supports (1944-line parser, 407-line AST).
+//
+// COBOL is case-insensitive — all keywords use ^"keyword".
+// Period (.) is a significant statement terminator, NOT whitespace.
+// Identifiers may contain hyphens: WS-VAR-NAME.
+// WHITESPACE includes spaces, tabs, and newlines (COBOL treats them equally).
+// Inline comments start with *> and run to end of line.
+// Expression precedence: NOT > AND > OR, then arithmetic +/- > */÷ > **.
+// Figurative constants: SPACES, ZEROS, LOW-VALUES, HIGH-VALUES, QUOTES, NULLS.
+// PIC strings are complex tokens: 9(5)V99, X(20), S9(5)COMP-3.
+// EXEC SQL/CICS/DLI blocks are opaque (raw text between EXEC and END-EXEC).
+
