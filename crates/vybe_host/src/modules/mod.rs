@@ -126,6 +126,46 @@ impl Capabilities {
 /// All capabilities granted.
 pub fn register_all(vm: &mut VM) {
     register_with_capabilities(vm, &Capabilities::all());
+
+    // __debug_dump(obj) — print all properties of an object for debugging.
+    // Useful in tests: `__debug_dump(myObj)` shows what's on the object.
+    vm.register_host_fn("vybe:debug", "dump", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        use vybe_bytecode::value::ObjectKind;
+        for (i, arg) in args.iter().enumerate() {
+            match arg {
+                Value::Object(obj) => {
+                    let o = obj.lock().unwrap();
+                    eprintln!("__debug_dump arg[{}]: Object (type_id={}) {{", i, o.type_id);
+                    match &o.kind {
+                        ObjectKind::Array(elems) => {
+                            eprintln!("  [Array] length={}", elems.len());
+                            for (j, elem) in elems.iter().enumerate().take(20) {
+                                eprintln!("    [{}] = {}", j, elem);
+                            }
+                        }
+                        ObjectKind::Function(f) => {
+                            eprintln!("  [Function] name={:?}, arity={}, chunk={}",
+                                f.name, f.arity, f.chunk_index);
+                        }
+                        ObjectKind::HostFunction(idx) => {
+                            eprintln!("  [HostFunction] idx={}", idx);
+                        }
+                        ObjectKind::Ordinary => {
+                            eprintln!("  [Ordinary]");
+                        }
+                    }
+                    for (k, v) in &o.properties {
+                        let v_str = format!("{}", v);
+                        let v_short = if v_str.len() > 60 { format!("{}...", &v_str[..60]) } else { v_str };
+                        eprintln!("  .{} = {}", k, v_short);
+                    }
+                    eprintln!("}}");
+                }
+                other => eprintln!("__debug_dump arg[{}]: {} ({})", i, other, other.type_tag()),
+            }
+        }
+        Value::Null
+    }));
     // Register no-op GUI stubs so compiled code that emits controlSetProperty/showForm/closeForm
     // doesn't fail with "Unresolved import" in non-GUI contexts.
     if vm.host_registry.get(&("vybe:gui".to_string(), "controlSetProperty".to_string())).is_none() {

@@ -156,6 +156,9 @@ pub struct VM {
     thread_handles: HashMap<i32, std::thread::JoinHandle<Vec<u8>>>,
     /// Next thread ID to assign.
     next_thread_id: i32,
+    /// Execution trace: when true, print every opcode + stack top.
+    /// Enable via `vm.set_trace(true)` or `VYBE_TRACE=1` env var.
+    trace: bool,
 }
 
 /// A registered finalizer for an object.
@@ -202,6 +205,48 @@ impl VM {
             finalizers: Vec::new(),
             thread_handles: HashMap::new(),
             next_thread_id: 1,
+            trace: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
+        }
+    }
+
+    /// Enable or disable execution tracing. When enabled, every opcode
+    /// execution prints the chunk name, offset, opcode, and stack top.
+    /// Can also be enabled via `VYBE_TRACE=1` environment variable.
+    pub fn set_trace(&mut self, enabled: bool) {
+        self.trace = enabled;
+    }
+
+    /// Capture the current call stack for error reporting.
+    pub fn capture_call_stack(&self) -> Vec<crate::error::StackFrame> {
+        self.frames.iter().rev().map(|f| {
+            let chunk = &self.chunks[f.chunk_index];
+            let line = chunk.get_line(f.ip.saturating_sub(1));
+            crate::error::StackFrame {
+                chunk_name: chunk.name.clone(),
+                offset: f.ip,
+                line,
+            }
+        }).collect()
+    }
+
+    /// Dump disassembled bytecode for all chunks. Useful for debugging
+    /// test failures — call after `compile()` to see what was emitted.
+    /// Returns a formatted string, one chunk per section.
+    pub fn dump_bytecode(&self) -> String {
+        let mut out = String::new();
+        for (i, chunk) in self.chunks.iter().enumerate() {
+            out.push_str(&format!("\n── Chunk {} ──\n", i));
+            out.push_str(&crate::debug::disassemble(chunk));
+        }
+        out
+    }
+
+    /// Dump bytecode for a specific chunk by index.
+    pub fn dump_chunk(&self, index: usize) -> String {
+        if index < self.chunks.len() {
+            crate::debug::disassemble(&self.chunks[index])
+        } else {
+            format!("Chunk {} not found (have {})", index, self.chunks.len())
         }
     }
 
@@ -1230,6 +1275,22 @@ impl VM {
                 }
             };
 
+            // ── Execution trace ──────────────────────────────────────────
+            if self.trace {
+                let f = self.frame();
+                let chunk_name = &self.chunks[f.chunk_index].name;
+                let ip = f.ip;
+                let stack_top = if self.stack.is_empty() {
+                    "[]".to_string()
+                } else {
+                    let top = &self.stack[self.stack.len() - 1];
+                    let depth = self.stack.len();
+                    format!("[{}] (depth={})", top, depth)
+                };
+                eprintln!("  TRACE {:>12} @{:04} {:?}  stack: {}",
+                    chunk_name, ip.saturating_sub(1), op, stack_top);
+            }
+
             match op {
                 Op::halt => {
                     if self.frames.len() <= 1 {
@@ -2155,7 +2216,8 @@ impl VM {
                         let f = self.frame_mut();
                         f.ip = handler.catch_ip;
                     } else {
-                        return Err(VMError::new(format!("{}", val)));
+                        let stack = self.capture_call_stack();
+                        return Err(VMError::new(format!("{}", val)).with_stack(stack));
                     }
                 }
                 Op::try_table => {
@@ -3956,7 +4018,10 @@ impl VM {
                     }
                 }
             }
-            _ => return Err(VMError::new(format!("{} is not callable (type: {})", callee.type_tag(), callee))),
+            _ => {
+                let stack = self.capture_call_stack();
+                return Err(VMError::new(format!("{} is not callable (type: {})", callee.type_tag(), callee)).with_stack(stack));
+            }
         }
         Ok(())
     }

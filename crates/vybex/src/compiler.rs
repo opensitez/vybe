@@ -2322,6 +2322,7 @@ impl Compiler {
                 match name.as_str() {
                     "NaN" => { self.emit_const(Value::F64(f64::NAN)); return Ok(()); }
                     "Infinity" => { self.emit_const(Value::F64(f64::INFINITY)); return Ok(()); }
+                    "undefined" if self.case_sensitive => { self.emit(Op::undefined); return Ok(()); }
                     _ => {}
                 }
                 // Local variable / parameter takes priority over implicit self field
@@ -3269,6 +3270,17 @@ impl Compiler {
                     self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
                     return Ok(());
                 }
+            }
+        }
+
+        // ── Debug intrinsic: __debug_dump(obj) ──────────────────────
+        // Available in all languages. Prints object properties to stderr.
+        if let ExprKind::Ident(name) = &callee.kind {
+            if name == "__debug_dump" {
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                let idx = self.import("vybe:debug", "dump");
+                self.emit_host_call(idx, arg_exprs.len() as u8);
+                return Ok(());
             }
         }
 

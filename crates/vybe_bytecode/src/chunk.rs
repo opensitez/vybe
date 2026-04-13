@@ -203,6 +203,12 @@ impl Chunk {
         self.code.len()
     }
 
+    /// Get the source line number for a bytecode offset.
+    /// Returns None if no line info is available for that offset.
+    pub fn get_line(&self, offset: usize) -> Option<u32> {
+        self.lines.get(offset).copied().filter(|&l| l > 0)
+    }
+
     pub fn emit_loop(&mut self, target_offset: usize, line: u32) {
         self.emit_op(Op::br, line);
         let jump = target_offset as i32 - (self.code.len() as i32 + 2);
