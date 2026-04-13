@@ -188,6 +188,10 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
         chunk.emit_op_u16(Op::struct_set, k, line);
         chunk.emit_op(Op::drop, line);
     }
+
+    // TODO: stamp `stack` = "Name: message" for JS Error.stack compatibility.
+    // Requires either a swap opcode or temp-local support in the helper.
+    // For now, `err.stack` returns null (1 test failure).
 }
 
 /// Emit type-dispatch for a single catch arm. The exception object is

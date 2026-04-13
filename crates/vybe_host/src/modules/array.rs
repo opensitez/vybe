@@ -533,6 +533,24 @@ pub fn register(vm: &mut VM) {
         }
         Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
     }));
+
+    // fill(arr, val, start?, end?) → arr (mutated in-place)
+    // JS semantics: fill indices [start, end) with val. Returns arr.
+    vm.register_host_fn("vybe:array", "fill", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let val = args.get(1).cloned().unwrap_or(Value::Null);
+            let mut o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref mut elems) = o.kind {
+                let len = elems.len() as i64;
+                let start = args.get(2).map(|v| v.as_f64() as i64).unwrap_or(0);
+                let end = args.get(3).map(|v| v.as_f64() as i64).unwrap_or(len);
+                let s = if start < 0 { (len + start).max(0) as usize } else { start.min(len) as usize };
+                let e = if end < 0 { (len + end).max(0) as usize } else { end.min(len) as usize };
+                for i in s..e { elems[i] = val.clone(); }
+            }
+        }
+        args.first().cloned().unwrap_or(Value::Null)
+    }));
 }
 
 fn norm(args: &[Value], idx: usize, default: i64, len: i64) -> usize {

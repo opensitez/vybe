@@ -443,7 +443,9 @@ impl Compiler {
                 self.compile_expr(cond)?;
                 self.emit(Op::dyn_to_bool);
                 let else_j = self.emit_jump(Op::br_if_false);
+                self.scope_mut().begin_scope();
                 for s in then_body { self.compile_stmt(s)?; }
+                self.scope_mut().end_scope();
                 let mut end_jumps = vec![];
                 if !elifs.is_empty() || else_body.is_some() {
                     end_jumps.push(self.emit_jump(Op::br));
@@ -453,12 +455,16 @@ impl Compiler {
                     self.compile_expr(elif_cond)?;
                     self.emit(Op::dyn_to_bool);
                     let skip = self.emit_jump(Op::br_if_false);
+                    self.scope_mut().begin_scope();
                     for s in elif_body { self.compile_stmt(s)?; }
+                    self.scope_mut().end_scope();
                     end_jumps.push(self.emit_jump(Op::br));
                     self.patch_jump(skip);
                 }
                 if let Some(else_stmts) = else_body {
+                    self.scope_mut().begin_scope();
                     for s in else_stmts { self.compile_stmt(s)?; }
+                    self.scope_mut().end_scope();
                 }
                 for j in end_jumps { self.patch_jump(j); }
             }
@@ -1337,8 +1343,10 @@ impl Compiler {
                         _ => self.emit(Op::null),
                     }
                 }
-                // Top-level / hoisted vars → globals
-                let is_toplevel = self.scopes.len() == 1;
+                // Top-level / hoisted vars → globals.
+                // `let`/`const` inside a block scope (depth > 0) are locals
+                // even at the top level — they respect block scoping.
+                let is_toplevel = self.scopes.len() == 1 && self.scope().depth == 0;
                 let is_hoisted = *kind == VarDeclKind::Var && self.profile.hoist_var;
                 if is_toplevel || (is_hoisted && self.scopes.len() <= 2) {
                     let cn = self.canon(name);
@@ -2940,8 +2948,26 @@ impl Compiler {
 
             // ── Await ───────────────────────────────────────────────────
             ExprKind::Await(inner) => {
+                // In our synchronous VM, promises are already resolved.
+                // `await p` unwraps the promise's `__value` property.
+                // If the inner value is not a promise, pass through.
                 self.compile_expr(inner)?;
-                // Await is a no-op in sync VM (JSPI handles transparent async)
+                // Save to local, try to read __value
+                let await_slot = self.scope_mut().define("__await");
+                self.emit_u16(Op::local_set, await_slot); self.emit(Op::drop);
+                self.emit_u16(Op::local_get, await_slot);
+                let vk = self.str_const("__value");
+                self.emit_u16(Op::struct_get, vk);
+                // If __value is null → not a promise, use original
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_null);
+                let use_original = self.emit_jump(Op::br_if_true);
+                // __value exists → use it (drop the null-check dup)
+                let done = self.emit_jump(Op::br);
+                self.patch_jump(use_original);
+                self.emit(Op::drop); // drop null __value
+                self.emit_u16(Op::local_get, await_slot); // push original
+                self.patch_jump(done);
             }
 
             // ── Yield ───────────────────────────────────────────────────
@@ -3553,8 +3579,14 @@ impl Compiler {
             );
             let user_method_shadow = receiver_is_direct
                 && self.defined_class_methods.contains(&canon_field);
-            if user_method_shadow {
-                // Fall through — let the generic call path handle it
+            // Also skip value_methods if the field is an array HOF method —
+            // the array_methods dispatch handles it with proper HOF semantics.
+            // Without this, `[1,2,3].includes(2)` routes through the string
+            // `includes` value method instead of the array contains HOF.
+            let field_lower_check = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
+            let is_array_method = self.profile.lookup_array_method(&field_lower_check).is_some();
+            if user_method_shadow || is_array_method {
+                // Fall through — let the HOF dispatch or generic call path handle it
             } else if let Some(def) = self.profile.lookup_value_method(field, arg_exprs.len() as u8).cloned() {
                 // For Stdlib calls, push func ref BEFORE args (call_ref expects [func, args...])
                 if let BuiltinEmit::Stdlib(stdlib_name) = &def.emit {
@@ -3657,15 +3689,44 @@ impl Compiler {
                         common::loops::emit_filter(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, elem_slot, line);
                     }
                     "reduce" => {
-                        // reduce(fn, initial?) — initial is second arg
+                        // reduce(fn, initial?) — initial is second arg.
+                        // When initial IS provided, start from i=0 with
+                        // acc=initial. emit_reduce always starts from
+                        // i=1 with acc=arr[0], so we only use it for
+                        // the no-initial case.
                         if let Some(init_expr) = arg_exprs.get(1) {
+                            // acc = initial, i = 0
                             self.compile_expr(init_expr)?;
                             self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
-                        } else {
+                            // Inline reduce loop starting from i=0
                             self.emit(Op::i32_const_0);
+                            self.emit_u16(Op::local_set, idx_slot); self.emit(Op::drop);
+                            let loop_start = self.chunks[self.current].current_offset();
+                            self.emit_u16(Op::local_get, idx_slot);
+                            self.emit_u16(Op::local_get, arr_slot);
+                            self.emit(Op::array_length);
+                            self.emit(Op::dyn_lt);
+                            let exit_jump = self.emit_jump(Op::br_if_false);
+                            // acc = fn(acc, arr[i])
+                            self.emit_u16(Op::local_get, fn_slot);
+                            self.emit_u16(Op::local_get, result_slot);
+                            self.emit_u16(Op::local_get, arr_slot);
+                            self.emit_u16(Op::local_get, idx_slot);
+                            self.emit(Op::array_get);
+                            self.emit_u8(Op::call_ref, 2);
                             self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                            // i++
+                            self.emit_u16(Op::local_get, idx_slot);
+                            self.emit_const(Value::I32(1));
+                            self.emit(Op::dyn_add);
+                            self.emit_u16(Op::local_set, idx_slot); self.emit(Op::drop);
+                            self.emit_loop(loop_start);
+                            self.patch_jump(exit_jump);
+                            self.emit_u16(Op::local_get, result_slot);
+                        } else {
+                            // No initial: emit_reduce starts from arr[0], i=1
+                            common::loops::emit_reduce(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, line);
                         }
-                        common::loops::emit_reduce(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, line);
                     }
                     "forEach" | "foreach" => {
                         common::loops::emit_foreach(self.chunk(), fn_slot, arr_slot, idx_slot, line);
@@ -3720,9 +3781,9 @@ impl Compiler {
                         self.emit_u16(Op::local_get, result_slot);
                     }
                     "includes" => {
-                        // includes uses contains from compiler_common
-                        self.emit_u16(Op::local_get, arr_slot);
-                        self.emit_u16(Op::local_get, fn_slot); // fn_slot holds the search value
+                        // contains expects [needle, haystack]
+                        self.emit_u16(Op::local_get, fn_slot); // needle (search value)
+                        self.emit_u16(Op::local_get, arr_slot); // haystack (array)
                         common::collections::emit_contains(self.chunk(), line);
                     }
                     "sort" => {
@@ -4416,7 +4477,16 @@ impl Compiler {
             "str_trim_start" => { self.compile_expr(args[0])?; self.emit(Op::str_trim_start); }
             "str_trim_end" => { self.compile_expr(args[0])?; self.emit(Op::str_trim_end); }
             "str_reverse" => { self.compile_expr(args[0])?; self.emit(Op::str_reverse); }
-            "str_from_char_code" => { self.compile_expr(args[0])?; self.emit(Op::str_from_char_code); }
+            "str_from_char_code" => {
+                // String.fromCharCode(72, 105) → "Hi"
+                self.compile_expr(args[0])?;
+                self.emit(Op::str_from_char_code);
+                for a in &args[1..] {
+                    self.compile_expr(a)?;
+                    self.emit(Op::str_from_char_code);
+                    self.emit(Op::str_concat);
+                }
+            }
             "str_compare" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::str_compare); } }
             "str_split" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::str_split); } }
             "str_repeat" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::str_repeat); } }

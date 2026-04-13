@@ -1367,13 +1367,12 @@ impl VM {
                         let setter_key = format!("__set_{}", name);
                         let setter = o.lock().unwrap().properties.get(&setter_key).cloned();
                         if let Some(setter_fn) = setter {
-                            // Call the setter with this = obj, value = val
-                            self.push(setter_fn)?;
-                            self.push(obj.clone())?;
-                            self.push(val.clone())?;
-                            self.call_value(2)?;
-                            // Setter returns are discarded, push the assigned value
-                            self.pop(); // discard setter return
+                            // Call the setter synchronously. Save stack depth
+                            // and restore after — invoke_callback leaks the
+                            // return value and intermediate locals on the stack.
+                            let stack_save = self.stack.len();
+                            let _result = self.invoke_callback(&setter_fn, &[obj.clone(), val.clone()]);
+                            self.stack.truncate(stack_save);
                             self.push(val)?;
                         } else {
                             o.lock().unwrap().set(name.clone(), val.clone());

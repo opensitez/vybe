@@ -101,7 +101,7 @@ decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    mi
 
 # ── String static methods ────────────────────────────────────────────────────
 
-"String.fromCharCode" = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 1 }
+"String.fromCharCode" = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 255 }
 
 # ── Array static methods ─────────────────────────────────────────────────────
 
@@ -246,7 +246,7 @@ shift         = { emit = "opcode:array_shift",         min_args = 0, max_args = 
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
 concat        = { emit = "opcode:array_concat",        min_args = 1, max_args = 255 }
-fill          = { emit = "opcode:array_fill",          min_args = 1, max_args = 3 }
+fill          = { emit = "host:vybe:array:fill",         min_args = 1, max_args = 3 }
 
 # Array instance methods — host calls (more complex than single opcode)
 unshift       = { emit = "intrinsic:array_unshift",    min_args = 1, max_args = 255 }
