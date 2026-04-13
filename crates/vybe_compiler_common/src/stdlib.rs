@@ -37,6 +37,12 @@ pub fn build_stdlib() -> StdLib {
     chunks.push(build_sort_in_place());
     exports.push("__stdlib_sort_in_place");
 
+    chunks.push(build_sort_with_comparator());
+    exports.push("__stdlib_sort_with_comparator");
+
+    chunks.push(build_sort_by_key());
+    exports.push("__stdlib_sort_by_key");
+
     chunks.push(build_reversed());
     exports.push("__stdlib_reversed");
 
@@ -383,6 +389,120 @@ fn build_sort_in_place() -> Chunk {
     c.patch_jump(outer_exit);
 
     // return arr (same reference, now sorted in place)
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op(Op::r#return, 0);
+    c
+}
+
+// ── sort_with_comparator(array, fn) → same array, sorted using fn ──
+// Same insertion sort as sort_in_place, but uses `fn(a, b)` for
+// comparison instead of `dyn_gt`. The comparator returns:
+//   negative → a before b (no swap)
+//   zero     → equal (no swap)
+//   positive → b before a (swap)
+// This is the standard JS `Array.sort(compareFn)` contract.
+fn build_sort_with_comparator() -> Chunk {
+    let mut c = Chunk::new("__stdlib_sort_with_comparator");
+    c.arity = 2;
+    c.local_count = 7; // callee(0) + arr(1) + cmp(2) + i(3) + j(4) + len(5) + key(6)
+    let arr = 1u16;
+    let cmp = 2;
+    let i = 3;
+    let j = 4;
+    let len = 5;
+    let key = 6;
+
+    // len = arr.length
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op(Op::array_length, 0);
+    c.emit_op_u16(Op::local_set, len, 0);
+    c.emit_op(Op::drop, 0);
+
+    // i = 1
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op_u16(Op::local_set, i, 0);
+    c.emit_op(Op::drop, 0);
+
+    let outer_loop = c.current_offset();
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op_u16(Op::local_get, len, 0);
+    c.emit_op(Op::dyn_lt, 0);
+    let outer_exit = c.emit_jump(Op::br_if_false, 0);
+
+    // key = arr[i]
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op_u16(Op::local_set, key, 0);
+    c.emit_op(Op::drop, 0);
+
+    // j = i - 1
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_sub, 0);
+    c.emit_op_u16(Op::local_set, j, 0);
+    c.emit_op(Op::drop, 0);
+
+    // while j >= 0 && cmp(arr[j], key) > 0
+    let inner_loop = c.current_offset();
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_0, 0);
+    c.emit_op(Op::dyn_ge, 0);
+    let inner_exit = c.emit_jump(Op::br_if_false, 0);
+
+    // call cmp(arr[j], key) → result
+    c.emit_op_u16(Op::local_get, cmp, 0);
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op_u16(Op::local_get, key, 0);
+    c.emit_op_u8(Op::call_ref, 2, 0);
+    // result > 0 → swap needed
+    c.emit_op(Op::i32_const_0, 0);
+    c.emit_op(Op::dyn_gt, 0);
+    let inner_exit2 = c.emit_jump(Op::br_if_false, 0);
+
+    // arr[j+1] = arr[j]
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op(Op::array_set, 0);
+    c.emit_op(Op::drop, 0);
+
+    // j -= 1
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_sub, 0);
+    c.emit_op_u16(Op::local_set, j, 0);
+    c.emit_op(Op::drop, 0);
+
+    c.emit_loop(inner_loop, 0);
+    c.patch_jump(inner_exit);
+    c.patch_jump(inner_exit2);
+
+    // arr[j+1] = key
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_get, key, 0);
+    c.emit_op(Op::array_set, 0);
+    c.emit_op(Op::drop, 0);
+
+    // i += 1
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_set, i, 0);
+    c.emit_op(Op::drop, 0);
+
+    c.emit_loop(outer_loop, 0);
+    c.patch_jump(outer_exit);
+
     c.emit_op_u16(Op::local_get, arr, 0);
     c.emit_op(Op::r#return, 0);
     c
@@ -1193,6 +1313,125 @@ fn build_dyn_mul() -> Chunk {
     c.emit_op_u16(Op::local_get, 1, 0);
     c.emit_op_u16(Op::local_get, 2, 0);
     c.emit_op(Op::f64_mul, 0);
+    c.emit_op(Op::r#return, 0);
+    c
+}
+
+// ── sort_by_key(array, keyFn) → same array, sorted by keyFn(x) ──
+// .NET LINQ OrderBy(keySelector): insertion sort where comparisons use
+// keyFn(a) vs keyFn(b) instead of a vs b directly. The keyFn is a
+// 1-arg function that extracts the sort key from each element.
+// `OrderBy(x => x)` is identity (plain sort). `OrderBy(x => x.name)`
+// sorts by the name property.
+fn build_sort_by_key() -> Chunk {
+    let mut c = Chunk::new("__stdlib_sort_by_key");
+    c.arity = 2;
+    c.local_count = 8; // callee(0) + arr(1) + keyFn(2) + i(3) + j(4) + len(5) + key(6) + keyVal(7)
+    let arr = 1u16;
+    let key_fn = 2;
+    let i = 3;
+    let j = 4;
+    let len = 5;
+    let key = 6;
+    let key_val = 7;
+
+    // len = arr.length
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op(Op::array_length, 0);
+    c.emit_op_u16(Op::local_set, len, 0);
+    c.emit_op(Op::drop, 0);
+
+    // i = 1
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op_u16(Op::local_set, i, 0);
+    c.emit_op(Op::drop, 0);
+
+    let outer_loop = c.current_offset();
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op_u16(Op::local_get, len, 0);
+    c.emit_op(Op::dyn_lt, 0);
+    let outer_exit = c.emit_jump(Op::br_if_false, 0);
+
+    // key = arr[i]
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op_u16(Op::local_set, key, 0);
+    c.emit_op(Op::drop, 0);
+
+    // keyVal = keyFn(key)
+    c.emit_op_u16(Op::local_get, key_fn, 0);
+    c.emit_op_u16(Op::local_get, key, 0);
+    c.emit_op_u8(Op::call_ref, 1, 0);
+    c.emit_op_u16(Op::local_set, key_val, 0);
+    c.emit_op(Op::drop, 0);
+
+    // j = i - 1
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_sub, 0);
+    c.emit_op_u16(Op::local_set, j, 0);
+    c.emit_op(Op::drop, 0);
+
+    // while j >= 0 && keyFn(arr[j]) > keyVal
+    let inner_loop = c.current_offset();
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_0, 0);
+    c.emit_op(Op::dyn_ge, 0);
+    let inner_exit = c.emit_jump(Op::br_if_false, 0);
+
+    // compare: keyFn(arr[j]) > keyVal
+    c.emit_op_u16(Op::local_get, key_fn, 0);
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op_u8(Op::call_ref, 1, 0);
+    c.emit_op_u16(Op::local_get, key_val, 0);
+    c.emit_op(Op::dyn_gt, 0);
+    let inner_exit2 = c.emit_jump(Op::br_if_false, 0);
+
+    // arr[j+1] = arr[j]
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op(Op::array_set, 0);
+    c.emit_op(Op::drop, 0);
+
+    // j -= 1
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_sub, 0);
+    c.emit_op_u16(Op::local_set, j, 0);
+    c.emit_op(Op::drop, 0);
+
+    c.emit_loop(inner_loop, 0);
+    c.patch_jump(inner_exit);
+    c.patch_jump(inner_exit2);
+
+    // arr[j+1] = key
+    c.emit_op_u16(Op::local_get, arr, 0);
+    c.emit_op_u16(Op::local_get, j, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_get, key, 0);
+    c.emit_op(Op::array_set, 0);
+    c.emit_op(Op::drop, 0);
+
+    // i += 1
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_set, i, 0);
+    c.emit_op(Op::drop, 0);
+
+    c.emit_loop(outer_loop, 0);
+    c.patch_jump(outer_exit);
+
+    c.emit_op_u16(Op::local_get, arr, 0);
     c.emit_op(Op::r#return, 0);
     c
 }

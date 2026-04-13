@@ -19,6 +19,8 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_range",      "__vybe_range"),
     ("__stdlib_sorted",     "__vybe_sorted"),
     ("__stdlib_sort_in_place", "__vybe_sort_in_place"),
+    ("__stdlib_sort_with_comparator", "__vybe_sort_with_comparator"),
+    ("__stdlib_sort_by_key", "__vybe_sort_by_key"),
     ("__stdlib_reversed",   "__vybe_reversed"),
     ("__stdlib_enumerate",  "__vybe_enumerate"),
     ("__stdlib_zip",        "__vybe_zip"),

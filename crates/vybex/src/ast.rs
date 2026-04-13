@@ -202,6 +202,10 @@ pub enum StmtKind {
         until: bool,
     },
 
+    /// Switch / Select Case. Cases are in source order. A case with
+    /// empty `conditions` is the default arm. The separate `default`
+    /// field is kept for backward compatibility with walkers that
+    /// still split it out — the compiler merges both.
     Switch {
         expr: Expression,
         cases: Vec<SwitchCase>,

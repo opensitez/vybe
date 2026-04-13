@@ -383,7 +383,8 @@ pub fn register_all(vm: &mut VM) {
         let mut t = TypeDef::new("Map");
         for (method, fname) in &[
             ("set", "mapSet"), ("get", "mapGet"), ("has", "mapHas"),
-            ("delete", "mapDelete"), ("keys", "mapKeys"), ("clear", "mapClear"),
+            ("delete", "mapDelete"), ("keys", "mapKeys"), ("values", "mapValues"),
+            ("clear", "mapClear"),
         ] {
             if let Some(idx) = h(vm, "vybe:collections", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));

@@ -795,6 +795,27 @@ fn test_export_default_expression() {
 }
 
 #[test]
+fn test_module_import_simulation() {
+    // Simulate import resolution: the imported module's body is prepended
+    // to the main module. This is what the vybex CLI does for:
+    //   import { capitalize, VERSION } from "./lib/utils.js"
+    let code = r#"
+        // --- imported from utils.js ---
+        export function capitalize(str) {
+            if (str.length === 0) return str;
+            return str.charAt(0).toUpperCase() + str.slice(1);
+        }
+        export let VERSION = "1.0.0";
+        // --- main module ---
+        console.log(capitalize("hello"));
+        console.log(VERSION);
+    "#;
+    let lines = run_js(code);
+    assert_eq!(lines[0], "Hello");
+    assert_eq!(lines[1], "1.0.0");
+}
+
+#[test]
 fn test_import_from_host_module() {
     // Importing from vybe:* should not crash — host modules resolved at call site
     let code = r#"

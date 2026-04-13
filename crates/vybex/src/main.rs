@@ -6,6 +6,48 @@
 
 use std::path::Path;
 use vybe_bytecode::VM;
+use vybex::ast::*;
+
+/// Resolve `import { x } from "./file.js"` by parsing the imported file
+/// and prepending its body to the main module. Exported names become
+/// globals that the main module can reference. Recursive (handles
+/// transitive imports).
+fn resolve_imports(module: &mut Module, lang: &vybex::languages::Language, base_dir: &Path) {
+    let mut prepend: Vec<Statement> = Vec::new();
+    for imp in &module.imports {
+        let path_str = match &imp.kind {
+            ImportKind::Named { path, .. } => path.clone(),
+            ImportKind::Default { path, .. } => path.clone(),
+            ImportKind::Simple { path, .. } => path.clone(),
+            ImportKind::Wildcard { path, .. } => path.clone(),
+        };
+        // Resolve relative path
+        let resolved = base_dir.join(&path_str);
+        let source = match std::fs::read_to_string(&resolved) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Warning: cannot resolve import '{}': {}", path_str, e);
+                continue;
+            }
+        };
+        // Parse the imported module
+        let mut imported = match (lang.parse)(&source) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Warning: parse error in '{}': {}", path_str, e);
+                continue;
+            }
+        };
+        // Recursively resolve nested imports
+        let import_dir = resolved.parent().unwrap_or(base_dir);
+        resolve_imports(&mut imported, lang, import_dir);
+        // Prepend the imported module's body
+        prepend.extend(imported.body);
+    }
+    // Insert imported code before the main body
+    prepend.append(&mut module.body);
+    module.body = prepend;
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -36,10 +78,16 @@ fn main() {
     };
 
     // Parse source → common AST
-    let module = match (lang.parse)(&source) {
+    let mut module = match (lang.parse)(&source) {
         Ok(m) => m,
         Err(e) => { eprintln!("Parse error: {}", e); std::process::exit(1); }
     };
+
+    // Resolve imports: parse each imported module and inline its body
+    // before the main module's body. Named imports bind the exported
+    // globals so the main module can reference them.
+    let base_dir = path.parent().unwrap_or(Path::new("."));
+    resolve_imports(&mut module, &lang, base_dir);
 
     // Load profile from embedded source
     let profile = match vybex::profile::parse_profile((lang.profile_source)()) {

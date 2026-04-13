@@ -387,14 +387,12 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let cond = walk_expression(next_meaningful(&mut inner)?)?;
     let then_stmt = walk_statement(next_meaningful(&mut inner)?)?;
-    let else_body = if let Some(p) = inner.next() {
-        if p.as_rule() != Rule::NEWLINE {
-            Some(vec![walk_statement(p)?])
-        } else {
-            None
-        }
-    } else {
-        None
+    // Skip NEWLINEs to find the optional else clause. The grammar's
+    // eat_terminators between then and else may leave visible NEWLINE
+    // tokens as siblings.
+    let else_body = match next_meaningful(&mut inner) {
+        Ok(p) => Some(vec![walk_statement(p)?]),
+        Err(_) => None,
     };
     Ok(StmtKind::If {
         cond,
@@ -511,15 +509,12 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let expr = walk_expression(next_meaningful(&mut inner)?)?;
     let mut cases = Vec::new();
-    let mut default = None;
     for p in inner {
         if p.as_rule() == Rule::switch_case {
             // Grammar: switch_case = { ("case" expression | "default") ~ ":" ~ statements }
-            // The literal `case`/`default` strings are silent, so for `case
-            // X: ...` the first child is `expression` and for `default: ...`
-            // the first child is the first statement (or none if empty).
-            // Detect default by looking at the source slice instead of
-            // trying to read a non-existent keyword token.
+            // Detect default by looking at the source slice.
+            // Default is emitted as a SwitchCase with empty conditions,
+            // preserving its position among the other cases for fallthrough.
             let is_default = p.as_str().trim_start().starts_with("default");
             let mut case_inner = p.into_inner();
             if is_default {
@@ -527,7 +522,10 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     .filter(|p| p.as_rule() != Rule::NEWLINE)
                     .map(walk_statement)
                     .collect::<Result<Vec<_>, _>>()?;
-                default = Some(stmts);
+                cases.push(SwitchCase {
+                    conditions: vec![], // empty = default
+                    body: stmts,
+                });
             } else {
                 let first = case_inner.next().ok_or("Empty switch case")?;
                 let val = walk_expression(first)?;
@@ -542,7 +540,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
         }
     }
-    Ok(StmtKind::Switch { expr, cases, default })
+    Ok(StmtKind::Switch { expr, cases, default: None })
 }
 
 fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -1130,7 +1128,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
     for chain in inner {
         if chain.as_rule() != Rule::call_chain { continue; }
-        let chain_src = chain.as_str();
+        let chain_src = chain.as_str().trim_start();
         let mut chain_inner: Vec<Pair<Rule>> = chain.into_inner().collect();
 
         if chain_src.starts_with("?.") {
@@ -1146,7 +1144,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             } else {
                 // ?. member
                 let name = chain_inner.into_iter()
-                    .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name)
+                    .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name || p.as_rule() == Rule::private_name)
                     .map(|p| p.as_str().to_string())
                     .unwrap_or_default();
                 expr = Expression::new(ExprKind::Member {
@@ -1164,7 +1162,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
         } else if chain_src.starts_with(".") {
             // Member access — normalize JS .length to canonical __len__
             let name = chain_inner.into_iter()
-                .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name)
+                .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name || p.as_rule() == Rule::private_name)
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
             expr = canonicalize_member_access(expr, &name);

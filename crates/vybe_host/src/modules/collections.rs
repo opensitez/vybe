@@ -87,6 +87,18 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
     }));
 
+    // Map.prototype.values()
+    vm.register_host_fn("vybe:collections", "mapValues", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            if let Some(Value::Object(data)) = o.properties.get("__data") {
+                let vals: Vec<Value> = data.lock().unwrap().properties.values().cloned().collect();
+                return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+            }
+        }
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+    }));
+
     // -- Set constructor: new Set() --
     vm.register_host_fn("vybe:collections", "Set", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))

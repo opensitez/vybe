@@ -259,7 +259,7 @@ ForEach   = "__array_forEach"
 Any       = "__array_some"
 All       = "__array_every"
 Aggregate = "__array_reduce"
-OrderBy   = "__array_sort"
+OrderBy   = "__array_sort_by_key"
 
 [namespace_constants]
 "Math.PI"               = 3.141592653589793

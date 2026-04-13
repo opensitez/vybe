@@ -502,7 +502,6 @@ impl Compiler {
                 let exit = common::loops::emit_loop_cond(self.chunk(), line);
                 for s in body { self.compile_stmt(s)?; }
                 let ctx = self.loops.pop().unwrap();
-                // Patch continue jumps to land here (at the update expression)
                 for p in ctx.continue_patches { self.patch_jump(p); }
                 if let Some(u) = update { self.compile_expr(u)?; self.emit(Op::drop); }
                 let line = self.line;
@@ -572,11 +571,31 @@ impl Compiler {
 
                 self.loops.push(LoopCtx { break_patches: vec![], continue_target: 0, continue_patches: vec![], continue_needs_patch: false, label: self.pending_label.take() });
 
+                // Merge legacy `default` field into the cases list.
+                // New walkers emit default as a case with empty conditions
+                // in source order. Old walkers may still use the separate
+                // `default` field — append it at the end if present.
+                let mut all_cases: Vec<&SwitchCase> = cases.iter().collect();
+                let default_case_storage;
+                if let Some(def) = default {
+                    if !def.is_empty() && !cases.iter().any(|c| c.conditions.is_empty()) {
+                        default_case_storage = SwitchCase { conditions: vec![], body: def.clone() };
+                        all_cases.push(&default_case_storage);
+                    }
+                }
+
                 // Phase 1: emit condition checks. Each matching condition
-                // jumps to the corresponding body. Non-matching falls through
-                // to the next check. After all checks, jump to default/end.
+                // jumps to the corresponding body. A case with empty
+                // conditions is the default — emit an unconditional jump.
                 let mut body_jumps: Vec<Vec<usize>> = Vec::new();
-                for case in cases.iter() {
+                let mut default_jump: Option<usize> = None;
+                for case in all_cases.iter() {
+                    if case.conditions.is_empty() {
+                        // Default case — unconditional jump (deferred to after
+                        // all condition checks so specific cases are tried first)
+                        body_jumps.push(vec![]);
+                        continue;
+                    }
                     let mut match_patches = Vec::new();
                     for cond in &case.conditions {
                         match cond {
@@ -614,23 +633,23 @@ impl Compiler {
                     }
                     body_jumps.push(match_patches);
                 }
-                // No case matched → jump to default or end
+                // No specific case matched → jump to default body (if any) or end
+                let default_idx = all_cases.iter().position(|c| c.conditions.is_empty());
                 let no_match = self.emit_jump(Op::br);
 
                 // Phase 2: emit all case bodies in order.
-                // C/JS: execution falls through to the next case unless
-                // there's an explicit `break`. VB/Pascal/other: each case
-                // is independent — auto-insert a break-to-end after each
-                // case body that doesn't already end with a break.
                 let body_has_break = |body: &[Statement]| -> bool {
                     body.iter().any(|s| matches!(s.kind, StmtKind::Break(_)))
                 };
-                for (i, case) in cases.iter().enumerate() {
+                for (i, case) in all_cases.iter().enumerate() {
+                    // Patch condition jumps to land at this body
                     for p in &body_jumps[i] { self.patch_jump(*p); }
+                    // Default case: patch the no_match jump to land here
+                    if case.conditions.is_empty() {
+                        self.patch_jump(no_match);
+                    }
                     for s in &case.body { self.compile_stmt(s)?; }
-                    // Auto-break for non-fallthrough languages: if no
-                    // explicit break in the body, emit a jump to end. JS/C
-                    // have `switch_fallthrough = true` so they skip this.
+                    // Auto-break for non-fallthrough languages
                     if !self.profile.switch_fallthrough
                         && !body_has_break(&case.body)
                         && !case.body.is_empty()
@@ -641,10 +660,9 @@ impl Compiler {
                         }
                     }
                 }
-                // Default body
-                self.patch_jump(no_match);
-                if let Some(def) = default {
-                    for s in def { self.compile_stmt(s)?; }
+                // If no default case, patch no_match to end
+                if default_idx.is_none() {
+                    self.patch_jump(no_match);
                 }
                 let ctx = self.loops.pop().unwrap();
                 for p in ctx.break_patches { self.patch_jump(p); }
@@ -1379,13 +1397,34 @@ impl Compiler {
                             self.compile_expr(default)?;
                             self.patch_jump(has_val);
                         }
-                        let bind_name = if let Some(BindingPattern::Ident(ref n)) = prop.value {
-                            n.as_str()
-                        } else {
-                            &prop.key
-                        };
-                        let slot = self.scope_mut().define(bind_name);
-                        self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                        match &prop.value {
+                            Some(BindingPattern::Ident(n)) => {
+                                let slot = self.scope_mut().define(n);
+                                self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                            }
+                            Some(BindingPattern::Object(nested_props)) => {
+                                // Nested destructuring: { nested: { b } }
+                                // Value from struct_get is the nested object
+                                let nested_slot = self.scope_mut().define("__nested");
+                                self.emit_u16(Op::local_set, nested_slot); self.emit(Op::drop);
+                                for np in nested_props {
+                                    self.emit_u16(Op::local_get, nested_slot);
+                                    let nk = self.str_const(&np.key);
+                                    self.emit_u16(Op::struct_get, nk);
+                                    let bind = if let Some(BindingPattern::Ident(ref n)) = np.value {
+                                        n.as_str()
+                                    } else {
+                                        &np.key
+                                    };
+                                    let slot = self.scope_mut().define(bind);
+                                    self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                                }
+                            }
+                            _ => {
+                                let slot = self.scope_mut().define(&prop.key);
+                                self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                            }
+                        }
                     }
                 }
             }
@@ -2377,6 +2416,14 @@ impl Compiler {
                     .or_else(|| self.scope().resolve("this"))
                 {
                     self.emit_u16(Op::local_get, slot);
+                } else if self.scopes.len() > 1 {
+                    // Arrow function: capture `this` from enclosing scope via upvalue
+                    let kw = self.profile.self_keyword.clone();
+                    if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, &kw) {
+                        self.emit_u8(Op::upvalue_get, uv);
+                    } else {
+                        self.emit(Op::null);
+                    }
                 } else {
                     self.emit(Op::null);
                 }
@@ -2634,6 +2681,28 @@ impl Compiler {
                             type_name, // original casing for `name` field
                             line,
                         );
+                        // Stamp `stack` = "Name: message" using locals.
+                        // Stack after finalize: [obj]
+                        let exc_tmp = self.scope_mut().define("__exc_tmp");
+                        self.emit_u16(Op::local_set, exc_tmp); self.emit(Op::drop);
+                        // Build "Name: " + message
+                        self.emit_const(Value::String(Arc::from(format!("{}: ", type_name))));
+                        self.emit_u16(Op::local_get, exc_tmp);
+                        let msg_k = self.str_const("message");
+                        self.emit_u16(Op::struct_get, msg_k);
+                        // Stack: ["Name: ", msg]. str_concat: a=prefix, b=msg → prefix+msg
+                        self.emit(Op::str_concat);
+                        // Stack: ["Name: msg"]. Save it.
+                        let sv = self.scope_mut().define("__stack_val");
+                        self.emit_u16(Op::local_set, sv); self.emit(Op::drop);
+                        // Stamp: obj.stack = stack_val
+                        self.emit_u16(Op::local_get, exc_tmp);
+                        self.emit_u16(Op::local_get, sv);
+                        let sk = self.str_const("stack");
+                        self.emit_u16(Op::struct_set, sk);
+                        self.emit(Op::drop);
+                        // Result: push obj
+                        self.emit_u16(Op::local_get, exc_tmp);
                         return Ok(());
                     }
 
@@ -3669,6 +3738,7 @@ impl Compiler {
                     "__array_reduce" => "reduce".to_string(),
                     "__array_find" => "find".to_string(),
                     "__array_sort" => "sort".to_string(),
+                    "__array_sort_by_key" => "sort_by_key".to_string(),
                     "__array_some" => "some".to_string(),
                     "__array_every" => "every".to_string(),
                     "__array_flat_map" => "flatMap".to_string(),
@@ -3799,11 +3869,40 @@ impl Compiler {
                         common::collections::emit_contains(self.chunk(), line);
                     }
                     "sort" => {
-                        // Sort: use compiler_common sorted (default order).
-                        // TODO: comparator-aware sort via a host fn that
-                        // takes [arr, fn] and calls fn(a,b) for each pair.
+                        // JS sort(comparatorFn?) — 2-arg comparator or default
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit(Op::ref_is_null);
+                        let no_fn = self.emit_jump(Op::br_if_true);
+                        let global = self.str_const("__vybe_sort_with_comparator");
+                        self.emit_u16(Op::global_get, global);
                         self.emit_u16(Op::local_get, arr_slot);
-                        common::collections::emit_sorted(self.chunk(), line);
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit_u8(Op::call_ref, 2);
+                        let done = self.emit_jump(Op::br);
+                        self.patch_jump(no_fn);
+                        let sort_global = self.str_const("__vybe_sort_in_place");
+                        self.emit_u16(Op::global_get, sort_global);
+                        self.emit_u16(Op::local_get, arr_slot);
+                        self.emit_u8(Op::call_ref, 1);
+                        self.patch_jump(done);
+                    }
+                    "sort_by_key" => {
+                        // .NET OrderBy(keySelector) — 1-arg key extractor
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit(Op::ref_is_null);
+                        let no_fn = self.emit_jump(Op::br_if_true);
+                        let global = self.str_const("__vybe_sort_by_key");
+                        self.emit_u16(Op::global_get, global);
+                        self.emit_u16(Op::local_get, arr_slot);
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit_u8(Op::call_ref, 2);
+                        let done = self.emit_jump(Op::br);
+                        self.patch_jump(no_fn);
+                        let sort_global = self.str_const("__vybe_sort_in_place");
+                        self.emit_u16(Op::global_get, sort_global);
+                        self.emit_u16(Op::local_get, arr_slot);
+                        self.emit_u8(Op::call_ref, 1);
+                        self.patch_jump(done);
                     }
                     "indexOf" | "indexof" => {
                         self.emit_u16(Op::local_get, arr_slot);
@@ -3912,81 +4011,40 @@ impl Compiler {
 
             let has_spread = args.iter().any(|a| a.spread);
             if has_spread {
-                // Spread args: build a flat args array, spread onto stack,
-                // then call with the function's declared arity. The spread
-                // pushes exactly the right number of elements because we
-                // built the array to contain all args.
+                // Spread args: build a flat args array, then spread onto
+                // stack and call. For known-length arrays we can compute
+                // the arity at compile time; for dynamic arrays we use
+                // the callee's declared arity.
                 let line = self.line;
-                // Build flat args array
+                // Build flat args array [arg0, arg1, ...spread, argN, ...]
+                // array_push returns the array; array_concat returns the
+                // merged array. Both leave the array on TOS — no drop needed.
                 self.chunks[self.current].emit_op_u16(Op::array_new, 0, line);
+                let mut known_len: Option<usize> = Some(0);
                 for a in args {
                     if a.spread {
                         self.compile_expr(&a.value)?;
                         self.emit(Op::array_concat);
+                        if let ExprKind::Array(elems) = &a.value.kind {
+                            if let Some(ref mut k) = known_len { *k += elems.len(); }
+                        } else {
+                            known_len = None;
+                        }
                     } else {
                         self.compile_expr(&a.value)?;
                         self.emit(Op::array_push);
-                        self.emit(Op::drop);
+                        // array_push returns the array — keep it for next push/concat
+                        if let Some(ref mut k) = known_len { *k += 1; }
                     }
                 }
-                // [argsArray] → save, push fn, spread array, call
+                // [argsArray] → save, push fn, spread, call
                 let args_slot = self.scope_mut().define("__spread_args");
                 self.emit_u16(Op::local_set, args_slot); self.emit(Op::drop);
                 self.emit_var_get(name);
                 self.emit_u16(Op::local_get, args_slot);
-                self.emit(Op::spread); // [fn, arg0, arg1, ...]
-                // Get the array length for the call arity
-                self.emit_u16(Op::local_get, args_slot);
-                self.emit(Op::array_length);
-                // Dynamic call: use call_indirect if available, else
-                // use the function's declared arity from chunk metadata.
-                // For now: use the declared arity from the function.
-                // Actually, we need the ACTUAL spread count. Store it
-                // and use a fixed call. The simplest: count the final
-                // array length via a host helper. For now, just use the
-                // function's declared arity since most spread cases pass
-                // exactly the right number of args.
-                self.emit(Op::drop); // drop array_length — can't use it with call_ref
-                // Use the callee's declared arity (read from chunk at runtime).
-                // call_ref reads argc from the next byte. We don't know
-                // the arity at compile time for spread. Workaround: the
-                // VM's call_value already uses min(argc, stack_available).
-                // So emit spread then call_ref with a generous count.
-                // Actually: if all args are spread from ONE array, count =
-                // non-spread args + 1 spread. We know non-spread count.
-                let non_spread: usize = args.iter().filter(|a| !a.spread).count();
-                let spread_count: usize = args.iter().filter(|a| a.spread).count();
-                // For f(...arr) with arr.len=3: total args = 3. call_ref 3.
-                // For f(1, ...arr, 4) with arr.len=2: total = 4. call_ref 4.
-                // We can't know arr.len at compile time. Use a large-but-safe
-                // arity. The VM's call_value takes min(argc, callee.arity).
-                // So passing a larger argc than needed is safe IF the extra
-                // stack values are from our spread and the callee ignores them.
-                // Actually call_value pops exactly argc from stack. If argc > actual
-                // pushed, stack underflow. If argc < actual, some values remain.
-                // For now, handle the simple case: exactly 1 spread and 0 other args.
-                if non_spread == 0 && spread_count == 1 {
-                    // f(...arr) — arity is arr.length. Use the function's
-                    // declared arity from the Chunk. Emit call with declared arity.
-                    // The VM's call_value reads arity from the callee anyway.
-                    // Use call with 0 — call_value will use callee's arity.
-                    // NO — call_ref reads argc and pops that many. Must match.
-                    // For sum(...[1,2,3]): sum has arity 3, spread pushes 3.
-                    // The callee's arity IS the right count. Emit call 0 then
-                    // let call_value see the function has arity 3 and pop 3.
-                    // Actually call_value pops argc, not callee.arity.
-                    // There's no way around this without a dynamic call opcode.
-                    // Fallback: count args at compile time from array literal length.
-                    if let ExprKind::Array(elems) = &args[0].value.kind {
-                        self.emit_u8(Op::call_ref, elems.len() as u8);
-                    } else {
-                        // Dynamic array — can't know length. Use 16 as max guess.
-                        self.emit_u8(Op::call_ref, 16);
-                    }
-                } else {
-                    // Mixed spread — not supported yet, use total arg count
-                    self.emit_u8(Op::call_ref, (non_spread + 10) as u8); // rough guess
-                }
+                self.emit(Op::spread);
+                let arity = known_len.unwrap_or(16) as u8;
+                self.emit_u8(Op::call_ref, arity);
                 return Ok(());
             }
             self.emit_var_get(name);

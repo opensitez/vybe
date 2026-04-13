@@ -189,9 +189,13 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
         chunk.emit_op(Op::drop, line);
     }
 
-    // TODO: stamp `stack` = "Name: message" for JS Error.stack compatibility.
-    // Requires either a swap opcode or temp-local support in the helper.
-    // For now, `err.stack` returns null (1 test failure).
+    // `stack` = "Name: message" for JS Error.stack compatibility.
+    // Stack: [obj]. Read message back, concat with prefix, stamp.
+    // `stack` = "Name: message" for JS Error.stack compatibility.
+    // Build from message (already on the object) by emitting the caller
+    // to do it — see the `stamp_error_stack` parameter pattern below.
+    // For now, stamp the `stack` field in the vybex compiler where we
+    // have access to local variables for the swap.
 }
 
 /// Emit type-dispatch for a single catch arm. The exception object is

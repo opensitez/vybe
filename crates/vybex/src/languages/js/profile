@@ -267,9 +267,9 @@ size              = { emit = "intrinsic:map_size",       min_args = 0, max_args 
 # Map/Set calls at compile time and route them through the wrong storage.
 hasOwnProperty    = { emit = "common:dict.has",          min_args = 1, max_args = 1 }
 
-# Object methods via host
-keys          = { emit = "host:vybe:object:keys",      min_args = 0, max_args = 0 }
-values        = { emit = "host:vybe:object:values",     min_args = 0, max_args = 0 }
+# Object.keys/values are STATIC calls via module alias (Object.keys(obj)),
+# NOT instance methods. Map.keys/values go through the type registry.
+# Removed from value_methods to avoid intercepting Map.keys().
 
 # Array higher-order methods — routed to compiled JS builtins
 # (see [array_methods] section below)

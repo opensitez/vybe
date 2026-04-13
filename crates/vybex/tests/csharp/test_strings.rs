@@ -28,8 +28,7 @@ fn string_trim() {
 
 #[test]
 fn string_contains() {
-    // str_includes opcode returns index (6) not bool — known VM behavior
-    assert_eq!(run_csharp_one(r#"Console.WriteLine("hello world".Contains("world"));"#), "6");
+    assert_eq!(run_csharp_one(r#"Console.WriteLine("hello world".Contains("world"));"#), "true");
 }
 
 #[test]
