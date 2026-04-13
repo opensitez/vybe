@@ -120,8 +120,14 @@ class_member = {
 
 static_kw = { "static" }
 
-getter_method = { "get" ~ property_name ~ "(" ~ ")" ~ function_body }
-setter_method = { "set" ~ property_name ~ "(" ~ param ~ ")" ~ function_body }
+// JS getters/setters: `get propName() { ... }` / `set propName(val) { ... }`
+// The keyword `get`/`set` must be a standalone word (not part of `getX`).
+// We use an atomic rule for the keyword check so WHITESPACE isn't consumed
+// before the word-boundary lookahead.
+get_keyword = @{ "get" ~ !(ASCII_ALPHANUMERIC | "_") }
+set_keyword = @{ "set" ~ !(ASCII_ALPHANUMERIC | "_") }
+getter_method = { get_keyword ~ property_name ~ "(" ~ ")" ~ function_body }
+setter_method = { set_keyword ~ property_name ~ "(" ~ param ~ ")" ~ function_body }
 class_method = { async_kw? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body }
 class_property = { property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
 
