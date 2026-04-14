@@ -194,6 +194,7 @@ impl TextInput {
     }
 
     /// Hit-test: given an x position (in widget-local coords), return byte offset in value.
+    #[allow(dead_code)]
     fn hit_test_cursor(&self, font_system: &mut cosmic_text::FontSystem, local_x: f32, scale: f32) -> usize {
         let text = if self.password {
             "\u{2022}".repeat(self.value.len())

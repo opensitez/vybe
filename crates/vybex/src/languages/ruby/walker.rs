@@ -487,7 +487,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 elifs.push((econd, ebody));
             }
             Rule::else_clause => {
-                let mut ei = p.into_inner();
+                let ei = p.into_inner();
                 else_body = Some(walk_body(find_rule(ei, Rule::body)?)?);
             }
             _ => {}
@@ -525,7 +525,7 @@ fn walk_unless(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut else_body = None;
     for p in iter {
         if p.as_rule() == Rule::else_clause {
-            let mut ei = p.into_inner();
+            let ei = p.into_inner();
             else_body = Some(walk_body(find_rule(ei, Rule::body)?)?);
         }
     }
@@ -676,7 +676,7 @@ fn walk_case(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 cases.push(SwitchCase { conditions, body });
             }
             Rule::else_clause => {
-                let mut ei = p.into_inner();
+                let ei = p.into_inner();
                 default = Some(walk_body(find_rule(ei, Rule::body)?)?);
             }
             _ if is_expression_rule(p.as_rule()) => {
@@ -732,7 +732,7 @@ fn walk_begin(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 });
             }
             Rule::else_clause => {
-                let mut ei = p.into_inner();
+                let ei = p.into_inner();
                 else_body = Some(walk_body(find_rule(ei, Rule::body)?)?);
             }
             Rule::ensure_clause => {
@@ -1225,7 +1225,7 @@ fn walk_expression_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
     // If there's an inline_rescue, wrap in try
     if !inner.is_empty() && inner[0].as_rule() == Rule::inline_rescue {
         let rescue_inner: Vec<Pair<Rule>> = inner.remove(0).into_inner().collect();
-        let rescue_val = if let Some(rp) = rescue_inner.into_iter().next() {
+        let _rescue_val = if let Some(rp) = rescue_inner.into_iter().next() {
             walk_expression(rp)?
         } else {
             Expression::null()
@@ -1448,7 +1448,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(expr.kind)
 }
 
-fn walk_postfix_chain(mut expr: Expression, chain: Pair<Rule>) -> Result<Expression, String> {
+fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression, String> {
     let children: Vec<Pair<Rule>> = chain.into_inner().collect();
 
     if children.is_empty() {

@@ -1,7 +1,7 @@
 use std::fs;
 use tiny_skia::{Paint, Pixmap, Transform, PathBuilder};
 use cosmic_text::{FontSystem, SwashCache, Buffer, Metrics, Attrs, Family, Color as CosmicColor};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 #[derive(Clone)]
 pub struct FileEntry {

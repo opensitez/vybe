@@ -1,5 +1,5 @@
 use pest::Parser;
-use pest::iterators::{Pair, Pairs};
+use pest::iterators::Pair;
 use super::{CSharpParser, Rule};
 use crate::ast::*;
 
@@ -1642,7 +1642,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             _ => {
                 // Expression inside brackets for array size
-                if let Ok(expr) = walk_expression(p) {
+                if let Ok(_expr) = walk_expression(p) {
                     if !is_array {
                         is_array = true;
                     }

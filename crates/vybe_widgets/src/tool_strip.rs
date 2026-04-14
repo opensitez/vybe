@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
 
 #[derive(Clone, Debug)]
 pub enum ToolStripItem {
@@ -184,7 +184,7 @@ impl PanelWidget for ToolStrip {
         for (i, item) in self.items.iter().enumerate() {
             if i >= positions.len() { break; }
             if let ToolStripItem::Button(label) = item {
-                let (ix, iw) = positions[i];
+                let (ix, _iw) = positions[i];
                 super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, label, r.x + ix + 4.0, r.y + 6.0, 11.0, col, ctx.scale);
             }
         }

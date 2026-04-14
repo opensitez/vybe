@@ -136,6 +136,7 @@ impl Form {
     }
 
     /// Recalculate control positions when the form's rect changes.
+    #[allow(dead_code)]
     fn relayout_controls(&mut self) {
         // Controls keep their relative positions within the form.
         // When the form moves, we'd need stored offsets. For now,

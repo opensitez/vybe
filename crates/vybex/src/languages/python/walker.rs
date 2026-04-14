@@ -1,5 +1,5 @@
 use pest::Parser;
-use pest::iterators::{Pair, Pairs};
+use pest::iterators::Pair;
 use super::{PythonParser, Rule};
 use crate::ast::*;
 
@@ -471,7 +471,7 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
 
 // ── Class def ───────────────────────────────────────────────────────────────
 
-fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtKind, String> {
+fn walk_class_def(pair: Pair<Rule>, _decorators: Vec<Expression>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut body_stmts = Vec::new();
@@ -574,7 +574,7 @@ fn walk_decorated(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner_pairs: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     // Collect decorators
-    let mut i = 0;
+    let i = 0;
     while i < inner_pairs.len() {
         if inner_pairs[i].as_rule() == Rule::decorator {
             let dec_pair = inner_pairs.remove(i);
@@ -1060,7 +1060,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     // Check for augmented assignment op
     let aug_pos = inner.iter().position(|p| p.as_rule() == Rule::aug_assign_op);
-    if let Some(pos) = aug_pos {
+    if let Some(_pos) = aug_pos {
         let target = walk_expr_list_or_single(inner.remove(0))?;
         let op_str = inner.remove(0).as_str(); // aug_assign_op
         let value = if inner.len() == 1 {
@@ -1750,15 +1750,15 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
     // Check for dict_comp_or_rest, set_comp_or_rest
     // Dispatch based on what children we have
-    let mut exprs: Vec<Expression> = Vec::new();
+    let _exprs: Vec<Expression> = Vec::new();
     let mut is_dict = false;
-    let mut has_comp = false;
+    let mut _has_comp = false;
 
     for p in &inner {
         match p.as_rule() {
             Rule::dict_comp_or_rest | Rule::dict_rest | Rule::dict_entry => is_dict = true,
             Rule::set_comp_or_rest => {}
-            Rule::comp_clause => has_comp = true,
+            Rule::comp_clause => _has_comp = true,
             _ => {}
         }
     }
@@ -1777,7 +1777,7 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     if comp_inner.iter().any(|p| p.as_rule() == Rule::comp_clause) {
                         // Dict comprehension — but we'd need the key/value from before
                         // This is complex, return simplified for now
-                        has_comp = true;
+                        _has_comp = true;
                     } else {
                         for de in comp_inner {
                             if de.as_rule() == Rule::dict_entry {

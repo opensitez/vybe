@@ -151,6 +151,7 @@ impl Compiler {
     fn emit_jump(&mut self, op: Op) -> usize { let l = self.line; self.chunks[self.current].emit_jump(op, l) }
     fn patch_jump(&mut self, o: usize) { self.chunks[self.current].patch_jump(o); }
     fn emit_loop(&mut self, t: usize) { let l = self.line; self.chunks[self.current].emit_loop(t, l); }
+    #[allow(dead_code)]
     fn current_offset(&self) -> usize { self.chunks[self.current].current_offset() }
     fn str_const(&mut self, s: &str) -> u16 { self.chunks[self.current].add_constant(Value::String(Arc::from(s))) }
 
@@ -360,6 +361,7 @@ impl Compiler {
     }
 
     /// Extract plain expressions from Argument slice.
+    #[allow(dead_code)]
     fn arg_exprs(args: &[Argument]) -> Vec<&Expression> {
         args.iter().map(|a| &a.value).collect()
     }
@@ -588,7 +590,7 @@ impl Compiler {
                 // jumps to the corresponding body. A case with empty
                 // conditions is the default — emit an unconditional jump.
                 let mut body_jumps: Vec<Vec<usize>> = Vec::new();
-                let mut default_jump: Option<usize> = None;
+                let _default_jump: Option<usize> = None;
                 for case in all_cases.iter() {
                     if case.conditions.is_empty() {
                         // Default case — unconditional jump (deferred to after
@@ -825,8 +827,8 @@ impl Compiler {
             }
 
             // ── Function declaration ────────────────────────────────────
-            StmtKind::FunctionDecl { name, params, return_type, body, modifiers: _, handles, is_async: _, is_generator: _, is_sub } => {
-                self.compile_function_decl(name, params, return_type, body, *is_sub, handles)?;
+            StmtKind::FunctionDecl { name, params, return_type, body, modifiers: _, handles, is_async: _, is_generator, is_sub } => {
+                self.compile_function_decl(name, params, return_type, body, *is_sub, *is_generator, handles)?;
             }
 
             // ── Class declaration ───────────────────────────────────────
@@ -1596,7 +1598,7 @@ impl Compiler {
 
     fn compile_function_decl(
         &mut self, name: &str, params: &[Param], return_type: &Option<String>,
-        body: &[Statement], is_sub: bool, handles: &[String],
+        body: &[Statement], _is_sub: bool, _is_generator: bool, handles: &[String],
     ) -> Result<(), String> {
         let cname = self.canon(name);
         self.defined_globals.insert(cname.clone());
@@ -1762,7 +1764,7 @@ impl Compiler {
         for m in members {
             match m {
                 ClassMember::Method(stmt) => {
-                    if let StmtKind::FunctionDecl { name: mname, params, return_type, body, modifiers, is_sub, .. } = &stmt.kind {
+                    if let StmtKind::FunctionDecl { name: mname, params, return_type, body, modifiers, is_sub: _, .. } = &stmt.kind {
                         // NOTE: do NOT skip empty-body methods. They still need
                         // a chunk + binding so that callers (e.g. an explicit
                         // constructor calling `InitializeComponent()`) can
@@ -1933,7 +1935,7 @@ impl Compiler {
         self.current_class = saved_class;
 
         // Find constructor body and its user arity
-        let ctor = method_chunks.iter().find(|(_, _, is_ctor, _)| *is_ctor);
+        let _ctor = method_chunks.iter().find(|(_, _, is_ctor, _)| *is_ctor);
         let ctor_body: Option<(&Vec<Statement>, &Vec<Param>, Option<&Vec<Expression>>)> = members.iter().find_map(|m| {
             match m {
                 ClassMember::Method(stmt) => {
@@ -3229,9 +3231,9 @@ impl Compiler {
 
             // ── FunctionExpr (JS) ───────────────────────────────────────
             ExprKind::FunctionExpr(stmt) => {
-                if let StmtKind::FunctionDecl { name, params, return_type, body, is_sub, handles, .. } = &stmt.kind {
+                if let StmtKind::FunctionDecl { name, params, return_type, body, is_sub, is_generator, handles, .. } = &stmt.kind {
                     let fn_name = if name.is_empty() { "__anon_fn" } else { name };
-                    self.compile_function_decl(fn_name, params, return_type, body, *is_sub, handles)?;
+                    self.compile_function_decl(fn_name, params, return_type, body, *is_sub, *is_generator, handles)?;
                     self.emit_var_get(fn_name);
                 } else {
                     self.emit(Op::null);
@@ -3389,7 +3391,7 @@ impl Compiler {
                         imp.extend(self.profile.namespaces.extra_imports.clone());
                         imp
                     };
-                    let scope = self.scope().clone();
+                    let scope = self.scope();
                     let defined_globals = self.defined_globals.clone();
                     let field_set: std::collections::HashSet<String> = if let Some(ref cn) = self.current_class {
                         self.pending_classes.get(cn.as_str())
@@ -4409,7 +4411,7 @@ impl Compiler {
     /// Emit a named opcode sequence for a builtin.
     /// Emit a single opcode by name. Used for value methods where args are already on stack.
     fn emit_named_opcode(&mut self, op_name: &str) {
-        let line = self.line;
+        let _line = self.line;
         match op_name {
             "f64_abs" => self.emit(Op::f64_abs),
             "f64_floor" => self.emit(Op::f64_floor),

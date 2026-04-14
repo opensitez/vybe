@@ -3,7 +3,7 @@
 
 use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
 use tiny_skia::{Paint, Pixmap, Transform, PathBuilder, Stroke};
-use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use crate::layout::{LayoutRect, RenderContext, MouseEvent, KeyEvent, PanelWidget, WidgetEvent, WidgetId};
 use winit::window::CursorIcon;
 
 const HEADER_H: f32 = 28.0;

@@ -380,7 +380,7 @@ impl VM {
     }
 
     /// Create a HostContext with callback capability for host functions.
-    fn make_host_context(&mut self) -> HostContext {
+    fn make_host_context(&mut self) -> HostContext<'_> {
         // We can't pass &mut self into the closure directly due to borrow rules.
         // Instead, we pass raw pointers — this is safe because the HostContext
         // lifetime is strictly scoped within the host function call.
@@ -480,7 +480,7 @@ impl VM {
         self.strict_isolation = true;
 
         for (i, comp) in components.iter().enumerate() {
-            let chunk_offset = link_result.component_offsets[i] + base_offset;
+            let _chunk_offset = link_result.component_offsets[i] + base_offset;
 
             // Set module prefix for global isolation
             self.module_prefix = Some(comp.name.clone());
@@ -3316,7 +3316,7 @@ impl VM {
                             child_vm.import_table = child_import_table;
 
                             // Set up call frame
-                            let arity = child_vm.chunks.get(ci).map(|c| c.arity).unwrap_or(0);
+                            let _arity = child_vm.chunks.get(ci).map(|c| c.arity).unwrap_or(0);
                             child_vm.frames.push(CallFrame {
                                 chunk_index: ci,
                                 ip: 0,
@@ -3705,8 +3705,8 @@ impl VM {
                 Op::i64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I64(self.memory.load_i64(addr)?))?; }
                 Op::f64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::F64(self.memory.load_f64(addr)?))?; }
                 Op::i32_store_64 => { let v = self.pop().as_i32(); let addr = self.pop().as_i64() as usize; self.memory.store_i32(addr, v)?; }
-                Op::i64_store_64 => { let v = self.pop().as_i64(); let addr = self.pop().as_i64() as usize; self.memory.store_i64(addr, v); }
-                Op::f64_store_64 => { let v = self.pop().as_f64(); let addr = self.pop().as_i64() as usize; self.memory.store_f64(addr, v); }
+                Op::i64_store_64 => { let v = self.pop().as_i64(); let addr = self.pop().as_i64() as usize; let _ = self.memory.store_i64(addr, v); }
+                Op::f64_store_64 => { let v = self.pop().as_f64(); let addr = self.pop().as_i64() as usize; let _ = self.memory.store_f64(addr, v); }
 
                 // -- Relaxed SIMD FMA --
                 Op::f32x4_relaxed_madd => {

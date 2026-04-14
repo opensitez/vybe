@@ -9,7 +9,7 @@ use arboard::Clipboard;
 
 use crate::text_editor::TextEditor;
 use crate::language::LanguageDef;
-use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent, WidgetId};
 use winit::window::CursorIcon;
 pub use crate::text_editor::TokenKind;
 
@@ -808,9 +808,9 @@ impl CodeEditorWidget {
             pixmap.fill_rect(Rect::from_xywh(ruler_x, rect.top(), 1.0, rect.height()).unwrap(), &rp, Transform::identity(), None);
         }
 
-        let cursor_state = self.editor.cursor(); let selection = self.editor.selection_bounds();
-        let selected_text = self.editor.copy_selection();
-        let partner = self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def).or_else(|| if cursor_state.index > 0 { self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index - 1, &self.lang_def) } else { None });
+        let cursor_state = self.editor.cursor(); let _selection = self.editor.selection_bounds();
+        let _selected_text = self.editor.copy_selection();
+        let _partner = self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def).or_else(|| if cursor_state.index > 0 { self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index - 1, &self.lang_def) } else { None });
         let mut total_h = 0.0; self.editor.with_buffer(|b| { for r in b.layout_runs() { if !self.is_line_hidden(r.line_i) { total_h += r.line_height; } } });
         self.scroll_y = self.scroll_y.clamp(0.0, (total_h - (rect.height() - FOOTER_HEIGHT * SCALE) + 100.0).max(0.0));
         

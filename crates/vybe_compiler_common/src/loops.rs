@@ -121,7 +121,7 @@ pub fn emit_map(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16
     let (loop_start, exit_jump) = emit_for_in_start(chunk, arr_slot, idx_slot, line);
 
     // Stack: [element]. Call fn(element), push result.
-    let elem_slot = idx_slot; // reuse naming — element is on stack, not in slot
+    let _elem_slot = idx_slot; // reuse naming — element is on stack, not in slot
     // Actually we need: result.push(fn(arr[i]))
     // Stack has [element] from for_in_start. Store it, then build call.
     // Simpler: rewrite to not use for_in_start since we need the fn call pattern.
@@ -202,7 +202,7 @@ pub fn emit_foreach(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: u1
 /// Emit `reduce(fn, arr)` → fn(fn(arr[0], arr[1]), arr[2]), ...
 /// Stack after: [accumulated_value]
 pub fn emit_reduce(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, acc_slot: u16, idx_slot: u16, line: u32) {
-    use std::sync::Arc;
+    
     use vybe_bytecode::Value;
 
     // acc = arr[0]

@@ -386,8 +386,8 @@ impl PanelWidget for ScrollBar {
 
     fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {
         let r = self.rect;
-        let lx = x - r.x;
-        let ly = y - r.y;
+        let _lx = x - r.x;
+        let _ly = y - r.y;
         if r.contains(x, y) && self.vertical {
             winit::window::CursorIcon::NsResize
         } else if r.contains(x, y) {

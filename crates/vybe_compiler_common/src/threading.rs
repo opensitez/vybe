@@ -15,7 +15,6 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Value;
-use std::sync::Arc;
 
 // ── Atomic memory operations (WASM Threads spec) ────────────────────────
 

@@ -75,7 +75,7 @@ pub fn emit_set_dynamic(chunk: &mut Chunk, line: u32) {
 /// Stack before: [key, value]  Stack after: [dict] (for chaining)
 pub fn emit_method_set(chunk: &mut Chunk, dict_slot: u16, line: u32) {
     // array_set(dict, key, val)
-    let val_tmp = chunk.add_constant(Value::Null); // dummy, we'll use stack
+    let _val_tmp = chunk.add_constant(Value::Null); // dummy, we'll use stack
     // Actually we need to save key for __keys. Use stack manipulation:
     // Stack: [key, value]. Need [dict, key, value] for array_set.
     // Then [dict.__keys, key] for array_push.
@@ -105,7 +105,7 @@ pub fn emit_method_set_tracked(chunk: &mut Chunk, dict_slot: u16, key_slot: u16,
     // array_set(dict, key, val)
     // Stack has [value]. Need [dict, key, value].
     // Save value, push dict+key, push value back.
-    let val_const = chunk.add_constant(Value::Null);
+    let _val_const = chunk.add_constant(Value::Null);
     // Actually: just reorder using locals.
     // Caller already has dict in dict_slot and key in key_slot.
     // We'll build the stack ourselves:

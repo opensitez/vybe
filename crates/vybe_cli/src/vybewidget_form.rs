@@ -23,7 +23,7 @@ use vybe_widgets::{
     Form as WidgetForm,
     // Widgets
     Button, Label, TextInput, Checkbox, Radio, ListBox, ProgressBar,
-    Slider, NumericUpDown, DateTimePicker, ScrollBar, LinkLabel, MaskedTextBox,
+    Slider, NumericUpDown, DateTimePicker, ScrollBar, MaskedTextBox,
     GroupBox, Panel, TreeView, DataGrid, ListView,
     Tabs, MenuStrip, ContextMenu, StatusStrip, ToolStrip,
     SplitContainer, FlowLayoutPanel, TableLayoutPanel, MonthCalendar,
@@ -53,6 +53,7 @@ struct NavigatorInfo {
     binding_source_name: String,
 }
 
+#[allow(dead_code)]
 struct DataStore {
     columns: Vec<String>,
     rows: Vec<std::collections::HashMap<String, String>>,

@@ -10,7 +10,7 @@ use vybe_widgets::{
     Form as WidgetForm,
     Button, Label, TextInput, Checkbox, Radio, Select, ListBox,
     Panel, GroupBox, PictureBox, ProgressBar, Slider, NumericUpDown,
-    DateTimePicker, ScrollBar, LinkLabel, MaskedTextBox,
+    DateTimePicker, ScrollBar, MaskedTextBox,
     TreeView, DataGrid, ListView, Tabs, MonthCalendar,
     MenuStrip, ContextMenu, StatusStrip, ToolStrip,
     SplitContainer, FlowLayoutPanel, TableLayoutPanel,

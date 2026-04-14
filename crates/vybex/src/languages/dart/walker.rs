@@ -39,7 +39,7 @@
 //!   Appended to `parents` list after the `extends` parent.
 
 use pest::Parser;
-use pest::iterators::{Pair, Pairs};
+use pest::iterators::Pair;
 use crate::ast::*;
 use super::{DartParser, Rule};
 
@@ -1800,7 +1800,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::call_expression => walk_call_chain(pair),
 
         Rule::new_expression => {
-            let mut inner = pair.into_inner();
+            let inner = pair.into_inner();
             // new_expression = { "new" ~ ident_name ~ ("." ~ ident_name)? ~ type_args? ~ "(" ~ argument_list? ~ ")" }
             let mut class_parts: Vec<String> = Vec::new();
             let mut args = Vec::new();

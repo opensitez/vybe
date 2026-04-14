@@ -2,7 +2,7 @@
 
 use tiny_skia::*;
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId, WidgetCommand, CommandValue};
 
 /// Parse a color string like "#C8C8C8" or "Red" into (r, g, b, a).
 fn parse_color_string(s: &str) -> Option<(u8, u8, u8, u8)> {

@@ -1,5 +1,5 @@
 use pest::Parser;
-use pest::iterators::{Pair, Pairs};
+use pest::iterators::Pair;
 use super::{JsParser, Rule};
 use crate::ast::*;
 
@@ -168,9 +168,126 @@ fn walk_array_pattern_elem(pair: Pair<Rule>) -> Result<ArrayPatternElem, String>
 
 // ── Function declaration ────────────────────────────────────────────────────
 
+/// Recursively scan a function body for `yield` / `yield from` expressions.
+/// Does NOT descend into nested function/closure/class bodies — those are
+/// their own generator scope.
+fn body_contains_yield(stmts: &[Statement]) -> bool {
+    fn ey(e: &Expression) -> bool {
+        match &e.kind {
+            ExprKind::Yield(_) | ExprKind::YieldFrom(_) => true,
+            // Scope boundaries — separate generator context
+            ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::ClassExpr { .. } => false,
+            // Leaves
+            ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::This | ExprKind::Super
+            | ExprKind::AddressOf(_) | ExprKind::Destructure(_) => false,
+            // Unary wrappers
+            ExprKind::Unary { expr: i, .. } | ExprKind::IsType { expr: i, .. }
+            | ExprKind::Cast { expr: i, .. } | ExprKind::TypeOf(i)
+            | ExprKind::Spread(i) | ExprKind::Await(i) | ExprKind::Void(i)
+            | ExprKind::Delete(i) => ey(i),
+            // Binary / two-child
+            ExprKind::Binary { left: a, right: b, .. }
+            | ExprKind::NullCoalesce { left: a, right: b }
+            | ExprKind::Assign { target: a, value: b }
+            | ExprKind::Walrus { target: a, value: b }
+            | ExprKind::Range { start: a, end: b, .. } => ey(a) || ey(b),
+            ExprKind::StaticAccess { class: a, member: b } => ey(a) || ey(b),
+            ExprKind::Ternary { cond, then, else_ } => ey(cond) || ey(then) || ey(else_),
+            ExprKind::Member { object, .. } => ey(object),
+            ExprKind::Index { object, index } => ey(object) || ey(index),
+            ExprKind::Call { callee, args, .. } => ey(callee) || args.iter().any(|a| ey(&a.value)),
+            ExprKind::New { class, args } => ey(class) || args.iter().any(|a| ey(&a.value)),
+            ExprKind::SuperCall { args, .. } => args.iter().any(|a| ey(&a.value)),
+            ExprKind::Array(elems) => elems.iter().any(|el| ey(&el.value) || el.key.as_ref().map_or(false, |k| ey(k))),
+            ExprKind::Tuple(es) | ExprKind::Set(es) | ExprKind::Sequence(es) => es.iter().any(|x| ey(x)),
+            ExprKind::Object(props) => props.iter().any(|p| match p {
+                ObjectProperty::KeyValue { key, value } | ObjectProperty::Computed { key, value } => ey(key) || ey(value),
+                ObjectProperty::Spread(x) => ey(x),
+                _ => false,
+            }),
+            ExprKind::Interpolation(parts) => parts.iter().any(|p| match p {
+                InterpolPart::Expr(x) | InterpolPart::Formatted(x, _) => ey(x),
+                _ => false,
+            }),
+            ExprKind::Match { subject, arms } => {
+                ey(subject) || arms.iter().any(|a| {
+                    a.conditions.as_ref().map_or(false, |cs| cs.iter().any(|c| ey(c)))
+                    || ey(&a.body)
+                })
+            }
+            ExprKind::Comprehension { element, generators, .. } => {
+                ey(element) || generators.iter().any(|g| ey(&g.iter) || g.conditions.iter().any(|c| ey(c)))
+            }
+            ExprKind::Slice { lower, upper, step } => {
+                [lower, upper, step].iter().any(|o| o.as_ref().map_or(false, |x| ey(x)))
+            }
+        }
+    }
+    fn sy(s: &Statement) -> bool {
+        match &s.kind {
+            StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => false,
+            StmtKind::Expr(e) => ey(e),
+            StmtKind::Block(ss) => ss.iter().any(|s| sy(s)),
+            StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|d| d.init.as_ref().map_or(false, |e| ey(e))),
+            StmtKind::Return(e) => e.as_ref().map_or(false, |e| ey(e)),
+            StmtKind::If { cond, then_body, elifs, else_body } => {
+                ey(cond) || then_body.iter().any(|s| sy(s))
+                || elifs.iter().any(|(c, b)| ey(c) || b.iter().any(|s| sy(s)))
+                || else_body.as_ref().map_or(false, |b| b.iter().any(|s| sy(s)))
+            }
+            StmtKind::While { cond, body, else_body } => {
+                ey(cond) || body.iter().any(|s| sy(s))
+                || else_body.as_ref().map_or(false, |b| b.iter().any(|s| sy(s)))
+            }
+            StmtKind::DoWhile { body, cond, .. } => body.iter().any(|s| sy(s)) || ey(cond),
+            StmtKind::For { init, cond, update, body } => {
+                init.as_ref().map_or(false, |s| sy(s))
+                || cond.as_ref().map_or(false, |e| ey(e))
+                || update.as_ref().map_or(false, |e| ey(e))
+                || body.iter().any(|s| sy(s))
+            }
+            StmtKind::ForIn { iter, body, else_body, .. } => {
+                ey(iter) || body.iter().any(|s| sy(s))
+                || else_body.as_ref().map_or(false, |b| b.iter().any(|s| sy(s)))
+            }
+            StmtKind::Switch { expr, cases, default } => {
+                ey(expr) || cases.iter().any(|c| c.body.iter().any(|s| sy(s)))
+                || default.as_ref().map_or(false, |b| b.iter().any(|s| sy(s)))
+            }
+            StmtKind::Try { body, catches, else_body, finally } => {
+                body.iter().any(|s| sy(s))
+                || catches.iter().any(|c| c.body.iter().any(|s| sy(s)))
+                || else_body.as_ref().map_or(false, |b| b.iter().any(|s| sy(s)))
+                || finally.as_ref().map_or(false, |b| b.iter().any(|s| sy(s)))
+            }
+            StmtKind::Assign { targets, value } => targets.iter().any(|e| ey(e)) || ey(value),
+            StmtKind::CompoundAssign { target, value, .. } => ey(target) || ey(value),
+            StmtKind::Throw { expr, cause } => {
+                expr.as_ref().map_or(false, |e| ey(e)) || cause.as_ref().map_or(false, |e| ey(e))
+            }
+            StmtKind::Labeled { body, .. } => sy(body),
+            StmtKind::Echo(es) | StmtKind::Delete(es) => es.iter().any(|e| ey(e)),
+            StmtKind::Export { declaration, default, .. } => {
+                declaration.as_ref().map_or(false, |s| sy(s))
+                || default.as_ref().map_or(false, |e| ey(e))
+            }
+            StmtKind::With { body, .. } | StmtKind::Using { body, .. }
+            | StmtKind::Lock { body, .. } | StmtKind::NamespaceDecl { body, .. } => body.iter().any(|s| sy(s)),
+            StmtKind::MatchStatement { subject, cases } => {
+                ey(subject) || cases.iter().any(|c| {
+                    c.guard.as_ref().map_or(false, |e| ey(e)) || c.body.iter().any(|s| sy(s))
+                })
+            }
+            StmtKind::Assert { test, msg } => ey(test) || msg.as_ref().map_or(false, |e| ey(e)),
+            _ => false,
+        }
+    }
+    stmts.iter().any(|s| sy(s))
+}
+
 fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let is_async = pair.as_rule() == Rule::async_function_declaration;
-    let mut inner = pair.into_inner();
+    let inner = pair.into_inner();
     let mut name = String::new();
     let mut params = Vec::new();
     let mut body = Vec::new();
@@ -185,6 +302,7 @@ fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    let is_generator = body_contains_yield(&body);
     Ok(StmtKind::FunctionDecl {
         name,
         params,
@@ -193,7 +311,7 @@ fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         modifiers: Modifiers::default(),
         handles: Vec::new(),
         is_async,
-        is_generator: false,
+        is_generator,
         is_sub: false,
     })
 }
@@ -346,6 +464,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     visibility: Visibility::Public,
                 })
             } else {
+                let is_generator = body_contains_yield(&body);
                 Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
                     name,
                     params,
@@ -354,7 +473,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     modifiers: Modifiers { is_static, ..Default::default() },
                     handles: Vec::new(),
                     is_async,
-                    is_generator: false,
+                    is_generator,
                     is_sub: false,
                 }))))
             }
@@ -430,7 +549,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             })
         }
         Rule::for_c_header => {
-            let mut parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
+            let parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
             let mut init = None;
             let mut cond = None;
             let mut update = None;
@@ -1069,7 +1188,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 // ── Binary chain walker ─────────────────────────────────────────────────────
 
 fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let rule = pair.as_rule();
+    let _rule = pair.as_rule();
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     if inner.len() == 1 {
@@ -1129,7 +1248,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
     for chain in inner {
         if chain.as_rule() != Rule::call_chain { continue; }
         let chain_src = chain.as_str().trim_start();
-        let mut chain_inner: Vec<Pair<Rule>> = chain.into_inner().collect();
+        let chain_inner: Vec<Pair<Rule>> = chain.into_inner().collect();
 
         if chain_src.starts_with("?.") {
             // Optional chaining
@@ -1259,10 +1378,11 @@ fn walk_object_property(pair: Pair<Rule>) -> Result<ObjectProperty, String> {
                     _ => {}
                 }
             }
+            let is_generator = body_contains_yield(&body);
             let func = Statement::new(StmtKind::FunctionDecl {
                 name: key.clone(), params, return_type: None, body,
                 modifiers: Modifiers::default(), handles: Vec::new(),
-                is_async: false, is_generator: false, is_sub: false,
+                is_async: false, is_generator, is_sub: false,
             });
             return Ok(ObjectProperty::Method { key, value: Box::new(func) });
         }

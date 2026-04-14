@@ -8,7 +8,7 @@
 
 use tiny_skia::*;
 use cosmic_text::Color as CosmicColor;
-use super::{WidgetColors, rounded_rect_path};
+use super::rounded_rect_path;
 use super::layout::{
     LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton,
     KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId,
@@ -404,7 +404,7 @@ impl ColorPicker {
 
         let sv_x = popup_x + PADDING;
         let sv_y = popup_y + PADDING;
-        let hue_x = sv_x + SV_SIZE + GAP;
+        let _hue_x = sv_x + SV_SIZE + GAP;
         let hue_y = sv_y;
 
         if self.dragging_sv {

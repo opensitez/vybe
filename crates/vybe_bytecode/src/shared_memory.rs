@@ -9,7 +9,6 @@
 //! Atomic operations use std::sync::atomic with SeqCst ordering.
 //! This matches real WASM engines (V8, SpiderMonkey).
 
-use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Condvar};
 use std::collections::HashMap;
 

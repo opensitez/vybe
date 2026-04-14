@@ -24,12 +24,12 @@ fn main() {
     TreeView::draw_text_static_internal(&mut pixmap, &mut fs, &mut sc, "Accept terms", 46.0, 18.0, CColor::rgb(51,51,51), 1.0);
 
     // Button
-    let mut button = Button::new("Click me");
+    let button = Button::new("Click me");
     button.paint(&mut pixmap, 20.0, 60.0, 1.0);
     TreeView::draw_text_static_internal(&mut pixmap, &mut fs, &mut sc, "Click me", 30.0, 64.0, CColor::rgb(51,51,51), 1.0);
 
     // Text input
-    let mut ti = TextInput::new().with_placeholder("Enter your name");
+    let ti = TextInput::new().with_placeholder("Enter your name");
     ti.paint_border(&mut pixmap, 20.0, 110.0, 1.0);
     let disp = ti.display_text();
     let col = if ti.is_placeholder() { CColor::rgb(150,150,150) } else { CColor::rgb(0,0,0) };
@@ -42,7 +42,7 @@ fn main() {
     TreeView::draw_text_static_internal(&mut pixmap, &mut fs, &mut sc, "Option A", 46.0, 158.0, CColor::rgb(51,51,51), 1.0);
 
     // Slider
-    let mut slider = Slider::new(0.0, 100.0, 42.0);
+    let slider = Slider::new(0.0, 100.0, 42.0);
     slider.paint(&mut pixmap, 20.0, 200.0, 1.0);
     TreeView::draw_text_static_internal(&mut pixmap, &mut fs, &mut sc, &format!("Value: {:.0}", slider.actual_value()), 240.0, 200.0, CColor::rgb(51,51,51), 1.0);
 

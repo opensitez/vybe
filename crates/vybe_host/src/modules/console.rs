@@ -1,6 +1,5 @@
 use vybe_bytecode::{VM, Value, HostContext};
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 thread_local! {
     static TIMERS: std::cell::RefCell<HashMap<String, f64>> = std::cell::RefCell::new(HashMap::new());

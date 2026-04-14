@@ -38,7 +38,7 @@
 //!   silent). User scripts may or may not have it.
 
 use pest::Parser;
-use pest::iterators::{Pair, Pairs};
+use pest::iterators::Pair;
 use crate::ast::*;
 use super::{PhpParser, Rule};
 

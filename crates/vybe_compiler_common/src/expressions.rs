@@ -257,7 +257,7 @@ pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 ///
 /// `dunder`: the method name to look for (e.g. "__lt__", "__gt__")
 /// `fallback_op`: the primitive opcode to use if no method (e.g. Op::dyn_lt)
-pub fn emit_rich_compare(chunk: &mut Chunk, dunder: &str, fallback_op: Op, line: u32) {
+pub fn emit_rich_compare(chunk: &mut Chunk, _dunder: &str, fallback_op: Op, line: u32) {
     // Stack: [left, right]
     // Save right to temp, check left for dunder method
     // We need to: peek at left (under right), struct_get dunder, check null

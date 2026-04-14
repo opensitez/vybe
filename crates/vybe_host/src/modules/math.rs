@@ -1,4 +1,4 @@
-use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::{VM, Value};
 
 pub fn register(vm: &mut VM) {
     // Core math — also available as opcodes, but registered as host fns

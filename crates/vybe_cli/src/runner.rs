@@ -322,6 +322,7 @@ fn run_vb_file(path: &Path, _extra_args: &[String]) {
 }
 
 /// Map internal ControlType debug names to host-recognized constructor names.
+#[allow(dead_code)]
 fn control_type_name(ctrl: &vybe_forms::Control) -> String {
     match format!("{:?}", ctrl.control_type).as_str() {
         "Frame" => "GroupBox".into(),
