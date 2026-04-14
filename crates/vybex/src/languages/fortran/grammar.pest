@@ -1,0 +1,462 @@
+// Fortran Grammar for pest parser (Modern Fortran 90/95/2003/2008/2018)
+//
+// Fortran is case-insensitive — all keywords use ^"keyword".
+// Newlines separate statements. Comments start with "!".
+// Line continuation: "&" at end of line joins the next line.
+// Semicolons can also separate statements on the same line.
+
+WHITESPACE = _{ " " | "\t" | line_continuation }
+COMMENT    = _{ "!" ~ (!"\n" ~ ANY)* }
+NEWLINE    = { "\r\n" | "\n" | "\r" }
+
+// Line continuation: & at end of line, optionally & at start of next
+line_continuation = _{ "&" ~ (" " | "\t")* ~ ("\r\n" | "\n" | "\r") ~ (" " | "\t")* ~ "&"? }
+
+// ── Program (top-level) ────────────────────────────────────────────────────
+
+program = { SOI ~ line* ~ EOI }
+
+line = _{ statement_line | NEWLINE | COMMENT }
+
+statement_line = {
+    statement ~ (";" ~ statement)* ~ (NEWLINE | &EOI)
+}
+
+// ── Statements ─────────────────────────────────────────────────────────────
+
+statement = _{
+    program_unit
+  | module_unit
+  | use_statement
+  | implicit_statement
+  | contains_statement
+  | subroutine_decl
+  | function_decl
+  | type_decl
+  | interface_decl
+  | if_statement
+  | do_statement
+  | do_while_statement
+  | select_case_statement
+  | print_statement
+  | write_statement
+  | read_statement
+  | allocate_statement
+  | deallocate_statement
+  | call_statement
+  | return_statement
+  | cycle_statement
+  | exit_statement
+  | stop_statement
+  | var_declaration
+  | assignment_statement
+  | expression_statement
+}
+
+// ── Program unit ───────────────────────────────────────────────────────────
+
+program_unit = {
+    kw_program ~ identifier ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end_program ~ identifier? ~ (NEWLINE | &EOI)?
+}
+
+kw_end_program = { kw_end ~ kw_program }
+
+// ── Module unit ────────────────────────────────────────────────────────────
+
+module_unit = {
+    kw_module ~ identifier ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end_module ~ identifier? ~ (NEWLINE | &EOI)?
+}
+
+kw_end_module = { kw_end ~ kw_module }
+
+// ── Use statement ──────────────────────────────────────────────────────────
+
+use_statement = {
+    kw_use ~ identifier ~ ("," ~ kw_only ~ ":" ~ use_name_list)?
+}
+
+use_name_list = { use_name ~ ("," ~ use_name)* }
+use_name = { identifier ~ ("=>" ~ identifier)? }
+
+// ── Implicit ───────────────────────────────────────────────────────────────
+
+implicit_statement = { kw_implicit ~ kw_none }
+
+// ── Contains ───────────────────────────────────────────────────────────────
+
+contains_statement = { kw_contains }
+
+// ── Variable declaration ───────────────────────────────────────────────────
+
+var_declaration = {
+    type_spec ~ var_attributes? ~ "::" ~ var_declarator_list
+}
+
+type_spec = {
+    kw_integer
+  | kw_real
+  | kw_double ~ kw_precision
+  | kw_complex
+  | kw_character ~ ("(" ~ (kw_len ~ "=" )? ~ (expression | "*") ~ ")")?
+  | kw_logical
+  | kw_type ~ "(" ~ identifier ~ ")"
+}
+
+var_attributes = { "," ~ var_attribute ~ ("," ~ var_attribute)* }
+
+var_attribute = {
+    kw_intent ~ "(" ~ intent_spec ~ ")"
+  | kw_parameter
+  | kw_dimension ~ "(" ~ dimension_spec_list ~ ")"
+  | kw_allocatable
+  | kw_save
+  | kw_optional
+  | kw_pointer
+  | kw_target
+  | kw_value
+  | kw_private
+  | kw_public
+}
+
+intent_spec = { kw_in ~ kw_out? | kw_out | kw_inout }
+
+dimension_spec_list = { dimension_spec ~ ("," ~ dimension_spec)* }
+dimension_spec = { expression? ~ ":" ~ expression? | expression | ":" }
+
+var_declarator_list = { var_declarator ~ ("," ~ var_declarator)* }
+
+var_declarator = {
+    identifier ~ ("(" ~ dimension_spec_list ~ ")")? ~ ("=" ~ expression)?
+}
+
+// ── Subroutine ─────────────────────────────────────────────────────────────
+
+subroutine_decl = {
+    kw_subroutine ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ kw_subroutine ~ identifier?
+}
+
+// ── Function ───────────────────────────────────────────────────────────────
+
+function_decl = {
+    type_spec? ~ kw_function ~ identifier ~ "(" ~ param_list? ~ ")" ~ result_clause? ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ kw_function ~ identifier?
+}
+
+result_clause = { kw_result ~ "(" ~ identifier ~ ")" }
+
+param_list = { identifier ~ ("," ~ identifier)* }
+
+// ── Derived type ───────────────────────────────────────────────────────────
+
+type_decl = {
+    kw_type ~ ("," ~ type_attribute)* ~ "::"? ~ identifier ~ ("(" ~ identifier ~ ")")? ~ (NEWLINE | ";")
+    ~ type_member*
+    ~ (kw_contains ~ (NEWLINE | ";") ~ type_bound_procedure*)?
+    ~ kw_end ~ kw_type ~ identifier?
+}
+
+type_attribute = { kw_public | kw_private | kw_extends ~ "(" ~ identifier ~ ")" | kw_abstract }
+
+type_member = { var_declaration | NEWLINE | COMMENT }
+
+type_bound_procedure = {
+    kw_procedure ~ ("::" | ",")? ~ identifier ~ ("=>" ~ identifier)? ~ (NEWLINE | ";")
+}
+
+// ── Interface ──────────────────────────────────────────────────────────────
+
+interface_decl = {
+    kw_interface ~ (kw_operator ~ "(" ~ operator ~ ")" | identifier)? ~ (NEWLINE | ";")
+    ~ (subroutine_decl | function_decl | kw_module ~ kw_procedure ~ identifier ~ (NEWLINE | ";") | NEWLINE | COMMENT)*
+    ~ kw_end ~ kw_interface ~ identifier?
+}
+
+operator = { "+" | "-" | "*" | "/" | "**" | "==" | "/=" | "<" | ">" | "<=" | ">=" | ".and." | ".or." | ".not." }
+
+// ── If statement ───────────────────────────────────────────────────────────
+
+if_statement = {
+    kw_if ~ "(" ~ expression ~ ")" ~ kw_then ~ (NEWLINE | ";")
+    ~ line*
+    ~ elseif_clause*
+    ~ else_clause?
+    ~ kw_end ~ kw_if
+  | kw_if ~ "(" ~ expression ~ ")" ~ single_statement
+}
+
+elseif_clause = {
+    kw_else ~ kw_if ~ "(" ~ expression ~ ")" ~ kw_then ~ (NEWLINE | ";")
+    ~ line*
+}
+
+else_clause = {
+    kw_else ~ (NEWLINE | ";")
+    ~ line*
+}
+
+single_statement = _{
+    print_statement | write_statement | call_statement | assignment_statement
+  | return_statement | cycle_statement | exit_statement | stop_statement
+  | allocate_statement | deallocate_statement | expression_statement
+}
+
+// ── Do loop ────────────────────────────────────────────────────────────────
+
+do_statement = {
+    kw_do ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ kw_do
+}
+
+do_while_statement = {
+    kw_do ~ kw_while ~ "(" ~ expression ~ ")" ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ kw_do
+}
+
+// ── Select case ────────────────────────────────────────────────────────────
+
+select_case_statement = {
+    kw_select ~ kw_case ~ "(" ~ expression ~ ")" ~ (NEWLINE | ";")
+    ~ case_block*
+    ~ kw_end ~ kw_select
+}
+
+case_block = {
+    kw_case ~ ("(" ~ case_value_list ~ ")" | kw_default) ~ (NEWLINE | ";")
+    ~ line*
+}
+
+case_value_list = { case_value ~ ("," ~ case_value)* }
+case_value = { expression ~ (":" ~ expression)? }
+
+// ── I/O ────────────────────────────────────────────────────────────────────
+
+print_statement = {
+    kw_print ~ ("*" | string_literal) ~ ("," ~ expression ~ ("," ~ expression)*)?
+}
+
+write_statement = {
+    kw_write ~ "(" ~ write_spec ~ ("," ~ write_spec)* ~ ")" ~ expression? ~ ("," ~ expression)*
+}
+
+read_statement = {
+    kw_read ~ "(" ~ write_spec ~ ("," ~ write_spec)* ~ ")" ~ identifier? ~ ("," ~ identifier)*
+}
+
+write_spec = { "*" | expression }
+
+// ── Memory ─────────────────────────────────────────────────────────────────
+
+allocate_statement = { kw_allocate ~ "(" ~ alloc_item ~ ("," ~ alloc_item)* ~ ")" }
+deallocate_statement = { kw_deallocate ~ "(" ~ identifier ~ ("," ~ identifier)* ~ ")" }
+alloc_item = { identifier ~ "(" ~ dimension_spec_list ~ ")" }
+
+// ── Call / Return / Cycle / Exit / Stop ────────────────────────────────────
+
+call_statement = { kw_call ~ identifier ~ ("(" ~ argument_list? ~ ")")? }
+
+return_statement = { kw_return ~ expression? }
+
+cycle_statement = { kw_cycle ~ identifier? }
+
+exit_statement = { kw_exit ~ identifier? }
+
+stop_statement = { kw_stop ~ expression? }
+
+// ── Assignment ─────────────────────────────────────────────────────────────
+
+assignment_statement = {
+    identifier ~ member_or_index* ~ "=" ~ expression
+}
+
+member_or_index = {
+    "%" ~ identifier
+  | "(" ~ expression ~ ("," ~ expression)* ~ ")"
+  | "(" ~ expression ~ ":" ~ expression? ~ ")"
+}
+
+// ── Expression statement ───────────────────────────────────────────────────
+
+expression_statement = { expression }
+
+// ── Expressions ────────────────────────────────────────────────────────────
+
+expression = { logical_or }
+
+logical_or = { logical_and ~ (or_op ~ logical_and)* }
+or_op = { ".or." | kw_or_dot }
+
+logical_and = { logical_not ~ (and_op ~ logical_not)* }
+and_op = { ".and." | kw_and_dot }
+
+logical_not = {
+    not_op ~ comparison
+  | comparison
+}
+not_op = { ".not." | kw_not_dot }
+
+comparison = { addition ~ (comparison_op ~ addition)* }
+comparison_op = {
+    "==" | "/=" | "<=" | ">=" | "<" ~ !"<" | ">" ~ !">"
+  | ".eq." | ".ne." | ".lt." | ".gt." | ".le." | ".ge."
+  | ".eqv." | ".neqv."
+}
+
+addition = { multiplication ~ (add_op ~ multiplication)* }
+add_op = { "+" ~ !"=" | "-" ~ !"=" }
+
+multiplication = { power ~ (mul_op ~ power)* }
+mul_op = { "*" ~ !"*" | "/" ~ !"=" }
+
+power = { concat ~ ("**" ~ concat)? }
+
+concat = { unary ~ ("//" ~ unary)* }
+
+unary = {
+    "-" ~ primary_expr
+  | "+" ~ primary_expr
+  | primary_expr
+}
+
+primary_expr = {
+    "(" ~ expression ~ ")"
+  | literal
+  | function_call_or_subscript
+  | identifier
+}
+
+function_call_or_subscript = {
+    identifier ~ "(" ~ argument_list? ~ ")"
+}
+
+argument_list = { argument ~ ("," ~ argument)* }
+argument = { (identifier ~ "=")? ~ expression }
+
+// ── Literals ───────────────────────────────────────────────────────────────
+
+literal = {
+    logical_literal
+  | number_literal
+  | string_literal
+}
+
+logical_literal = { ".true." | ".false." | kw_true_dot | kw_false_dot }
+
+number_literal = @{
+    ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (("e" | "E" | "d" | "D") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ ("_" ~ identifier)?
+  | "." ~ ASCII_DIGIT+ ~ (("e" | "E" | "d" | "D") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ ("_" ~ identifier)?
+  | ASCII_DIGIT+ ~ (("e" | "E" | "d" | "D") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ ("_" ~ identifier)?
+}
+
+string_literal = @{
+    "'" ~ (!"'" ~ ANY | "''")* ~ "'"
+  | "\"" ~ (!"\"" ~ ANY | "\"\"")* ~ "\""
+}
+
+// ── Identifiers ────────────────────────────────────────────────────────────
+
+identifier = @{ !strict_keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+strict_keyword = _{
+    ( ^"program" | ^"end" | ^"module" | ^"use" | ^"implicit" | ^"none"
+    | ^"subroutine" | ^"function" | ^"result" | ^"contains"
+    | ^"integer" | ^"real" | ^"double" | ^"precision" | ^"complex"
+    | ^"character" | ^"logical" | ^"type"
+    | ^"intent" | ^"dimension" | ^"allocatable" | ^"parameter" | ^"save"
+    | ^"optional" | ^"pointer" | ^"target" | ^"value"
+    | ^"if" | ^"then" | ^"else" | ^"elseif" | ^"endif" | ^"enddo" | ^"do" | ^"while"
+    | ^"select" | ^"case" | ^"default"
+    | ^"print" | ^"write" | ^"read" | ^"call" | ^"return"
+    | ^"cycle" | ^"exit" | ^"stop" | ^"allocate" | ^"deallocate"
+    | ^"interface" | ^"operator" | ^"abstract" | ^"extends"
+    | ^"public" | ^"private" | ^"procedure"
+    | ^"only"
+    ) ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+// ── Keywords (case-insensitive) ────────────────────────────────────────────
+
+kw_program    = @{ ^"program"    ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_end        = @{ ^"end"        ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_module     = @{ ^"module"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_use        = @{ ^"use"        ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_only       = @{ ^"only"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_implicit   = @{ ^"implicit"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_none       = @{ ^"none"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_contains   = @{ ^"contains"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_subroutine = @{ ^"subroutine" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_function   = @{ ^"function"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_result     = @{ ^"result"     ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// Type keywords
+kw_integer    = @{ ^"integer"    ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_real       = @{ ^"real"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_double     = @{ ^"double"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_precision  = @{ ^"precision"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_complex    = @{ ^"complex"    ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_character  = @{ ^"character"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_logical    = @{ ^"logical"    ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_type       = @{ ^"type"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_len        = @{ ^"len"        ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// Attribute keywords
+kw_intent     = @{ ^"intent"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_in         = @{ ^"in"         ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_out        = @{ ^"out"        ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_inout      = @{ ^"inout"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_parameter  = @{ ^"parameter"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_dimension  = @{ ^"dimension"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_allocatable = @{ ^"allocatable" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_save       = @{ ^"save"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_optional   = @{ ^"optional"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_pointer    = @{ ^"pointer"    ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_target     = @{ ^"target"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_value      = @{ ^"value"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_private    = @{ ^"private"    ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_public     = @{ ^"public"     ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// Control flow
+kw_if         = @{ ^"if"         ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_then       = @{ ^"then"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_else       = @{ ^"else"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_do         = @{ ^"do"         ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_while      = @{ ^"while"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_select     = @{ ^"select"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_case       = @{ ^"case"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_default    = @{ ^"default"    ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// I/O
+kw_print      = @{ ^"print"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_write      = @{ ^"write"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_read       = @{ ^"read"       ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// Statements
+kw_call       = @{ ^"call"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_return     = @{ ^"return"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_cycle      = @{ ^"cycle"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_exit       = @{ ^"exit"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_stop       = @{ ^"stop"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_allocate   = @{ ^"allocate"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_deallocate = @{ ^"deallocate" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// OO/interface
+kw_interface  = @{ ^"interface"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_operator   = @{ ^"operator"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_abstract   = @{ ^"abstract"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_extends    = @{ ^"extends"    ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_procedure  = @{ ^"procedure"  ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// Logical literal operators (case-insensitive dotted)
+kw_or_dot     = @{ ^".or."  }
+kw_and_dot    = @{ ^".and." }
+kw_not_dot    = @{ ^".not." }
+kw_true_dot   = @{ ^".true."  }
+kw_false_dot  = @{ ^".false." }

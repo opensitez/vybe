@@ -1,6 +1,7 @@
 pub mod cobol;
 pub mod csharp;
 pub mod dart;
+pub mod fortran;
 pub mod js;
 pub mod pascal;
 pub mod php;
@@ -31,6 +32,7 @@ pub fn all() -> Vec<Language> {
         Language { parse: ruby::parse, profile_source: ruby::profile_source },
         Language { parse: dart::parse, profile_source: dart::profile_source },
         Language { parse: cobol::parse, profile_source: cobol::profile_source },
+        Language { parse: fortran::parse, profile_source: fortran::profile_source },
     ]
 }
 

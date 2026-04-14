@@ -28,7 +28,7 @@ pub struct Module {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
-    VB, JavaScript, CSharp, Python, Ruby, PHP, Dart, Pascal, Cobol, Unknown,
+    VB, JavaScript, CSharp, Python, Ruby, PHP, Dart, Pascal, Cobol, Fortran, Unknown,
 }
 
 #[derive(Debug, Clone)]
