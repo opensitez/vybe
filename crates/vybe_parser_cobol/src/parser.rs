@@ -14,9 +14,10 @@ impl Parser {
         Ok(Parser { tokens, pos: 0 })
     }
 
+    #[allow(unused_assignments)]
     pub fn parse_program(&mut self) -> Result<Program, String> {
         let mut program_id = String::new();
-        let mut author = None;
+        let author = None;
         let mut data_items = Vec::new();
         let mut paragraphs = Vec::new();
         let mut main_body = Vec::new();

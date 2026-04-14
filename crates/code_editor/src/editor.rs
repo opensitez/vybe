@@ -1,6 +1,6 @@
 //! Code editor engine — wraps vybe_widgets::TextEditor with LSP diagnostic support.
 
-pub use vybe_widgets::text_editor::{LexerState, TokenKind, TokenSpan};
+pub use vybe_widgets::text_editor::{LexerState, TokenSpan};
 use vybe_widgets::text_editor::TextEditor;
 use vybe_widgets::language::LanguageDef;
 use lsp_types::Diagnostic;
@@ -9,9 +9,11 @@ use std::collections::HashSet;
 /// Editor wraps TextEditor and adds LSP-specific diagnostics.
 pub struct Editor {
     pub inner: TextEditor,
+    #[allow(dead_code)]
     pub diagnostics: Vec<Diagnostic>,
 }
 
+#[allow(dead_code)]
 impl Editor {
     pub fn from_text(text: &str, lang: &LanguageDef) -> Self {
         Self {
@@ -43,6 +45,7 @@ impl Editor {
 }
 
 // Expose inner fields via Deref-like accessors for renderer.rs compatibility
+#[allow(dead_code)]
 impl Editor {
     pub fn line_tokens(&self) -> &Vec<Vec<TokenSpan>> { &self.inner.line_tokens }
     pub fn line_states(&self) -> &Vec<LexerState> { &self.inner.line_states }

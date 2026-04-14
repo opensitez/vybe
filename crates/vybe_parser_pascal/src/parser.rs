@@ -41,6 +41,7 @@ impl Parser {
             t => Err(format!("Expected identifier, got {:?}", t)),
         }
     }
+    #[allow(dead_code)]
     fn eat_semicolons(&mut self) { while self.eat(&Token::Semicolon) {} }
 
     // ── Program ───────────────────────────────────────────────────────────────

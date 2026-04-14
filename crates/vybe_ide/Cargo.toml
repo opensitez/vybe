@@ -20,3 +20,6 @@ tiny-skia = "0.12"
 softbuffer = "0.4"
 winit = "0.30"
 cosmic-text = "0.18"
+
+[features]
+database = []

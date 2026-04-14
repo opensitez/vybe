@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::collections::HashMap;
 use vybe_parser_python::ast::*;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
@@ -122,6 +121,7 @@ impl Compiler {
     }
 
     /// Emit ref_func with 0 upvalues (for cases where we know there are none).
+    #[allow(dead_code)]
     fn emit_ref_func_no_upvalues(&mut self, chunk_idx: usize, func_chunk_idx: usize) {
         self.chunk(chunk_idx).emit_op_u16(Op::ref_func, func_chunk_idx as u16, 0);
         self.chunk(chunk_idx).emit(0, 0);
@@ -1644,7 +1644,7 @@ impl Compiler {
                                 } else {
                                     // Dynamic: compile type expr, use host pytype + eq
                                     self.compile_expr(&args[1], chunk_idx)?;
-                                    let type_fn = self.chunk(chunk_idx).add_import("vybe:array", "pytype");
+                                    let _type_fn = self.chunk(chunk_idx).add_import("vybe:array", "pytype");
                                     // Stack: [obj, type_arg]. Need pytype(obj) == str(type_arg)
                                     // Simplified: just emit false for dynamic isinstance
                                     self.chunk(chunk_idx).emit_op(Op::drop, 0);
@@ -3424,21 +3424,6 @@ impl Compiler {
                 let pyset = self.chunk(chunk_idx).add_import("vybe:array", "pyset");
                 self.chunk(chunk_idx).emit_op_u16(Op::call_import, pyset, 0);
                 self.chunk(chunk_idx).emit(1, 0);
-            }
-            "read" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
-            }
-            "write" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
-                if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
-                let write_fn = self.chunk(chunk_idx).add_import("wasi:filesystem", "writeFile");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, write_fn, 0);
-                self.chunk(chunk_idx).emit(2, 0);
-            }
-            "close" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                self.chunk(chunk_idx).emit_op(Op::null, 0);
             }
             _ => {
                 // Unknown builtin — should not reach here, but emit null as safety

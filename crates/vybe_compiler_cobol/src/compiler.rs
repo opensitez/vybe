@@ -11,6 +11,7 @@ pub struct Compiler {
     line: u32,
     next_local: u16,
     /// Maps data item names (uppercase) to local slots
+    #[allow(dead_code)]
     data_slots: std::collections::HashMap<String, u16>,
     /// Maps paragraph names to chunk indices
     para_chunks: std::collections::HashMap<String, usize>,
@@ -1507,7 +1508,7 @@ impl Compiler {
                     // ── INQUIRE / SET (system queries) ─────────
                     "INQUIRE" | "SET" => {
                         // System resource queries — simplified
-                        for (key, val) in params {
+                        for (_key, val) in params {
                             if !val.is_empty() {
                                 self.emit_constant(Value::String(Arc::from("")));
                                 let vi = self.add_string_constant(val);
@@ -2029,6 +2030,7 @@ impl Compiler {
     /// Takes a raw value and PIC string on stack, produces formatted string.
     /// Handles: Z (zero suppress), $ (currency), , (comma), . (decimal), 9 (digit), - (sign)
     /// Stack: [value, pic_string] → [formatted_string]
+    #[allow(dead_code)]
     fn emit_pic_format(&mut self, _pic: &str) {
         // Use host string format function which handles basic formatting
         let i = self.import("vybe:string", "format");
@@ -2079,6 +2081,7 @@ impl Compiler {
 
     /// After arithmetic, round to COMP-3 precision based on PIC.
     /// PIC 9(5)V99 → round to 2 decimal places.
+    #[allow(dead_code)]
     fn emit_comp3_round(&mut self, pic: &str) {
         // Count digits after V to determine scale
         let upper = pic.to_uppercase();

@@ -136,6 +136,7 @@ impl Lexer {
         if self.pos < self.src.len() { Some(self.src[self.pos]) } else { None }
     }
 
+    #[allow(dead_code)]
     fn peek2(&self) -> Option<char> {
         if self.pos + 1 < self.src.len() { Some(self.src[self.pos + 1]) } else { None }
     }

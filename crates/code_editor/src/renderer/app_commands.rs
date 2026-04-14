@@ -8,7 +8,7 @@ impl App {
     /// Push a line to the output panel and auto-show it.
     pub(crate) fn output_push(&mut self, line: String) {
         // Get current lines, add the new one, and set back
-        let mut lines: Vec<String> = Vec::new();
+        let _lines: Vec<String> = Vec::new();
         // We need to rebuild from scratch since OutputPanel owns the lines
         // Use a helper: store lines externally and sync
         self.output_lines_buffer.push(line);

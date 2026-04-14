@@ -23,6 +23,7 @@ struct ClassInfo {
     fields: Vec<String>,
     method_sigs: Vec<MethodSig>,
     compiled_methods: Vec<CompiledMethod>,
+    #[allow(dead_code)]
     properties: Vec<PropertyDef>,
 }
 
@@ -928,7 +929,7 @@ impl Compiler {
     }
 
     fn compile_call(&mut self, callee: &Expression, args: &[Expression]) -> Result<(), String> {
-        let line = self.line;
+        let _line = self.line;
         // Builtin function check
         if let Expression::Identifier(name) = callee {
             if self.try_compile_builtin(name, args)? { return Ok(()); }
@@ -1343,7 +1344,7 @@ impl Compiler {
         self.defined_globals.insert(name.to_string());
 
         // Initialize class variables as globals
-        let line = self.line;
+        let _line = self.line;
         for cv in &class_vars {
             let global_name = format!("{}.{}", name, cv);
             self.emit(Op::null);

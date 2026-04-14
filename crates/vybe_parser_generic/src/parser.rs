@@ -54,7 +54,7 @@ impl<'a> Parser<'a> {
     }
 
     fn advance(&mut self) -> &Token {
-        let tok = self.peek();
+        let _tok = self.peek();
         if self.pos < self.tokens.len() { self.pos += 1; }
         // SAFETY: we return from the slice which outlives the borrow
         &self.tokens[self.pos - 1]
@@ -126,6 +126,7 @@ impl<'a> Parser<'a> {
         while self.peek().kind == TokenKind::Newline { self.advance(); }
     }
 
+    #[allow(dead_code)]
     fn skip_terminators(&mut self) {
         match &self.grammar.language.statement_terminator {
             Terminator::Char(c) => {
@@ -429,8 +430,8 @@ impl<'a> Parser<'a> {
 
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
         self.skip_newlines();
-        let line = self.peek().line;
-        let col = self.peek().col;
+        let _line = self.peek().line;
+        let _col = self.peek().col;
 
         // Try declarations first
         if let Some(decl) = self.try_parse_declaration()? {
@@ -763,7 +764,7 @@ impl<'a> Parser<'a> {
         if self.eat_op("(") {
             // Could be for(init;cond;update) or for(x in/of expr)
             // Try for-in/of first
-            let has_var_kw = self.eat_keyword("var") || self.eat_keyword("let") || self.eat_keyword("const");
+            let _has_var_kw = self.eat_keyword("var") || self.eat_keyword("let") || self.eat_keyword("const");
             if self.peek().kind == TokenKind::Ident {
                 let var = self.peek().text.clone();
                 let after_ident = self.pos + 1;
@@ -1570,7 +1571,7 @@ impl<'a> Parser<'a> {
                     continue;
                 }
                 if self.is_keyword("function") || self.is_keyword("procedure") {
-                    let kw = self.advance().text.clone();
+                    let _kw = self.advance().text.clone();
                     let mname = self.expect_ident()?;
                     let params = if self.is_op("(") { self.parse_params()? } else { Vec::new() };
                     let return_type = if self.eat_op(":") { Some(self.parse_type_name()?) } else { None };
@@ -2370,7 +2371,7 @@ impl<'a> Parser<'a> {
 
     fn parse_postfix(&mut self, mut expr: Expression) -> Result<Expression, ParseError> {
         loop {
-            let tok = self.peek();
+            let _tok = self.peek();
             // Member access: .field
             if let Some(ref ma) = self.grammar.expressions.member_access {
                 if self.is_op(ma) {

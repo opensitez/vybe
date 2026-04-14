@@ -1154,6 +1154,31 @@ impl Parser {
                 self.advance();
                 Ok(Expression::Number(n))
             }
+            // Handle %w[] / %i[] / %q{} string that was encoded by lexer (before general Str arm)
+            TokenKind::Str(ref s) if s.starts_with('\x03') => {
+                let s = s.clone();
+                self.advance();
+                if s.starts_with("\x03w") {
+                    let content = &s[2..];
+                    let words: Vec<Expression> = if content.is_empty() {
+                        Vec::new()
+                    } else {
+                        content.split('\x04').map(|w| Expression::Str(w.to_string())).collect()
+                    };
+                    Ok(Expression::Array(words))
+                } else if s.starts_with("\x03i") {
+                    let content = &s[2..];
+                    let syms: Vec<Expression> = if content.is_empty() {
+                        Vec::new()
+                    } else {
+                        content.split('\x04').map(|w| Expression::Symbol(w.to_string())).collect()
+                    };
+                    Ok(Expression::Array(syms))
+                } else {
+                    Ok(Expression::Str(s[2..].to_string()))
+                }
+            }
+
             TokenKind::Str(s) => {
                 self.advance();
                 // Check for string interpolation
@@ -1171,6 +1196,25 @@ impl Parser {
             TokenKind::False => { self.advance(); Ok(Expression::Bool(false)) }
             TokenKind::Nil => { self.advance(); Ok(Expression::Nil) }
             TokenKind::Self_ => { self.advance(); Ok(Expression::SelfExpr) }
+
+            // Magic constants (must be before general Identifier arm)
+            TokenKind::Identifier(ref name) if name == "__FILE__" => {
+                self.advance();
+                Ok(Expression::MagicConstant(MagicConst::File))
+            }
+            TokenKind::Identifier(ref name) if name == "__LINE__" => {
+                let line = self.current_line();
+                self.advance();
+                Ok(Expression::Number(line as f64))
+            }
+            TokenKind::Identifier(ref name) if name == "__dir__" => {
+                self.advance();
+                Ok(Expression::MagicConstant(MagicConst::Dir))
+            }
+            TokenKind::Identifier(ref name) if name == "__method__" => {
+                self.advance();
+                Ok(Expression::MagicConstant(MagicConst::Method))
+            }
 
             TokenKind::Identifier(name) => {
                 self.advance();
@@ -1516,25 +1560,6 @@ impl Parser {
                 Ok(Expression::Backtick(cmd))
             }
 
-            // Magic constants
-            TokenKind::Identifier(ref name) if name == "__FILE__" => {
-                self.advance();
-                Ok(Expression::MagicConstant(MagicConst::File))
-            }
-            TokenKind::Identifier(ref name) if name == "__LINE__" => {
-                let line = self.current_line();
-                self.advance();
-                Ok(Expression::Number(line as f64))
-            }
-            TokenKind::Identifier(ref name) if name == "__dir__" => {
-                self.advance();
-                Ok(Expression::MagicConstant(MagicConst::Dir))
-            }
-            TokenKind::Identifier(ref name) if name == "__method__" => {
-                self.advance();
-                Ok(Expression::MagicConstant(MagicConst::Method))
-            }
-
             // pp (pretty print)
             TokenKind::Pp => {
                 self.advance();
@@ -1586,33 +1611,6 @@ impl Parser {
                     None
                 };
                 Ok(Expression::Throw { tag: Box::new(tag), value })
-            }
-
-            // Handle %w[] / %i[] / %q{} string that was encoded by lexer
-            TokenKind::Str(ref s) if s.starts_with('\x03') => {
-                let s = s.clone();
-                self.advance();
-                if s.starts_with("\x03w") {
-                    // Word array
-                    let content = &s[2..];
-                    let words: Vec<Expression> = if content.is_empty() {
-                        Vec::new()
-                    } else {
-                        content.split('\x04').map(|w| Expression::Str(w.to_string())).collect()
-                    };
-                    Ok(Expression::Array(words))
-                } else if s.starts_with("\x03i") {
-                    // Symbol array
-                    let content = &s[2..];
-                    let syms: Vec<Expression> = if content.is_empty() {
-                        Vec::new()
-                    } else {
-                        content.split('\x04').map(|w| Expression::Symbol(w.to_string())).collect()
-                    };
-                    Ok(Expression::Array(syms))
-                } else {
-                    Ok(Expression::Str(s[2..].to_string()))
-                }
             }
 
             _ => Err(format!("Unexpected token {:?} at line {}", self.current(), self.current_line())),

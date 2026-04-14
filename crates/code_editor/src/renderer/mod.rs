@@ -20,8 +20,8 @@ use crate::lsp_client::{LspClient, LspRequest};
 use vybe_widgets::{TreeView, Dropdown};
 use vybe_widgets::code_editor_widget::{Theme, CodeEditorWidget};
 use vybe_widgets::{SplitPanel, TabPanel, StatusBarPanel, LayoutRect, PanelWidget};
-use vybe_widgets::layout::{RenderContext, WidgetEvent};
-use vybe_widgets::output_panel::{OutputPanel, OutputPanelEvent, OutputTab, ProblemEntry, ProblemSeverity};
+use vybe_widgets::layout::WidgetEvent;
+use vybe_widgets::output_panel::{OutputPanel, OutputPanelEvent};
 
 use dialogs::ProjectPropsDialog;
 
@@ -54,6 +54,7 @@ pub(crate) const SIDEBAR_TAB_H: f32 = 28.0;
 pub(crate) enum SidebarTab { Files, Project }
 
 #[derive(Clone, Copy, PartialEq)]
+#[allow(dead_code)]
 pub(crate) enum BottomPanelTab { Output, Problems }
 
 #[derive(Clone, Copy)]
@@ -86,6 +87,7 @@ pub struct Tab {
     pub path: Option<String>,
     pub content: TabContent,
     pub is_sticky: bool,
+    #[allow(dead_code)]
     pub buffer: Option<()>,
     pub is_modified: bool,
 }
@@ -116,13 +118,16 @@ pub(crate) struct App {
     pub(crate) is_dragging_splitter: bool,
     pub(crate) hovering_splitter: bool,
     pub(crate) hovering_tab_close: Option<usize>,
+    #[allow(dead_code)]
     pub(crate) is_dragging: bool,
     pub(crate) needs_redraw: bool,
     pub(crate) last_lsp_update: Instant,
     pub(crate) pending_lsp_update: bool,
+    #[allow(dead_code)]
     pub(crate) lsp: Arc<LspClient>,
     pub(crate) is_quick_open: bool,
     pub(crate) quick_open_query: String,
+    #[allow(dead_code)]
     pub(crate) tab_scroll_x: f32,
     pub(crate) current_theme_idx: usize,
     pub(crate) breadcrumb_rects: Vec<(Rect, String)>,

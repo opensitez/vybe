@@ -1251,7 +1251,7 @@ impl Compiler {
                     self.emit_host_call(i, (args.len() + 1) as u8);
                     return Ok(());
                 }
-                "modify" | "add" | "sub" => {
+                "modify" | "sub" => {
                     // $dt->modify('+1 day') — simplified
                     self.compile_expression(object)?;
                     return Ok(());
@@ -2152,7 +2152,6 @@ impl Compiler {
             "decoct" => { compile_args!(); let i = self.import("vybe:convert", "oct"); self.emit_host_call(i, 1); return Ok(Some(())); }
             "is_finite" => { compile_args!(); let i = self.import("vybe:convert", "isFinite"); self.emit_host_call(i, 1); return Ok(Some(())); }
             "is_nan" => { compile_args!(); let i = self.import("vybe:convert", "isNaN"); self.emit_host_call(i, 1); return Ok(Some(())); }
-            "is_integer" => { compile_args!(); let i = self.import("vybe:convert", "isInteger"); self.emit_host_call(i, 1); return Ok(Some(())); }
 
             // ── Math (unmapped) ──
             "hypot" => { compile_args!(); let i = self.import("vybe:math", "hypot"); self.emit_host_call(i, 2); return Ok(Some(())); }
@@ -2188,11 +2187,8 @@ impl Compiler {
             "php_info" => { self.emit_constant(Value::String(Arc::from("Vybe PHP 8.3 on WASM VM"))); let line = self.line; common::io::emit_print(&mut self.chunks[c], 1, line); return Ok(Some(())); }
             "get_current_user" => { let i = self.import("wasi:cli", "userName"); self.emit_host_call(i, 0); return Ok(Some(())); }
 
-            // ── File handles (same host as VB Open/Print/Input/Close) ──
+            // ── File handles (additional) ──
             "fopen" => { compile_args!(); let i = self.import("wasi:filesystem", "openFile"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
-            "fwrite" | "fputs" => { compile_args!(); let i = self.import("wasi:filesystem", "printFile"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
-            "fgets" | "fread" => { compile_args!(); let i = self.import("wasi:filesystem", "lineInput"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
-            "fclose" => { compile_args!(); let i = self.import("wasi:filesystem", "closeFile"); self.emit_host_call(i, 1); return Ok(Some(())); }
             "feof" => { compile_args!(); self.emit(Op::ref_is_null); return Ok(Some(())); }
 
             // ── Filesystem (more) ──
@@ -2709,7 +2705,7 @@ impl Compiler {
 
         // Set class constants on the constructor object
         // For enum cases: create objects with ->name and ->value accessors
-        let is_enum = !constants.is_empty() && constants.iter().all(|(_, v)| !matches!(v, Expression::Number(_) | Expression::Bool(_)) || true);
+        let _is_enum = !constants.is_empty() && constants.iter().all(|(_, v)| !matches!(v, Expression::Number(_) | Expression::Bool(_)) || true);
         for (const_name, const_val) in &constants {
             self.emit_u16(Op::local_get, class_local);
             // Build enum case object: { name: "CaseName", value: val, __type: "ClassName" }

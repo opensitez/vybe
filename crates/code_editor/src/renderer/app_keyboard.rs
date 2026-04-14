@@ -2,7 +2,6 @@ use std::time::Instant;
 use winit::keyboard::{Key, NamedKey};
 
 use super::{App, TabContent};
-use vybe_widgets::code_editor_widget::CodeEditorWidget;
 use vybe_widgets::CursorMotion;
 
 impl App {

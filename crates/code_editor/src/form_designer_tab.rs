@@ -72,7 +72,9 @@ const TITLE_H: f32 = 30.0;
 const FORM_PADDING: f32 = 20.0;
 const GRID_SIZE: f32 = 20.0;
 const HANDLE_SZ: f32 = 6.0;
+#[allow(dead_code)]
 const MENU_BAR_H: f32 = 28.0;
+#[allow(dead_code)]
 const TOOLBAR_H: f32 = 36.0;
 
 // ── Menu bar ──────────────────────────────────────────────

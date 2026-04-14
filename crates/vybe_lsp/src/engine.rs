@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use crossbeam_channel::{Sender, Receiver, TryRecvError};
+#[allow(unused_imports)]
 use vybe_parser_generic::Lang;
 use crate::extract;
 use crate::symbols::*;
@@ -124,7 +125,7 @@ fn analysis_loop(
         }
 
         // Check if debounce period elapsed
-        if let Some((ref uri, ref content, version, at)) = pending {
+        if let Some((ref uri, ref _content, version, at)) = pending {
             if at.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
                 let current = latest_version.load(Ordering::Relaxed);
                 if version >= current {

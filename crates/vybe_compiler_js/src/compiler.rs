@@ -3164,10 +3164,6 @@ impl Compiler {
                 Ok(Some(()))
             }
             ("Object", "create", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:object", "create"); self.emit_host_call(idx, 1); Ok(Some(())) }
-            ("Array", "isArray", 1) => { self.compile_expression(&args[0])?; self.emit(Op::ref_is_array); Ok(Some(())) }
-            ("Array", "from", 1) => { self.compile_expression(&args[0])?; let idx = self.import("vybe:array", "from"); self.emit_host_call(idx, 1); Ok(Some(())) }
-            ("Number", "isNaN", 1) => { self.compile_expression(&args[0])?; self.emit(Op::dup); self.emit(Op::dyn_ne); Ok(Some(())) }
-            ("Number", "isFinite", 1) => { self.compile_expression(&args[0])?; common_math::emit_abs(&mut self.chunks[self.current_chunk_idx], self.line); self.emit_constant(Value::F64(f64::MAX)); self.emit(Op::dyn_le); Ok(Some(())) }
             ("Number", "parseInt", _) => {
                 for a in args { self.compile_expression(a)?; }
                 let idx = self.import("vybe:convert", "cint");

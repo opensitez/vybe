@@ -108,7 +108,7 @@ impl ProjectPropertiesDialog {
         // Content
         let text_color = CosmicColor::rgba(30, 30, 30, 255);
         let label_color = CosmicColor::rgba(60, 60, 60, 255);
-        let dim_color = CosmicColor::rgba(120, 120, 120, 255);
+        let _dim_color = CosmicColor::rgba(120, 120, 120, 255);
         let mut y = dy + TITLE_H + 16.0;
 
         // Project Name

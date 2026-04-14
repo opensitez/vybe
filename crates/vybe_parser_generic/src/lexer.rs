@@ -93,6 +93,7 @@ impl<'a> Lexer<'a> {
         c
     }
 
+    #[allow(dead_code)]
     fn remaining(&self) -> &[char] { &self.chars[self.pos..] }
 
     fn starts_with(&self, s: &str) -> bool {
@@ -227,7 +228,7 @@ impl<'a> Lexer<'a> {
         for (open, close) in &self.spec.comment_block {
             if self.starts_with(open) {
                 self.advance_n(open.len());
-                let close_chars: Vec<char> = close.chars().collect();
+                let _close_chars: Vec<char> = close.chars().collect();
                 while self.pos < self.chars.len() {
                     if self.starts_with(close) {
                         self.advance_n(close.len());
@@ -419,7 +420,7 @@ impl<'a> Lexer<'a> {
 
         // Count leading whitespace
         let mut indent = 0u32;
-        let start_pos = self.pos;
+        let _start_pos = self.pos;
         while let Some(c) = self.peek() {
             match c {
                 ' ' => { indent += 1; self.advance(); }

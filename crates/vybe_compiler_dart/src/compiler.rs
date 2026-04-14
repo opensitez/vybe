@@ -970,7 +970,7 @@ impl Compiler {
             common_fn::emit_function_epilogue(&mut self.chunks[idx], self.line);
             let lc = self.current_scope().next_slot;
             self.chunks[idx].local_count = lc;
-            let upvalues = self.current_scope().upvalues.clone();
+            let _upvalues = self.current_scope().upvalues.clone();
             self.scopes.pop();
             self.current_chunk_idx = saved;
             return Ok(());

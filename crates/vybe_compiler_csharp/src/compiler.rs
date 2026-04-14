@@ -355,6 +355,7 @@ impl Compiler {
     // Known types (same table as VB compiler)
     // ================================================================
 
+    #[allow(dead_code)]
     fn init_known_types() -> HashMap<String, (&'static str, &'static str)> {
         common::dotnet::known_types()
     }

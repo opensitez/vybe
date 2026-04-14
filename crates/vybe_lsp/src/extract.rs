@@ -7,6 +7,7 @@ use vybe_parser_generic::*;
 use crate::symbols::*;
 
 /// Extract symbols from a parsed common AST module.
+#[allow(dead_code)]
 pub fn extract_symbols(module: &Module) -> Vec<Symbol> {
     let mut out = Vec::new();
     for stmt in &module.body {
@@ -17,7 +18,7 @@ pub fn extract_symbols(module: &Module) -> Vec<Symbol> {
 
 fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
     match &stmt.kind {
-        StmtKind::FunctionDecl { name, params, return_type, body, modifiers } => {
+        StmtKind::FunctionDecl { name, params, return_type, body, modifiers: _ } => {
             let param_str: Vec<String> = params.iter().map(|p| {
                 if let Some(ref t) = p.type_hint {
                     format!("{}: {}", p.name, t)
@@ -40,7 +41,7 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
             });
         }
 
-        StmtKind::ClassDecl { name, parent, members, modifiers, .. } => {
+        StmtKind::ClassDecl { name, parent, members, modifiers: _, .. } => {
             let mut children = Vec::new();
             for m in members { extract_stmt(m, &mut children); }
             let detail = parent.as_ref().map(|p| format!("({})", p)).unwrap_or_default();

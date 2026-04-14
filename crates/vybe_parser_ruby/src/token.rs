@@ -5,6 +5,7 @@ pub struct Token {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(non_camel_case_types)]
 pub enum TokenKind {
     // Literals
     Number(f64),

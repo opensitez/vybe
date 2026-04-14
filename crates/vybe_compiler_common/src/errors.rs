@@ -136,7 +136,7 @@ pub fn is_exception_type(name: &str) -> bool {
         // PHP
         | "runtimeexception" | "logicexception" | "domainexception"
         | "lengthexception" | "outofboundsexception" | "outofrangeexception"
-        | "rangeexception" | "underflowexception" | "overflowexception"
+        | "rangeexception" | "underflowexception"
         | "unexpectedvalueexception"
         // JS
         | "rangeerror" | "syntaxerror" | "referenceerror" | "urierror"

@@ -21,7 +21,7 @@ impl App {
         let tch = self.top_chrome_h();
         let mx = self.mouse_pos.0 / SCALE;
         let my = self.mouse_pos.1 / SCALE;
-        let ph = self.win_height * SCALE / SCALE;
+        let _ph = self.win_height * SCALE / SCALE;
         // Output panel scroll
         if self.output_panel.visible() {
             let out_rect = self.output_panel.rect();

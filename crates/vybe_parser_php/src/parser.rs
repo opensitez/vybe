@@ -36,6 +36,7 @@ impl Parser {
         k
     }
 
+    #[allow(dead_code)]
     fn check(&self, kind: &TokenKind) -> bool {
         self.peek() == kind
     }

@@ -2527,14 +2527,6 @@ impl Compiler {
                     self.compile_expression(recv)?;
                     return Ok(());
                 }
-                "include?" => {
-                    self.compile_expression(recv)?;
-                    for a in args { self.compile_expression(a)?; }
-                    let c = self.current_chunk_idx;
-                    let line = self.line;
-                    common::collections::emit_contains(&mut self.chunks[c], line);
-                    return Ok(());
-                }
                 "each_slice" | "each_cons" => {
                     if let Some(_blk) = block {
                         self.compile_expression(recv)?;
@@ -2748,18 +2740,6 @@ impl Compiler {
                     self.emit_host_call(i, args.len() as u8);
                     return Ok(());
                 }
-                "size" if args.len() == 1 => {
-                    self.compile_expression(&args[0])?;
-                    let i = self.import("wasi:filesystem", "fileSize");
-                    self.emit_host_call(i, 1);
-                    return Ok(());
-                }
-                "write" if args.len() >= 2 => {
-                    for a in args { self.compile_expression(a)?; }
-                    let i = self.import("wasi:filesystem", "writeFile");
-                    self.emit_host_call(i, args.len() as u8);
-                    return Ok(());
-                }
                 "readlines" => {
                     self.compile_expression(recv)?;
                     let i = self.import("wasi:filesystem", "readFile");
@@ -2896,45 +2876,6 @@ impl Compiler {
                     common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
                     self.emit_u16(Op::local_get, hash_slot);
                     return Ok(());
-                }
-                // ── each_with_object ───────────────────────────
-                "each_with_object" => {
-                    if let Some(blk) = block {
-                        // arr.each_with_object(init) { |elem, obj| ... }
-                        if !args.is_empty() {
-                            self.compile_expression(&args[0])?;
-                        } else {
-                            self.emit(Op::null);
-                        }
-                        let obj_slot = self.define_local("__ewo_obj");
-                        self.emit_u16(Op::local_set, obj_slot);
-                        self.compile_expression(recv)?;
-                        let arr_slot = self.define_local("__ewo_arr");
-                        self.emit_u16(Op::local_set, arr_slot);
-                        let blk_decl = MethodDecl {
-                            name: "<block>".to_string(),
-                            params: blk.params.iter().map(|n| Param { name: n.clone(), default: None, splat: false, double_splat: false, block: false, keyword: false }).collect(),
-                            body: blk.body.clone(), is_self: false,
-                        };
-                        let fn_ci = self.compile_method_def(&blk_decl)?;
-                        let line = self.line;
-                        common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], fn_ci, 0, line);
-                        let fn_slot = self.define_local("__ewo_fn");
-                        self.emit_u16(Op::local_set, fn_slot);
-                        let i_slot = self.define_local("__ewo_i");
-                        let c = self.current_chunk_idx;
-                        let (loop_start, exit) = common::loops::emit_for_in_start(&mut self.chunks[c], arr_slot, i_slot, line);
-                        let elem_slot = self.define_local("__ewo_elem");
-                        self.emit_u16(Op::local_set, elem_slot);
-                        self.emit_u16(Op::local_get, fn_slot);
-                        self.emit_u16(Op::local_get, elem_slot);
-                        self.emit_u16(Op::local_get, obj_slot);
-                        self.emit_u8(Op::call_ref, 2);
-                        self.emit(Op::drop);
-                        common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
-                        self.emit_u16(Op::local_get, obj_slot);
-                        return Ok(());
-                    }
                 }
                 // ── minmax ─────────────────────────────────────
                 "minmax" => {
