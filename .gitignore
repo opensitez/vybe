@@ -1,6 +1,7 @@
 # Rust
 target/
 Cargo.lock
+snapshot_cache
 
 # IDE
 .vscode/
@@ -12,6 +13,8 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
-
+tmp
+temp
+data
 # Project files
 *.vbp.user
