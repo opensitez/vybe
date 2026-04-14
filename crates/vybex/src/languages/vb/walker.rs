@@ -1012,13 +1012,13 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
         }
     }
 
-    // Find the constructor (or create one) and append the new statements.
+    // Find the constructor (or create one) and append the AddHandler statements.
     let has_ctor = members.iter().any(|m| matches!(m, ClassMember::Constructor { .. }));
     if !has_ctor {
         members.push(ClassMember::Constructor {
             params: Vec::new(),
             body: new_stmts,
-            base_args: None,
+            base_args: None,  // compiler handles auto_base_call via profile
             visibility: Visibility::Public,
         });
     } else {

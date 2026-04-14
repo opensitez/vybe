@@ -20,6 +20,8 @@ case_sensitive = true
 string_indexing = "zero_based"
 entry_point = "Main"
 partial_classes = true
+auto_base_call = true
+auto_init_methods = ["InitializeComponent"]  # auto-call in ctor if class defines it
 dynamic_add = true
 
 # ────────────────────────────────────────────────────────────────────────────

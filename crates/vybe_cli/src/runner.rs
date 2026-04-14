@@ -80,7 +80,7 @@ fn run_js_file(path: &Path) {
 
     // If runApplication was called, GuiState already has the real widgets
     if gui.lock().unwrap().should_run {
-        crate::vybewidget_form::launch_gui(vm, gui);
+        vybe_host::gui_launch::launch_gui(vm, gui);
     }
 }
 
@@ -209,7 +209,7 @@ pub fn launch_project_form(
     vm: vybe_bytecode::VM,
     gui: std::sync::Arc<std::sync::Mutex<vybe_host::GuiState>>,
 ) {
-    crate::vybewidget_form::launch_vybewidget_form(vm, gui, &form);
+    vybe_host::gui_launch::launch_vybewidget_form(vm, gui, &form);
 }
 
 // ---------------------------------------------------------------------------
@@ -229,10 +229,10 @@ pub fn launch_vm_form(
     if should_launch {
         if let Some(form) = initial_form {
             // Designer form path — convert vybe_forms into real widgets
-            crate::vybewidget_form::launch_vybewidget_form(vm, gui, &form);
+            vybe_host::gui_launch::launch_vybewidget_form(vm, gui, &form);
         } else {
             // Programmatic form path — GuiState already has all widgets
-            crate::vybewidget_form::launch_gui(vm, gui);
+            vybe_host::gui_launch::launch_gui(vm, gui);
         }
     }
 }

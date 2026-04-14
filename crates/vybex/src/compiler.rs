@@ -2024,11 +2024,21 @@ impl Compiler {
             self.emit_u16(Op::local_set, this_slot);
             self.emit(Op::drop);
 
+            // Determine if auto_base_call should kick in:
+            // ctor exists + base_args None + profile says auto + parent exists + body has no super
+            let has_explicit_base = ctor_body.as_ref().map_or(false, |(_, _, ba)| ba.is_some());
+            let auto_base_needed = !has_explicit_base
+                && ctor_body.is_some()
+                && self.profile.auto_base_call
+                && parent.is_some()
+                && {
+                    let stmts = ctor_body.as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
+                    !body_has_super_call(stmts)
+                };
+
             if let Some((_, _, base_args)) = &ctor_body {
-                // Explicit constructor with : base(args) (C#/VB)
-                // Only auto-call parent if base_args is explicitly provided.
-                // If base_args is None, the constructor body handles super() itself (JS pattern).
                 if let Some(bargs) = base_args {
+                    // Explicit base_args provided (C#-style `: base(args)`)
                     if let Some(parent_name) = parent {
                         let pname = self.canon(parent_name);
                         let pidx = self.str_const(&pname);
@@ -2038,8 +2048,19 @@ impl Compiler {
                         self.emit_u16(Op::local_set, this_slot);
                         self.emit(Op::drop);
                     }
+                } else if auto_base_needed {
+                    // Profile-driven auto base call (VB/C#/Pascal):
+                    // body has no super() → auto-call parent() with 0 args.
+                    if let Some(parent_name) = parent {
+                        let pname = self.canon(parent_name);
+                        let pidx = self.str_const(&pname);
+                        self.emit_u16(Op::global_get, pidx);
+                        self.emit_u8(Op::call, 0);
+                        self.emit_u16(Op::local_set, this_slot);
+                        self.emit(Op::drop);
+                    }
                 }
-                // If base_args is None, body will call super() which sets this_slot
+                // else: JS pattern — body calls super() itself, sets this_slot
             } else {
                 // No explicit constructor — auto-call parent with user args
                 if let Some(parent_name) = parent {
@@ -2055,11 +2076,7 @@ impl Compiler {
                 }
             }
 
-            // Check if this is a C#-style constructor (base_args provided explicitly)
-            // vs JS/VB-style (super() called inside body)
-            let has_explicit_base = ctor_body.as_ref().map_or(false, |(_, _, ba)| ba.is_some());
-
-            if has_explicit_base || ctor_body.is_none() {
+            if has_explicit_base || auto_base_needed || ctor_body.is_none() {
                 // C#-style: base call already done above, or no-ctor auto-call done above.
                 // Order: re-stamp __type → fields → save base → bind methods → body
                 //
@@ -2098,6 +2115,21 @@ impl Compiler {
                         common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                     } else {
                         common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                    }
+                }
+
+                // Auto-init methods from profile (e.g. InitializeComponent for .NET forms).
+                // Emitted after method binding but before user body.
+                {
+                    let ctor_stmts: &[Statement] = ctor_body
+                        .as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
+                    let auto_inits = self.profile.auto_init_methods.clone();
+                    for aim in &auto_inits {
+                        let has_method = instance_methods.iter()
+                            .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
+                        if has_method && !body_calls_method(ctor_stmts, aim) {
+                            common::classes::emit_auto_init_call(self.chunk(), this_slot, aim, line);
+                        }
                     }
                 }
 
@@ -2224,8 +2256,21 @@ impl Compiler {
                     }
                 }
 
+                // Auto-init methods from profile (e.g. InitializeComponent for .NET forms).
+                // Emitted after method binding so struct_get finds the method,
+                // but before user body so controls exist for AddHandler etc.
+                let user_body = &body_stmts[preamble_end..];
+                let auto_inits = self.profile.auto_init_methods.clone();
+                for aim in &auto_inits {
+                    let has_method = instance_methods.iter()
+                        .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
+                    if has_method && !body_calls_method(user_body, aim) {
+                        common::classes::emit_auto_init_call(self.chunk(), this_slot, aim, line);
+                    }
+                }
+
                 // Compile the main body (everything after the preamble).
-                for s in &body_stmts[preamble_end..] {
+                for s in user_body {
                     self.compile_stmt(s)?;
                 }
             }
@@ -2257,18 +2302,22 @@ impl Compiler {
                 }
             }
 
+            // Auto-init methods from profile (e.g. InitializeComponent for .NET forms).
+            let ctor_stmts: &[Statement] = ctor_body
+                .as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
+            let auto_inits = self.profile.auto_init_methods.clone();
+            for aim in &auto_inits {
+                let has_method = instance_methods.iter()
+                    .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
+                if has_method && !body_calls_method(ctor_stmts, aim) {
+                    common::classes::emit_auto_init_call(self.chunk(), this_slot, aim, line);
+                }
+            }
+
             // Run user constructor body
             if let Some((body, _, _)) = ctor_body {
                 for s in body { self.compile_stmt(s)?; }
             }
-        }
-
-        // Check for auto InitializeComponent (.NET pattern)
-        let has_init_component = instance_methods.iter()
-            .any(|(n, _, _, _)| n.eq_ignore_ascii_case("initializecomponent"));
-        let has_explicit_ctor = ctor_body.is_some();
-        if has_init_component && !has_explicit_ctor {
-            common::classes::emit_auto_init_component(self.chunk(), this_slot, line);
         }
 
         // Finalize: instanceof chain
@@ -4954,6 +5003,41 @@ fn is_identity_stamp(stmt: &Statement) -> bool {
         }
     }
     false
+}
+
+/// Check whether a constructor body already contains a call to the given
+/// method (case-insensitive).  Matches `Me.Method()`, `this.Method()`,
+/// and bare `Method()` call shapes — which is how all walkers emit it.
+fn body_calls_method(body: &[Statement], method_name: &str) -> bool {
+    body.iter().any(|s| {
+        if let StmtKind::Expr(expr) = &s.kind {
+            if let ExprKind::Call { callee, .. } = &expr.kind {
+                if let ExprKind::Member { field, .. } = &callee.kind {
+                    return field.eq_ignore_ascii_case(method_name);
+                }
+                if let ExprKind::Ident(name) = &callee.kind {
+                    return name.eq_ignore_ascii_case(method_name);
+                }
+            }
+        }
+        false
+    })
+}
+
+/// Check whether a constructor body contains a super/base call.
+/// Matches `SuperCall { .. }` (VB/Pascal) and `Call { callee: Super }` (JS).
+fn body_has_super_call(body: &[Statement]) -> bool {
+    body.iter().any(|s| {
+        if let StmtKind::Expr(e) = &s.kind {
+            match &e.kind {
+                ExprKind::SuperCall { .. } => true,
+                ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::Super),
+                _ => false,
+            }
+        } else {
+            false
+        }
+    })
 }
 
 /// The first declaration of a class name keeps its position in the body and

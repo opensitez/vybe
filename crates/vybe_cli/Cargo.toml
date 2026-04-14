@@ -27,7 +27,7 @@ vybe_parser_csharp = { workspace = true }
 vybe_compiler_csharp = { workspace = true }
 vybe_parser_dart = { workspace = true }
 vybe_compiler_dart = { workspace = true }
-vybe_host = { workspace = true, features = ["gui"] }
+vybe_host = { workspace = true, features = ["gui_forms"] }
 vybe_parser_php = { workspace = true }
 vybe_compiler_php = { workspace = true }
 vybe_parser_python = { workspace = true }

@@ -7,11 +7,13 @@ license.workspace = true
 
 [features]
 gui = ["vybe_widgets"]
+gui_forms = ["gui", "vybe_forms"]
 
 [dependencies]
 vybe_bytecode = { workspace = true }
 vybe_compiler_common = { workspace = true }
 vybe_widgets = { workspace = true, optional = true }
+vybe_forms = { workspace = true, optional = true }
 regex = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }

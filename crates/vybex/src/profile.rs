@@ -90,6 +90,17 @@ pub struct LanguageProfile {
     /// VB: LINQ query syntax compiled to method chains.
     pub linq_queries: bool,
 
+    /// When true, the compiler auto-calls the parent constructor if the ctor
+    /// body doesn't contain an explicit super/base call. VB/C#/Pascal = true,
+    /// JS = false.
+    pub auto_base_call: bool,
+
+    /// Methods to auto-call at the start of every constructor if the class
+    /// defines them (e.g. `["InitializeComponent"]` for .NET forms).
+    /// The call is emitted after method binding but before the ctor body,
+    /// and only if the body doesn't already call the method.
+    pub auto_init_methods: Vec<String>,
+
     /// Builtin function mappings: source name → emission action.
     pub builtins: HashMap<String, BuiltinDef>,
 
@@ -328,6 +339,12 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let switch_fallthrough = compiler.get("switch_fallthrough")
         .and_then(|v| v.as_bool()).unwrap_or(false);
+    let auto_base_call = compiler.get("auto_base_call")
+        .and_then(|v| v.as_bool()).unwrap_or(false);
+    let auto_init_methods = compiler.get("auto_init_methods")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
 
     fn parse_builtin_table(root: &Value, section: &str) -> HashMap<String, BuiltinDef> {
         let mut map = HashMap::new();
@@ -471,6 +488,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         hoist_var, dynamic_add, commonjs_require,
         partial_classes, byref_boxing, with_block,
         new_with_initializer, new_from_initializer, linq_queries, switch_fallthrough,
+        auto_base_call, auto_init_methods,
         builtins, intrinsics, namespaces, known_types,
         value_methods, module_aliases, namespace_constants, array_methods,
     })

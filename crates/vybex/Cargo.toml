@@ -8,9 +8,9 @@ pest = { workspace = true }
 pest_derive = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_compiler_common = { workspace = true }
-vybe_host = { workspace = true }
-vybe_cli = { workspace = true }
+vybe_host = { workspace = true, features = ["gui"] }
 toml = "0.8"
+quick-xml = "0.39"
 
 [dev-dependencies]
 vybe_widgets = { path = "../vybe_widgets" }

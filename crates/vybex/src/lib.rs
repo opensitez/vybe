@@ -12,3 +12,5 @@ pub mod dotnet_register;
 pub mod languages;
 pub mod profile;
 pub mod scope;
+pub mod bundle;
+pub mod projects;

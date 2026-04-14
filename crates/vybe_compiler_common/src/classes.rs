@@ -498,9 +498,15 @@ pub fn register_class_with_interfaces(
 /// Call this AFTER instance methods have been attached to `this` (so that
 /// `struct_get "initializecomponent"` finds the method).
 pub fn emit_auto_init_component(chunk: &mut Chunk, this_slot: u16, line: u32) {
-    // Me.InitializeComponent() → struct_get + call with this as arg
+    emit_auto_init_call(chunk, this_slot, "initializecomponent", line);
+}
+
+/// Emit a call to `this.<method_name>()` — generalized auto-init for any
+/// method listed in the profile's `auto_init_methods`.  The method name is
+/// lowercased for the struct_get lookup (all method keys are stored lowercase).
+pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
     chunk.emit_op_u16(Op::local_get, this_slot, line);   // [this]
-    let name_idx = chunk.add_constant(Value::String(Arc::from("initializecomponent")));
+    let name_idx = chunk.add_constant(Value::String(Arc::from(method_name.to_lowercase())));
     chunk.emit_op_u16(Op::struct_get, name_idx, line);    // [method_ref]
     chunk.emit_op_u16(Op::local_get, this_slot, line);    // [method_ref, this]
     chunk.emit_op_u8(Op::call, 1, line);                  // call(1) → [result]

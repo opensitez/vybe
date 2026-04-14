@@ -66,8 +66,8 @@ fn main() {
     }
 
     // If the program created forms, launch the GUI
-    if gui.borrow().should_run {
-        vybe_cli::runner::launch_vm_form(vm, gui, None);
+    if gui.lock().unwrap().should_run {
+        vybe_host::gui_launch::launch_gui(vm, gui);
     }
 }
 
