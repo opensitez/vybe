@@ -133,5 +133,5 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         EntryPoint::Auto
     };
 
-    Ok(Bundle { name, language: lang, sources, entry_point })
+    Ok(Bundle { name, language: lang, sources, wasm_files: vec![], entry_point })
 }

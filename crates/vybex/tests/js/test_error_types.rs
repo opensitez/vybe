@@ -8,7 +8,8 @@ use super::helpers::run_js;
 // ERROR TYPES
 // ===================================================================
 
-#[test] fn type_error_basic() {
+#[test]
+fn type_error_basic() {
     assert_eq!(run_js(r#"
 try {
     null.foo;
@@ -19,7 +20,8 @@ try {
 "#), &["true", "Cannot read properties of null"]);
 }
 
-#[test] fn range_error() {
+#[test]
+fn range_error() {
     assert_eq!(run_js(r#"
 try {
     throw new RangeError("value out of range");
@@ -30,10 +32,10 @@ try {
 "#), &["true", "value out of range"]);
 }
 
-#[test] fn reference_error() {
+#[test]
+fn reference_error() {
     assert_eq!(run_js(r#"
 try {
-    // accessing undefined variable through eval-like mechanism
     throw new ReferenceError("x is not defined");
 } catch (e) {
     console.log(e instanceof ReferenceError);
@@ -42,7 +44,8 @@ try {
 "#), &["true", "x is not defined"]);
 }
 
-#[test] fn error_name_property() {
+#[test]
+fn error_name_property() {
     assert_eq!(run_js(r#"
 try {
     throw new TypeError("bad type");
@@ -53,7 +56,8 @@ try {
 "#), &["TypeError", "bad type"]);
 }
 
-#[test] fn error_instanceof_hierarchy() {
+#[test]
+fn error_instanceof_hierarchy() {
     assert_eq!(run_js(r#"
 try {
     throw new TypeError("test");
@@ -68,7 +72,8 @@ try {
 // CUSTOM ERROR CLASSES
 // ===================================================================
 
-#[test] fn custom_error_class() {
+#[test]
+fn custom_error_class() {
     assert_eq!(run_js(r#"
 class AppError extends Error {
     constructor(message, code) {
@@ -89,7 +94,8 @@ try {
 "#), &["AppError", "not found", "404", "true", "true"]);
 }
 
-#[test] fn custom_error_hierarchy() {
+#[test]
+fn custom_error_hierarchy() {
     assert_eq!(run_js(r#"
 class HttpError extends Error {
     constructor(status, msg) {
@@ -121,7 +127,8 @@ try {
 // ERROR HANDLING PATTERNS
 // ===================================================================
 
-#[test] fn rethrow_pattern() {
+#[test]
+fn rethrow_pattern() {
     assert_eq!(run_js(r#"
 function riskyOp() {
     throw new TypeError("wrong type");
@@ -141,7 +148,8 @@ try {
 "#), &["rethrown: wrong type"]);
 }
 
-#[test] fn conditional_catch() {
+#[test]
+fn conditional_catch() {
     assert_eq!(run_js(r#"
 function process(val) {
     if (val < 0) throw new RangeError("negative");
@@ -160,7 +168,8 @@ try {
 "#), &["range: negative"]);
 }
 
-#[test] fn error_in_finally() {
+#[test]
+fn try_catch_finally_order() {
     assert_eq!(run_js(r#"
 let log = [];
 try {
@@ -175,7 +184,8 @@ console.log(log.join(","));
 "#), &["try,catch,finally"]);
 }
 
-#[test] fn throw_non_error_object() {
+#[test]
+fn throw_string_value() {
     assert_eq!(run_js(r#"
 try {
     throw "just a string";
@@ -186,7 +196,8 @@ try {
 "#), &["string", "just a string"]);
 }
 
-#[test] fn throw_object_literal() {
+#[test]
+fn throw_object_value() {
     assert_eq!(run_js(r#"
 try {
     throw { code: 500, msg: "internal error" };
@@ -197,7 +208,8 @@ try {
 "#), &["500", "internal error"]);
 }
 
-#[test] fn nested_try_catch_propagation() {
+#[test]
+fn error_chaining() {
     assert_eq!(run_js(r#"
 function inner() {
     throw new Error("from inner");

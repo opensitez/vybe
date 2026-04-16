@@ -126,6 +126,79 @@ pub fn register(vm: &mut VM) {
         args.first().cloned().unwrap_or(Value::Null)
     }));
 
+    // Object.create(proto, [props]) → new object inheriting from proto
+    // Simplified: creates an empty object that copies proto's properties
+    vm.register_host_fn("vybe:object", "create", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let mut obj = Object::new();
+        if let Some(Value::Object(proto)) = args.first() {
+            let p = proto.lock().unwrap();
+            // Copy proto's properties as inherited
+            for (k, v) in &p.properties {
+                obj.properties.insert(k.clone(), v.clone());
+            }
+        }
+        Value::Object(Arc::new(Mutex::new(obj)))
+    }));
+
+    // Object.seal(obj) → no-op (return same object)
+    vm.register_host_fn("vybe:object", "seal", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        args.first().cloned().unwrap_or(Value::Null)
+    }));
+
+    // Object.isFrozen(obj) → false (we don't track freeze state)
+    vm.register_host_fn("vybe:object", "isFrozen", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        Value::Bool(false)
+    }));
+
+    // Object.isSealed(obj)
+    vm.register_host_fn("vybe:object", "isSealed", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        Value::Bool(false)
+    }));
+
+    // Object.is(a, b) — like === but treats NaN==NaN and -0!==+0
+    vm.register_host_fn("vybe:object", "is", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let a = args.first().cloned().unwrap_or(Value::Null);
+        let b = args.get(1).cloned().unwrap_or(Value::Null);
+        Value::Bool(format!("{:?}", a) == format!("{:?}", b))
+    }));
+
+    // Object.getPrototypeOf(obj) → null (we don't track prototypes)
+    vm.register_host_fn("vybe:object", "getPrototypeOf", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        Value::Null
+    }));
+
+    // Object.getOwnPropertyNames(obj) → array of string keys (own properties only)
+    vm.register_host_fn("vybe:object", "getOwnPropertyNames", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            let mut names: Vec<Value> = o.properties.keys()
+                .filter(|k| !k.starts_with("__"))
+                .map(|k| Value::String(Arc::from(k.as_str())))
+                .collect();
+            names.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
+            let mut arr = Object::new();
+            arr.kind = ObjectKind::Array(names);
+            Value::Object(Arc::new(Mutex::new(arr)))
+        } else {
+            let mut arr = Object::new();
+            arr.kind = ObjectKind::Array(vec![]);
+            Value::Object(Arc::new(Mutex::new(arr)))
+        }
+    }));
+
+    // Object.defineProperty(obj, key, descriptor) — simplified: set property to descriptor.value
+    vm.register_host_fn("vybe:object", "defineProperty", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let (Some(Value::Object(obj)), Some(key), Some(Value::Object(desc))) = (args.first(), args.get(1), args.get(2)) {
+            let key_str = format!("{}", key);
+            let d = desc.lock().unwrap();
+            if let Some(val) = d.properties.get("value") {
+                let mut o = obj.lock().unwrap();
+                o.properties.insert(key_str, val.clone());
+            }
+        }
+        args.first().cloned().unwrap_or(Value::Null)
+    }));
+
     // Object.fromEntries([[k,v], ...]) → obj
     vm.register_host_fn("vybe:object", "fromEntries", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let mut obj = Object::new();

@@ -115,10 +115,14 @@ class_declaration = {
 class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
 
 class_member = {
-    static_kw? ~ (getter_method | setter_method | class_method | class_property)
+    static_block
+    | static_kw? ~ (getter_method | setter_method | class_method | class_property)
 }
 
 static_kw = { "static" }
+
+// ES2022 static block: `static { ...statements... }` runs when class is defined
+static_block = { static_kw ~ "{" ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}" }
 
 // JS getters/setters: `get propName() { ... }` / `set propName(val) { ... }`
 // The keyword `get`/`set` must be a standalone word (not part of `getX`).
@@ -155,11 +159,11 @@ for_header = {
 }
 
 for_in_header = {
-    (var_kind ~ ident_name | ident_name) ~ "in" ~ expression
+    (var_kind ~ binding_pattern | binding_pattern) ~ "in" ~ expression
 }
 
 for_of_header = {
-    (var_kind ~ ident_name | ident_name) ~ "of" ~ expression
+    (var_kind ~ binding_pattern | binding_pattern) ~ "of" ~ expression
 }
 
 for_c_header = {
@@ -466,13 +470,19 @@ regex_flags = @{ ('a'..'z' | 'A'..'Z')* }
 
 // ── Literals ────────────────────────────────────────────────────────────────
 
+// ES2021 numeric separator: digits may contain `_` between them (1_000_000, 0xFF_FF)
+hex_digits = _{ ASCII_HEX_DIGIT ~ (ASCII_HEX_DIGIT | "_" ~ ASCII_HEX_DIGIT)* }
+oct_digits = _{ ('0'..'7') ~ (('0'..'7') | "_" ~ ('0'..'7'))* }
+bin_digits = _{ ('0'..'1') ~ (('0'..'1') | "_" ~ ('0'..'1'))* }
+dec_digits = _{ ASCII_DIGIT ~ (ASCII_DIGIT | "_" ~ ASCII_DIGIT)* }
+
 numeric_literal = @{
-    ("0x" | "0X") ~ ASCII_HEX_DIGIT+ ~ !(ASCII_ALPHANUMERIC | "_")
-    | ("0o" | "0O") ~ ('0'..'7')+ ~ !(ASCII_ALPHANUMERIC | "_")
-    | ("0b" | "0B") ~ ('0'..'1')+ ~ !(ASCII_ALPHANUMERIC | "_")
-    | ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
-    | "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
-    | ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
+    ("0x" | "0X") ~ hex_digits ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0o" | "0O") ~ oct_digits ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0b" | "0B") ~ bin_digits ~ !(ASCII_ALPHANUMERIC | "_")
+    | dec_digits ~ "." ~ dec_digits? ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digits)? ~ !(ASCII_ALPHANUMERIC | "_")
+    | "." ~ dec_digits ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digits)? ~ !(ASCII_ALPHANUMERIC | "_")
+    | dec_digits ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digits)? ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
 string_literal = @{

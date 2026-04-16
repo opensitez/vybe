@@ -93,11 +93,17 @@ decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    mi
 
 # ── Number static methods ────────────────────────────────────────────────────
 
-"Number.parseInt"   = { emit = "host:vybe:convert:cint",          min_args = 1, max_args = 2 }
-"Number.parseFloat" = { emit = "host:vybe:convert:cdbl",          min_args = 1, max_args = 1 }
+"Number.parseInt"   = { emit = "host:vybe:convert:parseInt",      min_args = 1, max_args = 2 }
+"Number.parseFloat" = { emit = "host:vybe:convert:parseFloat",    min_args = 1, max_args = 1 }
 "Number.isNaN"      = { emit = "intrinsic:number_isnan",          min_args = 1, max_args = 1 }
 "Number.isFinite"   = { emit = "intrinsic:number_isfinite",       min_args = 1, max_args = 1 }
 "Number.isInteger"  = { emit = "intrinsic:number_isinteger",      min_args = 1, max_args = 1 }
+
+# ── Type coercion globals: Boolean(v), Number(v), String(v) ──────────────────
+
+Boolean             = { emit = "host:vybe:convert:toBool",        min_args = 1, max_args = 1 }
+Number              = { emit = "host:vybe:convert:toNumber",      min_args = 1, max_args = 1 }
+String              = { emit = "host:vybe:convert:toStr",         min_args = 1, max_args = 1 }
 
 # ── String static methods ────────────────────────────────────────────────────
 
@@ -106,7 +112,8 @@ decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    mi
 # ── Array static methods ─────────────────────────────────────────────────────
 
 "Array.isArray"     = { emit = "opcode:ref_is_array",             min_args = 1, max_args = 1 }
-"Array.from"        = { emit = "host:vybe:array:from",            min_args = 1, max_args = 1 }
+"Array.from"        = { emit = "host:vybe:array:from",            min_args = 1, max_args = 3 }
+"Array.of"          = { emit = "host:vybe:array:of",              min_args = 0, max_args = 255 }
 
 # ── Object static methods ────────────────────────────────────────────────────
 
@@ -117,7 +124,14 @@ decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    mi
 "Object.freeze"      = { emit = "host:vybe:object:freeze",       min_args = 1, max_args = 1 }
 "Object.fromEntries" = { emit = "host:vybe:object:fromEntries",  min_args = 1, max_args = 1 }
 "Object.hasOwn"      = { emit = "host:vybe:object:hasOwn",       min_args = 2, max_args = 2 }
-"Object.create"      = { emit = "host:vybe:object:create",       min_args = 1, max_args = 1 }
+"Object.create"      = { emit = "host:vybe:object:create",       min_args = 1, max_args = 2 }
+"Object.seal"        = { emit = "host:vybe:object:seal",         min_args = 1, max_args = 1 }
+"Object.isFrozen"    = { emit = "host:vybe:object:isFrozen",     min_args = 1, max_args = 1 }
+"Object.isSealed"    = { emit = "host:vybe:object:isSealed",     min_args = 1, max_args = 1 }
+"Object.is"          = { emit = "host:vybe:object:is",           min_args = 2, max_args = 2 }
+"Object.getPrototypeOf"     = { emit = "host:vybe:object:getPrototypeOf",     min_args = 1, max_args = 1 }
+"Object.getOwnPropertyNames" = { emit = "host:vybe:object:getOwnPropertyNames", min_args = 1, max_args = 1 }
+"Object.defineProperty" = { emit = "host:vybe:object:defineProperty", min_args = 3, max_args = 3 }
 
 # ── JSON ─────────────────────────────────────────────────────────────────────
 
@@ -238,6 +252,7 @@ includes      = { emit = "opcode:str_includes",        min_args = 1, max_args = 
 match         = { emit = "host:vybe:string:match",     min_args = 1, max_args = 1 }
 search        = { emit = "host:vybe:string:search",    min_args = 1, max_args = 1 }
 toString      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
+toFixed       = { emit = "host:vybe:convert:toFixed",  min_args = 0, max_args = 1 }
 
 # Array instance methods (use compiler_common::collections)
 push          = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
@@ -249,12 +264,13 @@ concat        = { emit = "opcode:array_concat",        min_args = 1, max_args = 
 fill          = { emit = "host:vybe:array:fill",         min_args = 1, max_args = 3 }
 
 # Array instance methods — host calls (more complex than single opcode)
-unshift       = { emit = "intrinsic:array_unshift",    min_args = 1, max_args = 255 }
+unshift       = { emit = "host:vybe:array:unshift",    min_args = 1, max_args = 255 }
 splice        = { emit = "host:vybe:array:splice",     min_args = 1, max_args = 255 }
 flat          = { emit = "host:vybe:array:flat",        min_args = 0, max_args = 1 }
 slice         = { emit = "host:vybe:array:slice",       min_args = 0, max_args = 2 }
-at            = { emit = "intrinsic:array_at",          min_args = 1, max_args = 1 }
+at            = { emit = "host:vybe:array:at",          min_args = 1, max_args = 1 }
 entries       = { emit = "host:vybe:array:enumerate",   min_args = 0, max_args = 0 }
+copyWithin    = { emit = "host:vybe:array:copyWithin",  min_args = 1, max_args = 3 }
 
 # Map/Set size property
 size              = { emit = "intrinsic:map_size",       min_args = 0, max_args = 0 }

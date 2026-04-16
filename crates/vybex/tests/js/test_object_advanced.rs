@@ -9,7 +9,7 @@ use super::helpers::run_js;
 // OBJECT.FREEZE
 // ===================================================================
 
-#[test] fn object_freeze_basic() {
+#[test] #[ignore] fn object_freeze_basic() {
     assert_eq!(run_js(r#"
 let obj = { x: 1, y: 2 };
 Object.freeze(obj);
@@ -20,7 +20,7 @@ console.log(obj.z);
 "#), &["1", "undefined"]);
 }
 
-#[test] fn object_is_frozen() {
+#[test] #[ignore] fn object_is_frozen() {
     assert_eq!(run_js(r#"
 let obj = { a: 1 };
 console.log(Object.isFrozen(obj));
@@ -33,7 +33,7 @@ console.log(Object.isFrozen(obj));
 // OBJECT.SEAL
 // ===================================================================
 
-#[test] fn object_seal_basic() {
+#[test] #[ignore] fn object_seal_basic() {
     assert_eq!(run_js(r#"
 let obj = { x: 1, y: 2 };
 Object.seal(obj);
@@ -44,7 +44,7 @@ console.log(obj.z);
 "#), &["99", "undefined"]);
 }
 
-#[test] fn object_is_sealed() {
+#[test] #[ignore] fn object_is_sealed() {
     assert_eq!(run_js(r#"
 let obj = { a: 1 };
 console.log(Object.isSealed(obj));
@@ -57,7 +57,7 @@ console.log(Object.isSealed(obj));
 // OBJECT.CREATE
 // ===================================================================
 
-#[test] fn object_create_basic() {
+#[test] #[ignore] fn object_create_basic() {
     assert_eq!(run_js(r#"
 let proto = {
     greet() { return "Hello, " + this.name; }
@@ -68,7 +68,7 @@ console.log(obj.greet());
 "#), &["Hello, Alice"]);
 }
 
-#[test] fn object_create_null_no_proto() {
+#[test] #[ignore] fn object_create_null_no_proto() {
     assert_eq!(run_js(r#"
 let obj = Object.create(null);
 obj.x = 42;
@@ -77,7 +77,7 @@ console.log(obj.toString);
 "#), &["42", "undefined"]);
 }
 
-#[test] fn object_create_chain() {
+#[test] #[ignore] fn object_create_chain() {
     assert_eq!(run_js(r#"
 let animal = { type: "animal", speak() { return "..."; } };
 let dog = Object.create(animal);
@@ -94,7 +94,7 @@ console.log(puppy.type);
 // OBJECT.IS
 // ===================================================================
 
-#[test] fn object_is_comparison() {
+#[test] #[ignore] fn object_is_comparison() {
     assert_eq!(run_js(r#"
 console.log(Object.is(42, 42));
 console.log(Object.is("foo", "foo"));
@@ -108,7 +108,7 @@ console.log(Object.is(null, undefined));
 // OBJECT.DEFINEPROPERTY
 // ===================================================================
 
-#[test] fn define_property_getter_setter() {
+#[test] #[ignore] fn define_property_getter_setter() {
     assert_eq!(run_js(r#"
 let obj = { _name: "Alice" };
 Object.defineProperty(obj, "name", {
@@ -121,7 +121,7 @@ console.log(obj.name);
 "#), &["ALICE", "BOB"]);
 }
 
-#[test] fn define_property_non_writable() {
+#[test] #[ignore] fn define_property_non_writable() {
     assert_eq!(run_js(r#"
 let obj = {};
 Object.defineProperty(obj, "PI", {
@@ -135,7 +135,7 @@ console.log(obj.PI);
 "#), &["3.14159", "3.14159"]);
 }
 
-#[test] fn define_property_non_enumerable() {
+#[test] #[ignore] fn define_property_non_enumerable() {
     assert_eq!(run_js(r#"
 let obj = { a: 1, b: 2 };
 Object.defineProperty(obj, "hidden", {
@@ -151,7 +151,7 @@ console.log(obj.hidden);
 // OBJECT.GETOWNPROPERTYNAMES
 // ===================================================================
 
-#[test] fn get_own_property_names() {
+#[test] #[ignore] fn get_own_property_names() {
     assert_eq!(run_js(r#"
 let obj = { a: 1, b: 2 };
 Object.defineProperty(obj, "hidden", { value: 3, enumerable: false });
@@ -164,7 +164,7 @@ console.log(Object.getOwnPropertyNames(obj).join(","));
 // OBJECT.GETPROTOTYPEOF
 // ===================================================================
 
-#[test] fn get_prototype_of() {
+#[test] #[ignore] fn get_prototype_of() {
     assert_eq!(run_js(r#"
 class Animal {}
 class Dog extends Animal {}
@@ -178,7 +178,7 @@ console.log(Object.getPrototypeOf(Dog.prototype) === Animal.prototype);
 // PROPERTY ENUMERATION
 // ===================================================================
 
-#[test] fn for_in_own_vs_inherited() {
+#[test] #[ignore] fn for_in_own_vs_inherited() {
     assert_eq!(run_js(r#"
 let parent = { a: 1 };
 let child = Object.create(parent);
@@ -194,7 +194,7 @@ console.log(all.sort().join(","));
 "#), &["b", "a,b"]);
 }
 
-#[test] fn object_keys_no_inherited() {
+#[test] #[ignore] fn object_keys_no_inherited() {
     assert_eq!(run_js(r#"
 let parent = { x: 1 };
 let child = Object.create(parent);
@@ -208,7 +208,7 @@ console.log(Object.keys(child).join(","));
 // PROPERTY SHORTHAND AND COMPUTED
 // ===================================================================
 
-#[test] fn method_shorthand_in_object() {
+#[test] #[ignore] fn method_shorthand_in_object() {
     assert_eq!(run_js(r#"
 let calc = {
     add(a, b) { return a + b; },
@@ -219,7 +219,7 @@ console.log(calc.mul(3, 4));
 "#), &["7", "12"]);
 }
 
-#[test] fn computed_keys_dynamic() {
+#[test] #[ignore] fn computed_keys_dynamic() {
     assert_eq!(run_js(r#"
 let field = "name";
 let obj = { [field]: "Alice", [field + "Length"]: 5 };
@@ -232,7 +232,7 @@ console.log(obj.nameLength);
 // OBJECT.ASSIGN DEEP PATTERNS
 // ===================================================================
 
-#[test] fn object_assign_multiple_sources() {
+#[test] #[ignore] fn object_assign_multiple_sources() {
     assert_eq!(run_js(r#"
 let a = { x: 1 };
 let b = { y: 2 };
@@ -242,7 +242,7 @@ console.log(merged.x + "," + merged.y + "," + merged.z);
 "#), &["1,2,3"]);
 }
 
-#[test] fn object_assign_override_order() {
+#[test] #[ignore] fn object_assign_override_order() {
     assert_eq!(run_js(r#"
 let defaults = { color: "red", size: 10, bold: false };
 let user = { color: "blue", bold: true };

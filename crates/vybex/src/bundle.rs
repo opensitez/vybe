@@ -22,11 +22,19 @@ pub struct SourceFile {
     pub code: String,
 }
 
+/// A pre-compiled WASM binary to link alongside source files.
+#[derive(Debug, Clone)]
+pub struct WasmFile {
+    pub path: PathBuf,
+    pub data: Vec<u8>,
+}
+
 /// Everything needed to compile and run.
 pub struct Bundle {
     pub name: String,
     pub language: Language,
     pub sources: Vec<SourceFile>,
+    pub wasm_files: Vec<WasmFile>,
     pub entry_point: EntryPoint,
 }
 
@@ -84,9 +92,26 @@ impl Bundle {
             )));
         }
 
-        // Load profile + compile
+        // Load profile + compile source code
         let profile = crate::profile::parse_profile((self.language.profile_source)())?;
-        crate::compiler::Compiler::with_profile(profile).compile(&module)
+        let mut chunks = crate::compiler::Compiler::with_profile(profile).compile(&module)?;
+
+        // Load and append WASM binary chunks
+        for wf in &self.wasm_files {
+            let wasm_chunks = vybe_bytecode::wasm::read_wasm(&wf.data)
+                .map_err(|e| format!("WASM error in {}: {}", wf.path.display(), e))?;
+            eprintln!("[vybex] Loaded {} chunks from {}", wasm_chunks.len(), wf.path.display());
+            // Register WASM functions as globals so source code can call them
+            for wc in &wasm_chunks {
+                if !wc.name.is_empty() && wc.name != "<script>" {
+                    // The WASM chunk index will be: current chunks.len() + position
+                    eprintln!("  → fn {} (arity={})", wc.name, wc.arity);
+                }
+            }
+            chunks.extend(wasm_chunks);
+        }
+
+        Ok(chunks)
     }
 }
 

@@ -204,6 +204,100 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Array.from(arrayLike) — creates a new array from an iterable/array-like
+    // Array.of(...args) — creates array from variable arguments
+    vm.register_host_fn("vybe:array", "of", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let mut arr = Object::new();
+        arr.kind = ObjectKind::Array(args.to_vec());
+        Value::Object(Arc::new(Mutex::new(arr)))
+    }));
+
+    // arr.keys() → iterator of indices [0, 1, 2, ...] (returns array for spread support)
+    vm.register_host_fn("vybe:array", "arrKeys", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(arr)) = args.first() {
+            let a = arr.lock().unwrap();
+            if let ObjectKind::Array(elements) = &a.kind {
+                let keys: Vec<Value> = (0..elements.len()).map(|i| Value::F64(i as f64)).collect();
+                let mut out = Object::new();
+                out.kind = ObjectKind::Array(keys);
+                return Value::Object(Arc::new(Mutex::new(out)));
+            }
+        }
+        let mut out = Object::new();
+        out.kind = ObjectKind::Array(vec![]);
+        Value::Object(Arc::new(Mutex::new(out)))
+    }));
+
+    // arr.values() → iterator of values (returns shallow copy for spread support)
+    vm.register_host_fn("vybe:array", "arrValues", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(arr)) = args.first() {
+            let a = arr.lock().unwrap();
+            if let ObjectKind::Array(elements) = &a.kind {
+                let mut out = Object::new();
+                out.kind = ObjectKind::Array(elements.clone());
+                return Value::Object(Arc::new(Mutex::new(out)));
+            }
+        }
+        let mut out = Object::new();
+        out.kind = ObjectKind::Array(vec![]);
+        Value::Object(Arc::new(Mutex::new(out)))
+    }));
+
+    // Array.copyWithin(arr, target, start, [end])
+    vm.register_host_fn("vybe:array", "copyWithin", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(arr)) = args.first() {
+            let mut a = arr.lock().unwrap();
+            if let ObjectKind::Array(ref mut elements) = a.kind {
+                let len = elements.len() as i64;
+                let parse_i = |v: &Value, default: i64| -> i64 {
+                    format!("{}", v).parse::<f64>().unwrap_or(default as f64) as i64
+                };
+                let target = args.get(1).map(|v| parse_i(v, 0)).unwrap_or(0);
+                let start = args.get(2).map(|v| parse_i(v, 0)).unwrap_or(0);
+                let end = args.get(3).map(|v| parse_i(v, len)).unwrap_or(len);
+                let target = if target < 0 { (len + target).max(0) } else { target.min(len) } as usize;
+                let start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+                let end = if end < 0 { (len + end).max(0) } else { end.min(len) } as usize;
+                if start < end && target < elements.len() {
+                    let to_copy: Vec<Value> = elements[start..end].to_vec();
+                    let copy_len = to_copy.len().min(elements.len() - target);
+                    for (i, v) in to_copy.into_iter().take(copy_len).enumerate() {
+                        elements[target + i] = v;
+                    }
+                }
+            }
+        }
+        args.first().cloned().unwrap_or(Value::Null)
+    }));
+
+    // Array.at(arr, index) — supports negative indices for arrays AND strings
+    vm.register_host_fn("vybe:array", "at", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let idx = args.get(1).map(|v| format!("{}", v).parse::<f64>().unwrap_or(0.0) as i64).unwrap_or(0);
+        match args.first() {
+            Some(Value::Object(arr)) => {
+                let a = arr.lock().unwrap();
+                if let ObjectKind::Array(elements) = &a.kind {
+                    let len = elements.len() as i64;
+                    let real_idx = if idx < 0 { len + idx } else { idx };
+                    if real_idx >= 0 && (real_idx as usize) < elements.len() {
+                        return elements[real_idx as usize].clone();
+                    }
+                }
+                Value::Undefined
+            }
+            Some(Value::String(s)) => {
+                let chars: Vec<char> = s.chars().collect();
+                let len = chars.len() as i64;
+                let real_idx = if idx < 0 { len + idx } else { idx };
+                if real_idx >= 0 && (real_idx as usize) < chars.len() {
+                    Value::String(Arc::from(chars[real_idx as usize].to_string().as_str()))
+                } else {
+                    Value::Undefined
+                }
+            }
+            _ => Value::Undefined,
+        }
+    }));
+
     vm.register_host_fn("vybe:array", "from", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();

@@ -401,6 +401,26 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
     let member_pair = inner_pairs.into_iter().next()
         .ok_or("Empty class member")?;
 
+    // ES2022 static block — convert to a synthetic static method __static_init
+    if member_pair.as_rule() == Rule::static_block {
+        let stmts: Vec<Statement> = member_pair.into_inner()
+            .filter(|p| !matches!(p.as_rule(), Rule::NEWLINE | Rule::static_kw))
+            .map(walk_statement)
+            .collect::<Result<_, _>>()?;
+        let func = Statement::new(StmtKind::FunctionDecl {
+            name: "__static_init".to_string(),
+            params: vec![],
+            return_type: None,
+            body: stmts,
+            modifiers: Modifiers { is_static: true, ..Default::default() },
+            handles: vec![],
+            is_async: false,
+            is_generator: false,
+            is_sub: true,
+        });
+        return Ok(ClassMember::Method(Box::new(func)));
+    }
+
     match member_pair.as_rule() {
         Rule::getter_method => {
             let mut name = String::new();
@@ -531,20 +551,28 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     match header_inner.as_rule() {
         Rule::for_in_header => {
-            let mut parts = header_inner.into_inner();
-            let var = extract_ident_from_for_target(&mut parts)?;
-            let iter = walk_expression(next_meaningful(&mut parts)?)?;
+            let parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
+            let (var, prefix) = extract_for_target(&parts)?;
+            let iter = walk_expression(parts.into_iter()
+                .filter(|p| !matches!(p.as_rule(), Rule::var_kind | Rule::ident_name | Rule::binding_pattern))
+                .next().ok_or("missing iter expr")?)?;
+            let mut full_body = prefix;
+            full_body.extend(body);
             Ok(StmtKind::ForIn {
-                var, key: None, iter, body, of: false,
+                var, key: None, iter, body: full_body, of: false,
                 else_body: None, is_async: false,
             })
         }
         Rule::for_of_header => {
-            let mut parts = header_inner.into_inner();
-            let var = extract_ident_from_for_target(&mut parts)?;
-            let iter = walk_expression(next_meaningful(&mut parts)?)?;
+            let parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
+            let (var, prefix) = extract_for_target(&parts)?;
+            let iter = walk_expression(parts.into_iter()
+                .filter(|p| !matches!(p.as_rule(), Rule::var_kind | Rule::ident_name | Rule::binding_pattern))
+                .next().ok_or("missing iter expr")?)?;
+            let mut full_body = prefix;
+            full_body.extend(body);
             Ok(StmtKind::ForIn {
-                var, key: None, iter, body, of: true,
+                var, key: None, iter, body: full_body, of: true,
                 else_body: None, is_async: false,
             })
         }
@@ -844,7 +872,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
     match pair.as_rule() {
         // Literals
         Rule::numeric_literal => {
-            let s = pair.as_str();
+            // ES2021 numeric separator: strip `_` from digits before parsing
+            let raw = pair.as_str();
+            let s_owned: String = raw.chars().filter(|c| *c != '_').collect();
+            let s = s_owned.as_str();
             if s.contains('.') || s.contains('e') || s.contains('E') {
                 Ok(ExprKind::Lit(Literal::Float(s.parse().map_err(|e| format!("{}", e))?)))
             } else if s.starts_with("0x") || s.starts_with("0X") {
@@ -1472,6 +1503,49 @@ fn extract_ident_from_for_target<'a>(pairs: &mut impl Iterator<Item = Pair<'a, R
         }
     }
     Err("Expected identifier in for target".into())
+}
+
+/// Extract the loop variable and any destructuring prefix statements.
+/// For `for (let x of arr)` returns ("x", []).
+/// For `for (let [a, b] of arr)` returns ("__forof_tmp", [VarDecl let [a,b] = __forof_tmp])
+fn extract_for_target(parts: &[Pair<Rule>]) -> Result<(String, Vec<Statement>), String> {
+    let mut var_kind = VarDeclKind::Let;
+    for p in parts {
+        match p.as_rule() {
+            Rule::var_kind => {
+                var_kind = match p.as_str() {
+                    "var" => VarDeclKind::Var,
+                    "const" => VarDeclKind::Const,
+                    _ => VarDeclKind::Let,
+                };
+            }
+            Rule::ident_name => {
+                return Ok((p.as_str().to_string(), Vec::new()));
+            }
+            Rule::binding_pattern => {
+                let inner = p.clone().into_inner().next().ok_or("Empty binding pattern")?;
+                if inner.as_rule() == Rule::ident_name {
+                    return Ok((inner.as_str().to_string(), Vec::new()));
+                }
+                // Destructuring pattern — desugar to: let __forof_tmp; let [...] = __forof_tmp
+                let pattern = walk_binding_pattern(p.clone())?;
+                let tmp = "__forof_tmp".to_string();
+                let prefix = Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern,
+                        type_hint: None,
+                        init: Some(Expression::ident(&tmp)),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: var_kind,
+                });
+                return Ok((tmp, vec![prefix]));
+            }
+            _ => continue,
+        }
+    }
+    Err("Expected identifier or binding pattern in for target".into())
 }
 
 fn unquote(s: &str) -> String {

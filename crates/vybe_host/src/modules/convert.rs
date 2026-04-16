@@ -2,6 +2,50 @@ use std::sync::Arc;
 use vybe_bytecode::{VM, Value, HostContext};
 
 pub fn register(vm: &mut VM) {
+    // Boolean(v) — coerce to boolean (JS truthiness rules)
+    vm.register_host_fn("vybe:convert", "toBool", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let v = args.first().unwrap_or(&Value::Null);
+        let b = match v {
+            Value::Null | Value::Undefined => false,
+            Value::Bool(b) => *b,
+            Value::F64(n) => *n != 0.0 && !n.is_nan(),
+            Value::I32(n) => *n != 0,
+            Value::I64(n) => *n != 0,
+            Value::String(s) => !s.is_empty(),
+            _ => true, // objects/arrays/functions are always truthy
+        };
+        Value::Bool(b)
+    }));
+    // Number(v) — coerce to number (JS rules)
+    vm.register_host_fn("vybe:convert", "toNumber", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let v = args.first().unwrap_or(&Value::Null);
+        let n = match v {
+            Value::Null => 0.0,
+            Value::Undefined => f64::NAN,
+            Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+            Value::F64(n) => *n,
+            Value::I32(n) => *n as f64,
+            Value::I64(n) => *n as f64,
+            Value::String(s) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() { 0.0 } else { trimmed.parse::<f64>().unwrap_or(f64::NAN) }
+            }
+            _ => f64::NAN,
+        };
+        Value::F64(n)
+    }));
+    // String(v) — coerce to string
+    vm.register_host_fn("vybe:convert", "toStr", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Value::String(Arc::from(format!("{}", args.first().unwrap_or(&Value::Null)).as_str()))
+    }));
+
+    // n.toFixed(digits) — format number with fixed decimal places
+    vm.register_host_fn("vybe:convert", "toFixed", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
+        let digits = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+        Value::String(Arc::from(format!("{:.*}", digits, n).as_str()))
+    }));
+
     vm.register_host_fn("vybe:convert", "parseInt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         match s.trim().parse::<i64>() {

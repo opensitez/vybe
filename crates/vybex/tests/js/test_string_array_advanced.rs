@@ -9,7 +9,8 @@ use super::helpers::run_js;
 // STRING: AT()
 // ===================================================================
 
-#[test] fn string_at_positive() {
+#[test]
+fn string_at_positive() {
     assert_eq!(run_js(r#"
 let s = "Hello";
 console.log(s.at(0));
@@ -17,7 +18,8 @@ console.log(s.at(1));
 "#), &["H", "e"]);
 }
 
-#[test] fn string_at_negative() {
+#[test]
+fn string_at_negative() {
     assert_eq!(run_js(r#"
 let s = "Hello";
 console.log(s.at(-1));
@@ -29,14 +31,16 @@ console.log(s.at(-2));
 // STRING: REPLACEALL
 // ===================================================================
 
-#[test] fn string_replace_all() {
+#[test]
+fn string_replace_all() {
     assert_eq!(run_js(r#"
 let s = "foo-bar-baz-foo";
 console.log(s.replaceAll("foo", "qux"));
 "#), &["qux-bar-baz-qux"]);
 }
 
-#[test] fn string_replace_all_empty() {
+#[test]
+fn string_replace_all_empty() {
     assert_eq!(run_js(r#"
 let s = "abc";
 console.log(s.replaceAll("x", "y"));
@@ -47,13 +51,15 @@ console.log(s.replaceAll("x", "y"));
 // STRING: TRIMSTART / TRIMEND
 // ===================================================================
 
-#[test] fn string_trim_start() {
+#[test]
+fn string_trim_start() {
     assert_eq!(run_js(r#"
 console.log("   hello   ".trimStart());
 "#), &["hello   "]);
 }
 
-#[test] fn string_trim_end() {
+#[test]
+fn string_trim_end() {
     assert_eq!(run_js(r#"
 console.log("   hello   ".trimEnd());
 "#), &["   hello"]);
@@ -63,7 +69,8 @@ console.log("   hello   ".trimEnd());
 // STRING: SEARCH / MATCH PATTERNS
 // ===================================================================
 
-#[test] fn string_search() {
+#[test]
+fn string_search() {
     assert_eq!(run_js(r#"
 let s = "Hello World";
 console.log(s.search("World"));
@@ -71,7 +78,8 @@ console.log(s.search("xyz"));
 "#), &["6", "-1"]);
 }
 
-#[test] fn string_match_basic() {
+#[test]
+fn string_match_basic() {
     assert_eq!(run_js(r#"
 let s = "The year is 2024, not 2023";
 let matches = s.match(/\d+/g);
@@ -79,7 +87,8 @@ console.log(matches.join(","));
 "#), &["2024,2023"]);
 }
 
-#[test] fn string_match_groups() {
+#[test]
+fn string_match_groups() {
     assert_eq!(run_js(r#"
 let s = "2024-01-15";
 let m = s.match(/(\d{4})-(\d{2})-(\d{2})/);
@@ -93,7 +102,8 @@ console.log(m[3]);
 // STRING: SLICE VS SUBSTRING
 // ===================================================================
 
-#[test] fn string_slice_negative() {
+#[test]
+fn string_slice_negative() {
     assert_eq!(run_js(r#"
 let s = "Hello World";
 console.log(s.slice(-5));
@@ -101,7 +111,8 @@ console.log(s.slice(-5, -1));
 "#), &["World", "Worl"]);
 }
 
-#[test] fn string_concat_method() {
+#[test]
+fn string_concat_method() {
     assert_eq!(run_js(r#"
 let s = "Hello";
 console.log(s.concat(" ", "World", "!"));
@@ -112,7 +123,8 @@ console.log(s.concat(" ", "World", "!"));
 // ARRAY: AT()
 // ===================================================================
 
-#[test] fn array_at_positive() {
+#[test]
+fn array_at_positive() {
     assert_eq!(run_js(r#"
 let arr = [10, 20, 30, 40, 50];
 console.log(arr.at(0));
@@ -120,7 +132,8 @@ console.log(arr.at(2));
 "#), &["10", "30"]);
 }
 
-#[test] fn array_at_negative() {
+#[test]
+fn array_at_negative() {
     assert_eq!(run_js(r#"
 let arr = [10, 20, 30, 40, 50];
 console.log(arr.at(-1));
@@ -132,7 +145,8 @@ console.log(arr.at(-2));
 // ARRAY: FLATMAP
 // ===================================================================
 
-#[test] fn array_flatmap() {
+#[test]
+fn array_flatmap() {
     assert_eq!(run_js(r#"
 let arr = [1, 2, 3];
 let result = arr.flatMap(x => [x, x * 2]);
@@ -140,7 +154,8 @@ console.log(result.join(","));
 "#), &["1,2,2,4,3,6"]);
 }
 
-#[test] fn array_flatmap_filter() {
+#[test]
+fn array_flatmap_filter() {
     assert_eq!(run_js(r#"
 let arr = ["hello world", "foo bar"];
 let words = arr.flatMap(s => s.split(" "));
@@ -152,7 +167,8 @@ console.log(words.join(","));
 // ARRAY: OF / FROM WITH MAPPER
 // ===================================================================
 
-#[test] fn array_of() {
+#[test]
+fn array_of() {
     assert_eq!(run_js(r#"
 let arr = Array.of(1, 2, 3);
 console.log(arr.join(","));
@@ -160,21 +176,24 @@ console.log(arr.length);
 "#), &["1,2,3", "3"]);
 }
 
-#[test] fn array_from_with_mapper() {
+#[test]
+fn array_from_with_mapper() {
     assert_eq!(run_js(r#"
 let arr = Array.from([1, 2, 3], x => x * x);
 console.log(arr.join(","));
 "#), &["1,4,9"]);
 }
 
-#[test] fn array_from_string() {
+#[test]
+fn array_from_string() {
     assert_eq!(run_js(r#"
 let arr = Array.from("hello");
 console.log(arr.join(","));
 "#), &["h,e,l,l,o"]);
 }
 
-#[test] fn array_from_length_object() {
+#[test]
+fn array_from_length_object() {
     assert_eq!(run_js(r#"
 let arr = Array.from({ length: 5 }, (_, i) => i * 2);
 console.log(arr.join(","));
@@ -185,7 +204,8 @@ console.log(arr.join(","));
 // ARRAY: REDUCERIGHT
 // ===================================================================
 
-#[test] fn array_reduce_right() {
+#[test]
+fn array_reduce_right() {
     assert_eq!(run_js(r#"
 let arr = ["a", "b", "c", "d"];
 let result = arr.reduceRight((acc, val) => acc + val, "");
@@ -197,7 +217,8 @@ console.log(result);
 // ARRAY: SPLICE ADVANCED
 // ===================================================================
 
-#[test] fn array_splice_remove_and_insert() {
+#[test]
+fn array_splice_remove_and_insert() {
     assert_eq!(run_js(r#"
 let arr = [1, 2, 3, 4, 5];
 let removed = arr.splice(1, 2, 10, 20, 30);
@@ -206,7 +227,8 @@ console.log(arr.join(","));
 "#), &["2,3", "1,10,20,30,4,5"]);
 }
 
-#[test] fn array_splice_insert_only() {
+#[test]
+fn array_splice_insert_only() {
     assert_eq!(run_js(r#"
 let arr = [1, 2, 3];
 arr.splice(1, 0, 99);
@@ -218,7 +240,8 @@ console.log(arr.join(","));
 // ARRAY: UNSHIFT
 // ===================================================================
 
-#[test] fn array_unshift() {
+#[test]
+fn array_unshift() {
     assert_eq!(run_js(r#"
 let arr = [3, 4, 5];
 arr.unshift(1, 2);
@@ -230,7 +253,8 @@ console.log(arr.join(","));
 // ARRAY: COPYWITHIN
 // ===================================================================
 
-#[test] fn array_copywithin() {
+#[test]
+fn array_copywithin() {
     assert_eq!(run_js(r#"
 let arr = [1, 2, 3, 4, 5];
 arr.copyWithin(0, 3);
@@ -242,7 +266,8 @@ console.log(arr.join(","));
 // ARRAY: ENTRIES / KEYS / VALUES
 // ===================================================================
 
-#[test] fn array_entries() {
+#[test]
+fn array_entries() {
     assert_eq!(run_js(r#"
 let arr = ["a", "b", "c"];
 for (let [i, v] of arr.entries()) {
@@ -251,7 +276,8 @@ for (let [i, v] of arr.entries()) {
 "#), &["0:a", "1:b", "2:c"]);
 }
 
-#[test] fn array_keys() {
+#[test]
+fn array_keys() {
     assert_eq!(run_js(r#"
 let arr = ["x", "y", "z"];
 let keys = [...arr.keys()];
@@ -259,7 +285,8 @@ console.log(keys.join(","));
 "#), &["0,1,2"]);
 }
 
-#[test] fn array_values() {
+#[test]
+fn array_values() {
     assert_eq!(run_js(r#"
 let arr = [10, 20, 30];
 let vals = [...arr.values()];
@@ -271,7 +298,8 @@ console.log(vals.join(","));
 // ARRAY: SORTING PATTERNS
 // ===================================================================
 
-#[test] fn array_sort_strings() {
+#[test]
+fn array_sort_strings() {
     assert_eq!(run_js(r#"
 let arr = ["banana", "apple", "cherry"];
 arr.sort();
@@ -279,7 +307,8 @@ console.log(arr.join(","));
 "#), &["apple,banana,cherry"]);
 }
 
-#[test] fn array_sort_numbers_correct() {
+#[test]
+fn array_sort_numbers_correct() {
     assert_eq!(run_js(r#"
 let arr = [10, 1, 21, 2];
 arr.sort((a, b) => a - b);
@@ -287,7 +316,8 @@ console.log(arr.join(","));
 "#), &["1,2,10,21"]);
 }
 
-#[test] fn array_sort_objects_by_property() {
+#[test]
+fn array_sort_objects_by_property() {
     assert_eq!(run_js(r#"
 let people = [
     { name: "Charlie", age: 30 },
@@ -299,7 +329,8 @@ people.forEach(p => console.log(p.name + ":" + p.age));
 "#), &["Alice:25", "Charlie:30", "Bob:35"]);
 }
 
-#[test] fn array_sort_stable() {
+#[test]
+fn array_sort_stable() {
     assert_eq!(run_js(r#"
 let items = [
     { name: "A", score: 1 },
@@ -316,7 +347,8 @@ console.log(items.map(i => i.name).join(","));
 // NUMBER METHODS
 // ===================================================================
 
-#[test] fn number_is_integer() {
+#[test]
+fn number_is_integer() {
     assert_eq!(run_js(r#"
 console.log(Number.isInteger(42));
 console.log(Number.isInteger(42.0));
@@ -324,7 +356,8 @@ console.log(Number.isInteger(42.5));
 "#), &["true", "true", "false"]);
 }
 
-#[test] fn number_is_finite() {
+#[test]
+fn number_is_finite() {
     assert_eq!(run_js(r#"
 console.log(Number.isFinite(42));
 console.log(Number.isFinite(Infinity));
@@ -332,7 +365,8 @@ console.log(Number.isFinite(NaN));
 "#), &["true", "false", "false"]);
 }
 
-#[test] fn number_is_nan() {
+#[test]
+fn number_is_nan() {
     assert_eq!(run_js(r#"
 console.log(Number.isNaN(NaN));
 console.log(Number.isNaN(42));
@@ -340,14 +374,16 @@ console.log(Number.isNaN("NaN"));
 "#), &["true", "false", "false"]);
 }
 
-#[test] fn number_parse_int_float() {
+#[test]
+fn number_parse_int_float() {
     assert_eq!(run_js(r#"
 console.log(Number.parseInt("42px"));
 console.log(Number.parseFloat("3.14xyz"));
 "#), &["42", "3.14"]);
 }
 
-#[test] fn number_tofixed() {
+#[test]
+fn number_tofixed() {
     assert_eq!(run_js(r#"
 let n = 3.14159;
 console.log(n.toFixed(2));

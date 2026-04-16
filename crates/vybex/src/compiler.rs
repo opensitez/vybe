@@ -273,6 +273,16 @@ impl Compiler {
                 return;
             }
         }
+        // Known type used as a value (e.g. `e instanceof RangeError`) — emit
+        // the type name as a string so vybe:object:instanceOf can look it up
+        // via its String fallback. Without this, `RangeError` would become
+        // `global_get` of a nonexistent global → null.
+        if self.profile.known_types.contains_key(name) {
+            // Only do this when the name isn't shadowed by an actual global.
+            // We emit the name string; instanceOf accepts strings as type names.
+            self.emit_const(Value::String(Arc::from(name)));
+            return;
+        }
         // Global — canonicalize name for case-insensitive languages
         let cname = self.canon(name);
         let idx = self.str_const(&cname);
@@ -4773,10 +4783,13 @@ impl Compiler {
                 common::collections::emit_len(self.chunk(), line);
             }
             "array_at" => {
+                // .at() supports negative indices for both arrays and strings.
+                // Receiver is already on stack from value method dispatch.
+                // Route through host fn vybe:array:at (handles arrays AND strings via negative idx).
                 if args.len() >= 1 {
-                    // Already have object from value method dispatch
                     self.compile_expr(args[0])?;
-                    common::collections::emit_get(self.chunk(), line);
+                    let idx = self.import("vybe:array", "at");
+                    self.emit_host_call(idx, 2);
                 } else {
                     self.emit(Op::null);
                 }

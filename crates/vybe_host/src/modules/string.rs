@@ -37,6 +37,69 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(vybe_bytecode::value::Object::new_array(parts))))
     }));
     vm.register_host_fn("vybe:string", "replace",    Box::new(|_ctx, a| Value::String(Arc::from(s(a, 0).replacen(&s(a, 1), &s(a, 2), 1).as_str()))));
+    vm.register_host_fn("vybe:string", "replaceAll", Box::new(|_ctx, a| Value::String(Arc::from(s(a, 0).replace(&s(a, 1), &s(a, 2)).as_str()))));
+    vm.register_host_fn("vybe:string", "trimStart",  Box::new(|_ctx, a| Value::String(Arc::from(s(a, 0).trim_start()))));
+    vm.register_host_fn("vybe:string", "trimEnd",    Box::new(|_ctx, a| Value::String(Arc::from(s(a, 0).trim_end()))));
+    vm.register_host_fn("vybe:string", "search", Box::new(|_ctx, a| {
+        let haystack = s(a, 0);
+        let needle = s(a, 1);
+        match haystack.find(&needle) {
+            Some(i) => Value::F64(i as f64),
+            None => Value::F64(-1.0),
+        }
+    }));
+    vm.register_host_fn("vybe:string", "match", Box::new(|_ctx, a| {
+        // Simplified: returns array containing the matched substring, or null.
+        // Real regex support is in regex.rs; this handles plain string matches.
+        let haystack = s(a, 0);
+        let needle = s(a, 1);
+        if let Some(_idx) = haystack.find(&needle) {
+            let mut arr = vybe_bytecode::value::Object::new();
+            arr.kind = vybe_bytecode::value::ObjectKind::Array(vec![
+                Value::String(Arc::from(needle.as_str())),
+            ]);
+            Value::Object(Arc::new(Mutex::new(arr)))
+        } else {
+            Value::Null
+        }
+    }));
+    vm.register_host_fn("vybe:string", "concat", Box::new(|_ctx, a| {
+        let mut result = s(a, 0);
+        for i in 1..a.len() {
+            result.push_str(&format!("{}", a[i]));
+        }
+        Value::String(Arc::from(result.as_str()))
+    }));
+    vm.register_host_fn("vybe:string", "at", Box::new(|_ctx, a| {
+        let st = s(a, 0);
+        let chars: Vec<char> = st.chars().collect();
+        let len = chars.len() as i64;
+        let idx = a.get(1).map(|v| format!("{}", v).parse::<f64>().unwrap_or(0.0) as i64).unwrap_or(0);
+        let real_idx = if idx < 0 { len + idx } else { idx };
+        if real_idx >= 0 && (real_idx as usize) < chars.len() {
+            Value::String(Arc::from(chars[real_idx as usize].to_string().as_str()))
+        } else {
+            Value::Undefined
+        }
+    }));
+    vm.register_host_fn("vybe:string", "padStart", Box::new(|_ctx, a| {
+        let st = s(a, 0);
+        let target_len = a.get(1).map(|v| format!("{}", v).parse::<f64>().unwrap_or(0.0) as usize).unwrap_or(0);
+        let pad = a.get(2).map(|v| format!("{}", v)).unwrap_or_else(|| " ".to_string());
+        if st.len() >= target_len { return Value::String(Arc::from(st.as_str())); }
+        let pad_len = target_len - st.len();
+        let pad_str: String = pad.chars().cycle().take(pad_len).collect();
+        Value::String(Arc::from(format!("{}{}", pad_str, st).as_str()))
+    }));
+    vm.register_host_fn("vybe:string", "padEnd", Box::new(|_ctx, a| {
+        let st = s(a, 0);
+        let target_len = a.get(1).map(|v| format!("{}", v).parse::<f64>().unwrap_or(0.0) as usize).unwrap_or(0);
+        let pad = a.get(2).map(|v| format!("{}", v)).unwrap_or_else(|| " ".to_string());
+        if st.len() >= target_len { return Value::String(Arc::from(st.as_str())); }
+        let pad_len = target_len - st.len();
+        let pad_str: String = pad.chars().cycle().take(pad_len).collect();
+        Value::String(Arc::from(format!("{}{}", st, pad_str).as_str()))
+    }));
     vm.register_host_fn("vybe:string", "startsWith", Box::new(|_ctx, a| Value::Bool(s(a, 0).starts_with(&s(a, 1)))));
     vm.register_host_fn("vybe:string", "endsWith",   Box::new(|_ctx, a| Value::Bool(s(a, 0).ends_with(&s(a, 1)))));
     vm.register_host_fn("vybe:string", "charAt", Box::new(|_ctx, a| {

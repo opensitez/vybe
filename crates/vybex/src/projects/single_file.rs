@@ -21,6 +21,7 @@ pub fn load(path: &Path, ext: &str) -> Result<Bundle, String> {
         name,
         language: lang,
         sources: vec![SourceFile { path: path.to_path_buf(), code }],
+        wasm_files: vec![],
         entry_point: EntryPoint::Auto,
     })
 }

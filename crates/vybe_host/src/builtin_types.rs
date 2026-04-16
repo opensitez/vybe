@@ -89,6 +89,11 @@ pub fn register_all(vm: &mut VM) {
             ("concat", "vybe:array", "concat"),
             ("find", "vybe:types", "listIndexOf"),
             ("findindex", "vybe:types", "listIndexOf"),
+            // Array iterator methods (return arrays for spread support)
+            ("keys", "vybe:array", "arrKeys"),
+            ("values", "vybe:array", "arrValues"),
+            ("at", "vybe:array", "at"),
+            ("copywithin", "vybe:array", "copyWithin"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -413,6 +418,35 @@ pub fn register_all(vm: &mut VM) {
         if let Some(idx) = h(vm, "vybe:types", "listCount") {
             t.methods.insert("size".to_string(), Method::HostFn(idx));
             t.methods.insert("count".to_string(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- WeakMap (JS collection, shares Map storage semantics) ---
+    {
+        let mut t = TypeDef::new("WeakMap");
+        for (method, fname) in &[
+            ("set", "mapSet"), ("get", "mapGet"), ("has", "mapHas"),
+            ("delete", "mapDelete"),
+        ] {
+            if let Some(idx) = h(vm, "vybe:collections", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- WeakSet (JS collection, shares Set storage semantics) ---
+    {
+        let mut t = TypeDef::new("WeakSet");
+        for (method, fname) in &[
+            ("add", "setAdd"), ("has", "setHas"), ("delete", "setDelete"),
+        ] {
+            if let Some(idx) = h(vm, "vybe:collections", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
         }
         t.parent = Some(0);
         vm.type_registry.register(t);

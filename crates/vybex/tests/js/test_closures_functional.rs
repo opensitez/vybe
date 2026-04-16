@@ -8,7 +8,8 @@ use super::helpers::run_js;
 // CURRYING
 // ===================================================================
 
-#[test] fn curry_basic() {
+#[test]
+fn curry_basic() {
     assert_eq!(run_js(r#"
 function curry(fn) {
     return function(a) {
@@ -22,7 +23,8 @@ console.log(add(3)(4));
 "#), &["7"]);
 }
 
-#[test] fn curry_reusable() {
+#[test]
+fn curry_reusable() {
     assert_eq!(run_js(r#"
 function multiply(a) {
     return function(b) {
@@ -36,7 +38,8 @@ console.log(triple(5));
 "#), &["10", "15"]);
 }
 
-#[test] fn curry_string_formatter() {
+#[test]
+fn curry_string_formatter() {
     assert_eq!(run_js(r#"
 function greet(greeting) {
     return function(name) {
@@ -54,7 +57,8 @@ console.log(hi("Bob"));
 // PARTIAL APPLICATION
 // ===================================================================
 
-#[test] fn partial_application() {
+#[test]
+fn partial_application() {
     assert_eq!(run_js(r#"
 function partial(fn, ...presets) {
     return function(...args) {
@@ -72,7 +76,8 @@ console.log(addTo10(10));
 // COMPOSE AND PIPE
 // ===================================================================
 
-#[test] fn compose_functions() {
+#[test]
+fn compose_functions() {
     assert_eq!(run_js(r#"
 function compose(...fns) {
     return function(x) {
@@ -87,7 +92,8 @@ console.log(transform(3));
 "#), &["64"]);
 }
 
-#[test] fn pipe_functions() {
+#[test]
+fn pipe_functions() {
     assert_eq!(run_js(r#"
 function pipe(...fns) {
     return function(x) {
@@ -105,7 +111,8 @@ console.log(transform(3));
 // MEMOIZATION
 // ===================================================================
 
-#[test] fn memoize_basic() {
+#[test]
+fn memoize_basic() {
     assert_eq!(run_js(r#"
 function memoize(fn) {
     let cache = {};
@@ -124,7 +131,8 @@ console.log(callCount);
 "#), &["16", "16", "25", "2"]);
 }
 
-#[test] fn memoize_fibonacci() {
+#[test]
+fn memoize_fibonacci() {
     assert_eq!(run_js(r#"
 function memoize(fn) {
     let cache = {};
@@ -147,7 +155,8 @@ console.log(fib(20));
 // MODULE PATTERN
 // ===================================================================
 
-#[test] fn module_pattern_iife() {
+#[test]
+fn module_pattern_iife() {
     assert_eq!(run_js(r#"
 let counter = (function() {
     let count = 0;
@@ -165,13 +174,14 @@ console.log(counter.getCount());
 "#), &["2"]);
 }
 
-#[test] fn module_pattern_private_state() {
+#[test]
+fn module_pattern_private_state() {
     assert_eq!(run_js(r#"
 let bank = (function() {
     let balance = 0;
     return {
         deposit(amt) { balance += amt; },
-        withdraw(amt) { 
+        withdraw(amt) {
             if (amt > balance) return false;
             balance -= amt;
             return true;
@@ -192,7 +202,8 @@ console.log(bank.getBalance());
 // CLOSURE PATTERNS
 // ===================================================================
 
-#[test] fn closure_factory() {
+#[test]
+fn closure_factory() {
     assert_eq!(run_js(r#"
 function makeCounter(start) {
     let count = start;
@@ -210,7 +221,8 @@ console.log(c.next());
 "#), &["10", "11", "12", "10"]);
 }
 
-#[test] fn closure_over_let_in_loop() {
+#[test]
+fn closure_over_let_in_loop() {
     assert_eq!(run_js(r#"
 let funcs = [];
 for (let i = 0; i < 5; i++) {
@@ -222,7 +234,8 @@ console.log(funcs[4]());
 "#), &["0", "2", "4"]);
 }
 
-#[test] fn closure_over_var_in_loop() {
+#[test]
+fn closure_over_var_in_loop() {
     assert_eq!(run_js(r#"
 var funcs = [];
 for (var i = 0; i < 5; i++) {
@@ -234,7 +247,8 @@ console.log(funcs[4]());
 "#), &["0", "2", "4"]);
 }
 
-#[test] fn once_function() {
+#[test]
+fn once_function() {
     assert_eq!(run_js(r#"
 function once(fn) {
     let called = false;
@@ -257,7 +271,8 @@ console.log(init());
 // HIGHER-ORDER PATTERNS
 // ===================================================================
 
-#[test] fn map_filter_reduce_chain() {
+#[test]
+fn map_filter_reduce_chain() {
     assert_eq!(run_js(r#"
 let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 let result = data
@@ -268,7 +283,8 @@ console.log(result);
 "#), &["220"]);
 }
 
-#[test] fn custom_flat_map() {
+#[test]
+fn custom_flat_map() {
     assert_eq!(run_js(r#"
 let sentences = ["Hello World", "Foo Bar Baz"];
 let words = sentences.flatMap(s => s.split(" "));
@@ -276,7 +292,8 @@ console.log(words.join(","));
 "#), &["Hello,World,Foo,Bar,Baz"]);
 }
 
-#[test] fn reduce_group_by() {
+#[test]
+fn reduce_group_by() {
     assert_eq!(run_js(r#"
 let people = [
     { name: "Alice", dept: "eng" },
@@ -295,7 +312,8 @@ console.log(groups.sales.length);
 "#), &["3", "2"]);
 }
 
-#[test] fn reduce_to_frequency_map() {
+#[test]
+fn reduce_to_frequency_map() {
     assert_eq!(run_js(r#"
 let letters = "abracadabra".split("");
 let freq = letters.reduce((acc, ch) => {
@@ -312,7 +330,8 @@ console.log(freq.r);
 // TRAMPOLINING (tail-call optimization pattern)
 // ===================================================================
 
-#[test] fn trampoline() {
+#[test]
+fn trampoline() {
     assert_eq!(run_js(r#"
 function trampoline(fn) {
     return function(...args) {

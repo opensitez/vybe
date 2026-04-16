@@ -17,6 +17,32 @@ pub fn register(vm: &mut VM) {
         this
     }));
 
+    // -- WeakMap constructor: new WeakMap() -- (alias for Map, no GC semantics)
+    vm.register_host_fn("vybe:collections", "WeakMap", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
+            .unwrap_or_else(|| Value::Object(Arc::new(Mutex::new(Object::new()))));
+        if let Value::Object(obj) = &this {
+            let mut o = obj.lock().unwrap();
+            o.properties.insert("__type".into(), Value::String(Arc::from("WeakMap")));
+            o.properties.insert("__data".into(), Value::Object(Arc::new(Mutex::new(Object::new()))));
+        }
+        this
+    }));
+
+    // -- WeakSet constructor: new WeakSet() -- (alias for Set)
+    vm.register_host_fn("vybe:collections", "WeakSet", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
+            .unwrap_or_else(|| Value::Object(Arc::new(Mutex::new(Object::new()))));
+        if let Value::Object(obj) = &this {
+            let mut o = obj.lock().unwrap();
+            o.properties.insert("__type".into(), Value::String(Arc::from("WeakSet")));
+            let mut items = Object::new();
+            items.kind = ObjectKind::Array(Vec::new());
+            o.properties.insert("__items".into(), Value::Object(Arc::new(Mutex::new(items))));
+        }
+        this
+    }));
+
     // Map.prototype.set(key, value)
     vm.register_host_fn("vybe:collections", "mapSet", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {

@@ -8,7 +8,8 @@ use super::helpers::run_js;
 // MIXINS
 // ===================================================================
 
-#[test] fn mixin_pattern() {
+#[test]
+fn mixin_pattern() {
     assert_eq!(run_js(r#"
 let Serializable = (Base) => class extends Base {
     serialize() { return JSON.stringify(this); }
@@ -27,7 +28,8 @@ console.log(s.includes("Alice"));
 "#), &["LOG: Alice", "true"]);
 }
 
-#[test] fn mixin_multiple_methods() {
+#[test]
+fn mixin_multiple_methods() {
     assert_eq!(run_js(r#"
 function Timestamped(Base) {
     return class extends Base {
@@ -53,7 +55,8 @@ console.log(item.getTimestamp());
 // STATIC BLOCKS
 // ===================================================================
 
-#[test] fn static_block_initialization() {
+#[test]
+fn static_block_initialization() {
     assert_eq!(run_js(r#"
 class Config {
     static values;
@@ -66,7 +69,8 @@ console.log(Config.values.debug);
 "#), &["1.0", "false"]);
 }
 
-#[test] fn static_block_computed() {
+#[test]
+fn static_block_computed() {
     assert_eq!(run_js(r#"
 class MathConstants {
     static PI;
@@ -85,7 +89,8 @@ console.log(MathConstants.TAU);
 // BUILDER PATTERN
 // ===================================================================
 
-#[test] fn builder_pattern() {
+#[test]
+fn builder_pattern() {
     assert_eq!(run_js(r#"
 class QueryBuilder {
     constructor() { this.parts = []; }
@@ -107,7 +112,8 @@ console.log(q);
 // SINGLETON PATTERN
 // ===================================================================
 
-#[test] fn singleton_pattern() {
+#[test]
+fn singleton_pattern() {
     assert_eq!(run_js(r#"
 class Database {
     static instance = null;
@@ -130,7 +136,8 @@ console.log(db2.name);
 // OBSERVER PATTERN
 // ===================================================================
 
-#[test] fn observer_pattern() {
+#[test]
+fn observer_pattern() {
     assert_eq!(run_js(r#"
 class EventEmitter {
     constructor() { this.listeners = {}; }
@@ -155,7 +162,8 @@ emitter.emit("data", 42);
 // TOSTRING / VALUEOF
 // ===================================================================
 
-#[test] fn tostring_override() {
+#[test]
+fn tostring_override() {
     assert_eq!(run_js(r#"
 class Money {
     constructor(amount, currency) {
@@ -170,7 +178,8 @@ console.log(`${m}`);
 "#), &["100 USD", "100 USD"]);
 }
 
-#[test] fn valueof_override() {
+#[test]
+fn valueof_override() {
     assert_eq!(run_js(r#"
 class Num {
     constructor(v) { this.v = v; }
@@ -187,7 +196,8 @@ console.log(a * 3);
 // SYMBOL.TOPRIMITIVE
 // ===================================================================
 
-#[test] fn symbol_toprimitive() {
+#[test]
+fn symbol_toprimitive() {
     assert_eq!(run_js(r#"
 class Temperature {
     constructor(celsius) { this.celsius = celsius; }
@@ -207,7 +217,8 @@ console.log(`${t}`);
 // SYMBOL.HASINSTANCE
 // ===================================================================
 
-#[test] fn symbol_hasinstance() {
+#[test]
+fn symbol_hasinstance() {
     assert_eq!(run_js(r#"
 class Even {
     static [Symbol.hasInstance](num) {
@@ -223,7 +234,8 @@ console.log(3 instanceof Even);
 // CLASS EXPRESSION
 // ===================================================================
 
-#[test] fn class_expression_anonymous() {
+#[test]
+fn class_expression_anonymous() {
     assert_eq!(run_js(r#"
 let Animal = class {
     constructor(name) { this.name = name; }
@@ -234,7 +246,8 @@ console.log(a.speak());
 "#), &["Cat speaks"]);
 }
 
-#[test] fn class_expression_named() {
+#[test]
+fn class_expression_named() {
     assert_eq!(run_js(r#"
 let Foo = class Bar {
     static className() { return "Bar"; }
@@ -247,7 +260,8 @@ console.log(Foo.className());
 // GETTER/SETTER PATTERNS
 // ===================================================================
 
-#[test] fn computed_getter_setter() {
+#[test]
+fn computed_getter_setter() {
     assert_eq!(run_js(r#"
 class Circle {
     constructor(radius) { this._radius = radius; }
@@ -267,7 +281,8 @@ console.log(c.area);
 "#), &["78.5", "31.4", "314"]);
 }
 
-#[test] fn getter_setter_validation() {
+#[test]
+fn getter_setter_validation() {
     assert_eq!(run_js(r#"
 class User {
     #email;
@@ -292,7 +307,8 @@ try {
 // ABSTRACT-LIKE PATTERN
 // ===================================================================
 
-#[test] fn abstract_class_pattern() {
+#[test]
+fn abstract_class_pattern() {
     assert_eq!(run_js(r#"
 class Shape {
     area() { throw new Error("not implemented"); }
@@ -319,7 +335,8 @@ try {
 // ITERABLE CLASS
 // ===================================================================
 
-#[test] fn class_iterable_with_symbol_iterator() {
+#[test]
+fn class_iterable_with_symbol_iterator() {
     assert_eq!(run_js(r#"
 class NumberRange {
     constructor(start, end) { this.start = start; this.end = end; }

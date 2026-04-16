@@ -9,7 +9,8 @@ use super::helpers::run_js;
 // SCOPE: BLOCK SCOPING WITH LET/CONST
 // ===================================================================
 
-#[test] fn let_block_scope_in_if() {
+#[test]
+fn let_block_scope_in_if() {
     assert_eq!(run_js(r#"
 let x = "outer";
 if (true) {
@@ -20,7 +21,8 @@ console.log(x);
 "#), &["inner", "outer"]);
 }
 
-#[test] fn const_block_scope() {
+#[test]
+fn const_block_scope() {
     assert_eq!(run_js(r#"
 const x = 1;
 {
@@ -31,7 +33,8 @@ console.log(x);
 "#), &["2", "1"]);
 }
 
-#[test] fn var_no_block_scope() {
+#[test]
+fn var_no_block_scope() {
     assert_eq!(run_js(r#"
 var x = "outer";
 if (true) {
@@ -41,7 +44,8 @@ console.log(x);
 "#), &["inner"]);
 }
 
-#[test] fn let_in_for_loop_scope() {
+#[test]
+fn let_in_for_loop_scope() {
     assert_eq!(run_js(r#"
 let results = [];
 for (let i = 0; i < 3; i++) {
@@ -53,7 +57,8 @@ console.log(results[2]());
 "#), &["0", "1", "2"]);
 }
 
-#[test] fn var_in_for_loop_shared() {
+#[test]
+fn var_in_for_loop_shared() {
     assert_eq!(run_js(r#"
 var results = [];
 for (var i = 0; i < 3; i++) {
@@ -69,7 +74,8 @@ console.log(results[2]());
 // HOISTING
 // ===================================================================
 
-#[test] fn var_hoisting() {
+#[test]
+fn var_hoisting() {
     assert_eq!(run_js(r#"
 console.log(typeof x);
 var x = 5;
@@ -77,7 +83,8 @@ console.log(x);
 "#), &["undefined", "5"]);
 }
 
-#[test] fn function_hoisting() {
+#[test]
+fn function_hoisting() {
     assert_eq!(run_js(r#"
 console.log(greet());
 function greet() { return "hello"; }
@@ -88,7 +95,8 @@ function greet() { return "hello"; }
 // SYMBOL BASICS
 // ===================================================================
 
-#[test] fn symbol_basic() {
+#[test]
+fn symbol_basic() {
     assert_eq!(run_js(r#"
 let s1 = Symbol("desc");
 let s2 = Symbol("desc");
@@ -98,7 +106,8 @@ console.log(s1.toString());
 "#), &["symbol", "false", "Symbol(desc)"]);
 }
 
-#[test] fn symbol_as_property_key() {
+#[test]
+fn symbol_as_property_key() {
     assert_eq!(run_js(r#"
 let id = Symbol("id");
 let obj = { [id]: 42, name: "test" };
@@ -107,7 +116,8 @@ console.log(Object.keys(obj).join(","));
 "#), &["42", "name"]);
 }
 
-#[test] fn symbol_for_shared() {
+#[test]
+fn symbol_for_shared() {
     assert_eq!(run_js(r#"
 let s1 = Symbol.for("app.id");
 let s2 = Symbol.for("app.id");
@@ -119,7 +129,8 @@ console.log(s1 === s2);
 // WEAKMAP
 // ===================================================================
 
-#[test] fn weakmap_basic() {
+#[test]
+fn weakmap_basic() {
     assert_eq!(run_js(r#"
 let wm = new WeakMap();
 let key = {};
@@ -135,7 +146,8 @@ console.log(wm.has(key));
 // WEAKSET
 // ===================================================================
 
-#[test] fn weakset_basic() {
+#[test]
+fn weakset_basic() {
     assert_eq!(run_js(r#"
 let ws = new WeakSet();
 let obj = {};
@@ -150,7 +162,8 @@ console.log(ws.has(obj));
 // PROXY BASICS
 // ===================================================================
 
-#[test] fn proxy_get_trap() {
+#[test]
+fn proxy_get_trap() {
     assert_eq!(run_js(r#"
 let handler = {
     get(target, prop) {
@@ -163,7 +176,8 @@ console.log(obj.missing);
 "#), &["Alice", "default"]);
 }
 
-#[test] fn proxy_set_trap() {
+#[test]
+fn proxy_set_trap() {
     assert_eq!(run_js(r#"
 let handler = {
     set(target, prop, value) {
@@ -185,7 +199,8 @@ try {
 "#), &["42", "Expected number"]);
 }
 
-#[test] fn proxy_has_trap() {
+#[test]
+fn proxy_has_trap() {
     assert_eq!(run_js(r#"
 let handler = {
     has(target, prop) {
@@ -203,7 +218,8 @@ console.log("_secret" in obj);
 // REFLECT BASICS
 // ===================================================================
 
-#[test] fn reflect_get_set() {
+#[test]
+fn reflect_get_set() {
     assert_eq!(run_js(r#"
 let obj = { x: 1 };
 console.log(Reflect.get(obj, "x"));
@@ -212,7 +228,8 @@ console.log(obj.y);
 "#), &["1", "2"]);
 }
 
-#[test] fn reflect_has() {
+#[test]
+fn reflect_has() {
     assert_eq!(run_js(r#"
 let obj = { a: 1 };
 console.log(Reflect.has(obj, "a"));
@@ -224,7 +241,8 @@ console.log(Reflect.has(obj, "b"));
 // CLASS FIELDS (PUBLIC / PRIVATE / STATIC)
 // ===================================================================
 
-#[test] fn class_public_field_initializer() {
+#[test]
+fn class_public_field_initializer() {
     assert_eq!(run_js(r#"
 class Counter {
     count = 0;
@@ -237,7 +255,8 @@ console.log(c.count);
 "#), &["2"]);
 }
 
-#[test] fn class_static_field() {
+#[test]
+fn class_static_field() {
     assert_eq!(run_js(r#"
 class Config {
     static version = "1.0";
@@ -248,7 +267,8 @@ console.log(Config.appName);
 "#), &["1.0", "MyApp"]);
 }
 
-#[test] fn class_private_field_encapsulation() {
+#[test]
+fn class_private_field_encapsulation() {
     assert_eq!(run_js(r#"
 class Secret {
     #value;
@@ -261,7 +281,8 @@ console.log(s.value);
 "#), &["42", "undefined"]);
 }
 
-#[test] fn class_private_method() {
+#[test]
+fn class_private_method() {
     assert_eq!(run_js(r#"
 class Processor {
     #transform(x) { return x * 2; }
@@ -276,7 +297,8 @@ console.log(p.process(5));
 // PROTOTYPE CHAIN PATTERNS
 // ===================================================================
 
-#[test] fn prototype_method_lookup() {
+#[test]
+fn prototype_method_lookup() {
     assert_eq!(run_js(r#"
 function Animal(name) { this.name = name; }
 Animal.prototype.speak = function() { return this.name + " speaks"; };
@@ -287,7 +309,8 @@ console.log(a.hasOwnProperty("speak"));
 "#), &["Dog speaks", "true", "false"]);
 }
 
-#[test] fn prototype_chain_inheritance() {
+#[test]
+fn prototype_chain_inheritance() {
     assert_eq!(run_js(r#"
 function Animal(name) { this.name = name; }
 Animal.prototype.speak = function() { return "..."; };
@@ -307,7 +330,8 @@ console.log(d instanceof Animal);
 // MISC PATTERNS
 // ===================================================================
 
-#[test] fn tagged_template_literal() {
+#[test]
+fn tagged_template_literal() {
     assert_eq!(run_js(r#"
 function upper(strings, ...values) {
     let result = "";
@@ -323,7 +347,8 @@ console.log(upper`hello ${name} you are ${num}`);
 "#), &["hello WORLD you are 42"]);
 }
 
-#[test] fn structured_clone_like() {
+#[test]
+fn structured_clone_like() {
     assert_eq!(run_js(r#"
 let original = { a: 1, b: { c: 2 } };
 let clone = JSON.parse(JSON.stringify(original));
@@ -333,7 +358,8 @@ console.log(clone.b.c);
 "#), &["2", "99"]);
 }
 
-#[test] fn optional_chaining_with_method() {
+#[test]
+fn optional_chaining_with_method() {
     assert_eq!(run_js(r#"
 let obj = {
     foo: { bar() { return 42; } }
@@ -343,7 +369,8 @@ console.log(obj.baz?.bar());
 "#), &["42", "undefined"]);
 }
 
-#[test] fn nullish_assignment_operator() {
+#[test]
+fn nullish_assignment_operator() {
     assert_eq!(run_js(r#"
 let a = null;
 a ??= 42;
@@ -353,7 +380,8 @@ console.log(a);
 "#), &["42", "42"]);
 }
 
-#[test] fn logical_or_assignment() {
+#[test]
+fn logical_or_assignment() {
     assert_eq!(run_js(r#"
 let a = 0;
 a ||= 42;
@@ -364,7 +392,8 @@ console.log(b);
 "#), &["42", "hello"]);
 }
 
-#[test] fn logical_and_assignment() {
+#[test]
+fn logical_and_assignment() {
     assert_eq!(run_js(r#"
 let a = 1;
 a &&= 42;
