@@ -317,17 +317,17 @@ fn run_project(path: &Path, dump: bool) {
         let code = &mut chunk.code;
         let mut ip = 0;
         while ip < code.len() {
-            let op_byte = code[ip];
-            if let Some(op) = vybe_bytecode::Op::from_byte(op_byte) {
+            if ip + 1 >= code.len() { break; }
+            if let Some(op) = vybe_bytecode::Op::decode(code[ip], code[ip + 1]) {
                 match op {
                     vybe_bytecode::Op::REF_FUNC => {
                         if ip + 2 < code.len() {
-                            let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
+                            let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
                             let new_idx = old_idx + 1; // shift by 1 for bootstrap
-                            code[ip + 1] = (new_idx >> 8) as u8;
-                            code[ip + 2] = (new_idx & 0xff) as u8;
+                            code[ip + 2] = (new_idx >> 8) as u8;
+                            code[ip + 3] = (new_idx & 0xff) as u8;
                         }
-                        ip += 3 + 1;
+                        ip += 4 + 1; // 2 opcode + 2 u16 + 1 uv_count
                         if ip - 1 < code.len() {
                             let uv_count = code[ip - 1] as usize;
                             ip += uv_count * 2;
@@ -342,10 +342,10 @@ fn run_project(path: &Path, dump: bool) {
                     | vybe_bytecode::Op::ARRAY_NEW
                     | vybe_bytecode::Op::BR | vybe_bytecode::Op::BR_IF_TRUE | vybe_bytecode::Op::BR_IF_FALSE
                     | vybe_bytecode::Op::LOOP => { ip += 3; continue; }
-                    _ => { ip += 1; continue; }
+                    _ => { ip += 2; continue; }
                 }
             } else {
-                ip += 1;
+                ip += 2;
             }
         }
         all_chunks.push(chunk);
@@ -356,17 +356,17 @@ fn run_project(path: &Path, dump: bool) {
         let code = &mut all_chunks[0].code;
         let mut ip = 0;
         while ip < code.len() {
-            let op_byte = code[ip];
-            if let Some(op) = vybe_bytecode::Op::from_byte(op_byte) {
+            if ip + 1 >= code.len() { break; }
+            if let Some(op) = vybe_bytecode::Op::decode(code[ip], code[ip + 1]) {
                 match op {
                     vybe_bytecode::Op::REF_FUNC => {
                         if ip + 2 < code.len() {
-                            let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
+                            let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
                             let new_idx = old_idx + 1;
-                            code[ip + 1] = (new_idx >> 8) as u8;
-                            code[ip + 2] = (new_idx & 0xff) as u8;
+                            code[ip + 2] = (new_idx >> 8) as u8;
+                            code[ip + 3] = (new_idx & 0xff) as u8;
                         }
-                        ip += 3 + 1;
+                        ip += 4 + 1; // 2 opcode + 2 u16 + 1 uv_count
                         if ip - 1 < code.len() {
                             let uv_count = code[ip - 1] as usize;
                             ip += uv_count * 2;
@@ -374,9 +374,9 @@ fn run_project(path: &Path, dump: bool) {
                         continue;
                     }
                     vybe_bytecode::Op::CALL_REF => { ip += 2; continue; }
-                    _ => { ip += 1; continue; }
+                    _ => { ip += 2; continue; }
                 }
-            } else { ip += 1; }
+            } else { ip += 2; }
         }
     }
 

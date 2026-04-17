@@ -406,11 +406,12 @@ fn single_byte_opcode_encodes_correctly() {
 
 #[test]
 fn opcode_encoding_consistency() {
-    // Verify that from_byte(encode()) roundtrips for single-byte opcodes
+    // Verify that decode(encode()) roundtrips for all opcodes
     let op = Op::DYN_ADD;
-    let (b1, _) = op.encode();
-    let decoded = Op::from_byte(b1);
+    let (prefix, sub) = op.encode();
+    let decoded = Op::decode(prefix, sub);
     assert!(decoded.is_some());
+    assert_eq!(decoded.unwrap(), op);
 }
 
 #[test]

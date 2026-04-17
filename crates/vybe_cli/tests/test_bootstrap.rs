@@ -67,7 +67,7 @@ fn build_bootstrap(
         let code = &mut adjusted.code;
         let mut ip = 0;
         while ip < code.len() {
-            if let Some(op) = Op::from_byte(code[ip]) {
+            if let Some(op) = Op::decode(code[ip], code[ip + 1]) {
                 match op {
                     Op::REF_FUNC => {
                         if ip + 2 < code.len() {

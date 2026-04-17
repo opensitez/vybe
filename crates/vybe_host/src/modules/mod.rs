@@ -33,6 +33,7 @@ pub mod data;
 pub mod drawing;
 pub mod canvas;
 pub mod rt;
+pub mod js_builtins;
 
 use vybe_bytecode::{VM, Value, HostContext};
 use std::collections::HashSet;
@@ -356,6 +357,7 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     data::register(vm);
     drawing::register(vm);
     rt::register(vm);
+    js_builtins::register(vm);
 
     // Capability-gated modules
     if caps.has(Capability::Console) {
