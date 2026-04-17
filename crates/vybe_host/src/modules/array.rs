@@ -211,6 +211,26 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(arr)))
     }));
 
+    // Array constructor: new Array() or new Array(5) or new Array("a", "b")
+    // vybex `new X(args)` passes user args only (no this prefix).
+    vm.register_host_fn("vybe:array", "arrayNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let elems: Vec<Value> = if args.len() == 1 {
+            let v = &args[0];
+            if matches!(v, Value::F64(_) | Value::I32(_) | Value::I64(_)) {
+                let n = v.as_f64() as usize;
+                vec![Value::Null; n]
+            } else {
+                vec![v.clone()]
+            }
+        } else {
+            args.to_vec()
+        };
+        let mut obj = Object::new();
+        obj.kind = ObjectKind::Array(elems);
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Array")));
+        Value::Object(Arc::new(Mutex::new(obj)))
+    }));
+
     // arr.keys() → iterator of indices [0, 1, 2, ...] (returns array for spread support)
     vm.register_host_fn("vybe:array", "arrKeys", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(arr)) = args.first() {
@@ -298,14 +318,81 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    vm.register_host_fn("vybe:array", "from", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            if let ObjectKind::Array(ref elems) = o.kind {
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(elems.clone()))));
+    vm.register_host_fn("vybe:array", "from", Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        let mut elements: Vec<Value> = Vec::new();
+        match args.first() {
+            Some(Value::Object(obj)) => {
+                let o = obj.lock().unwrap();
+                // Native array: copy elements
+                if let ObjectKind::Array(ref elems) = o.kind {
+                    elements = elems.clone();
+                } else {
+                    let type_name = o.properties.get("__type")
+                        .map(|v| format!("{}", v))
+                        .unwrap_or_default();
+                    if type_name == "Set" || type_name == "WeakSet" {
+                        if let Some(Value::Object(items)) = o.properties.get("__items") {
+                            let it = items.lock().unwrap();
+                            if let ObjectKind::Array(ref elems) = it.kind {
+                                elements = elems.clone();
+                            }
+                        }
+                    } else if type_name == "Map" || type_name == "WeakMap" {
+                        // Map → array of [key, value] pairs (use __keys order)
+                        if let Some(Value::Object(data)) = o.properties.get("__data") {
+                            let d = data.lock().unwrap();
+                            if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
+                                let k = keys_arr.lock().unwrap();
+                                if let ObjectKind::Array(ref keys) = k.kind {
+                                    for key_v in keys {
+                                        let ks = format!("{}", key_v);
+                                        let v = d.properties.get(&ks).cloned().unwrap_or(Value::Undefined);
+                                        let pair = vec![key_v.clone(), v];
+                                        elements.push(Value::Object(Arc::new(Mutex::new(Object::new_array(pair)))));
+                                    }
+                                }
+                            } else {
+                                for (k, v) in &d.properties {
+                                    let pair = vec![
+                                        Value::String(Arc::from(k.as_str())),
+                                        v.clone(),
+                                    ];
+                                    elements.push(Value::Object(Arc::new(Mutex::new(Object::new_array(pair)))));
+                                }
+                            }
+                        }
+                    } else {
+                        // Array-like: object with `length` property and integer keys
+                        if let Some(len_val) = o.properties.get("length") {
+                            let len = len_val.as_f64() as usize;
+                            for i in 0..len {
+                                let key = i.to_string();
+                                let v = o.properties.get(&key).cloned().unwrap_or(Value::Undefined);
+                                elements.push(v);
+                            }
+                        }
+                    }
+                }
+            }
+            Some(Value::String(s)) => {
+                // Array.from(string) → array of single-char strings
+                for c in s.chars() {
+                    elements.push(Value::String(Arc::from(c.to_string().as_str())));
+                }
+            }
+            _ => {}
+        }
+        // Optional mapper: Array.from(src, (v, i) => ...)
+        if let Some(mapper) = args.get(1) {
+            if !matches!(mapper, Value::Null | Value::Undefined) {
+                let mut mapped = Vec::with_capacity(elements.len());
+                for (i, v) in elements.iter().enumerate() {
+                    mapped.push(ctx.invoke(mapper, &[v.clone(), Value::F64(i as f64)]));
+                }
+                elements = mapped;
             }
         }
-        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+        Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
     }));
 
     // --- VB-compatible array functions ---

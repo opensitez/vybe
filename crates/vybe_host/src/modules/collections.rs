@@ -3,26 +3,48 @@ use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
-    // -- Map constructor: new Map() --
-    // Called with (this) from `new Map()`. Sets up methods on this.
+    // -- Map constructor: new Map() or new Map([[k,v], ...]) --
+    // Always create a fresh object; if first arg is an array of [k,v] pairs, populate.
     vm.register_host_fn("vybe:collections", "Map", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
-            .unwrap_or_else(|| Value::Object(Arc::new(Mutex::new(Object::new()))));
+        let this = Value::Object(Arc::new(Mutex::new(Object::new())));
         if let Value::Object(obj) = &this {
             let mut o = obj.lock().unwrap();
             o.properties.insert("__type".into(), Value::String(Arc::from("Map")));
-            o.properties.insert("__data".into(), Value::Object(Arc::new(Mutex::new(Object::new()))));
-            o.properties.insert("size".into(), Value::F64(0.0));
+            let data = Value::Object(Arc::new(Mutex::new(Object::new())));
+            o.properties.insert("__data".into(), data.clone());
+            let mut count: f64 = 0.0;
+            // Accept iterable of [key, value] pairs
+            if let Some(Value::Object(entries)) = args.first() {
+                let e = entries.lock().unwrap();
+                if let ObjectKind::Array(ref items) = e.kind {
+                    if let Value::Object(data_obj) = &data {
+                        let mut d = data_obj.lock().unwrap();
+                        for item in items {
+                            if let Value::Object(pair) = item {
+                                let p = pair.lock().unwrap();
+                                if let ObjectKind::Array(ref kv) = p.kind {
+                                    if kv.len() >= 2 {
+                                        let k = format!("{}", kv[0]);
+                                        d.properties.insert(k, kv[1].clone());
+                                        count += 1.0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            o.properties.insert("size".into(), Value::F64(count));
         }
         this
     }));
 
     // -- WeakMap constructor: new WeakMap() -- (alias for Map, no GC semantics)
-    vm.register_host_fn("vybe:collections", "WeakMap", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
-            .unwrap_or_else(|| Value::Object(Arc::new(Mutex::new(Object::new()))));
-        if let Value::Object(obj) = &this {
-            let mut o = obj.lock().unwrap();
+    vm.register_host_fn("vybe:collections", "WeakMap", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        let obj = Object::new();
+        let this = Value::Object(Arc::new(Mutex::new(obj)));
+        if let Value::Object(o_arc) = &this {
+            let mut o = o_arc.lock().unwrap();
             o.properties.insert("__type".into(), Value::String(Arc::from("WeakMap")));
             o.properties.insert("__data".into(), Value::Object(Arc::new(Mutex::new(Object::new()))));
         }
@@ -30,11 +52,11 @@ pub fn register(vm: &mut VM) {
     }));
 
     // -- WeakSet constructor: new WeakSet() -- (alias for Set)
-    vm.register_host_fn("vybe:collections", "WeakSet", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
-            .unwrap_or_else(|| Value::Object(Arc::new(Mutex::new(Object::new()))));
-        if let Value::Object(obj) = &this {
-            let mut o = obj.lock().unwrap();
+    vm.register_host_fn("vybe:collections", "WeakSet", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        let obj = Object::new();
+        let this = Value::Object(Arc::new(Mutex::new(obj)));
+        if let Value::Object(o_arc) = &this {
+            let mut o = o_arc.lock().unwrap();
             o.properties.insert("__type".into(), Value::String(Arc::from("WeakSet")));
             let mut items = Object::new();
             items.kind = ObjectKind::Array(Vec::new());
@@ -127,13 +149,27 @@ pub fn register(vm: &mut VM) {
 
     // -- Set constructor: new Set() --
     vm.register_host_fn("vybe:collections", "Set", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let this = args.first().cloned().filter(|v| matches!(v, Value::Object(_)))
-            .unwrap_or_else(|| Value::Object(Arc::new(Mutex::new(Object::new()))));
+        // Always create a fresh object; if first arg is an array, init with deduped items.
+        let this = Value::Object(Arc::new(Mutex::new(Object::new())));
         if let Value::Object(obj) = &this {
             let mut o = obj.lock().unwrap();
             o.properties.insert("__type".into(), Value::String(Arc::from("Set")));
-            o.properties.insert("__items".into(), Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))));
-            o.properties.insert("size".into(), Value::F64(0.0));
+            let mut items: Vec<Value> = Vec::new();
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            if let Some(Value::Object(src)) = args.first() {
+                let s = src.lock().unwrap();
+                if let ObjectKind::Array(ref arr) = s.kind {
+                    for v in arr {
+                        let key = format!("{}", v);
+                        if seen.insert(key) {
+                            items.push(v.clone());
+                        }
+                    }
+                }
+            }
+            let len = items.len() as f64;
+            o.properties.insert("__items".into(), Value::Object(Arc::new(Mutex::new(Object::new_array(items)))));
+            o.properties.insert("size".into(), Value::F64(len));
         }
         this
     }));

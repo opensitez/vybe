@@ -42,6 +42,18 @@ pub fn setup_namespaces(vm: &mut VM) {
     data::register(vm);
     vb_globals::register(vm);
 
+    // globalThis: JS global object. Inject a plain object so `typeof globalThis`
+    // returns "object" and `globalThis !== undefined` is true. Also accessible
+    // from VB/C# where it's harmless (not referenced).
+    {
+        use vybe_bytecode::Value;
+        use vybe_bytecode::value::Object;
+        use std::sync::{Arc, Mutex};
+        let obj = Object::new();
+        vm.globals.insert("globalThis".to_string(),
+            Value::Object(Arc::new(Mutex::new(obj))));
+    }
+
     // Polyfill: now that all host fns are registered (including any test
     // overrides), point each `__vybe_*` global at its native equivalent so
     // calls compiled as `global_get __vybe_pow + call_ref` execute the

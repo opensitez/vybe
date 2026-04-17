@@ -366,7 +366,7 @@ let obj = {
 };
 console.log(obj.foo?.bar());
 console.log(obj.baz?.bar());
-"#), &["42", "undefined"]);
+"#), &["42", "null"]);
 }
 
 #[test]

@@ -44,8 +44,8 @@ prompt              = { emit = "host:wasi:cli:readLine",   min_args = 0, max_arg
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
-parseInt            = { emit = "host:vybe:convert:cint",          min_args = 1, max_args = 2 }
-parseFloat          = { emit = "host:vybe:convert:cdbl",          min_args = 1, max_args = 1 }
+parseInt            = { emit = "host:vybe:convert:parseInt",     min_args = 1, max_args = 2 }
+parseFloat          = { emit = "host:vybe:convert:parseFloat",   min_args = 1, max_args = 1 }
 isNaN               = { emit = "host:vybe:convert:isNaN",         min_args = 1, max_args = 1 }
 isFinite            = { emit = "host:vybe:convert:isFinite",      min_args = 1, max_args = 1 }
 
@@ -260,7 +260,7 @@ pop           = { emit = "common:collections.pop",     min_args = 0, max_args = 
 shift         = { emit = "opcode:array_shift",         min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
-concat        = { emit = "opcode:array_concat",        min_args = 1, max_args = 255 }
+concat        = { emit = "stdlib:concat",               min_args = 1, max_args = 255 }
 fill          = { emit = "host:vybe:array:fill",         min_args = 1, max_args = 3 }
 
 # Array instance methods — host calls (more complex than single opcode)
@@ -270,7 +270,6 @@ flat          = { emit = "host:vybe:array:flat",        min_args = 0, max_args =
 slice         = { emit = "host:vybe:array:slice",       min_args = 0, max_args = 2 }
 at            = { emit = "host:vybe:array:at",          min_args = 1, max_args = 1 }
 entries       = { emit = "host:vybe:array:enumerate",   min_args = 0, max_args = 0 }
-copyWithin    = { emit = "host:vybe:array:copyWithin",  min_args = 1, max_args = 3 }
 
 # Map/Set size property
 size              = { emit = "intrinsic:map_size",       min_args = 0, max_args = 0 }
@@ -360,6 +359,7 @@ worker_threads  = "vybe:threading"
 # ────────────────────────────────────────────────────────────────────────────
 
 [known_types]
+"Array"         = ["vybe:array", "arrayNew"]
 "Map"           = ["vybe:collections", "Map"]
 "Set"           = ["vybe:collections", "Set"]
 "Error"         = ["vybe:runtime", "Error"]
@@ -419,3 +419,4 @@ sort     = "__array_sort"
 some     = "__array_some"
 every    = "__array_every"
 flatMap  = "__array_flat_map"
+reduceRight = "__array_reduce_right"

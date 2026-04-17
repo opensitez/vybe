@@ -278,7 +278,7 @@ console.log(c.area);
 console.log(c.circumference);
 c.radius = 10;
 console.log(c.area);
-"#), &["78.5", "31.4", "314"]);
+"#), &["78.5", "31.400000000000002", "314"]);
 }
 
 #[test]

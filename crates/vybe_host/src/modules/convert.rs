@@ -47,18 +47,85 @@ pub fn register(vm: &mut VM) {
     }));
 
     vm.register_host_fn("vybe:convert", "parseInt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        // JS parseInt: parse leading whitespace + optional sign + digits until a
+        // non-digit character (honoring optional radix arg 2..=36, default 10,
+        // with 0x/0X auto-hex).
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        match s.trim().parse::<i64>() {
-            Ok(n) => Value::F64(n as f64),
-            Err(_) => match s.trim().parse::<f64>() {
-                Ok(n) => Value::F64(n.trunc()),
-                Err(_) => Value::F64(f64::NAN),
+        let radix_arg = args.get(1).map(|v| v.as_f64() as i32).unwrap_or(0);
+        let trimmed = s.trim_start();
+        let bytes = trimmed.as_bytes();
+        let mut i = 0usize;
+        let mut neg = false;
+        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+            neg = bytes[i] == b'-';
+            i += 1;
+        }
+        let mut radix = if radix_arg == 0 { 10 } else { radix_arg };
+        if i + 1 < bytes.len() && bytes[i] == b'0' && (bytes[i+1] == b'x' || bytes[i+1] == b'X') {
+            if radix_arg == 0 || radix_arg == 16 {
+                radix = 16;
+                i += 2;
+            }
+        }
+        if !(2..=36).contains(&radix) {
+            return Value::F64(f64::NAN);
+        }
+        let start = i;
+        while i < bytes.len() {
+            let c = bytes[i] as char;
+            let digit_val = if c.is_ascii_digit() { (c as u8 - b'0') as i32 }
+                else if c.is_ascii_lowercase() { (c as u8 - b'a' + 10) as i32 }
+                else if c.is_ascii_uppercase() { (c as u8 - b'A' + 10) as i32 }
+                else { -1 };
+            if digit_val < 0 || digit_val >= radix { break; }
+            i += 1;
+        }
+        if i == start { return Value::F64(f64::NAN); }
+        let digits = &trimmed[start..i];
+        match i64::from_str_radix(digits, radix as u32) {
+            Ok(n) => Value::F64(if neg { -(n as f64) } else { n as f64 }),
+            Err(_) => {
+                // Very long number — try f64 for radix-10 only; otherwise NaN.
+                if radix == 10 {
+                    match digits.parse::<f64>() {
+                        Ok(n) => Value::F64(if neg { -n } else { n }),
+                        Err(_) => Value::F64(f64::NAN),
+                    }
+                } else {
+                    Value::F64(f64::NAN)
+                }
             }
         }
     }));
     vm.register_host_fn("vybe:convert", "parseFloat", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        // JS parseFloat: parse leading whitespace + number, stopping at the
+        // first character that can't extend a valid float literal.
         let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        Value::F64(s.trim().parse::<f64>().unwrap_or(f64::NAN))
+        let trimmed = s.trim_start();
+        let bytes = trimmed.as_bytes();
+        let mut i = 0usize;
+        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') { i += 1; }
+        // Handle "Infinity"
+        if trimmed[i..].starts_with("Infinity") {
+            let neg = trimmed.starts_with('-');
+            return Value::F64(if neg { f64::NEG_INFINITY } else { f64::INFINITY });
+        }
+        let mut saw_digit = false;
+        while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; saw_digit = true; }
+        if i < bytes.len() && bytes[i] == b'.' {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; saw_digit = true; }
+        }
+        if saw_digit && i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+            let exp_start = i;
+            i += 1;
+            if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') { i += 1; }
+            let mut saw_exp_digit = false;
+            while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; saw_exp_digit = true; }
+            if !saw_exp_digit { i = exp_start; }
+        }
+        if !saw_digit { return Value::F64(f64::NAN); }
+        Value::F64(trimmed[..i].parse::<f64>().unwrap_or(f64::NAN))
     }));
     vm.register_host_fn("vybe:convert", "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         Value::String(std::sync::Arc::from(format!("{}", args.first().unwrap_or(&Value::Null)).as_str()))

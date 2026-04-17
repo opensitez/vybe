@@ -109,6 +109,9 @@ pub fn build_stdlib() -> StdLib {
     chunks.push(build_dyn_mul());
     exports.push("__stdlib_dynmul");
 
+    chunks.push(build_concat());
+    exports.push("__stdlib_concat");
+
     StdLib { chunks, exports }
 }
 
@@ -1433,5 +1436,37 @@ fn build_sort_by_key() -> Chunk {
 
     c.emit_op_u16(Op::local_get, arr, 0);
     c.emit_op(Op::r#return, 0);
+    c
+}
+
+// ── concat(a, b) → polymorphic concat ───────────────────────
+// If `a` is a string, do str_concat. If `a` is an array, do array_concat.
+// Runtime dispatch using ref_is_string. Pure WASM bytecode.
+fn build_concat() -> Chunk {
+    let mut c = Chunk::new("__stdlib_concat");
+    c.arity = 2; // a, b
+    c.local_count = 3; // callee(0) + a(1) + b(2)
+    let a = 1u16;
+    let b = 2u16;
+
+    // if ref_is_string(a) → str_concat
+    c.emit_op_u16(Op::local_get, a, 0);
+    c.emit_op(Op::ref_is_string, 0);
+    let not_string = c.emit_jump(Op::br_if_false, 0);
+
+    // String path: str_concat(a, b)
+    c.emit_op_u16(Op::local_get, a, 0);
+    c.emit_op_u16(Op::local_get, b, 0);
+    c.emit_op(Op::str_concat, 0);
+    c.emit_op(Op::r#return, 0);
+
+    c.patch_jump(not_string);
+
+    // Array path: array_concat(a, b)
+    c.emit_op_u16(Op::local_get, a, 0);
+    c.emit_op_u16(Op::local_get, b, 0);
+    c.emit_op(Op::array_concat, 0);
+    c.emit_op(Op::r#return, 0);
+
     c
 }

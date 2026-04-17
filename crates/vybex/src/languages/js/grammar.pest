@@ -362,6 +362,7 @@ call_chain = {
     | chain_lead ~ "." ~ private_name                         // private member: this.#x
     | chain_lead ~ "." ~ ident_or_keyword                     // member: obj.prop
     | "[" ~ expression ~ "]"                                  // computed: obj[expr]
+    | template_literal                                         // tagged template: tag`...`
 }
 
 argument_list = { argument ~ ("," ~ argument)* ~ ","? }

@@ -443,6 +443,29 @@ impl VM {
         }
     }
 
+    /// Convert a value to its string representation.
+    /// For objects with a `toString` method, invokes it; otherwise falls back to Display.
+    /// Used for string concatenation and template literals (JS coercion semantics).
+    pub fn value_to_string(&mut self, value: &Value) -> String {
+        if let Value::Object(obj) = value {
+            // Look for toString or valueOf method on the object
+            let to_str_fn = {
+                let o = obj.lock().unwrap();
+                o.properties.get("toString").cloned()
+            };
+            if let Some(fn_val) = to_str_fn {
+                if matches!(fn_val, Value::Object(_)) {
+                    let result = self.invoke_callback(&fn_val, &[value.clone()]);
+                    // If result is a string-like primitive, use it; otherwise fall through
+                    if !matches!(result, Value::Null | Value::Undefined) {
+                        return format!("{}", result);
+                    }
+                }
+            }
+        }
+        format!("{}", value)
+    }
+
     /// Get a type_id by name from the TypeRegistry.
     pub fn get_type_id(&self, name: &str) -> usize {
         self.type_registry.get_id(name).unwrap_or(0)
@@ -2003,27 +2026,55 @@ impl VM {
                 Op::dyn_eq => {
                     let b = self.pop();
                     let a = self.pop();
-                    let result = match (&a, &b) {
-                        // null == null, undefined == undefined, null == undefined
-                        (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
-                        (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
-                        (Value::Bool(x), Value::Bool(y)) => x == y,
-                        (Value::F64(x), Value::F64(y)) => if x.is_nan() || y.is_nan() { false } else { x == y },
-                        (Value::I32(x), Value::I32(y)) => x == y,
-                        (Value::F64(x), Value::I32(y)) => *x == *y as f64,
-                        (Value::I32(x), Value::F64(y)) => *x as f64 == *y,
-                        // String == Number coercion
-                        (Value::String(s), Value::F64(n)) | (Value::F64(n), Value::String(s)) => {
-                            if let Ok(sv) = s.parse::<f64>() { sv == *n } else { false }
+                    // JS abstract equality (==) coercion rules
+                    fn loose_eq(a: &Value, b: &Value) -> bool {
+                        match (a, b) {
+                            // null/undefined: equal to each other, nothing else
+                            (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
+                            (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
+                            (Value::Null, _) | (_, Value::Null) => false,
+                            (Value::Undefined, _) | (_, Value::Undefined) => false,
+                            // Same primitive types
+                            (Value::Bool(x), Value::Bool(y)) => x == y,
+                            (Value::F64(x), Value::F64(y)) => if x.is_nan() || y.is_nan() { false } else { x == y },
+                            (Value::I32(x), Value::I32(y)) => x == y,
+                            (Value::F64(x), Value::I32(y)) => *x == *y as f64,
+                            (Value::I32(x), Value::F64(y)) => *x as f64 == *y,
+                            (Value::String(x), Value::String(y)) => x == y,
+                            // Bool with anything else → coerce bool to number, retry
+                            (Value::Bool(x), other) | (other, Value::Bool(x)) => {
+                                let n = if *x { 1.0 } else { 0.0 };
+                                loose_eq(&Value::F64(n), other)
+                            }
+                            // String == Number: parse string, NaN if invalid
+                            (Value::String(s), Value::F64(n)) | (Value::F64(n), Value::String(s)) => {
+                                let trimmed = s.trim();
+                                if trimmed.is_empty() { *n == 0.0 }
+                                else if let Ok(sv) = trimmed.parse::<f64>() { sv == *n } else { false }
+                            }
+                            (Value::String(s), Value::I32(n)) | (Value::I32(n), Value::String(s)) => {
+                                let trimmed = s.trim();
+                                if trimmed.is_empty() { *n == 0 }
+                                else if let Ok(sv) = trimmed.parse::<f64>() { sv == *n as f64 } else { false }
+                            }
+                            // Object: same-reference, OR compare via toPrimitive (Array → string)
+                            (Value::Object(x), Value::Object(y)) => Arc::ptr_eq(x, y),
+                            // Object with primitive: coerce object to primitive (Array → joined string)
+                            (Value::Object(o), other) | (other, Value::Object(o)) => {
+                                let obj = o.lock().unwrap();
+                                if let ObjectKind::Array(elems) = &obj.kind {
+                                    let s = elems.iter().map(|v| format!("{}", v))
+                                        .collect::<Vec<_>>().join(",");
+                                    drop(obj);
+                                    loose_eq(&Value::String(Arc::from(s.as_str())), other)
+                                } else {
+                                    false
+                                }
+                            }
+                            _ => false,
                         }
-                        (Value::String(s), Value::I32(n)) | (Value::I32(n), Value::String(s)) => {
-                            if let Ok(sv) = s.parse::<f64>() { sv == *n as f64 } else { false }
-                        }
-                        (Value::String(x), Value::String(y)) => x == y,
-                        (Value::Object(x), Value::Object(y)) => Arc::ptr_eq(x, y),
-                        _ => false,
-                    };
-                    self.push(Value::Bool(result))?;
+                    }
+                    self.push(Value::Bool(loose_eq(&a, &b)))?;
                 }
                 Op::dyn_ne => {
                     let b = self.pop();

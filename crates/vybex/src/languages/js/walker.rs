@@ -24,6 +24,22 @@ pub fn parse(source: &str) -> Result<Module, String> {
             }
         }
     }
+    // JS function hoisting: function declarations are visible before their
+    // textual position. Reorder so they come first in the body. This mirrors
+    // what the JS engine does at parse time — function decls are hoisted to
+    // the top of their enclosing scope.
+    let mut hoisted = Vec::new();
+    let mut rest = Vec::new();
+    for stmt in body {
+        if matches!(stmt.kind, StmtKind::FunctionDecl { .. }) {
+            hoisted.push(stmt);
+        } else {
+            rest.push(stmt);
+        }
+    }
+    hoisted.append(&mut rest);
+    let body = hoisted;
+
     Ok(Module {
         name: "main".into(),
         language: Lang::JavaScript,
@@ -379,13 +395,37 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::ClassDecl {
+    // Extract static block bodies — these run immediately after class definition.
+    // Collect them and emit as post-class statements in a wrapping Block.
+    let mut static_init_stmts: Vec<Statement> = Vec::new();
+    members.retain(|m| {
+        if let ClassMember::Method(ref func) = m {
+            if let StmtKind::FunctionDecl { name: ref mname, ref body, ref modifiers, .. } = func.kind {
+                if mname == "__static_init" && modifiers.is_static {
+                    static_init_stmts.extend(body.iter().cloned());
+                    return false; // remove from members
+                }
+            }
+        }
+        true
+    });
+
+    let class_stmt = StmtKind::ClassDecl {
         name,
         parents,
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
-    })
+    };
+
+    if static_init_stmts.is_empty() {
+        Ok(class_stmt)
+    } else {
+        // Wrap: class declaration + static init statements in a Block
+        let mut block = vec![Statement::new(class_stmt)];
+        block.extend(static_init_stmts);
+        Ok(StmtKind::Block(block))
+    }
 }
 
 fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
@@ -581,6 +621,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             let mut init = None;
             let mut cond = None;
             let mut update = None;
+            let mut let_vars: Vec<String> = Vec::new(); // track `let` loop vars
 
             for p in parts {
                 match p.as_rule() {
@@ -599,7 +640,13 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 let mut decls = Vec::new();
                                 for d in vi {
                                     if d.as_rule() == Rule::var_declarator {
-                                        decls.push(walk_var_declarator(d)?);
+                                        let decl = walk_var_declarator(d)?;
+                                        if var_kind == VarDeclKind::Let || var_kind == VarDeclKind::Const {
+                                            if let BindingPattern::Ident(ref name) = decl.pattern {
+                                                let_vars.push(name.clone());
+                                            }
+                                        }
+                                        decls.push(decl);
                                     }
                                 }
                                 init = Some(Box::new(Statement::new(StmtKind::VarDecl {
@@ -632,6 +679,35 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }
                 }
             }
+
+            // Per-iteration `let` binding: wrap body in IIFE so closures
+            // capture a fresh copy each iteration. Only apply when the body
+            // contains function expressions/arrows that could close over the
+            // loop variable — otherwise IIFE breaks break/continue.
+            let body = if !let_vars.is_empty() && body_contains_closure(&body, &let_vars) {
+                let params: Vec<Param> = let_vars.iter().map(|v| Param {
+                    name: v.clone(), type_hint: None, default: None,
+                    pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                    is_optional: false, is_nullable: false,
+                }).collect();
+                let args: Vec<Argument> = let_vars.iter().map(|v| {
+                    Argument::positional(Expression::ident(v))
+                }).collect();
+                let iife = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Lambda {
+                        params,
+                        body: LambdaBody::Block(body),
+                        is_async: false,
+                        captures: Vec::new(),
+                    })),
+                    args,
+                    optional: false,
+                });
+                vec![Statement::new(StmtKind::Expr(iife))]
+            } else {
+                body
+            };
+
             Ok(StmtKind::For { init, cond, update, body })
         }
         other => Err(format!("Unexpected for header: {:?}", other)),
@@ -1029,26 +1105,28 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::call_expression => walk_call_chain(pair),
         Rule::new_expression => {
             // new_expression = { "new" ~ primary ~ call_chain* }
-            // Walk inner pairs: first is the class name (primary), rest are call_chain
+            // Per JS spec: the FIRST `()` after `new` is the constructor args.
+            // Any subsequent member/call/index chains are applied to the RESULT
+            // of the construction (e.g. `new Foo().bar().baz`).
             let mut inner = pair.into_inner();
             let first = inner.next().ok_or("Empty new")?;
             let mut expr = walk_expression(first)?;
+            let chains: Vec<Pair<Rule>> = inner.filter(|p| p.as_rule() == Rule::call_chain).collect();
+            let mut new_consumed = false; // True after the first `(args)` is processed
 
-            // Process call_chain pairs (just like walk_call_chain does)
-            for chain in inner {
-                if chain.as_rule() != Rule::call_chain { continue; }
-                let chain_src = chain.as_str();
+            for chain in chains {
+                let chain_src = chain.as_str().trim_start();
                 let chain_inner: Vec<Pair<Rule>> = chain.into_inner().collect();
 
-                if chain_src.starts_with("(") {
-                    // Constructor args: new Foo(42) → the (42) is a call_chain
+                if !new_consumed && chain_src.starts_with("(") {
+                    // First parens — these are the constructor args.
                     let args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
                         walk_arguments(arg_pair)?
                     } else { Vec::new() };
-                    // Return as New with these args
-                    return Ok(ExprKind::New { class: Box::new(expr), args });
-                } else if chain_src.starts_with(".") {
-                    // Member access: new Foo.Bar(42)
+                    expr = Expression::new(ExprKind::New { class: Box::new(expr), args });
+                    new_consumed = true;
+                } else if !new_consumed && chain_src.starts_with(".") {
+                    // Member access BEFORE constructor args: `new Foo.Bar(42)`.
                     let name = chain_inner.into_iter()
                         .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name)
                         .map(|p| p.as_str().to_string())
@@ -1056,10 +1134,57 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     expr = Expression::new(ExprKind::Member {
                         object: Box::new(expr), field: name, null_safe: false,
                     });
+                } else {
+                    // Chain AFTER `new X(...)` — applied to the constructed object.
+                    // Handle: `(args)` call, `.member`, `?.member`, `?.()`, `[idx]`, tagged template.
+                    if chain_src.starts_with("?.") {
+                        if chain_inner.first().map_or(false, |p| p.as_rule() == Rule::argument_list || p.as_str().starts_with("(")) {
+                            let args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
+                                walk_arguments(arg_pair)?
+                            } else { Vec::new() };
+                            expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(expr), args, optional: true,
+                            });
+                        } else {
+                            let name = chain_inner.into_iter()
+                                .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name || p.as_rule() == Rule::private_name)
+                                .map(|p| p.as_str().to_string())
+                                .unwrap_or_default();
+                            expr = Expression::new(ExprKind::Member {
+                                object: Box::new(expr), field: name, null_safe: true,
+                            });
+                        }
+                    } else if chain_src.starts_with("(") {
+                        let args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
+                            walk_arguments(arg_pair)?
+                        } else { Vec::new() };
+                        expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(expr), args, optional: false,
+                        });
+                    } else if chain_src.starts_with(".") {
+                        let name = chain_inner.into_iter()
+                            .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name || p.as_rule() == Rule::private_name)
+                            .map(|p| p.as_str().to_string())
+                            .unwrap_or_default();
+                        expr = canonicalize_member_access(expr, &name);
+                    } else if chain_src.starts_with("[") {
+                        let index_expr = chain_inner.into_iter()
+                            .find(|p| p.as_rule() == Rule::expression || matches!(p.as_rule(), Rule::assignment_expression | Rule::conditional_expression | Rule::ident_name | Rule::numeric_literal | Rule::string_literal))
+                            .map(walk_expression)
+                            .transpose()?
+                            .unwrap_or(Expression::new(ExprKind::Lit(Literal::Int(0))));
+                        expr = Expression::new(ExprKind::Index {
+                            object: Box::new(expr), index: Box::new(index_expr),
+                        });
+                    }
                 }
             }
-            // No call_chain with args → new Foo (no parens)
-            Ok(ExprKind::New { class: Box::new(expr), args: Vec::new() })
+
+            // If `new` had no `()` (e.g., `new X`), wrap the bare class.
+            if !new_consumed {
+                expr = Expression::new(ExprKind::New { class: Box::new(expr), args: Vec::new() });
+            }
+            Ok(expr.kind)
         }
 
         // Primary
@@ -1326,10 +1451,165 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             expr = Expression::new(ExprKind::Index {
                 object: Box::new(expr), index: Box::new(index_expr),
             });
+        } else if chain_src.starts_with("`") {
+            // Tagged template: tag`parts...${expr}...`
+            // Desugar to: tag(["part0", "part1", ...], expr0, expr1, ...)
+            if let Some(tmpl) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::template_literal) {
+                let (parts, exprs) = walk_template_parts(tmpl)?;
+                let mut args: Vec<Argument> = Vec::new();
+                // First arg: array of string parts
+                let strings_array = Expression::new(ExprKind::Array(
+                    parts.into_iter().map(|s| {
+                        ArrayElement {
+                            key: None,
+                            value: Expression::new(ExprKind::Lit(Literal::Str(s))),
+                            spread: false,
+                            by_ref: false,
+                        }
+                    }).collect()
+                ));
+                args.push(Argument::positional(strings_array));
+                // Rest: expression values
+                for e in exprs {
+                    args.push(Argument::positional(e));
+                }
+                expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(expr), args, optional: false,
+                });
+            }
         }
     }
 
+    // Normalize variadic concat: `x.concat(a, b, c)` → `x.concat(a).concat(b).concat(c)`
+    // The stdlib concat function is binary (receiver + 1 arg). For variadic calls,
+    // desugar into a chain of binary concat calls. Works for both strings and arrays.
+    expr = desugar_variadic_concat(expr);
+
     Ok(expr.kind)
+}
+
+/// Check if a for-loop body contains closures (lambdas or function expressions)
+/// that reference any of the given `let` variable names. Used to decide whether
+/// to wrap the body in an IIFE for per-iteration binding.
+fn body_contains_closure(stmts: &[Statement], _vars: &[String]) -> bool {
+    // Simple heuristic: check if any lambda/function expression exists in the body.
+    // A more precise check would verify the lambda references a let-var, but
+    // the simple check is correct — IIFE is safe when there ARE closures, and
+    // we skip it when there are none (preserving break/continue).
+    fn has_closure_expr(expr: &Expression) -> bool {
+        match &expr.kind {
+            ExprKind::Lambda { .. } => true,
+            ExprKind::Call { callee, args, .. } => {
+                has_closure_expr(callee) || args.iter().any(|a| has_closure_expr(&a.value))
+            }
+            ExprKind::Member { object, .. } => has_closure_expr(object),
+            ExprKind::Binary { left, right, .. } => has_closure_expr(left) || has_closure_expr(right),
+            ExprKind::Unary { expr, .. } => has_closure_expr(expr),
+            ExprKind::Ternary { cond, then, else_, .. } => {
+                has_closure_expr(cond) || has_closure_expr(then) || has_closure_expr(else_)
+            }
+            ExprKind::Array(elems) => elems.iter().any(|e| has_closure_expr(&e.value)),
+            ExprKind::Index { object, index } => has_closure_expr(object) || has_closure_expr(index),
+            ExprKind::Assign { target: _, value } => has_closure_expr(value),
+            _ => false,
+        }
+    }
+    fn has_closure_stmt(stmt: &Statement) -> bool {
+        match &stmt.kind {
+            StmtKind::Expr(e) => has_closure_expr(e),
+            StmtKind::VarDecl { declarations, .. } => {
+                declarations.iter().any(|d| d.init.as_ref().map_or(false, |e| has_closure_expr(e)))
+            }
+            StmtKind::If { cond, then_body, elifs, else_body, .. } => {
+                has_closure_expr(cond) || then_body.iter().any(has_closure_stmt)
+                || elifs.iter().any(|(c, b)| has_closure_expr(c) || b.iter().any(has_closure_stmt))
+                || else_body.as_ref().map_or(false, |b| b.iter().any(has_closure_stmt))
+            }
+            StmtKind::Block(stmts) => stmts.iter().any(has_closure_stmt),
+            StmtKind::Return(Some(e)) => has_closure_expr(e),
+            _ => false,
+        }
+    }
+    stmts.iter().any(has_closure_stmt)
+}
+
+/// Desugar `x.concat(a, b, c)` into `x.concat(a).concat(b).concat(c)`.
+fn desugar_variadic_concat(expr: Expression) -> Expression {
+    if let ExprKind::Call { ref callee, ref args, optional } = expr.kind {
+        if args.len() > 1 {
+            if let ExprKind::Member { ref object, ref field, null_safe } = callee.kind {
+                if field == "concat" {
+                    // Chain: start with receiver.concat(args[0]), then .concat(args[1]), etc.
+                    let mut result = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: object.clone(),
+                            field: "concat".to_string(),
+                            null_safe,
+                        })),
+                        args: vec![args[0].clone()],
+                        optional,
+                    });
+                    for arg in &args[1..] {
+                        result = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(result),
+                                field: "concat".to_string(),
+                                null_safe: false,
+                            })),
+                            args: vec![arg.clone()],
+                            optional: false,
+                        });
+                    }
+                    return result;
+                }
+            }
+        }
+    }
+    expr
+}
+
+/// Walk a template_literal into (string_parts, expressions).
+/// `hello ${name}!` → (["hello ", "!"], [name])
+fn walk_template_parts(pair: Pair<Rule>) -> Result<(Vec<String>, Vec<Expression>), String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut exprs: Vec<Expression> = Vec::new();
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::template_full => {
+                let s = p.as_str();
+                // Strip leading ` and trailing `
+                let inner = &s[1..s.len()-1];
+                parts.push(unescape_template(inner));
+            }
+            Rule::template_head => {
+                let s = p.as_str();
+                // Strip leading ` and trailing ${
+                let inner = &s[1..s.len()-2];
+                parts.push(unescape_template(inner));
+            }
+            Rule::template_middle => {
+                let s = p.as_str();
+                // Strip leading } and trailing ${
+                let inner = &s[1..s.len()-2];
+                parts.push(unescape_template(inner));
+            }
+            Rule::template_tail => {
+                let s = p.as_str();
+                // Strip leading } and trailing `
+                let inner = &s[1..s.len()-1];
+                parts.push(unescape_template(inner));
+            }
+            _ => {
+                // Expression inside ${...}
+                exprs.push(walk_expression(p)?);
+            }
+        }
+    }
+    Ok((parts, exprs))
+}
+
+fn unescape_template(s: &str) -> String {
+    s.replace("\\`", "`").replace("\\$", "$").replace("\\\\", "\\")
 }
 
 /// Canonicalize JS property access to unified AST representation.

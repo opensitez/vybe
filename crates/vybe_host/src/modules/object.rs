@@ -199,12 +199,24 @@ pub fn register(vm: &mut VM) {
         args.first().cloned().unwrap_or(Value::Null)
     }));
 
-    // Object.fromEntries([[k,v], ...]) → obj
+    // Object.fromEntries([[k,v], ...]) → obj. Also accepts Map.
     vm.register_host_fn("vybe:object", "fromEntries", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let mut obj = Object::new();
         if let Some(Value::Object(arr)) = args.first() {
             let a = arr.lock().unwrap();
-            if let ObjectKind::Array(entries) = &a.kind {
+            // Map: copy from __data
+            let type_name = a.properties.get("__type")
+                .map(|v| format!("{}", v))
+                .unwrap_or_default();
+            if type_name == "Map" {
+                if let Some(Value::Object(data)) = a.properties.get("__data") {
+                    let d = data.lock().unwrap();
+                    for (k, v) in &d.properties {
+                        obj.properties.insert(k.clone(), v.clone());
+                    }
+                }
+            } else if let ObjectKind::Array(entries) = &a.kind {
+                // Array of [k, v] pairs
                 for entry in entries {
                     if let Value::Object(pair) = entry {
                         let p = pair.lock().unwrap();

@@ -305,6 +305,7 @@ impl Compiler {
         if self.scopes.len() > 1 {
             if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
                 self.emit_u8(Op::upvalue_set, uv);
+                self.emit(Op::drop);
                 return;
             }
         }
@@ -1615,7 +1616,8 @@ impl Compiler {
         self.defined_functions.insert(cname.clone());
         let name = &cname;
 
-        let arity: u8 = params.len() as u8;
+        let has_rest = params.last().map_or(false, |p| p.is_rest);
+        let arity: u8 = if has_rest { 255 } else { params.len() as u8 };
         let func_idx = self.chunks.len();
         let chunk = common::functions::create_function_chunk(name, arity);
         self.chunks.push(chunk);
@@ -1636,6 +1638,34 @@ impl Compiler {
                 self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
                 self.patch_jump(has_val);
             }
+        }
+
+        // Rest param preamble: collect excess args into an array.
+        // With arity=255 the VM doesn't truncate excess args. They land in
+        // sequential slots after the non-rest params. We scan those slots
+        // with unrolled local_get + null-check (local_get is static u16).
+        // Caps at 16 rest args which covers all realistic use cases.
+        if has_rest {
+            let rest_name = &params.last().unwrap().name;
+            let rest_slot = self.scope().resolve(rest_name).unwrap();
+            // Build array from slots rest_slot..rest_slot+16, stopping at null.
+            // Pattern per slot: if local[N] is null → jump to done; else arr.push(local[N])
+            self.emit_u16(Op::array_new, 0); // arr on stack
+            let max_rest = 16u16;
+            let mut done_patches: Vec<usize> = Vec::new();
+            for i in 0..max_rest {
+                let slot = rest_slot + i;
+                self.emit_u16(Op::local_get, slot);
+                self.emit(Op::ref_is_null);
+                done_patches.push(self.emit_jump(Op::br_if_true)); // null → done
+                self.emit_u16(Op::local_get, slot);
+                self.emit(Op::array_push); // arr.push(val) → arr stays on stack
+            }
+            // All done_patches land here — arr is on stack
+            for p in done_patches { self.patch_jump(p); }
+            // Store array into rest_slot
+            self.emit_u16(Op::local_set, rest_slot);
+            self.emit(Op::drop);
         }
 
         // Result slot for functions with return type (Pascal/VB Function).
@@ -2575,7 +2605,11 @@ impl Compiler {
                         self.compile_expr(inner)?;
                         match op {
                             UnaryOp::Neg => { let l = self.line; common::math::emit_neg(self.chunk(), l); }
-                            UnaryOp::Pos => {} // no-op
+                            UnaryOp::Pos => {
+                                // JS `+v` coerces to number. Route through vybe:convert:toNumber.
+                                let idx = self.import("vybe:convert", "toNumber");
+                                self.emit_host_call(idx, 1);
+                            }
                             UnaryOp::Not => self.emit(Op::dyn_not),
                             UnaryOp::BitNot => self.emit(Op::i32_not),
                             UnaryOp::Typeof => self.emit(Op::ref_typeof),
@@ -3803,6 +3837,7 @@ impl Compiler {
                     "__array_some" => "some".to_string(),
                     "__array_every" => "every".to_string(),
                     "__array_flat_map" => "flatMap".to_string(),
+                    "__array_reduce_right" => "reduceRight".to_string(),
                     _ => field_lower,
                 };
                 // Compile arr and fn(s) into local slots
@@ -3970,6 +4005,65 @@ impl Compiler {
                         self.emit_u16(Op::local_get, fn_slot); // search value
                         common::collections::emit_index_of(self.chunk(), line);
                     }
+                    "flatMap" | "flatmap" => {
+                        // arr.flatMap(fn) = arr.map(fn).flat()
+                        // First emit map: result[i] = fn(arr[i])
+                        let mapped_slot = self.scope_mut().define("__flatmap_mapped");
+                        common::loops::emit_map(self.chunk(), fn_slot, arr_slot, mapped_slot, idx_slot, line);
+                        // Now the mapped array is on stack. Flatten it one level.
+                        let flat_idx = self.import("vybe:array", "flat");
+                        self.emit_const(Value::I32(1));  // depth = 1
+                        self.emit_host_call(flat_idx, 2);
+                    }
+                    "reduceRight" | "reduceright" => {
+                        // reduceRight(fn, initial?) — iterate from end to start.
+                        if let Some(init_expr) = arg_exprs.get(1) {
+                            self.compile_expr(init_expr)?;
+                            self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                        } else {
+                            // acc = arr[len-1]
+                            self.emit_u16(Op::local_get, arr_slot);
+                            self.emit(Op::array_length);
+                            self.emit_const(Value::I32(1));
+                            self.emit(Op::f64_sub);
+                            self.emit_u16(Op::local_set, idx_slot); self.emit(Op::drop);
+                            self.emit_u16(Op::local_get, arr_slot);
+                            self.emit_u16(Op::local_get, idx_slot);
+                            self.emit(Op::array_get);
+                            self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                        }
+                        // Start from len-1 (or len-2 if no initial)
+                        self.emit_u16(Op::local_get, arr_slot);
+                        self.emit(Op::array_length);
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::f64_sub);
+                        if arg_exprs.get(1).is_none() {
+                            self.emit_const(Value::I32(1));
+                            self.emit(Op::f64_sub);
+                        }
+                        self.emit_u16(Op::local_set, idx_slot); self.emit(Op::drop);
+                        let loop_start = self.chunks[self.current].current_offset();
+                        self.emit_u16(Op::local_get, idx_slot);
+                        self.emit_const(Value::I32(0));
+                        self.emit(Op::dyn_ge);
+                        let exit_jump = self.emit_jump(Op::br_if_false);
+                        // acc = fn(acc, arr[i])
+                        self.emit_u16(Op::local_get, fn_slot);
+                        self.emit_u16(Op::local_get, result_slot);
+                        self.emit_u16(Op::local_get, arr_slot);
+                        self.emit_u16(Op::local_get, idx_slot);
+                        self.emit(Op::array_get);
+                        self.emit_u8(Op::call_ref, 2);
+                        self.emit_u16(Op::local_set, result_slot); self.emit(Op::drop);
+                        // i--
+                        self.emit_u16(Op::local_get, idx_slot);
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::f64_sub);
+                        self.emit_u16(Op::local_set, idx_slot); self.emit(Op::drop);
+                        self.emit_loop(loop_start);
+                        self.patch_jump(exit_jump);
+                        self.emit_u16(Op::local_get, result_slot);
+                    }
                     _ => {
                         // Fallback: call as regular method
                         self.emit_u16(Op::local_get, arr_slot);
@@ -3996,8 +4090,35 @@ impl Compiler {
         }
 
         // ── Method call: obj.method(args) ───────────────────────────
-        if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if let ExprKind::Member { object, field, null_safe } = &callee.kind {
             self.compile_expr(object)?;
+
+            if *null_safe {
+                // obj?.method() — short-circuit to null if obj is null/undefined.
+                // Stack: [obj]. Check null, if null leave null on stack and skip call.
+                self.emit(Op::dup);
+                self.emit(Op::ref_is_null);
+                let obj_not_null = self.emit_jump(Op::br_if_false);
+                // obj IS null — leave null on stack, skip call
+                let end = self.emit_jump(Op::br);
+                self.patch_jump(obj_not_null);
+                // obj is not null — do the method call
+                let field_name = self.canon(field);
+                let prop = self.str_const(&field_name);
+                self.emit(Op::dup);
+                self.emit_u16(Op::struct_get, prop);
+                let fn_tmp = self.scope_mut().define("__fn");
+                self.emit_u16(Op::local_set, fn_tmp); self.emit(Op::drop);
+                let obj_tmp = self.scope_mut().define("__obj");
+                self.emit_u16(Op::local_set, obj_tmp); self.emit(Op::drop);
+                self.emit_u16(Op::local_get, fn_tmp);
+                self.emit_u16(Op::local_get, obj_tmp);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::call_ref, (arg_exprs.len() + 1) as u8);
+                self.patch_jump(end);
+                return Ok(());
+            }
+
             let field_name = self.canon(field);
             let prop = self.str_const(&field_name);
             self.emit(Op::dup);
@@ -4126,7 +4247,8 @@ impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
 
     fn compile_lambda(&mut self, params: &[Param], body: &LambdaBody) -> Result<(), String> {
-        let arity = params.len() as u8;
+        let has_rest = params.last().map_or(false, |p| p.is_rest);
+        let arity = if has_rest { 255u8 } else { params.len() as u8 };
         let ci = self.chunks.len();
         let chunk = common::functions::create_function_chunk("<lambda>", arity);
         self.chunks.push(chunk);
@@ -4144,6 +4266,26 @@ impl Compiler {
                 self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
                 self.patch_jump(has_val);
             }
+        }
+
+        // Rest param preamble (same as compile_function_decl)
+        if has_rest {
+            let rest_name = &params.last().unwrap().name;
+            let rest_slot = self.scope().resolve(rest_name).unwrap();
+            self.emit_u16(Op::array_new, 0);
+            let max_rest = 16u16;
+            let mut done_patches: Vec<usize> = Vec::new();
+            for i in 0..max_rest {
+                let slot = rest_slot + i;
+                self.emit_u16(Op::local_get, slot);
+                self.emit(Op::ref_is_null);
+                done_patches.push(self.emit_jump(Op::br_if_true));
+                self.emit_u16(Op::local_get, slot);
+                self.emit(Op::array_push);
+            }
+            for p in done_patches { self.patch_jump(p); }
+            self.emit_u16(Op::local_set, rest_slot);
+            self.emit(Op::drop);
         }
 
         // Result slot for ResultSlot languages
