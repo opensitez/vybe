@@ -22,6 +22,10 @@ impl Op {
     pub const I31_NEW: Op           = Op::new(0xFB, 0x1C);
     pub const I31_GET_S: Op         = Op::new(0xFB, 0x1D);
     pub const I31_GET_U: Op         = Op::new(0xFB, 0x1E);
+    // Custom Descriptors proposal
+    pub const STRUCT_NEW_DESC: Op       = Op::new(0xFB, 0x20); // struct.new_desc $typeidx
+    pub const STRUCT_NEW_DEFAULT_DESC: Op = Op::new(0xFB, 0x21); // struct.new_default_desc $typeidx
+    pub const REF_GET_DESC: Op          = Op::new(0xFB, 0x22); // ref.get_desc $typeidx
 }
 
 opcode_category! {
@@ -42,4 +46,8 @@ opcode_category! {
     [0x1C] i31_new => None, "ref.i31";
     [0x1D] i31_get_s => None, "i31.get_s";
     [0x1E] i31_get_u => None, "i31.get_u";
+    // Custom Descriptors
+    [0x20] struct_new_desc => U16, "struct.new_desc";
+    [0x21] struct_new_default_desc => U16, "struct.new_default_desc";
+    [0x22] ref_get_desc => U16, "ref.get_desc";
 }

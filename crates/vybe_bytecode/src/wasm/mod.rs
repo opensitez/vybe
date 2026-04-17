@@ -32,7 +32,7 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     let total_imports = rt_imports.len();
 
     // Type section: GC struct types + array type + function types
-    let (type_section_data, type_ctx) = types::build_type_context(chunks, total_imports);
+    let (type_section_data, type_ctx) = types::build_type_context(chunks, total_imports, &rt_imports);
     write_section(&mut out, SECTION_TYPE, &type_section_data);
 
     // Import section

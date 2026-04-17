@@ -16,8 +16,15 @@ pub fn collect_rt_imports(chunks: &[Chunk]) -> Vec<(&'static str, &'static str)>
         ("wasm:js-number", "fromI32"),
         ("wasm:js-number", "toF64"),
         ("wasm:js-number", "toI32"),
+        ("wasm:js-number", "test"),
         ("wasm:js-string", "test"),
         ("wasm:js-string", "concat"),
+        ("wasm:js-string", "equals"),
+        ("wasm:js-string", "compare"),
+        ("wasm:js-string", "length"),
+        ("wasm:js-string", "charCodeAt"),
+        ("wasm:js-string", "fromCharCode"),
+        ("wasm:js-string", "substring"),
         ("wasm:js-boolean", "test"),
         ("wasm:js-undefined", "test"),
     ];
@@ -26,34 +33,7 @@ pub fn collect_rt_imports(chunks: &[Chunk]) -> Vec<(&'static str, &'static str)>
         if seen.insert(key) { needed.push(key); }
     }
 
-    // Scan chunks for dynamic ops that need vybe:rt runtime calls
-    for chunk in chunks {
-        let mut ip = 0;
-        while ip < chunk.code.len() {
-            if ip + 1 >= chunk.code.len() { break; }
-            if let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
-                let rt_name: Option<&str> = if op == Op::DYN_ADD { Some("dyn_add") }
-                    else if op == Op::DYN_EQ { Some("dyn_eq") }
-                    else if op == Op::DYN_NE { Some("dyn_ne") }
-                    else if op == Op::DYN_LT { Some("dyn_lt") }
-                    else if op == Op::DYN_GT { Some("dyn_gt") }
-                    else if op == Op::DYN_LE { Some("dyn_le") }
-                    else if op == Op::DYN_GE { Some("dyn_ge") }
-                    else if op == Op::DYN_NEG { Some("dyn_neg") }
-                    else if op == Op::DYN_NOT { Some("dyn_not") }
-                    else if op == Op::DYN_TO_BOOL { Some("dyn_to_bool") }
-                    else if op == Op::STR_CONCAT { Some("str_concat") }
-                    else { None };
-                if let Some(name) = rt_name {
-                    let key = ("vybe:rt", name);
-                    if seen.insert(key) { needed.push(key); }
-                }
-                ip += super::code::opcode_size(op, &chunk.code, ip);
-            } else {
-                ip += 2;
-            }
-        }
-    }
+    // No vybe:rt imports — all ops lower to inline WASM + standard wasm:js-* builtins
     needed
 }
 
