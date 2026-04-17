@@ -1507,7 +1507,7 @@ fn call_value_on_undefined_errors() {
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op(Op::undefined, 0);
+    { let c = main.add_constant(Value::Undefined); main.emit_op_u16(Op::r#const, c, 0); }
     main.emit_op_u8(Op::call, 0, 0);
     main.emit_op(Op::halt, 0);
 

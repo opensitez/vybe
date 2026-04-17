@@ -977,7 +977,7 @@ impl Compiler {
             Expression::Boolean(true) => self.emit(Op::r#true),
             Expression::Boolean(false) => self.emit(Op::r#false),
             Expression::Null => self.emit(Op::null),
-            Expression::Undefined => self.emit(Op::undefined),
+            Expression::Undefined => { let l = self.line; vybe_compiler_common::expressions::emit_undefined(&mut self.chunks[self.current_chunk_idx], l); }
             Expression::This => {
                 // Resolve "this" as a variable — in a method it's local slot 1,
                 // in an arrow function inside a method it becomes an upvalue.
@@ -999,7 +999,7 @@ impl Compiler {
                 match name.as_str() {
                     "NaN" => { self.emit_constant(Value::F64(f64::NAN)); }
                     "Infinity" => { self.emit_constant(Value::F64(f64::INFINITY)); }
-                    "undefined" => { self.emit(Op::undefined); }
+                    "undefined" => { let l = self.line; vybe_compiler_common::expressions::emit_undefined(&mut self.chunks[self.current_chunk_idx], l); }
                     _ => match self.resolve_variable(name) {
                         VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
                         VarResolution::Upvalue(idx) => self.emit_u8(Op::upvalue_get, idx),
@@ -2576,7 +2576,7 @@ impl Compiler {
                 self.emit(Op::ref_is_null);
                 let is_null = self.emit_jump(Op::br_if_true);
                 // Check undefined
-                self.emit(Op::undefined);
+                { let l = self.line; vybe_compiler_common::expressions::emit_undefined(&mut self.chunks[self.current_chunk_idx], l); }
                 self.emit(Op::eq);
                 let is_undef = self.emit_jump(Op::br_if_true);
                 // Not null/undefined — skip default
@@ -2819,7 +2819,7 @@ impl Compiler {
                 self.emit(Op::dup);
                 self.emit(Op::ref_is_null);
                 let is_null = self.emit_jump(Op::br_if_true);
-                self.emit(Op::undefined);
+                { let l = self.line; vybe_compiler_common::expressions::emit_undefined(&mut self.chunks[self.current_chunk_idx], l); }
                 self.emit(Op::eq);
                 let is_undef = self.emit_jump(Op::br_if_true);
                 let skip = self.emit_jump(Op::br);

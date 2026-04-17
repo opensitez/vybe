@@ -44,6 +44,7 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_slicestep",  "__vybe_slicestep"),
     ("__stdlib_dynmul",     "__vybe_dynmul"),
     ("__stdlib_concat",     "__vybe_concat"),
+    ("__stdlib_string_raw", "__vybe_string_raw"),
 ];
 
 /// Additional alias mappings: import name → __vybe_* global name.

@@ -108,6 +108,7 @@ String              = { emit = "host:vybe:convert:toStr",         min_args = 1, 
 # ── String static methods ────────────────────────────────────────────────────
 
 "String.fromCharCode" = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 255 }
+"String.raw"          = { emit = "stdlib:string_raw",              min_args = 1, max_args = 255 }
 
 # ── Array static methods ─────────────────────────────────────────────────────
 

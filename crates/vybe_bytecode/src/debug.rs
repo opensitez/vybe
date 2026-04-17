@@ -57,7 +57,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::ref_make_weak | Op::ref_deref_weak | Op::ref_is_alive | Op::ref_register_finalizer |
         Op::memory_init | Op::memory_copy_cross |
         Op::string_as_ref | Op::string_from_ref | Op::string_ref_eq |
-        Op::null | Op::undefined | Op::r#true | Op::r#false |
+        Op::null | Op::r#true | Op::r#false |
         Op::i32_const_0 | Op::i32_const_1 | Op::f64_const_0 |
         Op::array_get | Op::array_set |
         Op::ref_is_null | Op::ref_is_string | Op::ref_is_number | Op::ref_is_bool | Op::ref_is_object | Op::ref_is_func |

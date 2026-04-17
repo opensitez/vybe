@@ -112,6 +112,9 @@ pub fn build_stdlib() -> StdLib {
     chunks.push(build_concat());
     exports.push("__stdlib_concat");
 
+    chunks.push(build_string_raw());
+    exports.push("__stdlib_string_raw");
+
     StdLib { chunks, exports }
 }
 
@@ -1468,5 +1471,87 @@ fn build_concat() -> Chunk {
     c.emit_op(Op::array_concat, 0);
     c.emit_op(Op::r#return, 0);
 
+    c
+}
+
+// ── String.raw(strings, ...values) → interleave strings and values ──
+// Tagged template function that returns the raw string without escape processing.
+// strings[0] + values[0] + strings[1] + values[1] + ... + strings[N]
+// Since this is called as a tagged template, strings is an array and
+// values are individual args. With rest params, values is already an array.
+fn build_string_raw() -> Chunk {
+    use std::sync::Arc;
+
+    let mut c = Chunk::new("__stdlib_string_raw");
+    c.arity = 2; // strings_array, values_array (rest-packed by caller)
+    c.local_count = 6; // callee(0) + strings(1) + values(2) + result(3) + i(4) + len(5)
+    let strings = 1u16;
+    let values = 2u16;
+    let result = 3u16;
+    let i = 4u16;
+    let len = 5u16;
+
+    // result = ""
+    let empty = c.add_constant(Value::String(Arc::from("")));
+    c.emit_op_u16(Op::r#const, empty, 0);
+    c.emit_op_u16(Op::local_set, result, 0);
+    c.emit_op(Op::drop, 0);
+
+    // len = strings.length
+    c.emit_op_u16(Op::local_get, strings, 0);
+    c.emit_op(Op::array_length, 0);
+    c.emit_op_u16(Op::local_set, len, 0);
+    c.emit_op(Op::drop, 0);
+
+    // i = 0
+    c.emit_op(Op::i32_const_0, 0);
+    c.emit_op_u16(Op::local_set, i, 0);
+    c.emit_op(Op::drop, 0);
+
+    // loop: while i < len
+    let loop_start = c.current_offset();
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op_u16(Op::local_get, len, 0);
+    c.emit_op(Op::dyn_lt, 0);
+    let exit = c.emit_jump(Op::br_if_false, 0);
+
+    // result += strings[i]
+    c.emit_op_u16(Op::local_get, result, 0);
+    c.emit_op_u16(Op::local_get, strings, 0);
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op(Op::str_concat, 0);
+    c.emit_op_u16(Op::local_set, result, 0);
+    c.emit_op(Op::drop, 0);
+
+    // if i < values.length: result += String(values[i])
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op_u16(Op::local_get, values, 0);
+    c.emit_op(Op::array_length, 0);
+    c.emit_op(Op::dyn_lt, 0);
+    let skip_val = c.emit_jump(Op::br_if_false, 0);
+
+    c.emit_op_u16(Op::local_get, result, 0);
+    c.emit_op_u16(Op::local_get, values, 0);
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::array_get, 0);
+    c.emit_op(Op::str_concat, 0); // dyn_add would also work since result is string
+    c.emit_op_u16(Op::local_set, result, 0);
+    c.emit_op(Op::drop, 0);
+
+    c.patch_jump(skip_val);
+
+    // i += 1
+    c.emit_op_u16(Op::local_get, i, 0);
+    c.emit_op(Op::i32_const_1, 0);
+    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::local_set, i, 0);
+    c.emit_op(Op::drop, 0);
+
+    c.emit_loop(loop_start, 0);
+    c.patch_jump(exit);
+
+    c.emit_op_u16(Op::local_get, result, 0);
+    c.emit_op(Op::r#return, 0);
     c
 }

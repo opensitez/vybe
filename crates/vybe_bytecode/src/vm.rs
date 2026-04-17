@@ -1911,7 +1911,6 @@ impl VM {
 
                 // -- Immediates --
                 Op::null => self.push(Value::Null)?,
-                Op::undefined => self.push(Value::Undefined)?,
                 Op::r#true => self.push(Value::Bool(true))?,
                 Op::r#false => self.push(Value::Bool(false))?,
                 Op::i32_const_0 => self.push(Value::I32(0))?,

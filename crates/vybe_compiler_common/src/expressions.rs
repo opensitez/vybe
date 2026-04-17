@@ -9,6 +9,25 @@ use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
+// ── Undefined sentinel ─────────────────────────────────────────────────
+//
+// JS `undefined` is not a WASM concept. We represent it as a global sentinel
+// `__undefined` that is set up at bundle time. All compilers that need
+// undefined semantics emit `global_get "__undefined"` via this helper.
+// Languages that don't have undefined (VB, C#, Pascal, Python) never call this.
+//
+// This centralizes all undefined emission so the opcode `Op::undefined` can
+// eventually be removed — every site that used to emit that opcode should
+// call this function instead.
+
+/// Emit the JS `undefined` value onto the stack.
+/// Uses `global_get "__undefined"` — a sentinel wired at bundle time.
+/// Stack: [] → [undefined]
+pub fn emit_undefined(chunk: &mut Chunk, line: u32) {
+    let name = chunk.add_constant(Value::String(Arc::from("__undefined")));
+    chunk.emit_op_u16(Op::global_get, name, line);
+}
+
 // ── Ternary / conditional expression ────────────────────────────────────
 //
 // Usage:

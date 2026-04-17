@@ -813,7 +813,7 @@ fn dyn_to_bool_null() {
 fn dyn_to_bool_undefined() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    chunk.emit_op(Op::undefined, 0);
+    { let c = chunk.add_constant(Value::Undefined); chunk.emit_op_u16(Op::r#const, c, 0); }
     chunk.emit_op(Op::dyn_to_bool, 0);
     chunk.emit_op(Op::halt, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
@@ -1564,7 +1564,7 @@ fn ref_is_null_on_number() {
 fn ref_is_null_on_undefined() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    chunk.emit_op(Op::undefined, 0);
+    { let c = chunk.add_constant(Value::Undefined); chunk.emit_op_u16(Op::r#const, c, 0); }
     chunk.emit_op(Op::ref_is_null, 0);
     chunk.emit_op(Op::halt, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
@@ -1656,7 +1656,7 @@ fn ref_typeof_boolean() {
 fn ref_typeof_undefined() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    chunk.emit_op(Op::undefined, 0);
+    { let c = chunk.add_constant(Value::Undefined); chunk.emit_op_u16(Op::r#const, c, 0); }
     chunk.emit_op(Op::ref_typeof, 0);
     chunk.emit_op(Op::halt, 0);
     assert_string(&run_chunks(vec![chunk]), "undefined");
@@ -1794,7 +1794,7 @@ fn immediate_values() {
     chunk.local_count = 1;
     chunk.emit_op(Op::null, 0);
     chunk.emit_op(Op::drop, 0);
-    chunk.emit_op(Op::undefined, 0);
+    { let c = chunk.add_constant(Value::Undefined); chunk.emit_op_u16(Op::r#const, c, 0); }
     chunk.emit_op(Op::drop, 0);
     chunk.emit_op(Op::r#true, 0);
     chunk.emit_op(Op::drop, 0);

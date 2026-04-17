@@ -1408,7 +1408,11 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         if chain_src.starts_with("?.") {
             // Optional chaining
-            if chain_inner.first().map_or(false, |p| p.as_rule() == Rule::argument_list || p.as_str().starts_with("(")) {
+            // Detect optional call: ?.(...) — chain_inner may be empty (no args) or contain argument_list.
+            // Use chain_src to detect the "(" after "?." since grammar literals aren't in chain_inner.
+            let is_optional_call = chain_src.starts_with("?.(")
+                || chain_inner.first().map_or(false, |p| p.as_rule() == Rule::argument_list);
+            if is_optional_call {
                 // ?.( call
                 let args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
                     walk_arguments(arg_pair)?
@@ -1498,7 +1502,7 @@ fn body_contains_closure(stmts: &[Statement], _vars: &[String]) -> bool {
     // we skip it when there are none (preserving break/continue).
     fn has_closure_expr(expr: &Expression) -> bool {
         match &expr.kind {
-            ExprKind::Lambda { .. } => true,
+            ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) => true,
             ExprKind::Call { callee, args, .. } => {
                 has_closure_expr(callee) || args.iter().any(|a| has_closure_expr(&a.value))
             }

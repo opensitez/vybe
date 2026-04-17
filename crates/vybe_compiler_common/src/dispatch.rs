@@ -68,6 +68,9 @@ pub fn emit_common(name: &str, chunk: &mut Chunk, line: u32) -> bool {
         "strings.index_of" => strings::emit_index_of(chunk, line),
         "strings.concat" => strings::emit_concat(chunk, 2, line),
 
+        // ── Expression ops ──
+        "expressions.undefined" => crate::expressions::emit_undefined(chunk, line),
+
         // ── Threading ops ──
         // Real WASM threading opcodes (wasi-threads proposal):
         // thread_spawn, thread_join, memory atomic_*. NOT host calls — these

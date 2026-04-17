@@ -2769,7 +2769,7 @@ impl Compiler {
         // If callMethod returned non-Undefined, it handled it — we're done
         // (Null is a valid return value from handled methods; Undefined means "not handled")
         self.emit(Op::dup);
-        self.emit(Op::undefined);
+        { let l = self.line; vybe_compiler_common::expressions::emit_undefined(&mut self.chunks[self.current_chunk_idx], l); }
         self.emit(Op::eq);
         let not_handled = self.emit_jump(Op::br_if_true); // undefined = not handled
         let done = self.emit_jump(Op::br); // handled — skip fallback

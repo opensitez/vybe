@@ -2441,7 +2441,7 @@ impl Compiler {
                     Literal::Char(c) => self.emit_const(Value::String(Arc::from(c.to_string().as_str()))),
                     Literal::Bool(b) => if *b { self.emit(Op::r#true) } else { self.emit(Op::r#false) },
                     Literal::Null => self.emit(Op::null),
-                    Literal::Undefined => self.emit(Op::undefined),
+                    Literal::Undefined => { let l = self.line; common::expressions::emit_undefined(self.chunk(), l); }
                     Literal::Ellipsis => self.emit(Op::null),
                 }
             }
@@ -2452,7 +2452,7 @@ impl Compiler {
                 match name.as_str() {
                     "NaN" => { self.emit_const(Value::F64(f64::NAN)); return Ok(()); }
                     "Infinity" => { self.emit_const(Value::F64(f64::INFINITY)); return Ok(()); }
-                    "undefined" if self.case_sensitive => { self.emit(Op::undefined); return Ok(()); }
+                    "undefined" if self.case_sensitive => { let l = self.line; common::expressions::emit_undefined(self.chunk(), l); return Ok(()); }
                     _ => {}
                 }
                 // Local variable / parameter takes priority over implicit self field
@@ -2637,8 +2637,25 @@ impl Compiler {
             }
 
             // ── Call ────────────────────────────────────────────────────
-            ExprKind::Call { callee, args, .. } => {
-                self.compile_call(callee, args)?;
+            ExprKind::Call { callee, args, optional } => {
+                if *optional {
+                    // Optional call: callee?.() — short-circuit to null if callee is null/undefined.
+                    // Stack: compile callee → [func_or_null].
+                    // Dup to check null while preserving the original for the call.
+                    self.compile_expr(callee)?;
+                    self.emit(Op::dup);
+                    self.emit(Op::ref_is_null);
+                    let skip = self.emit_jump(Op::br_if_true);
+                    // Not null — call it. Stack: [func]. Compile args, call.
+                    for a in args { self.compile_expr(&a.value)?; }
+                    self.emit_u8(Op::call_ref, args.len() as u8);
+                    let end = self.emit_jump(Op::br);
+                    self.patch_jump(skip);
+                    // Null path: the dup left [null] on stack, use it as result
+                    self.patch_jump(end);
+                } else {
+                    self.compile_call(callee, args)?;
+                }
             }
 
             // ── Member access ───────────────────────────────────────────
