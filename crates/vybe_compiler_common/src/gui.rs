@@ -192,7 +192,7 @@ pub const GUI_MODULE: &str = "vybe:gui";
 /// Stack on entry: [arg0, arg1, ...] (constructor args, if any)
 /// Stack on exit: [control]
 pub fn emit_new_control(chunk: &mut Chunk, import_idx: u16, argc: u8, line: u32) {
-    chunk.emit_op_u16(Op::call_import, import_idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
     chunk.emit(argc, line);
 }
 
@@ -213,7 +213,7 @@ pub fn emit_new_control(chunk: &mut Chunk, import_idx: u16, argc: u8, line: u32)
 /// - JS walker emits this for `ctrl.addEventListener(event, handler)`
 /// - etc.
 pub fn emit_bind_event(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::call_import, import_idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
     chunk.emit(3, line);
 }
 
@@ -221,7 +221,7 @@ pub fn emit_bind_event(chunk: &mut Chunk, import_idx: u16, line: u32) {
 /// `import_idx` must be the result of `compiler.import("vybe:gui", HOST_FN_UNBIND_EVENT)`.
 /// Caller drops the result if used as a statement.
 pub fn emit_unbind_event(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::call_import, import_idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
     chunk.emit(3, line);
 }
 
@@ -230,21 +230,21 @@ pub fn emit_unbind_event(chunk: &mut Chunk, import_idx: u16, line: u32) {
 /// Stack on entry: [parent, child]
 /// Stack on exit:  [host_call_result]   (caller drops if statement)
 pub fn emit_add_child(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::call_import, import_idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
     chunk.emit(2, line);
 }
 
 /// Emit `vybe:gui::runApplication(form)`.
 /// `import_idx` must be `compiler.import("vybe:gui", HOST_FN_RUN_APPLICATION)`.
 pub fn emit_run_application(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::call_import, import_idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
     chunk.emit(1, line);
 }
 
 /// Emit `vybe:gui::appExit()`.
 /// `import_idx` must be `compiler.import("vybe:gui", HOST_FN_APP_EXIT)`.
 pub fn emit_app_exit(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::call_import, import_idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
     chunk.emit(0, line);
 }
 
@@ -253,7 +253,7 @@ pub fn emit_app_exit(chunk: &mut Chunk, import_idx: u16, line: u32) {
 /// Stack on entry: [arg0, arg1, ..., event_name_string]
 /// Stack on exit:  [host_call_result]   (caller drops if statement)
 pub fn emit_raise_event(chunk: &mut Chunk, import_idx: u16, total_args: u8, line: u32) {
-    chunk.emit_op_u16(Op::call_import, import_idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
     chunk.emit(total_args, line);
 }
 
@@ -262,7 +262,7 @@ pub fn emit_raise_event(chunk: &mut Chunk, import_idx: u16, total_args: u8, line
 /// arguments for the GUI host calls above).
 pub fn emit_string_const(chunk: &mut Chunk, s: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(s)));
-    chunk.emit_op_u16(Op::r#const, idx, line);
+    chunk.emit_op_u16(Op::CONST, idx, line);
 }
 
 // ─── Read a control name from an object ──────────────────────────────────────
@@ -279,7 +279,7 @@ pub const CONTROL_TYPE_FIELD: &str = "__control_type";
 /// Stack on exit: [name_string]
 pub fn emit_get_control_name(chunk: &mut Chunk, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(CONTROL_NAME_FIELD)));
-    chunk.emit_op_u16(Op::struct_get, key, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
 }
 
 /// Emit a struct_get to read the control's type tag field.
@@ -287,5 +287,5 @@ pub fn emit_get_control_name(chunk: &mut Chunk, line: u32) {
 /// Stack on exit: [type_string]
 pub fn emit_get_control_type(chunk: &mut Chunk, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(CONTROL_TYPE_FIELD)));
-    chunk.emit_op_u16(Op::struct_get, key, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
 }

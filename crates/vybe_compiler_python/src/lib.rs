@@ -112,7 +112,7 @@ impl Compiler {
     /// Emit ref_func with upvalue descriptors from last_upvalues.
     fn emit_ref_func(&mut self, chunk_idx: usize, func_chunk_idx: usize) {
         let upvalues = std::mem::take(&mut self.last_upvalues);
-        self.chunk(chunk_idx).emit_op_u16(Op::ref_func, func_chunk_idx as u16, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::REF_FUNC, func_chunk_idx as u16, 0);
         self.chunk(chunk_idx).emit(upvalues.len() as u8, 0);
         for uv in &upvalues {
             self.chunk(chunk_idx).emit(if uv.is_local { 1 } else { 0 }, 0);
@@ -123,7 +123,7 @@ impl Compiler {
     /// Emit ref_func with 0 upvalues (for cases where we know there are none).
     #[allow(dead_code)]
     fn emit_ref_func_no_upvalues(&mut self, chunk_idx: usize, func_chunk_idx: usize) {
-        self.chunk(chunk_idx).emit_op_u16(Op::ref_func, func_chunk_idx as u16, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::REF_FUNC, func_chunk_idx as u16, 0);
         self.chunk(chunk_idx).emit(0, 0);
     }
 
@@ -165,7 +165,7 @@ impl Compiler {
         // Finalize main chunk
         let scope = self.scopes.remove(0);
         self.chunks[0].local_count = (scope.max_local + 1) as u16;
-        self.chunks[0].emit_op(Op::halt, 0);
+        self.chunks[0].emit_op(Op::HALT, 0);
 
         // Bundle stdlib — portable .wasm that works on any runtime.
         common::bundle::finalize_with_stdlib(&mut self.chunks);
@@ -187,14 +187,14 @@ impl Compiler {
                     }
                 }
                 self.compile_expr(expr, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
             }
 
             Statement::Assign { targets, value } => {
                 self.compile_expr(value, chunk_idx)?;
                 for (i, target) in targets.iter().enumerate() {
                     if i < targets.len() - 1 {
-                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                     }
                     self.compile_assign_target(target, chunk_idx)?;
                 }
@@ -205,29 +205,29 @@ impl Compiler {
                 match target {
                     Expression::Name(name) => {
                         let idx = self.scope(chunk_idx).alloc(name);
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx, 0);
                         self.compile_expr(value, chunk_idx)?;
                         self.emit_aug_op(*op, chunk_idx);
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                     }
                     Expression::Attribute { value: obj, attr } => {
                         // obj.attr op= value → obj.attr = obj.attr op value
                         self.compile_expr(obj, chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                         let attr_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
-                        self.chunk(chunk_idx).emit_op_u16(Op::struct_get, attr_c, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::STRUCT_GET, attr_c, 0);
                         self.compile_expr(value, chunk_idx)?;
                         self.emit_aug_op(*op, chunk_idx);
                         let attr_c2 = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
-                        self.chunk(chunk_idx).emit_op_u16(Op::struct_set, attr_c2, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::STRUCT_SET, attr_c2, 0);
                     }
                     Expression::Subscript { value: obj, slice } => {
                         // obj[idx] op= value → obj[idx] = obj[idx] op value
                         self.compile_expr(obj, chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                         self.compile_expr(slice, chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::dup, 0); // keep idx for set
+                        self.chunk(chunk_idx).emit_op(Op::DUP, 0); // keep idx for set
                         common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                         self.compile_expr(value, chunk_idx)?;
                         self.emit_aug_op(*op, chunk_idx);
@@ -241,23 +241,23 @@ impl Compiler {
 
             Statement::If { test, body, elif_clauses, else_body } => {
                 self.compile_expr(test, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
-                let exit_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_TO_BOOL, 0);
+                let exit_jump = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                 for s in body { self.compile_stmt(s, chunk_idx)?; }
 
                 if elif_clauses.is_empty() && else_body.is_none() {
                     self.chunk(chunk_idx).patch_jump(exit_jump);
                 } else {
-                    let after_jump = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    let after_jump = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                     self.chunk(chunk_idx).patch_jump(exit_jump);
 
                     for (elif_test, elif_body) in elif_clauses {
                         self.compile_expr(elif_test, chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
-                        let elif_exit = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DYN_TO_BOOL, 0);
+                        let elif_exit = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                         for s in elif_body { self.compile_stmt(s, chunk_idx)?; }
                         // Jump to after all branches
-                        let j = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                        let j = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                         self.chunk(chunk_idx).patch_jump(elif_exit);
                         // We need to patch this jump at the end — chain it
                         // For simplicity, patch to same target below
@@ -277,15 +277,15 @@ impl Compiler {
                 // If else_body exists, use a broke flag
                 let broke_local = if else_body.is_some() {
                     let l = self.scope(chunk_idx).alloc("__while_broke");
-                    self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, l, 0);
+                    self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, l, 0);
                     Some(l)
                 } else { None };
 
                 let loop_start = self.chunk(chunk_idx).current_offset();
                 self.compile_expr(test, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
-                let exit_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_TO_BOOL, 0);
+                let exit_jump = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
 
                 self.loop_stack.push(LoopCtx { _start: loop_start, break_jumps: Vec::new(), continue_jumps: Vec::new() });
                 for s in body { self.compile_stmt(s, chunk_idx)?; }
@@ -295,10 +295,10 @@ impl Compiler {
 
                 // break jumps land here — set broke flag before
                 if let Some(bl) = broke_local {
-                    let skip_flag = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    let skip_flag = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                     for bj in &ctx.break_jumps { self.chunk(chunk_idx).patch_jump(*bj); }
-                    self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, bl, 0);
+                    self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, bl, 0);
                     self.chunk(chunk_idx).patch_jump(skip_flag);
                 } else {
                     for bj in &ctx.break_jumps { self.chunk(chunk_idx).patch_jump(*bj); }
@@ -308,8 +308,8 @@ impl Compiler {
                 // else body: execute if broke == 0
                 if let Some(else_stmts) = else_body {
                     let bl = broke_local.unwrap();
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, bl, 0);
-                    let skip_else = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, bl, 0);
+                    let skip_else = self.chunk(chunk_idx).emit_jump(Op::BR_IF_TRUE, 0);
                     for s in else_stmts { self.compile_stmt(s, chunk_idx)?; }
                     self.chunk(chunk_idx).patch_jump(skip_else);
                 }
@@ -323,7 +323,7 @@ impl Compiler {
                 let func_idx = self.compile_function(name, params, body)?;
                 let idx = self.scope(chunk_idx).alloc(name);
                 self.emit_ref_func(chunk_idx, func_idx);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx, 0);
             }
 
             Statement::ClassDef { name, bases, keywords: _, body, decorators: _ } => {
@@ -435,19 +435,19 @@ impl Compiler {
                     let init_ci = init_chunk.unwrap();
 
                     // Initialize this_local to null (super() will create the real object)
-                    self.chunk(ctor_idx).emit_op(Op::null, 0);
-                    self.chunk(ctor_idx).emit_op_u16(Op::local_set, this_local, 0);
+                    self.chunk(ctor_idx).emit_op(Op::NULL, 0);
+                    self.chunk(ctor_idx).emit_op_u16(Op::LOCAL_SET, this_local, 0);
 
                     // Call __init__(self, *args)
-                    self.chunk(ctor_idx).emit_op_u16(Op::ref_func, init_ci as u16, 0);
+                    self.chunk(ctor_idx).emit_op_u16(Op::REF_FUNC, init_ci as u16, 0);
                     self.chunk(ctor_idx).emit(0, 0);
-                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0); // self (null, super will fix)
+                    self.chunk(ctor_idx).emit_op_u16(Op::LOCAL_GET, this_local, 0); // self (null, super will fix)
                     for i in 0..user_params {
-                        self.chunk(ctor_idx).emit_op_u16(Op::local_get, (i + 1) as u16, 0);
+                        self.chunk(ctor_idx).emit_op_u16(Op::LOCAL_GET, (i + 1) as u16, 0);
                     }
-                    self.chunk(ctor_idx).emit_op_u8(Op::call_ref, (user_params + 1) as u8, 0);
+                    self.chunk(ctor_idx).emit_op_u8(Op::CALL_REF, (user_params + 1) as u8, 0);
                     // __init__ returns value from super().__init__() — the parent object
-                    self.chunk(ctor_idx).emit_op_u16(Op::local_set, this_local, 0);
+                    self.chunk(ctor_idx).emit_op_u16(Op::LOCAL_SET, this_local, 0);
 
                     // Bind child methods on the object (overriding parent methods)
                     for (method_name, method_ci) in &method_entries {
@@ -473,11 +473,11 @@ impl Compiler {
                         if let Statement::Assign { targets, value } = s {
                             for target in targets {
                                 if let Expression::Name(attr_name) = target {
-                                    self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                                    self.chunk(ctor_idx).emit_op_u16(Op::LOCAL_GET, this_local, 0);
                                     self.compile_expr(value, ctor_idx)?;
                                     let attr_key = self.chunk(ctor_idx).add_constant(Value::String(Arc::from(attr_name.as_str())));
-                                    self.chunk(ctor_idx).emit_op_u16(Op::struct_set, attr_key, 0);
-                                    self.chunk(ctor_idx).emit_op(Op::drop, 0);
+                                    self.chunk(ctor_idx).emit_op_u16(Op::STRUCT_SET, attr_key, 0);
+                                    self.chunk(ctor_idx).emit_op(Op::DROP, 0);
                                 }
                             }
                         }
@@ -485,14 +485,14 @@ impl Compiler {
 
                     // Call __init__(self, *args) if it exists
                     if let Some(init_ci) = init_chunk {
-                        self.chunk(ctor_idx).emit_op_u16(Op::ref_func, init_ci as u16, 0);
+                        self.chunk(ctor_idx).emit_op_u16(Op::REF_FUNC, init_ci as u16, 0);
                         self.chunk(ctor_idx).emit(0, 0);
-                        self.chunk(ctor_idx).emit_op_u16(Op::local_get, this_local, 0);
+                        self.chunk(ctor_idx).emit_op_u16(Op::LOCAL_GET, this_local, 0);
                         for i in 0..user_params {
-                            self.chunk(ctor_idx).emit_op_u16(Op::local_get, (i + 1) as u16, 0);
+                            self.chunk(ctor_idx).emit_op_u16(Op::LOCAL_GET, (i + 1) as u16, 0);
                         }
-                        self.chunk(ctor_idx).emit_op_u8(Op::call_ref, (user_params + 1) as u8, 0);
-                        self.chunk(ctor_idx).emit_op(Op::drop, 0);
+                        self.chunk(ctor_idx).emit_op_u8(Op::CALL_REF, (user_params + 1) as u8, 0);
+                        self.chunk(ctor_idx).emit_op(Op::DROP, 0);
                     } else if !parent_name.is_empty() {
                         // No __init__ and has parent — call parent constructor with all args
                         common::classes::emit_store_super(self.chunk(ctor_idx), this_local, &parent_name, 0);
@@ -530,16 +530,16 @@ impl Compiler {
                 if let Some(e) = expr {
                     self.compile_expr(e, chunk_idx)?;
                 } else {
-                    self.chunk(chunk_idx).emit_op(Op::null, 0);
+                    self.chunk(chunk_idx).emit_op(Op::NULL, 0);
                 }
-                self.chunk(chunk_idx).emit_op(Op::r#return, 0);
+                self.chunk(chunk_idx).emit_op(Op::RETURN, 0);
             }
 
             Statement::Break => {
                 if self.loop_stack.is_empty() {
                     return Err("break outside loop".into());
                 }
-                let j = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                let j = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                 self.loop_stack.last_mut().unwrap().break_jumps.push(j);
             }
 
@@ -547,7 +547,7 @@ impl Compiler {
                 if self.loop_stack.is_empty() {
                     return Err("continue outside loop".into());
                 }
-                let j = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                let j = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                 self.loop_stack.last_mut().unwrap().continue_jumps.push(j);
             }
 
@@ -556,32 +556,32 @@ impl Compiler {
             Statement::Try { body, handlers, else_body, finally_body } => {
                 if handlers.len() <= 1 && handlers.first().map(|h| h.exc_type.is_none()).unwrap_or(true) {
                     // Simple untyped try/except — use try_start (faster path)
-                    let catch_jump = self.chunk(chunk_idx).emit_jump(Op::try_start, 0);
+                    let catch_jump = self.chunk(chunk_idx).emit_jump(Op::TRY_START, 0);
                     self.chunk(chunk_idx).emit(0u8, 0); // reserved for finally
 
                     for s in body { self.compile_stmt(s, chunk_idx)?; }
 
-                    self.chunk(chunk_idx).emit_op(Op::try_end, 0);
+                    self.chunk(chunk_idx).emit_op(Op::TRY_END, 0);
 
                     // else block runs if no exception
                     if let Some(else_body) = else_body {
                         for s in else_body { self.compile_stmt(s, chunk_idx)?; }
                     }
 
-                    let end_jump = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    let end_jump = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                     self.chunk(chunk_idx).patch_jump(catch_jump);
 
                     if let Some(handler) = handlers.first() {
                         if let Some(name) = &handler.name {
                             let idx = self.scope(chunk_idx).alloc(name);
-                            self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
-                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         } else {
-                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         }
                         for s in &handler.body { self.compile_stmt(s, chunk_idx)?; }
                     } else {
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                     }
 
                     // finally block
@@ -595,7 +595,7 @@ impl Compiler {
                 } else {
                     // Multiple typed handlers — use try_table with exception tags
                     // Emit try_table opcode: [try_table, handler_count, (tag, offset)...]
-                    self.chunk(chunk_idx).emit_op(Op::try_table, 0);
+                    self.chunk(chunk_idx).emit_op(Op::TRY_TABLE, 0);
                     self.chunk(chunk_idx).emit(handlers.len() as u8, 0);
 
                     // Reserve space for handler entries (tag + u16 offset each)
@@ -621,14 +621,14 @@ impl Compiler {
                     for s in body { self.compile_stmt(s, chunk_idx)?; }
 
                     // try_end — normal exit
-                    self.chunk(chunk_idx).emit_op(Op::try_end, 0);
+                    self.chunk(chunk_idx).emit_op(Op::TRY_END, 0);
 
                     // else block
                     if let Some(else_body) = else_body {
                         for s in else_body { self.compile_stmt(s, chunk_idx)?; }
                     }
 
-                    let end_jump = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    let end_jump = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
 
                     // Compile each handler and patch its offset in the try_table
                     let mut handler_end_jumps = Vec::new();
@@ -644,13 +644,13 @@ impl Compiler {
                         // Exception value is on stack
                         if let Some(name) = &handler.name {
                             let idx = self.scope(chunk_idx).alloc(name);
-                            self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
-                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         } else {
-                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         }
                         for s in &handler.body { self.compile_stmt(s, chunk_idx)?; }
-                        let j = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                        let j = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                         handler_end_jumps.push(j);
                     }
 
@@ -671,9 +671,9 @@ impl Compiler {
                 if let Some(e) = exc {
                     self.compile_expr(e, chunk_idx)?;
                 } else {
-                    self.chunk(chunk_idx).emit_op(Op::null, 0);
+                    self.chunk(chunk_idx).emit_op(Op::NULL, 0);
                 }
-                self.chunk(chunk_idx).emit_op(Op::throw_ref, 0);
+                self.chunk(chunk_idx).emit_op(Op::THROW_REF, 0);
             }
 
             Statement::Import { names } => {
@@ -681,9 +681,9 @@ impl Compiler {
                 for alias in names {
                     let local_name = alias.asname.as_ref().unwrap_or(&alias.name);
                     let idx = self.scope(chunk_idx).alloc(local_name);
-                    self.chunk(chunk_idx).emit_op(Op::null, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    self.chunk(chunk_idx).emit_op(Op::NULL, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                 }
             }
 
@@ -691,9 +691,9 @@ impl Compiler {
                 for alias in names {
                     let local_name = alias.asname.as_ref().unwrap_or(&alias.name);
                     let idx = self.scope(chunk_idx).alloc(local_name);
-                    self.chunk(chunk_idx).emit_op(Op::null, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    self.chunk(chunk_idx).emit_op(Op::NULL, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                 }
             }
 
@@ -710,9 +710,9 @@ impl Compiler {
                         Expression::Name(name) => {
                             // del name → set to null
                             let idx = self.scope(chunk_idx).alloc(name);
-                            self.chunk(chunk_idx).emit_op(Op::null, 0);
-                            self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
-                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                            self.chunk(chunk_idx).emit_op(Op::NULL, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         }
                         Expression::Subscript { value, slice } => {
                             // del obj[key] → deleteProperty(obj, key)
@@ -720,16 +720,16 @@ impl Compiler {
                             self.compile_expr(value, chunk_idx)?;
                             self.compile_expr(slice, chunk_idx)?;
                             common::bundle::emit_call_invoke(self.chunk(chunk_idx), 2, 0);
-                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         }
                         Expression::Attribute { value, attr } => {
                             // del obj.attr → deleteProperty(obj, attr_str)
                             common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_deleteproperty", 0);
                             self.compile_expr(value, chunk_idx)?;
                             let key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
-                            self.chunk(chunk_idx).emit_op_u16(Op::r#const, key, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::CONST, key, 0);
                             common::bundle::emit_call_invoke(self.chunk(chunk_idx), 2, 0);
-                            self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         }
                         _ => {
                             // Unsupported del target — skip
@@ -741,14 +741,14 @@ impl Compiler {
             Statement::Assert { test, msg } => {
                 // assert test [, msg] → if not test: raise AssertionError(msg)
                 self.compile_expr(test, chunk_idx)?;
-                let ok_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+                let ok_jump = self.chunk(chunk_idx).emit_jump(Op::BR_IF_TRUE, 0);
                 if let Some(m) = msg {
                     self.compile_expr(m, chunk_idx)?;
                 } else {
                     let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("AssertionError")));
-                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
                 }
-                self.chunk(chunk_idx).emit_op(Op::throw_ref, 0);
+                self.chunk(chunk_idx).emit_op(Op::THROW_REF, 0);
                 self.chunk(chunk_idx).patch_jump(ok_jump);
             }
 
@@ -758,31 +758,31 @@ impl Compiler {
                 for item in items {
                     self.compile_expr(&item.context_expr, chunk_idx)?;
                     let ctx_local = self.scope(chunk_idx).alloc("__with_ctx");
-                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, ctx_local, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, ctx_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                     ctx_locals.push(ctx_local);
 
                     // Call __enter__ if it exists, otherwise use value directly
-                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                     let enter_key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("__enter__")));
-                    self.chunk(chunk_idx).emit_op_u16(Op::struct_get, enter_key, 0);
-                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                    self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
-                    let no_enter = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::STRUCT_GET, enter_key, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+                    self.chunk(chunk_idx).emit_op(Op::REF_IS_NULL, 0);
+                    let no_enter = self.chunk(chunk_idx).emit_jump(Op::BR_IF_TRUE, 0);
                     // Has __enter__: call it with ctx as self
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, ctx_local, 0);
-                    self.chunk(chunk_idx).emit_op_u8(Op::call_ref, 1, 0);
-                    let done_enter = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, ctx_local, 0);
+                    self.chunk(chunk_idx).emit_op_u8(Op::CALL_REF, 1, 0);
+                    let done_enter = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                     self.chunk(chunk_idx).patch_jump(no_enter);
                     // No __enter__: drop the null, keep original value
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop null
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0); // drop null
                     self.chunk(chunk_idx).patch_jump(done_enter);
 
                     if let Some(var) = &item.optional_vars {
                         self.compile_assign_target(var, chunk_idx)?;
                     } else {
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                     }
                 }
 
@@ -791,22 +791,22 @@ impl Compiler {
 
                 // Call __exit__ on each context (reverse order)
                 for ctx_local in ctx_locals.iter().rev() {
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, *ctx_local, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, *ctx_local, 0);
                     let exit_key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("__exit__")));
-                    self.chunk(chunk_idx).emit_op_u16(Op::struct_get, exit_key, 0);
-                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                    self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
-                    let no_exit = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::STRUCT_GET, exit_key, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+                    self.chunk(chunk_idx).emit_op(Op::REF_IS_NULL, 0);
+                    let no_exit = self.chunk(chunk_idx).emit_jump(Op::BR_IF_TRUE, 0);
                     // Call __exit__(self, None, None, None) — no exception info
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, *ctx_local, 0);
-                    self.chunk(chunk_idx).emit_op(Op::null, 0);
-                    self.chunk(chunk_idx).emit_op(Op::null, 0);
-                    self.chunk(chunk_idx).emit_op(Op::null, 0);
-                    self.chunk(chunk_idx).emit_op_u8(Op::call_ref, 4, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                    let done_exit = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, *ctx_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::NULL, 0);
+                    self.chunk(chunk_idx).emit_op(Op::NULL, 0);
+                    self.chunk(chunk_idx).emit_op(Op::NULL, 0);
+                    self.chunk(chunk_idx).emit_op_u8(Op::CALL_REF, 4, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                    let done_exit = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                     self.chunk(chunk_idx).patch_jump(no_exit);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop null
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0); // drop null
                     self.chunk(chunk_idx).patch_jump(done_exit);
                 }
             }
@@ -823,7 +823,7 @@ impl Compiler {
                 // Compile as chained if/elif
                 let subj_local = self.scope(chunk_idx).alloc("__match_subj");
                 self.compile_expr(subject, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, subj_local, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, subj_local, 0);
 
                 let mut end_jumps = Vec::new();
 
@@ -833,23 +833,23 @@ impl Compiler {
 
                     // Guard
                     if let Some(guard) = &case.guard {
-                        let no_guard = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                        let no_guard = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                         self.compile_expr(guard, chunk_idx)?;
-                        let combined = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                        let combined = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                         // Body
                         self.compile_pattern_bindings(&case.pattern, subj_local, chunk_idx)?;
                         for s in &case.body { self.compile_stmt(s, chunk_idx)?; }
-                        end_jumps.push(self.chunk(chunk_idx).emit_jump(Op::br, 0));
+                        end_jumps.push(self.chunk(chunk_idx).emit_jump(Op::BR, 0));
                         self.chunk(chunk_idx).patch_jump(combined);
                         self.chunk(chunk_idx).patch_jump(no_guard);
                         continue;
                     }
 
-                    let skip = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                    let skip = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                     // Bind pattern variables
                     self.compile_pattern_bindings(&case.pattern, subj_local, chunk_idx)?;
                     for s in &case.body { self.compile_stmt(s, chunk_idx)?; }
-                    end_jumps.push(self.chunk(chunk_idx).emit_jump(Op::br, 0));
+                    end_jumps.push(self.chunk(chunk_idx).emit_jump(Op::BR, 0));
                     self.chunk(chunk_idx).patch_jump(skip);
                 }
 
@@ -870,13 +870,13 @@ impl Compiler {
         match pattern {
             Pattern::Wildcard => {
                 // Always matches
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
             }
             Pattern::Value(expr) | Pattern::Singleton(expr) => {
                 // subj is expr (None, True, False)
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, subj_local, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, subj_local, 0);
                 self.compile_expr(expr, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_EQ, 0);
             }
             Pattern::Or(patterns) => {
                 // p1 || p2 || ...
@@ -884,17 +884,17 @@ impl Compiler {
                 for (i, p) in patterns.iter().enumerate() {
                     self.compile_pattern(p, subj_local, chunk_idx)?;
                     if i < patterns.len() - 1 {
-                        let is_true = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+                        let is_true = self.chunk(chunk_idx).emit_jump(Op::BR_IF_TRUE, 0);
                         end_jumps.push(is_true);
                     }
                 }
                 // Last pattern's result is on stack
-                let skip_true = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                let skip_true = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                 for ej in end_jumps {
                     self.chunk(chunk_idx).patch_jump(ej);
                 }
                 // One of the earlier patterns was true
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
                 self.chunk(chunk_idx).patch_jump(skip_true);
             }
             Pattern::As { pattern: Some(inner), .. } => {
@@ -902,28 +902,28 @@ impl Compiler {
             }
             Pattern::As { pattern: None, .. } => {
                 // Just a name binding, always matches
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
             }
             Pattern::Sequence(pats) => {
                 // Check length == pats.len(), then check each element
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, subj_local, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, subj_local, 0);
                 common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
                 let expected = self.chunk(chunk_idx).add_constant(Value::I32(pats.len() as i32));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, expected, 0);
-                self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, expected, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_EQ, 0);
                 // If length doesn't match, short-circuit to false
                 // For now, just check length (element checks would need recursion per element)
             }
             Pattern::Mapping(_pairs) => {
                 // Dict pattern — check keys exist. Simplified: always true for now.
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
             }
             Pattern::Star(_) => {
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
             }
             Pattern::Class { .. } => {
                 // Class pattern — isinstance check. Simplified for now.
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
             }
         }
         Ok(())
@@ -934,8 +934,8 @@ impl Compiler {
         match pattern {
             Pattern::As { name: Some(name), .. } => {
                 let idx = self.scope(chunk_idx).alloc(name);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, subj_local, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, subj_local, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx, 0);
             }
             _ => {}
         }
@@ -951,12 +951,12 @@ impl Compiler {
         // Evaluate iterable. If it's a dict/object (not array), convert to keys array.
         // Python: `for x in dict` iterates keys. This matches JS Object.keys() behavior.
         self.compile_expr(iter, chunk_idx)?;
-        self.chunk(chunk_idx).emit_op(Op::dup, 0);
-        self.chunk(chunk_idx).emit_op(Op::ref_is_array, 0);
-        let is_array = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+        self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+        self.chunk(chunk_idx).emit_op(Op::REF_IS_ARRAY, 0);
+        let is_array = self.chunk(chunk_idx).emit_jump(Op::BR_IF_TRUE, 0);
         // Not array → get keys
         common::dict::emit_keys(self.chunk(chunk_idx), 0);
-        let done = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+        let done = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
         self.chunk(chunk_idx).patch_jump(is_array);
         // Is array → drop the dup (ref_is_array consumed one, dup left one extra)
         // Actually ref_is_array pops and pushes bool, dup left original on stack.
@@ -964,24 +964,24 @@ impl Compiler {
         // On the keys path: emit_keys consumed original, pushed keys array.
         // On the array path: original is still there. Good.
         self.chunk(chunk_idx).patch_jump(done);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, iter_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, iter_local, 0);
 
         // Init index to 0
-        self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_local, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_local, 0);
 
         let loop_start = self.chunk(chunk_idx).current_offset();
 
         // Condition: idx < len(iter)
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, iter_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, iter_local, 0);
         common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-        self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-        let exit_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+        self.chunk(chunk_idx).emit_op(Op::DYN_LT, 0);
+        let exit_jump = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
 
         // Load current element
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, iter_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, iter_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_local, 0);
         common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
 
         // Assign to target
@@ -995,10 +995,10 @@ impl Compiler {
         for cj in &ctx.continue_jumps { self.chunk(chunk_idx).patch_jump(*cj); }
 
         // Increment index
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_local, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_ADD, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_local, 0);
 
         self.chunk(chunk_idx).emit_loop(loop_start, 0);
 
@@ -1006,10 +1006,10 @@ impl Compiler {
         if let Some(else_stmts) = else_body {
             // Normal exit (no break) → run else
             // Break exits → skip else
-            let skip_flag = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+            let skip_flag = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
             for bj in &ctx.break_jumps { self.chunk(chunk_idx).patch_jump(*bj); }
             // Break landed here → jump past else
-            let skip_else = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+            let skip_else = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
             self.chunk(chunk_idx).patch_jump(skip_flag);
             self.chunk(chunk_idx).patch_jump(exit_jump);
             // Normal exit → else body
@@ -1066,8 +1066,8 @@ impl Compiler {
 
         if name == "__init__" {
             // __init__ returns self (slot 1) so child class wrappers can capture the object
-            self.chunks[func_chunk_idx].emit_op_u16(Op::local_get, 1, 0);
-            self.chunks[func_chunk_idx].emit_op(Op::r#return, 0);
+            self.chunks[func_chunk_idx].emit_op_u16(Op::LOCAL_GET, 1, 0);
+            self.chunks[func_chunk_idx].emit_op(Op::RETURN, 0);
         } else {
             common::functions::emit_function_epilogue(&mut self.chunks[func_chunk_idx], 0);
         }
@@ -1085,19 +1085,19 @@ impl Compiler {
         match target {
             Expression::Name(name) => {
                 let idx = self.scope(chunk_idx).alloc(name);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
             }
             Expression::Tuple(targets) | Expression::List(targets) => {
                 // Destructuring: value is an array on stack
                 for (i, t) in targets.iter().enumerate() {
-                    self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                     let c = self.chunk(chunk_idx).add_constant(Value::I32(i as i32));
-                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
                     common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                     self.compile_assign_target(t, chunk_idx)?;
                 }
-                self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop the array
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0); // drop the array
             }
             Expression::Attribute { value, attr } => {
                 // obj.attr = rhs_value
@@ -1108,27 +1108,27 @@ impl Compiler {
                 // But rhs is already on stack from the caller.
                 // Solution: store rhs in temp, push obj, push rhs back.
                 let tmp = self.scope(chunk_idx).alloc("__attr_tmp");
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                 self.compile_expr(value, chunk_idx)?; // push obj
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp, 0); // push rhs_value
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tmp, 0); // push rhs_value
                 let name_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
-                self.chunk(chunk_idx).emit_op_u16(Op::struct_set, name_c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::STRUCT_SET, name_c, 0);
             }
             Expression::Subscript { value, slice } => {
                 if let Expression::Slice { lower, upper, step: _ } = slice.as_ref() {
                     // Slice assignment: a[1:3] = [10, 20] → splice(a, start, deleteCount, ...items)
                     // Stack has: [rhs_value].
                     let tmp = self.scope(chunk_idx).alloc("__splice_rhs");
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, tmp, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, tmp, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                     // splice(arr, start, deleteCount, ...newItems)
                     // deleteCount = end - start
                     common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_splice", 0);
                     self.compile_expr(value, chunk_idx)?; // arr
                     // start
                     if let Some(lo) = lower { self.compile_expr(lo, chunk_idx)?; }
-                    else { let c = self.chunk(chunk_idx).add_constant(Value::I32(0)); self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0); }
+                    else { let c = self.chunk(chunk_idx).add_constant(Value::I32(0)); self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0); }
                     // deleteCount = end - start (simplified: use end - start)
                     if let Some(up) = upper { self.compile_expr(up, chunk_idx)?; }
                     else {
@@ -1143,8 +1143,8 @@ impl Compiler {
                     // splice(arr, start, 999999, replacement_spread)
                     // Actually, splice takes varargs. Let's use 3 fixed args + spread rhs.
                     // Rewrite: push arr, start, (end-start), then spread rhs items
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp, 0); // rhs array
-                    self.chunk(chunk_idx).emit_op(Op::spread, 0); // spread items
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tmp, 0); // rhs array
+                    self.chunk(chunk_idx).emit_op(Op::SPREAD, 0); // spread items
                     // Count args: arr(1) + start(1) + end(1) + spread items
                     // We can't know spread count at compile time.
                     // Alternative: just call splice with 4 args where 4th is the replacement array
@@ -1154,15 +1154,15 @@ impl Compiler {
                     // Simplest correct approach: use a different call convention.
                     // For now: just use array_set for non-slice, and for slice keep it simple.
                     common::bundle::emit_call_invoke(self.chunk(chunk_idx), 4, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                 } else {
                     // obj[idx] = rhs_value. array_set pops: val, key, obj.
                     let tmp = self.scope(chunk_idx).alloc("__sub_tmp");
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, tmp, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, tmp, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                     self.compile_expr(value, chunk_idx)?;
                     self.compile_expr(slice, chunk_idx)?;
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tmp, 0);
                     common_collections::emit_set(&mut self.chunks[chunk_idx], 0);
                 }
             }
@@ -1179,15 +1179,15 @@ impl Compiler {
         match expr {
             Expression::Int(n) => {
                 let c = self.chunk(chunk_idx).add_constant(Value::I32(*n as i32));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
             }
             Expression::Float(f) => {
                 let c = self.chunk(chunk_idx).add_constant(Value::F64(*f));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
             }
             Expression::Str(s) => {
                 let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(s.as_str())));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
             }
             Expression::FString { parts } => {
                 // Concatenate all parts
@@ -1196,14 +1196,14 @@ impl Compiler {
                     match part {
                         FStringPart::Literal(s) => {
                             let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(s.as_str())));
-                            self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
                             count += 1;
                         }
                         FStringPart::Expr(e) => {
                             self.compile_expr(e, chunk_idx)?;
                             // Convert to string
                             let to_str = self.chunk(chunk_idx).add_import("vybe:convert", "toString");
-                            self.chunk(chunk_idx).emit_op_u16(Op::call_import, to_str, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, to_str, 0);
                             self.chunk(chunk_idx).emit(1, 0);
                             count += 1;
                         }
@@ -1211,9 +1211,9 @@ impl Compiler {
                             self.compile_expr(e, chunk_idx)?;
                             // Apply format spec via host format function
                             let spec_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(spec.as_str())));
-                            self.chunk(chunk_idx).emit_op_u16(Op::r#const, spec_c, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::CONST, spec_c, 0);
                             let fmt_fn = self.chunk(chunk_idx).add_import("vybe:string", "format");
-                            self.chunk(chunk_idx).emit_op_u16(Op::call_import, fmt_fn, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, fmt_fn, 0);
                             self.chunk(chunk_idx).emit(2, 0);
                             count += 1;
                         }
@@ -1224,25 +1224,25 @@ impl Compiler {
             }
             Expression::Bool(b) => {
                 let c = self.chunk(chunk_idx).add_constant(Value::Bool(*b));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
             }
             Expression::None => {
-                self.chunk(chunk_idx).emit_op(Op::null, 0);
+                self.chunk(chunk_idx).emit_op(Op::NULL, 0);
             }
             Expression::Ellipsis => {
-                self.chunk(chunk_idx).emit_op(Op::null, 0);
+                self.chunk(chunk_idx).emit_op(Op::NULL, 0);
             }
             Expression::Name(name) => {
                 match self.resolve_variable(name, chunk_idx) {
                     VarResolution::Local(slot) => {
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, slot, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, slot, 0);
                     }
                     VarResolution::Upvalue(idx) => {
-                        self.chunk(chunk_idx).emit_op_u8(Op::upvalue_get, idx, 0);
+                        self.chunk(chunk_idx).emit_op_u8(Op::UPVALUE_GET, idx, 0);
                     }
                     VarResolution::Global => {
                         let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(name.as_str())));
-                        self.chunk(chunk_idx).emit_op_u16(Op::global_get, c, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::GLOBAL_GET, c, 0);
                     }
                 }
             }
@@ -1251,7 +1251,7 @@ impl Compiler {
                 let has_star = elems.iter().any(|e| matches!(e, Expression::Starred(_)));
                 if has_star {
                     // Build incrementally: start with [], push or concat
-                    self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, 0, 0);
                     for e in elems {
                         if let Expression::Starred(inner) = e {
                             // Concat the spread array
@@ -1264,12 +1264,12 @@ impl Compiler {
                     }
                 } else {
                     for e in elems { self.compile_expr(e, chunk_idx)?; }
-                    self.chunk(chunk_idx).emit_op_u16(Op::array_new, elems.len() as u16, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, elems.len() as u16, 0);
                 }
             }
             Expression::Set(elems) => {
                 for e in elems { self.compile_expr(e, chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op_u16(Op::array_new, elems.len() as u16, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, elems.len() as u16, 0);
             }
             Expression::Dict { keys, values } => {
                 common::dict::emit_new(self.chunk(chunk_idx), 0);
@@ -1277,19 +1277,19 @@ impl Compiler {
                     if let Some(key) = k {
                         if let Expression::Str(s) = key {
                             // String key with __keys tracking
-                            self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                             self.compile_expr(v, chunk_idx)?;
                             common::dict::emit_set_const_key(self.chunk(chunk_idx), s, 0);
                         } else {
                             // Dynamic key
-                            self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                             self.compile_expr(key, chunk_idx)?;
                             self.compile_expr(v, chunk_idx)?;
                             common::dict::emit_set_dynamic(self.chunk(chunk_idx), 0);
                         }
                     } else {
-                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                        self.chunk(chunk_idx).emit_op(Op::null, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+                        self.chunk(chunk_idx).emit_op(Op::NULL, 0);
                         self.compile_expr(v, chunk_idx)?;
                         common::dict::emit_set_dynamic(self.chunk(chunk_idx), 0);
                     }
@@ -1303,8 +1303,8 @@ impl Compiler {
                     // Arithmetic: use primitive opcodes (dyn_add handles string+int natively).
                     // User-defined __add__/__sub__ are available via cross-language aliases
                     // and the method-with-fallback dispatch path — not needed on every `+`.
-                    BinOp::Add => self.chunk(chunk_idx).emit_op(Op::dyn_add, 0),
-                    BinOp::Sub => self.chunk(chunk_idx).emit_op(Op::f64_sub, 0),
+                    BinOp::Add => self.chunk(chunk_idx).emit_op(Op::DYN_ADD, 0),
+                    BinOp::Sub => self.chunk(chunk_idx).emit_op(Op::F64_SUB, 0),
                     BinOp::Mul => {
                         // Use dynMul for string*int support
                         // Pop the two already-pushed operands, call dynMul
@@ -1312,48 +1312,48 @@ impl Compiler {
                         // Easiest: store both in temps, call dynMul(a, b)
                         let tmp_a = self.scope(chunk_idx).alloc("__mul_a");
                         let tmp_b = self.scope(chunk_idx).alloc("__mul_b");
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, tmp_b, 0);
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, tmp_a, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, tmp_b, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, tmp_a, 0);
                         common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_dynmul", 0);
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp_a, 0);
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp_b, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tmp_a, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tmp_b, 0);
                         common::bundle::emit_call_invoke(self.chunk(chunk_idx), 2, 0);
                     }
-                    BinOp::Div => self.chunk(chunk_idx).emit_op(Op::f64_div, 0),
+                    BinOp::Div => self.chunk(chunk_idx).emit_op(Op::F64_DIV, 0),
                     BinOp::FloorDiv => {
-                        self.chunk(chunk_idx).emit_op(Op::f64_div, 0);
+                        self.chunk(chunk_idx).emit_op(Op::F64_DIV, 0);
                         common::math::emit_floor(self.chunk(chunk_idx), 0);
                     }
-                    BinOp::Mod => self.chunk(chunk_idx).emit_op(Op::i32_rem_s, 0),
+                    BinOp::Mod => self.chunk(chunk_idx).emit_op(Op::I32_REM_S, 0),
                     BinOp::Pow => {
                         // left and right already on stack — need func ref below them
                         // Store right in temp, store left in temp, push func, push left, push right, call
                         // Actually: emit_call expects [func, args...]. Left and right are already pushed.
                         // Simplest: use the existing host call path for pow since 2 args are already on stack.
                         let pow_idx = self.chunk(chunk_idx).add_import("vybe:math", "pow");
-                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, pow_idx, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, pow_idx, 0);
                         self.chunk(chunk_idx).emit(2, 0);
                     }
-                    BinOp::LShift => self.chunk(chunk_idx).emit_op(Op::i32_shl, 0),
-                    BinOp::RShift => self.chunk(chunk_idx).emit_op(Op::i32_shr_s, 0),
-                    BinOp::BitOr => self.chunk(chunk_idx).emit_op(Op::i32_or, 0),
-                    BinOp::BitXor => self.chunk(chunk_idx).emit_op(Op::i32_xor, 0),
-                    BinOp::BitAnd => self.chunk(chunk_idx).emit_op(Op::i32_and, 0),
-                    BinOp::MatMul => self.chunk(chunk_idx).emit_op(Op::f64_mul, 0), // placeholder
+                    BinOp::LShift => self.chunk(chunk_idx).emit_op(Op::I32_SHL, 0),
+                    BinOp::RShift => self.chunk(chunk_idx).emit_op(Op::I32_SHR_S, 0),
+                    BinOp::BitOr => self.chunk(chunk_idx).emit_op(Op::I32_OR, 0),
+                    BinOp::BitXor => self.chunk(chunk_idx).emit_op(Op::I32_XOR, 0),
+                    BinOp::BitAnd => self.chunk(chunk_idx).emit_op(Op::I32_AND, 0),
+                    BinOp::MatMul => self.chunk(chunk_idx).emit_op(Op::F64_MUL, 0), // placeholder
                 }
             }
 
             Expression::UnaryOp { op, operand } => {
                 self.compile_expr(operand, chunk_idx)?;
                 match op {
-                    UnaryOp::Not => self.chunk(chunk_idx).emit_op(Op::dyn_not, 0),
-                    UnaryOp::USub => self.chunk(chunk_idx).emit_op(Op::dyn_neg, 0),
+                    UnaryOp::Not => self.chunk(chunk_idx).emit_op(Op::DYN_NOT, 0),
+                    UnaryOp::USub => self.chunk(chunk_idx).emit_op(Op::DYN_NEG, 0),
                     UnaryOp::UAdd => {} // no-op
                     UnaryOp::Invert => {
                         // ~x → x ^ -1 (bitwise NOT for ints)
                         let c = self.chunk(chunk_idx).add_constant(Value::I32(-1));
-                        self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
-                        self.chunk(chunk_idx).emit_op(Op::i32_xor, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
+                        self.chunk(chunk_idx).emit_op(Op::I32_XOR, 0);
                     }
                 }
             }
@@ -1392,20 +1392,20 @@ impl Compiler {
                     for (i, (op, cmp)) in ops.iter().zip(comparators.iter()).enumerate() {
                         self.compile_expr(cmp, chunk_idx)?;
                         if i < ops.len() - 1 {
-                            self.chunk(chunk_idx).emit_op(Op::dup, 0); // keep for next comparison
+                            self.chunk(chunk_idx).emit_op(Op::DUP, 0); // keep for next comparison
                         }
                         // Swap to get correct order for comparison
                         self.emit_cmp_op(*op, chunk_idx);
                         if i < ops.len() - 1 {
-                            let j = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                            let j = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                             end_jumps.push(j);
                         }
                     }
-                    let after = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                    let after = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                     for j in end_jumps {
                         self.chunk(chunk_idx).patch_jump(j);
                     }
-                    self.chunk(chunk_idx).emit_op(Op::r#false, 0);
+                    self.chunk(chunk_idx).emit_op(Op::FALSE, 0);
                     self.chunk(chunk_idx).patch_jump(after);
                 }
             }
@@ -1419,7 +1419,7 @@ impl Compiler {
                             // In a constructor, self is at slot 1 (after callee at slot 0)
                             // __super is set by the parent class binding
                             // For now: push self — super().method() will find parent methods via vtable
-                            self.chunk(chunk_idx).emit_op_u16(Op::local_get, 1, 0); // self
+                            self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, 1, 0); // self
                             return Ok(());
                         }
                         "print" => return self.compile_print(args, chunk_idx),
@@ -1429,8 +1429,8 @@ impl Compiler {
                                 // falls back to array_length for plain arrays/strings.
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 let obj_slot = self.scope(chunk_idx).alloc("__len_obj");
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, obj_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, obj_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 common::expressions::emit_smart_length(self.chunk(chunk_idx), obj_slot, 0);
                                 return Ok(());
                             }
@@ -1471,11 +1471,11 @@ impl Compiler {
                             if args.len() == 1 {
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 let log_idx = self.import_log;
-                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, log_idx, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
                                 self.chunk(chunk_idx).emit(1, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                             }
-                            self.chunk(chunk_idx).emit_op_u16(Op::call_import, input_idx, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, input_idx, 0);
                             self.chunk(chunk_idx).emit(0, 0);
                             return Ok(());
                         }
@@ -1491,50 +1491,50 @@ impl Compiler {
                                 let result_slot = self.scope(chunk_idx).alloc("__enum_res");
                                 let idx_slot = self.scope(chunk_idx).alloc("__enum_i");
                                 let start_slot = self.scope(chunk_idx).alloc("__enum_st");
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, result_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, result_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 self.compile_expr(&kw.value, chunk_idx)?;
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, start_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, start_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 // for i in 0..len(result): result[i][0] += start
-                                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_slot, 0);
                                 let loop_start = self.chunk(chunk_idx).current_offset();
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result_slot, 0);
                                 common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-                                self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-                                let exit = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DYN_LT, 0);
+                                let exit = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                                 // pair = result[i]; pair[0] = pair[0] + start
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
                                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0); // pair
                                 let zero_c = self.chunk(chunk_idx).add_constant(Value::I32(0));
-                                self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero_c, 0);
-                                self.chunk(chunk_idx).emit_op(Op::dup, 0); // keep 0 for set
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0); // cleanup
+                                self.chunk(chunk_idx).emit_op_u16(Op::CONST, zero_c, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DUP, 0); // keep 0 for set
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0); // cleanup
                                 // Simpler: pair[0] += start → pair, 0, pair[0]+start → array_set
-                                self.chunk(chunk_idx).emit_op(Op::dup, 0); // dup pair
-                                self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero_c, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DUP, 0); // dup pair
+                                self.chunk(chunk_idx).emit_op_u16(Op::CONST, zero_c, 0);
                                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0); // pair[0]
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, start_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::dyn_add, 0); // pair[0] + start
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, start_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DYN_ADD, 0); // pair[0] + start
                                 // Stack: [pair, new_idx]. Need [pair, 0, new_idx] for array_set.
                                 let new_idx_tmp = self.scope(chunk_idx).alloc("__enum_ni");
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, new_idx_tmp, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero_c, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, new_idx_tmp, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, new_idx_tmp, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::CONST, zero_c, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, new_idx_tmp, 0);
                                 common_collections::emit_set(&mut self.chunks[chunk_idx], 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 // i++
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-                                self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+                                self.chunk(chunk_idx).emit_op(Op::I32_ADD, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_slot, 0);
                                 self.chunk(chunk_idx).emit_loop(loop_start, 0);
                                 self.chunk(chunk_idx).patch_jump(exit);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result_slot, 0);
                             }
                             return Ok(());
                         }
@@ -1640,16 +1640,16 @@ impl Compiler {
                                 if !type_str.is_empty() {
                                     // Use ref_test opcode — standard WASM GC type check
                                     let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(type_str.as_str())));
-                                    self.chunk(chunk_idx).emit_op_u16(Op::ref_test, c, 0);
+                                    self.chunk(chunk_idx).emit_op_u16(Op::REF_TEST, c, 0);
                                 } else {
                                     // Dynamic: compile type expr, use host pytype + eq
                                     self.compile_expr(&args[1], chunk_idx)?;
                                     let _type_fn = self.chunk(chunk_idx).add_import("vybe:array", "pytype");
                                     // Stack: [obj, type_arg]. Need pytype(obj) == str(type_arg)
                                     // Simplified: just emit false for dynamic isinstance
-                                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                                    self.chunk(chunk_idx).emit_op(Op::r#false, 0);
+                                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                                    self.chunk(chunk_idx).emit_op(Op::FALSE, 0);
                                 }
                                 return Ok(());
                             }
@@ -1669,7 +1669,7 @@ impl Compiler {
                         "bool" => {
                             if args.len() == 1 {
                                 self.compile_expr(&args[0], chunk_idx)?;
-                                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DYN_TO_BOOL, 0);
                                 return Ok(());
                             }
                         }
@@ -1683,14 +1683,14 @@ impl Compiler {
                         "chr" => {
                             if args.len() == 1 {
                                 self.compile_expr(&args[0], chunk_idx)?;
-                                self.chunk(chunk_idx).emit_op(Op::str_from_char_code, 0);
+                                self.chunk(chunk_idx).emit_op(Op::STR_FROM_CHAR_CODE, 0);
                                 return Ok(());
                             }
                         }
                         "ord" => {
                             if args.len() == 1 {
                                 self.compile_expr(&args[0], chunk_idx)?;
-                                self.chunk(chunk_idx).emit_op(Op::str_char_code_at, 0);
+                                self.chunk(chunk_idx).emit_op(Op::STR_CHAR_CODE_AT, 0);
                                 return Ok(());
                             }
                         }
@@ -1715,8 +1715,8 @@ impl Compiler {
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 self.compile_expr(&args[1], chunk_idx)?;
                                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
-                                self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
-                                self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
+                                self.chunk(chunk_idx).emit_op(Op::REF_IS_NULL, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DYN_NOT, 0);
                                 return Ok(());
                             }
                         }
@@ -1743,12 +1743,12 @@ impl Compiler {
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 self.compile_expr(&args[1], chunk_idx)?;
                                 let pow_idx = self.chunk(chunk_idx).add_import("vybe:math", "pow");
-                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, pow_idx, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, pow_idx, 0);
                                 self.chunk(chunk_idx).emit(2, 0);
                                 // pow(x, y, mod) — apply modulo if 3 args
                                 if args.len() >= 3 {
                                     self.compile_expr(&args[2], chunk_idx)?;
-                                    self.chunk(chunk_idx).emit_op(Op::i32_rem_s, 0);
+                                    self.chunk(chunk_idx).emit_op(Op::I32_REM_S, 0);
                                 }
                                 return Ok(());
                             }
@@ -1760,21 +1760,21 @@ impl Compiler {
                                 self.compile_expr(&args[1], chunk_idx)?;
                                 let a_slot = self.scope(chunk_idx).alloc("__dm_a");
                                 let b_slot = self.scope(chunk_idx).alloc("__dm_b");
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, b_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, a_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, b_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, a_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 // a // b
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, b_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::f64_div, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, a_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, b_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::F64_DIV, 0);
                                 common::math::emit_floor(self.chunk(chunk_idx), 0);
                                 // a % b
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, b_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::i32_rem_s, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, a_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, b_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::I32_REM_S, 0);
                                 // pack as [quotient, remainder]
-                                self.chunk(chunk_idx).emit_op_u16(Op::array_new, 2, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, 2, 0);
                                 return Ok(());
                             }
                         }
@@ -1794,14 +1794,14 @@ impl Compiler {
                                 // callable(obj): check if obj is a function or has __call__
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 let obj_slot = self.scope(chunk_idx).alloc("__call_obj");
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, obj_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, obj_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 // Try struct_get "__call__"
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_slot, 0);
                                 let call_key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("__call__")));
-                                self.chunk(chunk_idx).emit_op_u16(Op::struct_get, call_key, 0);
-                                self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
-                                self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::STRUCT_GET, call_key, 0);
+                                self.chunk(chunk_idx).emit_op(Op::REF_IS_NULL, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DYN_NOT, 0);
                                 return Ok(());
                             }
                         }
@@ -1809,7 +1809,7 @@ impl Compiler {
                             if args.len() == 1 {
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 let bin_fn = self.chunk(chunk_idx).add_import("vybe:convert", "bin");
-                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, bin_fn, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, bin_fn, 0);
                                 self.chunk(chunk_idx).emit(1, 0);
                                 return Ok(());
                             }
@@ -1819,7 +1819,7 @@ impl Compiler {
                             if args.len() == 1 {
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 let id_fn = self.chunk(chunk_idx).add_import("vybe:convert", "id");
-                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, id_fn, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, id_fn, 0);
                                 self.chunk(chunk_idx).emit(1, 0);
                                 return Ok(());
                             }
@@ -1828,7 +1828,7 @@ impl Compiler {
                             if args.len() == 1 {
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 let hash_fn = self.chunk(chunk_idx).add_import("vybe:convert", "hash");
-                                self.chunk(chunk_idx).emit_op_u16(Op::call_import, hash_fn, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, hash_fn, 0);
                                 self.chunk(chunk_idx).emit(1, 0);
                                 return Ok(());
                             }
@@ -1840,11 +1840,11 @@ impl Compiler {
                             // defaultdict(factory) → dict with __default_factory property
                             common::dict::emit_new(self.chunk(chunk_idx), 0);
                             if args.len() >= 1 {
-                                self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                                 self.compile_expr(&args[0], chunk_idx)?;
                                 let key = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("__default_factory")));
-                                self.chunk(chunk_idx).emit_op_u16(Op::struct_set, key, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::STRUCT_SET, key, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                             }
                             return Ok(());
                         }
@@ -1855,55 +1855,55 @@ impl Compiler {
                                 let arr_slot = self.scope(chunk_idx).alloc("__ctr_arr");
                                 let dict_slot = self.scope(chunk_idx).alloc("__ctr_d");
                                 let idx_slot = self.scope(chunk_idx).alloc("__ctr_i");
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, arr_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 common::dict::emit_new(self.chunk(chunk_idx), 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, dict_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, dict_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 // for elem in arr: dict[elem] = dict.get(elem, 0) + 1
-                                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_slot, 0);
                                 let loop_start = self.chunk(chunk_idx).current_offset();
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
                                 common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-                                self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-                                let exit = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DYN_LT, 0);
+                                let exit = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                                 // elem = arr[i]
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
                                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                                 let elem_slot = self.scope(chunk_idx).alloc("__ctr_e");
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, elem_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, elem_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 // dict[elem] = (dict[elem] or 0) + 1
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, dict_slot, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, elem_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, dict_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, elem_slot, 0);
                                 // get current count
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, dict_slot, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, elem_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, dict_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, elem_slot, 0);
                                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                                 // if null, use 0
-                                self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                                self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
-                                let not_null = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+                                self.chunk(chunk_idx).emit_op(Op::REF_IS_NULL, 0);
+                                let not_null = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                                self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
                                 self.chunk(chunk_idx).patch_jump(not_null);
                                 // + 1
-                                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-                                self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DYN_ADD, 0);
                                 // array_set(dict, elem, count+1)
                                 common_collections::emit_set(&mut self.chunks[chunk_idx], 0);
-                                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                                 // i++
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
-                                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-                                self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
+                                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+                                self.chunk(chunk_idx).emit_op(Op::I32_ADD, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_slot, 0);
                                 self.chunk(chunk_idx).emit_loop(loop_start, 0);
                                 self.chunk(chunk_idx).patch_jump(exit);
-                                self.chunk(chunk_idx).emit_op_u16(Op::local_get, dict_slot, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, dict_slot, 0);
                             } else {
                                 // Counter() with no args → empty dict
                                 common::dict::emit_new(self.chunk(chunk_idx), 0);
@@ -1915,7 +1915,7 @@ impl Compiler {
                             // Simplified: return a function that creates a dict with named fields
                             // Usage: Point = namedtuple('Point', ['x', 'y']); p = Point(1, 2)
                             // For now: just emit null (class creation needs a function chunk)
-                            self.chunk(chunk_idx).emit_op(Op::null, 0);
+                            self.chunk(chunk_idx).emit_op(Op::NULL, 0);
                             return Ok(());
                         }
                         "bytes" | "bytearray" => {
@@ -1928,7 +1928,7 @@ impl Compiler {
                                 return Ok(());
                             } else {
                                 // bytes() → empty array
-                                self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
+                                self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, 0, 0);
                                 return Ok(());
                             }
                         }
@@ -1967,7 +1967,7 @@ impl Compiler {
                         // Unresolved global name: route through host import
                         for a in args { self.compile_expr(a, chunk_idx)?; }
                         let import_idx = self.chunk(chunk_idx).add_import("*", name);
-                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, import_idx, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
                         self.chunk(chunk_idx).emit(args.len() as u8, 0);
                         return Ok(());
                     }
@@ -1979,13 +1979,13 @@ impl Compiler {
                     if let Expression::Starred(inner) = a {
                         // *args: spread the iterable onto the stack
                         self.compile_expr(inner, chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::spread, 0);
+                        self.chunk(chunk_idx).emit_op(Op::SPREAD, 0);
                     } else {
                         self.compile_expr(a, chunk_idx)?;
                         argc += 1;
                     }
                 }
-                self.chunk(chunk_idx).emit_op_u8(Op::call_ref, argc, 0);
+                self.chunk(chunk_idx).emit_op_u8(Op::CALL_REF, argc, 0);
             }
 
             Expression::Attribute { value, attr } => {
@@ -2004,13 +2004,13 @@ impl Compiler {
                     };
                     if let Some(val) = constant {
                         let c = self.chunk(chunk_idx).add_constant(val);
-                        self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
                         return Ok(());
                     }
                 }
                 self.compile_expr(value, chunk_idx)?;
                 let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(attr.as_str())));
-                self.chunk(chunk_idx).emit_op_u16(Op::struct_get, c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::STRUCT_GET, c, 0);
             }
 
             Expression::Subscript { value, slice } => {
@@ -2022,10 +2022,10 @@ impl Compiler {
                         self.compile_expr(value, chunk_idx)?;
                         // start (null = default)
                         if let Some(lo) = lower { self.compile_expr(lo, chunk_idx)?; }
-                        else { self.chunk(chunk_idx).emit_op(Op::null, 0); }
+                        else { self.chunk(chunk_idx).emit_op(Op::NULL, 0); }
                         // end (null = default)
                         if let Some(up) = upper { self.compile_expr(up, chunk_idx)?; }
-                        else { self.chunk(chunk_idx).emit_op(Op::null, 0); }
+                        else { self.chunk(chunk_idx).emit_op(Op::NULL, 0); }
                         // step
                         self.compile_expr(step.as_ref().unwrap(), chunk_idx)?;
                         common::bundle::emit_call_invoke(self.chunk(chunk_idx), 4, 0);
@@ -2036,13 +2036,13 @@ impl Compiler {
                             self.compile_expr(lo, chunk_idx)?;
                         } else {
                             let c = self.chunk(chunk_idx).add_constant(Value::I32(0));
-                            self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
                         }
                         if let Some(up) = upper {
                             self.compile_expr(up, chunk_idx)?;
                         } else {
                             let c = self.chunk(chunk_idx).add_constant(Value::I32(i32::MAX));
-                            self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
                         }
                         common_collections::emit_slice(&mut self.chunks[chunk_idx], 0);
                     }
@@ -2062,10 +2062,10 @@ impl Compiler {
                         if matches!(operand.as_ref(), Expression::Int(_))
                     );
                     if is_negative_literal {
-                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                         common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
                         self.compile_expr(slice, chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DYN_ADD, 0);
                     } else {
                         self.compile_expr(slice, chunk_idx)?;
                     }
@@ -2079,16 +2079,16 @@ impl Compiler {
                 // The slice itself is compiled as arguments pushed individually
                 // Actually, slice is always inside Subscript, so handle it there
                 // If we get here standalone, push null
-                self.chunk(chunk_idx).emit_op(Op::null, 0);
+                self.chunk(chunk_idx).emit_op(Op::NULL, 0);
                 let _ = (lower, upper, step);
             }
 
             Expression::IfExp { test, body, orelse } => {
                 self.compile_expr(test, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
-                let false_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_TO_BOOL, 0);
+                let false_jump = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                 self.compile_expr(body, chunk_idx)?;
-                let end_jump = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                let end_jump = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                 self.chunk(chunk_idx).patch_jump(false_jump);
                 self.compile_expr(orelse, chunk_idx)?;
                 self.chunk(chunk_idx).patch_jump(end_jump);
@@ -2115,9 +2115,9 @@ impl Compiler {
                 if let Some(e) = expr {
                     self.compile_expr(e, chunk_idx)?;
                 } else {
-                    self.chunk(chunk_idx).emit_op(Op::null, 0);
+                    self.chunk(chunk_idx).emit_op(Op::NULL, 0);
                 }
-                self.chunk(chunk_idx).emit_op_u16(Op::suspend, 0, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::SUSPEND, 0, 0);
             }
 
             Expression::YieldFrom(expr) => {
@@ -2128,7 +2128,7 @@ impl Compiler {
 
             Expression::NamedExpr { target, value } => {
                 self.compile_expr(value, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                 self.compile_assign_target(target, chunk_idx)?;
             }
 
@@ -2141,18 +2141,18 @@ impl Compiler {
                 // Create empty dict, iterate, add items
                 common::dict::emit_new(self.chunk(chunk_idx), 0);
                 let result_local = self.scope(chunk_idx).alloc("__comp_result");
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, result_local, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, result_local, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
                 self.compile_comp_generators(generators, &|s| {
-                    s.chunk(chunk_idx).emit_op_u16(Op::local_get, result_local, 0);
+                    s.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result_local, 0);
                     s.compile_expr(key, chunk_idx)?;
                     s.compile_expr(value, chunk_idx)?;
                     common::dict::emit_set(s.chunk(chunk_idx), 0);
                     Ok(())
                 }, chunk_idx)?;
 
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_local, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result_local, 0);
             }
 
             Expression::GeneratorExp { element, generators } => {
@@ -2181,22 +2181,22 @@ impl Compiler {
         common::errors::emit_exception_constructor(&mut ctor, this_slot, exc_name, msg_slot, 0);
 
         // Return this
-        ctor.emit_op_u16(Op::local_get, this_slot, 0);
-        ctor.emit_op(Op::r#return, 0);
+        ctor.emit_op_u16(Op::LOCAL_GET, this_slot, 0);
+        ctor.emit_op(Op::RETURN, 0);
 
         let ctor_idx = self.chunks.len();
         self.chunks.push(ctor);
 
         // Store as global: ValueError = <constructor func ref>
         let local = self.scope(script_chunk_idx).alloc(exc_name);
-        self.chunk(script_chunk_idx).emit_op_u16(Op::ref_func, ctor_idx as u16, 0);
+        self.chunk(script_chunk_idx).emit_op_u16(Op::REF_FUNC, ctor_idx as u16, 0);
         self.chunk(script_chunk_idx).emit(0, 0);
-        self.chunk(script_chunk_idx).emit_op_u16(Op::local_set, local, 0);
+        self.chunk(script_chunk_idx).emit_op_u16(Op::LOCAL_SET, local, 0);
         let global_name = self.chunk(script_chunk_idx).add_constant(
             Value::String(Arc::from(lower.as_str()))
         );
-        self.chunk(script_chunk_idx).emit_op_u16(Op::global_set, global_name, 0);
-        self.chunk(script_chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(script_chunk_idx).emit_op_u16(Op::GLOBAL_SET, global_name, 0);
+        self.chunk(script_chunk_idx).emit_op(Op::DROP, 0);
 
         // Register type entry for cross-language type matching
         use vybe_bytecode::chunk::TypeEntry;
@@ -2224,7 +2224,7 @@ impl Compiler {
     fn compile_host_call(&mut self, module: &str, name: &str, args: &[Expression], chunk_idx: usize) -> Result<(), String> {
         let import_idx = self.chunk(chunk_idx).add_import(module, name);
         for a in args { self.compile_expr(a, chunk_idx)?; }
-        self.chunk(chunk_idx).emit_op_u16(Op::call_import, import_idx, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
         self.chunk(chunk_idx).emit(args.len() as u8, 0);
         Ok(())
     }
@@ -2252,22 +2252,22 @@ impl Compiler {
             for (i, a) in args.iter().enumerate() {
                 // "" + arg → string coercion
                 let empty = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("")));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, empty, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, empty, 0);
                 self.compile_expr(a, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_ADD, 0);
                 if i > 0 {
                     // Concatenate: prev + sep + current
                     // Stack has: [prev_result, current_str]
                     // Need: prev_result + sep + current_str
                     let sep_tmp = self.scope(chunk_idx).alloc("__print_sep_tmp");
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, sep_tmp, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, sep_tmp, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                     // Push sep
                     self.compile_expr(&sep_kw.value, chunk_idx)?;
-                    self.chunk(chunk_idx).emit_op(Op::str_concat, 0);
+                    self.chunk(chunk_idx).emit_op(Op::STR_CONCAT, 0);
                     // Push current
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, sep_tmp, 0);
-                    self.chunk(chunk_idx).emit_op(Op::str_concat, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, sep_tmp, 0);
+                    self.chunk(chunk_idx).emit_op(Op::STR_CONCAT, 0);
                 }
             }
             // Print the joined string
@@ -2284,14 +2284,14 @@ impl Compiler {
         common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_range", 0);
         match args.len() {
             1 => {
-                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
                 self.compile_expr(&args[0], chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
             }
             2 => {
                 self.compile_expr(&args[0], chunk_idx)?;
                 self.compile_expr(&args[1], chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
             }
             _ => {
                 for a in args { self.compile_expr(a, chunk_idx)?; }
@@ -2309,13 +2309,13 @@ impl Compiler {
                     if n == "super" && super_args.is_empty() {
                         if let Some(ref parent) = self.current_class_parent.clone() {
                             let parent_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(parent.as_str())));
-                            self.chunk(chunk_idx).emit_op_u16(Op::global_get, parent_c, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::GLOBAL_GET, parent_c, 0);
                             for a in args { self.compile_expr(a, chunk_idx)?; }
-                            self.chunk(chunk_idx).emit_op_u8(Op::call_ref, args.len() as u8, 0);
+                            self.chunk(chunk_idx).emit_op_u8(Op::CALL_REF, args.len() as u8, 0);
                             // Parent constructor returns the created object.
                             // Store it in self (slot 1) so subsequent self.x accesses work.
-                            self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                            self.chunk(chunk_idx).emit_op_u16(Op::local_set, 1, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+                            self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, 1, 0);
                             return Ok(());
                         }
                     }
@@ -2378,8 +2378,8 @@ impl Compiler {
                     // math.isnan(x) → x != x (NaN is the only value not equal to itself)
                     if args.len() == 1 && method == "isnan" {
                         self.compile_expr(&args[0], chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                        self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DYN_NE, 0);
                         return Ok(Some(()));
                     }
                     // math.isinf/isfinite — approximate with large value check
@@ -2387,12 +2387,12 @@ impl Compiler {
                         self.compile_expr(&args[0], chunk_idx)?;
                         common::math::emit_abs(self.chunk(chunk_idx), 0);
                         let inf_c = self.chunk(chunk_idx).add_constant(Value::F64(f64::MAX));
-                        self.chunk(chunk_idx).emit_op_u16(Op::r#const, inf_c, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::CONST, inf_c, 0);
                         if method == "isinf" {
-                            self.chunk(chunk_idx).emit_op(Op::dyn_gt, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DYN_GT, 0);
                         } else {
                             // isfinite = not isinf and not isnan
-                            self.chunk(chunk_idx).emit_op(Op::dyn_le, 0);
+                            self.chunk(chunk_idx).emit_op(Op::DYN_LE, 0);
                         }
                         return Ok(Some(()));
                     }
@@ -2414,7 +2414,7 @@ impl Compiler {
                 "random" => {
                     // random.random() → random float 0..1
                     let rnd = self.chunk(chunk_idx).add_import("vybe:math", "random");
-                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, rnd, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, rnd, 0);
                     self.chunk(chunk_idx).emit(0, 0);
                     return Ok(Some(()));
                 }
@@ -2424,25 +2424,25 @@ impl Compiler {
                         let a_slot = self.scope(chunk_idx).alloc("__ri_a");
                         let b_slot = self.scope(chunk_idx).alloc("__ri_b");
                         self.compile_expr(&args[0], chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, a_slot, 0);
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, a_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         self.compile_expr(&args[1], chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, b_slot, 0);
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, b_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         // a + floor(random() * (b - a + 1))
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, a_slot, 0);
                         let rnd = self.chunk(chunk_idx).add_import("vybe:math", "random");
-                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, rnd, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, rnd, 0);
                         self.chunk(chunk_idx).emit(0, 0);
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, b_slot, 0);
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, a_slot, 0);
-                        self.chunk(chunk_idx).emit_op(Op::f64_sub, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, b_slot, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, a_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::F64_SUB, 0);
                         let one_c = self.chunk(chunk_idx).add_constant(Value::F64(1.0));
-                        self.chunk(chunk_idx).emit_op_u16(Op::r#const, one_c, 0);
-                        self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
-                        self.chunk(chunk_idx).emit_op(Op::f64_mul, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::CONST, one_c, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DYN_ADD, 0);
+                        self.chunk(chunk_idx).emit_op(Op::F64_MUL, 0);
                         common::math::emit_floor(self.chunk(chunk_idx), 0);
-                        self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DYN_ADD, 0);
                         return Ok(Some(()));
                     }
                     return Ok(None);
@@ -2451,39 +2451,39 @@ impl Compiler {
                     // random.choice(lst) → lst[randint(0, len-1)]
                     if args.len() == 1 {
                         self.compile_expr(&args[0], chunk_idx)?;
-                        self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                         let rnd = self.chunk(chunk_idx).add_import("vybe:math", "random");
                         common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, rnd, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, rnd, 0);
                         self.chunk(chunk_idx).emit(0, 0);
                         // Stack: [arr, len, rnd]. Need floor(rnd * len)
                         // Reorder: we need arr on bottom, index on top.
                         // Actually: arr is under len. Let me redo.
                         // Simpler approach:
                         let arr_slot = self.scope(chunk_idx).alloc("__ch_arr");
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop random result
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop length
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_slot, 0);
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0); // drop random result
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0); // drop length
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, arr_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         // Redo properly
-                        self.chunk(chunk_idx).emit_op_u16(Op::call_import, rnd, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, rnd, 0);
                         self.chunk(chunk_idx).emit(0, 0);
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
                         common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-                        self.chunk(chunk_idx).emit_op(Op::f64_mul, 0);
+                        self.chunk(chunk_idx).emit_op(Op::F64_MUL, 0);
                         common::math::emit_floor(self.chunk(chunk_idx), 0);
                         // arr[index]
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
                         // Stack: [index, arr]. array_get needs [arr, index] → swap needed
                         // Actually array_get pops key(TOS) then obj(TOS-1). So [arr, index] → correct order.
                         // We have [floor_result, arr]. That's [index, arr]. Swap:
                         let idx_slot = self.scope(chunk_idx).alloc("__ch_idx");
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                         // Nope. Let me just do it cleanly with locals.
-                        self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop arr
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
-                        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+                        self.chunk(chunk_idx).emit_op(Op::DROP, 0); // drop arr
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
+                        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
                         common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                         return Ok(Some(()));
                     }
@@ -2507,7 +2507,7 @@ impl Compiler {
                     };
                     for a in args { self.compile_expr(a, chunk_idx)?; }
                     let imp = self.chunk(chunk_idx).add_import("vybe:regex", host_func);
-                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                     self.chunk(chunk_idx).emit(args.len() as u8, 0);
                     return Ok(Some(()));
                 }
@@ -2626,7 +2626,7 @@ impl Compiler {
                     // Returns a memory address (i32) for use with acquire/release
                     // Simplified: allocate 4 bytes at end of memory, return address
                     let alloc_fn = self.chunk(chunk_idx).add_import("wasi:thread", "allocLock");
-                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, alloc_fn, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, alloc_fn, 0);
                     self.chunk(chunk_idx).emit(0, 0);
                     return Ok(Some(()));
                 }
@@ -2755,7 +2755,7 @@ impl Compiler {
         // Generic host call pattern
         for a in args { self.compile_expr(a, chunk_idx)?; }
         let imp = self.chunk(chunk_idx).add_import(host_module, host_func);
-        self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
         self.chunk(chunk_idx).emit(args.len() as u8, 0);
         Ok(Some(()))
     }
@@ -2763,18 +2763,18 @@ impl Compiler {
     /// String methods — emit direct opcodes. Returns Some(()) if handled, None if not a string method.
     fn try_compile_string_method(&mut self, obj: &Expression, method: &str, args: &[Expression], chunk_idx: usize) -> Result<Option<()>, String> {
         match method {
-            "upper" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::str_to_upper, 0); }
-            "lower" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::str_to_lower, 0); }
-            "strip" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::str_trim, 0); }
-            "lstrip" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::str_trim_start, 0); }
-            "rstrip" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::str_trim_end, 0); }
+            "upper" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::STR_TO_UPPER, 0); }
+            "lower" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::STR_TO_LOWER, 0); }
+            "strip" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::STR_TRIM, 0); }
+            "lstrip" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::STR_TRIM_START, 0); }
+            "rstrip" => { self.compile_expr(obj, chunk_idx)?; self.chunk(chunk_idx).emit_op(Op::STR_TRIM_END, 0); }
             "split" => {
                 self.compile_expr(obj, chunk_idx)?;
                 if args.is_empty() {
                     let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(" ")));
-                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
                 } else { self.compile_expr(&args[0], chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op(Op::str_split, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_SPLIT, 0);
             }
             "join" => {
                 if args.len() == 1 {
@@ -2786,33 +2786,33 @@ impl Compiler {
             "replace" => {
                 self.compile_expr(obj, chunk_idx)?;
                 for a in args { self.compile_expr(a, chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op(Op::str_replace, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_REPLACE, 0);
             }
             "startswith" => {
                 self.compile_expr(obj, chunk_idx)?;
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op(Op::str_starts_with, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_STARTS_WITH, 0);
             }
             "endswith" => {
                 self.compile_expr(obj, chunk_idx)?;
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op(Op::str_ends_with, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_ENDS_WITH, 0);
             }
             "find" => {
                 self.compile_expr(obj, chunk_idx)?;
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op(Op::str_index_of, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_INDEX_OF, 0);
             }
             "rfind" | "rindex" => {
                 self.compile_expr(obj, chunk_idx)?;
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op(Op::str_last_index_of, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_LAST_INDEX_OF, 0);
             }
             "count" => {
                 self.compile_expr(obj, chunk_idx)?;
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 let count_fn = self.chunk(chunk_idx).add_import("vybe:string", "count");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, count_fn, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, count_fn, 0);
                 self.chunk(chunk_idx).emit(2, 0);
             }
             "encode" => {
@@ -2828,30 +2828,30 @@ impl Compiler {
                     common::convert::emit_to_string(self.chunk(chunk_idx), 0);
                     let tmp_s = self.scope(chunk_idx).alloc("__fmt_s");
                     let tmp_r = self.scope(chunk_idx).alloc("__fmt_r");
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, tmp_r, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, tmp_s, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp_s, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, placeholder, 0);
-                    self.chunk(chunk_idx).emit_op(Op::str_index_of, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, tmp_r, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, tmp_s, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tmp_s, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CONST, placeholder, 0);
+                    self.chunk(chunk_idx).emit_op(Op::STR_INDEX_OF, 0);
                     let idx_local = self.scope(chunk_idx).alloc("__fmt_idx");
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_local, 0);
-                    self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp_s, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tmp_s, 0);
                     let zero = self.chunk(chunk_idx).add_constant(Value::I32(0));
-                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-                    self.chunk(chunk_idx).emit_op(Op::str_substring, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp_r, 0);
-                    self.chunk(chunk_idx).emit_op(Op::str_concat, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, tmp_s, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, two, 0);
-                    self.chunk(chunk_idx).emit_op(Op::dyn_add, 0);
-                    self.chunk(chunk_idx).emit_op_u16(Op::r#const, max_val, 0);
-                    self.chunk(chunk_idx).emit_op(Op::str_substring, 0);
-                    self.chunk(chunk_idx).emit_op(Op::str_concat, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CONST, zero, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_local, 0);
+                    self.chunk(chunk_idx).emit_op(Op::STR_SUBSTRING, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tmp_r, 0);
+                    self.chunk(chunk_idx).emit_op(Op::STR_CONCAT, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tmp_s, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_local, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CONST, two, 0);
+                    self.chunk(chunk_idx).emit_op(Op::DYN_ADD, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CONST, max_val, 0);
+                    self.chunk(chunk_idx).emit_op(Op::STR_SUBSTRING, 0);
+                    self.chunk(chunk_idx).emit_op(Op::STR_CONCAT, 0);
                 }
             }
             "title" | "capitalize" => {
@@ -2864,14 +2864,14 @@ impl Compiler {
             }
             "isalpha" | "isalnum" | "isspace" | "islower" | "isupper" => {
                 self.compile_expr(obj, chunk_idx)?;
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                self.chunk(chunk_idx).emit_op(Op::r#true, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                self.chunk(chunk_idx).emit_op(Op::TRUE, 0);
             }
             "splitlines" => {
                 self.compile_expr(obj, chunk_idx)?;
                 let c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("\n")));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, c, 0);
-                self.chunk(chunk_idx).emit_op(Op::str_split, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, c, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_SPLIT, 0);
             }
             "removeprefix" => {
                 // s.removeprefix(prefix): if s.startswith(prefix), return s[len(prefix):]
@@ -2880,26 +2880,26 @@ impl Compiler {
                 // Stack: [s, prefix]. Dup both for startswith check.
                 let prefix_tmp = self.scope(chunk_idx).alloc("__rp_pfx");
                 let str_tmp = self.scope(chunk_idx).alloc("__rp_str");
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, prefix_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, str_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, prefix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                 // if s.startswith(prefix):
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, prefix_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::str_starts_with, 0);
-                let no_match = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, prefix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_STARTS_WITH, 0);
+                let no_match = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                 // return s[len(prefix):]
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, prefix_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::str_length, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, prefix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_LENGTH, 0);
                 let max_c = self.chunk(chunk_idx).add_constant(Value::I32(i32::MAX));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, max_c, 0);
-                self.chunk(chunk_idx).emit_op(Op::str_substring, 0);
-                let done = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, max_c, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_SUBSTRING, 0);
+                let done = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                 // else return s unchanged
                 self.chunk(chunk_idx).patch_jump(no_match);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, str_tmp, 0);
                 self.chunk(chunk_idx).patch_jump(done);
             }
             "removesuffix" => {
@@ -2908,35 +2908,35 @@ impl Compiler {
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 let suffix_tmp = self.scope(chunk_idx).alloc("__rs_sfx");
                 let str_tmp = self.scope(chunk_idx).alloc("__rs_str");
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, suffix_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, str_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, suffix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                 // if s.endswith(suffix):
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, suffix_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::str_ends_with, 0);
-                let no_match = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, suffix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_ENDS_WITH, 0);
+                let no_match = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                 // return s[:len(s)-len(suffix)]
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, str_tmp, 0);
                 let zero_c = self.chunk(chunk_idx).add_constant(Value::I32(0));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero_c, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::str_length, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, suffix_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::str_length, 0);
-                self.chunk(chunk_idx).emit_op(Op::f64_sub, 0);
-                self.chunk(chunk_idx).emit_op(Op::str_substring, 0);
-                let done = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, zero_c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_LENGTH, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, suffix_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_LENGTH, 0);
+                self.chunk(chunk_idx).emit_op(Op::F64_SUB, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_SUBSTRING, 0);
+                let done = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                 // else return s unchanged
                 self.chunk(chunk_idx).patch_jump(no_match);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, str_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, str_tmp, 0);
                 self.chunk(chunk_idx).patch_jump(done);
             }
             "zfill" | "rjust" => {
                 self.compile_expr(obj, chunk_idx)?;
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op(Op::str_pad_start, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_PAD_START, 0);
             }
             _ => return Ok(None), // Not a string method
         }
@@ -2950,28 +2950,28 @@ impl Compiler {
         // Store obj in temp so we can use it in both paths
         let obj_tmp = self.scope(chunk_idx).alloc("__meth_obj");
         self.compile_expr(obj, chunk_idx)?;
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, obj_tmp, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, obj_tmp, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
         // Try struct_get method from the object
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
         let method_c = self.chunk(chunk_idx).add_constant(Value::String(Arc::from(method)));
-        self.chunk(chunk_idx).emit_op_u16(Op::struct_get, method_c, 0);
-        self.chunk(chunk_idx).emit_op(Op::dup, 0);
-        self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
-        let is_null = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::STRUCT_GET, method_c, 0);
+        self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+        self.chunk(chunk_idx).emit_op(Op::REF_IS_NULL, 0);
+        let is_null = self.chunk(chunk_idx).emit_jump(Op::BR_IF_TRUE, 0);
 
         // ── Found user method: generic call ──
         // Stack: [method_func]. Push self + args, call.
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
         for a in args { self.compile_expr(a, chunk_idx)?; }
-        self.chunk(chunk_idx).emit_op_u8(Op::call_ref, (args.len() + 1) as u8, 0);
-        let done = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+        self.chunk(chunk_idx).emit_op_u8(Op::CALL_REF, (args.len() + 1) as u8, 0);
+        let done = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
 
         // ── Not found: builtin fallback ──
         self.chunk(chunk_idx).patch_jump(is_null);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop null from dup
-        self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop null from struct_get
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0); // drop null from dup
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0); // drop null from struct_get
 
         self.emit_builtin_method_fallback(obj_tmp, method, args, chunk_idx)?;
 
@@ -2983,16 +2983,16 @@ impl Compiler {
     fn emit_builtin_method_fallback(&mut self, obj_tmp: u16, method: &str, args: &[Expression], chunk_idx: usize) -> Result<(), String> {
         match method {
             "append" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 for a in args { self.compile_expr(a, chunk_idx)?; }
                 common::collections::emit_push(self.chunk(chunk_idx), 0);
             }
             "pop" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 common::collections::emit_pop(self.chunk(chunk_idx), 0);
             }
             "keys" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 common::dict::emit_keys(self.chunk(chunk_idx), 0);
             }
             "values" => {
@@ -3013,273 +3013,273 @@ impl Compiler {
             }
             "get" => {
                 // dict.get(key) — dynamic key via array_get
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 common::dict::emit_get_dynamic(self.chunk(chunk_idx), 0);
             }
             "sort" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 common::collections::emit_sorted(self.chunk(chunk_idx), 0);
             }
             "reverse" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 common::collections::emit_reverse(self.chunk(chunk_idx), 0);
             }
             // Threading: lock.acquire() / lock.release()
             "acquire" => {
                 // Lock acquire — obj_tmp holds the lock address
                 common::threading::emit_lock_acquire(self.chunk(chunk_idx), obj_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::null, 0); // return None
+                self.chunk(chunk_idx).emit_op(Op::NULL, 0); // return None
             }
             "release" => {
                 // Lock release
                 common::threading::emit_lock_release(self.chunk(chunk_idx), obj_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::null, 0);
+                self.chunk(chunk_idx).emit_op(Op::NULL, 0);
             }
             "start" => {
                 // thread.start() — obj_tmp holds thread handle, just return it
                 // Thread was already spawned by threading.Thread(target=fn)
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
             }
             "join" => {
                 // thread.join() — wait for thread to complete
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 common::threading::emit_thread_join(self.chunk(chunk_idx), 0);
             }
             // ── File object methods (same host as VB/PHP fopen/fwrite) ──
             "read" => {
                 // f.read() → readFile (whole file) or lineInput
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "readFile");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             "readline" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "lineInput");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             "readlines" => {
                 // f.readlines() → readFile then split by \n
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "readFile");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(1, 0);
                 let nl = self.chunk(chunk_idx).add_constant(Value::String(Arc::from("\n")));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, nl, 0);
-                self.chunk(chunk_idx).emit_op(Op::str_split, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, nl, 0);
+                self.chunk(chunk_idx).emit_op(Op::STR_SPLIT, 0);
             }
             "write" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 for a in args { self.compile_expr(a, chunk_idx)?; }
                 let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "printFile");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
             }
             "writelines" => {
                 // f.writelines(lines) — join and write
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 for a in args { self.compile_expr(a, chunk_idx)?; }
                 let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "printFile");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
             }
             "close" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let imp = self.chunk(chunk_idx).add_import("wasi:filesystem", "closeFile");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             "flush" => {
-                self.chunk(chunk_idx).emit_op(Op::null, 0); // no-op
+                self.chunk(chunk_idx).emit_op(Op::NULL, 0); // no-op
             }
             // ── Socket object methods (same host as VB/PHP) ──
             "connect" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 for a in args { self.compile_expr(a, chunk_idx)?; }
                 let imp = self.chunk(chunk_idx).add_import("vybe:net", "tcpConnect");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
             }
             "send" | "sendall" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 for a in args { self.compile_expr(a, chunk_idx)?; }
                 let imp = self.chunk(chunk_idx).add_import("vybe:net", "streamWriterWriteLine");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
             }
             "recv" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 for a in args { self.compile_expr(a, chunk_idx)?; }
                 let imp = self.chunk(chunk_idx).add_import("vybe:net", "streamReaderReadLine");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
             }
             "bind" | "listen" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let imp = self.chunk(chunk_idx).add_import("vybe:net", "tcpListenerStart");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(0, 0);
             }
             "accept" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let imp = self.chunk(chunk_idx).add_import("vybe:net", "tcpListenerAccept");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             // ── Database cursor methods (same host as VB/PHP) ──
             "execute" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 for a in args { self.compile_expr(a, chunk_idx)?; }
                 let imp = self.chunk(chunk_idx).add_import("vybe:database", "execute");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
             }
             "fetchone" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let imp = self.chunk(chunk_idx).add_import("vybe:database", "scalar");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             "fetchall" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let imp = self.chunk(chunk_idx).add_import("vybe:database", "query");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             "cursor" => {
                 // conn.cursor() → return conn itself (cursor IS the connection in our model)
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
             }
             // ── DateTime object methods ──
             "strftime" | "isoformat" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 for a in args { self.compile_expr(a, chunk_idx)?; }
                 let imp = self.chunk(chunk_idx).add_import("vybe:types", "dateTimeToString");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, imp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, imp, 0);
                 self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
             }
             "timestamp" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 // DateTime stores timestamp internally
             }
             // Cross-language compat: Dart/C# .contains(), JS .includes()
             "contains" | "includes" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 common_collections::emit_contains(&mut self.chunks[chunk_idx], 0);
             }
             // Cross-language compat: Dart .length, .isEmpty, .isNotEmpty
             "length" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
             }
             "insert" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 for a in args { self.compile_expr(a, chunk_idx)?; }
                 let splice_fn = self.chunk(chunk_idx).add_import("vybe:array", "splice");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, splice_fn, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, splice_fn, 0);
                 self.chunk(chunk_idx).emit(args.len() as u8 + 1, 0);
             }
             "remove" => {
                 // list.remove(item) — find index, delete
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 common::collections::emit_index_of(self.chunk(chunk_idx), 0);
                 // TODO: splice at index
             }
             "extend" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 common::collections::emit_concat(self.chunk(chunk_idx), 0);
             }
             "clear" => {
                 // Simplified: set to empty array
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                self.chunk(chunk_idx).emit_op(Op::null, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                self.chunk(chunk_idx).emit_op(Op::NULL, 0);
             }
             "copy" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let zero_c = self.chunk(chunk_idx).add_constant(Value::I32(0));
                 let max_c = self.chunk(chunk_idx).add_constant(Value::I32(i32::MAX));
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, zero_c, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::r#const, max_c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, zero_c, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CONST, max_c, 0);
                 common_collections::emit_slice(&mut self.chunks[chunk_idx], 0);
             }
             "index" => {
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 common::collections::emit_index_of(self.chunk(chunk_idx), 0);
             }
             "update" => {
                 // dict.update(other) — simplified
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
             }
             "setdefault" => {
                 // dict.setdefault(key, default) — get key, if null set default and return it
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                 // Check if result is null
-                self.chunk(chunk_idx).emit_op(Op::dup, 0);
-                self.chunk(chunk_idx).emit_op(Op::ref_is_null, 0);
-                let not_null = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.chunk(chunk_idx).emit_op(Op::DUP, 0);
+                self.chunk(chunk_idx).emit_op(Op::REF_IS_NULL, 0);
+                let not_null = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
                 // Null — set the default
-                self.chunk(chunk_idx).emit_op(Op::drop, 0); // drop null
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0); // drop null
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 if args.len() >= 2 {
                     self.compile_expr(&args[1], chunk_idx)?;
                 } else {
-                    self.chunk(chunk_idx).emit_op(Op::null, 0);
+                    self.chunk(chunk_idx).emit_op(Op::NULL, 0);
                 }
-                self.chunk(chunk_idx).emit_op(Op::dup, 0);
+                self.chunk(chunk_idx).emit_op(Op::DUP, 0);
                 let val_tmp = self.scope(chunk_idx).alloc("__sd_val");
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, val_tmp, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, val_tmp, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
                 common_collections::emit_set(&mut self.chunks[chunk_idx], 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, val_tmp, 0);
-                let done = self.chunk(chunk_idx).emit_jump(Op::br, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, val_tmp, 0);
+                let done = self.chunk(chunk_idx).emit_jump(Op::BR, 0);
                 self.chunk(chunk_idx).patch_jump(not_null);
                 self.chunk(chunk_idx).patch_jump(done);
             }
             // ── Set methods ──
             "add" => {
                 // set.add(value) — call host setAdd
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 let f = self.chunk(chunk_idx).add_import("vybe:collections", "setAdd");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, f, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, f, 0);
                 self.chunk(chunk_idx).emit(2, 0);
             }
             "discard" => {
                 // set.discard(value) — call host setDelete (no error if missing)
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
                 let f = self.chunk(chunk_idx).add_import("vybe:collections", "setDelete");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, f, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, f, 0);
                 self.chunk(chunk_idx).emit(2, 0);
             }
             "union" => {
                 // set.union(other) — create new set, add all from self + other
                 // Simplified: concat items arrays, build new set
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let v1 = self.chunk(chunk_idx).add_import("vybe:collections", "setValues");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, v1, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, v1, 0);
                 self.chunk(chunk_idx).emit(1, 0);
                 if !args.is_empty() {
                     self.compile_expr(&args[0], chunk_idx)?;
                     let v2 = self.chunk(chunk_idx).add_import("vybe:collections", "setValues");
-                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, v2, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, v2, 0);
                     self.chunk(chunk_idx).emit(1, 0);
                     common_collections::emit_concat(&mut self.chunks[chunk_idx], 0);
                 }
                 // Convert combined array to set via pyset host
                 let pyset = self.chunk(chunk_idx).add_import("vybe:array", "pyset");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, pyset, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, pyset, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             "intersection" => {
@@ -3289,60 +3289,60 @@ impl Compiler {
                 let result = self.scope(chunk_idx).alloc("__isect_r");
                 let i = self.scope(chunk_idx).alloc("__isect_i");
 
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let v_fn = self.chunk(chunk_idx).add_import("vybe:collections", "setValues");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, v_fn, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, v_fn, 0);
                 self.chunk(chunk_idx).emit(1, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, self_vals, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, self_vals, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, other_set, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, other_set, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
-                self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, result, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, 0, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, result, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, i, 0);
 
                 let loop_start = self.chunk(chunk_idx).current_offset();
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, i, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, self_vals, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, self_vals, 0);
                 common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-                self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-                let exit = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_LT, 0);
+                let exit = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
 
                 // if other.has(self_vals[i]): result.push(self_vals[i])
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, other_set, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, self_vals, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, other_set, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, self_vals, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, i, 0);
                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                 let has_fn = self.chunk(chunk_idx).add_import("vybe:collections", "setHas");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, has_fn, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, has_fn, 0);
                 self.chunk(chunk_idx).emit(2, 0);
-                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
-                let skip = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_TO_BOOL, 0);
+                let skip = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
 
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, self_vals, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, self_vals, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, i, 0);
                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                 common_collections::emit_push(&mut self.chunks[chunk_idx], 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
                 self.chunk(chunk_idx).patch_jump(skip);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, i, 0);
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-                self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, i, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_ADD, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, i, 0);
                 self.chunk(chunk_idx).emit_loop(loop_start, 0);
                 self.chunk(chunk_idx).patch_jump(exit);
 
                 // Convert result array to set
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result, 0);
                 let pyset = self.chunk(chunk_idx).add_import("vybe:array", "pyset");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, pyset, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, pyset, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             "difference" => {
@@ -3352,82 +3352,82 @@ impl Compiler {
                 let result = self.scope(chunk_idx).alloc("__diff_r");
                 let i = self.scope(chunk_idx).alloc("__diff_i");
 
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let v_fn = self.chunk(chunk_idx).add_import("vybe:collections", "setValues");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, v_fn, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, v_fn, 0);
                 self.chunk(chunk_idx).emit(1, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, self_vals, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, self_vals, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
                 if !args.is_empty() { self.compile_expr(&args[0], chunk_idx)?; }
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, other_set, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, other_set, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
-                self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, result, 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
-                self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, 0, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, result, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, i, 0);
 
                 let loop_start = self.chunk(chunk_idx).current_offset();
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, i, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, self_vals, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, self_vals, 0);
                 common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-                self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-                let exit = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_LT, 0);
+                let exit = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
 
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, other_set, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, self_vals, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, other_set, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, self_vals, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, i, 0);
                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                 let has_fn = self.chunk(chunk_idx).add_import("vybe:collections", "setHas");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, has_fn, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, has_fn, 0);
                 self.chunk(chunk_idx).emit(2, 0);
-                self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_TO_BOOL, 0);
                 // skip push if has returns true (we want elements NOT in other)
-                let skip = self.chunk(chunk_idx).emit_jump(Op::br_if_true, 0);
+                let skip = self.chunk(chunk_idx).emit_jump(Op::BR_IF_TRUE, 0);
 
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, self_vals, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, self_vals, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, i, 0);
                 common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
                 common_collections::emit_push(&mut self.chunks[chunk_idx], 0);
-                self.chunk(chunk_idx).emit_op(Op::drop, 0);
+                self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
                 self.chunk(chunk_idx).patch_jump(skip);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, i, 0);
-                self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-                self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, i, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, i, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+                self.chunk(chunk_idx).emit_op(Op::I32_ADD, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, i, 0);
                 self.chunk(chunk_idx).emit_loop(loop_start, 0);
                 self.chunk(chunk_idx).patch_jump(exit);
 
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, result, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result, 0);
                 let pyset = self.chunk(chunk_idx).add_import("vybe:array", "pyset");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, pyset, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, pyset, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             "symmetric_difference" => {
                 // a.symmetric_difference(b) = a.union(b).difference(a.intersection(b))
                 // Simplified: just do union for now — this is rarely used
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, obj_tmp, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, obj_tmp, 0);
                 let v1 = self.chunk(chunk_idx).add_import("vybe:collections", "setValues");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, v1, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, v1, 0);
                 self.chunk(chunk_idx).emit(1, 0);
                 if !args.is_empty() {
                     self.compile_expr(&args[0], chunk_idx)?;
                     let v2 = self.chunk(chunk_idx).add_import("vybe:collections", "setValues");
-                    self.chunk(chunk_idx).emit_op_u16(Op::call_import, v2, 0);
+                    self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, v2, 0);
                     self.chunk(chunk_idx).emit(1, 0);
                     common_collections::emit_concat(&mut self.chunks[chunk_idx], 0);
                 }
                 let pyset = self.chunk(chunk_idx).add_import("vybe:array", "pyset");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, pyset, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, pyset, 0);
                 self.chunk(chunk_idx).emit(1, 0);
             }
             _ => {
                 // Unknown builtin — should not reach here, but emit null as safety
-                self.chunk(chunk_idx).emit_op(Op::null, 0);
+                self.chunk(chunk_idx).emit_op(Op::NULL, 0);
             }
         }
         Ok(())
@@ -3436,19 +3436,19 @@ impl Compiler {
 
     fn compile_comprehension(&mut self, element: &Expression, generators: &[Comprehension], chunk_idx: usize) -> Result<(), String> {
         // Create empty array, iterate, push elements
-        self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, 0, 0);
         let result_local = self.scope(chunk_idx).alloc("__comp_result");
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, result_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, result_local, 0);
 
         self.compile_comp_generators(generators, &|s| {
-            s.chunk(chunk_idx).emit_op_u16(Op::local_get, result_local, 0);
+            s.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result_local, 0);
             s.compile_expr(element, chunk_idx)?;
             common_collections::emit_push(&mut s.chunks[chunk_idx], 0);
-            s.chunk(chunk_idx).emit_op(Op::drop, 0);
+            s.chunk(chunk_idx).emit_op(Op::DROP, 0);
             Ok(())
         }, chunk_idx)?;
 
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result_local, 0);
         Ok(())
     }
 
@@ -3462,20 +3462,20 @@ impl Compiler {
         let idx_local = self.scope(chunk_idx).alloc("__comp_idx");
 
         self.compile_expr(&generator.iter, chunk_idx)?;
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, iter_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, iter_local, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_local, 0);
 
         let loop_start = self.chunk(chunk_idx).current_offset();
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, iter_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, iter_local, 0);
         common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-        self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-        let exit_jump = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+        self.chunk(chunk_idx).emit_op(Op::DYN_LT, 0);
+        let exit_jump = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
 
         // Load current element
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, iter_local, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, iter_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_local, 0);
         common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
         self.compile_assign_target(&generator.target, chunk_idx)?;
 
@@ -3483,8 +3483,8 @@ impl Compiler {
         let mut filter_jumps = Vec::new();
         for f in &generator.ifs {
             self.compile_expr(f, chunk_idx)?;
-            self.chunk(chunk_idx).emit_op(Op::dyn_to_bool, 0);
-            let j = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+            self.chunk(chunk_idx).emit_op(Op::DYN_TO_BOOL, 0);
+            let j = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
             filter_jumps.push(j);
         }
 
@@ -3500,10 +3500,10 @@ impl Compiler {
         }
 
         // Increment index
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_local, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_local, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_ADD, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_local, 0);
 
         self.chunk(chunk_idx).emit_loop(loop_start, 0);
         self.chunk(chunk_idx).patch_jump(exit_jump);
@@ -3518,50 +3518,50 @@ impl Compiler {
         // common::expressions for cases where the compiler knows objects are involved
         // (e.g. sorted(key=...) comparisons).
         match op {
-            CmpOp::Eq => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0),
-            CmpOp::NotEq => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
-            CmpOp::Lt => self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0),
-            CmpOp::LtE => self.chunk(chunk_idx).emit_op(Op::dyn_le, 0),
-            CmpOp::Gt => self.chunk(chunk_idx).emit_op(Op::dyn_gt, 0),
-            CmpOp::GtE => self.chunk(chunk_idx).emit_op(Op::dyn_ge, 0),
-            CmpOp::Is => self.chunk(chunk_idx).emit_op(Op::dyn_eq, 0),
-            CmpOp::IsNot => self.chunk(chunk_idx).emit_op(Op::dyn_ne, 0),
+            CmpOp::Eq => self.chunk(chunk_idx).emit_op(Op::DYN_EQ, 0),
+            CmpOp::NotEq => self.chunk(chunk_idx).emit_op(Op::DYN_NE, 0),
+            CmpOp::Lt => self.chunk(chunk_idx).emit_op(Op::DYN_LT, 0),
+            CmpOp::LtE => self.chunk(chunk_idx).emit_op(Op::DYN_LE, 0),
+            CmpOp::Gt => self.chunk(chunk_idx).emit_op(Op::DYN_GT, 0),
+            CmpOp::GtE => self.chunk(chunk_idx).emit_op(Op::DYN_GE, 0),
+            CmpOp::Is => self.chunk(chunk_idx).emit_op(Op::DYN_EQ, 0),
+            CmpOp::IsNot => self.chunk(chunk_idx).emit_op(Op::DYN_NE, 0),
             CmpOp::In => common_collections::emit_contains(&mut self.chunks[chunk_idx], 0),
             CmpOp::NotIn => {
                 common_collections::emit_contains(&mut self.chunks[chunk_idx], 0);
-                self.chunk(chunk_idx).emit_op(Op::dyn_not, 0);
+                self.chunk(chunk_idx).emit_op(Op::DYN_NOT, 0);
             }
         }
     }
 
     fn emit_aug_op(&mut self, op: AugOp, chunk_idx: usize) {
         match op {
-            AugOp::Add => self.chunk(chunk_idx).emit_op(Op::dyn_add, 0),
-            AugOp::Sub => self.chunk(chunk_idx).emit_op(Op::f64_sub, 0),
+            AugOp::Add => self.chunk(chunk_idx).emit_op(Op::DYN_ADD, 0),
+            AugOp::Sub => self.chunk(chunk_idx).emit_op(Op::F64_SUB, 0),
             AugOp::Mul => {
                 let ta = self.scope(chunk_idx).alloc("__aug_a");
                 let tb = self.scope(chunk_idx).alloc("__aug_b");
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, tb, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_set, ta, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, tb, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, ta, 0);
                 common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_dynmul", 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, ta, 0);
-                self.chunk(chunk_idx).emit_op_u16(Op::local_get, tb, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, ta, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, tb, 0);
                 common::bundle::emit_call_invoke(self.chunk(chunk_idx), 2, 0);
             }
-            AugOp::Div => self.chunk(chunk_idx).emit_op(Op::f64_div, 0),
-            AugOp::FloorDiv => { self.chunk(chunk_idx).emit_op(Op::f64_div, 0); common::math::emit_floor(self.chunk(chunk_idx), 0); }
-            AugOp::Mod => self.chunk(chunk_idx).emit_op(Op::i32_rem_s, 0),
+            AugOp::Div => self.chunk(chunk_idx).emit_op(Op::F64_DIV, 0),
+            AugOp::FloorDiv => { self.chunk(chunk_idx).emit_op(Op::F64_DIV, 0); common::math::emit_floor(self.chunk(chunk_idx), 0); }
+            AugOp::Mod => self.chunk(chunk_idx).emit_op(Op::I32_REM_S, 0),
             AugOp::Pow => {
                 let pow_idx = self.chunk(chunk_idx).add_import("vybe:math", "pow");
-                self.chunk(chunk_idx).emit_op_u16(Op::call_import, pow_idx, 0);
+                self.chunk(chunk_idx).emit_op_u16(Op::CALL_IMPORT, pow_idx, 0);
                 self.chunk(chunk_idx).emit(2, 0);
             }
-            AugOp::LShift => self.chunk(chunk_idx).emit_op(Op::i32_shl, 0),
-            AugOp::RShift => self.chunk(chunk_idx).emit_op(Op::i32_shr_s, 0),
-            AugOp::BitOr => self.chunk(chunk_idx).emit_op(Op::i32_or, 0),
-            AugOp::BitXor => self.chunk(chunk_idx).emit_op(Op::i32_xor, 0),
-            AugOp::BitAnd => self.chunk(chunk_idx).emit_op(Op::i32_and, 0),
-            AugOp::MatMul => self.chunk(chunk_idx).emit_op(Op::f64_mul, 0),
+            AugOp::LShift => self.chunk(chunk_idx).emit_op(Op::I32_SHL, 0),
+            AugOp::RShift => self.chunk(chunk_idx).emit_op(Op::I32_SHR_S, 0),
+            AugOp::BitOr => self.chunk(chunk_idx).emit_op(Op::I32_OR, 0),
+            AugOp::BitXor => self.chunk(chunk_idx).emit_op(Op::I32_XOR, 0),
+            AugOp::BitAnd => self.chunk(chunk_idx).emit_op(Op::I32_AND, 0),
+            AugOp::MatMul => self.chunk(chunk_idx).emit_op(Op::F64_MUL, 0),
         }
     }
 
@@ -3573,11 +3573,11 @@ impl Compiler {
         let idx_local = self.scope(chunk_idx).alloc("__map_i");
 
         self.compile_expr(&args[0], chunk_idx)?;
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, fn_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, fn_local, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
         self.compile_expr(&args[1], chunk_idx)?;
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, arr_local, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
         common::loops::emit_map(self.chunk(chunk_idx), fn_local, arr_local, result_local, idx_local, 0);
         Ok(())
@@ -3591,11 +3591,11 @@ impl Compiler {
         let elem_local = self.scope(chunk_idx).alloc("__filt_elem");
 
         self.compile_expr(&args[0], chunk_idx)?;
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, fn_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, fn_local, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
         self.compile_expr(&args[1], chunk_idx)?;
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_local, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, arr_local, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
         common::loops::emit_filter(self.chunk(chunk_idx), fn_local, arr_local, result_local, idx_local, elem_local, 0);
         Ok(())
@@ -3612,89 +3612,89 @@ impl Compiler {
 
         // Evaluate iterable and key function
         self.compile_expr(iterable, chunk_idx)?;
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, arr_slot, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, arr_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
         self.compile_expr(key_fn, chunk_idx)?;
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, fn_slot, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, fn_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
         // Step 1: Build pairs = [[key(x), x] for x in arr]
-        self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, pairs_slot, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, 0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_slot, 0);
 
         let loop1 = self.chunk(chunk_idx).current_offset();
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
         common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-        self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-        let exit1 = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+        self.chunk(chunk_idx).emit_op(Op::DYN_LT, 0);
+        let exit1 = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
 
         // pair = [key(arr[i]), arr[i]]
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, pairs_slot, 0);
         // key(arr[i])
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, fn_slot, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, fn_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
         common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
-        self.chunk(chunk_idx).emit_op_u8(Op::call_ref, 1, 0);
+        self.chunk(chunk_idx).emit_op_u8(Op::CALL_REF, 1, 0);
         // arr[i]
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, arr_slot, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
         common_collections::emit_get(&mut self.chunks[chunk_idx], 0);
         // [key, val]
-        self.chunk(chunk_idx).emit_op_u16(Op::array_new, 2, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, 2, 0);
         common_collections::emit_push(&mut self.chunks[chunk_idx], 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
         // i++
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_ADD, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_slot, 0);
         self.chunk(chunk_idx).emit_loop(loop1, 0);
         self.chunk(chunk_idx).patch_jump(exit1);
 
         // Step 2: Sort pairs by first element (key) using stdlib sorted
         common::bundle::emit_call_push_func(self.chunk(chunk_idx), "__vybe_sorted", 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, pairs_slot, 0);
         common::bundle::emit_call_invoke(self.chunk(chunk_idx), 1, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, pairs_slot, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
         // Step 3: Extract values: result = [pair[1] for pair in sorted_pairs]
-        self.chunk(chunk_idx).emit_op_u16(Op::array_new, 0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, result_slot, 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_const_0, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::ARRAY_NEW, 0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, result_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_CONST_0, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_slot, 0);
 
         let loop2 = self.chunk(chunk_idx).current_offset();
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, pairs_slot, 0);
         common_collections::emit_len(&mut self.chunks[chunk_idx], 0);
-        self.chunk(chunk_idx).emit_op(Op::dyn_lt, 0);
-        let exit2 = self.chunk(chunk_idx).emit_jump(Op::br_if_false, 0);
+        self.chunk(chunk_idx).emit_op(Op::DYN_LT, 0);
+        let exit2 = self.chunk(chunk_idx).emit_jump(Op::BR_IF_FALSE, 0);
 
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, pairs_slot, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, pairs_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
         common_collections::emit_get(&mut self.chunks[chunk_idx], 0); // pair
         let one_c = self.chunk(chunk_idx).add_constant(Value::I32(1));
-        self.chunk(chunk_idx).emit_op_u16(Op::r#const, one_c, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::CONST, one_c, 0);
         common_collections::emit_get(&mut self.chunks[chunk_idx], 0); // pair[1] = original value
         common_collections::emit_push(&mut self.chunks[chunk_idx], 0);
-        self.chunk(chunk_idx).emit_op(Op::drop, 0);
+        self.chunk(chunk_idx).emit_op(Op::DROP, 0);
 
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, idx_slot, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_const_1, 0);
-        self.chunk(chunk_idx).emit_op(Op::i32_add, 0);
-        self.chunk(chunk_idx).emit_op_u16(Op::local_set, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, idx_slot, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_CONST_1, 0);
+        self.chunk(chunk_idx).emit_op(Op::I32_ADD, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_SET, idx_slot, 0);
         self.chunk(chunk_idx).emit_loop(loop2, 0);
         self.chunk(chunk_idx).patch_jump(exit2);
 
-        self.chunk(chunk_idx).emit_op_u16(Op::local_get, result_slot, 0);
+        self.chunk(chunk_idx).emit_op_u16(Op::LOCAL_GET, result_slot, 0);
         Ok(())
     }
 

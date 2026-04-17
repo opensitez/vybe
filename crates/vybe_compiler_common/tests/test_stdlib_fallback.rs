@@ -16,7 +16,7 @@ fn run_portable(mut build_fn: impl FnMut(&mut Chunk)) -> Value {
     let mut script = Chunk::new("<script>");
     script.local_count = 10;
     build_fn(&mut script);
-    script.emit_op(Op::halt, 0);
+    script.emit_op(Op::HALT, 0);
 
     let mut chunks = vec![script];
     let stdlib_base = chunks.len();
@@ -52,12 +52,12 @@ fn portable_range() {
     let result = run_portable(|chunk| {
         // Push func ref FIRST, then args
         bundle::emit_call_push_func(chunk, "__vybe_range", 0);
-        chunk.emit_op(Op::i32_const_0, 0);
+        chunk.emit_op(Op::I32_CONST_0, 0);
         let five = chunk.add_constant(Value::I32(5));
-        chunk.emit_op_u16(Op::r#const, five, 0);
-        chunk.emit_op(Op::i32_const_1, 0);
+        chunk.emit_op_u16(Op::CONST, five, 0);
+        chunk.emit_op(Op::I32_CONST_1, 0);
         bundle::emit_call_invoke(chunk, 3, 0);
-        chunk.emit_op(Op::array_length, 0);
+        chunk.emit_op(Op::ARRAY_LENGTH, 0);
     });
     assert_eq!(result.as_i32(), 5);
 }
@@ -69,13 +69,13 @@ fn portable_sorted() {
         let v3 = chunk.add_constant(Value::I32(3));
         let v1 = chunk.add_constant(Value::I32(1));
         let v2 = chunk.add_constant(Value::I32(2));
-        chunk.emit_op_u16(Op::r#const, v3, 0);
-        chunk.emit_op_u16(Op::r#const, v1, 0);
-        chunk.emit_op_u16(Op::r#const, v2, 0);
-        chunk.emit_op_u16(Op::array_new, 3, 0);
+        chunk.emit_op_u16(Op::CONST, v3, 0);
+        chunk.emit_op_u16(Op::CONST, v1, 0);
+        chunk.emit_op_u16(Op::CONST, v2, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
-        chunk.emit_op(Op::i32_const_0, 0);
-        chunk.emit_op(Op::array_get, 0);
+        chunk.emit_op(Op::I32_CONST_0, 0);
+        chunk.emit_op(Op::ARRAY_GET, 0);
     });
     assert_eq!(result.as_i32(), 1, "first element of sorted [3,1,2]");
 }
@@ -87,10 +87,10 @@ fn portable_sum() {
         let v10 = chunk.add_constant(Value::I32(10));
         let v20 = chunk.add_constant(Value::I32(20));
         let v30 = chunk.add_constant(Value::I32(30));
-        chunk.emit_op_u16(Op::r#const, v10, 0);
-        chunk.emit_op_u16(Op::r#const, v20, 0);
-        chunk.emit_op_u16(Op::r#const, v30, 0);
-        chunk.emit_op_u16(Op::array_new, 3, 0);
+        chunk.emit_op_u16(Op::CONST, v10, 0);
+        chunk.emit_op_u16(Op::CONST, v20, 0);
+        chunk.emit_op_u16(Op::CONST, v30, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
     });
     assert_eq!(result.as_i32(), 60);
@@ -102,8 +102,8 @@ fn portable_pow() {
         bundle::emit_call_push_func(chunk, "__vybe_pow", 0);
         let base = chunk.add_constant(Value::F64(2.0));
         let exp = chunk.add_constant(Value::I32(10));
-        chunk.emit_op_u16(Op::r#const, base, 0);
-        chunk.emit_op_u16(Op::r#const, exp, 0);
+        chunk.emit_op_u16(Op::CONST, base, 0);
+        chunk.emit_op_u16(Op::CONST, exp, 0);
         bundle::emit_call_invoke(chunk, 2, 0);
     });
     assert_eq!(result.as_f64() as i32, 1024);
@@ -116,10 +116,10 @@ fn portable_min_max() {
         let v5 = chunk.add_constant(Value::I32(5));
         let v2 = chunk.add_constant(Value::I32(2));
         let v8 = chunk.add_constant(Value::I32(8));
-        chunk.emit_op_u16(Op::r#const, v5, 0);
-        chunk.emit_op_u16(Op::r#const, v2, 0);
-        chunk.emit_op_u16(Op::r#const, v8, 0);
-        chunk.emit_op_u16(Op::array_new, 3, 0);
+        chunk.emit_op_u16(Op::CONST, v5, 0);
+        chunk.emit_op_u16(Op::CONST, v2, 0);
+        chunk.emit_op_u16(Op::CONST, v8, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
     });
     assert_eq!(min_result.as_i32(), 2);
@@ -129,10 +129,10 @@ fn portable_min_max() {
         let v5 = chunk.add_constant(Value::I32(5));
         let v2 = chunk.add_constant(Value::I32(2));
         let v8 = chunk.add_constant(Value::I32(8));
-        chunk.emit_op_u16(Op::r#const, v5, 0);
-        chunk.emit_op_u16(Op::r#const, v2, 0);
-        chunk.emit_op_u16(Op::r#const, v8, 0);
-        chunk.emit_op_u16(Op::array_new, 3, 0);
+        chunk.emit_op_u16(Op::CONST, v5, 0);
+        chunk.emit_op_u16(Op::CONST, v2, 0);
+        chunk.emit_op_u16(Op::CONST, v8, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
     });
     assert_eq!(max_result.as_i32(), 8);
@@ -145,13 +145,13 @@ fn portable_reversed() {
         let v1 = chunk.add_constant(Value::I32(1));
         let v2 = chunk.add_constant(Value::I32(2));
         let v3 = chunk.add_constant(Value::I32(3));
-        chunk.emit_op_u16(Op::r#const, v1, 0);
-        chunk.emit_op_u16(Op::r#const, v2, 0);
-        chunk.emit_op_u16(Op::r#const, v3, 0);
-        chunk.emit_op_u16(Op::array_new, 3, 0);
+        chunk.emit_op_u16(Op::CONST, v1, 0);
+        chunk.emit_op_u16(Op::CONST, v2, 0);
+        chunk.emit_op_u16(Op::CONST, v3, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
-        chunk.emit_op(Op::i32_const_0, 0);
-        chunk.emit_op(Op::array_get, 0);
+        chunk.emit_op(Op::I32_CONST_0, 0);
+        chunk.emit_op(Op::ARRAY_GET, 0);
     });
     assert_eq!(result.as_i32(), 3);
 }
@@ -170,12 +170,12 @@ fn vybe_host_overrides() {
     // TODO: skip preamble on Vybe (check if __vybe_range already set)
     let result = run_portable(|chunk| {
         bundle::emit_call_push_func(chunk, "__vybe_range", 0);
-        chunk.emit_op(Op::i32_const_0, 0);
+        chunk.emit_op(Op::I32_CONST_0, 0);
         let three = chunk.add_constant(Value::I32(3));
-        chunk.emit_op_u16(Op::r#const, three, 0);
-        chunk.emit_op(Op::i32_const_1, 0);
+        chunk.emit_op_u16(Op::CONST, three, 0);
+        chunk.emit_op(Op::I32_CONST_1, 0);
         bundle::emit_call_invoke(chunk, 3, 0);
-        chunk.emit_op(Op::array_length, 0);
+        chunk.emit_op(Op::ARRAY_LENGTH, 0);
     });
     assert_eq!(result.as_i32(), 3);
 }
@@ -185,11 +185,11 @@ fn portable_dynmul_str_repeat() {
     let result = run_portable(|chunk| {
         bundle::emit_call_push_func(chunk, "__vybe_dynmul", 0);
         let s = chunk.add_constant(Value::String(Rc::from("ab")));
-        chunk.emit_op_u16(Op::r#const, s, 0);
+        chunk.emit_op_u16(Op::CONST, s, 0);
         let three = chunk.add_constant(Value::I32(3));
-        chunk.emit_op_u16(Op::r#const, three, 0);
+        chunk.emit_op_u16(Op::CONST, three, 0);
         bundle::emit_call_invoke(chunk, 2, 0);
-        chunk.emit_op(Op::str_length, 0);
+        chunk.emit_op(Op::STR_LENGTH, 0);
     });
     assert_eq!(result.as_i32(), 6);
 }
@@ -199,9 +199,9 @@ fn portable_dynmul_numeric() {
     let result = run_portable(|chunk| {
         bundle::emit_call_push_func(chunk, "__vybe_dynmul", 0);
         let six = chunk.add_constant(Value::F64(6.0));
-        chunk.emit_op_u16(Op::r#const, six, 0);
+        chunk.emit_op_u16(Op::CONST, six, 0);
         let seven = chunk.add_constant(Value::F64(7.0));
-        chunk.emit_op_u16(Op::r#const, seven, 0);
+        chunk.emit_op_u16(Op::CONST, seven, 0);
         bundle::emit_call_invoke(chunk, 2, 0);
     });
     assert_eq!(result.as_f64(), 42.0);
@@ -212,21 +212,21 @@ fn portable_slicestep_every_other() {
     let result = run_portable(|chunk| {
         for i in 1..=6i32 {
             let c = chunk.add_constant(Value::I32(i));
-            chunk.emit_op_u16(Op::r#const, c, 0);
+            chunk.emit_op_u16(Op::CONST, c, 0);
         }
-        chunk.emit_op_u16(Op::array_new, 6, 0);
-        chunk.emit_op_u16(Op::local_set, 1, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW, 6, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
         bundle::emit_call_push_func(chunk, "__vybe_slicestep", 0);
-        chunk.emit_op_u16(Op::local_get, 1, 0);
+        chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
         let zero = chunk.add_constant(Value::I32(0));
-        chunk.emit_op_u16(Op::r#const, zero, 0);
+        chunk.emit_op_u16(Op::CONST, zero, 0);
         let six = chunk.add_constant(Value::I32(6));
-        chunk.emit_op_u16(Op::r#const, six, 0);
+        chunk.emit_op_u16(Op::CONST, six, 0);
         let two = chunk.add_constant(Value::I32(2));
-        chunk.emit_op_u16(Op::r#const, two, 0);
+        chunk.emit_op_u16(Op::CONST, two, 0);
         bundle::emit_call_invoke(chunk, 4, 0);
-        chunk.emit_op(Op::array_length, 0);
+        chunk.emit_op(Op::ARRAY_LENGTH, 0);
     });
     assert_eq!(result.as_i32(), 3);
 }

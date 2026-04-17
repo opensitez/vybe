@@ -146,37 +146,37 @@ fn build_range() -> Chunk {
     let result = 4;
 
     // result = []
-    c.emit_op_u16(Op::array_new, 0, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i = start (local 1 already has it, but copy for clarity — it IS local 1)
     // Loop: while i < stop (for positive step) or i > stop (negative step)
     // For simplicity, always check i < stop (works for positive step, which is 99% of usage)
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, start, 0);
-    c.emit_op_u16(Op::local_get, stop, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, stop, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // result.push(i)
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, start, 0);
-    c.emit_op(Op::array_push, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op(Op::ARRAY_PUSH, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i += step
-    c.emit_op_u16(Op::local_get, start, 0);
-    c.emit_op_u16(Op::local_get, step, 0);
-    c.emit_op(Op::dyn_add, 0);
-    c.emit_op_u16(Op::local_set, start, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, step, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, start, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -193,103 +193,103 @@ fn build_sorted() -> Chunk {
     let key = 6;
 
     // Copy input array → result (so we don't mutate the original)
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::i32_const_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
     let max = c.add_constant(Value::I32(i32::MAX));
-    c.emit_op_u16(Op::r#const, max, 0);
-    c.emit_op(Op::array_slice, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::CONST, max, 0);
+    c.emit_op(Op::ARRAY_SLICE, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
     // len = result.length
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
     // Insertion sort: for i = 1 to len-1
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let outer_loop = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let outer_exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let outer_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // key = result[i]
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_set, key, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key, 0);
+    c.emit_op(Op::DROP, 0);
 
     // j = i - 1
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, j, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+    c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && result[j] > key
     let inner_loop = c.current_offset();
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_ge, 0);
-    let inner_exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GE, 0);
+    let inner_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_get, key, 0);
-    c.emit_op(Op::dyn_gt, 0);
-    let inner_exit2 = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let inner_exit2 = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // result[j+1] = result[j]
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
     // Now stack: [result, j+1] — need value = result[j]
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::array_set, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
 
     // j -= 1
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, j, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(inner_loop, 0);
     c.patch_jump(inner_exit);
     c.patch_jump(inner_exit2);
 
     // result[j+1] = key
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_get, key, 0);
-    c.emit_op(Op::array_set, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i += 1
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(outer_loop, 0);
     c.patch_jump(outer_exit);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -312,94 +312,94 @@ fn build_sort_in_place() -> Chunk {
     let key = 5;
 
     // len = arr.length
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i = 1
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let outer_loop = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let outer_exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let outer_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // key = arr[i]
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_set, key, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key, 0);
+    c.emit_op(Op::DROP, 0);
 
     // j = i - 1
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, j, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+    c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && arr[j] > key
     let inner_loop = c.current_offset();
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_ge, 0);
-    let inner_exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GE, 0);
+    let inner_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_get, key, 0);
-    c.emit_op(Op::dyn_gt, 0);
-    let inner_exit2 = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let inner_exit2 = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // arr[j+1] = arr[j]
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::array_set, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
 
     // j -= 1
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, j, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(inner_loop, 0);
     c.patch_jump(inner_exit);
     c.patch_jump(inner_exit2);
 
     // arr[j+1] = key
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_get, key, 0);
-    c.emit_op(Op::array_set, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i += 1
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(outer_loop, 0);
     c.patch_jump(outer_exit);
 
     // return arr (same reference, now sorted in place)
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -422,98 +422,98 @@ fn build_sort_with_comparator() -> Chunk {
     let key = 6;
 
     // len = arr.length
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i = 1
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let outer_loop = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let outer_exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let outer_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // key = arr[i]
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_set, key, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key, 0);
+    c.emit_op(Op::DROP, 0);
 
     // j = i - 1
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, j, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+    c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && cmp(arr[j], key) > 0
     let inner_loop = c.current_offset();
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_ge, 0);
-    let inner_exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GE, 0);
+    let inner_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // call cmp(arr[j], key) → result
-    c.emit_op_u16(Op::local_get, cmp, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_get, key, 0);
-    c.emit_op_u8(Op::call_ref, 2, 0);
+    c.emit_op_u16(Op::LOCAL_GET, cmp, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op_u8(Op::CALL_REF, 2, 0);
     // result > 0 → swap needed
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_gt, 0);
-    let inner_exit2 = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let inner_exit2 = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // arr[j+1] = arr[j]
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::array_set, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
 
     // j -= 1
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, j, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(inner_loop, 0);
     c.patch_jump(inner_exit);
     c.patch_jump(inner_exit2);
 
     // arr[j+1] = key
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_get, key, 0);
-    c.emit_op(Op::array_set, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i += 1
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(outer_loop, 0);
     c.patch_jump(outer_exit);
 
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -527,42 +527,42 @@ fn build_reversed() -> Chunk {
     let i = 3;
 
     // result = []
-    c.emit_op_u16(Op::array_new, 0, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i = arr.length - 1
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_ge, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GE, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::array_push, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_PUSH, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -576,47 +576,47 @@ fn build_enumerate() -> Chunk {
     let i = 3;
     let len = 4;
 
-    c.emit_op_u16(Op::array_new, 0, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // Build pair [i, arr[i]], then push onto result.
     // array_push takes [array, value] — so emit result first, then pair.
-    c.emit_op_u16(Op::local_get, result, 0); // result on stack
-    c.emit_op_u16(Op::local_get, i, 0);      // i
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);             // arr[i]
-    c.emit_op_u16(Op::array_new, 2, 0);      // pair = [i, arr[i]]
-    c.emit_op(Op::array_push, 0);            // result.push(pair)
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0); // result on stack
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);      // i
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);             // arr[i]
+    c.emit_op_u16(Op::ARRAY_NEW, 2, 0);      // pair = [i, arr[i]]
+    c.emit_op(Op::ARRAY_PUSH, 0);            // result.push(pair)
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -631,49 +631,49 @@ fn build_zip() -> Chunk {
     let i = 4;
     let len = 5;
 
-    c.emit_op_u16(Op::array_new, 0, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
     // len = min(a.length, b.length) — use a.length for simplicity
-    c.emit_op_u16(Op::local_get, a, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, a, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // result.push([a[i], b[i]])
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, a, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_get, b, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::array_new, 2, 0);
-    c.emit_op(Op::array_push, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, a, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_GET, b, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    c.emit_op(Op::ARRAY_PUSH, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -687,44 +687,44 @@ fn build_sum() -> Chunk {
     let i = 3;
     let len = 4;
 
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op_u16(Op::local_set, total, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, total, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
-    c.emit_op_u16(Op::local_get, total, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::dyn_add, 0);
-    c.emit_op_u16(Op::local_set, total, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, total, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, total, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
-    c.emit_op_u16(Op::local_get, total, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, total, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -739,52 +739,52 @@ fn build_min() -> Chunk {
     let len = 4;
 
     // best = arr[0]
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_set, best, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, best, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // if arr[i] < best: best = arr[i]
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_get, best, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let skip = c.emit_jump(Op::br_if_false, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_set, best, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_GET, best, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let skip = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, best, 0);
+    c.emit_op(Op::DROP, 0);
     c.patch_jump(skip);
 
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
-    c.emit_op_u16(Op::local_get, best, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, best, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -798,51 +798,51 @@ fn build_max() -> Chunk {
     let i = 3;
     let len = 4;
 
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_set, best, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, best, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_get, best, 0);
-    c.emit_op(Op::dyn_gt, 0);
-    let skip = c.emit_jump(Op::br_if_false, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_set, best, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_GET, best, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let skip = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, best, 0);
+    c.emit_op(Op::DROP, 0);
     c.patch_jump(skip);
 
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
-    c.emit_op_u16(Op::local_get, best, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, best, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -864,62 +864,62 @@ fn build_pow() -> Chunk {
 
     // n = abs(exp) — branchless via select would need both values; use a flag
     // We compute n = (exp < 0) ? -exp : exp
-    c.emit_op_u16(Op::local_get, exp, 0);
-    c.emit_op_u16(Op::local_set, n, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, exp, 0);
+    c.emit_op_u16(Op::LOCAL_SET, n, 0);
+    c.emit_op(Op::DROP, 0);
     // if n < 0 then n = -n
-    c.emit_op_u16(Op::local_get, n, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let positive = c.emit_jump(Op::br_if_false, 0);
-    c.emit_op_u16(Op::local_get, n, 0);
-    c.emit_op(Op::f64_neg, 0);
-    c.emit_op_u16(Op::local_set, n, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, n, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let positive = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, n, 0);
+    c.emit_op(Op::F64_NEG, 0);
+    c.emit_op_u16(Op::LOCAL_SET, n, 0);
+    c.emit_op(Op::DROP, 0);
     c.patch_jump(positive);
 
     // result = 1.0
     let one = c.add_constant(Value::F64(1.0));
-    c.emit_op_u16(Op::r#const, one, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::CONST, one, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
     // while n > 0: result *= base; n -= 1
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, n, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_gt, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, n, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, base, 0);
-    c.emit_op(Op::f64_mul, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, base, 0);
+    c.emit_op(Op::F64_MUL, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, n, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, n, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, n, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, n, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
     // If original exp was negative, take reciprocal: result = 1.0 / result
-    c.emit_op_u16(Op::local_get, exp, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let no_reciprocal = c.emit_jump(Op::br_if_false, 0);
-    c.emit_op_u16(Op::r#const, one, 0);
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op(Op::f64_div, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, exp, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let no_reciprocal = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::CONST, one, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::F64_DIV, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
     c.patch_jump(no_reciprocal);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -931,10 +931,10 @@ fn build_to_string() -> Chunk {
     c.local_count = 2;
     let val = 1u16;
     let empty = c.add_constant(Value::String(std::sync::Arc::from("")));
-    c.emit_op_u16(Op::r#const, empty, 0);
-    c.emit_op_u16(Op::local_get, val, 0);
-    c.emit_op(Op::dyn_add, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::CONST, empty, 0);
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -949,42 +949,42 @@ fn build_str_count() -> Chunk {
     let count = 3;
     let pos = 4;
 
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op_u16(Op::local_set, count, 0);
-    c.emit_op(Op::drop, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op_u16(Op::local_set, pos, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, count, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, pos, 0);
+    c.emit_op(Op::DROP, 0);
 
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, haystack, 0);
-    c.emit_op_u16(Op::local_get, pos, 0);
+    c.emit_op_u16(Op::LOCAL_GET, haystack, 0);
+    c.emit_op_u16(Op::LOCAL_GET, pos, 0);
     let max = c.add_constant(Value::I32(i32::MAX));
-    c.emit_op_u16(Op::r#const, max, 0);
-    c.emit_op(Op::str_substring, 0);
-    c.emit_op_u16(Op::local_get, needle, 0);
-    c.emit_op(Op::str_index_of, 0);
-    c.emit_op(Op::dup, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let exit = c.emit_jump(Op::br_if_true, 0);
-    c.emit_op(Op::drop, 0);
-    c.emit_op_u16(Op::local_get, count, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, count, 0);
-    c.emit_op(Op::drop, 0);
-    c.emit_op_u16(Op::local_get, pos, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, pos, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::CONST, max, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::LOCAL_GET, needle, 0);
+    c.emit_op(Op::STR_INDEX_OF, 0);
+    c.emit_op(Op::DUP, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let exit = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, count, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, count, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, pos, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, pos, 0);
+    c.emit_op(Op::DROP, 0);
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, count, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, count, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1003,46 +1003,46 @@ fn build_splice() -> Chunk {
     let end = 6;
 
     // result = [] (removed elements)
-    c.emit_op_u16(Op::array_new, 0, 0);
-    c.emit_op_u16(Op::local_set, result_local, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result_local, 0);
+    c.emit_op(Op::DROP, 0);
 
     // Collect removed elements: arr[index..index+deleteCount]
-    c.emit_op_u16(Op::local_get, index, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, index, 0);
-    c.emit_op_u16(Op::local_get, delete_count, 0);
-    c.emit_op(Op::dyn_add, 0);
-    c.emit_op_u16(Op::local_set, end, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_GET, delete_count, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, end, 0);
+    c.emit_op(Op::DROP, 0);
 
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, end, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
-    c.emit_op_u16(Op::local_get, result_local, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::array_push, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result_local, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_PUSH, 0);
+    c.emit_op(Op::DROP, 0);
 
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
     // Return removed elements (actual array mutation would need more complex bytecode)
-    c.emit_op_u16(Op::local_get, result_local, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result_local, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1055,31 +1055,31 @@ fn build_is_numeric() -> Chunk {
     let val = 1u16;
 
     // typeof(val) → string
-    c.emit_op_u16(Op::local_get, val, 0);
-    c.emit_op(Op::ref_typeof, 0);
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
 
     // Check if type is "number" (covers I32, I64, F64)
     let num_str = c.add_constant(Value::String(std::sync::Arc::from("number")));
-    c.emit_op_u16(Op::r#const, num_str, 0);
-    c.emit_op(Op::str_equals, 0);
+    c.emit_op_u16(Op::CONST, num_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
 
     // If true, return true
-    c.emit_op(Op::dup, 0);
-    let done = c.emit_jump(Op::br_if_true, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::DUP, 0);
+    let done = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_op(Op::DROP, 0);
 
     // Also check for string that parses as number: try val + 0 and see if NaN
     // Simpler: check if typeof is "i32"
     // Actually ref_typeof returns "number" for all numeric types already.
     // Also check if it's a numeric string by trying to convert.
-    c.emit_op_u16(Op::local_get, val, 0);
-    c.emit_op(Op::ref_typeof, 0);
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
     let i32_str = c.add_constant(Value::String(std::sync::Arc::from("i32")));
-    c.emit_op_u16(Op::r#const, i32_str, 0);
-    c.emit_op(Op::str_equals, 0);
+    c.emit_op_u16(Op::CONST, i32_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
 
     c.patch_jump(done);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1088,9 +1088,9 @@ fn build_floor() -> Chunk {
     let mut c = Chunk::new("__stdlib_floor");
     c.arity = 1;
     c.local_count = 2;
-    c.emit_op_u16(Op::local_get, 1, 0);
-    c.emit_op(Op::f64_floor, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::F64_FLOOR, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1111,24 +1111,24 @@ fn build_slice() -> Chunk {
     let end = 3u16;
 
     // if ref_is_string(obj) → str_substring; else → array_slice
-    c.emit_op_u16(Op::local_get, obj, 0);
-    c.emit_op(Op::ref_is_string, 0);
-    let to_array = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, obj, 0);
+    c.emit_op(Op::REF_IS_STRING, 0);
+    let to_array = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // String branch: [obj, start, end] → str_substring
-    c.emit_op_u16(Op::local_get, obj, 0);
-    c.emit_op_u16(Op::local_get, start, 0);
-    c.emit_op_u16(Op::local_get, end, 0);
-    c.emit_op(Op::str_substring, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, obj, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op(Op::RETURN, 0);
 
     // Array branch
     c.patch_jump(to_array);
-    c.emit_op_u16(Op::local_get, obj, 0);
-    c.emit_op_u16(Op::local_get, start, 0);
-    c.emit_op_u16(Op::local_get, end, 0);
-    c.emit_op(Op::array_slice, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, obj, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    c.emit_op(Op::ARRAY_SLICE, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1142,8 +1142,8 @@ fn build_keys() -> Chunk {
     c.arity = 1;
     c.local_count = 2;
     // Return empty array as fallback (properties aren't enumerable in pure WASM)
-    c.emit_op_u16(Op::array_new, 0, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1152,12 +1152,12 @@ fn build_has_property() -> Chunk {
     let mut c = Chunk::new("__stdlib_hasproperty");
     c.arity = 2;
     c.local_count = 3;
-    c.emit_op_u16(Op::local_get, 1, 0); // obj
-    c.emit_op_u16(Op::local_get, 2, 0); // key
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::ref_is_null, 0);
-    c.emit_op(Op::dyn_not, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // obj
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // key
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1168,8 +1168,8 @@ fn build_assign() -> Chunk {
     let mut c = Chunk::new("__stdlib_assign");
     c.arity = 2;
     c.local_count = 3;
-    c.emit_op_u16(Op::local_get, 1, 0); // return target
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // return target
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1180,13 +1180,13 @@ fn build_instance_of() -> Chunk {
     c.local_count = 3;
     // ref_test needs a constant pool string, but we have a dynamic value.
     // Workaround: compare __type property with the type name string.
-    c.emit_op_u16(Op::local_get, 1, 0); // obj
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // obj
     let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
-    c.emit_op_u16(Op::r#const, type_key, 0);
-    c.emit_op(Op::array_get, 0); // obj["__type"]
-    c.emit_op_u16(Op::local_get, 2, 0); // type_name
-    c.emit_op(Op::str_equals, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::CONST, type_key, 0);
+    c.emit_op(Op::ARRAY_GET, 0); // obj["__type"]
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // type_name
+    c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1196,13 +1196,13 @@ fn build_delete_property() -> Chunk {
     let mut c = Chunk::new("__stdlib_deleteproperty");
     c.arity = 2;
     c.local_count = 3;
-    c.emit_op_u16(Op::local_get, 1, 0); // obj
-    c.emit_op_u16(Op::local_get, 2, 0); // key
-    c.emit_op(Op::null, 0);             // value = null
-    c.emit_op(Op::array_set, 0);
-    c.emit_op(Op::drop, 0);
-    c.emit_op(Op::r#true, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // obj
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // key
+    c.emit_op(Op::NULL, 0);             // value = null
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::TRUE, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1212,12 +1212,12 @@ fn build_array_from() -> Chunk {
     c.arity = 1;
     c.local_count = 2;
     // Slice the entire array (copy)
-    c.emit_op_u16(Op::local_get, 1, 0);
-    c.emit_op(Op::i32_const_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
     let max = c.add_constant(Value::I32(i32::MAX));
-    c.emit_op_u16(Op::r#const, max, 0);
-    c.emit_op(Op::array_slice, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::CONST, max, 0);
+    c.emit_op(Op::ARRAY_SLICE, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1227,11 +1227,11 @@ fn build_redim() -> Chunk {
     let mut c = Chunk::new("__stdlib_redim");
     c.arity = 2;
     c.local_count = 3;
-    c.emit_op_u16(Op::local_get, 1, 0); // arr
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op_u16(Op::local_get, 2, 0); // new_size
-    c.emit_op(Op::array_slice, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // arr
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // new_size
+    c.emit_op(Op::ARRAY_SLICE, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1241,51 +1241,51 @@ fn build_slice_step() -> Chunk {
     c.arity = 4;
     c.local_count = 7; // arr(1) start(2) end(3) step(4) result(5) i(6)
     let zero = c.add_constant(Value::I32(0));
-    c.emit_op_u16(Op::array_new, 0, 0);
-    c.emit_op_u16(Op::local_set, 5, 0);
-    c.emit_op_u16(Op::local_get, 2, 0);
-    c.emit_op_u16(Op::local_set, 6, 0);
+    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, 4, 0);
-    c.emit_op_u16(Op::r#const, zero, 0);
-    c.emit_op(Op::dyn_gt, 0);
-    let step_pos = c.emit_jump(Op::br_if_true, 0);
-    c.emit_op_u16(Op::local_get, 6, 0);
-    c.emit_op_u16(Op::local_get, 3, 0);
-    c.emit_op(Op::dyn_gt, 0);
-    let cond_done = c.emit_jump(Op::br, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let step_pos = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let cond_done = c.emit_jump(Op::BR, 0);
     c.patch_jump(step_pos);
-    c.emit_op_u16(Op::local_get, 6, 0);
-    c.emit_op_u16(Op::local_get, 3, 0);
-    c.emit_op(Op::dyn_lt, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::DYN_LT, 0);
     c.patch_jump(cond_done);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
     // bounds check
-    c.emit_op_u16(Op::local_get, 6, 0);
-    c.emit_op_u16(Op::r#const, zero, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let skip = c.emit_jump(Op::br_if_true, 0);
-    c.emit_op_u16(Op::local_get, 6, 0);
-    c.emit_op_u16(Op::local_get, 1, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op(Op::dyn_ge, 0);
-    let skip2 = c.emit_jump(Op::br_if_true, 0);
-    c.emit_op_u16(Op::local_get, 5, 0);
-    c.emit_op_u16(Op::local_get, 1, 0);
-    c.emit_op_u16(Op::local_get, 6, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::array_push, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let skip = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op(Op::DYN_GE, 0);
+    let skip2 = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_PUSH, 0);
+    c.emit_op(Op::DROP, 0);
     c.patch_jump(skip);
     c.patch_jump(skip2);
-    c.emit_op_u16(Op::local_get, 6, 0);
-    c.emit_op_u16(Op::local_get, 4, 0);
-    c.emit_op(Op::dyn_add, 0);
-    c.emit_op_u16(Op::local_set, 6, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
-    c.emit_op_u16(Op::local_get, 5, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1297,32 +1297,32 @@ fn build_dyn_mul() -> Chunk {
     c.local_count = 3;
     let str_tag = c.add_constant(Value::String(Arc::from("string")));
     // if typeof(a) == "string": return str_repeat(a, b)
-    c.emit_op_u16(Op::local_get, 1, 0);
-    c.emit_op(Op::ref_typeof, 0);
-    c.emit_op_u16(Op::r#const, str_tag, 0);
-    c.emit_op(Op::dyn_eq, 0);
-    let a_not_str = c.emit_jump(Op::br_if_false, 0);
-    c.emit_op_u16(Op::local_get, 1, 0);
-    c.emit_op_u16(Op::local_get, 2, 0);
-    c.emit_op(Op::str_repeat, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, str_tag, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    let a_not_str = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::STR_REPEAT, 0);
+    c.emit_op(Op::RETURN, 0);
     c.patch_jump(a_not_str);
     // if typeof(b) == "string": return str_repeat(b, a)
-    c.emit_op_u16(Op::local_get, 2, 0);
-    c.emit_op(Op::ref_typeof, 0);
-    c.emit_op_u16(Op::r#const, str_tag, 0);
-    c.emit_op(Op::dyn_eq, 0);
-    let b_not_str = c.emit_jump(Op::br_if_false, 0);
-    c.emit_op_u16(Op::local_get, 2, 0);
-    c.emit_op_u16(Op::local_get, 1, 0);
-    c.emit_op(Op::str_repeat, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, str_tag, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    let b_not_str = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::STR_REPEAT, 0);
+    c.emit_op(Op::RETURN, 0);
     c.patch_jump(b_not_str);
     // numeric
-    c.emit_op_u16(Op::local_get, 1, 0);
-    c.emit_op_u16(Op::local_get, 2, 0);
-    c.emit_op(Op::f64_mul, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::F64_MUL, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1345,103 +1345,103 @@ fn build_sort_by_key() -> Chunk {
     let key_val = 7;
 
     // len = arr.length
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i = 1
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     let outer_loop = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let outer_exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let outer_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // key = arr[i]
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u16(Op::local_set, key, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key, 0);
+    c.emit_op(Op::DROP, 0);
 
     // keyVal = keyFn(key)
-    c.emit_op_u16(Op::local_get, key_fn, 0);
-    c.emit_op_u16(Op::local_get, key, 0);
-    c.emit_op_u8(Op::call_ref, 1, 0);
-    c.emit_op_u16(Op::local_set, key_val, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key_fn, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key_val, 0);
+    c.emit_op(Op::DROP, 0);
 
     // j = i - 1
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, j, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+    c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && keyFn(arr[j]) > keyVal
     let inner_loop = c.current_offset();
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op(Op::dyn_ge, 0);
-    let inner_exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GE, 0);
+    let inner_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // compare: keyFn(arr[j]) > keyVal
-    c.emit_op_u16(Op::local_get, key_fn, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op_u8(Op::call_ref, 1, 0);
-    c.emit_op_u16(Op::local_get, key_val, 0);
-    c.emit_op(Op::dyn_gt, 0);
-    let inner_exit2 = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key_fn, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key_val, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let inner_exit2 = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // arr[j+1] = arr[j]
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::array_set, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
 
     // j -= 1
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_sub, 0);
-    c.emit_op_u16(Op::local_set, j, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(inner_loop, 0);
     c.patch_jump(inner_exit);
     c.patch_jump(inner_exit2);
 
     // arr[j+1] = key
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op_u16(Op::local_get, j, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_get, key, 0);
-    c.emit_op(Op::array_set, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i += 1
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(outer_loop, 0);
     c.patch_jump(outer_exit);
 
-    c.emit_op_u16(Op::local_get, arr, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1456,23 +1456,23 @@ fn build_concat() -> Chunk {
     let b = 2u16;
 
     // if ref_is_string(a) → str_concat
-    c.emit_op_u16(Op::local_get, a, 0);
-    c.emit_op(Op::ref_is_string, 0);
-    let not_string = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, a, 0);
+    c.emit_op(Op::REF_IS_STRING, 0);
+    let not_string = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // String path: str_concat(a, b)
-    c.emit_op_u16(Op::local_get, a, 0);
-    c.emit_op_u16(Op::local_get, b, 0);
-    c.emit_op(Op::str_concat, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, a, 0);
+    c.emit_op_u16(Op::LOCAL_GET, b, 0);
+    c.emit_op(Op::STR_CONCAT, 0);
+    c.emit_op(Op::RETURN, 0);
 
     c.patch_jump(not_string);
 
     // Array path: array_concat(a, b)
-    c.emit_op_u16(Op::local_get, a, 0);
-    c.emit_op_u16(Op::local_get, b, 0);
-    c.emit_op(Op::array_concat, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, a, 0);
+    c.emit_op_u16(Op::LOCAL_GET, b, 0);
+    c.emit_op(Op::ARRAY_CONCAT, 0);
+    c.emit_op(Op::RETURN, 0);
 
     c
 }
@@ -1496,66 +1496,66 @@ fn build_string_raw() -> Chunk {
 
     // result = ""
     let empty = c.add_constant(Value::String(Arc::from("")));
-    c.emit_op_u16(Op::r#const, empty, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::CONST, empty, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
     // len = strings.length
-    c.emit_op_u16(Op::local_get, strings, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op_u16(Op::local_set, len, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, strings, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
 
     // i = 0
-    c.emit_op(Op::i32_const_0, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     // loop: while i < len
     let loop_start = c.current_offset();
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, len, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let exit = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
 
     // result += strings[i]
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, strings, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::str_concat, 0);
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, strings, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::STR_CONCAT, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
     // if i < values.length: result += String(values[i])
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op_u16(Op::local_get, values, 0);
-    c.emit_op(Op::array_length, 0);
-    c.emit_op(Op::dyn_lt, 0);
-    let skip_val = c.emit_jump(Op::br_if_false, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, values, 0);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    let skip_val = c.emit_jump(Op::BR_IF_FALSE, 0);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op_u16(Op::local_get, values, 0);
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::array_get, 0);
-    c.emit_op(Op::str_concat, 0); // dyn_add would also work since result is string
-    c.emit_op_u16(Op::local_set, result, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, values, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::STR_CONCAT, 0); // dyn_add would also work since result is string
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.patch_jump(skip_val);
 
     // i += 1
-    c.emit_op_u16(Op::local_get, i, 0);
-    c.emit_op(Op::i32_const_1, 0);
-    c.emit_op(Op::i32_add, 0);
-    c.emit_op_u16(Op::local_set, i, 0);
-    c.emit_op(Op::drop, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_loop(loop_start, 0);
     c.patch_jump(exit);
 
-    c.emit_op_u16(Op::local_get, result, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
     c
 }
 
@@ -1570,14 +1570,14 @@ fn build_fmod() -> Chunk {
     let b = 2u16;
 
     // result = a - trunc(a / b) * b
-    c.emit_op_u16(Op::local_get, a, 0);   // a
-    c.emit_op_u16(Op::local_get, a, 0);   // a
-    c.emit_op_u16(Op::local_get, b, 0);   // b
-    c.emit_op(Op::f64_div, 0);            // a / b
-    c.emit_op(Op::f64_trunc, 0);          // trunc(a / b)
-    c.emit_op_u16(Op::local_get, b, 0);   // b
-    c.emit_op(Op::f64_mul, 0);            // trunc(a / b) * b
-    c.emit_op(Op::f64_sub, 0);            // a - trunc(a / b) * b
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::LOCAL_GET, a, 0);   // a
+    c.emit_op_u16(Op::LOCAL_GET, a, 0);   // a
+    c.emit_op_u16(Op::LOCAL_GET, b, 0);   // b
+    c.emit_op(Op::F64_DIV, 0);            // a / b
+    c.emit_op(Op::F64_TRUNC, 0);          // trunc(a / b)
+    c.emit_op_u16(Op::LOCAL_GET, b, 0);   // b
+    c.emit_op(Op::F64_MUL, 0);            // trunc(a / b) * b
+    c.emit_op(Op::F64_SUB, 0);            // a - trunc(a / b) * b
+    c.emit_op(Op::RETURN, 0);
     c
 }

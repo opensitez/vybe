@@ -101,10 +101,10 @@ class Foo:
 "#);
     let ctor = chunks.iter().find(|c| c.name == "foo").unwrap();
     // The bytecode should contain the set_type_id opcode
-    let has_set_type = ctor.code.iter().any(|&b| b == vybe_bytecode::opcode::Op::set_type_id.encode().0
+    let has_set_type = ctor.code.iter().any(|&b| b == vybe_bytecode::opcode::Op::SET_TYPE_ID.encode().0
         || (b == 0xFE)); // extended opcode prefix
     // set_type_id is an extended opcode, check for 0xFE prefix
-    let set_type_id_encoded = vybe_bytecode::opcode::Op::set_type_id.encode();
+    let set_type_id_encoded = vybe_bytecode::opcode::Op::SET_TYPE_ID.encode();
     let has_it = if let (prefix, Some(ext)) = set_type_id_encoded {
         ctor.code.windows(2).any(|w| w[0] == prefix && w[1] == ext)
     } else {

@@ -15,32 +15,32 @@ use crate::Target;
 
 /// Create array from N stack values. Stack: [v1, v2, ..., vN] → [array]
 pub fn emit_array_new(chunk: &mut Chunk, count: u16, line: u32) {
-    chunk.emit_op_u16(Op::array_new, count, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW, count, line);
 }
 
 /// Array length. Stack: [array] → [i32]
 pub fn emit_len(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_length, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
 }
 
 /// Array push. Stack: [array, value] → [array]
 pub fn emit_push(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_push, line);
+    chunk.emit_op(Op::ARRAY_PUSH, line);
 }
 
 /// Array pop. Stack: [array] → [value]
 pub fn emit_pop(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_pop, line);
+    chunk.emit_op(Op::ARRAY_POP, line);
 }
 
 /// Array get. Stack: [array, index] → [value]
 pub fn emit_get(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_get, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
 }
 
 /// Array set. Stack: [array, index, value] → [value]
 pub fn emit_set(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_set, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
 }
 
 /// Raw array slice opcode. Stack: [array, start, end] → [array]
@@ -48,7 +48,7 @@ pub fn emit_set(chunk: &mut Chunk, line: u32) {
 /// `emit_slice_push_func` + args + `emit_slice_invoke`, which routes through
 /// the stdlib `__vybe_slice` chunk that runtime-dispatches on the value type.
 pub fn emit_slice(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_slice, line);
+    chunk.emit_op(Op::ARRAY_SLICE, line);
 }
 
 /// Push the __vybe_slice func ref. Use BEFORE compiling the object/start/end.
@@ -58,42 +58,42 @@ pub fn emit_slice(chunk: &mut Chunk, line: u32) {
 /// surface syntax is `obj[start..end]`.
 pub fn emit_slice_push_func(chunk: &mut Chunk, line: u32) {
     let name = chunk.add_constant(Value::String(Arc::from("__vybe_slice")));
-    chunk.emit_op_u16(Op::global_get, name, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
 }
 
 /// Invoke __vybe_slice after [func, obj, start, end] are on the stack.
 pub fn emit_slice_invoke(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u8(Op::call_ref, 3, line);
+    chunk.emit_op_u8(Op::CALL_REF, 3, line);
 }
 
 /// Array join. Stack: [array, delimiter] → [string]
 pub fn emit_join(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_join, line);
+    chunk.emit_op(Op::ARRAY_JOIN, line);
 }
 
 /// Array reverse (in-place). Stack: [array] → [array]
 pub fn emit_reverse(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_reverse, line);
+    chunk.emit_op(Op::ARRAY_REVERSE, line);
 }
 
 /// Array contains. Stack: [array, value] → [bool]
 pub fn emit_contains(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_contains, line);
+    chunk.emit_op(Op::ARRAY_CONTAINS, line);
 }
 
 /// Array indexOf. Stack: [array, value] → [i32]
 pub fn emit_index_of(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_index_of, line);
+    chunk.emit_op(Op::ARRAY_INDEX_OF, line);
 }
 
 /// Array concat. Stack: [array, array] → [array]
 pub fn emit_concat(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_concat, line);
+    chunk.emit_op(Op::ARRAY_CONCAT, line);
 }
 
 /// Array shift (remove first). Stack: [array] → [value]
 pub fn emit_shift(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_shift, line);
+    chunk.emit_op(Op::ARRAY_SHIFT, line);
 }
 
 // ── Host imports (higher-level operations) ──────────────────
@@ -107,7 +107,7 @@ pub fn emit_range(chunk: &mut Chunk, arg_count: u8, line: u32) {
     // can't be done in pure opcodes without a complex inline loop.
     // On non-Vybe runtimes, this import must be provided by the embedder.
     let idx = chunk.add_import("vybe:array", "range");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(arg_count, line);
 }
 
@@ -116,7 +116,7 @@ pub fn emit_range(chunk: &mut Chunk, arg_count: u8, line: u32) {
 pub fn emit_range_targeted(chunk: &mut Chunk, arg_count: u8, target: &Target, line: u32) {
     if target.has_module("vybe:array") {
         let idx = chunk.add_import("vybe:array", "range");
-        chunk.emit_op_u16(Op::call_import, idx, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
         chunk.emit(arg_count, line);
     } else {
         // Pure WASM fallback: build array with inline loop.
@@ -139,40 +139,40 @@ pub fn emit_range_targeted(chunk: &mut Chunk, arg_count: u8, target: &Target, li
             let i_local = stop_local + 1;
             let result_local = stop_local + 2;
 
-            chunk.emit_op_u16(Op::local_set, stop_local, line);  // store stop
-            chunk.emit_op(Op::drop, line);
-            chunk.emit_op_u16(Op::array_new, 0, line);           // result = []
-            chunk.emit_op_u16(Op::local_set, result_local, line);
-            chunk.emit_op(Op::drop, line);
-            chunk.emit_op(Op::i32_const_0, line);                // i = 0
-            chunk.emit_op_u16(Op::local_set, i_local, line);
-            chunk.emit_op(Op::drop, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, stop_local, line);  // store stop
+            chunk.emit_op(Op::DROP, line);
+            chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);           // result = []
+            chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+            chunk.emit_op(Op::DROP, line);
+            chunk.emit_op(Op::I32_CONST_0, line);                // i = 0
+            chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
+            chunk.emit_op(Op::DROP, line);
 
             let loop_start = chunk.current_offset();
-            chunk.emit_op_u16(Op::local_get, i_local, line);
-            chunk.emit_op_u16(Op::local_get, stop_local, line);
-            chunk.emit_op(Op::dyn_lt, line);
-            let exit = chunk.emit_jump(Op::br_if_false, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, stop_local, line);
+            chunk.emit_op(Op::DYN_LT, line);
+            let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
-            chunk.emit_op_u16(Op::local_get, result_local, line);
-            chunk.emit_op_u16(Op::local_get, i_local, line);
-            chunk.emit_op(Op::array_push, line);
-            chunk.emit_op(Op::drop, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
+            chunk.emit_op(Op::ARRAY_PUSH, line);
+            chunk.emit_op(Op::DROP, line);
 
-            chunk.emit_op_u16(Op::local_get, i_local, line);
-            chunk.emit_op(Op::i32_const_1, line);
-            chunk.emit_op(Op::i32_add, line);
-            chunk.emit_op_u16(Op::local_set, i_local, line);
-            chunk.emit_op(Op::drop, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
+            chunk.emit_op(Op::I32_CONST_1, line);
+            chunk.emit_op(Op::I32_ADD, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
+            chunk.emit_op(Op::DROP, line);
 
             chunk.emit_loop(loop_start, line);
             chunk.patch_jump(exit);
 
-            chunk.emit_op_u16(Op::local_get, result_local, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
         } else {
             // 2+ args: just use host call (complex step handling not worth inlining)
             let idx = chunk.add_import("vybe:array", "range");
-            chunk.emit_op_u16(Op::call_import, idx, line);
+            chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
             chunk.emit(arg_count, line);
         }
     }
@@ -183,7 +183,7 @@ pub fn emit_range_targeted(chunk: &mut Chunk, arg_count: u8, target: &Target, li
 /// Prefer using `emit_sorted_push_func` + args + `emit_sorted_invoke` for pure WASM bytecode.
 pub fn emit_sorted(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:array", "sorted");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
@@ -191,12 +191,12 @@ pub fn emit_sorted(chunk: &mut Chunk, line: u32) {
 /// Pure WASM — no host import. Bundle wires __vybe_sorted to stdlib chunk.
 pub fn emit_sorted_push_func(chunk: &mut Chunk, line: u32) {
     let name = chunk.add_constant(Value::String(Arc::from("__vybe_sorted")));
-    chunk.emit_op_u16(Op::global_get, name, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
 }
 
 /// Invoke __vybe_sorted after func ref + array are on stack.
 pub fn emit_sorted_invoke(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u8(Op::call_ref, 1, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
 }
 
 /// Push the __vybe_sort_in_place func ref. Use BEFORE compiling the array.
@@ -205,13 +205,13 @@ pub fn emit_sorted_invoke(chunk: &mut Chunk, line: u32) {
 /// the global with an optimized native sort (polyfill pattern).
 pub fn emit_sort_in_place_push_func(chunk: &mut Chunk, line: u32) {
     let name = chunk.add_constant(Value::String(Arc::from("__vybe_sort_in_place")));
-    chunk.emit_op_u16(Op::global_get, name, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
 }
 
 /// Invoke __vybe_sort_in_place after func ref + array are on stack.
 /// Stack: [func, array] → [array] (same reference, mutated in place).
 pub fn emit_sort_in_place_invoke(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u8(Op::call_ref, 1, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
 }
 
 /// Target-aware sorted — Vybe host call or standard "env" import.
@@ -223,7 +223,7 @@ pub fn emit_sorted_targeted(chunk: &mut Chunk, target: &Target, line: u32) {
         // Inlining a sort algorithm as bytecode would bloat every binary.
         // This is the same approach as Emscripten (imports libc functions).
         let idx = chunk.add_import("env", "sorted");
-        chunk.emit_op_u16(Op::call_import, idx, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
         chunk.emit(1, line);
     }
 }
@@ -231,41 +231,41 @@ pub fn emit_sorted_targeted(chunk: &mut Chunk, target: &Target, line: u32) {
 /// reversed(iterable). Stack: [array] → [reversed_array]
 pub fn emit_reversed(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:array", "reversed");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 /// enumerate(iterable). Stack: [array] → [array of [i, val] pairs]
 pub fn emit_enumerate(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:array", "enumerate");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 /// zip(a, b). Stack: [array, array] → [array of [a_i, b_i] pairs]
 pub fn emit_zip(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:array", "zip");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(2, line);
 }
 
 /// sum(iterable). Stack: [array] → [number]
 pub fn emit_sum(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:array", "sum");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 /// min(args...). Stack: [args...] → [min_value]
 pub fn emit_min(chunk: &mut Chunk, arg_count: u8, line: u32) {
     let idx = chunk.add_import("vybe:array", "pymin");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(arg_count, line);
 }
 
 /// max(args...). Stack: [args...] → [max_value]
 pub fn emit_max(chunk: &mut Chunk, arg_count: u8, line: u32) {
     let idx = chunk.add_import("vybe:array", "pymax");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(arg_count, line);
 }

@@ -239,13 +239,13 @@ fn blocked_host_call_returns_undefined() {
     let mut chunk = Chunk::new("<test>");
     // Try to call wasi:filesystem readFile — it shouldn't be registered
     let ci = chunk.add_constant(Value::String(Rc::from("test.txt")));
-    chunk.emit_op_u16(Op::r#const, ci, 0);
+    chunk.emit_op_u16(Op::CONST, ci, 0);
     // Try global_get for a filesystem function — returns Undefined
     let fn_name = chunk.add_constant(Value::String(Rc::from("readfile")));
-    chunk.emit_op_u16(Op::global_get, fn_name, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, fn_name, 0);
     // The function doesn't exist, so we get Undefined
-    chunk.emit_op(Op::ref_is_null, 0); // Undefined is null-ish
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::REF_IS_NULL, 0); // Undefined is null-ish
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     // ref_is_null on Undefined should be true
@@ -273,12 +273,12 @@ fn sandbox_console_capture() {
     // Build a simple chunk: push "hello sandbox", call console.log
     let mut chunk = Chunk::new("<test>");
     let msg = chunk.add_constant(Value::String(Rc::from("hello sandbox")));
-    chunk.emit_op_u16(Op::r#const, msg, 0);
+    chunk.emit_op_u16(Op::CONST, msg, 0);
     let log_idx = chunk.add_import("wasi:cli", "log");
-    chunk.emit_op_u16(Op::call_import, log_idx, 0);
+    chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
     chunk.emit(1, 0); // argc = 1
-    chunk.emit_op(Op::drop, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     vm.run(vec![chunk]).unwrap();
     assert_eq!(*output.borrow(), vec!["hello sandbox"]);

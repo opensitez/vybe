@@ -62,8 +62,8 @@ impl Compiler {
         for stmt in &module.body {
             self.compile_stmt(stmt)?;
         }
-        self.emit(Op::null);
-        self.emit(Op::halt);
+        self.emit(Op::NULL);
+        self.emit(Op::HALT);
         let locals = self.scope().next_slot;
         self.chunks[0].local_count = locals;
         common::bundle::finalize_with_stdlib(&mut self.chunks);
@@ -79,7 +79,7 @@ impl Compiler {
     fn emit(&mut self, op: Op) { let l = self.line; self.chunks[self.current].emit_op(op, l); }
     fn emit_u16(&mut self, op: Op, v: u16) { let l = self.line; self.chunks[self.current].emit_op_u16(op, v, l); }
     fn emit_u8(&mut self, op: Op, v: u8) { let l = self.line; self.chunks[self.current].emit_op_u8(op, v, l); }
-    fn emit_const(&mut self, val: Value) { let idx = self.chunks[self.current].add_constant(val); self.emit_u16(Op::r#const, idx); }
+    fn emit_const(&mut self, val: Value) { let idx = self.chunks[self.current].add_constant(val); self.emit_u16(Op::CONST, idx); }
     fn emit_jump(&mut self, op: Op) -> usize { let l = self.line; self.chunks[self.current].emit_jump(op, l) }
     fn patch_jump(&mut self, o: usize) { self.chunks[self.current].patch_jump(o); }
     fn emit_loop(&mut self, t: usize) { let l = self.line; self.chunks[self.current].emit_loop(t, l); }
@@ -89,7 +89,7 @@ impl Compiler {
     fn import(&mut self, module: &str, name: &str) -> u16 { self.chunks[0].add_import(module, name) }
     fn emit_host_call(&mut self, idx: u16, argc: u8) {
         let l = self.line;
-        self.chunks[self.current].emit_op_u16(Op::call_import, idx, l);
+        self.chunks[self.current].emit_op_u16(Op::CALL_IMPORT, idx, l);
         self.chunks[self.current].emit(argc, l);
     }
 
@@ -103,31 +103,31 @@ impl Compiler {
 
     fn emit_var_get(&mut self, name: &str) {
         if let Some(slot) = self.scope().resolve(name) {
-            self.emit_u16(Op::local_get, slot);
+            self.emit_u16(Op::LOCAL_GET, slot);
         } else if !self.case_sensitive {
             if let Some(slot) = self.scope().resolve_ci(name) {
-                self.emit_u16(Op::local_get, slot);
+                self.emit_u16(Op::LOCAL_GET, slot);
                 return;
             }
             let idx = self.str_const(name);
-            self.emit_u16(Op::global_get, idx);
+            self.emit_u16(Op::GLOBAL_GET, idx);
         } else {
             let idx = self.str_const(name);
-            self.emit_u16(Op::global_get, idx);
+            self.emit_u16(Op::GLOBAL_GET, idx);
         }
     }
 
     fn emit_var_set(&mut self, name: &str) {
         if let Some(slot) = self.scope().resolve(name) {
-            self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+            self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
         } else if !self.case_sensitive {
             if let Some(slot) = self.scope().resolve_ci(name) {
-                self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                 return;
             }
-            let idx = self.str_const(name); self.emit_u16(Op::global_set, idx); self.emit(Op::drop);
+            let idx = self.str_const(name); self.emit_u16(Op::GLOBAL_SET, idx); self.emit(Op::DROP);
         } else {
-            let idx = self.str_const(name); self.emit_u16(Op::global_set, idx); self.emit(Op::drop);
+            let idx = self.str_const(name); self.emit_u16(Op::GLOBAL_SET, idx); self.emit(Op::DROP);
         }
     }
 
@@ -141,28 +141,28 @@ impl Compiler {
                 match &expr.kind {
                     ExprKind::Ident(name) if self.defined_globals.contains(name.as_str()) => {
                         self.emit_var_get(name);
-                        self.emit_u8(Op::call_ref, 0);
-                        self.emit(Op::drop);
+                        self.emit_u8(Op::CALL_REF, 0);
+                        self.emit(Op::DROP);
                     }
                     ExprKind::Member { object, field, .. } => {
                         // obj.Method → method call with 0 args
                         self.compile_expr(object)?;
                         let field_name = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
                         let prop = self.str_const(&field_name);
-                        self.emit(Op::dup);
-                        self.emit_u16(Op::struct_get, prop);
+                        self.emit(Op::DUP);
+                        self.emit_u16(Op::STRUCT_GET, prop);
                         let fn_tmp = self.scope_mut().define("__fn");
-                        self.emit_u16(Op::local_set, fn_tmp); self.emit(Op::drop);
+                        self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
                         let obj_tmp = self.scope_mut().define("__obj");
-                        self.emit_u16(Op::local_set, obj_tmp); self.emit(Op::drop);
-                        self.emit_u16(Op::local_get, fn_tmp);
-                        self.emit_u16(Op::local_get, obj_tmp);
-                        self.emit_u8(Op::call_ref, 1);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit(Op::DROP);
                     }
                     _ => {
                         self.compile_expr(expr)?;
-                        self.emit(Op::drop);
+                        self.emit(Op::DROP);
                     }
                 }
             }
@@ -178,23 +178,23 @@ impl Compiler {
                     self.compile_expr(init_expr)?;
                 } else {
                     match type_hint.as_deref().map(|s| s.to_lowercase()).as_deref() {
-                        Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => self.emit(Op::f64_const_0),
-                        Some("boolean") | Some("bool") => self.emit(Op::r#false),
+                        Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => self.emit(Op::F64_CONST_0),
+                        Some("boolean") | Some("bool") => self.emit(Op::FALSE),
                         Some("string") => self.emit_const(Value::String(Rc::from(""))),
-                        _ => self.emit(Op::null),
+                        _ => self.emit(Op::NULL),
                     }
                 }
                 // Top-level vars/consts → globals (even if inside a block from const section)
                 let is_toplevel = self.scopes.len() == 1;
                 if is_toplevel {
                     let idx = self.str_const(name);
-                    self.emit_u16(Op::global_set, idx);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
+                    self.emit(Op::DROP);
                     self.defined_globals.insert(name.clone());
                 } else {
                     let slot = self.scope_mut().define(name);
-                    self.emit_u16(Op::local_set, slot);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
                 }
             }
             StmtKind::Assign { target, value } => {
@@ -209,20 +209,20 @@ impl Compiler {
             }
             StmtKind::If { cond, then, elifs, else_ } => {
                 self.compile_expr(cond)?;
-                self.emit(Op::dyn_to_bool);
-                let else_j = self.emit_jump(Op::br_if_false);
+                self.emit(Op::DYN_TO_BOOL);
+                let else_j = self.emit_jump(Op::BR_IF_FALSE);
                 for s in then { self.compile_stmt(s)?; }
                 let mut end_jumps = vec![];
                 if !elifs.is_empty() || else_.is_some() {
-                    end_jumps.push(self.emit_jump(Op::br));
+                    end_jumps.push(self.emit_jump(Op::BR));
                 }
                 self.patch_jump(else_j);
                 for (elif_cond, elif_body) in elifs {
                     self.compile_expr(elif_cond)?;
-                    self.emit(Op::dyn_to_bool);
-                    let skip = self.emit_jump(Op::br_if_false);
+                    self.emit(Op::DYN_TO_BOOL);
+                    let skip = self.emit_jump(Op::BR_IF_FALSE);
                     for s in elif_body { self.compile_stmt(s)?; }
-                    end_jumps.push(self.emit_jump(Op::br));
+                    end_jumps.push(self.emit_jump(Op::BR));
                     self.patch_jump(skip);
                 }
                 if let Some(else_body) = else_ {
@@ -234,8 +234,8 @@ impl Compiler {
                 let start = self.current_offset();
                 self.loops.push(LoopCtx { break_patches: vec![], continue_target: start });
                 self.compile_expr(cond)?;
-                self.emit(Op::dyn_to_bool);
-                let exit = self.emit_jump(Op::br_if_false);
+                self.emit(Op::DYN_TO_BOOL);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
                 for s in body { self.compile_stmt(s)?; }
                 self.emit_loop(start);
                 self.patch_jump(exit);
@@ -248,13 +248,13 @@ impl Compiler {
                 self.loops.push(LoopCtx { break_patches: vec![], continue_target: start });
                 if let Some(c) = cond {
                     self.compile_expr(c)?;
-                    self.emit(Op::dyn_to_bool);
+                    self.emit(Op::DYN_TO_BOOL);
                 } else {
-                    self.emit(Op::r#true);
+                    self.emit(Op::TRUE);
                 }
-                let exit = self.emit_jump(Op::br_if_false);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
                 for s in body { self.compile_stmt(s)?; }
-                if let Some(u) = update { self.compile_expr(u)?; self.emit(Op::drop); }
+                if let Some(u) = update { self.compile_expr(u)?; self.emit(Op::DROP); }
                 self.emit_loop(start);
                 self.patch_jump(exit);
                 let ctx = self.loops.pop().unwrap();
@@ -263,7 +263,7 @@ impl Compiler {
             StmtKind::ForIn { var, iter, body } => {
                 self.compile_expr(iter)?;
                 let arr_slot = self.scope_mut().define("__forin_arr");
-                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
                 let idx_slot = self.scope_mut().define("__forin_idx");
                 let line = self.line;
                 let (loop_start, exit_jump) = common::loops::emit_for_in_start(
@@ -283,13 +283,13 @@ impl Compiler {
                 self.loops.push(LoopCtx { break_patches: vec![], continue_target: start });
                 for s in body { self.compile_stmt(s)?; }
                 self.compile_expr(cond)?;
-                self.emit(Op::dyn_to_bool);
+                self.emit(Op::DYN_TO_BOOL);
                 if *until {
-                    let exit = self.emit_jump(Op::br_if_true);
+                    let exit = self.emit_jump(Op::BR_IF_TRUE);
                     self.emit_loop(start);
                     self.patch_jump(exit);
                 } else {
-                    let cont = self.emit_jump(Op::br_if_true);
+                    let cont = self.emit_jump(Op::BR_IF_TRUE);
                     self.patch_jump(cont); // TODO: this is wrong, need to loop back
                     // Actually: if cond is true, loop; if false, exit
                     // br_if_true jumps to... we need to loop
@@ -303,39 +303,39 @@ impl Compiler {
                 for case in cases {
                     let mut match_patches = Vec::new();
                     for val in &case.values {
-                        self.emit(Op::dup);
+                        self.emit(Op::DUP);
                         self.compile_expr(val)?;
-                        self.emit(Op::dyn_eq);
-                        match_patches.push(self.emit_jump(Op::br_if_true));
+                        self.emit(Op::DYN_EQ);
+                        match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
                     }
-                    let skip = self.emit_jump(Op::br);
+                    let skip = self.emit_jump(Op::BR);
                     for p in match_patches { self.patch_jump(p); }
                     for s in &case.body { self.compile_stmt(s)?; }
-                    end_patches.push(self.emit_jump(Op::br));
+                    end_patches.push(self.emit_jump(Op::BR));
                     self.patch_jump(skip);
                 }
                 if let Some(def) = default {
                     for s in def { self.compile_stmt(s)?; }
                 }
                 for p in end_patches { self.patch_jump(p); }
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             StmtKind::Try { body, catches, else_: _, finally } => {
                 let line = self.line;
                 let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current], line);
                 for s in body { self.compile_stmt(s)?; }
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
-                let skip = self.emit_jump(Op::br);
+                let skip = self.emit_jump(Op::BR);
                 common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
                 if catches.is_empty() {
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 } else {
                     for c in catches {
                         if let Some(ref var) = c.var_name {
                             let slot = self.scope_mut().define(var);
-                            self.emit_u16(Op::local_set, slot); self.emit(Op::drop);
+                            self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                         } else {
-                            self.emit(Op::drop);
+                            self.emit(Op::DROP);
                         }
                         for s in &c.body { self.compile_stmt(s)?; }
                     }
@@ -346,11 +346,11 @@ impl Compiler {
                 }
             }
             StmtKind::Return(val) => {
-                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::null); }
-                self.emit(Op::r#return);
+                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::NULL); }
+                self.emit(Op::RETURN);
             }
             StmtKind::Break(_) => {
-                let p = self.emit_jump(Op::br);
+                let p = self.emit_jump(Op::BR);
                 if let Some(ctx) = self.loops.last_mut() { ctx.break_patches.push(p); }
             }
             StmtKind::Continue => {
@@ -360,7 +360,7 @@ impl Compiler {
                 }
             }
             StmtKind::Throw(val) => {
-                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::null); }
+                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::NULL); }
                 let line = self.line;
                 common::errors::emit_throw(&mut self.chunks[self.current], line);
             }
@@ -368,14 +368,14 @@ impl Compiler {
                 if let Some(v) = val {
                     self.compile_expr(v)?;
                 } else if let Some(rs) = self.current_result_slot {
-                    self.emit_u16(Op::local_get, rs);
+                    self.emit_u16(Op::LOCAL_GET, rs);
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
-                self.emit(Op::r#return);
+                self.emit(Op::RETURN);
             }
             StmtKind::Raise(val) => {
-                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::null); }
+                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::NULL); }
                 let line = self.line;
                 common::errors::emit_throw(&mut self.chunks[self.current], line);
             }
@@ -395,7 +395,7 @@ impl Compiler {
                 // Result slot for functions with return type
                 let result_slot = if return_type.is_some() {
                     let rs = self.scope_mut().define("Result");
-                    self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
+                    self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
                     Some(rs)
                 } else { None };
 
@@ -411,8 +411,8 @@ impl Compiler {
                 self.current_result_slot = saved_rs;
 
                 if let Some(rs) = result_slot {
-                    self.emit_u16(Op::local_get, rs);
-                    self.emit(Op::r#return);
+                    self.emit_u16(Op::LOCAL_GET, rs);
+                    self.emit(Op::RETURN);
                 } else {
                     let line = self.line;
                     common::functions::emit_function_epilogue(&mut self.chunks[func_idx], line);
@@ -431,8 +431,8 @@ impl Compiler {
                     self.chunks[self.current].emit(uv.index, line);
                 }
                 let idx = self.str_const(name);
-                self.emit_u16(Op::global_set, idx);
-                self.emit(Op::drop);
+                self.emit_u16(Op::GLOBAL_SET, idx);
+                self.emit(Op::DROP);
             }
             StmtKind::ClassDecl { name, parent, members, .. } => {
                 self.defined_globals.insert(name.clone());
@@ -448,8 +448,8 @@ impl Compiler {
                             self.emit_const(Value::F64(i as f64));
                         }
                         let idx = self.str_const(&m.name);
-                        self.emit_u16(Op::global_set, idx);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::GLOBAL_SET, idx);
+                        self.emit(Op::DROP);
                         self.defined_globals.insert(m.name.clone());
                     }
                 }
@@ -466,8 +466,8 @@ impl Compiler {
                 if self.defined_globals.contains("main") || self.defined_globals.contains("Main") {
                     let main_name = if self.defined_globals.contains("Main") { "Main" } else { "main" };
                     self.emit_var_get(main_name);
-                    self.emit_u8(Op::call_ref, 0);
-                    self.emit(Op::drop);
+                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit(Op::DROP);
                 }
             }
             StmtKind::Extra { tag, exprs, .. } => {
@@ -479,16 +479,16 @@ impl Compiler {
                             if let ExprKind::Member { object, field, .. } = &exprs[0].kind {
                                 self.compile_expr(object)?;
                                 let name_key = self.str_const("__control_name");
-                                self.emit_u16(Op::struct_get, name_key);
+                                self.emit_u16(Op::STRUCT_GET, name_key);
                                 let ev = field.to_lowercase();
                                 self.emit_const(Value::String(Rc::from(ev.as_str())));
                                 self.compile_expr(&exprs[1])?;
                                 let idx = self.import("vybe:gui", "onEvent");
                                 self.emit_host_call(idx, 3);
-                                self.emit(Op::drop);
+                                self.emit(Op::DROP);
                             } else {
-                                self.emit(Op::null);
-                                self.emit(Op::drop);
+                                self.emit(Op::NULL);
+                                self.emit(Op::DROP);
                             }
                         }
                     }
@@ -569,13 +569,13 @@ impl Compiler {
                     // Constructor body — sets fields on Self, returns Self
                     for s in body { self.compile_stmt(s)?; }
                     if let Some(slot) = self.scope().resolve(&self_kw) {
-                        self.emit_u16(Op::local_get, slot);
-                        self.emit(Op::r#return);
+                        self.emit_u16(Op::LOCAL_GET, slot);
+                        self.emit(Op::RETURN);
                     }
                 } else if return_type.is_some() && result_style == ReturnStyle::ResultSlot {
                     // Result-slot function (Pascal)
                     let rs = self.scope_mut().define("Result");
-                    self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
+                    self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
                     let saved_fn = self.current_func_name.take();
                     let saved_rs = self.current_result_slot.take();
                     self.current_func_name = Some(mname.clone());
@@ -583,8 +583,8 @@ impl Compiler {
                     for s in body { self.compile_stmt(s)?; }
                     self.current_func_name = saved_fn;
                     self.current_result_slot = saved_rs;
-                    self.emit_u16(Op::local_get, rs);
-                    self.emit(Op::r#return);
+                    self.emit_u16(Op::LOCAL_GET, rs);
+                    self.emit(Op::RETURN);
                 } else {
                     // Regular method — explicit return or epilogue
                     for s in body { self.compile_stmt(s)?; }
@@ -628,26 +628,26 @@ impl Compiler {
             // Child class: call PARENT constructor first to create the object
             if let Some(parent_name) = parent {
                 let pidx = self.chunks[wrapper_idx].add_constant(Value::String(Rc::from(parent_name.as_str())));
-                self.chunks[wrapper_idx].emit_op_u16(Op::global_get, pidx, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::GLOBAL_GET, pidx, line);
                 // Pass constructor args to parent
                 for i in 0..user_arity {
-                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+                    self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_GET, (i as u16) + 1, line);
                 }
-                self.chunks[wrapper_idx].emit_op_u8(Op::call_ref, user_arity as u8, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_set, this_slot, line);
+                self.chunks[wrapper_idx].emit_op_u8(Op::CALL_REF, user_arity as u8, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_SET, this_slot, line);
             } else {
-                self.chunks[wrapper_idx].emit_op(Op::null, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_set, this_slot, line);
+                self.chunks[wrapper_idx].emit_op(Op::NULL, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_SET, this_slot, line);
             }
             // Call child's own constructor body if present
             if let Some((_, init_ci, _)) = ctor {
                 common::functions::emit_ref_func(&mut self.chunks[wrapper_idx], *init_ci, 0, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_GET, this_slot, line);
                 for i in 0..user_arity {
-                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+                    self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_GET, (i as u16) + 1, line);
                 }
-                self.chunks[wrapper_idx].emit_op_u8(Op::call_ref, (user_arity + 1) as u8, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_set, this_slot, line);
+                self.chunks[wrapper_idx].emit_op_u8(Op::CALL_REF, (user_arity + 1) as u8, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_SET, this_slot, line);
             }
             // Bind child methods (override parent's)
             for (mname, mci, is_ctor) in &method_chunks {
@@ -656,12 +656,12 @@ impl Compiler {
             }
             common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, name, line);
             // Re-stamp __type for child
-            self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
+            self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_GET, this_slot, line);
             let ts = self.chunks[wrapper_idx].add_constant(Value::String(Rc::from(name)));
             let tk = self.chunks[wrapper_idx].add_constant(Value::String(Rc::from("__type")));
-            self.chunks[wrapper_idx].emit_op_u16(Op::r#const, ts, line);
-            self.chunks[wrapper_idx].emit_op_u16(Op::struct_set, tk, line);
-            self.chunks[wrapper_idx].emit_op(Op::drop, line);
+            self.chunks[wrapper_idx].emit_op_u16(Op::CONST, ts, line);
+            self.chunks[wrapper_idx].emit_op_u16(Op::STRUCT_SET, tk, line);
+            self.chunks[wrapper_idx].emit_op(Op::DROP, line);
         } else {
             // Base class: create object, init fields, bind methods, call constructor
             common::classes::emit_new_typed_object(&mut self.chunks[wrapper_idx], this_slot, name, line);
@@ -669,14 +669,14 @@ impl Compiler {
             for (fname, init) in &field_inits {
                 if let Some(init_expr) = init {
                     // Compile initializer into wrapper chunk
-                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
+                    self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_GET, this_slot, line);
                     let saved_cur = self.current;
                     self.current = wrapper_idx;
                     self.compile_expr(init_expr)?;
                     self.current = saved_cur;
                     let fk = self.chunks[wrapper_idx].add_constant(Value::String(Rc::from(fname.as_str())));
-                    self.chunks[wrapper_idx].emit_op_u16(Op::struct_set, fk, line);
-                    self.chunks[wrapper_idx].emit_op(Op::drop, line);
+                    self.chunks[wrapper_idx].emit_op_u16(Op::STRUCT_SET, fk, line);
+                    self.chunks[wrapper_idx].emit_op(Op::DROP, line);
                 } else {
                     common::classes::emit_init_field_null(&mut self.chunks[wrapper_idx], this_slot, fname, line);
                 }
@@ -689,12 +689,12 @@ impl Compiler {
             // Call constructor body
             if let Some((_, init_ci, _)) = ctor {
                 common::functions::emit_ref_func(&mut self.chunks[wrapper_idx], *init_ci, 0, line);
-                self.chunks[wrapper_idx].emit_op_u16(Op::local_get, this_slot, line);
+                self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_GET, this_slot, line);
                 for i in 0..user_arity {
-                    self.chunks[wrapper_idx].emit_op_u16(Op::local_get, (i as u16) + 1, line);
+                    self.chunks[wrapper_idx].emit_op_u16(Op::LOCAL_GET, (i as u16) + 1, line);
                 }
-                self.chunks[wrapper_idx].emit_op_u8(Op::call_ref, (user_arity + 1) as u8, line);
-                self.chunks[wrapper_idx].emit_op(Op::drop, line);
+                self.chunks[wrapper_idx].emit_op_u8(Op::CALL_REF, (user_arity + 1) as u8, line);
+                self.chunks[wrapper_idx].emit_op(Op::DROP, line);
             }
             common::classes::emit_instanceof_chain(&mut self.chunks[wrapper_idx], this_slot, name, line);
         }
@@ -751,8 +751,8 @@ impl Compiler {
                     let matches = if self.case_sensitive { name == fn_name } else { name.eq_ignore_ascii_case(fn_name) };
                     if matches {
                         if let Some(rs) = self.current_result_slot {
-                            self.emit_u16(Op::local_set, rs);
-                            self.emit(Op::drop);
+                            self.emit_u16(Op::LOCAL_SET, rs);
+                            self.emit(Op::DROP);
                             return Ok(());
                         }
                     }
@@ -762,13 +762,13 @@ impl Compiler {
                     let self_kw = self.profile.self_keyword.clone();
                     if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
                         let tmp = self.scope_mut().define("__field_tmp");
-                        self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
-                        self.emit_u16(Op::local_get, slot);
-                        self.emit_u16(Op::local_get, tmp);
+                        self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, slot);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
                         let field_name = if self.case_sensitive { name.clone() } else { name.to_lowercase() };
                         let idx = self.str_const(&field_name);
-                        self.emit_u16(Op::struct_set, idx);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::STRUCT_SET, idx);
+                        self.emit(Op::DROP);
                         return Ok(());
                     }
                 }
@@ -776,32 +776,32 @@ impl Compiler {
             }
             ExprKind::Member { object, field, .. } => {
                 let tmp = self.scope_mut().define("__tmp");
-                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(object)?;
-                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 let field_name = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
                 let idx = self.str_const(&field_name);
-                self.emit_u16(Op::struct_set, idx);
-                self.emit(Op::drop);
+                self.emit_u16(Op::STRUCT_SET, idx);
+                self.emit(Op::DROP);
             }
             ExprKind::Index { object, index } => {
                 let tmp = self.scope_mut().define("__tmp");
-                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(object)?;
                 self.compile_expr(index)?;
-                self.emit_u16(Op::local_get, tmp);
-                self.emit(Op::array_set);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_GET, tmp);
+                self.emit(Op::ARRAY_SET);
+                self.emit(Op::DROP);
             }
             // VB: arr(idx) = val — Call used as index because () is both call and index
             ExprKind::Call { callee, args } if args.len() == 1 => {
                 let tmp = self.scope_mut().define("__tmp");
-                self.emit_u16(Op::local_set, tmp); self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(callee)?;
                 self.compile_expr(&args[0])?;
-                self.emit_u16(Op::local_get, tmp);
-                self.emit(Op::array_set);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_GET, tmp);
+                self.emit(Op::ARRAY_SET);
+                self.emit(Op::DROP);
             }
             _ => {}
         }
@@ -818,8 +818,8 @@ impl Compiler {
                     Literal::Float(n) => self.emit_const(Value::F64(*n)),
                     Literal::Str(s) => self.emit_const(Value::String(Rc::from(s.as_str()))),
                     Literal::Char(c) => self.emit_const(Value::String(Rc::from(c.to_string().as_str()))),
-                    Literal::Bool(b) => if *b { self.emit(Op::r#true) } else { self.emit(Op::r#false) },
-                    Literal::Null => self.emit(Op::null),
+                    Literal::Bool(b) => if *b { self.emit(Op::TRUE) } else { self.emit(Op::FALSE) },
+                    Literal::Null => self.emit(Op::NULL),
                 }
             }
             ExprKind::Ident(name) => {
@@ -831,10 +831,10 @@ impl Compiler {
                         if self.is_class_field(name) {
                             let self_kw = self.profile.self_keyword.clone();
                             if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
-                                self.emit_u16(Op::local_get, slot);
+                                self.emit_u16(Op::LOCAL_GET, slot);
                                 let field_name = if self.case_sensitive { name.clone() } else { name.to_lowercase() };
                                 let idx = self.str_const(&field_name);
-                                self.emit_u16(Op::struct_get, idx);
+                                self.emit_u16(Op::STRUCT_GET, idx);
                             } else {
                                 self.emit_var_get(name);
                             }
@@ -852,10 +852,10 @@ impl Compiler {
                     .or_else(|| self.scope().resolve("self"))
                     .or_else(|| self.scope().resolve("this"))
                 {
-                    self.emit_u16(Op::local_get, slot);
-                } else { self.emit(Op::null); }
+                    self.emit_u16(Op::LOCAL_GET, slot);
+                } else { self.emit(Op::NULL); }
             }
-            ExprKind::Super => { self.emit(Op::null); /* TODO */ }
+            ExprKind::Super => { self.emit(Op::NULL); /* TODO */ }
             ExprKind::Binary { op, left, right } => {
                 // Short-circuit for And/Or
                 if *op == BinOp::And {
@@ -882,10 +882,10 @@ impl Compiler {
                 self.compile_expr(expr)?;
                 match op {
                     UnaryOp::Neg => { let l = self.line; common::math::emit_neg(self.chunk(), l); }
-                    UnaryOp::Not => self.emit(Op::dyn_not),
+                    UnaryOp::Not => self.emit(Op::DYN_NOT),
                     UnaryOp::BitNot => { let l = self.line; common::expressions::emit_i32_not(self.chunk(), l); }
                     UnaryOp::Pos => {} // no-op
-                    UnaryOp::Deref => { let idx = self.str_const("__value"); self.emit_u16(Op::struct_get, idx); }
+                    UnaryOp::Deref => { let idx = self.str_const("__value"); self.emit_u16(Op::STRUCT_GET, idx); }
                     UnaryOp::AddrOf => {} // no-op in our VM
                     UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec => {
                         // TODO: proper inc/dec
@@ -895,10 +895,10 @@ impl Compiler {
             }
             ExprKind::Ternary { cond, then, else_ } => {
                 self.compile_expr(cond)?;
-                self.emit(Op::dyn_to_bool);
-                let else_j = self.emit_jump(Op::br_if_false);
+                self.emit(Op::DYN_TO_BOOL);
+                let else_j = self.emit_jump(Op::BR_IF_FALSE);
                 self.compile_expr(then)?;
-                let end_j = self.emit_jump(Op::br);
+                let end_j = self.emit_jump(Op::BR);
                 self.patch_jump(else_j);
                 self.compile_expr(else_)?;
                 self.patch_jump(end_j);
@@ -922,7 +922,7 @@ impl Compiler {
                         if is_ctor && self.defined_globals.contains(class_name.as_str()) {
                             self.emit_var_get(class_name);
                             for a in args { self.compile_expr(a)?; }
-                            self.emit_u8(Op::call_ref, args.len() as u8);
+                            self.emit_u8(Op::CALL_REF, args.len() as u8);
                             return Ok(());
                         }
                     }
@@ -944,7 +944,7 @@ impl Compiler {
                         // Skip known no-op methods (WinForms layout, etc.)
                         if let Some(last) = lower_parts.last() {
                             if common::dotnet::is_noop_method(last) {
-                                self.emit(Op::null);
+                                self.emit(Op::NULL);
                                 return Ok(());
                             }
                         }
@@ -963,13 +963,13 @@ impl Compiler {
                                 return Ok(());
                             }
                             let root_idx = self.str_const(&lower_parts[0]);
-                            self.emit_u16(Op::global_get, root_idx);
+                            self.emit_u16(Op::GLOBAL_GET, root_idx);
                             for part in &lower_parts[1..] {
                                 let idx = self.str_const(part);
-                                self.emit_u16(Op::struct_get, idx);
+                                self.emit_u16(Op::STRUCT_GET, idx);
                             }
                             for a in args { self.compile_expr(a)?; }
-                            self.emit_u8(Op::call_ref, args.len() as u8);
+                            self.emit_u8(Op::CALL_REF, args.len() as u8);
                             return Ok(());
                         }
                     }
@@ -991,16 +991,16 @@ impl Compiler {
                     self.compile_expr(object)?;
                     let field_name = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
                     let prop = self.str_const(&field_name);
-                    self.emit(Op::dup);
-                    self.emit_u16(Op::struct_get, prop);
+                    self.emit(Op::DUP);
+                    self.emit_u16(Op::STRUCT_GET, prop);
                     let fn_tmp = self.scope_mut().define("__fn");
-                    self.emit_u16(Op::local_set, fn_tmp); self.emit(Op::drop);
+                    self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
                     let obj_tmp = self.scope_mut().define("__obj");
-                    self.emit_u16(Op::local_set, obj_tmp); self.emit(Op::drop);
-                    self.emit_u16(Op::local_get, fn_tmp);
-                    self.emit_u16(Op::local_get, obj_tmp);
+                    self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     for a in args { self.compile_expr(a)?; }
-                    self.emit_u8(Op::call_ref, (args.len() + 1) as u8);
+                    self.emit_u8(Op::CALL_REF, (args.len() + 1) as u8);
                     return Ok(());
                 }
                 // Constructor call: ClassName(args) or ClassName.Create(args)
@@ -1017,18 +1017,18 @@ impl Compiler {
                         // VB array access: arr(idx)
                         self.emit_var_get(name);
                         self.compile_expr(&args[0])?;
-                        self.emit(Op::array_get);
+                        self.emit(Op::ARRAY_GET);
                     } else {
                         // Function call (including forward references resolved at runtime)
                         self.emit_var_get(name);
                         for a in args { self.compile_expr(a)?; }
-                        self.emit_u8(Op::call_ref, args.len() as u8);
+                        self.emit_u8(Op::CALL_REF, args.len() as u8);
                     }
                     return Ok(());
                 }
                 self.compile_expr(callee)?;
                 for a in args { self.compile_expr(a)?; }
-                self.emit_u8(Op::call_ref, args.len() as u8);
+                self.emit_u8(Op::CALL_REF, args.len() as u8);
             }
             ExprKind::Member { object, field, .. } => {
                 // ClassName.Create (no parens) → constructor call with 0 args
@@ -1037,19 +1037,19 @@ impl Compiler {
                     let is_ctor = if self.case_sensitive { field == ctor_name } else { field.eq_ignore_ascii_case(ctor_name) };
                     if is_ctor && self.defined_globals.contains(class_name.as_str()) {
                         self.emit_var_get(class_name);
-                        self.emit_u8(Op::call_ref, 0);
+                        self.emit_u8(Op::CALL_REF, 0);
                         return Ok(());
                     }
                 }
                 self.compile_expr(object)?;
                 let field_name = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
                 let idx = self.str_const(&field_name);
-                self.emit_u16(Op::struct_get, idx);
+                self.emit_u16(Op::STRUCT_GET, idx);
             }
             ExprKind::Index { object, index } => {
                 self.compile_expr(object)?;
                 self.compile_expr(index)?;
-                self.emit(Op::array_get);
+                self.emit(Op::ARRAY_GET);
             }
             ExprKind::New { class, args } => {
                 // Check for known .NET types (List, Dictionary, Point, etc.)
@@ -1070,11 +1070,11 @@ impl Compiler {
                 // User-defined class constructor
                 self.compile_expr(class)?;
                 for a in args { self.compile_expr(a)?; }
-                self.emit_u8(Op::call_ref, args.len() as u8);
+                self.emit_u8(Op::CALL_REF, args.len() as u8);
             }
             ExprKind::Assign { target, value } => {
                 self.compile_expr(value)?;
-                self.emit(Op::dup);
+                self.emit(Op::DUP);
                 self.compile_assign_target(target)?;
             }
             ExprKind::Lambda { params, body, .. } => {
@@ -1090,7 +1090,7 @@ impl Compiler {
                 // For Result-slot languages, add Result slot
                 let result_slot = if self.profile.function_return == ReturnStyle::ResultSlot {
                     let rs = self.scope_mut().define("Result");
-                    self.emit(Op::null); self.emit_u16(Op::local_set, rs); self.emit(Op::drop);
+                    self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
                     let saved_fn = self.current_func_name.take();
                     let saved_rs = self.current_result_slot.take();
                     self.current_func_name = Some("<lambda>".into());
@@ -1101,8 +1101,8 @@ impl Compiler {
                 for s in body { self.compile_stmt(s)?; }
 
                 if let Some((rs, saved_fn, saved_rs)) = result_slot {
-                    self.emit_u16(Op::local_get, rs);
-                    self.emit(Op::r#return);
+                    self.emit_u16(Op::LOCAL_GET, rs);
+                    self.emit(Op::RETURN);
                     self.current_func_name = saved_fn;
                     self.current_result_slot = saved_rs;
                 } else {
@@ -1124,23 +1124,23 @@ impl Compiler {
             ExprKind::Array(items) => {
                 for item in items { self.compile_expr(item)?; }
                 let line = self.line;
-                self.chunks[self.current].emit_op_u16(Op::array_new, items.len() as u16, line);
+                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW, items.len() as u16, line);
             }
             ExprKind::Object(pairs) => {
                 let line = self.line;
                 common::dict::emit_new(&mut self.chunks[self.current], line);
                 for (key, val) in pairs {
-                    self.emit(Op::dup);
+                    self.emit(Op::DUP);
                     self.compile_expr(val)?;
                     // Key should be a string
                     if let ExprKind::Lit(Literal::Str(k)) = &key.kind {
                         let idx = self.str_const(k);
-                        self.emit_u16(Op::struct_set, idx);
+                        self.emit_u16(Op::STRUCT_SET, idx);
                     } else {
                         self.compile_expr(key)?;
-                        self.emit(Op::array_set);
+                        self.emit(Op::ARRAY_SET);
                     }
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
             }
             ExprKind::Inherited { method, args } => {
@@ -1149,44 +1149,44 @@ impl Compiler {
                     let parent = self.pending_classes.get(class_name.as_str()).and_then(|c| c.parent.clone());
                     if let Some(parent_name) = parent {
                         let parent_idx = self.str_const(&parent_name);
-                        self.emit_u16(Op::global_get, parent_idx);
+                        self.emit_u16(Op::GLOBAL_GET, parent_idx);
                         for a in args { self.compile_expr(a)?; }
-                        self.emit_u8(Op::call_ref, args.len() as u8);
+                        self.emit_u8(Op::CALL_REF, args.len() as u8);
                         // Store result in Self slot
                         let self_kw = self.profile.self_keyword.clone();
                         if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
-                            self.emit(Op::dup);
-                            self.emit_u16(Op::local_set, slot);
-                            self.emit(Op::drop);
+                            self.emit(Op::DUP);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                            self.emit(Op::DROP);
                         }
                     } else {
-                        self.emit(Op::null);
+                        self.emit(Op::NULL);
                     }
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
             }
             ExprKind::IsType { expr, type_name } => {
                 self.compile_expr(expr)?;
                 let key = self.str_const("__type");
-                self.emit_u16(Op::struct_get, key);
+                self.emit_u16(Op::STRUCT_GET, key);
                 self.emit_const(Value::String(Rc::from(type_name.as_str())));
-                self.emit(Op::dyn_eq);
+                self.emit(Op::DYN_EQ);
             }
             ExprKind::AsCast { expr, .. } => {
                 self.compile_expr(expr)?;
             }
             ExprKind::Spread(inner) => {
                 self.compile_expr(inner)?;
-                self.emit(Op::spread);
+                self.emit(Op::SPREAD);
             }
             ExprKind::Await(inner) => {
                 self.compile_expr(inner)?;
                 // TODO: async/await
             }
             ExprKind::Yield(val) => {
-                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::null); }
-                self.emit_u16(Op::suspend, 0);
+                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::NULL); }
+                self.emit_u16(Op::SUSPEND, 0);
             }
             ExprKind::Extra { tag, exprs } => {
                 match tag.as_str() {
@@ -1195,10 +1195,10 @@ impl Compiler {
                         if let Some(size_expr) = exprs.first() {
                             self.compile_expr(size_expr)?;
                             self.emit_const(Value::F64(1.0));
-                            self.emit(Op::dyn_add);
-                            self.emit(Op::array_new_default);
+                            self.emit(Op::DYN_ADD);
+                            self.emit(Op::ARRAY_NEW_DEFAULT);
                         } else {
-                            self.emit(Op::null);
+                            self.emit(Op::NULL);
                         }
                     }
                     "slice" => {
@@ -1207,11 +1207,11 @@ impl Compiler {
                         let idx = self.import("vybe:array", "sliceStep");
                         self.emit_host_call(idx, exprs.len() as u8);
                     }
-                    _ => self.emit(Op::null),
+                    _ => self.emit(Op::NULL),
                 }
             }
             _ => {
-                self.emit(Op::null);
+                self.emit(Op::NULL);
             }
         }
         Ok(())
@@ -1219,31 +1219,31 @@ impl Compiler {
 
     fn compile_binop(&mut self, op: &BinOp) {
         match op {
-            BinOp::Add => self.emit(Op::dyn_add),
-            BinOp::Sub => self.emit(Op::f64_sub),
-            BinOp::Mul => self.emit(Op::f64_mul),
-            BinOp::Div => self.emit(Op::f64_div),
-            BinOp::IDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
+            BinOp::Add => self.emit(Op::DYN_ADD),
+            BinOp::Sub => self.emit(Op::F64_SUB),
+            BinOp::Mul => self.emit(Op::F64_MUL),
+            BinOp::Div => self.emit(Op::F64_DIV),
+            BinOp::IDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
             BinOp::Mod => { let idx = self.import("vybe:math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); }
             BinOp::Pow => { let i = self.import("vybe:math", "pow"); self.emit_host_call(i, 2); }
-            BinOp::Eq => self.emit(Op::dyn_eq),
-            BinOp::NotEq => self.emit(Op::dyn_ne),
-            BinOp::Lt => self.emit(Op::dyn_lt),
-            BinOp::Gt => self.emit(Op::dyn_gt),
-            BinOp::Le => self.emit(Op::dyn_le),
-            BinOp::Ge => self.emit(Op::dyn_ge),
+            BinOp::Eq => self.emit(Op::DYN_EQ),
+            BinOp::NotEq => self.emit(Op::DYN_NE),
+            BinOp::Lt => self.emit(Op::DYN_LT),
+            BinOp::Gt => self.emit(Op::DYN_GT),
+            BinOp::Le => self.emit(Op::DYN_LE),
+            BinOp::Ge => self.emit(Op::DYN_GE),
             BinOp::And | BinOp::Or => unreachable!(), // handled with short-circuit
-            BinOp::Xor => self.emit(Op::i32_xor),
-            BinOp::BitAnd => self.emit(Op::i32_and),
-            BinOp::BitOr => self.emit(Op::i32_or),
-            BinOp::BitXor => self.emit(Op::i32_xor),
-            BinOp::Shl => self.emit(Op::i32_shl),
-            BinOp::Shr => self.emit(Op::i32_shr_s),
+            BinOp::Xor => self.emit(Op::I32_XOR),
+            BinOp::BitAnd => self.emit(Op::I32_AND),
+            BinOp::BitOr => self.emit(Op::I32_OR),
+            BinOp::BitXor => self.emit(Op::I32_XOR),
+            BinOp::Shl => self.emit(Op::I32_SHL),
+            BinOp::Shr => self.emit(Op::I32_SHR_S),
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In | BinOp::NotIn => {
                 let idx = self.import("vybe:collections", "setHas");
                 self.emit_host_call(idx, 2);
-                if *op == BinOp::NotIn { self.emit(Op::dyn_not); }
+                if *op == BinOp::NotIn { self.emit(Op::DYN_NOT); }
             }
             BinOp::NullCoalesce => { /* TODO */ }
         }
@@ -1289,16 +1289,16 @@ impl Compiler {
                         self.emit_var_get(&var);
                         if args.len() > 1 { self.compile_expr(&args[1])?; } else { self.emit_const(Value::F64(1.0)); }
                         match op.as_str() {
-                            "add" => self.emit(Op::dyn_add),
-                            "sub" => self.emit(Op::f64_sub),
-                            _ => self.emit(Op::dyn_add),
+                            "add" => self.emit(Op::DYN_ADD),
+                            "sub" => self.emit(Op::F64_SUB),
+                            _ => self.emit(Op::DYN_ADD),
                         }
                         self.emit_var_set(&var);
                     }
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
                 BuiltinEmit::Noop => {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
             }
             return Ok(true);
@@ -1319,9 +1319,9 @@ impl Compiler {
             "ceil" => { self.compile_expr(&args[0])?; common::math::emit_ceil(self.chunk(), line); }
             "min" => { self.compile_expr(&args[0])?; self.compile_expr(&args[1])?; common::math::emit_min(self.chunk(), line); }
             "max" => { self.compile_expr(&args[0])?; self.compile_expr(&args[1])?; common::math::emit_max(self.chunk(), line); }
-            "sqr" => { self.compile_expr(&args[0])?; self.emit(Op::dup); self.emit(Op::f64_mul); }
-            "succ" => { self.compile_expr(&args[0])?; self.emit_const(Value::F64(1.0)); self.emit(Op::dyn_add); }
-            "pred" => { self.compile_expr(&args[0])?; self.emit_const(Value::F64(1.0)); self.emit(Op::f64_sub); }
+            "sqr" => { self.compile_expr(&args[0])?; self.emit(Op::DUP); self.emit(Op::F64_MUL); }
+            "succ" => { self.compile_expr(&args[0])?; self.emit_const(Value::F64(1.0)); self.emit(Op::DYN_ADD); }
+            "pred" => { self.compile_expr(&args[0])?; self.emit_const(Value::F64(1.0)); self.emit(Op::F64_SUB); }
             "to_upper" => { self.compile_expr(&args[0])?; common::strings::emit_to_upper(self.chunk(), line); }
             "to_lower" => { self.compile_expr(&args[0])?; common::strings::emit_to_lower(self.chunk(), line); }
             "trim" => { self.compile_expr(&args[0])?; common::strings::emit_trim(self.chunk(), line); }
@@ -1333,7 +1333,7 @@ impl Compiler {
                 self.compile_expr(&args[0])?;
                 common::strings::emit_length(self.chunk(), line);
                 self.emit_const(Value::F64(1.0));
-                self.emit(Op::f64_sub);
+                self.emit(Op::F64_SUB);
             }
             "low" => { self.emit_const(Value::F64(0.0)); }
             "setlength" => {
@@ -1344,7 +1344,7 @@ impl Compiler {
                     self.emit_host_call(idx, 1);
                     self.emit_var_set(&var);
                 }
-                self.emit(Op::null);
+                self.emit(Op::NULL);
             }
             "trim_start" => { self.compile_expr(&args[0])?; common::strings::emit_trim_start(self.chunk(), line); }
             "trim_end" => { self.compile_expr(&args[0])?; common::strings::emit_trim_end(self.chunk(), line); }
@@ -1354,23 +1354,23 @@ impl Compiler {
             "cos" => { self.compile_expr(&args[0])?; common::math::emit_cos(self.chunk(), line); }
             "tan" => { self.compile_expr(&args[0])?; common::math::emit_tan(self.chunk(), line); }
             "exp" => { self.compile_expr(&args[0])?; common::math::emit_exp(self.chunk(), line); }
-            "is_null" => { self.compile_expr(&args[0])?; self.emit(Op::ref_is_null); }
+            "is_null" => { self.compile_expr(&args[0])?; self.emit(Op::REF_IS_NULL); }
             "space" => {
                 // Space(n) → " " repeated n times
                 self.emit_const(Value::String(Rc::from(" ")));
                 self.compile_expr(&args[0])?;
                 common::strings::emit_repeat(self.chunk(), line);
             }
-            "assigned" => { self.compile_expr(&args[0])?; self.emit(Op::ref_is_null); self.emit(Op::dyn_not); }
+            "assigned" => { self.compile_expr(&args[0])?; self.emit(Op::REF_IS_NULL); self.emit(Op::DYN_NOT); }
             "freeandnil" => {
                 if let Some(ExprKind::Ident(var)) = args.first().map(|a| &a.kind) {
                     let var = var.clone();
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                     self.emit_var_set(&var);
                 }
-                self.emit(Op::null);
+                self.emit(Op::NULL);
             }
-            _ => { self.emit(Op::null); }
+            _ => { self.emit(Op::NULL); }
         }
         Ok(())
     }

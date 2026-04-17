@@ -192,11 +192,11 @@ fn test_ref_test_opcode_with_type_string() {
     // Push a Button object (using __type property)
     let obj = make_typed_object("Button");
     let const_idx = chunk.add_constant(obj);
-    chunk.emit_op_u16(Op::r#const, const_idx, 0);
+    chunk.emit_op_u16(Op::CONST, const_idx, 0);
     // ref_test with "control" type name
     let type_name_idx = chunk.add_constant(Value::String(Rc::from("control")));
-    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
-    chunk.emit_op(Op::r#return, 0);
+    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(true)), "Button should be a subtype of Control, got {:?}", result);
@@ -212,10 +212,10 @@ fn test_ref_test_opcode_with_type_id() {
     let mut chunk = Chunk::new("<test>");
     let obj = make_typed_object_with_id(button_id, "Button");
     let const_idx = chunk.add_constant(obj);
-    chunk.emit_op_u16(Op::r#const, const_idx, 0);
+    chunk.emit_op_u16(Op::CONST, const_idx, 0);
     let type_name_idx = chunk.add_constant(Value::String(Rc::from("control")));
-    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
-    chunk.emit_op(Op::r#return, 0);
+    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(true)), "Button (type_id) should be a subtype of Control, got {:?}", result);
@@ -232,10 +232,10 @@ fn test_ref_test_opcode_negative() {
     let mut chunk = Chunk::new("<test>");
     let obj = make_typed_object("List");
     let const_idx = chunk.add_constant(obj);
-    chunk.emit_op_u16(Op::r#const, const_idx, 0);
+    chunk.emit_op_u16(Op::CONST, const_idx, 0);
     let type_name_idx = chunk.add_constant(Value::String(Rc::from("button")));
-    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
-    chunk.emit_op(Op::r#return, 0);
+    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(false)), "List should NOT be a subtype of Button, got {:?}", result);
@@ -257,10 +257,10 @@ fn test_ref_test_with_js_types_array() {
     obj.properties.insert("__type".into(), Value::String(Rc::from("Dog")));
 
     let const_idx = chunk.add_constant(Value::Object(Rc::new(RefCell::new(obj))));
-    chunk.emit_op_u16(Op::r#const, const_idx, 0);
+    chunk.emit_op_u16(Op::CONST, const_idx, 0);
     let type_name_idx = chunk.add_constant(Value::String(Rc::from("animal")));
-    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
-    chunk.emit_op(Op::r#return, 0);
+    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(true)), "Dog (via __types) should match Animal, got {:?}", result);
@@ -273,10 +273,10 @@ fn test_ref_test_primitives() {
     // String is "string"
     let mut chunk = Chunk::new("<test>");
     let str_idx = chunk.add_constant(Value::String(Rc::from("hello")));
-    chunk.emit_op_u16(Op::r#const, str_idx, 0);
+    chunk.emit_op_u16(Op::CONST, str_idx, 0);
     let type_name_idx = chunk.add_constant(Value::String(Rc::from("string")));
-    chunk.emit_op_u16(Op::ref_test, type_name_idx, 0);
-    chunk.emit_op(Op::r#return, 0);
+    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(true)), "String should match 'string', got {:?}", result);

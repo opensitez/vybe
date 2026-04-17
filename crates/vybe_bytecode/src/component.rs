@@ -304,42 +304,47 @@ impl Linker {
                     let code = &mut all_chunks[merged_ci].code;
                     let mut ip = 0;
                     while ip < code.len() {
-                        if let Some(op) = crate::opcode::Op::from_byte(code[ip]) {
-                            match op {
-                                crate::opcode::Op::call_import => {
-                                    // [op, u16 import_idx, u8 argc]
-                                    if ip + 2 < code.len() {
-                                        let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
-                                        if (old_idx as usize) < remap.len() {
-                                            let new_idx = remap[old_idx as usize];
-                                            code[ip + 1] = (new_idx >> 8) as u8;
-                                            code[ip + 2] = (new_idx & 0xff) as u8;
-                                        }
+                        if ip + 1 >= code.len() { break; }
+                        if let Some(op) = crate::opcode::Op::decode(code[ip], code[ip + 1]) {
+                            if op == crate::opcode::Op::CALL_IMPORT {
+                                // Remap import index: operand u16 is at ip+2..ip+3
+                                if ip + 3 < code.len() {
+                                    let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
+                                    if (old_idx as usize) < remap.len() {
+                                        let new_idx = remap[old_idx as usize];
+                                        code[ip + 2] = (new_idx >> 8) as u8;
+                                        code[ip + 3] = (new_idx & 0xff) as u8;
                                     }
-                                    ip += 4; // op + u16 + u8
                                 }
-                                // Skip other opcodes by their size
-                                crate::opcode::Op::ref_func => {
-                                    ip += 3; // op + u16
+                            }
+                            // Skip using operand_format
+                            use crate::opcode::OperandFormat;
+                            let fmt = op.operand_format();
+                            ip += 2; // 2-byte opcode
+                            match fmt {
+                                OperandFormat::Closure => {
+                                    ip += 2 + 1; // u16 + u8 uv_count
+                                    if ip > 0 && ip - 1 < code.len() {
+                                        let uv = code[ip - 1] as usize;
+                                        ip += uv * 2;
+                                    }
+                                }
+                                OperandFormat::BrTable => {
                                     if ip < code.len() {
-                                        let uv = code[ip] as usize;
-                                        ip += 1 + uv * 2;
+                                        let count = code[ip] as usize;
+                                        ip += 2 + count;
                                     }
                                 }
-                                crate::opcode::Op::r#const
-                                | crate::opcode::Op::local_get | crate::opcode::Op::local_set
-                                | crate::opcode::Op::global_get | crate::opcode::Op::global_set
-                                | crate::opcode::Op::struct_get | crate::opcode::Op::struct_set
-                                | crate::opcode::Op::array_new
-                                | crate::opcode::Op::br | crate::opcode::Op::br_if_true
-                                | crate::opcode::Op::br_if_false
-                                | crate::opcode::Op::r#loop => { ip += 3; }
-                                crate::opcode::Op::call | crate::opcode::Op::call_ref
-                                | crate::opcode::Op::upvalue_get | crate::opcode::Op::upvalue_set => { ip += 2; }
-                                _ => { ip += 1; }
+                                OperandFormat::TryTable => {
+                                    if ip < code.len() {
+                                        let count = code[ip] as usize;
+                                        ip += 1 + count * 3;
+                                    }
+                                }
+                                _ => { ip += fmt.fixed_size(); }
                             }
                         } else {
-                            ip += 1;
+                            ip += 2;
                         }
                     }
                 }

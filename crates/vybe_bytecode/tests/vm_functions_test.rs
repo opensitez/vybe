@@ -84,21 +84,21 @@ fn call_fewer_args_than_arity_padded_with_null() {
     // func(a, b, c) => if b == Null then return a else return b
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0); // 0 upvalues
     let c5 = main.add_constant(Value::I32(5));
-    main.emit_op_u16(Op::r#const, c5, 0);
+    main.emit_op_u16(Op::CONST, c5, 0);
     // call with 1 arg, but function arity is 3
-    main.emit_op_u8(Op::call, 1, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u8(Op::CALL, 1, 0);
+    main.emit_op(Op::HALT, 0);
 
     // func(a, b, c): returns b (which should be Null since not passed)
     let mut func = Chunk::new("check_padding");
     func.arity = 3;
     func.local_count = 4; // func + 3 params
     // local 1 = a, local 2 = b (should be Null), local 3 = c (should be Null)
-    func.emit_op_u16(Op::local_get, 2, 0); // b
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 2, 0); // b
+    func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);
     assert_null(&result);
@@ -114,22 +114,22 @@ fn call_more_args_than_arity() {
     // func(a) => return a
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     let c10 = main.add_constant(Value::I32(10));
     let c20 = main.add_constant(Value::I32(20));
     let c30 = main.add_constant(Value::I32(30));
-    main.emit_op_u16(Op::r#const, c10, 0);
-    main.emit_op_u16(Op::r#const, c20, 0);
-    main.emit_op_u16(Op::r#const, c30, 0);
-    main.emit_op_u8(Op::call, 3, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::CONST, c10, 0);
+    main.emit_op_u16(Op::CONST, c20, 0);
+    main.emit_op_u16(Op::CONST, c30, 0);
+    main.emit_op_u8(Op::CALL, 3, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut func = Chunk::new("take_one");
     func.arity = 1;
     func.local_count = 2;
-    func.emit_op_u16(Op::local_get, 1, 0); // a = 10
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 1, 0); // a = 10
+    func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);
     assert_i32(&result, 10);
@@ -144,22 +144,22 @@ fn call_exact_arity() {
     // func(a, b) => a + b, called with exactly 2 args
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     let c3 = main.add_constant(Value::I32(3));
     let c4 = main.add_constant(Value::I32(4));
-    main.emit_op_u16(Op::r#const, c3, 0);
-    main.emit_op_u16(Op::r#const, c4, 0);
-    main.emit_op_u8(Op::call, 2, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::CONST, c3, 0);
+    main.emit_op_u16(Op::CONST, c4, 0);
+    main.emit_op_u8(Op::CALL, 2, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut func = Chunk::new("add");
     func.arity = 2;
     func.local_count = 3;
-    func.emit_op_u16(Op::local_get, 1, 0);
-    func.emit_op_u16(Op::local_get, 2, 0);
-    func.emit_op(Op::i32_add, 0);
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    func.emit_op(Op::I32_ADD, 0);
+    func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);
     assert_i32(&result, 7);
@@ -175,48 +175,48 @@ fn nested_function_calls_a_b_c() {
     // A(2) => B(6) => C(7) => 70
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     let c2 = main.add_constant(Value::I32(2));
-    main.emit_op_u16(Op::r#const, c2, 0);
-    main.emit_op_u8(Op::call, 1, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::CONST, c2, 0);
+    main.emit_op_u8(Op::CALL, 1, 0);
+    main.emit_op(Op::HALT, 0);
 
     // chunk 1: A(x) => B(x * 3)
     let mut a = Chunk::new("A");
     a.arity = 1;
     a.local_count = 2;
-    a.emit_op_u16(Op::ref_func, 2, 0);
+    a.emit_op_u16(Op::REF_FUNC, 2, 0);
     a.emit(0, 0);
-    a.emit_op_u16(Op::local_get, 1, 0);
+    a.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let c3 = a.add_constant(Value::I32(3));
-    a.emit_op_u16(Op::r#const, c3, 0);
-    a.emit_op(Op::i32_mul, 0);
-    a.emit_op_u8(Op::call, 1, 0);
-    a.emit_op(Op::r#return, 0);
+    a.emit_op_u16(Op::CONST, c3, 0);
+    a.emit_op(Op::I32_MUL, 0);
+    a.emit_op_u8(Op::CALL, 1, 0);
+    a.emit_op(Op::RETURN, 0);
 
     // chunk 2: B(x) => C(x + 1)
     let mut b = Chunk::new("B");
     b.arity = 1;
     b.local_count = 2;
-    b.emit_op_u16(Op::ref_func, 3, 0);
+    b.emit_op_u16(Op::REF_FUNC, 3, 0);
     b.emit(0, 0);
-    b.emit_op_u16(Op::local_get, 1, 0);
+    b.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let c1 = b.add_constant(Value::I32(1));
-    b.emit_op_u16(Op::r#const, c1, 0);
-    b.emit_op(Op::i32_add, 0);
-    b.emit_op_u8(Op::call, 1, 0);
-    b.emit_op(Op::r#return, 0);
+    b.emit_op_u16(Op::CONST, c1, 0);
+    b.emit_op(Op::I32_ADD, 0);
+    b.emit_op_u8(Op::CALL, 1, 0);
+    b.emit_op(Op::RETURN, 0);
 
     // chunk 3: C(x) => x * 10
     let mut c = Chunk::new("C");
     c.arity = 1;
     c.local_count = 2;
-    c.emit_op_u16(Op::local_get, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let c10 = c.add_constant(Value::I32(10));
-    c.emit_op_u16(Op::r#const, c10, 0);
-    c.emit_op(Op::i32_mul, 0);
-    c.emit_op(Op::r#return, 0);
+    c.emit_op_u16(Op::CONST, c10, 0);
+    c.emit_op(Op::I32_MUL, 0);
+    c.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, a, b, c]);
     assert_i32(&result, 70);
@@ -232,12 +232,12 @@ fn recursive_fibonacci() {
     // fib(10) = 55
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     let c10 = main.add_constant(Value::I32(10));
-    main.emit_op_u16(Op::r#const, c10, 0);
-    main.emit_op_u8(Op::call, 1, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::CONST, c10, 0);
+    main.emit_op_u8(Op::CALL, 1, 0);
+    main.emit_op(Op::HALT, 0);
 
     // chunk 1: fib(n)
     let mut fib = Chunk::new("fib");
@@ -248,44 +248,44 @@ fn recursive_fibonacci() {
     let c2 = fib.add_constant(Value::I32(2));
 
     // if n <= 0, return 0
-    fib.emit_op_u16(Op::local_get, 1, 0); // n
-    fib.emit_op_u16(Op::r#const, c0, 0);  // 0
-    fib.emit_op(Op::dyn_le, 0);
-    let jump_base0 = fib.emit_jump(Op::br_if_true, 0);
+    fib.emit_op_u16(Op::LOCAL_GET, 1, 0); // n
+    fib.emit_op_u16(Op::CONST, c0, 0);  // 0
+    fib.emit_op(Op::DYN_LE, 0);
+    let jump_base0 = fib.emit_jump(Op::BR_IF_TRUE, 0);
 
     // if n == 1, return 1
-    fib.emit_op_u16(Op::local_get, 1, 0); // n
-    fib.emit_op_u16(Op::r#const, c1, 0);  // 1
-    fib.emit_op(Op::dyn_eq, 0);
-    let jump_base1 = fib.emit_jump(Op::br_if_true, 0);
+    fib.emit_op_u16(Op::LOCAL_GET, 1, 0); // n
+    fib.emit_op_u16(Op::CONST, c1, 0);  // 1
+    fib.emit_op(Op::DYN_EQ, 0);
+    let jump_base1 = fib.emit_jump(Op::BR_IF_TRUE, 0);
 
     // recursive: fib(n-1) + fib(n-2)
-    fib.emit_op_u16(Op::ref_func, 1, 0);
+    fib.emit_op_u16(Op::REF_FUNC, 1, 0);
     fib.emit(0, 0);
-    fib.emit_op_u16(Op::local_get, 1, 0);
-    fib.emit_op_u16(Op::r#const, c1, 0);
-    fib.emit_op(Op::i32_sub, 0);
-    fib.emit_op_u8(Op::call, 1, 0); // fib(n-1)
+    fib.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    fib.emit_op_u16(Op::CONST, c1, 0);
+    fib.emit_op(Op::I32_SUB, 0);
+    fib.emit_op_u8(Op::CALL, 1, 0); // fib(n-1)
 
-    fib.emit_op_u16(Op::ref_func, 1, 0);
+    fib.emit_op_u16(Op::REF_FUNC, 1, 0);
     fib.emit(0, 0);
-    fib.emit_op_u16(Op::local_get, 1, 0);
-    fib.emit_op_u16(Op::r#const, c2, 0);
-    fib.emit_op(Op::i32_sub, 0);
-    fib.emit_op_u8(Op::call, 1, 0); // fib(n-2)
+    fib.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    fib.emit_op_u16(Op::CONST, c2, 0);
+    fib.emit_op(Op::I32_SUB, 0);
+    fib.emit_op_u8(Op::CALL, 1, 0); // fib(n-2)
 
-    fib.emit_op(Op::i32_add, 0);
-    fib.emit_op(Op::r#return, 0);
+    fib.emit_op(Op::I32_ADD, 0);
+    fib.emit_op(Op::RETURN, 0);
 
     // base case 0: return 0
     fib.patch_jump(jump_base0);
-    fib.emit_op_u16(Op::r#const, c0, 0);
-    fib.emit_op(Op::r#return, 0);
+    fib.emit_op_u16(Op::CONST, c0, 0);
+    fib.emit_op(Op::RETURN, 0);
 
     // base case 1: return 1
     fib.patch_jump(jump_base1);
-    fib.emit_op_u16(Op::r#const, c1, 0);
-    fib.emit_op(Op::r#return, 0);
+    fib.emit_op_u16(Op::CONST, c1, 0);
+    fib.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, fib]);
     assert_i32(&result, 55);
@@ -297,38 +297,38 @@ fn recursive_factorial() {
     // fact(6) = 720
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     let c6 = main.add_constant(Value::I32(6));
-    main.emit_op_u16(Op::r#const, c6, 0);
-    main.emit_op_u8(Op::call, 1, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::CONST, c6, 0);
+    main.emit_op_u8(Op::CALL, 1, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut fact = Chunk::new("fact");
     fact.arity = 1;
     fact.local_count = 2;
     let c1 = fact.add_constant(Value::I32(1));
 
-    fact.emit_op_u16(Op::local_get, 1, 0);
-    fact.emit_op_u16(Op::r#const, c1, 0);
-    fact.emit_op(Op::dyn_le, 0);
-    let jump_base = fact.emit_jump(Op::br_if_true, 0);
+    fact.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    fact.emit_op_u16(Op::CONST, c1, 0);
+    fact.emit_op(Op::DYN_LE, 0);
+    let jump_base = fact.emit_jump(Op::BR_IF_TRUE, 0);
 
     // n * fact(n-1)
-    fact.emit_op_u16(Op::local_get, 1, 0);
-    fact.emit_op_u16(Op::ref_func, 1, 0);
+    fact.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    fact.emit_op_u16(Op::REF_FUNC, 1, 0);
     fact.emit(0, 0);
-    fact.emit_op_u16(Op::local_get, 1, 0);
-    fact.emit_op_u16(Op::r#const, c1, 0);
-    fact.emit_op(Op::i32_sub, 0);
-    fact.emit_op_u8(Op::call, 1, 0);
-    fact.emit_op(Op::i32_mul, 0);
-    fact.emit_op(Op::r#return, 0);
+    fact.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    fact.emit_op_u16(Op::CONST, c1, 0);
+    fact.emit_op(Op::I32_SUB, 0);
+    fact.emit_op_u8(Op::CALL, 1, 0);
+    fact.emit_op(Op::I32_MUL, 0);
+    fact.emit_op(Op::RETURN, 0);
 
     // base: return 1
     fact.patch_jump(jump_base);
-    fact.emit_op_u16(Op::r#const, c1, 0);
-    fact.emit_op(Op::r#return, 0);
+    fact.emit_op_u16(Op::CONST, c1, 0);
+    fact.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, fact]);
     assert_i32(&result, 720);
@@ -343,9 +343,9 @@ fn call_import_zero_args() {
     let mut main = Chunk::new("main");
     main.local_count = 1;
     let import_idx = main.add_import("test", "get_value");
-    main.emit_op_u16(Op::call_import, import_idx, 0);
+    main.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
     main.emit(0, 0); // 0 args
-    main.emit_op(Op::halt, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     vm.register_host_fn("test", "get_value", Box::new(|_args: &[Value]| {
@@ -361,10 +361,10 @@ fn call_import_one_arg() {
     main.local_count = 1;
     let import_idx = main.add_import("test", "negate");
     let c = main.add_constant(Value::I32(7));
-    main.emit_op_u16(Op::r#const, c, 0);
-    main.emit_op_u16(Op::call_import, import_idx, 0);
+    main.emit_op_u16(Op::CONST, c, 0);
+    main.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
     main.emit(1, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     vm.register_host_fn("test", "negate", Box::new(|args: &[Value]| {
@@ -381,11 +381,11 @@ fn call_import_two_args() {
     let import_idx = main.add_import("test", "add");
     let c1 = main.add_constant(Value::I32(11));
     let c2 = main.add_constant(Value::I32(22));
-    main.emit_op_u16(Op::r#const, c1, 0);
-    main.emit_op_u16(Op::r#const, c2, 0);
-    main.emit_op_u16(Op::call_import, import_idx, 0);
+    main.emit_op_u16(Op::CONST, c1, 0);
+    main.emit_op_u16(Op::CONST, c2, 0);
+    main.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
     main.emit(2, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     vm.register_host_fn("test", "add", Box::new(|args: &[Value]| {
@@ -403,12 +403,12 @@ fn call_import_three_args() {
     let c1 = main.add_constant(Value::I32(1));
     let c2 = main.add_constant(Value::I32(2));
     let c3 = main.add_constant(Value::I32(3));
-    main.emit_op_u16(Op::r#const, c1, 0);
-    main.emit_op_u16(Op::r#const, c2, 0);
-    main.emit_op_u16(Op::r#const, c3, 0);
-    main.emit_op_u16(Op::call_import, import_idx, 0);
+    main.emit_op_u16(Op::CONST, c1, 0);
+    main.emit_op_u16(Op::CONST, c2, 0);
+    main.emit_op_u16(Op::CONST, c3, 0);
+    main.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
     main.emit(3, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     vm.register_host_fn("test", "sum3", Box::new(|args: &[Value]| {
@@ -427,13 +427,13 @@ fn call_import_four_args() {
     let c2 = main.add_constant(Value::I32(20));
     let c3 = main.add_constant(Value::I32(30));
     let c4 = main.add_constant(Value::I32(40));
-    main.emit_op_u16(Op::r#const, c1, 0);
-    main.emit_op_u16(Op::r#const, c2, 0);
-    main.emit_op_u16(Op::r#const, c3, 0);
-    main.emit_op_u16(Op::r#const, c4, 0);
-    main.emit_op_u16(Op::call_import, import_idx, 0);
+    main.emit_op_u16(Op::CONST, c1, 0);
+    main.emit_op_u16(Op::CONST, c2, 0);
+    main.emit_op_u16(Op::CONST, c3, 0);
+    main.emit_op_u16(Op::CONST, c4, 0);
+    main.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
     main.emit(4, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     vm.register_host_fn("test", "sum4", Box::new(|args: &[Value]| {
@@ -454,13 +454,13 @@ fn call_import_return_in_expression() {
     main.local_count = 1;
     let import_idx = main.add_import("test", "double");
     let c5 = main.add_constant(Value::I32(5));
-    main.emit_op_u16(Op::r#const, c5, 0);
-    main.emit_op_u16(Op::call_import, import_idx, 0);
+    main.emit_op_u16(Op::CONST, c5, 0);
+    main.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
     main.emit(1, 0);
     let c3 = main.add_constant(Value::I32(3));
-    main.emit_op_u16(Op::r#const, c3, 0);
-    main.emit_op(Op::i32_add, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::CONST, c3, 0);
+    main.emit_op(Op::I32_ADD, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     vm.register_host_fn("test", "double", Box::new(|args: &[Value]| {
@@ -485,10 +485,10 @@ fn call_value_with_host_function() {
     // The easiest way: store host fn ref as global, then load it
     let import_idx = main.add_import("test", "triple");
     let c7 = main.add_constant(Value::I32(7));
-    main.emit_op_u16(Op::r#const, c7, 0);
-    main.emit_op_u16(Op::call_import, import_idx, 0);
+    main.emit_op_u16(Op::CONST, c7, 0);
+    main.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
     main.emit(1, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     vm.register_host_fn("test", "triple", Box::new(|args: &[Value]| {
@@ -504,27 +504,27 @@ fn call_value_with_host_function() {
 
 #[test]
 fn call_value_with_function_object() {
-    // Create a Function object via ref_func, store in local, then call via Op::call
+    // Create a Function object via ref_func, store in local, then call via Op::CALL
     let mut main = Chunk::new("main");
     main.local_count = 2;
     // ref_func pushes a Function object
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::local_set, 1, 0);
-    main.emit_op(Op::drop, 0);
+    main.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    main.emit_op(Op::DROP, 0);
     // Load it back and call it
-    main.emit_op_u16(Op::local_get, 1, 0);
+    main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let c99 = main.add_constant(Value::I32(99));
-    main.emit_op_u16(Op::r#const, c99, 0);
-    main.emit_op_u8(Op::call, 1, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::CONST, c99, 0);
+    main.emit_op_u8(Op::CALL, 1, 0);
+    main.emit_op(Op::HALT, 0);
 
     // chunk 1: identity(x) => x
     let mut func = Chunk::new("identity");
     func.arity = 1;
     func.local_count = 2;
-    func.emit_op_u16(Op::local_get, 1, 0);
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);
     assert_i32(&result, 99);
@@ -539,9 +539,9 @@ fn call_value_non_callable_errors() {
     let mut main = Chunk::new("main");
     main.local_count = 1;
     let c = main.add_constant(Value::I32(42));
-    main.emit_op_u16(Op::r#const, c, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::CONST, c, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     let result = vm.run(vec![main]);
@@ -565,8 +565,8 @@ fn invoke_zero_args_arity_zero() {
     func.arity = 0;
     func.local_count = 1;
     let c = func.add_constant(Value::I32(42));
-    func.emit_op_u16(Op::r#const, c, 0);
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::CONST, c, 0);
+    func.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     // Load chunks so the VM knows about them
@@ -597,14 +597,14 @@ fn invoke_fewer_args_padding() {
     // func(a, b, c) => returns b (should be Null if only 1 arg passed)
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::null, 0);
-    dummy_main.emit_op(Op::halt, 0);
+    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_op(Op::HALT, 0);
 
     let mut func = Chunk::new("check_pad");
     func.arity = 3;
     func.local_count = 4;
-    func.emit_op_u16(Op::local_get, 2, 0); // b
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 2, 0); // b
+    func.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     vm.run(vec![dummy_main, func]).ok();
@@ -632,19 +632,19 @@ fn invoke_fewer_args_padding() {
 fn invoke_exact_args() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::null, 0);
-    dummy_main.emit_op(Op::halt, 0);
+    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_op(Op::HALT, 0);
 
     // func(a, b, c) => a + b + c
     let mut func = Chunk::new("sum3");
     func.arity = 3;
     func.local_count = 4;
-    func.emit_op_u16(Op::local_get, 1, 0);
-    func.emit_op_u16(Op::local_get, 2, 0);
-    func.emit_op(Op::i32_add, 0);
-    func.emit_op_u16(Op::local_get, 3, 0);
-    func.emit_op(Op::i32_add, 0);
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    func.emit_op(Op::I32_ADD, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    func.emit_op(Op::I32_ADD, 0);
+    func.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     vm.run(vec![dummy_main, func]).ok();
@@ -672,16 +672,16 @@ fn invoke_exact_args() {
 fn invoke_returning_value() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::null, 0);
-    dummy_main.emit_op(Op::halt, 0);
+    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_op(Op::HALT, 0);
 
     // func() => "hello"
     let mut func = Chunk::new("greet");
     func.arity = 0;
     func.local_count = 1;
     let c = func.add_constant(Value::String(Rc::from("hello")));
-    func.emit_op_u16(Op::r#const, c, 0);
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::CONST, c, 0);
+    func.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     vm.run(vec![dummy_main, func]).ok();
@@ -709,8 +709,8 @@ fn invoke_returning_value() {
 fn invoke_returning_object() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::null, 0);
-    dummy_main.emit_op(Op::halt, 0);
+    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_op(Op::HALT, 0);
 
     // func() => creates {x: 10} via struct_new
     let mut func = Chunk::new("make_obj");
@@ -718,10 +718,10 @@ fn invoke_returning_object() {
     func.local_count = 1;
     let key = func.add_constant(Value::String(Rc::from("x")));
     let val = func.add_constant(Value::I32(10));
-    func.emit_op_u16(Op::r#const, key, 0);
-    func.emit_op_u16(Op::r#const, val, 0);
-    func.emit_op_u16(Op::struct_new, 1, 0); // 1 key-value pair
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::CONST, key, 0);
+    func.emit_op_u16(Op::CONST, val, 0);
+    func.emit_op_u16(Op::STRUCT_NEW, 1, 0); // 1 key-value pair
+    func.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     vm.run(vec![dummy_main, func]).ok();
@@ -760,18 +760,18 @@ fn invoke_host_function() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
     let _import_idx = dummy_main.add_import("test", "square"); // index 0
-    dummy_main.emit_op(Op::null, 0);
-    dummy_main.emit_op(Op::halt, 0);
+    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_op(Op::HALT, 0);
 
     // chunk 1: wrapper(x) => call_import square(x)
     // Import index 0 is resolved from chunk 0's import table
     let mut wrapper = Chunk::new("wrapper");
     wrapper.arity = 1;
     wrapper.local_count = 2;
-    wrapper.emit_op_u16(Op::local_get, 1, 0); // x
-    wrapper.emit_op_u16(Op::call_import, 0, 0); // import index 0
+    wrapper.emit_op_u16(Op::LOCAL_GET, 1, 0); // x
+    wrapper.emit_op_u16(Op::CALL_IMPORT, 0, 0); // import index 0
     wrapper.emit(1, 0); // 1 arg
-    wrapper.emit_op(Op::r#return, 0);
+    wrapper.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     vm.register_host_fn("test", "square", Box::new(|args: &[Value]| {
@@ -803,18 +803,18 @@ fn invoke_host_function() {
 fn invoke_stack_clean_between_invocations() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::null, 0);
-    dummy_main.emit_op(Op::halt, 0);
+    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_op(Op::HALT, 0);
 
     // func(x) => x * 2
     let mut func = Chunk::new("double");
     func.arity = 1;
     func.local_count = 2;
-    func.emit_op_u16(Op::local_get, 1, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let c2 = func.add_constant(Value::I32(2));
-    func.emit_op_u16(Op::r#const, c2, 0);
-    func.emit_op(Op::i32_mul, 0);
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::CONST, c2, 0);
+    func.emit_op(Op::I32_MUL, 0);
+    func.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     vm.run(vec![dummy_main, func]).ok();
@@ -849,25 +849,25 @@ fn invoke_stack_clean_between_invocations() {
 fn invoke_preserves_globals() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::null, 0);
-    dummy_main.emit_op(Op::halt, 0);
+    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_op(Op::HALT, 0);
 
     // chunk 1: set_global(val) => sets global "counter" = val
     let mut setter = Chunk::new("set_global");
     setter.arity = 1;
     setter.local_count = 2;
     let name_idx = setter.add_constant(Value::String(Rc::from("counter")));
-    setter.emit_op_u16(Op::local_get, 1, 0);
-    setter.emit_op_u16(Op::global_set, name_idx, 0);
-    setter.emit_op(Op::r#return, 0);
+    setter.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    setter.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+    setter.emit_op(Op::RETURN, 0);
 
     // chunk 2: get_global() => returns global "counter"
     let mut getter = Chunk::new("get_global");
     getter.arity = 0;
     getter.local_count = 1;
     let gname = getter.add_constant(Value::String(Rc::from("counter")));
-    getter.emit_op_u16(Op::global_get, gname, 0);
-    getter.emit_op(Op::r#return, 0);
+    getter.emit_op_u16(Op::GLOBAL_GET, gname, 0);
+    getter.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     vm.run(vec![dummy_main, setter, getter]).ok();
@@ -909,17 +909,17 @@ fn invoke_preserves_globals() {
 fn invoke_function_that_uses_struct_get() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::null, 0);
-    dummy_main.emit_op(Op::halt, 0);
+    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_op(Op::HALT, 0);
 
     // chunk 1: get_x(obj) => obj.x
     let mut func = Chunk::new("get_x");
     func.arity = 1;
     func.local_count = 2;
     let prop = func.add_constant(Value::String(Rc::from("x")));
-    func.emit_op_u16(Op::local_get, 1, 0); // obj
-    func.emit_op_u16(Op::struct_get, prop, 0); // obj.x
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 1, 0); // obj
+    func.emit_op_u16(Op::STRUCT_GET, prop, 0); // obj.x
+    func.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     vm.run(vec![dummy_main, func]).ok();
@@ -953,26 +953,26 @@ fn local_get_set_within_function() {
     // func() { local x = 5; local y = 10; return x + y; }
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut func = Chunk::new("local_test");
     func.arity = 0;
     func.local_count = 3; // func + x + y
     let c5 = func.add_constant(Value::I32(5));
     let c10 = func.add_constant(Value::I32(10));
-    func.emit_op_u16(Op::r#const, c5, 0);
-    func.emit_op_u16(Op::local_set, 1, 0); // x = 5
-    func.emit_op(Op::drop, 0);
-    func.emit_op_u16(Op::r#const, c10, 0);
-    func.emit_op_u16(Op::local_set, 2, 0); // y = 10
-    func.emit_op(Op::drop, 0);
-    func.emit_op_u16(Op::local_get, 1, 0); // x
-    func.emit_op_u16(Op::local_get, 2, 0); // y
-    func.emit_op(Op::i32_add, 0);
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::CONST, c5, 0);
+    func.emit_op_u16(Op::LOCAL_SET, 1, 0); // x = 5
+    func.emit_op(Op::DROP, 0);
+    func.emit_op_u16(Op::CONST, c10, 0);
+    func.emit_op_u16(Op::LOCAL_SET, 2, 0); // y = 10
+    func.emit_op(Op::DROP, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 1, 0); // x
+    func.emit_op_u16(Op::LOCAL_GET, 2, 0); // y
+    func.emit_op(Op::I32_ADD, 0);
+    func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);
     assert_i32(&result, 15);
@@ -989,31 +989,31 @@ fn locals_dont_leak_between_calls() {
     let mut main = Chunk::new("main");
     main.local_count = 1;
     // call func_a
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::drop, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::DROP, 0);
     // call func_b
-    main.emit_op_u16(Op::ref_func, 2, 0);
+    main.emit_op_u16(Op::REF_FUNC, 2, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::HALT, 0);
 
     // chunk 1: func_a() { local 1 = 100; return 100; }
     let mut func_a = Chunk::new("func_a");
     func_a.arity = 0;
     func_a.local_count = 2;
     let c100 = func_a.add_constant(Value::I32(100));
-    func_a.emit_op_u16(Op::r#const, c100, 0);
-    func_a.emit_op_u16(Op::local_set, 1, 0);
-    func_a.emit_op(Op::r#return, 0);
+    func_a.emit_op_u16(Op::CONST, c100, 0);
+    func_a.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    func_a.emit_op(Op::RETURN, 0);
 
     // chunk 2: func_b() { return local 1; } — local 1 should be Null
     let mut func_b = Chunk::new("func_b");
     func_b.arity = 0;
     func_b.local_count = 2;
-    func_b.emit_op_u16(Op::local_get, 1, 0);
-    func_b.emit_op(Op::r#return, 0);
+    func_b.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    func_b.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func_a, func_b]);
     assert_null(&result);
@@ -1029,22 +1029,22 @@ fn globals_persist_after_function_returns() {
     // main calls func_a(), then reads global "val"
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::drop, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::DROP, 0);
     let gname = main.add_constant(Value::String(Rc::from("val")));
-    main.emit_op_u16(Op::global_get, gname, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::GLOBAL_GET, gname, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut func = Chunk::new("set_val");
     func.arity = 0;
     func.local_count = 1;
     let name_idx = func.add_constant(Value::String(Rc::from("val")));
     let c42 = func.add_constant(Value::I32(42));
-    func.emit_op_u16(Op::r#const, c42, 0);
-    func.emit_op_u16(Op::global_set, name_idx, 0);
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::CONST, c42, 0);
+    func.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+    func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);
     assert_i32(&result, 42);
@@ -1059,8 +1059,8 @@ fn global_get_undefined_returns_undefined() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     let name_idx = chunk.add_constant(Value::String(Rc::from("nonexistent")));
-    chunk.emit_op_u16(Op::global_get, name_idx, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_undefined(&result);
@@ -1076,11 +1076,11 @@ fn global_set_get_roundtrip() {
     chunk.local_count = 1;
     let name_idx = chunk.add_constant(Value::String(Rc::from("myVar")));
     let val = chunk.add_constant(Value::String(Rc::from("hello world")));
-    chunk.emit_op_u16(Op::r#const, val, 0);
-    chunk.emit_op_u16(Op::global_set, name_idx, 0);
-    chunk.emit_op(Op::drop, 0);
-    chunk.emit_op_u16(Op::global_get, name_idx, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_string(&result, "hello world");
@@ -1097,33 +1097,33 @@ fn multiple_functions_sharing_globals() {
     // main calls func_a(), then func_b(), returns result
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::drop, 0);
-    main.emit_op_u16(Op::ref_func, 2, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::DROP, 0);
+    main.emit_op_u16(Op::REF_FUNC, 2, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut func_a = Chunk::new("func_a");
     func_a.arity = 0;
     func_a.local_count = 1;
     let name_a = func_a.add_constant(Value::String(Rc::from("shared")));
     let c10 = func_a.add_constant(Value::I32(10));
-    func_a.emit_op_u16(Op::r#const, c10, 0);
-    func_a.emit_op_u16(Op::global_set, name_a, 0);
-    func_a.emit_op(Op::r#return, 0);
+    func_a.emit_op_u16(Op::CONST, c10, 0);
+    func_a.emit_op_u16(Op::GLOBAL_SET, name_a, 0);
+    func_a.emit_op(Op::RETURN, 0);
 
     let mut func_b = Chunk::new("func_b");
     func_b.arity = 0;
     func_b.local_count = 1;
     let name_b = func_b.add_constant(Value::String(Rc::from("shared")));
     let c5 = func_b.add_constant(Value::I32(5));
-    func_b.emit_op_u16(Op::global_get, name_b, 0);
-    func_b.emit_op_u16(Op::r#const, c5, 0);
-    func_b.emit_op(Op::i32_add, 0);
-    func_b.emit_op(Op::r#return, 0);
+    func_b.emit_op_u16(Op::GLOBAL_GET, name_b, 0);
+    func_b.emit_op_u16(Op::CONST, c5, 0);
+    func_b.emit_op(Op::I32_ADD, 0);
+    func_b.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func_a, func_b]);
     assert_i32(&result, 15);
@@ -1140,34 +1140,34 @@ fn local_set_nested_doesnt_affect_outer() {
     // outer should still return 5
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut outer = Chunk::new("outer");
     outer.arity = 0;
     outer.local_count = 2;
     let c5 = outer.add_constant(Value::I32(5));
-    outer.emit_op_u16(Op::r#const, c5, 0);
-    outer.emit_op_u16(Op::local_set, 1, 0);
-    outer.emit_op(Op::drop, 0);
+    outer.emit_op_u16(Op::CONST, c5, 0);
+    outer.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    outer.emit_op(Op::DROP, 0);
     // call inner
-    outer.emit_op_u16(Op::ref_func, 2, 0);
+    outer.emit_op_u16(Op::REF_FUNC, 2, 0);
     outer.emit(0, 0);
-    outer.emit_op_u8(Op::call, 0, 0);
-    outer.emit_op(Op::drop, 0); // discard inner's result
+    outer.emit_op_u8(Op::CALL, 0, 0);
+    outer.emit_op(Op::DROP, 0); // discard inner's result
     // return local 1 (should still be 5)
-    outer.emit_op_u16(Op::local_get, 1, 0);
-    outer.emit_op(Op::r#return, 0);
+    outer.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    outer.emit_op(Op::RETURN, 0);
 
     let mut inner = Chunk::new("inner");
     inner.arity = 0;
     inner.local_count = 2;
     let c999 = inner.add_constant(Value::I32(999));
-    inner.emit_op_u16(Op::r#const, c999, 0);
-    inner.emit_op_u16(Op::local_set, 1, 0);
-    inner.emit_op(Op::r#return, 0);
+    inner.emit_op_u16(Op::CONST, c999, 0);
+    inner.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    inner.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, outer, inner]);
     assert_i32(&result, 5);
@@ -1187,33 +1187,33 @@ fn closure_capture_one_variable() {
     // closure() { return upvalue 0; }  => should be 10
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut outer = Chunk::new("outer");
     outer.arity = 0;
     outer.local_count = 3; // func + x + closure
     let c10 = outer.add_constant(Value::I32(10));
-    outer.emit_op_u16(Op::r#const, c10, 0);
-    outer.emit_op_u16(Op::local_set, 1, 0); // x = 10
-    outer.emit_op(Op::drop, 0);
+    outer.emit_op_u16(Op::CONST, c10, 0);
+    outer.emit_op_u16(Op::LOCAL_SET, 1, 0); // x = 10
+    outer.emit_op(Op::DROP, 0);
 
     // ref_func(2) with 1 upvalue: is_local=1, index=1 (capture local 1)
-    outer.emit_op_u16(Op::ref_func, 2, 0);
+    outer.emit_op_u16(Op::REF_FUNC, 2, 0);
     outer.emit(1, 0); // 1 upvalue
     outer.emit(1, 0); // is_local = true
     outer.emit(1, 0); // index = 1 (local x)
 
-    outer.emit_op_u8(Op::call, 0, 0);
-    outer.emit_op(Op::r#return, 0);
+    outer.emit_op_u8(Op::CALL, 0, 0);
+    outer.emit_op(Op::RETURN, 0);
 
     let mut closure = Chunk::new("closure");
     closure.arity = 0;
     closure.local_count = 1;
-    closure.emit_op_u8(Op::upvalue_get, 0, 0); // upvalue 0 = x
-    closure.emit_op(Op::r#return, 0);
+    closure.emit_op_u8(Op::UPVALUE_GET, 0, 0); // upvalue 0 = x
+    closure.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, outer, closure]);
     assert_i32(&result, 10);
@@ -1235,37 +1235,37 @@ fn closure_mutation() {
     // outer should return 20 because closure mutated x
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut outer = Chunk::new("outer");
     outer.arity = 0;
     outer.local_count = 3;
     let c10 = outer.add_constant(Value::I32(10));
-    outer.emit_op_u16(Op::r#const, c10, 0);
-    outer.emit_op_u16(Op::local_set, 1, 0);
-    outer.emit_op(Op::drop, 0);
+    outer.emit_op_u16(Op::CONST, c10, 0);
+    outer.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    outer.emit_op(Op::DROP, 0);
 
     // ref_func(2) with 1 upvalue capturing local 1
-    outer.emit_op_u16(Op::ref_func, 2, 0);
+    outer.emit_op_u16(Op::REF_FUNC, 2, 0);
     outer.emit(1, 0); // 1 upvalue
     outer.emit(1, 0); // is_local = true
     outer.emit(1, 0); // index = 1
 
-    outer.emit_op_u8(Op::call, 0, 0);
-    outer.emit_op(Op::drop, 0); // discard closure return
-    outer.emit_op_u16(Op::local_get, 1, 0); // x — should be 20
-    outer.emit_op(Op::r#return, 0);
+    outer.emit_op_u8(Op::CALL, 0, 0);
+    outer.emit_op(Op::DROP, 0); // discard closure return
+    outer.emit_op_u16(Op::LOCAL_GET, 1, 0); // x — should be 20
+    outer.emit_op(Op::RETURN, 0);
 
     let mut closure = Chunk::new("mutator");
     closure.arity = 0;
     closure.local_count = 1;
     let c20 = closure.add_constant(Value::I32(20));
-    closure.emit_op_u16(Op::r#const, c20, 0);
-    closure.emit_op_u8(Op::upvalue_set, 0, 0); // set upvalue 0 = 20
-    closure.emit_op(Op::r#return, 0); // returns 20 (upvalue_set keeps val on stack)
+    closure.emit_op_u16(Op::CONST, c20, 0);
+    closure.emit_op_u8(Op::UPVALUE_SET, 0, 0); // set upvalue 0 = 20
+    closure.emit_op(Op::RETURN, 0); // returns 20 (upvalue_set keeps val on stack)
 
     let result = run_chunks(vec![main, outer, closure]);
     assert_i32(&result, 20);
@@ -1288,68 +1288,68 @@ fn multiple_closures_sharing_upvalue() {
     // }
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut outer = Chunk::new("outer");
     outer.arity = 0;
     outer.local_count = 4; // func + x + inc + get
     let c0 = outer.add_constant(Value::I32(0));
-    outer.emit_op_u16(Op::r#const, c0, 0);
-    outer.emit_op_u16(Op::local_set, 1, 0); // x = 0
-    outer.emit_op(Op::drop, 0);
+    outer.emit_op_u16(Op::CONST, c0, 0);
+    outer.emit_op_u16(Op::LOCAL_SET, 1, 0); // x = 0
+    outer.emit_op(Op::DROP, 0);
 
     // inc = ref_func(2) capturing local 1 (x)
-    outer.emit_op_u16(Op::ref_func, 2, 0);
+    outer.emit_op_u16(Op::REF_FUNC, 2, 0);
     outer.emit(1, 0); // 1 upvalue
     outer.emit(1, 0); // is_local
     outer.emit(1, 0); // index = 1
-    outer.emit_op_u16(Op::local_set, 2, 0); // inc
-    outer.emit_op(Op::drop, 0);
+    outer.emit_op_u16(Op::LOCAL_SET, 2, 0); // inc
+    outer.emit_op(Op::DROP, 0);
 
     // get = ref_func(3) capturing local 1 (x)
-    outer.emit_op_u16(Op::ref_func, 3, 0);
+    outer.emit_op_u16(Op::REF_FUNC, 3, 0);
     outer.emit(1, 0); // 1 upvalue
     outer.emit(1, 0); // is_local
     outer.emit(1, 0); // index = 1
-    outer.emit_op_u16(Op::local_set, 3, 0); // get
-    outer.emit_op(Op::drop, 0);
+    outer.emit_op_u16(Op::LOCAL_SET, 3, 0); // get
+    outer.emit_op(Op::DROP, 0);
 
     // call inc() 3 times
-    outer.emit_op_u16(Op::local_get, 2, 0);
-    outer.emit_op_u8(Op::call, 0, 0);
-    outer.emit_op(Op::drop, 0);
-    outer.emit_op_u16(Op::local_get, 2, 0);
-    outer.emit_op_u8(Op::call, 0, 0);
-    outer.emit_op(Op::drop, 0);
-    outer.emit_op_u16(Op::local_get, 2, 0);
-    outer.emit_op_u8(Op::call, 0, 0);
-    outer.emit_op(Op::drop, 0);
+    outer.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    outer.emit_op_u8(Op::CALL, 0, 0);
+    outer.emit_op(Op::DROP, 0);
+    outer.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    outer.emit_op_u8(Op::CALL, 0, 0);
+    outer.emit_op(Op::DROP, 0);
+    outer.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    outer.emit_op_u8(Op::CALL, 0, 0);
+    outer.emit_op(Op::DROP, 0);
 
     // return call get()
-    outer.emit_op_u16(Op::local_get, 3, 0);
-    outer.emit_op_u8(Op::call, 0, 0);
-    outer.emit_op(Op::r#return, 0);
+    outer.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    outer.emit_op_u8(Op::CALL, 0, 0);
+    outer.emit_op(Op::RETURN, 0);
 
     // chunk 2: inc() { x = x + 1; return Null; }
     let mut inc = Chunk::new("inc");
     inc.arity = 0;
     inc.local_count = 1;
     let c1 = inc.add_constant(Value::I32(1));
-    inc.emit_op_u8(Op::upvalue_get, 0, 0); // x
-    inc.emit_op_u16(Op::r#const, c1, 0);
-    inc.emit_op(Op::i32_add, 0);
-    inc.emit_op_u8(Op::upvalue_set, 0, 0); // x = x + 1
-    inc.emit_op(Op::r#return, 0);
+    inc.emit_op_u8(Op::UPVALUE_GET, 0, 0); // x
+    inc.emit_op_u16(Op::CONST, c1, 0);
+    inc.emit_op(Op::I32_ADD, 0);
+    inc.emit_op_u8(Op::UPVALUE_SET, 0, 0); // x = x + 1
+    inc.emit_op(Op::RETURN, 0);
 
     // chunk 3: get() { return x; }
     let mut get = Chunk::new("get");
     get.arity = 0;
     get.local_count = 1;
-    get.emit_op_u8(Op::upvalue_get, 0, 0); // x
-    get.emit_op(Op::r#return, 0);
+    get.emit_op_u8(Op::UPVALUE_GET, 0, 0); // x
+    get.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, outer, inc, get]);
     assert_i32(&result, 3);
@@ -1373,46 +1373,46 @@ fn nested_closure() {
     // inner() { return upvalue 0; }  => 100
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::call, 0, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u8(Op::CALL, 0, 0);
+    main.emit_op(Op::HALT, 0);
 
     let mut outer = Chunk::new("outer");
     outer.arity = 0;
     outer.local_count = 2;
     let c100 = outer.add_constant(Value::I32(100));
-    outer.emit_op_u16(Op::r#const, c100, 0);
-    outer.emit_op_u16(Op::local_set, 1, 0);
-    outer.emit_op(Op::drop, 0);
+    outer.emit_op_u16(Op::CONST, c100, 0);
+    outer.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    outer.emit_op(Op::DROP, 0);
 
     // middle = ref_func(2) capturing local 1
-    outer.emit_op_u16(Op::ref_func, 2, 0);
+    outer.emit_op_u16(Op::REF_FUNC, 2, 0);
     outer.emit(1, 0); // 1 upvalue
     outer.emit(1, 0); // is_local = true
     outer.emit(1, 0); // index = 1
 
-    outer.emit_op_u8(Op::call, 0, 0);
-    outer.emit_op(Op::r#return, 0);
+    outer.emit_op_u8(Op::CALL, 0, 0);
+    outer.emit_op(Op::RETURN, 0);
 
     let mut middle = Chunk::new("middle");
     middle.arity = 0;
     middle.local_count = 1;
 
     // inner = ref_func(3) capturing upvalue 0 from middle (which is x from outer)
-    middle.emit_op_u16(Op::ref_func, 3, 0);
+    middle.emit_op_u16(Op::REF_FUNC, 3, 0);
     middle.emit(1, 0); // 1 upvalue
     middle.emit(0, 0); // is_local = false (capture from parent's upvalue)
     middle.emit(0, 0); // index = 0 (middle's upvalue 0)
 
-    middle.emit_op_u8(Op::call, 0, 0);
-    middle.emit_op(Op::r#return, 0);
+    middle.emit_op_u8(Op::CALL, 0, 0);
+    middle.emit_op(Op::RETURN, 0);
 
     let mut inner = Chunk::new("inner");
     inner.arity = 0;
     inner.local_count = 1;
-    inner.emit_op_u8(Op::upvalue_get, 0, 0);
-    inner.emit_op(Op::r#return, 0);
+    inner.emit_op_u8(Op::UPVALUE_GET, 0, 0);
+    inner.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, outer, middle, inner]);
     assert_i32(&result, 100);
@@ -1429,12 +1429,12 @@ fn struct_get_returns_value() {
     chunk.local_count = 1;
     let key = chunk.add_constant(Value::String(Rc::from("name")));
     let val = chunk.add_constant(Value::String(Rc::from("alice")));
-    chunk.emit_op_u16(Op::r#const, key, 0);
-    chunk.emit_op_u16(Op::r#const, val, 0);
-    chunk.emit_op_u16(Op::struct_new, 1, 0); // {name: "alice"}
+    chunk.emit_op_u16(Op::CONST, key, 0);
+    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0); // {name: "alice"}
     let get_key = chunk.add_constant(Value::String(Rc::from("name")));
-    chunk.emit_op_u16(Op::struct_get, get_key, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_string(&result, "alice");
@@ -1450,12 +1450,12 @@ fn struct_get_missing_prop_returns_null() {
     chunk.local_count = 1;
     let key = chunk.add_constant(Value::String(Rc::from("x")));
     let val = chunk.add_constant(Value::I32(10));
-    chunk.emit_op_u16(Op::r#const, key, 0);
-    chunk.emit_op_u16(Op::r#const, val, 0);
-    chunk.emit_op_u16(Op::struct_new, 1, 0); // {x: 10}
+    chunk.emit_op_u16(Op::CONST, key, 0);
+    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0); // {x: 10}
     let miss_key = chunk.add_constant(Value::String(Rc::from("y")));
-    chunk.emit_op_u16(Op::struct_get, miss_key, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, miss_key, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_null(&result);
@@ -1471,23 +1471,23 @@ fn struct_set_creates_new_property() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 2;
     // Create empty object
-    chunk.emit_op_u16(Op::struct_new, 0, 0);
-    chunk.emit_op_u16(Op::local_set, 1, 0); // local 1 = obj
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0); // local 1 = obj
+    chunk.emit_op(Op::DROP, 0);
 
     // struct_set: pops val then obj from stack
     let set_key = chunk.add_constant(Value::String(Rc::from("age")));
     let c25 = chunk.add_constant(Value::I32(25));
-    chunk.emit_op_u16(Op::local_get, 1, 0); // obj
-    chunk.emit_op_u16(Op::r#const, c25, 0); // 25
-    chunk.emit_op_u16(Op::struct_set, set_key, 0); // obj.age = 25
-    chunk.emit_op(Op::drop, 0); // struct_set pushes assigned val
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0); // obj
+    chunk.emit_op_u16(Op::CONST, c25, 0); // 25
+    chunk.emit_op_u16(Op::STRUCT_SET, set_key, 0); // obj.age = 25
+    chunk.emit_op(Op::DROP, 0); // struct_set pushes assigned val
 
     // struct_get
     let get_key = chunk.add_constant(Value::String(Rc::from("age")));
-    chunk.emit_op_u16(Op::local_get, 1, 0);
-    chunk.emit_op_u16(Op::struct_get, get_key, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_i32(&result, 25);
@@ -1504,25 +1504,25 @@ fn struct_set_overwrites_existing_property() {
     // Create {x: 1}
     let key = chunk.add_constant(Value::String(Rc::from("x")));
     let val = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::r#const, key, 0);
-    chunk.emit_op_u16(Op::r#const, val, 0);
-    chunk.emit_op_u16(Op::struct_new, 1, 0);
-    chunk.emit_op_u16(Op::local_set, 1, 0);
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::CONST, key, 0);
+    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     // Overwrite x = 99
     let set_key = chunk.add_constant(Value::String(Rc::from("x")));
     let c99 = chunk.add_constant(Value::I32(99));
-    chunk.emit_op_u16(Op::local_get, 1, 0);
-    chunk.emit_op_u16(Op::r#const, c99, 0);
-    chunk.emit_op_u16(Op::struct_set, set_key, 0);
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    chunk.emit_op_u16(Op::CONST, c99, 0);
+    chunk.emit_op_u16(Op::STRUCT_SET, set_key, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     // Read it back
     let get_key = chunk.add_constant(Value::String(Rc::from("x")));
-    chunk.emit_op_u16(Op::local_get, 1, 0);
-    chunk.emit_op_u16(Op::struct_get, get_key, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_i32(&result, 99);
@@ -1541,9 +1541,9 @@ fn struct_get_chain() {
     // Create inner object {c: 42}
     let key_c = chunk.add_constant(Value::String(Rc::from("c")));
     let c42 = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::r#const, key_c, 0);
-    chunk.emit_op_u16(Op::r#const, c42, 0);
-    chunk.emit_op_u16(Op::struct_new, 1, 0); // {c: 42}
+    chunk.emit_op_u16(Op::CONST, key_c, 0);
+    chunk.emit_op_u16(Op::CONST, c42, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0); // {c: 42}
 
     // Create outer object {b: inner}
     let key_b = chunk.add_constant(Value::String(Rc::from("b")));
@@ -1553,18 +1553,18 @@ fn struct_get_chain() {
     // So we need: "b", inner_obj on stack
     // inner_obj is on stack. We need to push "b" under it.
     // Simpler: store inner in local, then build outer
-    chunk.emit_op_u16(Op::local_set, 1, 0);
-    chunk.emit_op(Op::drop, 0);
-    chunk.emit_op_u16(Op::r#const, key_b, 0);
-    chunk.emit_op_u16(Op::local_get, 1, 0);
-    chunk.emit_op_u16(Op::struct_new, 1, 0); // {b: {c: 42}}
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op_u16(Op::CONST, key_b, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0); // {b: {c: 42}}
 
     // Now chain access: obj.b.c
     let get_b = chunk.add_constant(Value::String(Rc::from("b")));
-    chunk.emit_op_u16(Op::struct_get, get_b, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, get_b, 0);
     let get_c = chunk.add_constant(Value::String(Rc::from("c")));
-    chunk.emit_op_u16(Op::struct_get, get_c, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, get_c, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_i32(&result, 42);
@@ -1584,22 +1584,22 @@ fn getter_auto_dispatch() {
     // Create the getter function at chunk 1
     // Build object with __get_name = ref_func(1)
     let key = main.add_constant(Value::String(Rc::from("__get_name")));
-    main.emit_op_u16(Op::r#const, key, 0);
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::CONST, key, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0); // 0 upvalues
-    main.emit_op_u16(Op::struct_new, 1, 0); // { __get_name: <func> }
+    main.emit_op_u16(Op::STRUCT_NEW, 1, 0); // { __get_name: <func> }
     // struct_get "name" should trigger the getter
     let get_name = main.add_constant(Value::String(Rc::from("name")));
-    main.emit_op_u16(Op::struct_get, get_name, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::STRUCT_GET, get_name, 0);
+    main.emit_op(Op::HALT, 0);
 
     // chunk 1: getter(this) => "computed"
     let mut getter = Chunk::new("__get_name");
     getter.arity = 1; // this
     getter.local_count = 2;
     let cs = getter.add_constant(Value::String(Rc::from("computed")));
-    getter.emit_op_u16(Op::r#const, cs, 0);
-    getter.emit_op(Op::r#return, 0);
+    getter.emit_op_u16(Op::CONST, cs, 0);
+    getter.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, getter]);
     assert_string(&result, "computed");
@@ -1618,26 +1618,26 @@ fn setter_auto_dispatch() {
     main.local_count = 2;
 
     let key = main.add_constant(Value::String(Rc::from("__set_x")));
-    main.emit_op_u16(Op::r#const, key, 0);
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::CONST, key, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::struct_new, 1, 0); // { __set_x: <func> }
-    main.emit_op_u16(Op::local_set, 1, 0);
-    main.emit_op(Op::drop, 0);
+    main.emit_op_u16(Op::STRUCT_NEW, 1, 0); // { __set_x: <func> }
+    main.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    main.emit_op(Op::DROP, 0);
 
     // struct_set "x" = 5
     let set_key = main.add_constant(Value::String(Rc::from("x")));
     let c5 = main.add_constant(Value::I32(5));
-    main.emit_op_u16(Op::local_get, 1, 0);
-    main.emit_op_u16(Op::r#const, c5, 0);
-    main.emit_op_u16(Op::struct_set, set_key, 0);
-    main.emit_op(Op::drop, 0); // drop set result
+    main.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    main.emit_op_u16(Op::CONST, c5, 0);
+    main.emit_op_u16(Op::STRUCT_SET, set_key, 0);
+    main.emit_op(Op::DROP, 0); // drop set result
 
     // struct_get "actual_x"
     let get_key = main.add_constant(Value::String(Rc::from("actual_x")));
-    main.emit_op_u16(Op::local_get, 1, 0);
-    main.emit_op_u16(Op::struct_get, get_key, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    main.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    main.emit_op(Op::HALT, 0);
 
     // chunk 1: setter(this, value) => this.actual_x = value * 2
     let mut setter = Chunk::new("__set_x");
@@ -1645,12 +1645,12 @@ fn setter_auto_dispatch() {
     setter.local_count = 3;
     let actual_key = setter.add_constant(Value::String(Rc::from("actual_x")));
     let c2 = setter.add_constant(Value::I32(2));
-    setter.emit_op_u16(Op::local_get, 1, 0); // this
-    setter.emit_op_u16(Op::local_get, 2, 0); // value
-    setter.emit_op_u16(Op::r#const, c2, 0);
-    setter.emit_op(Op::i32_mul, 0); // value * 2
-    setter.emit_op_u16(Op::struct_set, actual_key, 0); // this.actual_x = value*2
-    setter.emit_op(Op::r#return, 0);
+    setter.emit_op_u16(Op::LOCAL_GET, 1, 0); // this
+    setter.emit_op_u16(Op::LOCAL_GET, 2, 0); // value
+    setter.emit_op_u16(Op::CONST, c2, 0);
+    setter.emit_op(Op::I32_MUL, 0); // value * 2
+    setter.emit_op_u16(Op::STRUCT_SET, actual_key, 0); // this.actual_x = value*2
+    setter.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, setter]);
     assert_i32(&result, 10);
@@ -1668,29 +1668,29 @@ fn object_method_get_and_call() {
     main.local_count = 2;
 
     let key = main.add_constant(Value::String(Rc::from("greet")));
-    main.emit_op_u16(Op::r#const, key, 0);
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::CONST, key, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::struct_new, 1, 0); // { greet: <func> }
-    main.emit_op_u16(Op::local_set, 1, 0);
-    main.emit_op(Op::drop, 0);
+    main.emit_op_u16(Op::STRUCT_NEW, 1, 0); // { greet: <func> }
+    main.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    main.emit_op(Op::DROP, 0);
 
     // obj.greet
     let get_key = main.add_constant(Value::String(Rc::from("greet")));
-    main.emit_op_u16(Op::local_get, 1, 0);
-    main.emit_op_u16(Op::struct_get, get_key, 0);
+    main.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    main.emit_op_u16(Op::STRUCT_GET, get_key, 0);
     // call it with obj as arg (acting as this)
-    main.emit_op_u16(Op::local_get, 1, 0);
-    main.emit_op_u8(Op::call, 1, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    main.emit_op_u8(Op::CALL, 1, 0);
+    main.emit_op(Op::HALT, 0);
 
     // chunk 1: greet(this) => "hi"
     let mut func = Chunk::new("greet");
     func.arity = 1;
     func.local_count = 2;
     let cs = func.add_constant(Value::String(Rc::from("hi")));
-    func.emit_op_u16(Op::r#const, cs, 0);
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::CONST, cs, 0);
+    func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);
     assert_string(&result, "hi");
@@ -1709,47 +1709,47 @@ fn object_multiple_methods_call_correct() {
 
     // Build object with two methods
     let k_add = main.add_constant(Value::String(Rc::from("add")));
-    main.emit_op_u16(Op::r#const, k_add, 0);
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::CONST, k_add, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
 
     let k_mul = main.add_constant(Value::String(Rc::from("mul")));
-    main.emit_op_u16(Op::r#const, k_mul, 0);
-    main.emit_op_u16(Op::ref_func, 2, 0);
+    main.emit_op_u16(Op::CONST, k_mul, 0);
+    main.emit_op_u16(Op::REF_FUNC, 2, 0);
     main.emit(0, 0);
 
-    main.emit_op_u16(Op::struct_new, 2, 0); // { add: <f1>, mul: <f2> }
-    main.emit_op_u16(Op::local_set, 1, 0);
-    main.emit_op(Op::drop, 0);
+    main.emit_op_u16(Op::STRUCT_NEW, 2, 0); // { add: <f1>, mul: <f2> }
+    main.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    main.emit_op(Op::DROP, 0);
 
     // Call obj.mul(3, 4)
     let get_mul = main.add_constant(Value::String(Rc::from("mul")));
-    main.emit_op_u16(Op::local_get, 1, 0);
-    main.emit_op_u16(Op::struct_get, get_mul, 0);
+    main.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    main.emit_op_u16(Op::STRUCT_GET, get_mul, 0);
     let c3 = main.add_constant(Value::I32(3));
     let c4 = main.add_constant(Value::I32(4));
-    main.emit_op_u16(Op::r#const, c3, 0);
-    main.emit_op_u16(Op::r#const, c4, 0);
-    main.emit_op_u8(Op::call, 2, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::CONST, c3, 0);
+    main.emit_op_u16(Op::CONST, c4, 0);
+    main.emit_op_u8(Op::CALL, 2, 0);
+    main.emit_op(Op::HALT, 0);
 
     // chunk 1: add(a, b) => a + b
     let mut add_fn = Chunk::new("add");
     add_fn.arity = 2;
     add_fn.local_count = 3;
-    add_fn.emit_op_u16(Op::local_get, 1, 0);
-    add_fn.emit_op_u16(Op::local_get, 2, 0);
-    add_fn.emit_op(Op::i32_add, 0);
-    add_fn.emit_op(Op::r#return, 0);
+    add_fn.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    add_fn.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    add_fn.emit_op(Op::I32_ADD, 0);
+    add_fn.emit_op(Op::RETURN, 0);
 
     // chunk 2: mul(a, b) => a * b
     let mut mul_fn = Chunk::new("mul");
     mul_fn.arity = 2;
     mul_fn.local_count = 3;
-    mul_fn.emit_op_u16(Op::local_get, 1, 0);
-    mul_fn.emit_op_u16(Op::local_get, 2, 0);
-    mul_fn.emit_op(Op::i32_mul, 0);
-    mul_fn.emit_op(Op::r#return, 0);
+    mul_fn.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    mul_fn.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    mul_fn.emit_op(Op::I32_MUL, 0);
+    mul_fn.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, add_fn, mul_fn]);
     assert_i32(&result, 12);
@@ -1769,34 +1769,34 @@ fn object_method_receives_this() {
     // Build { value: 7, get_value: <func> }
     let k_value = main.add_constant(Value::String(Rc::from("value")));
     let c7 = main.add_constant(Value::I32(7));
-    main.emit_op_u16(Op::r#const, k_value, 0);
-    main.emit_op_u16(Op::r#const, c7, 0);
+    main.emit_op_u16(Op::CONST, k_value, 0);
+    main.emit_op_u16(Op::CONST, c7, 0);
 
     let k_get = main.add_constant(Value::String(Rc::from("get_value")));
-    main.emit_op_u16(Op::r#const, k_get, 0);
-    main.emit_op_u16(Op::ref_func, 1, 0);
+    main.emit_op_u16(Op::CONST, k_get, 0);
+    main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
 
-    main.emit_op_u16(Op::struct_new, 2, 0); // { value: 7, get_value: <func> }
-    main.emit_op_u16(Op::local_set, 1, 0);
-    main.emit_op(Op::drop, 0);
+    main.emit_op_u16(Op::STRUCT_NEW, 2, 0); // { value: 7, get_value: <func> }
+    main.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    main.emit_op(Op::DROP, 0);
 
     // Call obj.get_value(obj)
     let get_method = main.add_constant(Value::String(Rc::from("get_value")));
-    main.emit_op_u16(Op::local_get, 1, 0);
-    main.emit_op_u16(Op::struct_get, get_method, 0);
-    main.emit_op_u16(Op::local_get, 1, 0); // pass obj as this
-    main.emit_op_u8(Op::call, 1, 0);
-    main.emit_op(Op::halt, 0);
+    main.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    main.emit_op_u16(Op::STRUCT_GET, get_method, 0);
+    main.emit_op_u16(Op::LOCAL_GET, 1, 0); // pass obj as this
+    main.emit_op_u8(Op::CALL, 1, 0);
+    main.emit_op(Op::HALT, 0);
 
     // chunk 1: get_value(this) => this.value
     let mut func = Chunk::new("get_value");
     func.arity = 1;
     func.local_count = 2;
     let prop = func.add_constant(Value::String(Rc::from("value")));
-    func.emit_op_u16(Op::local_get, 1, 0); // this
-    func.emit_op_u16(Op::struct_get, prop, 0); // this.value
-    func.emit_op(Op::r#return, 0);
+    func.emit_op_u16(Op::LOCAL_GET, 1, 0); // this
+    func.emit_op_u16(Op::STRUCT_GET, prop, 0); // this.value
+    func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);
     assert_i32(&result, 7);

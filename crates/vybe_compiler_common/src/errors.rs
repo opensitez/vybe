@@ -13,40 +13,40 @@ use vybe_bytecode::opcode::Op;
 /// This ensures Python `except ValueError` can catch a Dart `throw ValueError("...")`.
 pub fn emit_exception_constructor(chunk: &mut Chunk, this_slot: u16, exc_name: &str, msg_slot: u16, line: u32) {
     // Create object
-    chunk.emit_op_u16(Op::struct_new, 0, line);
-    chunk.emit_op_u16(Op::local_set, this_slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // __type = exc_name (for ref_test matching)
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let t_val = chunk.add_constant(Value::String(Arc::from(exc_name)));
-    chunk.emit_op_u16(Op::r#const, t_val, line);
+    chunk.emit_op_u16(Op::CONST, t_val, line);
     let t_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_op_u16(Op::struct_set, t_key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, t_key, line);
+    chunk.emit_op(Op::DROP, line);
 
     // __exception_type = exc_name (Python convention)
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let et_val = chunk.add_constant(Value::String(Arc::from(exc_name)));
-    chunk.emit_op_u16(Op::r#const, et_val, line);
+    chunk.emit_op_u16(Op::CONST, et_val, line);
     let et_key = chunk.add_constant(Value::String(Arc::from("__exception_type")));
-    chunk.emit_op_u16(Op::struct_set, et_key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, et_key, line);
+    chunk.emit_op(Op::DROP, line);
 
     // name = exc_name (JS Error convention)
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let n_val = chunk.add_constant(Value::String(Arc::from(exc_name)));
-    chunk.emit_op_u16(Op::r#const, n_val, line);
+    chunk.emit_op_u16(Op::CONST, n_val, line);
     let n_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::struct_set, n_key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, n_key, line);
+    chunk.emit_op(Op::DROP, line);
 
     // message = msg_slot
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
-    chunk.emit_op_u16(Op::local_get, msg_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, msg_slot, line);
     let m_key = chunk.add_constant(Value::String(Arc::from("message")));
-    chunk.emit_op_u16(Op::struct_set, m_key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, m_key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// Standard exception type names shared across all languages.
@@ -80,7 +80,7 @@ pub fn canonical_exception_name(name: &str) -> &str {
 /// Layout: [try_start, u16 catch_offset, u16 finally_offset]
 /// Stack: unchanged
 pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
-    let catch_jump = chunk.emit_jump(Op::try_start, line);
+    let catch_jump = chunk.emit_jump(Op::TRY_START, line);
     chunk.emit(0u8, line); // finally offset high byte (reserved)
     chunk.emit(0u8, line); // finally offset low byte (reserved)
     catch_jump
@@ -88,7 +88,7 @@ pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
 
 /// Emit the end of the try body (normal exit path).
 pub fn emit_try_end(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::try_end, line);
+    chunk.emit_op(Op::TRY_END, line);
 }
 
 /// Patch the catch handler offset after the handler code has been emitted.
@@ -106,7 +106,7 @@ pub fn patch_catch(chunk: &mut Chunk, catch_jump: usize) {
 /// Emit a throw — takes the exception value from TOS.
 /// Stack before: [exception_value]  Stack after: diverges
 pub fn emit_throw(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::throw, line);
+    chunk.emit_op(Op::THROW, line);
 }
 
 /// Returns true if `name` (case-insensitive) is one of the known
@@ -147,7 +147,7 @@ pub fn is_exception_type(name: &str) -> bool {
 
 /// Stack-based exception constructor. Use this in two phases:
 ///
-/// 1. Caller emits `Op::struct_new` and `Op::dup` to push `[obj, obj]`,
+/// 1. Caller emits `Op::STRUCT_NEW` and `Op::DUP` to push `[obj, obj]`,
 ///    then emits the message expression to push `[obj, obj, msg]`.
 /// 2. Caller invokes `emit_exception_new_finalize(chunk, exc_name, line)`
 ///    which consumes the inner `[obj, msg]` pair into `obj.message=msg`,
@@ -173,20 +173,20 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
 
     // [obj, obj, msg] → [obj, msg_val] via struct_set "message"
     let m_key = chunk.add_constant(Value::String(Arc::from("message")));
-    chunk.emit_op_u16(Op::struct_set, m_key, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, m_key, line);
     // [obj, msg_val] → [obj]
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op(Op::DROP, line);
 
     // __type and __exception_type use the canonical name (for cross-language
     // catch dispatch). `name` uses the original (language-specific) name
     // so `err.name` returns what the language expects.
     for (key, val) in [("__type", canon), ("__exception_type", canon), ("name", original)] {
-        chunk.emit_op(Op::dup, line);
+        chunk.emit_op(Op::DUP, line);
         let v = chunk.add_constant(Value::String(Arc::from(val)));
-        chunk.emit_op_u16(Op::r#const, v, line);
+        chunk.emit_op_u16(Op::CONST, v, line);
         let k = chunk.add_constant(Value::String(Arc::from(key)));
-        chunk.emit_op_u16(Op::struct_set, k, line);
-        chunk.emit_op(Op::drop, line);
+        chunk.emit_op_u16(Op::STRUCT_SET, k, line);
+        chunk.emit_op(Op::DROP, line);
     }
 
     // `stack` = "Name: message" for JS Error.stack compatibility.
@@ -215,11 +215,11 @@ pub fn emit_catch_dispatch(chunk: &mut Chunk, expected_canon: &str, line: u32) -
         return usize::MAX;
     }
     // dup exc, struct_get __exception_type, push expected, dyn_eq, br_if_false skip
-    chunk.emit_op(Op::dup, line);
+    chunk.emit_op(Op::DUP, line);
     let k = chunk.add_constant(Value::String(Arc::from("__exception_type")));
-    chunk.emit_op_u16(Op::struct_get, k, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, k, line);
     let v = chunk.add_constant(Value::String(Arc::from(expected_canon)));
-    chunk.emit_op_u16(Op::r#const, v, line);
-    chunk.emit_op(Op::dyn_eq, line);
-    chunk.emit_jump(Op::br_if_false, line)
+    chunk.emit_op_u16(Op::CONST, v, line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    chunk.emit_jump(Op::BR_IF_FALSE, line)
 }

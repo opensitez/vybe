@@ -40,8 +40,8 @@ impl Compiler {
         for stmt in &program.body {
             self.compile_statement(stmt)?;
         }
-        self.emit(Op::null);
-        self.emit(Op::halt);
+        self.emit(Op::NULL);
+        self.emit(Op::HALT);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
         common::bundle::finalize_with_stdlib(&mut self.chunks);
@@ -69,7 +69,7 @@ impl Compiler {
 
     fn emit_constant(&mut self, value: Value) {
         let idx = self.chunks[self.current_chunk_idx].add_constant(value);
-        self.emit_u16(Op::r#const, idx);
+        self.emit_u16(Op::CONST, idx);
     }
 
     fn add_string_constant(&mut self, s: &str) -> u16 {
@@ -102,7 +102,7 @@ impl Compiler {
     fn emit_host_call(&mut self, import_idx: u16, argc: u8) {
         let line = self.line;
         let c = &mut self.chunks[self.current_chunk_idx];
-        c.emit_op_u16(Op::call_import, import_idx, line);
+        c.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
         c.emit(argc, line);
     }
 
@@ -143,34 +143,34 @@ impl Compiler {
 
     fn emit_var_get(&mut self, name: &str) {
         if let Some(slot) = self.resolve_var(name) {
-            self.emit_u16(Op::local_get, slot);
+            self.emit_u16(Op::LOCAL_GET, slot);
         } else if self.scopes.len() > 1 {
             if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
-                self.emit_u8(Op::upvalue_get, uv);
+                self.emit_u8(Op::UPVALUE_GET, uv);
                 return;
             }
             let idx = self.add_string_constant(name);
-            self.emit_u16(Op::global_get, idx);
+            self.emit_u16(Op::GLOBAL_GET, idx);
         } else {
             let idx = self.add_string_constant(name);
-            self.emit_u16(Op::global_get, idx);
+            self.emit_u16(Op::GLOBAL_GET, idx);
         }
     }
 
     fn emit_var_set(&mut self, name: &str) {
         if let Some(slot) = self.resolve_var(name) {
-            self.emit_u16(Op::local_set, slot);
+            self.emit_u16(Op::LOCAL_SET, slot);
         } else if self.scopes.len() > 1 {
             if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
-                self.emit_u8(Op::upvalue_set, uv);
+                self.emit_u8(Op::UPVALUE_SET, uv);
                 return;
             }
             let idx = self.add_string_constant(name);
-            self.emit_u16(Op::global_set, idx);
+            self.emit_u16(Op::GLOBAL_SET, idx);
             self.defined_globals.insert(name.to_string());
         } else {
             let idx = self.add_string_constant(name);
-            self.emit_u16(Op::global_set, idx);
+            self.emit_u16(Op::GLOBAL_SET, idx);
             self.defined_globals.insert(name.to_string());
         }
     }
@@ -200,13 +200,13 @@ impl Compiler {
                     self.compile_expression(expr)?;
                     let line = self.line;
                     common::io::emit_print(&mut self.chunks[self.current_chunk_idx], 1, line);
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
             }
 
             Statement::Expression(expr) => {
                 self.compile_expression(expr)?;
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::Block(stmts) => {
@@ -219,22 +219,22 @@ impl Compiler {
                 if let Some(val) = value {
                     self.compile_expression(val)?;
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
                 if self.is_global_scope() {
                     let idx = self.add_string_constant(name);
-                    self.emit_u16(Op::global_set, idx);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
                     self.defined_globals.insert(name.clone());
                 } else {
                     let slot = self.define_local(name);
-                    self.emit_u16(Op::local_set, slot);
+                    self.emit_u16(Op::LOCAL_SET, slot);
                 }
             }
 
             Statement::ConstDeclaration { name, value } => {
                 self.compile_expression(value)?;
                 let idx = self.add_string_constant(name);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
                 self.defined_globals.insert(name.clone());
             }
 
@@ -248,20 +248,20 @@ impl Compiler {
                 if let Some(expr) = val {
                     self.compile_expression(expr)?;
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
-                self.emit(Op::r#return);
+                self.emit(Op::RETURN);
             }
 
             Statement::Break(_) => {
-                let patch = self.emit_jump(Op::br);
+                let patch = self.emit_jump(Op::BR);
                 if let Some(ctx) = self.loop_stack.last_mut() {
                     ctx.break_patches.push(patch);
                 }
             }
 
             Statement::Continue(_) => {
-                let patch = self.emit_jump(Op::br);
+                let patch = self.emit_jump(Op::BR);
                 if let Some(ctx) = self.loop_stack.last_mut() {
                     ctx.continue_patches.push(patch);
                 }
@@ -269,18 +269,18 @@ impl Compiler {
 
             Statement::If { test, consequent, alternates, alternate } => {
                 self.compile_expression(test)?;
-                self.emit(Op::dyn_to_bool);
+                self.emit(Op::DYN_TO_BOOL);
                 let mut end_jumps = Vec::new();
-                let skip = self.emit_jump(Op::br_if_false);
+                let skip = self.emit_jump(Op::BR_IF_FALSE);
                 self.compile_statement(consequent)?;
-                end_jumps.push(self.emit_jump(Op::br));
+                end_jumps.push(self.emit_jump(Op::BR));
                 self.patch_jump(skip);
                 for elif in alternates {
                     self.compile_expression(&elif.test)?;
-                    self.emit(Op::dyn_to_bool);
-                    let s = self.emit_jump(Op::br_if_false);
+                    self.emit(Op::DYN_TO_BOOL);
+                    let s = self.emit_jump(Op::BR_IF_FALSE);
                     self.compile_statement(&elif.body)?;
-                    end_jumps.push(self.emit_jump(Op::br));
+                    end_jumps.push(self.emit_jump(Op::BR));
                     self.patch_jump(s);
                 }
                 if let Some(alt) = alternate {
@@ -293,8 +293,8 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.loop_stack.push(LoopContext { break_patches: Vec::new(), continue_patches: Vec::new() });
                 self.compile_expression(test)?;
-                self.emit(Op::dyn_to_bool);
-                let exit = self.emit_jump(Op::br_if_false);
+                self.emit(Op::DYN_TO_BOOL);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
                 self.compile_statement(body)?;
                 let continues: Vec<usize> = self.loop_stack.last().unwrap().continue_patches.clone();
                 for c in &continues { self.patch_jump(*c); }
@@ -311,25 +311,25 @@ impl Compiler {
                 let continues: Vec<usize> = self.loop_stack.last().unwrap().continue_patches.clone();
                 for c in &continues { self.patch_jump(*c); }
                 self.compile_expression(test)?;
-                self.emit(Op::dyn_to_bool);
+                self.emit(Op::DYN_TO_BOOL);
                 self.emit_loop(loop_start);
                 let breaks: Vec<usize> = self.loop_stack.pop().unwrap().break_patches;
                 for b in breaks { self.patch_jump(b); }
             }
 
             Statement::For { init, test, update, body } => {
-                for e in init { self.compile_expression(e)?; self.emit(Op::drop); }
+                for e in init { self.compile_expression(e)?; self.emit(Op::DROP); }
                 let loop_start = self.current_offset();
                 self.loop_stack.push(LoopContext { break_patches: Vec::new(), continue_patches: Vec::new() });
                 let exit = if let Some(t) = test {
                     self.compile_expression(t)?;
-                    self.emit(Op::dyn_to_bool);
-                    Some(self.emit_jump(Op::br_if_false))
+                    self.emit(Op::DYN_TO_BOOL);
+                    Some(self.emit_jump(Op::BR_IF_FALSE))
                 } else { None };
                 self.compile_statement(body)?;
                 let continues: Vec<usize> = self.loop_stack.last().unwrap().continue_patches.clone();
                 for c in &continues { self.patch_jump(*c); }
-                for e in update { self.compile_expression(e)?; self.emit(Op::drop); }
+                for e in update { self.compile_expression(e)?; self.emit(Op::DROP); }
                 self.emit_loop(loop_start);
                 if let Some(e) = exit { self.patch_jump(e); }
                 let breaks: Vec<usize> = self.loop_stack.pop().unwrap().break_patches;
@@ -340,66 +340,66 @@ impl Compiler {
                 // Use common::dict::emit_keys to get keys, then iterate with array_get
                 self.compile_expression(array)?;
                 let arr_slot = self.define_local("__foreach_arr");
-                self.emit_u16(Op::local_set, arr_slot);
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
 
                 // Get keys array: dict.__keys via common helper, or array indices
                 {
                     let line = self.line;
-                    self.emit_u16(Op::local_get, arr_slot);
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
                     common::dict::emit_keys(&mut self.chunks[self.current_chunk_idx], line);
                 }
                 let keys_slot = self.define_local("__foreach_keys");
-                self.emit_u16(Op::local_set, keys_slot);
+                self.emit_u16(Op::LOCAL_SET, keys_slot);
 
                 // length of keys
-                self.emit_u16(Op::local_get, keys_slot);
-                self.emit(Op::array_length);
+                self.emit_u16(Op::LOCAL_GET, keys_slot);
+                self.emit(Op::ARRAY_LENGTH);
                 let len_slot = self.define_local("__foreach_len");
-                self.emit_u16(Op::local_set, len_slot);
+                self.emit_u16(Op::LOCAL_SET, len_slot);
 
                 // index = 0
                 self.emit_constant(Value::I32(0));
                 let idx_slot = self.define_local("__foreach_idx");
-                self.emit_u16(Op::local_set, idx_slot);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
 
                 let loop_start = self.current_offset();
                 self.loop_stack.push(LoopContext { break_patches: Vec::new(), continue_patches: Vec::new() });
 
                 // while idx < len
-                self.emit_u16(Op::local_get, idx_slot);
-                self.emit_u16(Op::local_get, len_slot);
-                self.emit(Op::dyn_lt);
-                let exit = self.emit_jump(Op::br_if_false);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, len_slot);
+                self.emit(Op::DYN_LT);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
 
                 // current_key = keys[idx]
-                self.emit_u16(Op::local_get, keys_slot);
-                self.emit_u16(Op::local_get, idx_slot);
-                self.emit(Op::array_get);
+                self.emit_u16(Op::LOCAL_GET, keys_slot);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit(Op::ARRAY_GET);
                 let key_tmp_slot = self.define_local("__foreach_key_tmp");
-                self.emit_u16(Op::local_set, key_tmp_slot);
+                self.emit_u16(Op::LOCAL_SET, key_tmp_slot);
 
                 if let Some(key_name) = key {
                     let key_slot = self.define_local_or_get(key_name);
-                    self.emit_u16(Op::local_get, key_tmp_slot);
-                    self.emit_u16(Op::local_set, key_slot);
+                    self.emit_u16(Op::LOCAL_GET, key_tmp_slot);
+                    self.emit_u16(Op::LOCAL_SET, key_slot);
                 }
 
                 // $val = $arr[current_key] — use array_get (works for both arrays and dicts)
-                self.emit_u16(Op::local_get, arr_slot);
-                self.emit_u16(Op::local_get, key_tmp_slot);
-                self.emit(Op::array_get);
+                self.emit_u16(Op::LOCAL_GET, arr_slot);
+                self.emit_u16(Op::LOCAL_GET, key_tmp_slot);
+                self.emit(Op::ARRAY_GET);
                 let val_slot = self.define_local_or_get(value);
-                self.emit_u16(Op::local_set, val_slot);
+                self.emit_u16(Op::LOCAL_SET, val_slot);
 
                 self.compile_statement(body)?;
 
                 // continue point: idx++
                 let continues: Vec<usize> = self.loop_stack.last().unwrap().continue_patches.clone();
                 for c in &continues { self.patch_jump(*c); }
-                self.emit_u16(Op::local_get, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_constant(Value::I32(1));
-                self.emit(Op::i32_add);
-                self.emit_u16(Op::local_set, idx_slot);
+                self.emit(Op::I32_ADD);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
                 self.emit_loop(loop_start);
 
                 self.patch_jump(exit);
@@ -410,7 +410,7 @@ impl Compiler {
             Statement::Switch { discriminant, cases } => {
                 self.compile_expression(discriminant)?;
                 let disc_slot = self.define_local("__switch_disc");
-                self.emit_u16(Op::local_set, disc_slot);
+                self.emit_u16(Op::LOCAL_SET, disc_slot);
 
                 let mut end_jumps: Vec<usize> = Vec::new();
                 let mut next_case_jump: Option<usize> = None;
@@ -420,13 +420,13 @@ impl Compiler {
                         self.patch_jump(nj);
                     }
                     if let Some(test) = &case.test {
-                        self.emit_u16(Op::local_get, disc_slot);
+                        self.emit_u16(Op::LOCAL_GET, disc_slot);
                         self.compile_expression(test)?;
-                        self.emit(Op::eq);
-                        next_case_jump = Some(self.emit_jump(Op::br_if_false));
+                        self.emit(Op::EQ);
+                        next_case_jump = Some(self.emit_jump(Op::BR_IF_FALSE));
                     }
                     for s in &case.body { self.compile_statement(s)?; }
-                    end_jumps.push(self.emit_jump(Op::br));
+                    end_jumps.push(self.emit_jump(Op::BR));
                 }
                 if let Some(nj) = next_case_jump { self.patch_jump(nj); }
                 for j in end_jumps { self.patch_jump(j); }
@@ -448,7 +448,7 @@ impl Compiler {
                 for s in block { self.compile_statement(s)?; }
                 let line = self.line;
                 common::errors::emit_try_end(&mut self.chunks[c], line);
-                let skip_catch = self.emit_jump(Op::br);
+                let skip_catch = self.emit_jump(Op::BR);
 
                 // Patch catch offset
                 common::errors::patch_catch(&mut self.chunks[c], catch_jump);
@@ -462,10 +462,10 @@ impl Compiler {
                     }
                     if let Some(var) = &catch.var {
                         let slot = self.define_local_or_get(var);
-                        self.emit_u16(Op::local_set, slot);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                        self.emit(Op::DROP);
                     } else {
-                        self.emit(Op::drop);
+                        self.emit(Op::DROP);
                     }
                     for s in &catch.body { self.compile_statement(s)?; }
                 }
@@ -484,7 +484,7 @@ impl Compiler {
                 common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], chunk_idx, 0, line);
                 let name_lower = decl.name.to_lowercase();
                 let idx = self.add_string_constant(&name_lower);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
                 self.defined_globals.insert(name_lower);
             }
 
@@ -508,14 +508,14 @@ impl Compiler {
                 self.emit_constant(Value::String(Arc::from(s.as_str())));
             }
             Expression::Bool(b) => {
-                if *b { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
+                if *b { self.emit(Op::TRUE); } else { self.emit(Op::FALSE); }
             }
             Expression::Null => {
-                self.emit(Op::null);
+                self.emit(Op::NULL);
             }
             Expression::This => {
                 // $this is slot 1 in method scope (slot 0 = callee)
-                self.emit_u16(Op::local_get, 1);
+                self.emit_u16(Op::LOCAL_GET, 1);
             }
             Expression::Variable(name) => {
                 self.emit_var_get(name);
@@ -527,12 +527,12 @@ impl Compiler {
                     "php_int_max" => { self.emit_constant(Value::F64(i64::MAX as f64)); }
                     "php_int_min" => { self.emit_constant(Value::F64(i64::MIN as f64)); }
                     "m_pi" | "m_pi_value" => { self.emit_constant(Value::F64(std::f64::consts::PI)); }
-                    "true" => { self.emit(Op::r#true); }
-                    "false" => { self.emit(Op::r#false); }
-                    "null" => { self.emit(Op::null); }
+                    "true" => { self.emit(Op::TRUE); }
+                    "false" => { self.emit(Op::FALSE); }
+                    "null" => { self.emit(Op::NULL); }
                     _ => {
                         let idx = self.add_string_constant(&lower);
-                        self.emit_u16(Op::global_get, idx);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
                     }
                 }
             }
@@ -542,27 +542,27 @@ impl Compiler {
                         // parent:: resolves to the parent class constructor via global
                         if let Some(ref parent) = self.current_class_parent.clone() {
                             let idx = self.add_string_constant(parent);
-                            self.emit_u16(Op::global_get, idx);
+                            self.emit_u16(Op::GLOBAL_GET, idx);
                         } else {
-                            self.emit(Op::null);
+                            self.emit(Op::NULL);
                         }
                     }
                     "self" | "static" => {
                         // self:: resolves to the class constructor (stored as global)
                         // For now, get it from $this->__type name → global
-                        self.emit_u16(Op::local_get, 1); // $this
+                        self.emit_u16(Op::LOCAL_GET, 1); // $this
                         let idx = self.add_string_constant("__type");
-                        self.emit_u16(Op::struct_get, idx);
+                        self.emit_u16(Op::STRUCT_GET, idx);
                         // type name is a string, get the constructor from globals
                         common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line);
                         // Can't do dynamic global_get — use the class name from context
                         // Fallback: just push $this for self:: method calls
-                        self.emit(Op::drop);
-                        self.emit_u16(Op::local_get, 1);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, 1);
                     }
                     _ => {
                         let idx = self.add_string_constant(kw);
-                        self.emit_u16(Op::global_get, idx);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
                     }
                 }
             }
@@ -578,9 +578,9 @@ impl Compiler {
             Expression::Unary { op, expr } => {
                 self.compile_expression(expr)?;
                 match op {
-                    UnaryOp::Neg => { self.emit(Op::dyn_neg); }
+                    UnaryOp::Neg => { self.emit(Op::DYN_NEG); }
                     UnaryOp::Pos => {}
-                    UnaryOp::Not => { self.emit(Op::dyn_not); }
+                    UnaryOp::Not => { self.emit(Op::DYN_NOT); }
                     UnaryOp::BitNot => { let l = self.line; vybe_compiler_common::expressions::emit_i32_not(&mut self.chunks[self.current_chunk_idx], l); }
                 }
             }
@@ -588,36 +588,36 @@ impl Compiler {
                 // ++$x → compute new value, store it, result = new value
                 self.compile_expression(expr)?;
                 match op {
-                    UpdateOp::Inc => { self.emit_constant(Value::F64(1.0)); self.emit(Op::dyn_add); }
-                    UpdateOp::Dec => { self.emit_constant(Value::F64(1.0)); self.emit(Op::f64_sub); }
+                    UpdateOp::Inc => { self.emit_constant(Value::F64(1.0)); self.emit(Op::DYN_ADD); }
+                    UpdateOp::Dec => { self.emit_constant(Value::F64(1.0)); self.emit(Op::F64_SUB); }
                 }
                 // Save new value
                 let new_tmp = self.define_local("__pre_new");
-                self.emit_u16(Op::local_set, new_tmp);
-                self.emit(Op::drop); // local_set peeks, need to pop
-                self.emit_u16(Op::local_get, new_tmp);
+                self.emit_u16(Op::LOCAL_SET, new_tmp);
+                self.emit(Op::DROP); // local_set peeks, need to pop
+                self.emit_u16(Op::LOCAL_GET, new_tmp);
                 // Store back
                 self.compile_assign_lhs(expr)?;
                 // Push new value as result
-                self.emit_u16(Op::local_get, new_tmp);
+                self.emit_u16(Op::LOCAL_GET, new_tmp);
             }
             Expression::PostUpdate { op, expr } => {
                 // $x++ → evaluate old value, compute new, store new, result = old value
                 // Save old value in temp
                 self.compile_expression(expr)?;
                 let old_tmp = self.define_local("__post_old");
-                self.emit_u16(Op::local_set, old_tmp);
-                self.emit(Op::drop); // local_set peeks, need to pop
+                self.emit_u16(Op::LOCAL_SET, old_tmp);
+                self.emit(Op::DROP); // local_set peeks, need to pop
                 // Compute new value
-                self.emit_u16(Op::local_get, old_tmp);
+                self.emit_u16(Op::LOCAL_GET, old_tmp);
                 match op {
-                    UpdateOp::Inc => { self.emit_constant(Value::F64(1.0)); self.emit(Op::dyn_add); }
-                    UpdateOp::Dec => { self.emit_constant(Value::F64(1.0)); self.emit(Op::f64_sub); }
+                    UpdateOp::Inc => { self.emit_constant(Value::F64(1.0)); self.emit(Op::DYN_ADD); }
+                    UpdateOp::Dec => { self.emit_constant(Value::F64(1.0)); self.emit(Op::F64_SUB); }
                 }
                 // Store new value back
                 self.compile_assign_lhs(expr)?;
                 // Push old value as result
-                self.emit_u16(Op::local_get, old_tmp);
+                self.emit_u16(Op::LOCAL_GET, old_tmp);
             }
             Expression::Ternary { test, consequent, alternate } => {
                 let c = self.current_chunk_idx;
@@ -658,7 +658,7 @@ impl Compiler {
                 match name.as_ref() {
                     Expression::Identifier(s) => {
                         let idx = self.add_string_constant(s);
-                        self.emit_u16(Op::struct_get, idx);
+                        self.emit_u16(Op::STRUCT_GET, idx);
                     }
                     _ => {
                         // dynamic property: obj[expr] via common::dict
@@ -673,15 +673,15 @@ impl Compiler {
                 match member.as_ref() {
                     Expression::Identifier(s) => {
                         let idx = self.add_string_constant(s);
-                        self.emit_u16(Op::struct_get, idx);
+                        self.emit_u16(Op::STRUCT_GET, idx);
                     }
                     Expression::Variable(s) => {
                         let idx = self.add_string_constant(s);
-                        self.emit_u16(Op::struct_get, idx);
+                        self.emit_u16(Op::STRUCT_GET, idx);
                     }
                     _ => {
                         self.compile_expression(member)?;
-                        self.emit(Op::array_get);
+                        self.emit(Op::ARRAY_GET);
                     }
                 }
             }
@@ -694,23 +694,23 @@ impl Compiler {
             Expression::Isset(vars) => {
                 for (i, var) in vars.iter().enumerate() {
                     self.compile_expression(var)?;
-                    self.emit(Op::ref_is_null);
-                    self.emit(Op::dyn_not);
+                    self.emit(Op::REF_IS_NULL);
+                    self.emit(Op::DYN_NOT);
                     if i > 0 {
-                        self.emit(Op::i32_and);
+                        self.emit(Op::I32_AND);
                     }
                 }
                 if vars.is_empty() {
-                    self.emit(Op::r#true);
+                    self.emit(Op::TRUE);
                 }
             }
             Expression::Empty(var) => {
                 self.compile_expression(var)?;
-                self.emit(Op::dyn_to_bool);
-                self.emit(Op::dyn_not);
+                self.emit(Op::DYN_TO_BOOL);
+                self.emit(Op::DYN_NOT);
             }
             Expression::Unset(_vars) => {
-                self.emit(Op::null);
+                self.emit(Op::NULL);
             }
             Expression::Cast { cast, expr } => {
                 self.compile_expression(expr)?;
@@ -728,11 +728,11 @@ impl Compiler {
                         self.emit_host_call(idx, 1);
                     }
                     CastKind::Bool => {
-                        self.emit(Op::dyn_to_bool);
+                        self.emit(Op::DYN_TO_BOOL);
                     }
                     CastKind::Array => {
                         // Wrap in a single-element array
-                        self.emit(Op::array_new);
+                        self.emit(Op::ARRAY_NEW);
                     }
                     CastKind::Object => {
                         // Already an object at runtime; no-op
@@ -772,7 +772,7 @@ impl Compiler {
             Expression::Match { subject, arms } => {
                 self.compile_expression(subject)?;
                 let disc_slot = self.define_local("__match_disc");
-                self.emit_u16(Op::local_set, disc_slot);
+                self.emit_u16(Op::LOCAL_SET, disc_slot);
                 let mut end_jumps = Vec::new();
                 let mut next_arm_jump: Option<usize> = None;
                 for arm in arms {
@@ -781,40 +781,40 @@ impl Compiler {
                         let mut skip_jumps = Vec::new();
                         let mut fail_jumps = Vec::new();
                         for cond in conds {
-                            self.emit_u16(Op::local_get, disc_slot);
+                            self.emit_u16(Op::LOCAL_GET, disc_slot);
                             self.compile_expression(cond)?;
-                            self.emit(Op::eq);
-                            skip_jumps.push(self.emit_jump(Op::br_if_true));
+                            self.emit(Op::EQ);
+                            skip_jumps.push(self.emit_jump(Op::BR_IF_TRUE));
                         }
-                        fail_jumps.push(self.emit_jump(Op::br));
+                        fail_jumps.push(self.emit_jump(Op::BR));
                         for s in &skip_jumps { self.patch_jump(*s); }
                         self.compile_expression(&arm.body)?;
-                        end_jumps.push(self.emit_jump(Op::br));
+                        end_jumps.push(self.emit_jump(Op::BR));
                         for f in fail_jumps { self.patch_jump(f); }
                         next_arm_jump = None;
                     } else {
                         self.compile_expression(&arm.body)?;
-                        end_jumps.push(self.emit_jump(Op::br));
+                        end_jumps.push(self.emit_jump(Op::BR));
                     }
                 }
                 if let Some(nj) = next_arm_jump { self.patch_jump(nj); }
-                self.emit(Op::null);
+                self.emit(Op::NULL);
                 for j in end_jumps { self.patch_jump(j); }
             }
             Expression::Spread(inner) => {
                 self.compile_expression(inner)?;
             }
             Expression::List(_) => {
-                self.emit(Op::null);
+                self.emit(Op::NULL);
             }
             Expression::Yield(value) => {
                 // yield $value → suspend opcode (returns value to caller, pauses generator)
                 if let Some(val) = value {
                     self.compile_expression(val)?;
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
-                self.emit_u16(Op::suspend, 0); // tag 0
+                self.emit_u16(Op::SUSPEND, 0); // tag 0
             }
             Expression::YieldFrom(expr) => {
                 // yield from $generator → delegate to sub-generator
@@ -832,7 +832,7 @@ impl Compiler {
     fn compile_assign(&mut self, op: &AssignOp, left: &Expression, right: &Expression) -> Result<(), String> {
         if *op == AssignOp::Assign {
             self.compile_expression(right)?;
-            self.emit(Op::dup);
+            self.emit(Op::DUP);
             self.compile_assign_lhs(left)?;
             return Ok(());
         }
@@ -844,17 +844,17 @@ impl Compiler {
             let (_null_jump, end_jump) = common::expressions::emit_null_coalesce_start(&mut self.chunks[c], line);
             self.compile_expression(right)?;
             common::expressions::emit_null_coalesce_end(&mut self.chunks[c], end_jump);
-            self.emit(Op::dup);
+            self.emit(Op::DUP);
             self.compile_assign_lhs(left)?;
             return Ok(());
         }
         self.compile_expression(left)?;
         self.compile_expression(right)?;
         match op {
-            AssignOp::AddAssign => { self.emit(Op::dyn_add); }
-            AssignOp::SubAssign => { self.emit(Op::f64_sub); }
-            AssignOp::MulAssign => { self.emit(Op::f64_mul); }
-            AssignOp::DivAssign => { self.emit(Op::f64_div); }
+            AssignOp::AddAssign => { self.emit(Op::DYN_ADD); }
+            AssignOp::SubAssign => { self.emit(Op::F64_SUB); }
+            AssignOp::MulAssign => { self.emit(Op::F64_MUL); }
+            AssignOp::DivAssign => { self.emit(Op::F64_DIV); }
             AssignOp::ModAssign => { { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }; }
             AssignOp::PowAssign => {
                 let c = self.current_chunk_idx;
@@ -862,15 +862,15 @@ impl Compiler {
                 common::math::emit_pow(&mut self.chunks[c], line);
             }
             AssignOp::ConcatAssign => { common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line); }
-            AssignOp::AndAssign => { self.emit(Op::i32_and); }
-            AssignOp::OrAssign => { self.emit(Op::i32_or); }
-            AssignOp::XorAssign => { self.emit(Op::i32_xor); }
-            AssignOp::ShlAssign => { self.emit(Op::i32_shl); }
-            AssignOp::ShrAssign => { self.emit(Op::i32_shr_s); }
+            AssignOp::AndAssign => { self.emit(Op::I32_AND); }
+            AssignOp::OrAssign => { self.emit(Op::I32_OR); }
+            AssignOp::XorAssign => { self.emit(Op::I32_XOR); }
+            AssignOp::ShlAssign => { self.emit(Op::I32_SHL); }
+            AssignOp::ShrAssign => { self.emit(Op::I32_SHR_S); }
             AssignOp::NullCoalesceAssign => {}
             AssignOp::Assign => unreachable!(),
         }
-        self.emit(Op::dup);
+        self.emit(Op::DUP);
         self.compile_assign_lhs(left)?;
         Ok(())
     }
@@ -884,53 +884,53 @@ impl Compiler {
                 // Stack: [val]. struct_set expects [obj, val].
                 // Save val to temp, push obj, push val back.
                 let tmp = self.define_local("__store_tmp");
-                self.emit_u16(Op::local_set, tmp);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, tmp);
+                self.emit(Op::DROP);
                 self.compile_expression(object)?;
-                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 match name.as_ref() {
                     Expression::Identifier(s) => {
                         let idx = self.add_string_constant(s);
-                        self.emit_u16(Op::struct_set, idx);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::STRUCT_SET, idx);
+                        self.emit(Op::DROP);
                     }
                     _ => {
                         // dynamic property: use array_set [obj, key, val]
                         // Stack: [obj, val]. Need [obj, key, val].
                         // Save val again, push key, push val.
                         let tmp2 = self.define_local("__store_tmp2");
-                        self.emit_u16(Op::local_set, tmp2);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::LOCAL_SET, tmp2);
+                        self.emit(Op::DROP);
                         self.compile_expression(name)?;
-                        self.emit_u16(Op::local_get, tmp2);
-                        self.emit(Op::array_set);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::LOCAL_GET, tmp2);
+                        self.emit(Op::ARRAY_SET);
+                        self.emit(Op::DROP);
                     }
                 }
             }
             Expression::ArrayAccess { array, index } => {
                 // Stack: [val]. array_set expects [obj, key, val].
                 let tmp = self.define_local("__store_tmp");
-                self.emit_u16(Op::local_set, tmp);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, tmp);
+                self.emit(Op::DROP);
                 self.compile_expression(array)?;
                 self.compile_expression(index)?;
-                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 let line = self.line;
                 common::dict::emit_set_dynamic(&mut self.chunks[self.current_chunk_idx], line);
             }
             Expression::List(targets) => {
                 // list($a, $b) = [1, 2]
                 let arr_tmp = self.define_local("__list_arr");
-                self.emit_u16(Op::local_set, arr_tmp);
+                self.emit_u16(Op::LOCAL_SET, arr_tmp);
                 for (i, target) in targets.iter().enumerate() {
                     if let Some(t) = target {
-                        self.emit_u16(Op::local_get, arr_tmp);
+                        self.emit_u16(Op::LOCAL_GET, arr_tmp);
                         self.emit_constant(Value::I32(i as i32));
-                        self.emit(Op::array_get);
+                        self.emit(Op::ARRAY_GET);
                         match t {
                             Expression::Variable(name) => { self.emit_var_set(name); }
-                            _ => { self.emit(Op::drop); }
+                            _ => { self.emit(Op::DROP); }
                         }
                     }
                 }
@@ -938,38 +938,38 @@ impl Compiler {
             Expression::Array(elements) => {
                 // [$a, $b, $c] = [10, 20, 30] — short destructuring syntax
                 let arr_tmp = self.define_local("__destruct_arr");
-                self.emit_u16(Op::local_set, arr_tmp);
+                self.emit_u16(Op::LOCAL_SET, arr_tmp);
                 for (i, elem) in elements.iter().enumerate() {
-                    self.emit_u16(Op::local_get, arr_tmp);
+                    self.emit_u16(Op::LOCAL_GET, arr_tmp);
                     let key = match &elem.key {
                         Some(Expression::Str(s)) => s.clone(),
                         Some(Expression::Number(n)) => n.to_string(),
                         _ => i.to_string(),
                     };
                     self.emit_constant(Value::String(Arc::from(key.as_str())));
-                    self.emit(Op::array_get);
+                    self.emit(Op::ARRAY_GET);
                     match &elem.value {
                         Expression::Variable(name) => { self.emit_var_set(name); }
-                        _ => { self.emit(Op::drop); }
+                        _ => { self.emit(Op::DROP); }
                     }
                 }
             }
             Expression::StaticAccess { class, member } => {
                 // ClassName::$prop = val — set property on class constructor object
                 let tmp = self.define_local("__static_tmp");
-                self.emit_u16(Op::local_set, tmp);
+                self.emit_u16(Op::LOCAL_SET, tmp);
                 self.compile_expression(class)?;
-                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 match member.as_ref() {
                     Expression::Identifier(s) | Expression::Variable(s) => {
                         let idx = self.add_string_constant(s);
-                        self.emit_u16(Op::struct_set, idx);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::STRUCT_SET, idx);
+                        self.emit(Op::DROP);
                     }
                     _ => {
                         self.compile_expression(member)?;
-                        self.emit(Op::array_set);
-                        self.emit(Op::drop);
+                        self.emit(Op::ARRAY_SET);
+                        self.emit(Op::DROP);
                     }
                 }
             }
@@ -1008,61 +1008,61 @@ impl Compiler {
         self.compile_expression(right)?;
         match op {
             // PHP + is type-juggling: "5" + 3 = 8, [1,2] + [3] = [1,2,3]
-            BinaryOp::Add => { self.emit(Op::dyn_add); }
-            BinaryOp::Sub => { self.emit(Op::f64_sub); }
-            BinaryOp::Mul => { self.emit(Op::f64_mul); }
-            BinaryOp::Div => { self.emit(Op::f64_div); }
+            BinaryOp::Add => { self.emit(Op::DYN_ADD); }
+            BinaryOp::Sub => { self.emit(Op::F64_SUB); }
+            BinaryOp::Mul => { self.emit(Op::F64_MUL); }
+            BinaryOp::Div => { self.emit(Op::F64_DIV); }
             BinaryOp::Mod => { { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }; }
             BinaryOp::Pow => {
                 common::math::emit_pow(&mut self.chunks[c], line);
             }
             BinaryOp::Concat => { common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line); }
-            BinaryOp::Eq => { self.emit(Op::dyn_eq); }
-            BinaryOp::Ne => { self.emit(Op::dyn_ne); }
-            BinaryOp::SEq => { self.emit(Op::eq); }
-            BinaryOp::SNe => { self.emit(Op::ne); }
-            BinaryOp::Lt => { self.emit(Op::dyn_lt); }
-            BinaryOp::Gt => { self.emit(Op::dyn_gt); }
-            BinaryOp::Le => { self.emit(Op::dyn_le); }
-            BinaryOp::Ge => { self.emit(Op::dyn_ge); }
+            BinaryOp::Eq => { self.emit(Op::DYN_EQ); }
+            BinaryOp::Ne => { self.emit(Op::DYN_NE); }
+            BinaryOp::SEq => { self.emit(Op::EQ); }
+            BinaryOp::SNe => { self.emit(Op::NE); }
+            BinaryOp::Lt => { self.emit(Op::DYN_LT); }
+            BinaryOp::Gt => { self.emit(Op::DYN_GT); }
+            BinaryOp::Le => { self.emit(Op::DYN_LE); }
+            BinaryOp::Ge => { self.emit(Op::DYN_GE); }
             BinaryOp::Spaceship => {
                 // Inline: (a < b) ? -1 : ((a > b) ? 1 : 0)
                 // a and b already on stack, use temp locals
                 let b_tmp = self.define_local("__cmp_b");
                 let a_tmp = self.define_local("__cmp_a");
-                self.emit_u16(Op::local_set, b_tmp);
-                self.emit(Op::drop);
-                self.emit_u16(Op::local_set, a_tmp);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, b_tmp);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, a_tmp);
+                self.emit(Op::DROP);
                 // a < b?
-                self.emit_u16(Op::local_get, a_tmp);
-                self.emit_u16(Op::local_get, b_tmp);
-                self.emit(Op::dyn_lt);
-                let lt_jump = self.emit_jump(Op::br_if_true);
+                self.emit_u16(Op::LOCAL_GET, a_tmp);
+                self.emit_u16(Op::LOCAL_GET, b_tmp);
+                self.emit(Op::DYN_LT);
+                let lt_jump = self.emit_jump(Op::BR_IF_TRUE);
                 // a > b?
-                self.emit_u16(Op::local_get, a_tmp);
-                self.emit_u16(Op::local_get, b_tmp);
-                self.emit(Op::dyn_gt);
-                let gt_jump = self.emit_jump(Op::br_if_true);
+                self.emit_u16(Op::LOCAL_GET, a_tmp);
+                self.emit_u16(Op::LOCAL_GET, b_tmp);
+                self.emit(Op::DYN_GT);
+                let gt_jump = self.emit_jump(Op::BR_IF_TRUE);
                 // equal → 0
                 self.emit_constant(Value::F64(0.0));
-                let end_jump = self.emit_jump(Op::br);
+                let end_jump = self.emit_jump(Op::BR);
                 // a > b → 1
                 self.patch_jump(gt_jump);
                 self.emit_constant(Value::F64(1.0));
-                let end_jump2 = self.emit_jump(Op::br);
+                let end_jump2 = self.emit_jump(Op::BR);
                 // a < b → -1
                 self.patch_jump(lt_jump);
                 self.emit_constant(Value::F64(-1.0));
                 self.patch_jump(end_jump);
                 self.patch_jump(end_jump2);
             }
-            BinaryOp::BitAnd => { self.emit(Op::i32_and); }
-            BinaryOp::BitOr => { self.emit(Op::i32_or); }
-            BinaryOp::BitXor => { self.emit(Op::i32_xor); }
-            BinaryOp::Shl => { self.emit(Op::i32_shl); }
-            BinaryOp::Shr => { self.emit(Op::i32_shr_s); }
-            BinaryOp::InstanceOf => { self.emit(Op::ref_test); }
+            BinaryOp::BitAnd => { self.emit(Op::I32_AND); }
+            BinaryOp::BitOr => { self.emit(Op::I32_OR); }
+            BinaryOp::BitXor => { self.emit(Op::I32_XOR); }
+            BinaryOp::Shl => { self.emit(Op::I32_SHL); }
+            BinaryOp::Shr => { self.emit(Op::I32_SHR_S); }
+            BinaryOp::InstanceOf => { self.emit(Op::REF_TEST); }
             BinaryOp::And | BinaryOp::Or => unreachable!(),
         }
         Ok(())
@@ -1089,7 +1089,7 @@ impl Compiler {
                 // Known local/global — use global_get + call_ref
                 self.compile_expression(callee)?;
                 for arg in args { self.compile_expression(&arg.value)?; }
-                self.emit_u8(Op::call_ref, args.len() as u8);
+                self.emit_u8(Op::CALL_REF, args.len() as u8);
             } else {
                 // Unresolved → WASM import
                 let idx = self.import("*", &lower);
@@ -1100,7 +1100,7 @@ impl Compiler {
         }
         self.compile_expression(callee)?;
         for arg in args { self.compile_expression(&arg.value)?; }
-        self.emit_u8(Op::call_ref, args.len() as u8);
+        self.emit_u8(Op::CALL_REF, args.len() as u8);
         Ok(())
     }
 
@@ -1113,33 +1113,33 @@ impl Compiler {
                     // Multiple args: pack into array for the continuation to unpack
                     self.compile_expression(object)?; // continuation
                     if args.is_empty() {
-                        self.emit(Op::null);
+                        self.emit(Op::NULL);
                     } else if args.len() == 1 {
                         self.compile_expression(&args[0].value)?;
                     } else {
                         // Pack multiple args into an array
                         for arg in args { self.compile_expression(&arg.value)?; }
-                        self.emit_u16(Op::array_new, args.len() as u16);
+                        self.emit_u16(Op::ARRAY_NEW, args.len() as u16);
                     }
-                    self.emit_u16(Op::resume, 0);
+                    self.emit_u16(Op::RESUME, 0);
                     return Ok(());
                 }
                 "resume" => {
                     // $fiber->resume($value) → resume(continuation, value)
                     self.compile_expression(object)?; // continuation
                     if args.is_empty() {
-                        self.emit(Op::null);
+                        self.emit(Op::NULL);
                     } else {
                         self.compile_expression(&args[0].value)?;
                     }
-                    self.emit_u16(Op::resume, 0);
+                    self.emit_u16(Op::RESUME, 0);
                     return Ok(());
                 }
                 "isStarted" | "isRunning" | "isTerminated" | "isSuspended" => {
                     // Read state from continuation object
                     self.compile_expression(object)?;
                     let state_key = self.add_string_constant("__cont_state");
-                    self.emit_u16(Op::struct_get, state_key);
+                    self.emit_u16(Op::STRUCT_GET, state_key);
                     let expected = match method_name.as_str() {
                         "isStarted" => "running",
                         "isRunning" => "running",
@@ -1148,14 +1148,14 @@ impl Compiler {
                         _ => "unknown",
                     };
                     self.emit_constant(Value::String(Arc::from(expected)));
-                    self.emit(Op::dyn_eq);
+                    self.emit(Op::DYN_EQ);
                     return Ok(());
                 }
                 "getReturn" => {
                     // Read the return value from continuation
                     self.compile_expression(object)?;
                     let val_key = self.add_string_constant("__cont_value");
-                    self.emit_u16(Op::struct_get, val_key);
+                    self.emit_u16(Op::STRUCT_GET, val_key);
                     return Ok(());
                 }
                 // ── StringBuilder methods (same as VB/C#) ──────────
@@ -1317,17 +1317,17 @@ impl Compiler {
                     let line = self.line;
                     let c = self.current_chunk_idx;
                     common::dict::emit_new(&mut self.chunks[c], line);
-                    self.emit(Op::dup);
+                    self.emit(Op::DUP);
                     self.compile_expression(object)?;
                     let conn_key = self.add_string_constant("__conn");
-                    self.emit_u16(Op::struct_set, conn_key);
-                    self.emit(Op::drop);
-                    self.emit(Op::dup);
+                    self.emit_u16(Op::STRUCT_SET, conn_key);
+                    self.emit(Op::DROP);
+                    self.emit(Op::DUP);
                     if !args.is_empty() { self.compile_expression(&args[0].value)?; }
-                    else { self.emit(Op::null); }
+                    else { self.emit(Op::NULL); }
                     let sql_key = self.add_string_constant("__sql");
-                    self.emit_u16(Op::struct_set, sql_key);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::STRUCT_SET, sql_key);
+                    self.emit(Op::DROP);
                     return Ok(());
                 }
                 // $stmt->fetch() → query(conn, sql) then return first row
@@ -1335,22 +1335,22 @@ impl Compiler {
                     // Get __conn and __sql from statement object
                     self.compile_expression(object)?;
                     let conn_key = self.add_string_constant("__conn");
-                    self.emit(Op::dup);
-                    self.emit_u16(Op::struct_get, conn_key);
+                    self.emit(Op::DUP);
+                    self.emit_u16(Op::STRUCT_GET, conn_key);
                     // Stack: [stmt, conn]
                     let conn_tmp = self.define_local("__fetch_conn");
-                    self.emit_u16(Op::local_set, conn_tmp);
+                    self.emit_u16(Op::LOCAL_SET, conn_tmp);
                     let sql_key = self.add_string_constant("__sql");
-                    self.emit_u16(Op::struct_get, sql_key);
+                    self.emit_u16(Op::STRUCT_GET, sql_key);
                     // Stack: [sql]. Call scalar(conn, sql)
                     let scalar_fn = self.import("vybe:database", "scalar");
-                    self.emit_u16(Op::local_get, conn_tmp);
+                    self.emit_u16(Op::LOCAL_GET, conn_tmp);
                     // Need: [conn, sql] for host call — reorder
                     let sql_tmp = self.define_local("__fetch_sql");
-                    self.emit_u16(Op::local_set, sql_tmp);
-                    self.emit(Op::drop); // drop local_get result
-                    self.emit_u16(Op::local_get, conn_tmp);
-                    self.emit_u16(Op::local_get, sql_tmp);
+                    self.emit_u16(Op::LOCAL_SET, sql_tmp);
+                    self.emit(Op::DROP); // drop local_get result
+                    self.emit_u16(Op::LOCAL_GET, conn_tmp);
+                    self.emit_u16(Op::LOCAL_GET, sql_tmp);
                     self.emit_host_call(scalar_fn, 2);
                     return Ok(());
                 }
@@ -1358,16 +1358,16 @@ impl Compiler {
                 "fetchAll" | "fetchall" => {
                     self.compile_expression(object)?;
                     let conn_key = self.add_string_constant("__conn");
-                    self.emit(Op::dup);
-                    self.emit_u16(Op::struct_get, conn_key);
+                    self.emit(Op::DUP);
+                    self.emit_u16(Op::STRUCT_GET, conn_key);
                     let conn_tmp = self.define_local("__fetchall_conn");
-                    self.emit_u16(Op::local_set, conn_tmp);
+                    self.emit_u16(Op::LOCAL_SET, conn_tmp);
                     let sql_key = self.add_string_constant("__sql");
-                    self.emit_u16(Op::struct_get, sql_key);
+                    self.emit_u16(Op::STRUCT_GET, sql_key);
                     let sql_tmp = self.define_local("__fetchall_sql");
-                    self.emit_u16(Op::local_set, sql_tmp);
-                    self.emit_u16(Op::local_get, conn_tmp);
-                    self.emit_u16(Op::local_get, sql_tmp);
+                    self.emit_u16(Op::LOCAL_SET, sql_tmp);
+                    self.emit_u16(Op::LOCAL_GET, conn_tmp);
+                    self.emit_u16(Op::LOCAL_GET, sql_tmp);
                     let query_fn = self.import("vybe:database", "query");
                     self.emit_host_call(query_fn, 2);
                     return Ok(());
@@ -1408,17 +1408,17 @@ impl Compiler {
         match method {
             Expression::Identifier(name) => {
                 let prop_idx = self.add_string_constant(&name);
-                self.emit_u16(Op::struct_get, prop_idx);
+                self.emit_u16(Op::STRUCT_GET, prop_idx);
             }
             _ => {
                 self.compile_expression(method)?;
-                self.emit(Op::array_get);
+                self.emit(Op::ARRAY_GET);
             }
         }
         // call_ref expects: [func_ref, args...]. First arg is `this`.
         self.compile_expression(object)?;
         for arg in args { self.compile_expression(&arg.value)?; }
-        self.emit_u8(Op::call_ref, (args.len() + 1) as u8);
+        self.emit_u8(Op::CALL_REF, (args.len() + 1) as u8);
         Ok(())
     }
 
@@ -1429,11 +1429,11 @@ impl Compiler {
                 if let Expression::Identifier(method_name) = method {
                     if method_name == "suspend" {
                         if args.is_empty() {
-                            self.emit(Op::null);
+                            self.emit(Op::NULL);
                         } else {
                             self.compile_expression(&args[0].value)?;
                         }
-                        self.emit_u16(Op::suspend, 0);
+                        self.emit_u16(Op::SUSPEND, 0);
                         return Ok(());
                     }
                 }
@@ -1447,13 +1447,13 @@ impl Compiler {
                     if method_name == "__construct" {
                         if let Some(ref parent) = self.current_class_parent.clone() {
                             let idx = self.add_string_constant(parent);
-                            self.emit_u16(Op::global_get, idx);
+                            self.emit_u16(Op::GLOBAL_GET, idx);
                             for arg in args { self.compile_expression(&arg.value)?; }
-                            self.emit_u8(Op::call_ref, args.len() as u8);
+                            self.emit_u8(Op::CALL_REF, args.len() as u8);
                             // Store returned object as $this
                             if let Some(this_slot) = self.current_scope().resolve_local("this") {
-                                self.emit(Op::dup);
-                                self.emit_u16(Op::local_set, this_slot);
+                                self.emit(Op::DUP);
+                                self.emit_u16(Op::LOCAL_SET, this_slot);
                             }
                             return Ok(());
                         }
@@ -1467,15 +1467,15 @@ impl Compiler {
         match method {
             Expression::Identifier(name) => {
                 let idx = self.add_string_constant(&name);
-                self.emit_u16(Op::struct_get, idx);
+                self.emit_u16(Op::STRUCT_GET, idx);
             }
             _ => {
                 self.compile_expression(method)?;
-                self.emit(Op::array_get);
+                self.emit(Op::ARRAY_GET);
             }
         }
         for arg in args { self.compile_expression(&arg.value)?; }
-        self.emit_u8(Op::call_ref, args.len() as u8);
+        self.emit_u8(Op::CALL_REF, args.len() as u8);
         Ok(())
     }
 
@@ -1502,32 +1502,32 @@ impl Compiler {
                 if !args.is_empty() {
                     compile_args!();
                     common::io::emit_print(&mut self.chunks[c], args.len() as u8, line);
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
-                self.emit(Op::halt);
+                self.emit(Op::HALT);
                 return Ok(Some(()));
             }
             "__clone" => {
                 // clone $obj — create new object, copy properties
                 compile_args!(); // source obj on stack
                 let src_slot = self.define_local("__clone_src");
-                self.emit_u16(Op::local_set, src_slot);
+                self.emit_u16(Op::LOCAL_SET, src_slot);
                 // Create empty object
-                self.emit_u16(Op::struct_new, 0);
+                self.emit_u16(Op::STRUCT_NEW, 0);
                 let dest_slot = self.define_local("__clone_dest");
-                self.emit_u16(Op::local_set, dest_slot);
+                self.emit_u16(Op::LOCAL_SET, dest_slot);
                 // assign(dest, src)
                 common::bundle::emit_call_push_func(&mut self.chunks[c], "__vybe_assign", line);
-                self.emit_u16(Op::local_get, dest_slot);
-                self.emit_u16(Op::local_get, src_slot);
+                self.emit_u16(Op::LOCAL_GET, dest_slot);
+                self.emit_u16(Op::LOCAL_GET, src_slot);
                 common::bundle::emit_call_invoke(&mut self.chunks[c], 2, line);
                 return Ok(Some(()));
             }
             "__throw" => {
                 // throw as expression — compile arg and emit throw opcode
                 compile_args!();
-                self.emit(Op::throw);
-                self.emit(Op::null); // unreachable, but keeps stack balanced
+                self.emit(Op::THROW);
+                self.emit(Op::NULL); // unreachable, but keeps stack balanced
                 return Ok(Some(()));
             }
 
@@ -1539,9 +1539,9 @@ impl Compiler {
             "ltrim"        => { compile_args!(); common_strings::emit_trim_start(&mut self.chunks[c], line); return Ok(Some(())); }
             "rtrim"        => { compile_args!(); common_strings::emit_trim_end(&mut self.chunks[c], line); return Ok(Some(())); }
             "strpos" | "stripos"   => { compile_args!(); common_strings::emit_index_of(&mut self.chunks[c], line); return Ok(Some(())); }
-            "str_contains" => { compile_args!(); self.emit(Op::str_contains); return Ok(Some(())); }
-            "str_starts_with" => { compile_args!(); self.emit(Op::str_starts_with); return Ok(Some(())); }
-            "str_ends_with"   => { compile_args!(); self.emit(Op::str_ends_with); return Ok(Some(())); }
+            "str_contains" => { compile_args!(); self.emit(Op::STR_CONTAINS); return Ok(Some(())); }
+            "str_starts_with" => { compile_args!(); self.emit(Op::STR_STARTS_WITH); return Ok(Some(())); }
+            "str_ends_with"   => { compile_args!(); self.emit(Op::STR_ENDS_WITH); return Ok(Some(())); }
             "str_replace"  => {
                 // str_replace(search, replace, subject) — PHP arg order: [search, replace, subject]
                 // str_replace opcode expects [subject, search, replace] — reorder
@@ -1565,8 +1565,8 @@ impl Compiler {
             }
             "explode" | "str_split" => { compile_args!(); common_strings::emit_split(&mut self.chunks[c], line); return Ok(Some(())); }
             "str_repeat"   => { compile_args!(); common_strings::emit_repeat(&mut self.chunks[c], line); return Ok(Some(())); }
-            "str_pad"      => { compile_args!(); self.emit(Op::str_pad_start); return Ok(Some(())); }
-            "chr"          => { compile_args!(); self.emit(Op::str_from_char_code); return Ok(Some(())); }
+            "str_pad"      => { compile_args!(); self.emit(Op::STR_PAD_START); return Ok(Some(())); }
+            "chr"          => { compile_args!(); self.emit(Op::STR_FROM_CHAR_CODE); return Ok(Some(())); }
             "ord"          => {
                 compile_args!();
                 let idx = self.import("vybe:string", "charCodeAt");
@@ -1604,48 +1604,48 @@ impl Compiler {
             "ucfirst" => {
                 // substr(0,1).toUpper . substr(1) — inline bytecode
                 compile_args!();
-                self.emit(Op::dup);
+                self.emit(Op::DUP);
                 self.emit_constant(Value::I32(0));
                 self.emit_constant(Value::I32(1));
                 common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                 common_strings::emit_to_upper(&mut self.chunks[self.current_chunk_idx], self.line);
                 // swap: [orig, upper_first]
                 let tmp = self.define_local("__ucf_tmp");
-                self.emit_u16(Op::local_set, tmp);
+                self.emit_u16(Op::LOCAL_SET, tmp);
                 self.emit_constant(Value::I32(1));
                 self.emit_constant(Value::I32(i32::MAX));
                 common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
-                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 // swap order for concat: [upper_first, rest]
                 let tmp2 = self.define_local("__ucf_tmp2");
-                self.emit_u16(Op::local_set, tmp2);
+                self.emit_u16(Op::LOCAL_SET, tmp2);
                 // now stack: [rest], need [upper_first, rest]
                 let tmp3 = self.define_local("__ucf_tmp3");
-                self.emit_u16(Op::local_set, tmp3);
-                self.emit_u16(Op::local_get, tmp2);
-                self.emit_u16(Op::local_get, tmp3);
+                self.emit_u16(Op::LOCAL_SET, tmp3);
+                self.emit_u16(Op::LOCAL_GET, tmp2);
+                self.emit_u16(Op::LOCAL_GET, tmp3);
                 common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
             "lcfirst" => {
                 compile_args!();
-                self.emit(Op::dup);
+                self.emit(Op::DUP);
                 self.emit_constant(Value::I32(0));
                 self.emit_constant(Value::I32(1));
                 common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                 common_strings::emit_to_lower(&mut self.chunks[self.current_chunk_idx], self.line);
                 let tmp = self.define_local("__lcf_tmp");
-                self.emit_u16(Op::local_set, tmp);
+                self.emit_u16(Op::LOCAL_SET, tmp);
                 self.emit_constant(Value::I32(1));
                 self.emit_constant(Value::I32(i32::MAX));
                 common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
-                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 let tmp2 = self.define_local("__lcf_tmp2");
-                self.emit_u16(Op::local_set, tmp2);
+                self.emit_u16(Op::LOCAL_SET, tmp2);
                 let tmp3 = self.define_local("__lcf_tmp3");
-                self.emit_u16(Op::local_set, tmp3);
-                self.emit_u16(Op::local_get, tmp2);
-                self.emit_u16(Op::local_get, tmp3);
+                self.emit_u16(Op::LOCAL_SET, tmp3);
+                self.emit_u16(Op::LOCAL_GET, tmp2);
+                self.emit_u16(Op::LOCAL_GET, tmp3);
                 common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line);
                 return Ok(Some(()));
             }
@@ -1672,14 +1672,14 @@ impl Compiler {
             "strval"   => { compile_args!(); common::strings::emit_to_string(&mut self.chunks[c], line); return Ok(Some(())); }
             "boolval"  => { compile_args!(); common::convert::emit_to_bool(&mut self.chunks[c], line); return Ok(Some(())); }
             "is_numeric" => { compile_args!(); common::convert::emit_is_numeric(&mut self.chunks[c], line); return Ok(Some(())); }
-            "is_null"  => { compile_args!(); self.emit(Op::ref_is_null); return Ok(Some(())); }
+            "is_null"  => { compile_args!(); self.emit(Op::REF_IS_NULL); return Ok(Some(())); }
 
             // ── Array opcodes (common::collections) ─────────────────
             "count" | "sizeof" => {
                 // Use smart length — works on arrays, strings, and objects with __get_length
                 compile_args!();
                 let obj_slot = self.define_local("__count_obj");
-                self.emit_u16(Op::local_set, obj_slot);
+                self.emit_u16(Op::LOCAL_SET, obj_slot);
                 common::expressions::emit_smart_length(&mut self.chunks[c], obj_slot, line);
                 return Ok(Some(()));
             }
@@ -1712,18 +1712,18 @@ impl Compiler {
                 // Actually: push func first, then arg. But arg is already on stack.
                 // Use the pattern: save arg, push func, push arg back, call
                 let tmp = self.define_local("__sort_tmp");
-                self.emit_u16(Op::local_set, tmp);
+                self.emit_u16(Op::LOCAL_SET, tmp);
                 common::bundle::emit_call_push_func(&mut self.chunks[c], "__vybe_sorted", line);
-                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 common::bundle::emit_call_invoke(&mut self.chunks[c], 1, line);
                 return Ok(Some(()));
             }
             "array_sum" => {
                 compile_args!();
                 let tmp = self.define_local("__sum_tmp");
-                self.emit_u16(Op::local_set, tmp);
+                self.emit_u16(Op::LOCAL_SET, tmp);
                 common::bundle::emit_call_push_func(&mut self.chunks[c], "__vybe_sum", line);
-                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 common::bundle::emit_call_invoke(&mut self.chunks[c], 1, line);
                 return Ok(Some(()));
             }
@@ -1735,10 +1735,10 @@ impl Compiler {
                 if args.len() < 2 { return Ok(None); }
                 self.compile_expression(&args[0].value)?; // callback
                 let fn_slot = self.define_local("__map_fn");
-                self.emit_u16(Op::local_set, fn_slot);
+                self.emit_u16(Op::LOCAL_SET, fn_slot);
                 self.compile_expression(&args[1].value)?; // array
                 let arr_slot = self.define_local("__map_arr");
-                self.emit_u16(Op::local_set, arr_slot);
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
                 let res_slot = self.define_local("__map_res");
                 let i_slot = self.define_local("__map_i");
                 common::loops::emit_map(&mut self.chunks[c], fn_slot, arr_slot, res_slot, i_slot, line);
@@ -1749,12 +1749,12 @@ impl Compiler {
                 if args.is_empty() { return Ok(None); }
                 self.compile_expression(&args[0].value)?; // array
                 let arr_slot = self.define_local("__filt_arr");
-                self.emit_u16(Op::local_set, arr_slot);
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
                 if args.len() >= 2 {
                     // With callback
                     self.compile_expression(&args[1].value)?;
                     let fn_slot = self.define_local("__filt_fn");
-                    self.emit_u16(Op::local_set, fn_slot);
+                    self.emit_u16(Op::LOCAL_SET, fn_slot);
                     let res_slot = self.define_local("__filt_res");
                     let i_slot = self.define_local("__filt_i");
                     let elem_slot = self.define_local("__filt_elem");
@@ -1764,24 +1764,24 @@ impl Compiler {
                 // No callback — filter falsy values inline
                 let res_slot = self.define_local("__filt_res");
                 let i_slot = self.define_local("__filt_i");
-                self.emit_u16(Op::array_new, 0);
-                self.emit_u16(Op::local_set, res_slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::ARRAY_NEW, 0);
+                self.emit_u16(Op::LOCAL_SET, res_slot);
+                self.emit(Op::DROP);
                 let (loop_start, exit) = common::loops::emit_for_in_start(&mut self.chunks[c], arr_slot, i_slot, line);
                 // element on stack — test truthiness
                 let val_slot = self.define_local("__filt_val");
-                self.emit_u16(Op::local_set, val_slot);
-                self.emit(Op::drop);
-                self.emit_u16(Op::local_get, val_slot);
-                self.emit(Op::dyn_to_bool);
-                let skip = self.emit_jump(Op::br_if_false);
-                self.emit_u16(Op::local_get, res_slot);
-                self.emit_u16(Op::local_get, val_slot);
-                self.emit(Op::array_push);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, val_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, val_slot);
+                self.emit(Op::DYN_TO_BOOL);
+                let skip = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, res_slot);
+                self.emit_u16(Op::LOCAL_GET, val_slot);
+                self.emit(Op::ARRAY_PUSH);
+                self.emit(Op::DROP);
                 self.patch_jump(skip);
                 common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
-                self.emit_u16(Op::local_get, res_slot);
+                self.emit_u16(Op::LOCAL_GET, res_slot);
                 return Ok(Some(()));
             }
             "array_reduce" => {
@@ -1789,35 +1789,35 @@ impl Compiler {
                 if args.len() < 2 { return Ok(None); }
                 self.compile_expression(&args[0].value)?; // array
                 let arr_slot = self.define_local("__red_arr");
-                self.emit_u16(Op::local_set, arr_slot);
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
                 self.compile_expression(&args[1].value)?; // callback
                 let fn_slot = self.define_local("__red_fn");
-                self.emit_u16(Op::local_set, fn_slot);
+                self.emit_u16(Op::LOCAL_SET, fn_slot);
                 // If initial value provided, set acc to it; otherwise use arr[0]
                 if args.len() >= 3 {
                     self.compile_expression(&args[2].value)?;
                     let acc_slot = self.define_local("__red_acc");
-                    self.emit_u16(Op::local_set, acc_slot);
+                    self.emit_u16(Op::LOCAL_SET, acc_slot);
                     let i_slot = self.define_local("__red_i");
                     // Start from 0 since we have an initial value
                     self.emit_constant(Value::I32(0));
-                    self.emit_u16(Op::local_set, i_slot);
+                    self.emit_u16(Op::LOCAL_SET, i_slot);
                     // Inline loop with initial accumulator
                     let loop_start = self.current_offset();
-                    self.emit_u16(Op::local_get, i_slot);
-                    self.emit_u16(Op::local_get, arr_slot);
-                    self.emit(Op::array_length);
-                    self.emit(Op::dyn_lt);
-                    let exit = self.emit_jump(Op::br_if_false);
-                    self.emit_u16(Op::local_get, fn_slot);
-                    self.emit_u16(Op::local_get, acc_slot);
-                    self.emit_u16(Op::local_get, arr_slot);
-                    self.emit_u16(Op::local_get, i_slot);
-                    self.emit(Op::array_get);
-                    self.emit_u8(Op::call_ref, 2);
-                    self.emit_u16(Op::local_set, acc_slot);
+                    self.emit_u16(Op::LOCAL_GET, i_slot);
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit(Op::ARRAY_LENGTH);
+                    self.emit(Op::DYN_LT);
+                    let exit = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, fn_slot);
+                    self.emit_u16(Op::LOCAL_GET, acc_slot);
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit_u16(Op::LOCAL_GET, i_slot);
+                    self.emit(Op::ARRAY_GET);
+                    self.emit_u8(Op::CALL_REF, 2);
+                    self.emit_u16(Op::LOCAL_SET, acc_slot);
                     common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, loop_start, exit, line);
-                    self.emit_u16(Op::local_get, acc_slot);
+                    self.emit_u16(Op::LOCAL_GET, acc_slot);
                 } else {
                     let acc_slot = self.define_local("__red_acc");
                     let i_slot = self.define_local("__red_i");
@@ -1830,10 +1830,10 @@ impl Compiler {
                 if args.len() < 2 { return Ok(None); }
                 self.compile_expression(&args[0].value)?; // array
                 let arr_slot = self.define_local("__walk_arr");
-                self.emit_u16(Op::local_set, arr_slot);
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
                 self.compile_expression(&args[1].value)?; // callback
                 let fn_slot = self.define_local("__walk_fn");
-                self.emit_u16(Op::local_set, fn_slot);
+                self.emit_u16(Op::LOCAL_SET, fn_slot);
                 let i_slot = self.define_local("__walk_i");
                 common::loops::emit_foreach(&mut self.chunks[c], fn_slot, arr_slot, i_slot, line);
                 return Ok(Some(()));
@@ -1841,9 +1841,9 @@ impl Compiler {
             "usort" => {
                 compile_args!();
                 let tmp = self.define_local("__usort_tmp");
-                self.emit_u16(Op::local_set, tmp);
+                self.emit_u16(Op::LOCAL_SET, tmp);
                 common::bundle::emit_call_push_func(&mut self.chunks[c], "__vybe_sorted", line);
-                self.emit_u16(Op::local_get, tmp);
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 common::bundle::emit_call_invoke(&mut self.chunks[c], 1, line);
                 return Ok(Some(()));
             }
@@ -1856,7 +1856,7 @@ impl Compiler {
                 common::dict::emit_new(&mut self.chunks[c], line);
                 for arg in args {
                     if let Expression::Str(name) = &arg.value {
-                        self.emit(Op::dup);
+                        self.emit(Op::DUP);
                         self.emit_var_get(name);
                         let line = self.line;
                         common::dict::emit_set_const_key(&mut self.chunks[c], name, line);
@@ -1881,16 +1881,16 @@ impl Compiler {
             "is_string" => {
                 // Check ref_is_null first, then check if it's a string via str_length (doesn't throw on strings)
                 compile_args!();
-                self.emit(Op::dup);
-                self.emit(Op::ref_is_null);
-                let is_null = self.emit_jump(Op::br_if_true);
+                self.emit(Op::DUP);
+                self.emit(Op::REF_IS_NULL);
+                let is_null = self.emit_jump(Op::BR_IF_TRUE);
                 // Try str_length — if it doesn't crash, it's a string-like value
                 // Simplest: use convert toString and check if unchanged (approximate)
-                self.emit(Op::r#true); // approximate: treat as true for now
-                let end = self.emit_jump(Op::br);
+                self.emit(Op::TRUE); // approximate: treat as true for now
+                let end = self.emit_jump(Op::BR);
                 self.patch_jump(is_null);
-                self.emit(Op::drop);
-                self.emit(Op::r#false);
+                self.emit(Op::DROP);
+                self.emit(Op::FALSE);
                 self.patch_jump(end);
                 return Ok(Some(()));
             }
@@ -1907,16 +1907,16 @@ impl Compiler {
             "is_bool" => {
                 compile_args!();
                 // Approximate: check dyn_to_bool produces same value
-                self.emit(Op::dup);
-                self.emit(Op::dyn_to_bool);
-                self.emit(Op::eq);
+                self.emit(Op::DUP);
+                self.emit(Op::DYN_TO_BOOL);
+                self.emit(Op::EQ);
                 return Ok(Some(()));
             }
             "is_object" => {
                 compile_args!();
-                self.emit(Op::dup);
-                self.emit(Op::ref_is_null);
-                self.emit(Op::dyn_not);
+                self.emit(Op::DUP);
+                self.emit(Op::REF_IS_NULL);
+                self.emit(Op::DYN_NOT);
                 return Ok(Some(()));
             }
             "gettype" => {
@@ -1931,39 +1931,39 @@ impl Compiler {
                     self.compile_expression(&args[1].value)?;
                     if let Expression::Str(name) = &args[0].value {
                         let idx = self.add_string_constant(name);
-                        self.emit_u16(Op::global_set, idx);
+                        self.emit_u16(Op::GLOBAL_SET, idx);
                         self.defined_globals.insert(name.clone());
                     }
                 }
-                self.emit(Op::r#true);
+                self.emit(Op::TRUE);
                 return Ok(Some(()));
             }
             "defined" => {
                 if let Some(arg) = args.first() {
                     if let Expression::Str(name) = &arg.value {
                         let idx = self.add_string_constant(name);
-                        self.emit_u16(Op::global_get, idx);
-                        self.emit(Op::ref_is_null);
-                        self.emit(Op::dyn_not);
-                    } else { self.emit(Op::r#false); }
-                } else { self.emit(Op::r#false); }
+                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit(Op::REF_IS_NULL);
+                        self.emit(Op::DYN_NOT);
+                    } else { self.emit(Op::FALSE); }
+                } else { self.emit(Op::FALSE); }
                 return Ok(Some(()));
             }
             "function_exists" | "class_exists" => {
                 if let Some(arg) = args.first() {
                     if let Expression::Str(name) = &arg.value {
                         let idx = self.add_string_constant(&name.to_lowercase());
-                        self.emit_u16(Op::global_get, idx);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
                     } else {
                         self.compile_expression(&arg.value)?;
                     }
-                    self.emit(Op::ref_is_null);
-                    self.emit(Op::dyn_not);
-                } else { self.emit(Op::r#false); }
+                    self.emit(Op::REF_IS_NULL);
+                    self.emit(Op::DYN_NOT);
+                } else { self.emit(Op::FALSE); }
                 return Ok(Some(()));
             }
             "ob_start" | "ob_end_clean" | "ob_get_clean" => {
-                self.emit(Op::null);
+                self.emit(Op::NULL);
                 return Ok(Some(()));
             }
 
@@ -2013,17 +2013,17 @@ impl Compiler {
                 self.emit_host_call(i, 1);
                 return Ok(Some(()));
             }
-            "curl_init" => { self.emit(Op::null); return Ok(Some(())); }
-            "curl_setopt" => { compile_args!(); self.emit(Op::drop); self.emit(Op::drop); self.emit(Op::null); return Ok(Some(())); }
+            "curl_init" => { self.emit(Op::NULL); return Ok(Some(())); }
+            "curl_setopt" => { compile_args!(); self.emit(Op::DROP); self.emit(Op::DROP); self.emit(Op::NULL); return Ok(Some(())); }
             "curl_exec" => {
                 compile_args!();
                 let i = self.import("wasi:http", "get");
                 self.emit_host_call(i, 1);
                 return Ok(Some(()));
             }
-            "curl_close" => { compile_args!(); self.emit(Op::drop); self.emit(Op::null); return Ok(Some(())); }
-            "http_response_code" => { compile_args!(); self.emit(Op::null); return Ok(Some(())); }
-            "header" => { compile_args!(); self.emit(Op::drop); self.emit(Op::null); return Ok(Some(())); }
+            "curl_close" => { compile_args!(); self.emit(Op::DROP); self.emit(Op::NULL); return Ok(Some(())); }
+            "http_response_code" => { compile_args!(); self.emit(Op::NULL); return Ok(Some(())); }
+            "header" => { compile_args!(); self.emit(Op::DROP); self.emit(Op::NULL); return Ok(Some(())); }
 
             // ── Environment / CLI (existing wasi:cli host) ──
             "getenv" => { compile_args!(); let i = self.import("wasi:cli", "getEnv"); self.emit_host_call(i, 1); return Ok(Some(())); }
@@ -2050,28 +2050,28 @@ impl Compiler {
             "pathinfo" => {
                 // Return assoc array with dirname, basename, extension, filename
                 compile_args!();
-                self.emit(Op::dup);
+                self.emit(Op::DUP);
                 let c = self.current_chunk_idx;
                 let line = self.line;
                 common::dict::emit_new(&mut self.chunks[c], line);
                 // dirname
-                self.emit(Op::dup); self.emit(Op::dup);
+                self.emit(Op::DUP); self.emit(Op::DUP);
                 let di = self.import("wasi:filesystem", "pathGetDirectory");
                 self.emit_host_call(di, 1);
                 let dk = self.add_string_constant("dirname");
-                self.emit_u16(Op::struct_set, dk); self.emit(Op::drop);
+                self.emit_u16(Op::STRUCT_SET, dk); self.emit(Op::DROP);
                 // basename
-                self.emit(Op::dup); self.emit(Op::dup);
+                self.emit(Op::DUP); self.emit(Op::DUP);
                 let bi = self.import("wasi:filesystem", "pathGetFileName");
                 self.emit_host_call(bi, 1);
                 let bk = self.add_string_constant("basename");
-                self.emit_u16(Op::struct_set, bk); self.emit(Op::drop);
+                self.emit_u16(Op::STRUCT_SET, bk); self.emit(Op::DROP);
                 // extension
-                self.emit(Op::dup); self.emit(Op::dup);
+                self.emit(Op::DUP); self.emit(Op::DUP);
                 let ei = self.import("wasi:filesystem", "pathGetExtension");
                 self.emit_host_call(ei, 1);
                 let ek = self.add_string_constant("extension");
-                self.emit_u16(Op::struct_set, ek); self.emit(Op::drop);
+                self.emit_u16(Op::STRUCT_SET, ek); self.emit(Op::DROP);
                 // Drop extra path copy, keep dict
                 // Stack management is messy — simplified: just return the dict
                 return Ok(Some(()));
@@ -2104,7 +2104,7 @@ impl Compiler {
                 // usleep(microseconds) — convert to ms for sleep
                 compile_args!();
                 self.emit_constant(Value::F64(1000.0));
-                self.emit(Op::f64_div);
+                self.emit(Op::F64_DIV);
                 let i = self.import("wasi:clocks", "sleep");
                 self.emit_host_call(i, 1);
                 return Ok(Some(()));
@@ -2158,9 +2158,9 @@ impl Compiler {
             "log1p" => { compile_args!(); common::math::emit_log(&mut self.chunks[c], line); return Ok(Some(())); }
             "pi" => { let i = self.import("vybe:math", "PI"); self.emit_host_call(i, 0); return Ok(Some(())); }
             "m_pi" => { let i = self.import("vybe:math", "PI"); self.emit_host_call(i, 0); return Ok(Some(())); }
-            "intdiv" => { compile_args!(); self.emit(Op::f64_div); self.emit(Op::f64_trunc); return Ok(Some(())); }
+            "intdiv" => { compile_args!(); self.emit(Op::F64_DIV); self.emit(Op::F64_TRUNC); return Ok(Some(())); }
             "fmod" => { compile_args!(); { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }; return Ok(Some(())); }
-            "fdiv" => { compile_args!(); self.emit(Op::f64_div); return Ok(Some(())); }
+            "fdiv" => { compile_args!(); self.emit(Op::F64_DIV); return Ok(Some(())); }
 
             // ── Network / Sockets (existing vybe:net host — same as VB/C#) ──
             "dns_get_record" | "gethostbyname" => { compile_args!(); let i = self.import("vybe:net", "dnsResolve"); self.emit_host_call(i, 1); return Ok(Some(())); }
@@ -2189,7 +2189,7 @@ impl Compiler {
 
             // ── File handles (additional) ──
             "fopen" => { compile_args!(); let i = self.import("wasi:filesystem", "openFile"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
-            "feof" => { compile_args!(); self.emit(Op::ref_is_null); return Ok(Some(())); }
+            "feof" => { compile_args!(); self.emit(Op::REF_IS_NULL); return Ok(Some(())); }
 
             // ── Filesystem (more) ──
             "file_append_contents" | "fopen_append" => { compile_args!(); let i = self.import("wasi:filesystem", "appendFile"); self.emit_host_call(i, args.len() as u8); return Ok(Some(())); }
@@ -2234,7 +2234,7 @@ impl Compiler {
             }
             "mysqli_num_rows" => {
                 compile_args!();
-                self.emit(Op::array_length);
+                self.emit(Op::ARRAY_LENGTH);
                 return Ok(Some(()));
             }
 
@@ -2254,7 +2254,7 @@ impl Compiler {
             "mutex_create" => {
                 // mutex_create() → allocate lock word, return address
                 let alloc_fn = self.chunks[c].add_import("wasi:thread", "allocLock");
-                self.chunks[c].emit_op_u16(Op::call_import, alloc_fn, line);
+                self.chunks[c].emit_op_u16(Op::CALL_IMPORT, alloc_fn, line);
                 self.chunks[c].emit(0, line);
                 return Ok(Some(()));
             }
@@ -2262,18 +2262,18 @@ impl Compiler {
                 // mutex_lock($lock) → acquire spinlock
                 compile_args!();
                 let lock_slot = self.define_local("__lock_addr");
-                self.emit_u16(Op::local_set, lock_slot);
+                self.emit_u16(Op::LOCAL_SET, lock_slot);
                 common::threading::emit_lock_acquire(&mut self.chunks[c], lock_slot, line);
-                self.emit(Op::null);
+                self.emit(Op::NULL);
                 return Ok(Some(()));
             }
             "mutex_unlock" => {
                 // mutex_unlock($lock) → release spinlock
                 compile_args!();
                 let lock_slot = self.define_local("__unlock_addr");
-                self.emit_u16(Op::local_set, lock_slot);
+                self.emit_u16(Op::LOCAL_SET, lock_slot);
                 common::threading::emit_lock_release(&mut self.chunks[c], lock_slot, line);
-                self.emit(Op::null);
+                self.emit(Op::NULL);
                 return Ok(Some(()));
             }
 
@@ -2302,7 +2302,7 @@ impl Compiler {
         let c = self.current_chunk_idx;
         common::dict::emit_new(&mut self.chunks[c], line);
         for (i, elem) in elements.iter().enumerate() {
-            self.emit(Op::dup); // keep dict on stack
+            self.emit(Op::DUP); // keep dict on stack
             self.compile_expression(&elem.value)?;
             let key_str = match &elem.key {
                 Some(Expression::Str(s)) => s.clone(),
@@ -2324,7 +2324,7 @@ impl Compiler {
             // Special: new Fiber(fn) → create continuation via cont_new
             if name == "Fiber" && args.len() >= 1 {
                 self.compile_expression(&args[0].value)?;
-                self.emit(Op::cont_new);
+                self.emit(Op::CONT_NEW);
                 return Ok(());
             }
             // Special: new Exception/RuntimeException/etc → cross-language exception object
@@ -2343,13 +2343,13 @@ impl Compiler {
                 } else {
                     self.emit_constant(Value::String(Arc::from("")));
                 }
-                self.emit_u16(Op::local_set, msg_slot);
+                self.emit_u16(Op::LOCAL_SET, msg_slot);
                 let line = self.line;
                 let c = self.current_chunk_idx;
                 common::errors::emit_exception_constructor(
                     &mut self.chunks[c], this_slot, canonical, msg_slot, line,
                 );
-                self.emit_u16(Op::local_get, this_slot);
+                self.emit_u16(Op::LOCAL_GET, this_slot);
                 return Ok(());
             }
             // Special: SPL/collections → same host types as VB/C# (cross-language compatible)
@@ -2420,7 +2420,7 @@ impl Compiler {
             // Special: new PDO(dsn) → vybe:database connect
             if name == "PDO" || name == "mysqli" {
                 // PDO(dsn, [user, pass]) — connect to database
-                if args.is_empty() { self.emit(Op::null); return Ok(()); }
+                if args.is_empty() { self.emit(Op::NULL); return Ok(()); }
                 self.compile_expression(&args[0].value)?; // DSN string
                 let connect = self.import("vybe:database", "connect");
                 self.emit_host_call(connect, 1);
@@ -2439,7 +2439,7 @@ impl Compiler {
                 // Known class — use global_get + call_ref
                 self.compile_expression(class)?;
                 for arg in args { self.compile_expression(&arg.value)?; }
-                self.emit_u8(Op::call_ref, args.len() as u8);
+                self.emit_u8(Op::CALL_REF, args.len() as u8);
             } else {
                 // Unresolved class → WASM import
                 let idx = self.import("*", &lower);
@@ -2451,7 +2451,7 @@ impl Compiler {
         // Dynamic expression (e.g. new $className()) — keep global_get + call_ref
         self.compile_expression(class)?;
         for arg in args { self.compile_expression(&arg.value)?; }
-        self.emit_u8(Op::call_ref, args.len() as u8);
+        self.emit_u8(Op::CALL_REF, args.len() as u8);
         Ok(())
     }
 
@@ -2587,17 +2587,17 @@ impl Compiler {
             let trait_lower = trait_name.to_lowercase();
             // Get trait constructor, call with 0 args to get prototype with bound methods
             let trait_c = self.chunks[ctor_idx].add_constant(Value::String(Arc::from(trait_lower.as_str())));
-            self.chunks[ctor_idx].emit_op_u16(Op::global_get, trait_c, line);
-            self.chunks[ctor_idx].emit_op_u8(Op::call_ref, 0, line);
+            self.chunks[ctor_idx].emit_op_u16(Op::GLOBAL_GET, trait_c, line);
+            self.chunks[ctor_idx].emit_op_u8(Op::CALL_REF, 0, line);
             // assign(this, traitPrototype) — copies all methods onto this
             let trait_slot = self.define_local(&format!("__trait_{}", trait_lower));
-            self.chunks[ctor_idx].emit_op_u16(Op::local_set, trait_slot, line);
-            self.chunks[ctor_idx].emit_op(Op::drop, line);
+            self.chunks[ctor_idx].emit_op_u16(Op::LOCAL_SET, trait_slot, line);
+            self.chunks[ctor_idx].emit_op(Op::DROP, line);
             common::bundle::emit_call_push_func(&mut self.chunks[ctor_idx], "__vybe_assign", line);
-            self.chunks[ctor_idx].emit_op_u16(Op::local_get, this_slot, line);
-            self.chunks[ctor_idx].emit_op_u16(Op::local_get, trait_slot, line);
+            self.chunks[ctor_idx].emit_op_u16(Op::LOCAL_GET, this_slot, line);
+            self.chunks[ctor_idx].emit_op_u16(Op::LOCAL_GET, trait_slot, line);
             common::bundle::emit_call_invoke(&mut self.chunks[ctor_idx], 2, line);
-            self.chunks[ctor_idx].emit_op(Op::drop, line);
+            self.chunks[ctor_idx].emit_op(Op::DROP, line);
         }
 
         if parent_name.is_empty() {
@@ -2614,15 +2614,15 @@ impl Compiler {
         // Set field defaults on the instance (only for base classes — child gets them from parent)
         if parent_name.is_empty() {
             for (field_name, default) in &field_defaults {
-                self.emit_u16(Op::local_get, this_slot);
+                self.emit_u16(Op::LOCAL_GET, this_slot);
                 if let Some(val) = default {
                     self.compile_expression(val)?;
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
                 let key = self.add_string_constant(field_name);
-                self.emit_u16(Op::struct_set, key);
-                self.emit(Op::drop);
+                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit(Op::DROP);
             }
         }
 
@@ -2630,17 +2630,17 @@ impl Compiler {
         if let Some(init_ci) = init_chunk {
             let line = self.line;
             common::functions::emit_ref_func(&mut self.chunks[ctor_idx], init_ci, 0, line);
-            self.emit_u16(Op::local_get, this_slot); // $this
+            self.emit_u16(Op::LOCAL_GET, this_slot); // $this
             for i in 0..user_params {
-                self.emit_u16(Op::local_get, (i + 1) as u16);
+                self.emit_u16(Op::LOCAL_GET, (i + 1) as u16);
             }
-            self.emit_u8(Op::call_ref, (user_params + 1) as u8);
+            self.emit_u8(Op::CALL_REF, (user_params + 1) as u8);
             if !parent_name.is_empty() {
                 // Child class: __construct called parent::__construct which created
                 // the object. __construct returns $this. Use it as our __this.
-                self.emit_u16(Op::local_set, this_slot);
+                self.emit_u16(Op::LOCAL_SET, this_slot);
             } else {
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
         }
 
@@ -2655,15 +2655,15 @@ impl Compiler {
             }
             // Set child field defaults
             for (field_name, default) in &field_defaults {
-                self.emit_u16(Op::local_get, this_slot);
+                self.emit_u16(Op::LOCAL_GET, this_slot);
                 if let Some(val) = default {
                     self.compile_expression(val)?;
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
                 let key = self.add_string_constant(field_name);
-                self.emit_u16(Op::struct_set, key);
-                self.emit(Op::drop);
+                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit(Op::DROP);
             }
         }
 
@@ -2707,41 +2707,41 @@ impl Compiler {
         // For enum cases: create objects with ->name and ->value accessors
         let _is_enum = !constants.is_empty() && constants.iter().all(|(_, v)| !matches!(v, Expression::Number(_) | Expression::Bool(_)) || true);
         for (const_name, const_val) in &constants {
-            self.emit_u16(Op::local_get, class_local);
+            self.emit_u16(Op::LOCAL_GET, class_local);
             // Build enum case object: { name: "CaseName", value: val, __type: "ClassName" }
             let line = self.line;
             let c = self.current_chunk_idx;
             common::dict::emit_new(&mut self.chunks[c], line);
             // name property
-            self.emit(Op::dup);
+            self.emit(Op::DUP);
             self.emit_constant(Value::String(Arc::from(const_name.as_str())));
             let name_key = self.add_string_constant("name");
-            self.emit_u16(Op::struct_set, name_key);
-            self.emit(Op::drop);
+            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit(Op::DROP);
             // value property
-            self.emit(Op::dup);
+            self.emit(Op::DUP);
             self.compile_expression(const_val)?;
             let val_key = self.add_string_constant("value");
-            self.emit_u16(Op::struct_set, val_key);
-            self.emit(Op::drop);
+            self.emit_u16(Op::STRUCT_SET, val_key);
+            self.emit(Op::DROP);
             // __type property for instanceof
-            self.emit(Op::dup);
+            self.emit(Op::DUP);
             self.emit_constant(Value::String(Arc::from(class_name.as_str())));
             let type_key = self.add_string_constant("__type");
-            self.emit_u16(Op::struct_set, type_key);
-            self.emit(Op::drop);
+            self.emit_u16(Op::STRUCT_SET, type_key);
+            self.emit(Op::DROP);
             // Store on class constructor
             let key = self.add_string_constant(const_name);
-            self.emit_u16(Op::struct_set, key);
-            self.emit(Op::drop);
+            self.emit_u16(Op::STRUCT_SET, key);
+            self.emit(Op::DROP);
         }
 
         // Inherit statics from parent
         if !parent_name.is_empty() {
-            self.emit_u16(Op::local_get, class_local);
+            self.emit_u16(Op::LOCAL_GET, class_local);
             let line = self.line;
             common::classes::emit_inherit_statics(&mut self.chunks[self.current_chunk_idx], &parent_name, line);
-            self.emit(Op::drop);
+            self.emit(Op::DROP);
         }
 
         // Register type entry
@@ -2802,8 +2802,8 @@ impl Compiler {
 
         // __construct returns $this so child class wrappers can capture the parent-created object
         if decl.name == "__construct" {
-            self.emit_u16(Op::local_get, 1); // $this at slot 1
-            self.emit(Op::r#return);
+            self.emit_u16(Op::LOCAL_GET, 1); // $this at slot 1
+            self.emit(Op::RETURN);
         }
         let line = self.line;
         common::functions::emit_function_epilogue(&mut self.chunks[self.current_chunk_idx], line);

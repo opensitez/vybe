@@ -16,9 +16,9 @@ fn shared_new_creates_typed_object() {
     chunk.local_count = 2;
 
     let type_id = chunk.add_constant(Value::I32(tid as i32));
-    chunk.emit_op_u16(Op::r#const, type_id, 0);
-    chunk.emit_op(Op::shared_new, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, type_id, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
@@ -43,21 +43,21 @@ fn shared_struct_get_set() {
 
     // Create shared object
     let type_id = chunk.add_constant(Value::I32(tid as i32));
-    chunk.emit_op_u16(Op::r#const, type_id, 0);
-    chunk.emit_op(Op::shared_new, 0);
-    chunk.emit_op_u16(Op::local_set, 1, 0);
+    chunk.emit_op_u16(Op::CONST, type_id, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // Set field 0 to 42
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let val = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::r#const, val, 0);
-    chunk.emit_op_u16(Op::shared_struct_set, 0, 0); // field 0
+    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_op_u16(Op::SHARED_STRUCT_SET, 0, 0); // field 0
 
     // Read field 0
-    chunk.emit_op_u16(Op::local_get, 1, 0);
-    chunk.emit_op_u16(Op::shared_struct_get, 0, 0); // field 0
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    chunk.emit_op_u16(Op::SHARED_STRUCT_GET, 0, 0); // field 0
 
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 42);
@@ -73,27 +73,27 @@ fn shared_array_get_set() {
     let v10 = chunk.add_constant(Value::I32(10));
     let v20 = chunk.add_constant(Value::I32(20));
     let v30 = chunk.add_constant(Value::I32(30));
-    chunk.emit_op_u16(Op::r#const, v10, 0);
-    chunk.emit_op_u16(Op::r#const, v20, 0);
-    chunk.emit_op_u16(Op::r#const, v30, 0);
-    chunk.emit_op_u16(Op::array_new, 3, 0);
-    chunk.emit_op_u16(Op::local_set, 1, 0);
+    chunk.emit_op_u16(Op::CONST, v10, 0);
+    chunk.emit_op_u16(Op::CONST, v20, 0);
+    chunk.emit_op_u16(Op::CONST, v30, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // shared_array_set: arr[1] = 99
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let idx = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::r#const, idx, 0);
+    chunk.emit_op_u16(Op::CONST, idx, 0);
     let v99 = chunk.add_constant(Value::I32(99));
-    chunk.emit_op_u16(Op::r#const, v99, 0);
-    chunk.emit_op(Op::shared_array_set, 0);
+    chunk.emit_op_u16(Op::CONST, v99, 0);
+    chunk.emit_op(Op::SHARED_ARRAY_SET, 0);
 
     // shared_array_get: arr[1]
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let idx2 = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::r#const, idx2, 0);
-    chunk.emit_op(Op::shared_array_get, 0);
+    chunk.emit_op_u16(Op::CONST, idx2, 0);
+    chunk.emit_op(Op::SHARED_ARRAY_GET, 0);
 
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 99);
@@ -111,24 +111,24 @@ fn shared_struct_cas_success() {
 
     // Create shared object, set field 0 to 10
     let type_id = chunk.add_constant(Value::I32(tid as i32));
-    chunk.emit_op_u16(Op::r#const, type_id, 0);
-    chunk.emit_op(Op::shared_new, 0);
-    chunk.emit_op_u16(Op::local_set, 1, 0);
+    chunk.emit_op_u16(Op::CONST, type_id, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let v10 = chunk.add_constant(Value::I32(10));
-    chunk.emit_op_u16(Op::r#const, v10, 0);
-    chunk.emit_op_u16(Op::shared_struct_set, 0, 0);
+    chunk.emit_op_u16(Op::CONST, v10, 0);
+    chunk.emit_op_u16(Op::SHARED_STRUCT_SET, 0, 0);
 
     // CAS: expect 10, set 20 → should succeed, return old value 10
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let expected = chunk.add_constant(Value::I32(10));
-    chunk.emit_op_u16(Op::r#const, expected, 0);
+    chunk.emit_op_u16(Op::CONST, expected, 0);
     let new_val = chunk.add_constant(Value::I32(20));
-    chunk.emit_op_u16(Op::r#const, new_val, 0);
-    chunk.emit_op_u16(Op::shared_struct_cas, 0, 0); // field 0
+    chunk.emit_op_u16(Op::CONST, new_val, 0);
+    chunk.emit_op_u16(Op::SHARED_STRUCT_CAS, 0, 0); // field 0
 
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 10, "CAS should return old value");
@@ -146,29 +146,29 @@ fn shared_struct_cas_failure() {
 
     // Create shared object, set field 0 to 10
     let type_id = chunk.add_constant(Value::I32(tid as i32));
-    chunk.emit_op_u16(Op::r#const, type_id, 0);
-    chunk.emit_op(Op::shared_new, 0);
-    chunk.emit_op_u16(Op::local_set, 1, 0);
+    chunk.emit_op_u16(Op::CONST, type_id, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let v10 = chunk.add_constant(Value::I32(10));
-    chunk.emit_op_u16(Op::r#const, v10, 0);
-    chunk.emit_op_u16(Op::shared_struct_set, 0, 0);
+    chunk.emit_op_u16(Op::CONST, v10, 0);
+    chunk.emit_op_u16(Op::SHARED_STRUCT_SET, 0, 0);
 
     // CAS: expect 99 (wrong), set 20 → should fail, return old value 10, field unchanged
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let expected = chunk.add_constant(Value::I32(99));
-    chunk.emit_op_u16(Op::r#const, expected, 0);
+    chunk.emit_op_u16(Op::CONST, expected, 0);
     let new_val = chunk.add_constant(Value::I32(20));
-    chunk.emit_op_u16(Op::r#const, new_val, 0);
-    chunk.emit_op_u16(Op::shared_struct_cas, 0, 0);
-    chunk.emit_op(Op::drop, 0); // drop old value
+    chunk.emit_op_u16(Op::CONST, new_val, 0);
+    chunk.emit_op_u16(Op::SHARED_STRUCT_CAS, 0, 0);
+    chunk.emit_op(Op::DROP, 0); // drop old value
 
     // Read field — should still be 10 (CAS failed)
-    chunk.emit_op_u16(Op::local_get, 1, 0);
-    chunk.emit_op_u16(Op::shared_struct_get, 0, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    chunk.emit_op_u16(Op::SHARED_STRUCT_GET, 0, 0);
 
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 10, "field should be unchanged after failed CAS");

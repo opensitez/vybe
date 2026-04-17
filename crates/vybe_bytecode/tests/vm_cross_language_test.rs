@@ -53,21 +53,21 @@ fn js_can_read_python_dict_fields() {
     chunk.local_count = 3;
 
     // Create dict like Python does (struct_new + struct_set)
-    chunk.emit_op_u16(Op::struct_new, 0, 0);
-    chunk.emit_op(Op::dup, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    chunk.emit_op(Op::DUP, 0);
     let name_val = chunk.add_constant(Value::String(Rc::from("Rex")));
-    chunk.emit_op_u16(Op::r#const, name_val, 0);
+    chunk.emit_op_u16(Op::CONST, name_val, 0);
     let name_key = chunk.add_constant(Value::String(Rc::from("name")));
-    chunk.emit_op_u16(Op::struct_set, name_key, 0);
-    chunk.emit_op(Op::drop, 0);
-    chunk.emit_op_u16(Op::local_set, 1, 0);
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::STRUCT_SET, name_key, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     // Read like JS does (struct_get)
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let get_name = chunk.add_constant(Value::String(Rc::from("name")));
-    chunk.emit_op_u16(Op::struct_get, get_name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, get_name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.to_string(), "Rex");
@@ -83,21 +83,21 @@ fn python_can_read_js_object_fields() {
     chunk.local_count = 3;
 
     // JS-style object creation
-    chunk.emit_op_u16(Op::struct_new, 0, 0);
-    chunk.emit_op(Op::dup, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    chunk.emit_op(Op::DUP, 0);
     let val = chunk.add_constant(Value::String(Rc::from("hello")));
-    chunk.emit_op_u16(Op::r#const, val, 0);
+    chunk.emit_op_u16(Op::CONST, val, 0);
     let key = chunk.add_constant(Value::String(Rc::from("msg")));
-    chunk.emit_op_u16(Op::struct_set, key, 0);
-    chunk.emit_op(Op::drop, 0);
-    chunk.emit_op_u16(Op::local_set, 1, 0);
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     // Python-style dict access
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let get_key = chunk.add_constant(Value::String(Rc::from("msg")));
-    chunk.emit_op_u16(Op::struct_get, get_key, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.to_string(), "hello");
@@ -120,25 +120,25 @@ fn typed_class_across_languages() {
 
     // VB-style: create typed object
     let tid = chunk.add_constant(Value::I32(dog_id as i32));
-    chunk.emit_op_u16(Op::r#const, tid, 0);
-    chunk.emit_op(Op::shared_new, 0); // creates object with type_id + pre-allocated fields
+    chunk.emit_op_u16(Op::CONST, tid, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0); // creates object with type_id + pre-allocated fields
 
     // Set fields via struct_set (VB way)
-    chunk.emit_op(Op::dup, 0);
+    chunk.emit_op(Op::DUP, 0);
     let name_val = chunk.add_constant(Value::String(Rc::from("Rex")));
-    chunk.emit_op_u16(Op::r#const, name_val, 0);
+    chunk.emit_op_u16(Op::CONST, name_val, 0);
     let name_key = chunk.add_constant(Value::String(Rc::from("name")));
-    chunk.emit_op_u16(Op::struct_set, name_key, 0);
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::STRUCT_SET, name_key, 0);
+    chunk.emit_op(Op::DROP, 0);
 
-    chunk.emit_op_u16(Op::local_set, 1, 0);
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     // Python-style: read field with struct_get
-    chunk.emit_op_u16(Op::local_get, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let get_name = chunk.add_constant(Value::String(Rc::from("name")));
-    chunk.emit_op_u16(Op::struct_get, get_name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, get_name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.to_string(), "Rex");
@@ -156,13 +156,13 @@ fn ref_test_works_across_languages() {
 
     // C#-style: create Dog object with type_id
     let tid = chunk.add_constant(Value::I32(dog_id as i32));
-    chunk.emit_op_u16(Op::r#const, tid, 0);
-    chunk.emit_op(Op::shared_new, 0);
+    chunk.emit_op_u16(Op::CONST, tid, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0);
 
     // Python-style: ref_test against "dog"
     let type_name = chunk.add_constant(Value::String(Rc::from("dog")));
-    chunk.emit_op_u16(Op::ref_test, type_name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(true)));
@@ -182,13 +182,13 @@ fn inheritance_works_across_languages() {
     chunk.local_count = 2;
 
     let tid = chunk.add_constant(Value::I32(dog_id as i32));
-    chunk.emit_op_u16(Op::r#const, tid, 0);
-    chunk.emit_op(Op::shared_new, 0);
+    chunk.emit_op_u16(Op::CONST, tid, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0);
 
     // Check if Dog is-a Animal
     let type_name = chunk.add_constant(Value::String(Rc::from("animal")));
-    chunk.emit_op_u16(Op::ref_test, type_name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(true)), "Dog should be instanceof Animal");
@@ -209,12 +209,12 @@ fn interface_works_across_languages() {
     chunk.local_count = 2;
 
     let tid = chunk.add_constant(Value::I32(dog_id as i32));
-    chunk.emit_op_u16(Op::r#const, tid, 0);
-    chunk.emit_op(Op::shared_new, 0);
+    chunk.emit_op_u16(Op::CONST, tid, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0);
 
     let type_name = chunk.add_constant(Value::String(Rc::from("ianimal")));
-    chunk.emit_op_u16(Op::ref_test, type_name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(true)), "Dog implements IAnimal");
@@ -230,15 +230,15 @@ fn array_from_any_language_is_same() {
     // [1, "two", true] — same across Python/JS/VB/C#/Dart
     let v1 = chunk.add_constant(Value::I32(1));
     let v2 = chunk.add_constant(Value::String(Rc::from("two")));
-    chunk.emit_op_u16(Op::r#const, v1, 0);
-    chunk.emit_op_u16(Op::r#const, v2, 0);
-    chunk.emit_op(Op::r#true, 0);
-    chunk.emit_op_u16(Op::array_new, 3, 0);
+    chunk.emit_op_u16(Op::CONST, v1, 0);
+    chunk.emit_op_u16(Op::CONST, v2, 0);
+    chunk.emit_op(Op::TRUE, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
 
     // Access element 1
-    chunk.emit_op(Op::i32_const_1, 0);
-    chunk.emit_op(Op::array_get, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_op(Op::ARRAY_GET, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.to_string(), "two");
@@ -265,8 +265,8 @@ fn cls_case_resolution_at_link_time() {
     // C# component defines Dog with PascalCase field "Name"
     let mut cs_script = Chunk::new("<script>");
     cs_script.local_count = 1;
-    cs_script.emit_op(Op::null, 0);
-    cs_script.emit_op(Op::halt, 0);
+    cs_script.emit_op(Op::NULL, 0);
+    cs_script.emit_op(Op::HALT, 0);
     cs_script.types.push(TypeEntry {
         name: "Dog".to_string(),
         parent: String::new(),
@@ -292,8 +292,8 @@ fn cls_case_resolution_at_link_time() {
     // VB component accesses Dog with lowercase "name" (VB convention)
     let mut vb_script = Chunk::new("<script>");
     vb_script.local_count = 1;
-    vb_script.emit_op(Op::null, 0);
-    vb_script.emit_op(Op::halt, 0);
+    vb_script.emit_op(Op::NULL, 0);
+    vb_script.emit_op(Op::HALT, 0);
     // VB's constant pool has lowercased "name" from VB compiler
     let name_idx = vb_script.add_constant(Value::String(Rc::from("name")));
     let breed_idx = vb_script.add_constant(Value::String(Rc::from("breed")));
@@ -334,8 +334,8 @@ fn cls_case_preserves_case_sensitive_languages() {
     // JS component with camelCase "firstName"
     let mut js_script = Chunk::new("<script>");
     js_script.local_count = 1;
-    js_script.emit_op(Op::null, 0);
-    js_script.emit_op(Op::halt, 0);
+    js_script.emit_op(Op::NULL, 0);
+    js_script.emit_op(Op::HALT, 0);
     js_script.add_constant(Value::String(Rc::from("firstName")));
 
     let js_comp = Component {
@@ -351,8 +351,8 @@ fn cls_case_preserves_case_sensitive_languages() {
     // Python component with snake_case "first_name"
     let mut py_script = Chunk::new("<script>");
     py_script.local_count = 1;
-    py_script.emit_op(Op::null, 0);
-    py_script.emit_op(Op::halt, 0);
+    py_script.emit_op(Op::NULL, 0);
+    py_script.emit_op(Op::HALT, 0);
     py_script.add_constant(Value::String(Rc::from("first_name")));
 
     let py_comp = Component {

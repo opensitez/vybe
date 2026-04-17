@@ -258,13 +258,13 @@ fn ref_test_interface_in_vm() {
 
     // Create typed Dog object
     let tid = chunk.add_constant(Value::I32(dog_id as i32));
-    chunk.emit_op_u16(Op::r#const, tid, 0);
-    chunk.emit_op(Op::shared_new, 0);
+    chunk.emit_op_u16(Op::CONST, tid, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0);
 
     // ref_test against "ianimal"
     let type_name = chunk.add_constant(Value::String(Rc::from("ianimal")));
-    chunk.emit_op_u16(Op::ref_test, type_name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(true)), "Dog should pass ref_test for IAnimal");

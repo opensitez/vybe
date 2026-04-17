@@ -94,16 +94,16 @@ pub fn emit_stdlib_preamble(script: &mut Chunk, stdlib_base: usize) {
         let name_c = script.add_constant(Value::String(Arc::from(global_name)));
 
         // Check if global is already set: global_get + ref_is_null
-        script.emit_op_u16(Op::global_get, name_c, 0);
-        script.emit_op(Op::ref_is_null, 0);
+        script.emit_op_u16(Op::GLOBAL_GET, name_c, 0);
+        script.emit_op(Op::REF_IS_NULL, 0);
         // br_if_false skip — if NOT null, skip the install
-        let skip = script.emit_jump(Op::br_if_false, 0);
+        let skip = script.emit_jump(Op::BR_IF_FALSE, 0);
 
         // Install: ref_func + global_set + drop
-        script.emit_op_u16(Op::ref_func, ci as u16, 0);
+        script.emit_op_u16(Op::REF_FUNC, ci as u16, 0);
         script.emit(0, 0); // 0 upvalues
-        script.emit_op_u16(Op::global_set, name_c, 0);
-        script.emit_op(Op::drop, 0);
+        script.emit_op_u16(Op::GLOBAL_SET, name_c, 0);
+        script.emit_op(Op::DROP, 0);
 
         script.patch_jump(skip);
     }
@@ -127,12 +127,12 @@ pub fn append_stdlib_chunks(program_chunks: &mut Vec<Chunk>) {
 ///   emit_call_invoke(chunk, 3, 0);                    // call_ref 3
 pub fn emit_call_push_func(chunk: &mut Chunk, global_name: &str, line: u32) {
     let name_c = chunk.add_constant(Value::String(Arc::from(global_name)));
-    chunk.emit_op_u16(Op::global_get, name_c, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name_c, line);
 }
 
 /// Emit call_ref after func + args are on stack.
 pub fn emit_call_invoke(chunk: &mut Chunk, argc: u8, line: u32) {
-    chunk.emit_op_u8(Op::call_ref, argc, line);
+    chunk.emit_op_u8(Op::CALL_REF, argc, line);
 }
 
 /// Append stdlib chunks to a compiled program and register them as global_inits.
@@ -166,6 +166,6 @@ pub fn finalize_with_stdlib(chunks: &mut Vec<Chunk>) {
 /// For multi-arg calls, use the push_func/invoke pair.
 pub fn emit_call(chunk: &mut Chunk, global_name: &str, argc: u8, line: u32) {
     let name_c = chunk.add_constant(Value::String(Arc::from(global_name)));
-    chunk.emit_op_u16(Op::global_get, name_c, line);
-    chunk.emit_op_u8(Op::call_ref, argc, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name_c, line);
+    chunk.emit_op_u8(Op::CALL_REF, argc, line);
 }

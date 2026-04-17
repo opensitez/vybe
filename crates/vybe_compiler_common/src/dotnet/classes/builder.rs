@@ -73,20 +73,20 @@ pub fn build_setter_chunk(
     let line = 0u32;
 
     // [this]
-    chunk.emit_op_u16(Op::local_get, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
     // [this, "PropName"]
     let prop_const = chunk.add_constant(Value::String(Arc::from(prop_pascal)));
-    chunk.emit_op_u16(Op::r#const, prop_const, line);
+    chunk.emit_op_u16(Op::CONST, prop_const, line);
     // [this, "PropName", value]
-    chunk.emit_op_u16(Op::local_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, 2, line);
     // [this, "PropName", value] → call_import controlSetProperty(3) → [result]
-    chunk.emit_op_u16(Op::call_import, set_property_import_idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, set_property_import_idx, line);
     chunk.emit(3, line);
     // drop the host return value
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op(Op::DROP, line);
     // return null
-    chunk.emit_op(Op::null, line);
-    chunk.emit_op(Op::r#return, line);
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op(Op::RETURN, line);
 
     chunk.local_count = 2; // this + value
     chunk
@@ -156,28 +156,28 @@ pub fn build_method_thunk_chunk(
         MethodTarget::Host { .. } => {
             // Push this + each user arg in order, then call_import.
             for slot in 1..=method.arity as u16 {
-                chunk.emit_op_u16(Op::local_get, slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
             }
-            chunk.emit_op_u16(Op::call_import, import_idx, line);
+            chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
             chunk.emit(method.arity, line);
             // Result of the host call is on the stack — return it. For
             // void methods (most setters / `Show` / `DrawLine`) the host
             // fn returns `Value::Null`, which is fine.
-            chunk.emit_op(Op::r#return, line);
+            chunk.emit_op(Op::RETURN, line);
         }
         MethodTarget::DotnetCtor { class: target_class } => {
             // Discard `this` (slot 1) — factory-style methods don't pass
             // it to the target ctor. Push the target class global, then
             // the user args (slots 2..=arity), then call.
             let target_const = chunk.add_constant(Value::String(Arc::from(target_class)));
-            chunk.emit_op_u16(Op::global_get, target_const, line);
+            chunk.emit_op_u16(Op::GLOBAL_GET, target_const, line);
             // User args only — skip slot 1 (this).
             for slot in 2..=method.arity as u16 {
-                chunk.emit_op_u16(Op::local_get, slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
             }
             // arity - 1 because we dropped `this`.
-            chunk.emit_op_u8(Op::call, method.arity - 1, line);
-            chunk.emit_op(Op::r#return, line);
+            chunk.emit_op_u8(Op::CALL, method.arity - 1, line);
+            chunk.emit_op(Op::RETURN, line);
         }
         MethodTarget::Body(ops) => {
             compile_body(&mut chunk, ops, body_imports, method.arity, line);
@@ -212,68 +212,68 @@ fn compile_body(
     for op in ops {
         match *op {
             MethodOp::PushThis => {
-                chunk.emit_op_u16(Op::local_get, 1, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
             }
             MethodOp::PushArg(n) => {
                 debug_assert!(n >= 1 && n <= arity - 1,
                     "PushArg({}) out of range for method arity {} (this + {} args)",
                     n, arity, arity - 1);
                 // arg N (1-indexed after `this`) lives in slot 1 + N.
-                chunk.emit_op_u16(Op::local_get, (1 + n) as u16, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, (1 + n) as u16, line);
             }
             MethodOp::PushThisField(field) => {
-                chunk.emit_op_u16(Op::local_get, 1, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                chunk.emit_op_u16(Op::struct_get, key, line);
+                chunk.emit_op_u16(Op::STRUCT_GET, key, line);
             }
             MethodOp::PushArgField(n, field) => {
                 debug_assert!(n >= 1 && n <= arity - 1,
                     "PushArgField({}, _) out of range for method arity {}",
                     n, arity);
-                chunk.emit_op_u16(Op::local_get, (1 + n) as u16, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, (1 + n) as u16, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                chunk.emit_op_u16(Op::struct_get, key, line);
+                chunk.emit_op_u16(Op::STRUCT_GET, key, line);
             }
             MethodOp::PushArgFieldField(n, f1, f2) => {
                 debug_assert!(n >= 1 && n <= arity - 1,
                     "PushArgFieldField({}, _, _) out of range for method arity {}",
                     n, arity);
-                chunk.emit_op_u16(Op::local_get, (1 + n) as u16, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, (1 + n) as u16, line);
                 let k1 = chunk.add_constant(Value::String(Arc::from(f1)));
-                chunk.emit_op_u16(Op::struct_get, k1, line);
+                chunk.emit_op_u16(Op::STRUCT_GET, k1, line);
                 let k2 = chunk.add_constant(Value::String(Arc::from(f2)));
-                chunk.emit_op_u16(Op::struct_get, k2, line);
+                chunk.emit_op_u16(Op::STRUCT_GET, k2, line);
             }
             MethodOp::PushConstInt(v) => {
                 let c = chunk.add_constant(Value::F64(v as f64));
-                chunk.emit_op_u16(Op::r#const, c, line);
+                chunk.emit_op_u16(Op::CONST, c, line);
             }
             MethodOp::PushConstFloat(v) => {
                 let c = chunk.add_constant(Value::F64(v));
-                chunk.emit_op_u16(Op::r#const, c, line);
+                chunk.emit_op_u16(Op::CONST, c, line);
             }
             MethodOp::PushConstStr(s) => {
                 let c = chunk.add_constant(Value::String(Arc::from(s)));
-                chunk.emit_op_u16(Op::r#const, c, line);
+                chunk.emit_op_u16(Op::CONST, c, line);
             }
             MethodOp::PushConstBool(b) => {
-                if b { chunk.emit_op(Op::r#true, line); }
-                else { chunk.emit_op(Op::r#false, line); }
+                if b { chunk.emit_op(Op::TRUE, line); }
+                else { chunk.emit_op(Op::FALSE, line); }
             }
             MethodOp::PushConstNull => {
-                chunk.emit_op(Op::null, line);
+                chunk.emit_op(Op::NULL, line);
             }
             MethodOp::CallHost { argc, .. } => {
                 debug_assert!(import_cursor < body_imports.len(),
                     "compile_body: ran out of pre-resolved import indices");
                 let idx = body_imports[import_cursor];
                 import_cursor += 1;
-                chunk.emit_op_u16(Op::call_import, idx, line);
+                chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
                 chunk.emit(argc, line);
             }
             MethodOp::NewDotnet { class, argc } => {
                 let global_const = chunk.add_constant(Value::String(Arc::from(class)));
-                chunk.emit_op_u16(Op::global_get, global_const, line);
+                chunk.emit_op_u16(Op::GLOBAL_GET, global_const, line);
                 // Note: global_get pushes the ctor; the args are
                 // expected to already be on the stack BELOW it from
                 // earlier `Push*` ops. Real .NET ctor convention here
@@ -328,20 +328,20 @@ fn compile_body(
                 debug_assert_eq!(argc, 0,
                     "MethodOp::NewDotnet currently only supports argc=0; \
                      for arity-N factories, switch to a Host target or extend the DSL");
-                chunk.emit_op_u8(Op::call, 0, line);
+                chunk.emit_op_u8(Op::CALL, 0, line);
             }
             MethodOp::SetField(field) => {
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                chunk.emit_op_u16(Op::struct_set, key, line);
+                chunk.emit_op_u16(Op::STRUCT_SET, key, line);
             }
             MethodOp::Drop => {
-                chunk.emit_op(Op::drop, line);
+                chunk.emit_op(Op::DROP, line);
             }
             MethodOp::Dup => {
-                chunk.emit_op(Op::dup, line);
+                chunk.emit_op(Op::DUP, line);
             }
             MethodOp::Return => {
-                chunk.emit_op(Op::r#return, line);
+                chunk.emit_op(Op::RETURN, line);
                 returned = true;
                 break;
             }
@@ -350,8 +350,8 @@ fn compile_body(
 
     // Safety net: if the body didn't end in `Return`, emit `null + return`.
     if !returned {
-        chunk.emit_op(Op::null, line);
-        chunk.emit_op(Op::r#return, line);
+        chunk.emit_op(Op::NULL, line);
+        chunk.emit_op(Op::RETURN, line);
     }
 }
 
@@ -447,25 +447,25 @@ pub fn build_constructor_chunk(
     if let Some(parent_name) = class.parent {
         // this = <Parent>()  — global_get parent ; call(0) ; local_set this ; drop
         let parent_const = chunk.add_constant(Value::String(Arc::from(parent_name)));
-        chunk.emit_op_u16(Op::global_get, parent_const, line);
-        chunk.emit_op_u8(Op::call, 0, line);
-        chunk.emit_op_u16(Op::local_set, this_slot, line);
-        chunk.emit_op(Op::drop, line);
+        chunk.emit_op_u16(Op::GLOBAL_GET, parent_const, line);
+        chunk.emit_op_u8(Op::CALL, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+        chunk.emit_op(Op::DROP, line);
     } else {
         // Root class (Object): this = struct_new 0
-        chunk.emit_op_u16(Op::struct_new, 0, line);
-        chunk.emit_op_u16(Op::local_set, this_slot, line);
-        chunk.emit_op(Op::drop, line);
+        chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+        chunk.emit_op(Op::DROP, line);
     }
 
     // ── Step 2: re-stamp __type with this class's name ──────────────────────
     {
-        chunk.emit_op_u16(Op::local_get, this_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         let type_str = chunk.add_constant(Value::String(Arc::from(class.name)));
-        chunk.emit_op_u16(Op::r#const, type_str, line);
+        chunk.emit_op_u16(Op::CONST, type_str, line);
         let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-        chunk.emit_op_u16(Op::struct_set, type_key, line);
-        chunk.emit_op(Op::drop, line);
+        chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+        chunk.emit_op(Op::DROP, line);
     }
 
     // ── Step 3: bind setters for THIS class's properties ────────────────────
@@ -475,12 +475,12 @@ pub fn build_constructor_chunk(
     for binding in setter_bindings {
         let set_name = format!("__set_{}", binding.prop_pascal.to_lowercase());
         // local_get this ; ref_func setter ; struct_set "__set_<prop>" ; drop
-        chunk.emit_op_u16(Op::local_get, this_slot, line);
-        chunk.emit_op_u16(Op::ref_func, binding.setter_chunk_idx as u16, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::REF_FUNC, binding.setter_chunk_idx as u16, line);
         chunk.emit(0, line); // 0 upvalues
         let key = chunk.add_constant(Value::String(Arc::from(set_name.as_str())));
-        chunk.emit_op_u16(Op::struct_set, key, line);
-        chunk.emit_op(Op::drop, line);
+        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_op(Op::DROP, line);
     }
 
     // ── Step 4: bind methods for THIS class ────────────────────────────────
@@ -493,12 +493,12 @@ pub fn build_constructor_chunk(
     // re-binding the same method name overwrites the parent's binding via
     // the same `struct_set` — exactly how virtual override works in .NET.
     for binding in method_bindings {
-        chunk.emit_op_u16(Op::local_get, this_slot, line);
-        chunk.emit_op_u16(Op::ref_func, binding.thunk_chunk_idx as u16, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::REF_FUNC, binding.thunk_chunk_idx as u16, line);
         chunk.emit(0, line); // 0 upvalues
         let key = chunk.add_constant(Value::String(Arc::from(binding.method_name)));
-        chunk.emit_op_u16(Op::struct_set, key, line);
-        chunk.emit_op(Op::drop, line);
+        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_op(Op::DROP, line);
     }
 
     // ── Step 5: concrete leaf — wire backing object ────────────────────────
@@ -513,12 +513,12 @@ pub fn build_constructor_chunk(
     // fn is called with no args.
     if let Some(import_idx) = widget_new_import_idx {
         for i in 1..=arity {
-            chunk.emit_op_u16(Op::local_get, i, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, i, line);
         }
-        chunk.emit_op_u16(Op::call_import, import_idx, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
         chunk.emit(arity as u8, line);
-        chunk.emit_op_u16(Op::local_set, widget_slot, line);
-        chunk.emit_op(Op::drop, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, widget_slot, line);
+        chunk.emit_op(Op::DROP, line);
 
         // Copy backing identity fields: this.<f> = widget.<f>.
         //
@@ -538,17 +538,17 @@ pub fn build_constructor_chunk(
         // (or inherited from `Control`).
         for field in &["__control_name", "__control_type"] {
             let key_idx = chunk.add_constant(Value::String(Arc::from(*field)));
-            chunk.emit_op_u16(Op::local_get, this_slot, line);
-            chunk.emit_op_u16(Op::local_get, widget_slot, line);
-            chunk.emit_op_u16(Op::struct_get, key_idx, line);
-            chunk.emit_op_u16(Op::struct_set, key_idx, line);
-            chunk.emit_op(Op::drop, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, widget_slot, line);
+            chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
+            chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+            chunk.emit_op(Op::DROP, line);
         }
     }
 
     // ── Step 6: return this ─────────────────────────────────────────────────
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
-    chunk.emit_op(Op::r#return, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op(Op::RETURN, line);
 
     // Locals beyond the closure ref slot 0:
     //   slots 1..=ctor_arity = ctor args
@@ -587,19 +587,19 @@ pub fn emit_install_class_global(
     line: u32,
 ) {
     // Original case
-    script_chunk.emit_op_u16(Op::ref_func, ctor_chunk_idx as u16, line);
+    script_chunk.emit_op_u16(Op::REF_FUNC, ctor_chunk_idx as u16, line);
     script_chunk.emit(0, line); // 0 upvalues
     let name_const = script_chunk.add_constant(Value::String(Arc::from(class_name)));
-    script_chunk.emit_op_u16(Op::global_set, name_const, line);
-    script_chunk.emit_op(Op::drop, line);
+    script_chunk.emit_op_u16(Op::GLOBAL_SET, name_const, line);
+    script_chunk.emit_op(Op::DROP, line);
 
     // Lowercase alias (skip if already lowercase)
     let lower = class_name.to_lowercase();
     if lower != class_name {
-        script_chunk.emit_op_u16(Op::ref_func, ctor_chunk_idx as u16, line);
+        script_chunk.emit_op_u16(Op::REF_FUNC, ctor_chunk_idx as u16, line);
         script_chunk.emit(0, line);
         let lower_const = script_chunk.add_constant(Value::String(Arc::from(lower.as_str())));
-        script_chunk.emit_op_u16(Op::global_set, lower_const, line);
-        script_chunk.emit_op(Op::drop, line);
+        script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_const, line);
+        script_chunk.emit_op(Op::DROP, line);
     }
 }

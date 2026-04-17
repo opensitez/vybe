@@ -15,8 +15,8 @@ fn global_init_literal() {
 
     // Read the global
     let name = chunk.add_constant(Value::String(Rc::from("PI")));
-    chunk.emit_op_u16(Op::global_get, name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!((result.as_f64() - 3.14159).abs() < 1e-10);
@@ -36,8 +36,8 @@ fn global_init_add() {
     ));
 
     let name = chunk.add_constant(Value::String(Rc::from("OFFSET")));
-    chunk.emit_op_u16(Op::global_get, name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 150);
@@ -57,8 +57,8 @@ fn global_init_mul() {
     ));
 
     let name = chunk.add_constant(Value::String(Rc::from("TABLE")));
-    chunk.emit_op_u16(Op::global_get, name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 1024);
@@ -82,8 +82,8 @@ fn global_init_chain() {
     ));
 
     let name = chunk.add_constant(Value::String(Rc::from("C")));
-    chunk.emit_op_u16(Op::global_get, name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 40);
@@ -106,11 +106,11 @@ fn global_init_runtime_opcode() {
             Box::new(ConstExpr::Value(Value::I32(10))),
         ),
     });
-    chunk.emit_op_u16(Op::global_init, 1, 0); // init Y (index 1)
+    chunk.emit_op_u16(Op::GLOBAL_INIT, 1, 0); // init Y (index 1)
 
     let name = chunk.add_constant(Value::String(Rc::from("Y")));
-    chunk.emit_op_u16(Op::global_get, name, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 15);
@@ -127,12 +127,12 @@ fn cont_new_typed_stores_tag() {
     let tag_idx = chunk.add_continuation_tag("generator", "i32", "i32");
 
     // Create a dummy function (ref_func points to chunk 0)
-    chunk.emit_op_u16(Op::ref_func, 0, 0);
+    chunk.emit_op_u16(Op::REF_FUNC, 0, 0);
     chunk.emit(0, 0); // 0 upvalues
 
     // cont_new_typed with our tag
-    chunk.emit_op_u16(Op::cont_new_typed, tag_idx, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONT_NEW_TYPED, tag_idx, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
@@ -170,9 +170,9 @@ fn string_as_ref_passthrough() {
     chunk.local_count = 1;
 
     let s = chunk.add_constant(Value::String(Rc::from("hello")));
-    chunk.emit_op_u16(Op::r#const, s, 0);
-    chunk.emit_op(Op::string_as_ref, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, s, 0);
+    chunk.emit_op(Op::STRING_AS_REF, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
@@ -188,10 +188,10 @@ fn string_from_ref_passthrough() {
     chunk.local_count = 1;
 
     let s = chunk.add_constant(Value::String(Rc::from("world")));
-    chunk.emit_op_u16(Op::r#const, s, 0);
-    chunk.emit_op(Op::string_as_ref, 0);
-    chunk.emit_op(Op::string_from_ref, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, s, 0);
+    chunk.emit_op(Op::STRING_AS_REF, 0);
+    chunk.emit_op(Op::STRING_FROM_REF, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
@@ -208,10 +208,10 @@ fn string_ref_eq_same_rc() {
 
     // Push the same constant twice — same Rc
     let s = chunk.add_constant(Value::String(Rc::from("shared")));
-    chunk.emit_op_u16(Op::r#const, s, 0);
-    chunk.emit_op(Op::dup, 0);
-    chunk.emit_op(Op::string_ref_eq, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, s, 0);
+    chunk.emit_op(Op::DUP, 0);
+    chunk.emit_op(Op::STRING_REF_EQ, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(true)));
@@ -226,10 +226,10 @@ fn string_ref_eq_different_rc() {
     // Two different Rc<str> with same content
     let s1 = chunk.add_constant(Value::String(Rc::from("test")));
     let s2 = chunk.add_constant(Value::String(Rc::from("test")));
-    chunk.emit_op_u16(Op::r#const, s1, 0);
-    chunk.emit_op_u16(Op::r#const, s2, 0);
-    chunk.emit_op(Op::string_ref_eq, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, s1, 0);
+    chunk.emit_op_u16(Op::CONST, s2, 0);
+    chunk.emit_op(Op::STRING_REF_EQ, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     // Different Rc pointers even though same content → false
@@ -244,10 +244,10 @@ fn string_ref_eq_non_strings() {
 
     let a = chunk.add_constant(Value::I32(42));
     let b = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::r#const, a, 0);
-    chunk.emit_op_u16(Op::r#const, b, 0);
-    chunk.emit_op(Op::string_ref_eq, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, a, 0);
+    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_op(Op::STRING_REF_EQ, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Bool(false)));

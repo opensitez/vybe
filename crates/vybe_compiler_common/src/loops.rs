@@ -37,8 +37,8 @@ pub fn emit_loop_start(chunk: &mut Chunk) -> usize {
 /// After condition is on stack: convert to bool, jump out if false.
 /// Returns exit_jump to patch later.
 pub fn emit_loop_cond(chunk: &mut Chunk, line: u32) -> usize {
-    chunk.emit_op(Op::dyn_to_bool, line);
-    chunk.emit_jump(Op::br_if_false, line)
+    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    chunk.emit_jump(Op::BR_IF_FALSE, line)
 }
 
 /// End of loop: jump back to start, patch the exit.
@@ -56,12 +56,12 @@ pub fn emit_do_loop_start(chunk: &mut Chunk) -> usize {
 /// End of do-while: condition on stack, branch back to start if true.
 /// `negate` = true for `until` (loop while condition is FALSE).
 pub fn emit_do_loop_end(chunk: &mut Chunk, loop_start: usize, negate: bool, line: u32) {
-    chunk.emit_op(Op::dyn_to_bool, line);
+    chunk.emit_op(Op::DYN_TO_BOOL, line);
     if negate {
-        chunk.emit_op(Op::dyn_not, line);
+        chunk.emit_op(Op::DYN_NOT, line);
     }
     // Branch back to start if condition is true
-    let exit = chunk.emit_jump(Op::br_if_false, line);
+    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_loop(loop_start, line);
     chunk.patch_jump(exit);
 }
@@ -75,22 +75,22 @@ pub fn emit_do_loop_end(chunk: &mut Chunk, loop_start: usize, negate: bool, line
 /// Stack after: [element] on top (caller assigns to loop variable)
 pub fn emit_for_in_start(chunk: &mut Chunk, arr_slot: u16, idx_slot: u16, line: u32) -> (usize, usize) {
     // i = 0
-    chunk.emit_op(Op::i32_const_0, line);
-    chunk.emit_op_u16(Op::local_set, idx_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
     let loop_start = chunk.current_offset();
 
     // while i < arr.length
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);
-    chunk.emit_op_u16(Op::local_get, arr_slot, line);
-    chunk.emit_op(Op::array_length, line);
-    chunk.emit_op(Op::dyn_lt, line);
-    let exit_jump = chunk.emit_jump(Op::br_if_false, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let exit_jump = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // element = arr[i]
-    chunk.emit_op_u16(Op::local_get, arr_slot, line);
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);
-    chunk.emit_op(Op::array_get, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
 
     (loop_start, exit_jump)
 }
@@ -98,10 +98,10 @@ pub fn emit_for_in_start(chunk: &mut Chunk, arr_slot: u16, idx_slot: u16, line: 
 /// Emit the end of a for-in loop: increment index, loop back, patch exit.
 pub fn emit_for_in_end(chunk: &mut Chunk, idx_slot: u16, loop_start: usize, exit_jump: usize, line: u32) {
     // i += 1
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);
-    chunk.emit_op(Op::i32_const_1, line);
-    chunk.emit_op(Op::i32_add, line);
-    chunk.emit_op_u16(Op::local_set, idx_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::I32_CONST_1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
     chunk.emit_loop(loop_start, line);
     chunk.patch_jump(exit_jump);
@@ -114,9 +114,9 @@ pub fn emit_for_in_end(chunk: &mut Chunk, idx_slot: u16, loop_start: usize, exit
 /// Stack after: [result_array]
 pub fn emit_map(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16, idx_slot: u16, line: u32) {
     // result = []
-    chunk.emit_op_u16(Op::array_new, 0, line);
-    chunk.emit_op_u16(Op::local_set, result_slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     let (loop_start, exit_jump) = emit_for_in_start(chunk, arr_slot, idx_slot, line);
 
@@ -127,22 +127,22 @@ pub fn emit_map(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16
     // Simpler: rewrite to not use for_in_start since we need the fn call pattern.
 
     // Drop element from for_in_start — we'll re-fetch inline
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op(Op::DROP, line);
 
     // result.push(fn(arr[i], i))
-    chunk.emit_op_u16(Op::local_get, result_slot, line);
-    chunk.emit_op_u16(Op::local_get, fn_slot, line);
-    chunk.emit_op_u16(Op::local_get, arr_slot, line);
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);
-    chunk.emit_op(Op::array_get, line);
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);  // pass index as 2nd arg
-    chunk.emit_op_u8(Op::call_ref, 2, line);
-    chunk.emit_op(Op::array_push, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);  // pass index as 2nd arg
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op(Op::ARRAY_PUSH, line);
+    chunk.emit_op(Op::DROP, line);
 
     emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
 
-    chunk.emit_op_u16(Op::local_get, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 /// Emit `filter(fn, arr)` → new array with elements where fn(x) is true.
@@ -150,33 +150,33 @@ pub fn emit_map(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16
 /// Stack after: [result_array]
 pub fn emit_filter(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16, idx_slot: u16, elem_slot: u16, line: u32) {
     // result = []
-    chunk.emit_op_u16(Op::array_new, 0, line);
-    chunk.emit_op_u16(Op::local_set, result_slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     let (loop_start, exit_jump) = emit_for_in_start(chunk, arr_slot, idx_slot, line);
 
     // Store element
-    chunk.emit_op_u16(Op::local_set, elem_slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // if fn(element): result.push(element)
-    chunk.emit_op_u16(Op::local_get, fn_slot, line);
-    chunk.emit_op_u16(Op::local_get, elem_slot, line);
-    chunk.emit_op_u8(Op::call_ref, 1, line);
-    chunk.emit_op(Op::dyn_to_bool, line);
-    let skip_push = chunk.emit_jump(Op::br_if_false, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    let skip_push = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
-    chunk.emit_op_u16(Op::local_get, result_slot, line);
-    chunk.emit_op_u16(Op::local_get, elem_slot, line);
-    chunk.emit_op(Op::array_push, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunk.emit_op(Op::ARRAY_PUSH, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.patch_jump(skip_push);
 
     emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
 
-    chunk.emit_op_u16(Op::local_get, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 /// Emit `forEach(fn, arr)` → call fn(x) for each x, returns null.
@@ -187,19 +187,19 @@ pub fn emit_foreach(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: u1
     // Drop element from for_in_start, call fn(arr[i], i) directly.
     // Pass index as 2nd arg (JS forEach contract: value, index, array).
     // Languages whose callbacks take only 1 arg safely ignore the extra.
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op_u16(Op::local_get, fn_slot, line);
-    chunk.emit_op_u16(Op::local_get, arr_slot, line);
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);
-    chunk.emit_op(Op::array_get, line);
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);
-    chunk.emit_op_u8(Op::call_ref, 2, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op(Op::DROP, line);
 
     emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
 
-    chunk.emit_op(Op::null, line);
+    chunk.emit_op(Op::NULL, line);
 }
 
 /// Emit `reduce(fn, arr)` → fn(fn(arr[0], arr[1]), arr[2]), ...
@@ -209,40 +209,40 @@ pub fn emit_reduce(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, acc_slot: u16
     use vybe_bytecode::Value;
 
     // acc = arr[0]
-    chunk.emit_op_u16(Op::local_get, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     let zero = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::r#const, zero, line);
-    chunk.emit_op(Op::array_get, line);
-    chunk.emit_op_u16(Op::local_set, acc_slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::CONST, zero, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, acc_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // i = 1
     let one = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::r#const, one, line);
-    chunk.emit_op_u16(Op::local_set, idx_slot, line);
+    chunk.emit_op_u16(Op::CONST, one, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
     let loop_start = chunk.current_offset();
 
     // while i < arr.length
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);
-    chunk.emit_op_u16(Op::local_get, arr_slot, line);
-    chunk.emit_op(Op::array_length, line);
-    chunk.emit_op(Op::dyn_lt, line);
-    let exit_jump = chunk.emit_jump(Op::br_if_false, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let exit_jump = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // acc = fn(acc, arr[i])
-    chunk.emit_op_u16(Op::local_get, fn_slot, line);
-    chunk.emit_op_u16(Op::local_get, acc_slot, line);
-    chunk.emit_op_u16(Op::local_get, arr_slot, line);
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);
-    chunk.emit_op(Op::array_get, line);
-    chunk.emit_op_u8(Op::call_ref, 2, line);
-    chunk.emit_op_u16(Op::local_set, acc_slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, acc_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, acc_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
 
-    chunk.emit_op_u16(Op::local_get, acc_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, acc_slot, line);
 }
 
 /// Emit `any(fn, arr)` → true if fn(x) is true for any x.
@@ -262,35 +262,35 @@ pub fn emit_any_every(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: 
     let (loop_start, exit_jump) = emit_for_in_start(chunk, arr_slot, idx_slot, line);
 
     // Drop element from for_in_start, call fn(arr[i]) directly
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op_u16(Op::local_get, fn_slot, line);
-    chunk.emit_op_u16(Op::local_get, arr_slot, line);
-    chunk.emit_op_u16(Op::local_get, idx_slot, line);
-    chunk.emit_op(Op::array_get, line);
-    chunk.emit_op_u8(Op::call_ref, 1, line);
-    chunk.emit_op(Op::dyn_to_bool, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op(Op::DYN_TO_BOOL, line);
 
     // Patches that jump to the "found a match — leave result on stack" arm.
     let mut early_exit_patches: Vec<usize> = Vec::new();
     if is_any {
         // any: if true → break out with `true`
-        let no_match = chunk.emit_jump(Op::br_if_false, line);
-        chunk.emit_op(Op::r#true, line);
-        early_exit_patches.push(chunk.emit_jump(Op::br, line));
+        let no_match = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_op(Op::TRUE, line);
+        early_exit_patches.push(chunk.emit_jump(Op::BR, line));
         chunk.patch_jump(no_match);
     } else {
         // every: if false → break out with `false`
-        let still_ok = chunk.emit_jump(Op::br_if_true, line);
-        chunk.emit_op(Op::r#false, line);
-        early_exit_patches.push(chunk.emit_jump(Op::br, line));
+        let still_ok = chunk.emit_jump(Op::BR_IF_TRUE, line);
+        chunk.emit_op(Op::FALSE, line);
+        early_exit_patches.push(chunk.emit_jump(Op::BR, line));
         chunk.patch_jump(still_ok);
     }
 
     emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
 
     // Loop completed with no early exit → any=false, every=true
-    if is_any { chunk.emit_op(Op::r#false, line); } else { chunk.emit_op(Op::r#true, line); }
+    if is_any { chunk.emit_op(Op::FALSE, line); } else { chunk.emit_op(Op::TRUE, line); }
 
     // Land here from the early-exit branch with the result already on the stack.
     for p in early_exit_patches { chunk.patch_jump(p); }

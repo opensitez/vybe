@@ -96,12 +96,12 @@ impl Compiler {
         }
         if self.defined_globals.contains("main") {
             let idx = self.add_string_constant("main");
-            self.emit_u16(Op::global_get, idx);
-            self.emit_u8(Op::call, 0);
-            self.emit(Op::drop);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_u8(Op::CALL, 0);
+            self.emit(Op::DROP);
         }
-        self.emit(Op::null);
-        self.emit(Op::halt);
+        self.emit(Op::NULL);
+        self.emit(Op::HALT);
         let local_count = self.current_scope().next_slot;
         self.chunks[0].local_count = local_count;
         // Type entries are registered directly in chunks[0].types via common::classes::register_type
@@ -128,7 +128,7 @@ impl Compiler {
     }
     pub(crate) fn emit_constant(&mut self, value: Value) {
         let idx = self.chunks[self.current_chunk_idx].add_constant(value);
-        self.emit_u16(Op::r#const, idx);
+        self.emit_u16(Op::CONST, idx);
     }
     pub(crate) fn emit_jump(&mut self, op: Op) -> usize {
         let line = self.line;
@@ -150,7 +150,7 @@ impl Compiler {
     pub(crate) fn emit_host_call(&mut self, import_idx: u16, argc: u8) {
         let line = self.line;
         let c = &mut self.chunks[self.current_chunk_idx];
-        c.emit_op(Op::call_import, line);
+        c.emit_op(Op::CALL_IMPORT, line);
         c.emit((import_idx >> 8) as u8, line);
         c.emit((import_idx & 0xff) as u8, line);
         c.emit(argc, line);
@@ -163,7 +163,7 @@ impl Compiler {
 
     pub(crate) fn emit_global_set(&mut self, name: &str) {
         let idx = self.add_string_constant(name);
-        self.emit_u16(Op::global_set, idx);
+        self.emit_u16(Op::GLOBAL_SET, idx);
         self.defined_globals.insert(name.to_lowercase());
     }
 
@@ -275,8 +275,8 @@ impl Compiler {
         let tid_name = format!("__tid_{}", type_name.to_lowercase());
         let tid_idx = self.add_string_constant(&tid_name);
         // set_type_id pops type_id, peeks obj — leaves obj on stack
-        self.emit_u16(Op::global_get, tid_idx);
-        self.emit(Op::set_type_id);
+        self.emit_u16(Op::GLOBAL_GET, tid_idx);
+        self.emit(Op::SET_TYPE_ID);
     }
 
     // ---- Declarations ----
@@ -292,7 +292,7 @@ impl Compiler {
                 self.func_signatures.insert(name.clone(), sig);
                 self.compile_sub(sub)?;
                 self.emit_global_set(&name);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Declaration::Function(func) => {
                 let sig: Vec<bool> = func.parameters.iter()
@@ -302,14 +302,14 @@ impl Compiler {
                 self.func_signatures.insert(name.clone(), sig);
                 self.compile_function(func)?;
                 self.emit_global_set(&name);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Declaration::Class(class) => {
                 self.compile_class(class)?;
                 let name = class.name.as_str().to_lowercase();
                 self.defined_classes.insert(name.clone());
                 self.emit_global_set(&name);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Declaration::Variable(vars) => {
                 for var in vars {
@@ -318,15 +318,15 @@ impl Compiler {
                         if let Some(bound_expr) = bounds.first() {
                             self.compile_expression(bound_expr)?;
                             self.emit_constant(Value::F64(1.0));
-                            self.emit(Op::dyn_add);
-                            self.emit(Op::array_new_default);
+                            self.emit(Op::DYN_ADD);
+                            self.emit(Op::ARRAY_NEW_DEFAULT);
                         } else {
                             common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 0, self.line);
                         }
                     } else if let Some(ref init) = var.initializer {
                         self.compile_expression(init)?;
                     } else {
-                        self.emit(Op::null);
+                        self.emit(Op::NULL);
                     }
                     let name = var.name.as_str().to_lowercase();
                     if var.array_bounds.is_some() {
@@ -334,11 +334,11 @@ impl Compiler {
                     }
                     if self.scopes.len() == 1 && self.current_scope().depth == 0 {
                         self.emit_global_set(&name);
-                        self.emit(Op::drop);
+                        self.emit(Op::DROP);
                     } else {
                         let slot = self.define_local(&name);
-                        self.emit_u16(Op::local_set, slot);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                        self.emit(Op::DROP);
                     }
                 }
             }
@@ -347,29 +347,29 @@ impl Compiler {
                 let name = c.name.as_str().to_lowercase();
                 if self.scopes.len() == 1 {
                     self.emit_global_set(&name);
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 } else {
                     let slot = self.define_local(&name);
-                    self.emit_u16(Op::local_set, slot);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
                 }
             }
             Declaration::Enum(e) => {
                 // Compile enum as an object with named constants
-                self.emit_u16(Op::struct_new, 0);
+                self.emit_u16(Op::STRUCT_NEW, 0);
                 for (i, member) in e.members.iter().enumerate() {
-                    self.emit(Op::dup);
+                    self.emit(Op::DUP);
                     let val = member.value.as_ref()
                         .map(|v| v.clone())
                         .unwrap_or(Expression::IntegerLiteral(i as i32));
                     self.compile_expression(&val)?;
                     let prop_idx = self.add_string_constant(&member.name.as_str().to_lowercase());
-                    self.emit_u16(Op::struct_set, prop_idx);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::STRUCT_SET, prop_idx);
+                    self.emit(Op::DROP);
                 }
                 let name = e.name.as_str().to_lowercase();
                 self.emit_global_set(&name);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Declaration::Structure(s) => {
                 // Structure is like a lightweight class — compile same way
@@ -392,7 +392,7 @@ impl Compiler {
                 let name = s.name.as_str().to_lowercase();
                 self.defined_classes.insert(name.clone());
                 self.emit_global_set(&name);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Declaration::Imports(imp) => {
                 // Register as interface prefix for Component Model resolution
@@ -439,8 +439,8 @@ impl Compiler {
         if let Some(func_name) = self.function_name_stack.last() {
             if name == *func_name {
                 let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
-                self.emit_u16(Op::local_set, rv_slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, rv_slot);
+                self.emit(Op::DROP);
                 return Ok(());
             }
         }
@@ -450,23 +450,23 @@ impl Compiler {
                     // ByRef: write to box[0] — stack has [value]
                     // Need: [box, 0, value] for array_set
                     let tmp = self.define_local("__byref_tmp");
-                    self.emit_u16(Op::local_set, tmp);
-                    self.emit(Op::drop);
-                    self.emit_u16(Op::local_get, slot); // box
-                    self.emit(Op::i32_const_0);           // index 0
-                    self.emit_u16(Op::local_get, tmp);    // value
+                    self.emit_u16(Op::LOCAL_SET, tmp);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, slot); // box
+                    self.emit(Op::I32_CONST_0);           // index 0
+                    self.emit_u16(Op::LOCAL_GET, tmp);    // value
                     common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 } else {
-                    self.emit_u16(Op::local_set, slot);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
                 }
             }
             VarResolution::Global => {
                 // Inside a class: unresolved name that's a class field → Me.field = value
                 if self.class_fields.contains(&name) {
                     if let Some(me_slot) = self.current_scope().resolve_local("me") {
-                        self.emit_u16(Op::local_get, me_slot);
+                        self.emit_u16(Op::LOCAL_GET, me_slot);
                         // Stack: [value, me] — but struct_set needs [obj, val]
                         // value is already on stack from caller, me is on top
                         // Need to swap: not directly available. Use a workaround:
@@ -479,13 +479,13 @@ impl Compiler {
                         // The pattern: compile_expression(value), then compile_store_ident(target)
                         // So stack has [..., value]. We need:
                         // local_set tmp (saves value), drop, local_get me, local_get tmp, struct_set
-                        self.emit_u16(Op::local_set, tmp); // save me to tmp (wrong — me is on top)
+                        self.emit_u16(Op::LOCAL_SET, tmp); // save me to tmp (wrong — me is on top)
                         // This is getting messy. Let me restructure.
                         // Actually we pushed me AFTER value. Stack: [..., value, me]
                         // We need struct_set which pops [obj, val]: expects obj below val
                         // Stack: [value, me] — me is on top, value below. struct_set sees obj=value, val=me. Wrong order.
                         // Need to swap. No swap opcode. Let me pop both and re-push.
-                        self.emit(Op::drop); // drop me, stack: [value]
+                        self.emit(Op::DROP); // drop me, stack: [value]
                         // Actually this whole approach is wrong. Let me handle it differently.
                         // Start over: value is on stack top. We need Me under it.
                         // Pop value to temp, push Me, push value back
@@ -495,7 +495,7 @@ impl Compiler {
                     }
                 }
                 self.emit_global_set(&name);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
         }
         Ok(())
@@ -507,16 +507,16 @@ impl Compiler {
         // Need: Me on stack, then value, then struct_set
         // Use a temp to reorder
         let tmp = self.define_local(&format!("__st_{}", field_name));
-        self.emit_u16(Op::local_set, tmp); // save value
-        self.emit(Op::drop);
+        self.emit_u16(Op::LOCAL_SET, tmp); // save value
+        self.emit(Op::DROP);
         // Now push Me, then value
         if let Some(me_slot) = self.current_scope().resolve_local("me") {
-            self.emit_u16(Op::local_get, me_slot);
+            self.emit_u16(Op::LOCAL_GET, me_slot);
         }
-        self.emit_u16(Op::local_get, tmp); // push value back
+        self.emit_u16(Op::LOCAL_GET, tmp); // push value back
         let prop_idx = self.add_string_constant(field_name);
-        self.emit_u16(Op::struct_set, prop_idx);
-        self.emit(Op::drop);
+        self.emit_u16(Op::STRUCT_SET, prop_idx);
+        self.emit(Op::DROP);
         Ok(())
     }
 
@@ -570,20 +570,20 @@ impl Compiler {
         self.scopes.push(scope);
         if let Some(rv) = return_var { self.function_name_stack.push(rv.as_str().to_lowercase()); }
         if return_var.is_some() {
-            self.emit(Op::null);
+            self.emit(Op::NULL);
             let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
-            self.emit_u16(Op::local_set, rv_slot);
-            self.emit(Op::drop);
+            self.emit_u16(Op::LOCAL_SET, rv_slot);
+            self.emit(Op::DROP);
         }
         for stmt in body { self.compile_statement(stmt)?; }
         if return_var.is_some() { self.function_name_stack.pop(); }
         if return_var.is_some() {
             let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
-            self.emit_u16(Op::local_get, rv_slot);
+            self.emit_u16(Op::LOCAL_GET, rv_slot);
         } else {
-            self.emit(Op::null);
+            self.emit(Op::NULL);
         }
-        self.emit(Op::r#return);
+        self.emit(Op::RETURN);
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;
         let upvalues = self.current_scope().upvalues.clone();
@@ -597,7 +597,7 @@ impl Compiler {
 
     pub(crate) fn emit_ref_func(&mut self, func_idx: usize, upvalues: &[crate::scope::UpvalueDesc]) {
         let line = self.line;
-        self.chunks[self.current_chunk_idx].emit_op_u16(Op::ref_func, func_idx as u16, line);
+        self.chunks[self.current_chunk_idx].emit_op_u16(Op::REF_FUNC, func_idx as u16, line);
         self.chunks[self.current_chunk_idx].emit(upvalues.len() as u8, line);
         for uv in upvalues {
             self.chunks[self.current_chunk_idx].emit(if uv.is_local { 1 } else { 0 }, line);

@@ -56,8 +56,8 @@ impl Compiler {
             self.compile_statement(stmt)?;
         }
 
-        self.emit(Op::null);
-        self.emit(Op::halt);
+        self.emit(Op::NULL);
+        self.emit(Op::HALT);
         self.chunks[0].local_count = self.next_local;
         common::bundle::finalize_with_stdlib(&mut self.chunks);
         Ok(self.chunks)
@@ -84,7 +84,7 @@ impl Compiler {
 
     fn emit_constant(&mut self, value: Value) {
         let idx = self.chunks[self.current_chunk_idx].add_constant(value);
-        self.emit_u16(Op::r#const, idx);
+        self.emit_u16(Op::CONST, idx);
     }
 
     fn add_string_constant(&mut self, s: &str) -> u16 {
@@ -116,7 +116,7 @@ impl Compiler {
     fn emit_host_call(&mut self, import_idx: u16, argc: u8) {
         let line = self.line;
         let c = &mut self.chunks[self.current_chunk_idx];
-        c.emit_op_u16(Op::call_import, import_idx, line);
+        c.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
         c.emit(argc, line);
     }
 
@@ -134,14 +134,14 @@ impl Compiler {
     fn emit_global_set_with_cls(&mut self, name: &str) {
         // Store under original name (for COBOL internal use)
         let idx = self.add_string_constant(name);
-        self.emit_u16(Op::global_set, idx);
+        self.emit_u16(Op::GLOBAL_SET, idx);
 
         // Also store CLS alias if different (for cross-language access)
         // global_set peeks (doesn't pop), so value is still on stack
         let cls_name = Self::cls_normalize(name);
         if cls_name != name {
             let cls_idx = self.add_string_constant(&cls_name);
-            self.emit_u16(Op::global_set, cls_idx);
+            self.emit_u16(Op::GLOBAL_SET, cls_idx);
         }
     }
 
@@ -162,7 +162,7 @@ impl Compiler {
 
             // Set fields from children
             for child in &item.children {
-                self.emit(Op::dup);
+                self.emit(Op::DUP);
                 self.compile_initial_value(&child.pic, &child.value)?;
                 let line = self.line;
                 common::dict::emit_set_const_key(&mut self.chunks[c], &child.name, line);
@@ -180,7 +180,7 @@ impl Compiler {
             if let Some(pic) = &item.pic {
                 self.emit_constant(Value::String(Arc::from(pic.as_str())));
                 let pk = self.add_string_constant(&format!("__PIC_{}", name));
-                self.emit_u16(Op::global_set, pk);
+                self.emit_u16(Op::GLOBAL_SET, pk);
             }
         }
 
@@ -204,7 +204,7 @@ impl Compiler {
                     // Emit: str_pad_end to pad with spaces
                     self.emit_constant(Value::F64(size as f64));
                     self.emit_constant(Value::String(Arc::from(" ")));
-                    self.emit(Op::str_pad_end);
+                    self.emit(Op::STR_PAD_END);
                 }
             }
         } else if let Some(pic) = pic {
@@ -219,7 +219,7 @@ impl Compiler {
                 self.emit_constant(Value::F64(0.0));
             }
         } else {
-            self.emit(Op::null);
+            self.emit(Op::NULL);
         }
         Ok(())
     }
@@ -232,8 +232,8 @@ impl Compiler {
             Literal::Zeros => { self.emit_constant(Value::F64(0.0)); }
             Literal::LowValues => { self.emit_constant(Value::String(Arc::from(""))); }
             Literal::HighValues => { self.emit_constant(Value::String(Arc::from("\u{FFFF}"))); }
-            Literal::True => { self.emit(Op::r#true); }
-            Literal::False => { self.emit(Op::r#false); }
+            Literal::True => { self.emit(Op::TRUE); }
+            Literal::False => { self.emit(Op::FALSE); }
         }
         Ok(())
     }
@@ -273,21 +273,21 @@ impl Compiler {
                     if let Expr::Ident(var_name) = expr {
                         let pic_key = format!("__PIC_{}", var_name);
                         let pk = self.add_string_constant(&pic_key);
-                        self.emit_u16(Op::global_get, pk);
-                        self.emit(Op::dup);
-                        self.emit(Op::ref_is_null);
-                        let no_pic = self.emit_jump(Op::br_if_true);
+                        self.emit_u16(Op::GLOBAL_GET, pk);
+                        self.emit(Op::DUP);
+                        self.emit(Op::REF_IS_NULL);
+                        let no_pic = self.emit_jump(Op::BR_IF_TRUE);
                         // Has PIC — format the value
                         let pic_slot = self.next_local; self.next_local += 1;
-                        self.emit_u16(Op::local_set, pic_slot);
+                        self.emit_u16(Op::LOCAL_SET, pic_slot);
                         self.compile_expr(expr)?;
-                        self.emit_u16(Op::local_get, pic_slot);
+                        self.emit_u16(Op::LOCAL_GET, pic_slot);
                         let fi = self.import("vybe:string", "format");
                         self.emit_host_call(fi, 2);
-                        let skip = self.emit_jump(Op::br);
+                        let skip = self.emit_jump(Op::BR);
                         // No PIC — just compile normally
                         self.patch_jump(no_pic);
-                        self.emit(Op::drop);
+                        self.emit(Op::DROP);
                         self.compile_expr(expr)?;
                         self.patch_jump(skip);
                     } else {
@@ -296,14 +296,14 @@ impl Compiler {
                 }
                 let line = self.line;
                 common::io::emit_print(&mut self.chunks[c], exprs.len() as u8, line);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::Accept(name) => {
                 let i = self.import("wasi:cli", "readLine");
                 self.emit_host_call(i, 0);
                 let idx = self.add_string_constant(name);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
             }
 
             Statement::Move { src, dsts } => {
@@ -319,45 +319,45 @@ impl Compiler {
                 // Get src dict, get its keys, iterate and copy each to dst
                 let src_idx = self.add_string_constant(src);
                 let dst_idx = self.add_string_constant(dst);
-                self.emit_u16(Op::global_get, src_idx);
+                self.emit_u16(Op::GLOBAL_GET, src_idx);
                 let c = self.current_chunk_idx;
                 let line = self.line;
                 common::dict::emit_keys(&mut self.chunks[c], line);
                 let keys_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, keys_slot);
+                self.emit_u16(Op::LOCAL_SET, keys_slot);
                 // Iterate keys
-                self.emit_u16(Op::local_get, keys_slot);
+                self.emit_u16(Op::LOCAL_GET, keys_slot);
                 common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 let len_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, len_slot);
+                self.emit_u16(Op::LOCAL_SET, len_slot);
                 self.emit_constant(Value::I32(0));
                 let i_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, i_slot);
+                self.emit_u16(Op::LOCAL_SET, i_slot);
                 let loop_start = self.current_offset();
-                self.emit_u16(Op::local_get, i_slot);
-                self.emit_u16(Op::local_get, len_slot);
-                self.emit(Op::dyn_lt);
-                let exit = self.emit_jump(Op::br_if_false);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
+                self.emit_u16(Op::LOCAL_GET, len_slot);
+                self.emit(Op::DYN_LT);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
                 // key = keys[i]
-                self.emit_u16(Op::local_get, keys_slot);
-                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::LOCAL_GET, keys_slot);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let key_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, key_slot);
+                self.emit_u16(Op::LOCAL_SET, key_slot);
                 // dst[key] = src[key]
-                self.emit_u16(Op::global_get, dst_idx);
-                self.emit_u16(Op::global_get, src_idx);
-                self.emit_u16(Op::local_get, key_slot);
+                self.emit_u16(Op::GLOBAL_GET, dst_idx);
+                self.emit_u16(Op::GLOBAL_GET, src_idx);
+                self.emit_u16(Op::LOCAL_GET, key_slot);
                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line); // src[key]
-                self.emit_u16(Op::local_get, key_slot);
+                self.emit_u16(Op::LOCAL_GET, key_slot);
                 // struct_set expects [obj, val] with key as constant — use array_set instead
                 common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
                 // i++
-                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
                 self.emit_constant(Value::I32(1));
-                self.emit(Op::dyn_add);
-                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::DYN_ADD);
+                self.emit_u16(Op::LOCAL_SET, i_slot);
                 self.emit_loop(loop_start);
                 self.patch_jump(exit);
             }
@@ -369,35 +369,35 @@ impl Compiler {
                     let mut first = true;
                     for src in srcs {
                         self.compile_expr(src)?;
-                        if !first { self.emit(Op::dyn_add); }
+                        if !first { self.emit(Op::DYN_ADD); }
                         first = false;
                     }
                     let idx = self.add_string_constant(giving_name);
-                    self.emit_u16(Op::global_set, idx);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
                 } else {
                     // ADD a TO b → b = b + a
-                    self.emit_u16(Op::global_get, to_idx);
+                    self.emit_u16(Op::GLOBAL_GET, to_idx);
                     for src in srcs {
                         self.compile_expr(src)?;
-                        self.emit(Op::dyn_add);
+                        self.emit(Op::DYN_ADD);
                     }
-                    self.emit_u16(Op::global_set, to_idx);
+                    self.emit_u16(Op::GLOBAL_SET, to_idx);
                 }
             }
 
             Statement::Subtract { src, from, giving } => {
                 let from_idx = self.add_string_constant(from);
                 if let Some(giving_name) = giving {
-                    self.emit_u16(Op::global_get, from_idx);
+                    self.emit_u16(Op::GLOBAL_GET, from_idx);
                     self.compile_expr(src)?;
-                    self.emit(Op::f64_sub);
+                    self.emit(Op::F64_SUB);
                     let idx = self.add_string_constant(giving_name);
-                    self.emit_u16(Op::global_set, idx);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
                 } else {
-                    self.emit_u16(Op::global_get, from_idx);
+                    self.emit_u16(Op::GLOBAL_GET, from_idx);
                     self.compile_expr(src)?;
-                    self.emit(Op::f64_sub);
-                    self.emit_u16(Op::global_set, from_idx);
+                    self.emit(Op::F64_SUB);
+                    self.emit_u16(Op::GLOBAL_SET, from_idx);
                 }
             }
 
@@ -405,47 +405,47 @@ impl Compiler {
                 let by_idx = self.add_string_constant(by);
                 if let Some(giving_name) = giving {
                     self.compile_expr(src)?;
-                    self.emit_u16(Op::global_get, by_idx);
-                    self.emit(Op::f64_mul);
+                    self.emit_u16(Op::GLOBAL_GET, by_idx);
+                    self.emit(Op::F64_MUL);
                     let idx = self.add_string_constant(giving_name);
-                    self.emit_u16(Op::global_set, idx);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
                 } else {
-                    self.emit_u16(Op::global_get, by_idx);
+                    self.emit_u16(Op::GLOBAL_GET, by_idx);
                     self.compile_expr(src)?;
-                    self.emit(Op::f64_mul);
-                    self.emit_u16(Op::global_set, by_idx);
+                    self.emit(Op::F64_MUL);
+                    self.emit_u16(Op::GLOBAL_SET, by_idx);
                 }
             }
 
             Statement::Divide { src, by, giving, remainder } => {
                 self.compile_expr(src)?;
                 self.compile_expr(by)?;
-                self.emit(Op::dup);
+                self.emit(Op::DUP);
                 let by_tmp = self.next_local;
                 self.next_local += 1;
-                self.emit_u16(Op::local_set, by_tmp);
-                self.emit(Op::f64_div);
+                self.emit_u16(Op::LOCAL_SET, by_tmp);
+                self.emit(Op::F64_DIV);
                 { let c = self.current_chunk_idx; let line = self.line; common::math::emit_trunc(&mut self.chunks[c], line); }
-                self.emit(Op::dup);
+                self.emit(Op::DUP);
                 let gi = self.add_string_constant(giving);
-                self.emit_u16(Op::global_set, gi);
+                self.emit_u16(Op::GLOBAL_SET, gi);
                 if let Some(rem_name) = remainder {
                     // remainder = src - (quotient * by)
-                    self.emit_u16(Op::local_get, by_tmp);
-                    self.emit(Op::f64_mul);
+                    self.emit_u16(Op::LOCAL_GET, by_tmp);
+                    self.emit(Op::F64_MUL);
                     self.compile_expr(src)?;
                     // swap and subtract
                     let tmp = self.next_local;
                     self.next_local += 1;
-                    self.emit_u16(Op::local_set, tmp);
-                    self.emit_u16(Op::local_get, tmp);
-                    self.emit(Op::f64_sub);
+                    self.emit_u16(Op::LOCAL_SET, tmp);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit(Op::F64_SUB);
                     // negate (src - q*b, but we have q*b - src currently)
-                    self.emit(Op::dyn_neg);
+                    self.emit(Op::DYN_NEG);
                     let ri = self.add_string_constant(rem_name);
-                    self.emit_u16(Op::global_set, ri);
+                    self.emit_u16(Op::GLOBAL_SET, ri);
                 } else {
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
             }
 
@@ -454,38 +454,38 @@ impl Compiler {
                 // Apply COMP-3 rounding if target has PIC with V (decimal)
                 let pic_key = format!("__PIC_{}", dst);
                 let pk = self.add_string_constant(&pic_key);
-                self.emit_u16(Op::global_get, pk);
-                self.emit(Op::dup);
-                self.emit(Op::ref_is_null);
-                let no_pic = self.emit_jump(Op::br_if_true);
+                self.emit_u16(Op::GLOBAL_GET, pk);
+                self.emit(Op::DUP);
+                self.emit(Op::REF_IS_NULL);
+                let no_pic = self.emit_jump(Op::BR_IF_TRUE);
                 // Has PIC — check for V (implied decimal)
                 // The PIC string is on stack, but we need it as a Rust string
                 // to determine scale. Since we can't inspect at compile time
                 // for dynamic vars, emit a generic round-to-2 for V99 patterns.
-                self.emit(Op::drop); // drop PIC string
+                self.emit(Op::DROP); // drop PIC string
                 // Round to 2 decimal places (most common: V99)
                 self.emit_constant(Value::F64(100.0));
-                self.emit(Op::f64_mul);
+                self.emit(Op::F64_MUL);
                 let c = self.current_chunk_idx;
                 let line = self.line;
                 common::math::emit_round(&mut self.chunks[c], line);
                 self.emit_constant(Value::F64(100.0));
-                self.emit(Op::f64_div);
-                let end = self.emit_jump(Op::br);
+                self.emit(Op::F64_DIV);
+                let end = self.emit_jump(Op::BR);
                 self.patch_jump(no_pic);
-                self.emit(Op::drop); // drop null
+                self.emit(Op::DROP); // drop null
                 self.patch_jump(end);
                 let idx = self.add_string_constant(dst);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
             }
 
             Statement::If { test, body, else_body } => {
                 self.compile_expr(test)?;
-                self.emit(Op::dyn_to_bool);
+                self.emit(Op::DYN_TO_BOOL);
                 let mut end_jumps = Vec::new();
-                let skip = self.emit_jump(Op::br_if_false);
+                let skip = self.emit_jump(Op::BR_IF_FALSE);
                 for s in body { self.compile_statement(s)?; }
-                end_jumps.push(self.emit_jump(Op::br));
+                end_jumps.push(self.emit_jump(Op::BR));
                 self.patch_jump(skip);
                 if let Some(alt) = else_body {
                     for s in alt { self.compile_statement(s)?; }
@@ -497,7 +497,7 @@ impl Compiler {
                 self.compile_expr(subject)?;
                 let disc_slot = self.next_local;
                 self.next_local += 1;
-                self.emit_u16(Op::local_set, disc_slot);
+                self.emit_u16(Op::LOCAL_SET, disc_slot);
 
                 let mut end_jumps = Vec::new();
 
@@ -510,18 +510,18 @@ impl Compiler {
                         if is_true {
                             // EVALUATE TRUE: WHEN condition
                             self.compile_expr(val)?;
-                            self.emit(Op::dyn_to_bool);
+                            self.emit(Op::DYN_TO_BOOL);
                         } else {
-                            self.emit_u16(Op::local_get, disc_slot);
+                            self.emit_u16(Op::LOCAL_GET, disc_slot);
                             self.compile_expr(val)?;
-                            self.emit(Op::dyn_eq);
+                            self.emit(Op::DYN_EQ);
                         }
-                        match_jumps.push(self.emit_jump(Op::br_if_true));
+                        match_jumps.push(self.emit_jump(Op::BR_IF_TRUE));
                     }
-                    let fail = self.emit_jump(Op::br);
+                    let fail = self.emit_jump(Op::BR);
                     for m in &match_jumps { self.patch_jump(*m); }
                     for s in &when.body { self.compile_statement(s)?; }
-                    end_jumps.push(self.emit_jump(Op::br));
+                    end_jumps.push(self.emit_jump(Op::BR));
                     self.patch_jump(fail);
                 }
                 if let Some(other_body) = other {
@@ -533,20 +533,20 @@ impl Compiler {
             Statement::PerformTimes { count, body } => {
                 self.compile_expr(count)?;
                 let limit_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, limit_slot);
+                self.emit_u16(Op::LOCAL_SET, limit_slot);
                 self.emit_constant(Value::I32(0));
                 let i_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, i_slot);
+                self.emit_u16(Op::LOCAL_SET, i_slot);
                 let loop_start = self.current_offset();
-                self.emit_u16(Op::local_get, i_slot);
-                self.emit_u16(Op::local_get, limit_slot);
-                self.emit(Op::dyn_lt);
-                let exit = self.emit_jump(Op::br_if_false);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
+                self.emit_u16(Op::LOCAL_GET, limit_slot);
+                self.emit(Op::DYN_LT);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
                 for s in body { self.compile_statement(s)?; }
-                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
                 self.emit_constant(Value::I32(1));
-                self.emit(Op::dyn_add);
-                self.emit_u16(Op::local_set, i_slot);
+                self.emit(Op::DYN_ADD);
+                self.emit_u16(Op::LOCAL_SET, i_slot);
                 self.emit_loop(loop_start);
                 self.patch_jump(exit);
             }
@@ -557,17 +557,17 @@ impl Compiler {
                     let loop_start = self.current_offset();
                     for s in body { self.compile_statement(s)?; }
                     self.compile_expr(test)?;
-                    self.emit(Op::dyn_to_bool);
-                    self.emit(Op::dyn_not); // loop while NOT condition
-                    let exit = self.emit_jump(Op::br_if_false);
+                    self.emit(Op::DYN_TO_BOOL);
+                    self.emit(Op::DYN_NOT); // loop while NOT condition
+                    let exit = self.emit_jump(Op::BR_IF_FALSE);
                     self.emit_loop(loop_start);
                     self.patch_jump(exit);
                 } else {
                     // WITH TEST BEFORE (default): test-then-loop
                     let loop_start = self.current_offset();
                     self.compile_expr(test)?;
-                    self.emit(Op::dyn_to_bool);
-                    let exit = self.emit_jump(Op::br_if_true);
+                    self.emit(Op::DYN_TO_BOOL);
+                    let exit = self.emit_jump(Op::BR_IF_TRUE);
                     for s in body { self.compile_statement(s)?; }
                     self.emit_loop(loop_start);
                     self.patch_jump(exit);
@@ -577,17 +577,17 @@ impl Compiler {
             Statement::PerformVarying { var, from, by, until, body } => {
                 let var_idx = self.add_string_constant(var);
                 self.compile_expr(from)?;
-                self.emit_u16(Op::global_set, var_idx);
+                self.emit_u16(Op::GLOBAL_SET, var_idx);
                 let loop_start = self.current_offset();
                 self.compile_expr(until)?;
-                self.emit(Op::dyn_to_bool);
-                let exit = self.emit_jump(Op::br_if_true);
+                self.emit(Op::DYN_TO_BOOL);
+                let exit = self.emit_jump(Op::BR_IF_TRUE);
                 for s in body { self.compile_statement(s)?; }
                 // Increment: var = var + by
-                self.emit_u16(Op::global_get, var_idx);
+                self.emit_u16(Op::GLOBAL_GET, var_idx);
                 self.compile_expr(by)?;
-                self.emit(Op::dyn_add);
-                self.emit_u16(Op::global_set, var_idx);
+                self.emit(Op::DYN_ADD);
+                self.emit_u16(Op::GLOBAL_SET, var_idx);
                 self.emit_loop(loop_start);
                 self.patch_jump(exit);
             }
@@ -596,13 +596,13 @@ impl Compiler {
                 if let Some(&ci) = self.para_chunks.get(name) {
                     let line = self.line;
                     common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
-                    self.emit_u8(Op::call_ref, 0);
-                    self.emit(Op::drop);
+                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit(Op::DROP);
                 } else {
                     // Paragraph not found locally — emit as import call
                     let i = self.import("*", name);
                     self.emit_host_call(i, 0);
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
             }
 
@@ -615,12 +615,12 @@ impl Compiler {
                 }
                 if first { self.emit_constant(Value::String(Arc::from(""))); }
                 let idx = self.add_string_constant(into);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
             }
 
             Statement::Unstring { src, delimiters, into, pointer: _ } => {
                 let src_idx = self.add_string_constant(src);
-                self.emit_u16(Op::global_get, src_idx);
+                self.emit_u16(Op::GLOBAL_GET, src_idx);
                 if let Some(delim) = delimiters.first() {
                     self.emit_constant(Value::String(Arc::from(delim.as_str())));
                 } else {
@@ -629,42 +629,42 @@ impl Compiler {
                 common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 // Assign each part to the target variables
                 let arr_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, arr_slot);
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
                 for (i, target) in into.iter().enumerate() {
-                    self.emit_u16(Op::local_get, arr_slot);
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_constant(Value::I32(i as i32));
                     common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     let idx = self.add_string_constant(&target.name);
-                    self.emit_u16(Op::global_set, idx);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
                 }
             }
 
             Statement::InspectTallying { var, counter, mode: _, target } => {
                 // Count occurrences of target in var
                 let var_idx = self.add_string_constant(var);
-                self.emit_u16(Op::global_get, var_idx);
+                self.emit_u16(Op::GLOBAL_GET, var_idx);
                 self.emit_constant(Value::String(Arc::from(target.as_str())));
                 common_strings::emit_split(&mut self.chunks[self.current_chunk_idx], self.line);
                 common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit_constant(Value::I32(1));
-                self.emit(Op::f64_sub);
+                self.emit(Op::F64_SUB);
                 let cnt_idx = self.add_string_constant(counter);
-                self.emit_u16(Op::global_set, cnt_idx);
+                self.emit_u16(Op::GLOBAL_SET, cnt_idx);
             }
 
             Statement::InspectReplacing { var, mode: _, old, new } => {
                 let var_idx = self.add_string_constant(var);
-                self.emit_u16(Op::global_get, var_idx);
+                self.emit_u16(Op::GLOBAL_GET, var_idx);
                 self.emit_constant(Value::String(Arc::from(old.as_str())));
                 self.emit_constant(Value::String(Arc::from(new.as_str())));
                 common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
-                self.emit_u16(Op::global_set, var_idx);
+                self.emit_u16(Op::GLOBAL_SET, var_idx);
             }
 
             Statement::Call { name, args } => {
                 for arg in args {
                     let ai = self.add_string_constant(arg);
-                    self.emit_u16(Op::global_get, ai);
+                    self.emit_u16(Op::GLOBAL_GET, ai);
                 }
                 // Check cross-language common imports first, then fall back to wildcard
                 let i = if let Some((module, func)) = vybe_compiler_common::imports::resolve_common_import(name) {
@@ -673,31 +673,31 @@ impl Compiler {
                     self.import("*", name)
                 };
                 self.emit_host_call(i, args.len() as u8);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::Initialize(name) => {
                 // Reset to default values (spaces for alpha, zeros for numeric)
                 self.emit_constant(Value::String(Arc::from("")));
                 let idx = self.add_string_constant(name);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
             }
 
             Statement::Set { target, value } => {
                 // SET condition TO TRUE → set parent variable to condition's value
-                if *value { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
+                if *value { self.emit(Op::TRUE); } else { self.emit(Op::FALSE); }
                 let idx = self.add_string_constant(target);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
             }
 
             Statement::StopRun => {
-                self.emit(Op::null);
-                self.emit(Op::halt);
+                self.emit(Op::NULL);
+                self.emit(Op::HALT);
             }
 
             Statement::Goback => {
-                self.emit(Op::null);
-                self.emit(Op::r#return);
+                self.emit(Op::NULL);
+                self.emit(Op::RETURN);
             }
 
             Statement::Continue => {
@@ -709,8 +709,8 @@ impl Compiler {
                 if let Some(&ci) = self.para_chunks.get(name) {
                     let line = self.line;
                     common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
-                    self.emit_u8(Op::call_ref, 0);
-                    self.emit(Op::drop);
+                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit(Op::DROP);
                 }
             }
 
@@ -722,20 +722,20 @@ impl Compiler {
 
             Statement::JsonGenerate { dst, src } => {
                 let src_idx = self.add_string_constant(src);
-                self.emit_u16(Op::global_get, src_idx);
+                self.emit_u16(Op::GLOBAL_GET, src_idx);
                 let i = self.import("vybe:json", "stringify");
                 self.emit_host_call(i, 1);
                 let dst_idx = self.add_string_constant(dst);
-                self.emit_u16(Op::global_set, dst_idx);
+                self.emit_u16(Op::GLOBAL_SET, dst_idx);
             }
 
             Statement::JsonParse { src, dst } => {
                 let src_idx = self.add_string_constant(src);
-                self.emit_u16(Op::global_get, src_idx);
+                self.emit_u16(Op::GLOBAL_GET, src_idx);
                 let i = self.import("vybe:json", "parse");
                 self.emit_host_call(i, 1);
                 let dst_idx = self.add_string_constant(dst);
-                self.emit_u16(Op::global_set, dst_idx);
+                self.emit_u16(Op::GLOBAL_SET, dst_idx);
             }
 
             Statement::Open { mode, file } => {
@@ -750,43 +750,43 @@ impl Compiler {
                 let i = self.import("wasi:filesystem", "openFile");
                 self.emit_host_call(i, 2);
                 let fi = self.add_string_constant(&format!("__file_{}", file));
-                self.emit_u16(Op::global_set, fi);
+                self.emit_u16(Op::GLOBAL_SET, fi);
             }
 
             Statement::Close(file) => {
                 let fi = self.add_string_constant(&format!("__file_{}", file));
-                self.emit_u16(Op::global_get, fi);
+                self.emit_u16(Op::GLOBAL_GET, fi);
                 let i = self.import("wasi:filesystem", "closeFile");
                 self.emit_host_call(i, 1);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::ReadFile { file, into } => {
                 let fi = self.add_string_constant(&format!("__file_{}", file));
-                self.emit_u16(Op::global_get, fi);
+                self.emit_u16(Op::GLOBAL_GET, fi);
                 let i = self.import("wasi:filesystem", "lineInput");
                 self.emit_host_call(i, 1);
                 if let Some(var) = into {
                     let idx = self.add_string_constant(var);
-                    self.emit_u16(Op::global_set, idx);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
                 } else {
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
             }
 
             Statement::WriteFile { record, from } => {
                 let fi = self.add_string_constant(&format!("__file_{}", record));
-                self.emit_u16(Op::global_get, fi);
+                self.emit_u16(Op::GLOBAL_GET, fi);
                 if let Some(var) = from {
                     let vi = self.add_string_constant(var);
-                    self.emit_u16(Op::global_get, vi);
+                    self.emit_u16(Op::GLOBAL_GET, vi);
                 } else {
                     let ri = self.add_string_constant(record);
-                    self.emit_u16(Op::global_get, ri);
+                    self.emit_u16(Op::GLOBAL_GET, ri);
                 }
                 let i = self.import("wasi:filesystem", "printFile");
                 self.emit_host_call(i, 2);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::Sort { file: _, ascending: _, key: _ } => {
@@ -798,24 +798,24 @@ impl Compiler {
                 if let Some(&ci) = self.para_chunks.get(from) {
                     let line = self.line;
                     common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
-                    self.emit_u8(Op::call_ref, 0);
-                    self.emit(Op::drop);
+                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit(Op::DROP);
                 }
                 if let Some(&ci) = self.para_chunks.get(thru) {
                     let line = self.line;
                     common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
-                    self.emit_u8(Op::call_ref, 0);
-                    self.emit(Op::drop);
+                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit(Op::DROP);
                 }
             }
 
             Statement::SearchTable { table: _, at_end, when_cond, when_body } => {
                 // SEARCH — simplified: evaluate condition, if true execute when_body, else at_end
                 self.compile_expr(when_cond)?;
-                self.emit(Op::dyn_to_bool);
-                let skip = self.emit_jump(Op::br_if_false);
+                self.emit(Op::DYN_TO_BOOL);
+                let skip = self.emit_jump(Op::BR_IF_FALSE);
                 for s in when_body { self.compile_statement(s)?; }
-                let end = self.emit_jump(Op::br);
+                let end = self.emit_jump(Op::BR);
                 self.patch_jump(skip);
                 for s in at_end { self.compile_statement(s)?; }
                 self.patch_jump(end);
@@ -845,30 +845,30 @@ impl Compiler {
                     }
                 }
                 let idx = self.add_string_constant(var);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
             }
 
             Statement::Rewrite { record, from } => {
                 // REWRITE record FROM var → write updated record
                 let fi = self.add_string_constant(&format!("__file_{}", record));
-                self.emit_u16(Op::global_get, fi);
+                self.emit_u16(Op::GLOBAL_GET, fi);
                 if let Some(var) = from {
                     let vi = self.add_string_constant(var);
-                    self.emit_u16(Op::global_get, vi);
+                    self.emit_u16(Op::GLOBAL_GET, vi);
                 } else {
                     let ri = self.add_string_constant(record);
-                    self.emit_u16(Op::global_get, ri);
+                    self.emit_u16(Op::GLOBAL_GET, ri);
                 }
                 let i = self.import("wasi:filesystem", "printFile");
                 self.emit_host_call(i, 2);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::DeleteFile(file) => {
                 self.emit_constant(Value::String(Arc::from(file.as_str())));
                 let i = self.import("wasi:filesystem", "remove");
                 self.emit_host_call(i, 1);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::StartFile { file, key: _ } => {
@@ -878,14 +878,14 @@ impl Compiler {
 
             Statement::ExitPerform => {
                 // EXIT PERFORM → break out of current perform loop
-                self.emit(Op::null);
-                self.emit(Op::r#return);
+                self.emit(Op::NULL);
+                self.emit(Op::RETURN);
             }
 
             Statement::ExitParagraph => {
                 // EXIT PARAGRAPH → return from current paragraph
-                self.emit(Op::null);
-                self.emit(Op::r#return);
+                self.emit(Op::NULL);
+                self.emit(Op::RETURN);
             }
 
             Statement::Merge { file: _, ascending: _, key: _ } => {
@@ -899,11 +899,11 @@ impl Compiler {
             Statement::InspectConverting { var, from, to } => {
                 // INSPECT var CONVERTING from TO to → character-by-character translation
                 let var_idx = self.add_string_constant(var);
-                self.emit_u16(Op::global_get, var_idx);
+                self.emit_u16(Op::GLOBAL_GET, var_idx);
                 self.emit_constant(Value::String(Arc::from(from.as_str())));
                 self.emit_constant(Value::String(Arc::from(to.as_str())));
                 common_strings::emit_replace(&mut self.chunks[self.current_chunk_idx], self.line);
-                self.emit_u16(Op::global_set, var_idx);
+                self.emit_u16(Op::GLOBAL_SET, var_idx);
             }
 
             Statement::EvaluateAlso { subjects, whens, other } => {
@@ -913,17 +913,17 @@ impl Compiler {
                     self.compile_expr(first)?;
                 }
                 let disc_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, disc_slot);
+                self.emit_u16(Op::LOCAL_SET, disc_slot);
                 let mut end_jumps = Vec::new();
                 for when in whens {
                     if let Some(first_vals) = when.values.first() {
                         if let Some(val) = first_vals.first() {
-                            self.emit_u16(Op::local_get, disc_slot);
+                            self.emit_u16(Op::LOCAL_GET, disc_slot);
                             self.compile_expr(val)?;
-                            self.emit(Op::dyn_eq);
-                            let skip = self.emit_jump(Op::br_if_false);
+                            self.emit(Op::DYN_EQ);
+                            let skip = self.emit_jump(Op::BR_IF_FALSE);
                             for s in &when.body { self.compile_statement(s)?; }
-                            end_jumps.push(self.emit_jump(Op::br));
+                            end_jumps.push(self.emit_jump(Op::BR));
                             self.patch_jump(skip);
                         }
                     }
@@ -937,21 +937,21 @@ impl Compiler {
             Statement::Invoke { object, method, args, returning } => {
                 // INVOKE object method USING args RETURNING result
                 let oi = self.add_string_constant(object);
-                self.emit_u16(Op::global_get, oi);
+                self.emit_u16(Op::GLOBAL_GET, oi);
                 let mi = self.add_string_constant(method);
-                self.emit_u16(Op::struct_get, mi);
+                self.emit_u16(Op::STRUCT_GET, mi);
                 // Push self + args
-                self.emit_u16(Op::global_get, oi);
+                self.emit_u16(Op::GLOBAL_GET, oi);
                 for arg in args {
                     let ai = self.add_string_constant(arg);
-                    self.emit_u16(Op::global_get, ai);
+                    self.emit_u16(Op::GLOBAL_GET, ai);
                 }
-                self.emit_u8(Op::call_ref, (args.len() + 1) as u8);
+                self.emit_u8(Op::CALL_REF, (args.len() + 1) as u8);
                 if let Some(ret_var) = returning {
                     let ri = self.add_string_constant(ret_var);
-                    self.emit_u16(Op::global_set, ri);
+                    self.emit_u16(Op::GLOBAL_SET, ri);
                 } else {
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
             }
 
@@ -966,9 +966,9 @@ impl Compiler {
 
             Statement::FreeStmt(var) => {
                 // FREE → set variable to null
-                self.emit(Op::null);
+                self.emit(Op::NULL);
                 let idx = self.add_string_constant(var);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
             }
 
             Statement::AllocateStmt(var) => {
@@ -977,7 +977,7 @@ impl Compiler {
                 let c = self.current_chunk_idx;
                 common::dict::emit_new(&mut self.chunks[c], line);
                 let idx = self.add_string_constant(var);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
             }
 
             // ── Async / Threading ──────────────────────────────
@@ -986,46 +986,46 @@ impl Compiler {
                 // Push args
                 for arg in args {
                     let ai = self.add_string_constant(arg);
-                    self.emit_u16(Op::global_get, ai);
+                    self.emit_u16(Op::GLOBAL_GET, ai);
                 }
                 let i = self.import("*", name);
                 self.emit_host_call(i, args.len() as u8);
                 // Store handle
                 if let Some(h) = handle {
                     let hi = self.add_string_constant(h);
-                    self.emit_u16(Op::global_set, hi);
+                    self.emit_u16(Op::GLOBAL_SET, hi);
                 } else {
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
             }
 
             Statement::Wait(handle) => {
                 // WAIT FOR handle → join thread, get result
                 let hi = self.add_string_constant(handle);
-                self.emit_u16(Op::global_get, hi);
+                self.emit_u16(Op::GLOBAL_GET, hi);
                 let c = self.current_chunk_idx;
                 let line = self.line;
                 common::threading::emit_thread_join(&mut self.chunks[c], line);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::RunUnit { name, args } => {
                 // RUN UNIT → call external program via import
                 for arg in args {
                     let ai = self.add_string_constant(arg);
-                    self.emit_u16(Op::global_get, ai);
+                    self.emit_u16(Op::GLOBAL_GET, ai);
                 }
                 let i = self.import("*", name);
                 self.emit_host_call(i, args.len() as u8);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::LockMonitor(name) => {
                 // LOCK monitor → acquire spinlock
                 let ni = self.add_string_constant(name);
-                self.emit_u16(Op::global_get, ni);
+                self.emit_u16(Op::GLOBAL_GET, ni);
                 let lock_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, lock_slot);
+                self.emit_u16(Op::LOCAL_SET, lock_slot);
                 let c = self.current_chunk_idx;
                 let line = self.line;
                 common::threading::emit_lock_acquire(&mut self.chunks[c], lock_slot, line);
@@ -1034,9 +1034,9 @@ impl Compiler {
             Statement::UnlockMonitor(name) => {
                 // UNLOCK monitor → release spinlock
                 let ni = self.add_string_constant(name);
-                self.emit_u16(Op::global_get, ni);
+                self.emit_u16(Op::GLOBAL_GET, ni);
                 let lock_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, lock_slot);
+                self.emit_u16(Op::LOCAL_SET, lock_slot);
                 let c = self.current_chunk_idx;
                 let line = self.line;
                 common::threading::emit_lock_release(&mut self.chunks[c], lock_slot, line);
@@ -1047,22 +1047,22 @@ impl Compiler {
                 if let Some(&ci) = self.para_chunks.get(para_name) {
                     let line = self.line;
                     common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, 0, line);
-                    self.emit(Op::cont_new); // create continuation from function
-                    self.emit(Op::null);     // initial value
-                    self.emit_u16(Op::resume, 0); // start the fiber
-                    self.emit(Op::drop);
+                    self.emit(Op::CONT_NEW); // create continuation from function
+                    self.emit(Op::NULL);     // initial value
+                    self.emit_u16(Op::RESUME, 0); // start the fiber
+                    self.emit(Op::DROP);
                 }
             }
 
             Statement::YieldStmt => {
                 // YIELD → suspend current fiber, return control to caller
-                self.emit(Op::null);
-                self.emit_u16(Op::suspend, 0);
+                self.emit(Op::NULL);
+                self.emit_u16(Op::SUSPEND, 0);
             }
 
             Statement::SuspendStmt => {
-                self.emit(Op::null);
-                self.emit_u16(Op::suspend, 0);
+                self.emit(Op::NULL);
+                self.emit_u16(Op::SUSPEND, 0);
             }
 
             Statement::AddCorresponding { src, dst } => {
@@ -1070,19 +1070,19 @@ impl Compiler {
                 // Same pattern as MOVE CORRESPONDING but with addition
                 let src_idx = self.add_string_constant(src);
                 let dst_idx = self.add_string_constant(dst);
-                self.emit_u16(Op::global_get, dst_idx);
-                self.emit_u16(Op::global_get, src_idx);
-                self.emit(Op::dyn_add);
-                self.emit_u16(Op::global_set, dst_idx);
+                self.emit_u16(Op::GLOBAL_GET, dst_idx);
+                self.emit_u16(Op::GLOBAL_GET, src_idx);
+                self.emit(Op::DYN_ADD);
+                self.emit_u16(Op::GLOBAL_SET, dst_idx);
             }
 
             Statement::SubtractCorresponding { src, dst } => {
                 let dst_idx = self.add_string_constant(dst);
                 let src_idx = self.add_string_constant(src);
-                self.emit_u16(Op::global_get, dst_idx);
-                self.emit_u16(Op::global_get, src_idx);
-                self.emit(Op::f64_sub);
-                self.emit_u16(Op::global_set, dst_idx);
+                self.emit_u16(Op::GLOBAL_GET, dst_idx);
+                self.emit_u16(Op::GLOBAL_GET, src_idx);
+                self.emit(Op::F64_SUB);
+                self.emit_u16(Op::GLOBAL_SET, dst_idx);
             }
 
             Statement::CopyReplacing { copybook: _, replacements: _ } => {
@@ -1093,7 +1093,7 @@ impl Compiler {
                 let i = self.import("wasi:cli", "getArgs");
                 self.emit_host_call(i, 0);
                 let idx = self.add_string_constant(var);
-                self.emit_u16(Op::global_set, idx);
+                self.emit_u16(Op::GLOBAL_SET, idx);
             }
 
             // ── CICS ───────────────────────────────────────────
@@ -1105,11 +1105,11 @@ impl Compiler {
                         for (key, val) in params {
                             if key == "FROM" || key == "MAP" {
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_get, vi);
+                                self.emit_u16(Op::GLOBAL_GET, vi);
                                 let c = self.current_chunk_idx;
                                 let line = self.line;
                                 common::io::emit_print(&mut self.chunks[c], 1, line);
-                                self.emit(Op::drop);
+                                self.emit(Op::DROP);
                             }
                         }
                     }
@@ -1120,7 +1120,7 @@ impl Compiler {
                                 let i = self.import("wasi:cli", "readLine");
                                 self.emit_host_call(i, 0);
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             }
                         }
                     }
@@ -1131,7 +1131,7 @@ impl Compiler {
                                 let i = self.import("wasi:cli", "readLine");
                                 self.emit_host_call(i, 0);
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             }
                         }
                     }
@@ -1139,27 +1139,27 @@ impl Compiler {
                         for (key, val) in params {
                             if key == "FROM" {
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_get, vi);
+                                self.emit_u16(Op::GLOBAL_GET, vi);
                                 let c = self.current_chunk_idx;
                                 let line = self.line;
                                 common::io::emit_print(&mut self.chunks[c], 1, line);
-                                self.emit(Op::drop);
+                                self.emit(Op::DROP);
                             }
                         }
                     }
                     "RETURN" => {
                         // RETURN TRANSID(next-trans) — return to CICS
-                        self.emit(Op::null);
-                        self.emit(Op::r#return);
+                        self.emit(Op::NULL);
+                        self.emit(Op::RETURN);
                     }
                     "LINK" | "XCTL" => {
                         // LINK/XCTL PROGRAM(progname) — call another program
                         for (key, val) in params {
                             if key == "PROGRAM" {
                                 let ni = self.add_string_constant(val);
-                                self.emit_u16(Op::global_get, ni);
-                                self.emit_u8(Op::call_ref, 0);
-                                self.emit(Op::drop);
+                                self.emit_u16(Op::GLOBAL_GET, ni);
+                                self.emit_u8(Op::CALL_REF, 0);
+                                self.emit(Op::DROP);
                             }
                         }
                     }
@@ -1173,7 +1173,7 @@ impl Compiler {
                                 let i = self.import("wasi:clocks", "toISOString");
                                 self.emit_host_call(i, 0);
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             }
                         }
                     }
@@ -1185,7 +1185,7 @@ impl Compiler {
                                 let c = self.current_chunk_idx;
                                 common::dict::emit_new(&mut self.chunks[c], line);
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             }
                         }
                     }
@@ -1193,9 +1193,9 @@ impl Compiler {
                         // Free memory — set to null
                         for (key, val) in params {
                             if key == "DATA" || key == "DATAPOINTER" {
-                                self.emit(Op::null);
+                                self.emit(Op::NULL);
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             }
                         }
                     }
@@ -1208,7 +1208,7 @@ impl Compiler {
                             let key = format!("__CICS_HANDLER_{}", condition);
                             let ki = self.add_string_constant(&key);
                             self.emit_constant(Value::String(Arc::from(handler.as_str())));
-                            self.emit_u16(Op::global_set, ki);
+                            self.emit_u16(Op::GLOBAL_SET, ki);
                         }
                     }
 
@@ -1234,24 +1234,24 @@ impl Compiler {
                             // Queue is stored as a global array
                             let qk = self.add_string_constant(&format!("__CICS_Q_{}", queue_name));
                             // Get or create the queue array
-                            self.emit_u16(Op::global_get, qk);
-                            self.emit(Op::dup);
-                            self.emit(Op::ref_is_null);
-                            let exists = self.emit_jump(Op::br_if_false);
-                            self.emit(Op::drop);
+                            self.emit_u16(Op::GLOBAL_GET, qk);
+                            self.emit(Op::DUP);
+                            self.emit(Op::REF_IS_NULL);
+                            let exists = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit(Op::DROP);
                             common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 0, self.line);
                             self.patch_jump(exists);
                             // Push data to queue
                             if !from_var.is_empty() {
                                 let fi = self.add_string_constant(&from_var);
-                                self.emit_u16(Op::global_get, fi);
+                                self.emit_u16(Op::GLOBAL_GET, fi);
                             } else {
                                 self.emit_constant(Value::String(Arc::from("")));
                             }
                             common_collections::emit_push(&mut self.chunks[self.current_chunk_idx], self.line);
-                            self.emit(Op::drop);
+                            self.emit(Op::DROP);
                             // Save queue back
-                            self.emit_u16(Op::global_set, qk);
+                            self.emit_u16(Op::GLOBAL_SET, qk);
                         }
                     }
 
@@ -1272,13 +1272,13 @@ impl Compiler {
                         }
                         if !queue_name.is_empty() {
                             let qk = self.add_string_constant(&format!("__CICS_Q_{}", queue_name));
-                            self.emit_u16(Op::global_get, qk);
+                            self.emit_u16(Op::GLOBAL_GET, qk);
                             // Get item by index (default: first item = shift)
                             if let Some(item) = &item_num {
                                 let ii = self.add_string_constant(item);
-                                self.emit_u16(Op::global_get, ii);
+                                self.emit_u16(Op::GLOBAL_GET, ii);
                                 self.emit_constant(Value::I32(1));
-                                self.emit(Op::f64_sub); // CICS is 1-indexed
+                                self.emit(Op::F64_SUB); // CICS is 1-indexed
                                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                             } else {
                                 // Read next = shift from front
@@ -1288,9 +1288,9 @@ impl Compiler {
                             }
                             if !into_var.is_empty() {
                                 let vi = self.add_string_constant(&into_var);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             } else {
-                                self.emit(Op::drop);
+                                self.emit(Op::DROP);
                             }
                         }
                     }
@@ -1300,8 +1300,8 @@ impl Compiler {
                         for (key, val) in params {
                             if key == "QUEUE" {
                                 let qk = self.add_string_constant(&format!("__CICS_Q_{}", val));
-                                self.emit(Op::null);
-                                self.emit_u16(Op::global_set, qk);
+                                self.emit(Op::NULL);
+                                self.emit_u16(Op::GLOBAL_SET, qk);
                             }
                         }
                     }
@@ -1314,7 +1314,7 @@ impl Compiler {
                                 let rk = self.add_string_constant(&format!("__CICS_LOCK_{}", val));
                                 // Simple spinlock via global flag
                                 self.emit_constant(Value::I32(1));
-                                self.emit_u16(Op::global_set, rk);
+                                self.emit_u16(Op::GLOBAL_SET, rk);
                             }
                         }
                     }
@@ -1323,7 +1323,7 @@ impl Compiler {
                             if key == "RESOURCE" {
                                 let rk = self.add_string_constant(&format!("__CICS_LOCK_{}", val));
                                 self.emit_constant(Value::I32(0));
-                                self.emit_u16(Op::global_set, rk);
+                                self.emit_u16(Op::GLOBAL_SET, rk);
                             }
                         }
                     }
@@ -1337,23 +1337,23 @@ impl Compiler {
                                     let i = self.import("wasi:cli", "userName");
                                     self.emit_host_call(i, 0);
                                     let vi = self.add_string_constant(val);
-                                    self.emit_u16(Op::global_set, vi);
+                                    self.emit_u16(Op::GLOBAL_SET, vi);
                                 }
                                 "SYSID" | "APPLID" => {
                                     self.emit_constant(Value::String(Arc::from("VYBE")));
                                     let vi = self.add_string_constant(val);
-                                    self.emit_u16(Op::global_set, vi);
+                                    self.emit_u16(Op::GLOBAL_SET, vi);
                                 }
                                 "CWALENGTH" => {
                                     self.emit_constant(Value::F64(0.0));
                                     let vi = self.add_string_constant(val);
-                                    self.emit_u16(Op::global_set, vi);
+                                    self.emit_u16(Op::GLOBAL_SET, vi);
                                 }
                                 _ => {
                                     // Generic: return empty string
                                     self.emit_constant(Value::String(Arc::from("")));
                                     let vi = self.add_string_constant(val);
-                                    self.emit_u16(Op::global_set, vi);
+                                    self.emit_u16(Op::GLOBAL_SET, vi);
                                 }
                             }
                         }
@@ -1382,11 +1382,11 @@ impl Compiler {
                             let ck = self.add_string_constant(&format!("__CICS_CONT_{}_{}", channel, container));
                             if !from_var.is_empty() {
                                 let fi = self.add_string_constant(&from_var);
-                                self.emit_u16(Op::global_get, fi);
+                                self.emit_u16(Op::GLOBAL_GET, fi);
                             } else {
                                 self.emit_constant(Value::String(Arc::from("")));
                             }
-                            self.emit_u16(Op::global_set, ck);
+                            self.emit_u16(Op::GLOBAL_SET, ck);
                         }
                     }
                     "GET" => {
@@ -1404,12 +1404,12 @@ impl Compiler {
                         }
                         if !container.is_empty() {
                             let ck = self.add_string_constant(&format!("__CICS_CONT_{}_{}", channel, container));
-                            self.emit_u16(Op::global_get, ck);
+                            self.emit_u16(Op::GLOBAL_GET, ck);
                             if !into_var.is_empty() {
                                 let vi = self.add_string_constant(&into_var);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             } else {
-                                self.emit(Op::drop);
+                                self.emit(Op::DROP);
                             }
                         }
                     }
@@ -1420,7 +1420,7 @@ impl Compiler {
                         for (key, val) in params {
                             if key == "SECONDS" || key == "INTERVAL" {
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_get, vi);
+                                self.emit_u16(Op::GLOBAL_GET, vi);
                                 let i = self.import("wasi:clocks", "sleep");
                                 self.emit_host_call(i, 1);
                             }
@@ -1431,25 +1431,25 @@ impl Compiler {
                         for (key, val) in params {
                             if key == "TRANSID" {
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_get, vi);
-                                self.emit_u8(Op::call_ref, 0);
-                                self.emit(Op::drop);
+                                self.emit_u16(Op::GLOBAL_GET, vi);
+                                self.emit_u8(Op::CALL_REF, 0);
+                                self.emit(Op::DROP);
                             }
                         }
                     }
 
                     // ── SUSPEND / POST / WAIT EVENT ────────────
                     "SUSPEND" => {
-                        self.emit(Op::null);
-                        self.emit_u16(Op::suspend, 0);
+                        self.emit(Op::NULL);
+                        self.emit_u16(Op::SUSPEND, 0);
                     }
                     "POST" => {
                         // POST EVENT(name) — signal event
                         for (key, val) in params {
                             if key == "EVENT" {
                                 let ek = self.add_string_constant(&format!("__CICS_EVT_{}", val));
-                                self.emit(Op::r#true);
-                                self.emit_u16(Op::global_set, ek);
+                                self.emit(Op::TRUE);
+                                self.emit_u16(Op::GLOBAL_SET, ek);
                             }
                         }
                     }
@@ -1464,17 +1464,17 @@ impl Compiler {
                         for (key, val) in params {
                             if key == "FROM" {
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_get, vi);
+                                self.emit_u16(Op::GLOBAL_GET, vi);
                                 let c = self.current_chunk_idx;
                                 let line = self.line;
                                 common::io::emit_print(&mut self.chunks[c], 1, line);
-                                self.emit(Op::drop);
+                                self.emit(Op::DROP);
                             }
                             if key == "INTO" || key == "SET" {
                                 let i = self.import("wasi:cli", "readLine");
                                 self.emit_host_call(i, 0);
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             }
                         }
                     }
@@ -1488,7 +1488,7 @@ impl Compiler {
                                 let c = self.current_chunk_idx;
                                 common::dict::emit_new(&mut self.chunks[c], line);
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             }
                         }
                     }
@@ -1512,7 +1512,7 @@ impl Compiler {
                             if !val.is_empty() {
                                 self.emit_constant(Value::String(Arc::from("")));
                                 let vi = self.add_string_constant(val);
-                                self.emit_u16(Op::global_set, vi);
+                                self.emit_u16(Op::GLOBAL_SET, vi);
                             }
                         }
                     }
@@ -1534,9 +1534,9 @@ impl Compiler {
                                 self.emit_host_call(i, 0);
                                 if !val.is_empty() {
                                     let vi = self.add_string_constant(val);
-                                    self.emit_u16(Op::global_set, vi);
+                                    self.emit_u16(Op::GLOBAL_SET, vi);
                                 } else {
-                                    self.emit(Op::drop);
+                                    self.emit(Op::DROP);
                                 }
                             }
                         }
@@ -1547,11 +1547,11 @@ impl Compiler {
                             if key == "FROM" || key.is_empty() {
                                 if !val.is_empty() {
                                     let vi = self.add_string_constant(val);
-                                    self.emit_u16(Op::global_get, vi);
+                                    self.emit_u16(Op::GLOBAL_GET, vi);
                                     let c = self.current_chunk_idx;
                                     let line = self.line;
                                     common::io::emit_print(&mut self.chunks[c], 1, line);
-                                    self.emit(Op::drop);
+                                    self.emit(Op::DROP);
                                 }
                             }
                         }
@@ -1565,19 +1565,19 @@ impl Compiler {
                 let to_idx = self.add_string_constant(to);
                 if let Some(giving_name) = giving {
                     let mut first = true;
-                    for src in srcs { self.compile_expr(src)?; if !first { self.emit(Op::dyn_add); } first = false; }
+                    for src in srcs { self.compile_expr(src)?; if !first { self.emit(Op::DYN_ADD); } first = false; }
                     let c = self.current_chunk_idx;
                     let line = self.line;
                     common::math::emit_round(&mut self.chunks[c], line);
                     let idx = self.add_string_constant(giving_name);
-                    self.emit_u16(Op::global_set, idx);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
                 } else {
-                    self.emit_u16(Op::global_get, to_idx);
-                    for src in srcs { self.compile_expr(src)?; self.emit(Op::dyn_add); }
+                    self.emit_u16(Op::GLOBAL_GET, to_idx);
+                    for src in srcs { self.compile_expr(src)?; self.emit(Op::DYN_ADD); }
                     let c = self.current_chunk_idx;
                     let line = self.line;
                     common::math::emit_round(&mut self.chunks[c], line);
-                    self.emit_u16(Op::global_set, to_idx);
+                    self.emit_u16(Op::GLOBAL_SET, to_idx);
                 }
             }
 
@@ -1591,14 +1591,14 @@ impl Compiler {
                     common::math::emit_round(&mut self.chunks[c], line);
                 }
                 let di = self.add_string_constant(dst);
-                self.emit_u16(Op::global_set, di);
+                self.emit_u16(Op::GLOBAL_SET, di);
                 let line = self.line;
                 common::errors::emit_try_end(&mut self.chunks[c], line);
                 // NOT ON SIZE ERROR
                 for s in not_on_error { self.compile_statement(s)?; }
-                let skip = self.emit_jump(Op::br);
+                let skip = self.emit_jump(Op::BR);
                 common::errors::patch_catch(&mut self.chunks[c], catch_jump);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
                 // ON SIZE ERROR
                 for s in on_error { self.compile_statement(s)?; }
                 self.patch_jump(skip);
@@ -1606,25 +1606,25 @@ impl Compiler {
 
             Statement::ReadFileAtEnd { file, into, at_end, not_at_end } => {
                 let fi = self.add_string_constant(&format!("__file_{}", file));
-                self.emit_u16(Op::global_get, fi);
+                self.emit_u16(Op::GLOBAL_GET, fi);
                 let i = self.import("wasi:filesystem", "lineInput");
                 self.emit_host_call(i, 1);
                 // Check if null (end of file)
-                self.emit(Op::dup);
-                self.emit(Op::ref_is_null);
-                let eof_jump = self.emit_jump(Op::br_if_true);
+                self.emit(Op::DUP);
+                self.emit(Op::REF_IS_NULL);
+                let eof_jump = self.emit_jump(Op::BR_IF_TRUE);
                 // NOT AT END — got data
                 if let Some(var) = into {
                     let idx = self.add_string_constant(var);
-                    self.emit_u16(Op::global_set, idx);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
                 } else {
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
                 for s in not_at_end { self.compile_statement(s)?; }
-                let end = self.emit_jump(Op::br);
+                let end = self.emit_jump(Op::BR);
                 // AT END
                 self.patch_jump(eof_jump);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
                 for s in at_end { self.compile_statement(s)?; }
                 self.patch_jump(end);
             }
@@ -1640,30 +1640,30 @@ impl Compiler {
             Statement::DisplayFormatted { var, pic } => {
                 // Format a number using PIC editing mask
                 let vi = self.add_string_constant(var);
-                self.emit_u16(Op::global_get, vi);
+                self.emit_u16(Op::GLOBAL_GET, vi);
                 self.emit_constant(Value::String(Arc::from(pic.as_str())));
                 let i = self.import("vybe:string", "format");
                 self.emit_host_call(i, 2);
                 let c = self.current_chunk_idx;
                 let line = self.line;
                 common::io::emit_print(&mut self.chunks[c], 1, line);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             // ── Embedded SQL ───────────────────────────────────
             Statement::SqlConnect { dsn, handle_var } => {
                 // EXEC SQL CONNECT :dsn END-EXEC → vybe:database connect
                 let di = self.add_string_constant(dsn);
-                self.emit_u16(Op::global_get, di);
+                self.emit_u16(Op::GLOBAL_GET, di);
                 let i = self.import("vybe:database", "connect");
                 self.emit_host_call(i, 1);
                 if let Some(hv) = handle_var {
                     let hi = self.add_string_constant(hv);
-                    self.emit_u16(Op::global_set, hi);
+                    self.emit_u16(Op::GLOBAL_SET, hi);
                 } else {
                     // Store as default connection
                     let idx = self.add_string_constant("__SQL_CONN");
-                    self.emit_u16(Op::global_set, idx);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
                 }
             }
 
@@ -1671,21 +1671,21 @@ impl Compiler {
                 // EXEC SQL SELECT ... INTO :var1, :var2 FROM ... WHERE :var3 END-EXEC
                 // Build SQL string, push host vars, call query
                 let conn_idx = self.add_string_constant("__SQL_CONN");
-                self.emit_u16(Op::global_get, conn_idx);
+                self.emit_u16(Op::GLOBAL_GET, conn_idx);
                 self.emit_constant(Value::String(Arc::from(sql.as_str())));
                 // Push WHERE-clause host vars as parameters
                 for var in from_vars {
                     let vi = self.add_string_constant(var);
-                    self.emit_u16(Op::global_get, vi);
+                    self.emit_u16(Op::GLOBAL_GET, vi);
                 }
                 let i = self.import("vybe:database", "query");
                 self.emit_host_call(i, (from_vars.len() + 2) as u8);
                 // Result is array of rows. For SELECT INTO, take first row.
                 let result_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, result_slot);
+                self.emit_u16(Op::LOCAL_SET, result_slot);
                 // Assign each INTO var from the result
                 for (col, var) in into_vars.iter().enumerate() {
-                    self.emit_u16(Op::local_get, result_slot);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
                     // First row: result[0]
                     self.emit_constant(Value::I32(0));
                     common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
@@ -1693,82 +1693,82 @@ impl Compiler {
                     self.emit_constant(Value::I32(col as i32));
                     common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     let vi = self.add_string_constant(var);
-                    self.emit_u16(Op::global_set, vi);
+                    self.emit_u16(Op::GLOBAL_SET, vi);
                 }
                 // Set SQLCODE = 0 (success)
                 self.emit_constant(Value::F64(0.0));
                 let sc = self.add_string_constant("SQLCODE");
-                self.emit_u16(Op::global_set, sc);
+                self.emit_u16(Op::GLOBAL_SET, sc);
             }
 
             Statement::SqlExecute { sql, host_vars } => {
                 // EXEC SQL INSERT/UPDATE/DELETE ... END-EXEC
                 let conn_idx = self.add_string_constant("__SQL_CONN");
-                self.emit_u16(Op::global_get, conn_idx);
+                self.emit_u16(Op::GLOBAL_GET, conn_idx);
                 self.emit_constant(Value::String(Arc::from(sql.as_str())));
                 for var in host_vars {
                     let vi = self.add_string_constant(var);
-                    self.emit_u16(Op::global_get, vi);
+                    self.emit_u16(Op::GLOBAL_GET, vi);
                 }
                 let i = self.import("vybe:database", "execute");
                 self.emit_host_call(i, (host_vars.len() + 2) as u8);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
                 // SQLCODE = 0
                 self.emit_constant(Value::F64(0.0));
                 let sc = self.add_string_constant("SQLCODE");
-                self.emit_u16(Op::global_set, sc);
+                self.emit_u16(Op::GLOBAL_SET, sc);
             }
 
             Statement::SqlCommit => {
                 let conn_idx = self.add_string_constant("__SQL_CONN");
-                self.emit_u16(Op::global_get, conn_idx);
+                self.emit_u16(Op::GLOBAL_GET, conn_idx);
                 self.emit_constant(Value::String(Arc::from("COMMIT")));
                 let i = self.import("vybe:database", "execute");
                 self.emit_host_call(i, 2);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::SqlRollback => {
                 let conn_idx = self.add_string_constant("__SQL_CONN");
-                self.emit_u16(Op::global_get, conn_idx);
+                self.emit_u16(Op::GLOBAL_GET, conn_idx);
                 self.emit_constant(Value::String(Arc::from("ROLLBACK")));
                 let i = self.import("vybe:database", "execute");
                 self.emit_host_call(i, 2);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
 
             Statement::SqlDeclareCursor { cursor_name, sql, host_vars } => {
                 // Store cursor SQL + params for later OPEN
                 let cursor_sql_key = self.add_string_constant(&format!("__CURSOR_{}_SQL", cursor_name));
                 self.emit_constant(Value::String(Arc::from(sql.as_str())));
-                self.emit_u16(Op::global_set, cursor_sql_key);
+                self.emit_u16(Op::GLOBAL_SET, cursor_sql_key);
                 // Store host var names for parameter binding
                 for (i, var) in host_vars.iter().enumerate() {
                     let pk = self.add_string_constant(&format!("__CURSOR_{}_P{}", cursor_name, i));
                     let vi = self.add_string_constant(var);
-                    self.emit_u16(Op::global_get, vi);
-                    self.emit_u16(Op::global_set, pk);
+                    self.emit_u16(Op::GLOBAL_GET, vi);
+                    self.emit_u16(Op::GLOBAL_SET, pk);
                 }
                 let pc = self.add_string_constant(&format!("__CURSOR_{}_PCNT", cursor_name));
                 self.emit_constant(Value::F64(host_vars.len() as f64));
-                self.emit_u16(Op::global_set, pc);
+                self.emit_u16(Op::GLOBAL_SET, pc);
             }
 
             Statement::SqlOpenCursor(cursor_name) => {
                 // Execute the cursor's SQL and store result set
                 let conn_idx = self.add_string_constant("__SQL_CONN");
-                self.emit_u16(Op::global_get, conn_idx);
+                self.emit_u16(Op::GLOBAL_GET, conn_idx);
                 let sql_key = self.add_string_constant(&format!("__CURSOR_{}_SQL", cursor_name));
-                self.emit_u16(Op::global_get, sql_key);
+                self.emit_u16(Op::GLOBAL_GET, sql_key);
                 let i = self.import("vybe:database", "query");
                 self.emit_host_call(i, 2);
                 // Store result set
                 let rs_key = self.add_string_constant(&format!("__CURSOR_{}_RS", cursor_name));
-                self.emit_u16(Op::global_set, rs_key);
+                self.emit_u16(Op::GLOBAL_SET, rs_key);
                 // Reset row index to 0
                 let idx_key = self.add_string_constant(&format!("__CURSOR_{}_IDX", cursor_name));
                 self.emit_constant(Value::F64(0.0));
-                self.emit_u16(Op::global_set, idx_key);
+                self.emit_u16(Op::GLOBAL_SET, idx_key);
             }
 
             Statement::SqlFetch { cursor_name, into_vars } => {
@@ -1777,45 +1777,45 @@ impl Compiler {
                 let idx_key = self.add_string_constant(&format!("__CURSOR_{}_IDX", cursor_name));
 
                 // Check if index < result set length
-                self.emit_u16(Op::global_get, idx_key);
-                self.emit_u16(Op::global_get, rs_key);
+                self.emit_u16(Op::GLOBAL_GET, idx_key);
+                self.emit_u16(Op::GLOBAL_GET, rs_key);
                 common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
-                self.emit(Op::dyn_lt);
-                let no_more = self.emit_jump(Op::br_if_false);
+                self.emit(Op::DYN_LT);
+                let no_more = self.emit_jump(Op::BR_IF_FALSE);
 
                 // Get current row
-                self.emit_u16(Op::global_get, rs_key);
-                self.emit_u16(Op::global_get, idx_key);
+                self.emit_u16(Op::GLOBAL_GET, rs_key);
+                self.emit_u16(Op::GLOBAL_GET, idx_key);
                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let row_slot = self.next_local; self.next_local += 1;
-                self.emit_u16(Op::local_set, row_slot);
+                self.emit_u16(Op::LOCAL_SET, row_slot);
 
                 // Assign each column to INTO var
                 for (col, var) in into_vars.iter().enumerate() {
-                    self.emit_u16(Op::local_get, row_slot);
+                    self.emit_u16(Op::LOCAL_GET, row_slot);
                     self.emit_constant(Value::I32(col as i32));
                     common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     let vi = self.add_string_constant(var);
-                    self.emit_u16(Op::global_set, vi);
+                    self.emit_u16(Op::GLOBAL_SET, vi);
                 }
 
                 // Increment index
-                self.emit_u16(Op::global_get, idx_key);
+                self.emit_u16(Op::GLOBAL_GET, idx_key);
                 self.emit_constant(Value::F64(1.0));
-                self.emit(Op::dyn_add);
-                self.emit_u16(Op::global_set, idx_key);
+                self.emit(Op::DYN_ADD);
+                self.emit_u16(Op::GLOBAL_SET, idx_key);
 
                 // SQLCODE = 0 (success)
                 self.emit_constant(Value::F64(0.0));
                 let sc = self.add_string_constant("SQLCODE");
-                self.emit_u16(Op::global_set, sc);
-                let end = self.emit_jump(Op::br);
+                self.emit_u16(Op::GLOBAL_SET, sc);
+                let end = self.emit_jump(Op::BR);
 
                 // No more rows: SQLCODE = 100
                 self.patch_jump(no_more);
                 self.emit_constant(Value::F64(100.0));
                 let sc2 = self.add_string_constant("SQLCODE");
-                self.emit_u16(Op::global_set, sc2);
+                self.emit_u16(Op::GLOBAL_SET, sc2);
 
                 self.patch_jump(end);
             }
@@ -1823,8 +1823,8 @@ impl Compiler {
             Statement::SqlCloseCursor(cursor_name) => {
                 // Clear cursor state
                 let rs_key = self.add_string_constant(&format!("__CURSOR_{}_RS", cursor_name));
-                self.emit(Op::null);
-                self.emit_u16(Op::global_set, rs_key);
+                self.emit(Op::NULL);
+                self.emit_u16(Op::GLOBAL_SET, rs_key);
             }
         }
         Ok(())
@@ -1838,40 +1838,40 @@ impl Compiler {
         match expr {
             Expr::Lit(lit) => self.compile_literal(lit),
             Expr::Bool(b) => {
-                if *b { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
+                if *b { self.emit(Op::TRUE); } else { self.emit(Op::FALSE); }
                 Ok(())
             }
             Expr::Ident(name) => {
                 let idx = self.add_string_constant(name);
-                self.emit_u16(Op::global_get, idx);
+                self.emit_u16(Op::GLOBAL_GET, idx);
                 Ok(())
             }
             Expr::Subscript(name, index) => {
                 let idx = self.add_string_constant(name);
-                self.emit_u16(Op::global_get, idx);
+                self.emit_u16(Op::GLOBAL_GET, idx);
                 self.compile_expr(index)?;
                 // COBOL is 1-indexed, VM is 0-indexed
                 self.emit_constant(Value::I32(1));
-                self.emit(Op::f64_sub);
+                self.emit(Op::F64_SUB);
                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 Ok(())
             }
             Expr::Qualified(field, parent) => {
                 // X OF Y → Y.X
                 let pi = self.add_string_constant(parent);
-                self.emit_u16(Op::global_get, pi);
+                self.emit_u16(Op::GLOBAL_GET, pi);
                 let fi = self.add_string_constant(field);
-                self.emit_u16(Op::struct_get, fi);
+                self.emit_u16(Op::STRUCT_GET, fi);
                 Ok(())
             }
             Expr::BinOp { op, left, right } => {
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
                 match op {
-                    BinOp::Add => { self.emit(Op::dyn_add); }
-                    BinOp::Sub => { self.emit(Op::f64_sub); }
-                    BinOp::Mul => { self.emit(Op::f64_mul); }
-                    BinOp::Div => { self.emit(Op::f64_div); }
+                    BinOp::Add => { self.emit(Op::DYN_ADD); }
+                    BinOp::Sub => { self.emit(Op::F64_SUB); }
+                    BinOp::Mul => { self.emit(Op::F64_MUL); }
+                    BinOp::Div => { self.emit(Op::F64_DIV); }
                     BinOp::Pow => {
                         let c = self.current_chunk_idx;
                         let line = self.line;
@@ -1884,12 +1884,12 @@ impl Compiler {
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
                 match op {
-                    CmpOp::Eq => { self.emit(Op::dyn_eq); }
-                    CmpOp::Ne => { self.emit(Op::dyn_ne); }
-                    CmpOp::Lt => { self.emit(Op::dyn_lt); }
-                    CmpOp::Gt => { self.emit(Op::dyn_gt); }
-                    CmpOp::Le => { self.emit(Op::dyn_le); }
-                    CmpOp::Ge => { self.emit(Op::dyn_ge); }
+                    CmpOp::Eq => { self.emit(Op::DYN_EQ); }
+                    CmpOp::Ne => { self.emit(Op::DYN_NE); }
+                    CmpOp::Lt => { self.emit(Op::DYN_LT); }
+                    CmpOp::Gt => { self.emit(Op::DYN_GT); }
+                    CmpOp::Le => { self.emit(Op::DYN_LE); }
+                    CmpOp::Ge => { self.emit(Op::DYN_GE); }
                 }
                 Ok(())
             }
@@ -1914,7 +1914,7 @@ impl Compiler {
             }
             Expr::Not(inner) => {
                 self.compile_expr(inner)?;
-                self.emit(Op::dyn_not);
+                self.emit(Op::DYN_NOT);
                 Ok(())
             }
             Expr::FunctionCall { name, args } => {
@@ -1923,18 +1923,18 @@ impl Compiler {
             Expr::RefMod { name, start, length } => {
                 // Reference modification: name(start:length) → substring
                 let idx = self.add_string_constant(name);
-                self.emit_u16(Op::global_get, idx);
+                self.emit_u16(Op::GLOBAL_GET, idx);
                 self.compile_expr(start)?;
                 // COBOL is 1-indexed, str_substring is 0-indexed
                 self.emit_constant(Value::I32(1));
-                self.emit(Op::f64_sub);
+                self.emit(Op::F64_SUB);
                 if let Some(len) = length {
                     // start + length = end position
                     self.compile_expr(start)?;
                     self.compile_expr(len)?;
-                    self.emit(Op::dyn_add);
+                    self.emit(Op::DYN_ADD);
                     self.emit_constant(Value::I32(1));
-                    self.emit(Op::f64_sub);
+                    self.emit(Op::F64_SUB);
                 } else {
                     self.emit_constant(Value::I32(i32::MAX));
                 }
@@ -1953,7 +1953,7 @@ impl Compiler {
                         // Simplified: check string length > 0
                         common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
                         self.emit_constant(Value::I32(0));
-                        self.emit(Op::dyn_gt);
+                        self.emit(Op::DYN_GT);
                     }
                 }
                 Ok(())
@@ -1963,15 +1963,15 @@ impl Compiler {
                 match sign {
                     SignCondition::Positive => {
                         self.emit_constant(Value::F64(0.0));
-                        self.emit(Op::dyn_gt);
+                        self.emit(Op::DYN_GT);
                     }
                     SignCondition::Negative => {
                         self.emit_constant(Value::F64(0.0));
-                        self.emit(Op::dyn_lt);
+                        self.emit(Op::DYN_LT);
                     }
                     SignCondition::Zero => {
                         self.emit_constant(Value::F64(0.0));
-                        self.emit(Op::dyn_eq);
+                        self.emit(Op::DYN_EQ);
                     }
                 }
                 Ok(())
@@ -1996,28 +1996,28 @@ impl Compiler {
         // Check if we have PIC metadata for the target
         let pic_key = format!("__PIC_{}", dst);
         let pk = self.add_string_constant(&pic_key);
-        self.emit_u16(Op::global_get, pk);
-        self.emit(Op::dup);
-        self.emit(Op::ref_is_null);
-        let has_pic = self.emit_jump(Op::br_if_false);
+        self.emit_u16(Op::GLOBAL_GET, pk);
+        self.emit(Op::DUP);
+        self.emit(Op::REF_IS_NULL);
+        let has_pic = self.emit_jump(Op::BR_IF_FALSE);
 
         // No PIC metadata — just store raw value
-        self.emit(Op::drop); // drop null PIC
+        self.emit(Op::DROP); // drop null PIC
         self.emit_global_set_with_cls(dst);
-        let end = self.emit_jump(Op::br);
+        let end = self.emit_jump(Op::BR);
 
         // Has PIC metadata — apply padding
         self.patch_jump(has_pic);
         let pic_slot = self.next_local; self.next_local += 1;
-        self.emit_u16(Op::local_set, pic_slot); // PIC string
+        self.emit_u16(Op::LOCAL_SET, pic_slot); // PIC string
         // Stack: [value]
         let val_slot = self.next_local; self.next_local += 1;
-        self.emit_u16(Op::local_set, val_slot);
+        self.emit_u16(Op::LOCAL_SET, val_slot);
 
         // Parse PIC to determine type and size
         // Call the PIC padding helper
-        self.emit_u16(Op::local_get, val_slot);
-        self.emit_u16(Op::local_get, pic_slot);
+        self.emit_u16(Op::LOCAL_GET, val_slot);
+        self.emit_u16(Op::LOCAL_GET, pic_slot);
         let i = self.import("vybe:string", "format");
         self.emit_host_call(i, 2);
         self.emit_global_set_with_cls(dst);
@@ -2092,12 +2092,12 @@ impl Compiler {
                 // Multiply by 10^scale, truncate, divide by 10^scale
                 let factor = 10f64.powi(scale as i32);
                 self.emit_constant(Value::F64(factor));
-                self.emit(Op::f64_mul);
+                self.emit(Op::F64_MUL);
                 let c = self.current_chunk_idx;
                 let line = self.line;
                 common::math::emit_round(&mut self.chunks[c], line);
                 self.emit_constant(Value::F64(factor));
-                self.emit(Op::f64_div);
+                self.emit(Op::F64_DIV);
             }
         }
     }
@@ -2139,7 +2139,7 @@ impl Compiler {
             "ABS" => { common::math::emit_abs(&mut self.chunks[c], line); }
             "SUM" => {
                 // SUM — args on stack, add them up
-                for _ in 1..args.len() { self.emit(Op::dyn_add); }
+                for _ in 1..args.len() { self.emit(Op::DYN_ADD); }
             }
             "INTEGER" => {
                 let c = self.current_chunk_idx;
@@ -2151,7 +2151,7 @@ impl Compiler {
                 self.emit_host_call(i, 1);
             }
             "CHAR" => {
-                self.emit(Op::str_from_char_code);
+                self.emit(Op::STR_FROM_CHAR_CODE);
             }
             // Trigonometric
             "SIN" => { common::math::emit_sin(&mut self.chunks[c], line); }
@@ -2169,23 +2169,23 @@ impl Compiler {
             "FLOOR" => { common::math::emit_floor(&mut self.chunks[c], line); }
             "SIGN" => {
                 // Returns -1, 0, or 1
-                self.emit(Op::dup);
+                self.emit(Op::DUP);
                 self.emit_constant(Value::F64(0.0));
-                self.emit(Op::dyn_lt);
-                let neg = self.emit_jump(Op::br_if_true);
-                self.emit(Op::dup);
+                self.emit(Op::DYN_LT);
+                let neg = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit(Op::DUP);
                 self.emit_constant(Value::F64(0.0));
-                self.emit(Op::dyn_gt);
-                let pos = self.emit_jump(Op::br_if_true);
-                self.emit(Op::drop);
+                self.emit(Op::DYN_GT);
+                let pos = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit(Op::DROP);
                 self.emit_constant(Value::F64(0.0));
-                let end1 = self.emit_jump(Op::br);
+                let end1 = self.emit_jump(Op::BR);
                 self.patch_jump(pos);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
                 self.emit_constant(Value::F64(1.0));
-                let end2 = self.emit_jump(Op::br);
+                let end2 = self.emit_jump(Op::BR);
                 self.patch_jump(neg);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
                 self.emit_constant(Value::F64(-1.0));
                 self.patch_jump(end1);
                 self.patch_jump(end2);
@@ -2196,16 +2196,16 @@ impl Compiler {
             "MEAN" => {
                 // MEAN(a, b, c) = (a + b + c) / count
                 let count = args.len();
-                for _ in 1..count { self.emit(Op::dyn_add); }
+                for _ in 1..count { self.emit(Op::DYN_ADD); }
                 self.emit_constant(Value::F64(count as f64));
-                self.emit(Op::f64_div);
+                self.emit(Op::F64_DIV);
             }
             "MEDIAN" => {
                 // Simplified: return first arg
-                for _ in 1..args.len() { self.emit(Op::drop); }
+                for _ in 1..args.len() { self.emit(Op::DROP); }
             }
             "VARIANCE" => {
-                for _ in 1..args.len() { self.emit(Op::drop); }
+                for _ in 1..args.len() { self.emit(Op::DROP); }
                 self.emit_constant(Value::F64(0.0));
             }
             // Date functions
@@ -2229,7 +2229,7 @@ impl Compiler {
             }
             // Financial
             "ANNUITY" | "PRESENT-VALUE" => {
-                for _ in 1..args.len() { self.emit(Op::drop); }
+                for _ in 1..args.len() { self.emit(Op::DROP); }
             }
             _ => {
                 // Unknown function — call as import
@@ -2291,7 +2291,7 @@ impl Compiler {
 
         // Create new typed object
         common::classes::emit_new_typed_object(&mut self.chunks[c], this_idx, class_name, line);
-        self.chunks[c].emit_op_u16(Op::local_set, this_idx, line);
+        self.chunks[c].emit_op_u16(Op::LOCAL_SET, this_idx, line);
         self.chunks[c].local_count = (ctor_arity as u16) + 2;
 
         // Bind instance methods with cross-language aliases
@@ -2303,22 +2303,22 @@ impl Compiler {
 
         // Call init if present
         if let Some(init_ci) = init_chunk {
-            self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);
+            self.chunks[c].emit_op_u16(Op::LOCAL_GET, this_idx, line);
             common::functions::emit_ref_func(&mut self.chunks[c], init_ci, 0, line);
-            self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);
+            self.chunks[c].emit_op_u16(Op::LOCAL_GET, this_idx, line);
             for i in 0..ctor_arity {
-                self.chunks[c].emit_op_u16(Op::local_get, (i as u16) + 2, line);
+                self.chunks[c].emit_op_u16(Op::LOCAL_GET, (i as u16) + 2, line);
             }
-            self.chunks[c].emit_op_u8(Op::call_ref, (ctor_arity + 1) as u8, line);
-            self.chunks[c].emit_op(Op::drop, line);
+            self.chunks[c].emit_op_u8(Op::CALL_REF, (ctor_arity + 1) as u8, line);
+            self.chunks[c].emit_op(Op::DROP, line);
         }
 
         // Stamp __types array for instanceof support
         common::classes::emit_instanceof_chain(&mut self.chunks[c], this_idx, class_name, line);
 
         // Return this
-        self.chunks[c].emit_op_u16(Op::local_get, this_idx, line);
-        self.chunks[c].emit_op(Op::r#return, line);
+        self.chunks[c].emit_op_u16(Op::LOCAL_GET, this_idx, line);
+        self.chunks[c].emit_op(Op::RETURN, line);
 
         // Register type for cross-language compatibility
         let method_names: Vec<String> = method_entries.iter().map(|(n, _)| n.clone()).collect();
@@ -2343,9 +2343,9 @@ impl Compiler {
         // Bind static methods to constructor
         for (sname, sci) in &static_method_entries {
             let name_idx = self.add_string_constant(class_name);
-            self.emit_u16(Op::global_get, name_idx);
+            self.emit_u16(Op::GLOBAL_GET, name_idx);
             let slot = self.next_local; self.next_local += 1;
-            self.emit_u16(Op::local_set, slot);
+            self.emit_u16(Op::LOCAL_SET, slot);
             common::classes::emit_bind_method_with_aliases(
                 &mut self.chunks[self.current_chunk_idx], slot, sname, *sci, line,
             );
@@ -2363,8 +2363,8 @@ impl Compiler {
         let new_name = format!("__new_{}", class_name);
         let ni = self.add_string_constant(&new_name);
         let ci_name = self.add_string_constant(class_name);
-        self.emit_u16(Op::global_get, ci_name); // get constructor
-        self.emit_u16(Op::global_set, ni);       // store as __new_ClassName
+        self.emit_u16(Op::GLOBAL_GET, ci_name); // get constructor
+        self.emit_u16(Op::GLOBAL_SET, ni);       // store as __new_ClassName
 
         Ok(())
     }

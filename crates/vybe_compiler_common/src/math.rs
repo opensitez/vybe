@@ -10,15 +10,15 @@ use crate::Target;
 
 // ── Direct WASM opcodes (no host call) ──────────────────────
 
-pub fn emit_abs(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::f64_abs, line); }
-pub fn emit_floor(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::f64_floor, line); }
-pub fn emit_ceil(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::f64_ceil, line); }
-pub fn emit_trunc(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::f64_trunc, line); }
-pub fn emit_round(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::f64_nearest, line); }
-pub fn emit_sqrt(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::f64_sqrt, line); }
-pub fn emit_min(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::f64_min, line); }
-pub fn emit_max(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::f64_max, line); }
-pub fn emit_neg(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::f64_neg, line); }
+pub fn emit_abs(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_ABS, line); }
+pub fn emit_floor(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_FLOOR, line); }
+pub fn emit_ceil(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_CEIL, line); }
+pub fn emit_trunc(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_TRUNC, line); }
+pub fn emit_round(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_NEAREST, line); }
+pub fn emit_sqrt(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_SQRT, line); }
+pub fn emit_min(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_MIN, line); }
+pub fn emit_max(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_MAX, line); }
+pub fn emit_neg(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_NEG, line); }
 
 // ── Host imports (standard math, same across all languages) ──
 
@@ -32,7 +32,7 @@ use std::sync::Arc;
 /// so this still works, but new code should use the explicit stdlib pattern.
 pub fn emit_pow(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:math", "pow");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(2, line);
 }
 
@@ -40,49 +40,49 @@ pub fn emit_pow(chunk: &mut Chunk, line: u32) {
 /// Pure WASM — bundle wires `__vybe_pow` to `build_pow` stdlib chunk.
 pub fn emit_pow_push_func(chunk: &mut Chunk, line: u32) {
     let name = chunk.add_constant(Value::String(Arc::from("__vybe_pow")));
-    chunk.emit_op_u16(Op::global_get, name, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
 }
 
 /// Invoke __vybe_pow after [func, base, exponent] are on the stack.
 pub fn emit_pow_invoke(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u8(Op::call_ref, 2, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
 }
 
 /// Stack: [value] → [result]
 pub fn emit_log(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:math", "log");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 pub fn emit_sin(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:math", "sin");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 pub fn emit_cos(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:math", "cos");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 pub fn emit_tan(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:math", "tan");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 pub fn emit_exp(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:math", "exp");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 /// Stack: [] → [f64 random 0..1]
 pub fn emit_random(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("vybe:math", "random");
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(0, line);
 }
 
@@ -98,7 +98,7 @@ pub fn emit_pow_targeted(chunk: &mut Chunk, target: &Target, line: u32) {
         // Standard WASM fallback: import from a portable math module.
         // Any compliant embedder must provide "env"/"pow" or "math"/"pow".
         let idx = chunk.add_import("env", "pow");
-        chunk.emit_op_u16(Op::call_import, idx, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
         chunk.emit(2, line);
     }
 }
@@ -111,6 +111,6 @@ pub fn emit_math_fn_targeted(chunk: &mut Chunk, name: &str, target: &Target, lin
         ("env", name)
     };
     let idx = chunk.add_import(module, func);
-    chunk.emit_op_u16(Op::call_import, idx, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }

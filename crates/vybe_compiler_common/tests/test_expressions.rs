@@ -6,11 +6,11 @@ use vybe_compiler_common::expressions;
 fn ternary_emits_jumps() {
     let mut chunk = Chunk::new("test");
     // Simulate: condition already on stack
-    chunk.emit_op(Op::r#true, 0); // condition
+    chunk.emit_op(Op::TRUE, 0); // condition
     let false_jump = expressions::emit_ternary_start(&mut chunk, 0);
-    chunk.emit_op(Op::i32_const_1, 0); // then value
+    chunk.emit_op(Op::I32_CONST_1, 0); // then value
     let end_jump = expressions::emit_ternary_middle(&mut chunk, false_jump, 0);
-    chunk.emit_op(Op::i32_const_0, 0); // else value
+    chunk.emit_op(Op::I32_CONST_0, 0); // else value
     expressions::emit_ternary_end(&mut chunk, end_jump);
     assert!(chunk.code.len() > 5, "ternary should emit jump structure");
 }
@@ -18,9 +18,9 @@ fn ternary_emits_jumps() {
 #[test]
 fn and_short_circuit() {
     let mut chunk = Chunk::new("test");
-    chunk.emit_op(Op::r#true, 0); // left
+    chunk.emit_op(Op::TRUE, 0); // left
     let jump = expressions::emit_and_start(&mut chunk, 0);
-    chunk.emit_op(Op::r#false, 0); // right
+    chunk.emit_op(Op::FALSE, 0); // right
     expressions::emit_short_circuit_end(&mut chunk, jump);
     assert!(chunk.code.len() > 3);
 }
@@ -28,9 +28,9 @@ fn and_short_circuit() {
 #[test]
 fn or_short_circuit() {
     let mut chunk = Chunk::new("test");
-    chunk.emit_op(Op::r#false, 0); // left
+    chunk.emit_op(Op::FALSE, 0); // left
     let jump = expressions::emit_or_start(&mut chunk, 0);
-    chunk.emit_op(Op::r#true, 0); // right
+    chunk.emit_op(Op::TRUE, 0); // right
     expressions::emit_short_circuit_end(&mut chunk, jump);
     assert!(chunk.code.len() > 3);
 }
@@ -38,9 +38,9 @@ fn or_short_circuit() {
 #[test]
 fn null_coalesce() {
     let mut chunk = Chunk::new("test");
-    chunk.emit_op(Op::null, 0); // left
+    chunk.emit_op(Op::NULL, 0); // left
     let (_null_jump, end_jump) = expressions::emit_null_coalesce_start(&mut chunk, 0);
-    chunk.emit_op(Op::i32_const_1, 0); // right (default)
+    chunk.emit_op(Op::I32_CONST_1, 0); // right (default)
     expressions::emit_null_coalesce_end(&mut chunk, end_jump);
     assert!(chunk.code.len() > 4);
 }
@@ -48,10 +48,10 @@ fn null_coalesce() {
 #[test]
 fn null_safe_access() {
     let mut chunk = Chunk::new("test");
-    chunk.emit_op(Op::null, 0); // object
+    chunk.emit_op(Op::NULL, 0); // object
     let (skip, _) = expressions::emit_null_safe_start(&mut chunk, 0);
     // member access would go here
-    chunk.emit_op(Op::drop, 0); // placeholder
+    chunk.emit_op(Op::DROP, 0); // placeholder
     expressions::emit_null_safe_end(&mut chunk, skip, 0);
     assert!(chunk.code.len() > 3);
 }
@@ -60,7 +60,7 @@ fn null_safe_access() {
 fn rich_compare_locals_emits_dispatch() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 5;
-    expressions::emit_rich_compare_locals(&mut chunk, 1, 2, "__lt__", Op::dyn_lt, 0);
+    expressions::emit_rich_compare_locals(&mut chunk, 1, 2, "__lt__", Op::DYN_LT, 0);
     // Should have: struct_get, dup, ref_is_null, br_if_true, call_ref, br, drop, drop, dyn_lt
     assert!(chunk.code.len() > 15, "rich compare should emit dispatch bytecode");
     let has_lt = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "__lt__"));
@@ -82,7 +82,7 @@ fn rich_compare_fallback_emits_primitive() {
     // When no dunder found, should fall back to the primitive op
     let mut chunk = Chunk::new("test");
     chunk.local_count = 5;
-    expressions::emit_rich_compare(&mut chunk, "__lt__", Op::dyn_lt, 0);
+    expressions::emit_rich_compare(&mut chunk, "__lt__", Op::DYN_LT, 0);
     // Simple fallback version just emits the opcode directly
     assert!(!chunk.code.is_empty());
 }

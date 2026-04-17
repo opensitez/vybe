@@ -36,22 +36,22 @@ fn build_bootstrap(
         if Some(i) == entry_idx { continue; }
         // script chunk is at component_offsets[i] + 1 (shifted by bootstrap)
         let script_idx = (link_result.component_offsets[i] + 1) as u16;
-        bootstrap.emit_op_u16(Op::ref_func, script_idx, line);
+        bootstrap.emit_op_u16(Op::REF_FUNC, script_idx, line);
         bootstrap.emit(0, line); // 0 upvalues
-        bootstrap.emit_op_u8(Op::call_ref, 0, line);
-        bootstrap.emit_op(Op::drop, line);
+        bootstrap.emit_op_u8(Op::CALL_REF, 0, line);
+        bootstrap.emit_op(Op::DROP, line);
     }
 
     // Call entry script chunk last
     if let Some(ei) = entry_idx {
         let script_idx = (link_result.component_offsets[ei] + 1) as u16;
-        bootstrap.emit_op_u16(Op::ref_func, script_idx, line);
+        bootstrap.emit_op_u16(Op::REF_FUNC, script_idx, line);
         bootstrap.emit(0, line);
-        bootstrap.emit_op_u8(Op::call_ref, 0, line);
-        bootstrap.emit_op(Op::drop, line);
+        bootstrap.emit_op_u8(Op::CALL_REF, 0, line);
+        bootstrap.emit_op(Op::DROP, line);
     }
 
-    bootstrap.emit_op(Op::halt, line);
+    bootstrap.emit_op(Op::HALT, line);
     bootstrap.local_count = 16;
 
     // Copy the unified import table from chunk 0 (set by Linker import unification).
@@ -69,7 +69,7 @@ fn build_bootstrap(
         while ip < code.len() {
             if let Some(op) = Op::from_byte(code[ip]) {
                 match op {
-                    Op::ref_func => {
+                    Op::REF_FUNC => {
                         if ip + 2 < code.len() {
                             let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
                             let new_idx = old_idx + 1;
@@ -83,14 +83,14 @@ fn build_bootstrap(
                         }
                         continue;
                     }
-                    Op::call_import => { ip += 4; continue; }
-                    Op::r#const | Op::local_get | Op::local_set
-                    | Op::global_get | Op::global_set
-                    | Op::struct_get | Op::struct_set
-                    | Op::array_new
-                    | Op::br | Op::br_if_true | Op::br_if_false
-                    | Op::r#loop => { ip += 3; continue; }
-                    Op::call | Op::call_ref | Op::upvalue_get | Op::upvalue_set => { ip += 2; continue; }
+                    Op::CALL_IMPORT => { ip += 4; continue; }
+                    Op::CONST | Op::LOCAL_GET | Op::LOCAL_SET
+                    | Op::GLOBAL_GET | Op::GLOBAL_SET
+                    | Op::STRUCT_GET | Op::STRUCT_SET
+                    | Op::ARRAY_NEW
+                    | Op::BR | Op::BR_IF_TRUE | Op::BR_IF_FALSE
+                    | Op::LOOP => { ip += 3; continue; }
+                    Op::CALL | Op::CALL_REF | Op::UPVALUE_GET | Op::UPVALUE_SET => { ip += 2; continue; }
                     _ => { ip += 1; }
                 }
             } else {

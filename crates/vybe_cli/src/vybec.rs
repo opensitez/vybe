@@ -290,22 +290,22 @@ fn run_project(path: &Path, dump: bool) {
         if Some(i) == entry_idx { continue; }
         let script_idx = link_result.component_offsets[i];
         // ref_func + call_ref 0 + drop
-        bootstrap.emit_op_u16(vybe_bytecode::Op::ref_func, script_idx as u16, line);
+        bootstrap.emit_op_u16(vybe_bytecode::Op::REF_FUNC, script_idx as u16, line);
         bootstrap.emit(0, line); // 0 upvalues
-        bootstrap.emit_op_u8(vybe_bytecode::Op::call_ref, 0, line);
-        bootstrap.emit_op(vybe_bytecode::Op::drop, line);
+        bootstrap.emit_op_u8(vybe_bytecode::Op::CALL_REF, 0, line);
+        bootstrap.emit_op(vybe_bytecode::Op::DROP, line);
     }
 
     // Call entry script chunk last
     if let Some(ei) = entry_idx {
         let script_idx = link_result.component_offsets[ei];
-        bootstrap.emit_op_u16(vybe_bytecode::Op::ref_func, script_idx as u16, line);
+        bootstrap.emit_op_u16(vybe_bytecode::Op::REF_FUNC, script_idx as u16, line);
         bootstrap.emit(0, line);
-        bootstrap.emit_op_u8(vybe_bytecode::Op::call_ref, 0, line);
-        bootstrap.emit_op(vybe_bytecode::Op::drop, line);
+        bootstrap.emit_op_u8(vybe_bytecode::Op::CALL_REF, 0, line);
+        bootstrap.emit_op(vybe_bytecode::Op::DROP, line);
     }
 
-    bootstrap.emit_op(vybe_bytecode::Op::halt, line);
+    bootstrap.emit_op(vybe_bytecode::Op::HALT, line);
     bootstrap.local_count = 16;
 
     // Prepend bootstrap chunk — all other chunk indices shift by 1
@@ -320,7 +320,7 @@ fn run_project(path: &Path, dump: bool) {
             let op_byte = code[ip];
             if let Some(op) = vybe_bytecode::Op::from_byte(op_byte) {
                 match op {
-                    vybe_bytecode::Op::ref_func => {
+                    vybe_bytecode::Op::REF_FUNC => {
                         if ip + 2 < code.len() {
                             let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
                             let new_idx = old_idx + 1; // shift by 1 for bootstrap
@@ -334,14 +334,14 @@ fn run_project(path: &Path, dump: bool) {
                         }
                         continue;
                     }
-                    vybe_bytecode::Op::call_import => { ip += 4; continue; }
-                    vybe_bytecode::Op::call | vybe_bytecode::Op::call_ref => { ip += 2; continue; }
-                    vybe_bytecode::Op::r#const | vybe_bytecode::Op::local_get | vybe_bytecode::Op::local_set
-                    | vybe_bytecode::Op::global_get | vybe_bytecode::Op::global_set
-                    | vybe_bytecode::Op::struct_get | vybe_bytecode::Op::struct_set
-                    | vybe_bytecode::Op::array_new
-                    | vybe_bytecode::Op::br | vybe_bytecode::Op::br_if_true | vybe_bytecode::Op::br_if_false
-                    | vybe_bytecode::Op::r#loop => { ip += 3; continue; }
+                    vybe_bytecode::Op::CALL_IMPORT => { ip += 4; continue; }
+                    vybe_bytecode::Op::CALL | vybe_bytecode::Op::CALL_REF => { ip += 2; continue; }
+                    vybe_bytecode::Op::CONST | vybe_bytecode::Op::LOCAL_GET | vybe_bytecode::Op::LOCAL_SET
+                    | vybe_bytecode::Op::GLOBAL_GET | vybe_bytecode::Op::GLOBAL_SET
+                    | vybe_bytecode::Op::STRUCT_GET | vybe_bytecode::Op::STRUCT_SET
+                    | vybe_bytecode::Op::ARRAY_NEW
+                    | vybe_bytecode::Op::BR | vybe_bytecode::Op::BR_IF_TRUE | vybe_bytecode::Op::BR_IF_FALSE
+                    | vybe_bytecode::Op::LOOP => { ip += 3; continue; }
                     _ => { ip += 1; continue; }
                 }
             } else {
@@ -359,7 +359,7 @@ fn run_project(path: &Path, dump: bool) {
             let op_byte = code[ip];
             if let Some(op) = vybe_bytecode::Op::from_byte(op_byte) {
                 match op {
-                    vybe_bytecode::Op::ref_func => {
+                    vybe_bytecode::Op::REF_FUNC => {
                         if ip + 2 < code.len() {
                             let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
                             let new_idx = old_idx + 1;
@@ -373,7 +373,7 @@ fn run_project(path: &Path, dump: bool) {
                         }
                         continue;
                     }
-                    vybe_bytecode::Op::call_ref => { ip += 2; continue; }
+                    vybe_bytecode::Op::CALL_REF => { ip += 2; continue; }
                     _ => { ip += 1; continue; }
                 }
             } else { ip += 1; }

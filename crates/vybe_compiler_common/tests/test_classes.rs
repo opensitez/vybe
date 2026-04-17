@@ -192,8 +192,8 @@ fn dict_set_const_key_tracks_key() {
     let mut chunk = Chunk::new("test");
     dict::emit_new(&mut chunk, 0);
     // Simulate: dup dict, push value, then set key
-    chunk.emit_op(Op::dup, 0);
-    chunk.emit_op(Op::null, 0); // placeholder value
+    chunk.emit_op(Op::DUP, 0);
+    chunk.emit_op(Op::NULL, 0); // placeholder value
     dict::emit_set_const_key(&mut chunk, "name", 0);
     // Should have "name" in constants (for struct_set AND for __keys push)
     let name_count = chunk.constants.iter().filter(|c| matches!(c, Value::String(s) if s.as_ref() == "name")).count();

@@ -15,9 +15,9 @@ impl Compiler {
         match expr {
             Expression::IntegerLiteral(n) => {
                 if *n == 0 {
-                    self.emit(Op::i32_const_0);
+                    self.emit(Op::I32_CONST_0);
                 } else if *n == 1 {
-                    self.emit(Op::i32_const_1);
+                    self.emit(Op::I32_CONST_1);
                 } else {
                     self.emit_constant(Value::I32(*n));
                 }
@@ -25,8 +25,8 @@ impl Compiler {
             Expression::DoubleLiteral(n) => {
                 let v = *n;
                 if v.fract() == 0.0 && v >= i32::MIN as f64 && v <= i32::MAX as f64 {
-                    if v == 0.0 { self.emit(Op::i32_const_0); }
-                    else if v == 1.0 { self.emit(Op::i32_const_1); }
+                    if v == 0.0 { self.emit(Op::I32_CONST_0); }
+                    else if v == 1.0 { self.emit(Op::I32_CONST_1); }
                     else { self.emit_constant(Value::I32(v as i32)); }
                 } else {
                     self.emit_constant(Value::F64(v));
@@ -34,15 +34,15 @@ impl Compiler {
             }
             Expression::StringLiteral(s) => self.emit_constant(Value::String(Arc::from(s.as_str()))),
             Expression::BooleanLiteral(b) => {
-                if *b { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
+                if *b { self.emit(Op::TRUE); } else { self.emit(Op::FALSE); }
             }
-            Expression::Nothing => self.emit(Op::null),
+            Expression::Nothing => self.emit(Op::NULL),
 
             // Me (this) reference inside a class method
             Expression::Me => {
                 match self.resolve_variable("me") {
-                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
-                    VarResolution::Global => self.emit(Op::null),
+                    VarResolution::Local(slot) => self.emit_u16(Op::LOCAL_GET, slot),
+                    VarResolution::Global => self.emit(Op::NULL),
                 }
             }
 
@@ -51,8 +51,8 @@ impl Compiler {
                 // MyBase resolves to Me — the parent's methods are already on the object
                 // For MyBase.New() the compiler handles it specially in method calls
                 match self.resolve_variable("me") {
-                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
-                    VarResolution::Global => self.emit(Op::null),
+                    VarResolution::Local(slot) => self.emit_u16(Op::LOCAL_GET, slot),
+                    VarResolution::Global => self.emit(Op::NULL),
                 }
             }
 
@@ -60,10 +60,10 @@ impl Compiler {
                 let name = id.as_str().to_lowercase();
                 match self.resolve_variable(&name) {
                     VarResolution::Local(slot) => {
-                        self.emit_u16(Op::local_get, slot);
+                        self.emit_u16(Op::LOCAL_GET, slot);
                         // ByRef params are boxes — dereference with array_get 0
                         if self.current_scope().is_byref(&name) {
-                            self.emit(Op::i32_const_0);
+                            self.emit(Op::I32_CONST_0);
                             common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                         }
                     }
@@ -71,16 +71,16 @@ impl Compiler {
                         // Inside a class: unresolved name that's a field → Me.field
                         if self.class_fields.contains(&name) {
                             if let Some(me_slot) = self.current_scope().resolve_local("me") {
-                                self.emit_u16(Op::local_get, me_slot);
+                                self.emit_u16(Op::LOCAL_GET, me_slot);
                                 let prop_idx = self.add_string_constant(&name);
-                                self.emit_u16(Op::struct_get, prop_idx);
+                                self.emit_u16(Op::STRUCT_GET, prop_idx);
                             } else {
                                 let idx = self.add_string_constant(&name);
-                                self.emit_u16(Op::global_get, idx);
+                                self.emit_u16(Op::GLOBAL_GET, idx);
                             }
                         } else {
                             let idx = self.add_string_constant(&name);
-                            self.emit_u16(Op::global_get, idx);
+                            self.emit_u16(Op::GLOBAL_GET, idx);
                         }
                     }
                 }
@@ -96,21 +96,21 @@ impl Compiler {
                     } else {
                         self.compile_expression(obj)?;
                         let idx = self.add_string_constant(&mem_lower);
-                        self.emit_u16(Op::struct_get, idx);
+                        self.emit_u16(Op::STRUCT_GET, idx);
                     }
                 } else {
                     self.compile_expression(obj)?;
                     let idx = self.add_string_constant(&member.as_str().to_lowercase());
-                    self.emit_u16(Op::struct_get, idx);
+                    self.emit_u16(Op::STRUCT_GET, idx);
                 }
             }
             Expression::ArrayAccess(arr, indices) => {
                 let name = arr.as_str().to_lowercase();
                 match self.resolve_variable(&name) {
-                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Local(slot) => self.emit_u16(Op::LOCAL_GET, slot),
                     VarResolution::Global => {
                         let idx = self.add_string_constant(&name);
-                        self.emit_u16(Op::global_get, idx);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
                     }
                 }
                 if let Some(index) = indices.first() {
@@ -124,16 +124,16 @@ impl Compiler {
             }
 
             // Arithmetic
-            Expression::Add(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::dyn_add); }
-            Expression::Subtract(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::f64_sub); }
-            Expression::Multiply(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::f64_mul); }
-            Expression::Divide(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::f64_div); }
+            Expression::Add(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::DYN_ADD); }
+            Expression::Subtract(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::F64_SUB); }
+            Expression::Multiply(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::F64_MUL); }
+            Expression::Divide(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::F64_DIV); }
             Expression::IntegerDivide(a, b) => {
                 self.compile_expression(a)?;
                 common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.compile_expression(b)?;
                 common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
-                self.emit(Op::i32_div_s);
+                self.emit(Op::I32_DIV_S);
             }
             Expression::Modulo(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }; }
             Expression::Exponent(a, b) => {
@@ -144,16 +144,16 @@ impl Compiler {
             Expression::Concatenate(a, b) => {
                 self.compile_expression(a)?; self.compile_expression(b)?; common_strings::emit_str_concat(&mut self.chunks[self.current_chunk_idx], self.line);
             }
-            Expression::Negate(a) => { self.compile_expression(a)?; self.emit(Op::dyn_neg); }
-            Expression::Not(a) => { self.compile_expression(a)?; self.emit(Op::dyn_not); }
+            Expression::Negate(a) => { self.compile_expression(a)?; self.emit(Op::DYN_NEG); }
+            Expression::Not(a) => { self.compile_expression(a)?; self.emit(Op::DYN_NOT); }
 
             // Comparison
-            Expression::Equal(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::dyn_eq); }
-            Expression::NotEqual(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::dyn_ne); }
-            Expression::LessThan(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::dyn_lt); }
-            Expression::LessThanOrEqual(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::dyn_le); }
-            Expression::GreaterThan(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::dyn_gt); }
-            Expression::GreaterThanOrEqual(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::dyn_ge); }
+            Expression::Equal(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::DYN_EQ); }
+            Expression::NotEqual(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::DYN_NE); }
+            Expression::LessThan(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::DYN_LT); }
+            Expression::LessThanOrEqual(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::DYN_LE); }
+            Expression::GreaterThan(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::DYN_GT); }
+            Expression::GreaterThanOrEqual(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::DYN_GE); }
 
             // Logical (short-circuit)
             Expression::And(a, b) | Expression::AndAlso(a, b) => {
@@ -172,19 +172,19 @@ impl Compiler {
             // Bitwise operators
             Expression::Xor(a, b) => {
                 self.compile_expression(a)?; self.compile_expression(b)?;
-                self.emit(Op::i32_xor);
+                self.emit(Op::I32_XOR);
             }
-            Expression::BitShiftLeft(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::i32_shl); }
-            Expression::BitShiftRight(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::i32_shr_s); }
+            Expression::BitShiftLeft(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::I32_SHL); }
+            Expression::BitShiftRight(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::I32_SHR_S); }
 
             // Is / IsNot — reference equality
             Expression::Is(a, b) => {
                 self.compile_expression(a)?; self.compile_expression(b)?;
-                self.emit(Op::dyn_eq);
+                self.emit(Op::DYN_EQ);
             }
             Expression::IsNot(a, b) => {
                 self.compile_expression(a)?; self.compile_expression(b)?;
-                self.emit(Op::dyn_ne);
+                self.emit(Op::DYN_NE);
             }
 
             // TypeOf expr Is Type — resolved via TypeRegistry
@@ -192,21 +192,21 @@ impl Compiler {
                 self.compile_expression(expr)?;
                 // Emit the target type name as a constant, then ref_is_type opcode
                 let type_idx = self.add_string_constant(&type_name.to_lowercase());
-                self.emit_u16(Op::ref_test, type_idx);
+                self.emit_u16(Op::REF_TEST, type_idx);
             }
 
             // Like — string pattern matching (simplified)
             Expression::Like(a, b) => {
                 self.compile_expression(a)?; self.compile_expression(b)?;
                 // Simplified: treat as string equality
-                self.emit(Op::dyn_eq);
+                self.emit(Op::DYN_EQ);
             }
 
             // AddressOf funcName (stored as string by parser)
             Expression::AddressOf(name) => {
                 let func_name = name.to_lowercase();
                 let idx = self.add_string_constant(&func_name);
-                self.emit_u16(Op::global_get, idx);
+                self.emit_u16(Op::GLOBAL_GET, idx);
             }
 
             // Date literal
@@ -222,30 +222,30 @@ impl Compiler {
             // WithTarget — reference to the With block's target object
             Expression::WithTarget => {
                 match self.resolve_variable("__with_obj") {
-                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
-                    _ => self.emit(Op::null),
+                    VarResolution::Local(slot) => self.emit_u16(Op::LOCAL_GET, slot),
+                    _ => self.emit(Op::NULL),
                 }
             }
 
             // Query (LINQ) — not yet compiled, emit null
             Expression::Query(_) => {
-                self.emit(Op::null);
+                self.emit(Op::NULL);
             }
 
             // XML literal — emit as null (would need XML serialization)
             Expression::XmlLiteral(_) => {
-                self.emit(Op::null);
+                self.emit(Op::NULL);
             }
 
             // New with initializers — compile New then set properties
             Expression::NewWithInitializer(class_name, args, inits) => {
                 self.compile_new_expr(class_name, args)?;
                 for (prop, val) in inits {
-                    self.emit(Op::dup);
+                    self.emit(Op::DUP);
                     self.compile_expression(val)?;
                     let idx = self.add_string_constant(&prop.to_lowercase());
-                    self.emit_u16(Op::struct_set, idx);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::STRUCT_SET, idx);
+                    self.emit(Op::DROP);
                 }
             }
 
@@ -281,7 +281,7 @@ impl Compiler {
                 if let Some(ev) = else_val {
                     self.compile_expression(ev)?;
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
                 common_expr::emit_ternary_end(&mut self.chunks[self.current_chunk_idx], end_jump);
             }
@@ -308,7 +308,7 @@ impl Compiler {
             "refresh" | "invalidate" | "update" | "begininit" | "endinit" |
             "dispose" | "select" | "focus" | "bringtofront" | "sendtoback"
         ) {
-            self.emit(Op::null);
+            self.emit(Op::NULL);
             return Ok(());
         }
 
@@ -336,13 +336,13 @@ impl Compiler {
                 let lower_parts: Vec<String> = parts.iter().map(|s| s.to_lowercase()).collect();
                 if self.is_namespace(&lower_parts[0]) && lower_parts[0] != "console" {
                     let root_idx = self.add_string_constant(&lower_parts[0]);
-                    self.emit_u16(Op::global_get, root_idx);
+                    self.emit_u16(Op::GLOBAL_GET, root_idx);
                     for part in &lower_parts[1..] {
                         let idx = self.add_string_constant(part);
-                        self.emit_u16(Op::struct_get, idx);
+                        self.emit_u16(Op::STRUCT_GET, idx);
                     }
                     for arg in args { self.compile_expression(arg)?; }
-                    self.emit_u8(Op::call, args.len() as u8);
+                    self.emit_u8(Op::CALL, args.len() as u8);
                     return Ok(());
                 }
             }
@@ -353,13 +353,13 @@ impl Compiler {
         if matches!(obj, Expression::MyBase) && method.as_str().eq_ignore_ascii_case("New") {
             if let Some(parent) = self.current_class_parent.clone() {
                 let parent_idx = self.add_string_constant(&parent);
-                self.emit_u16(Op::global_get, parent_idx);
+                self.emit_u16(Op::GLOBAL_GET, parent_idx);
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, args.len() as u8);
+                self.emit_u8(Op::CALL, args.len() as u8);
                 // Store returned object as Me
                 if let Some(me_slot) = self.current_scope().resolve_local("me") {
-                    self.emit_u16(Op::local_set, me_slot);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::LOCAL_SET, me_slot);
+                    self.emit(Op::DROP);
                 }
             }
             return Ok(());
@@ -371,14 +371,14 @@ impl Compiler {
             let base_name = format!("__base_{}", meth_lower);
             match self.resolve_variable("me") {
                 VarResolution::Local(slot) => {
-                    self.emit_u16(Op::local_get, slot);
+                    self.emit_u16(Op::LOCAL_GET, slot);
                     let prop_idx = self.add_string_constant(&base_name);
-                    self.emit_u16(Op::struct_get, prop_idx);
-                    self.emit_u16(Op::local_get, slot);
+                    self.emit_u16(Op::STRUCT_GET, prop_idx);
+                    self.emit_u16(Op::LOCAL_GET, slot);
                     for arg in args { self.compile_expression(arg)?; }
-                    self.emit_u8(Op::call, (args.len() + 1) as u8);
+                    self.emit_u8(Op::CALL, (args.len() + 1) as u8);
                 }
-                _ => { self.emit(Op::null); }
+                _ => { self.emit(Op::NULL); }
             }
             return Ok(());
         }
@@ -392,18 +392,18 @@ impl Compiler {
                     "suspendlayout" | "resumelayout" | "performlayout"
                     | "refresh" | "invalidate" | "update" | "begininit" | "endinit"
                     | "dispose" | "select" | "bringtofront" | "sendtoback" => {
-                        self.emit(Op::null);
+                        self.emit(Op::NULL);
                         return Ok(());
                     }
                     _ => {
                         // Try object method first (controls have show/close/focus on them)
                         // If not found at runtime, falls through gracefully
-                        self.emit_u16(Op::local_get, me_slot);
+                        self.emit_u16(Op::LOCAL_GET, me_slot);
                         let prop_idx = self.add_string_constant(&meth_lower);
-                        self.emit_u16(Op::struct_get, prop_idx);
-                        self.emit_u16(Op::local_get, me_slot); // this
+                        self.emit_u16(Op::STRUCT_GET, prop_idx);
+                        self.emit_u16(Op::LOCAL_GET, me_slot); // this
                         for arg in args { self.compile_expression(arg)?; }
-                        self.emit_u8(Op::call, (args.len() + 1) as u8);
+                        self.emit_u8(Op::CALL, (args.len() + 1) as u8);
                         return Ok(());
                     }
                 }
@@ -419,19 +419,19 @@ impl Compiler {
                 let me_slot = self.current_scope().resolve_local("me").unwrap();
                 match meth_lower.as_str() {
                     "show" => {
-                        self.emit_u16(Op::local_get, me_slot);
+                        self.emit_u16(Op::LOCAL_GET, me_slot);
                         let idx = self.import("vybe:gui", "showForm");
                         self.emit_host_call(idx, 1);
                         return Ok(());
                     }
                     "close" => {
-                        self.emit_u16(Op::local_get, me_slot);
+                        self.emit_u16(Op::LOCAL_GET, me_slot);
                         let idx = self.import("vybe:gui", "closeForm");
                         self.emit_host_call(idx, 1);
                         return Ok(());
                     }
                     "showdialog" => {
-                        self.emit_u16(Op::local_get, me_slot);
+                        self.emit_u16(Op::LOCAL_GET, me_slot);
                         let idx = self.import("vybe:gui", "showFormDialog");
                         self.emit_host_call(idx, 1);
                         return Ok(());
@@ -447,9 +447,9 @@ impl Compiler {
                 // Namespace call — no `this`
                 self.compile_expression(obj)?;
                 let prop_idx = self.add_string_constant(&meth_lower);
-                self.emit_u16(Op::struct_get, prop_idx);
+                self.emit_u16(Op::STRUCT_GET, prop_idx);
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, args.len() as u8);
+                self.emit_u8(Op::CALL, args.len() as u8);
             } else if self.defined_classes.contains(&obj_lower)
                 && !matches!(self.resolve_variable(&obj_lower), VarResolution::Local(_))
                 && !self.class_fields.contains(&obj_lower)
@@ -457,16 +457,16 @@ impl Compiler {
                 // Static class call — name is ONLY a class, not a variable or field
                 self.compile_expression(obj)?;
                 let prop_idx = self.add_string_constant(&meth_lower);
-                self.emit_u16(Op::struct_get, prop_idx);
+                self.emit_u16(Op::STRUCT_GET, prop_idx);
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, args.len() as u8);
+                self.emit_u8(Op::CALL, args.len() as u8);
             } else {
                 self.compile_expression(obj)?;
                 let prop_idx = self.add_string_constant(&meth_lower);
-                self.emit_u16(Op::struct_get, prop_idx);
+                self.emit_u16(Op::STRUCT_GET, prop_idx);
                 self.compile_expression(obj)?;
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, (args.len() + 1) as u8);
+                self.emit_u8(Op::CALL, (args.len() + 1) as u8);
             }
         } else {
             // Check for form.Controls.Add(ctrl) pattern
@@ -487,17 +487,17 @@ impl Compiler {
                 let meth_lower = method.as_str().to_lowercase();
                 self.compile_expression(obj)?;
                 let prop_idx = self.add_string_constant(&meth_lower);
-                self.emit_u16(Op::struct_get, prop_idx);
+                self.emit_u16(Op::STRUCT_GET, prop_idx);
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, args.len() as u8);
+                self.emit_u8(Op::CALL, args.len() as u8);
             } else {
                 let meth_lower = method.as_str().to_lowercase();
                 self.compile_expression(obj)?;
                 let prop_idx = self.add_string_constant(&meth_lower);
-                self.emit_u16(Op::struct_get, prop_idx);
+                self.emit_u16(Op::STRUCT_GET, prop_idx);
                 self.compile_expression(obj)?;
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, (args.len() + 1) as u8);
+                self.emit_u8(Op::CALL, (args.len() + 1) as u8);
             }
         }
         Ok(())
@@ -511,16 +511,16 @@ impl Compiler {
         // Built-in exception types
         if matches!(name.as_str(), "exception" | "argumentexception" | "invalidoperationexception"
             | "notimplementedexception" | "notsupportedexception") {
-            self.emit_u16(Op::struct_new, 0);
-            self.emit(Op::dup);
+            self.emit_u16(Op::STRUCT_NEW, 0);
+            self.emit(Op::DUP);
             if let Some(msg_arg) = args.first() {
                 self.compile_expression(msg_arg)?;
             } else {
                 self.emit_constant(Value::String(Arc::from("")));
             }
             let msg_idx = self.add_string_constant("message");
-            self.emit_u16(Op::struct_set, msg_idx);
-            self.emit(Op::drop);
+            self.emit_u16(Op::STRUCT_SET, msg_idx);
+            self.emit(Op::DROP);
             return Ok(());
         }
 
@@ -528,9 +528,9 @@ impl Compiler {
         // Constructor creates its own object — just call(argc) with no pre-created this.
         if self.defined_classes.contains(&name) {
             let idx = self.add_string_constant(&name);
-            self.emit_u16(Op::global_get, idx);
+            self.emit_u16(Op::GLOBAL_GET, idx);
             for arg in args { self.compile_expression(arg)?; }
-            self.emit_u8(Op::call, args.len() as u8);
+            self.emit_u8(Op::CALL, args.len() as u8);
             return Ok(());
         }
 
@@ -587,13 +587,13 @@ impl Compiler {
             let parts: Vec<&str> = name.split('.').collect();
             if parts.len() >= 2 && self.is_namespace(parts[0]) {
                 let root_idx = self.add_string_constant(parts[0]);
-                self.emit_u16(Op::global_get, root_idx);
+                self.emit_u16(Op::GLOBAL_GET, root_idx);
                 for part in &parts[1..] {
                     let idx = self.add_string_constant(part);
-                    self.emit_u16(Op::struct_get, idx);
+                    self.emit_u16(Op::STRUCT_GET, idx);
                 }
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, args.len() as u8);
+                self.emit_u8(Op::CALL, args.len() as u8);
                 return Ok(());
             }
         }
@@ -608,13 +608,13 @@ impl Compiler {
                 let parts: Vec<&str> = full_path.split('.').collect();
                 if parts.len() >= 2 && self.is_namespace(parts[0]) {
                     let root_idx = self.add_string_constant(parts[0]);
-                    self.emit_u16(Op::global_get, root_idx);
+                    self.emit_u16(Op::GLOBAL_GET, root_idx);
                     for part in &parts[1..] {
                         let idx = self.add_string_constant(part);
-                        self.emit_u16(Op::struct_get, idx);
+                        self.emit_u16(Op::STRUCT_GET, idx);
                     }
                     for arg in args { self.compile_expression(arg)?; }
-                    self.emit_u8(Op::call, args.len() as u8);
+                    self.emit_u8(Op::CALL, args.len() as u8);
                     return Ok(());
                 }
             }
@@ -644,17 +644,17 @@ impl Compiler {
         match body {
             LambdaBody::Expression(expr) => {
                 self.compile_expression(expr)?;
-                self.emit(Op::r#return);
+                self.emit(Op::RETURN);
             }
             LambdaBody::Statement(stmt) => {
                 self.compile_statement(stmt)?;
-                self.emit(Op::null);
-                self.emit(Op::r#return);
+                self.emit(Op::NULL);
+                self.emit(Op::RETURN);
             }
             LambdaBody::Block(stmts) => {
                 for s in stmts { self.compile_statement(s)?; }
-                self.emit(Op::null);
-                self.emit(Op::r#return);
+                self.emit(Op::NULL);
+                self.emit(Op::RETURN);
             }
         }
 
@@ -665,7 +665,7 @@ impl Compiler {
         self.current_chunk_idx = saved;
 
         let line = self.line;
-        self.chunks[self.current_chunk_idx].emit_op_u16(Op::ref_func, idx as u16, line);
+        self.chunks[self.current_chunk_idx].emit_op_u16(Op::REF_FUNC, idx as u16, line);
         self.chunks[self.current_chunk_idx].emit(upvalues.len() as u8, line);
         for uv in &upvalues {
             self.chunks[self.current_chunk_idx].emit(if uv.is_local { 1 } else { 0 }, line);

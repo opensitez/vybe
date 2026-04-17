@@ -24,17 +24,17 @@ use vybe_bytecode::opcode::Op;
 /// Returns a jump offset to patch.
 /// Stack: unchanged
 pub fn emit_default_param_start(chunk: &mut Chunk, param_slot: u16, line: u32) -> usize {
-    chunk.emit_op_u16(Op::local_get, param_slot, line);
-    chunk.emit_op(Op::ref_is_null, line);
-    chunk.emit_jump(Op::br_if_false, line)
+    chunk.emit_op_u16(Op::LOCAL_GET, param_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_jump(Op::BR_IF_FALSE, line)
 }
 
 /// Emit the end of a default parameter check.
 /// Caller must have compiled the default expression onto the stack.
 /// Stack before: [default_value]  Stack after: [] (stored in param_slot)
 pub fn emit_default_param_end(chunk: &mut Chunk, param_slot: u16, skip_jump: usize, line: u32) {
-    chunk.emit_op_u16(Op::local_set, param_slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, param_slot, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.patch_jump(skip_jump);
 }
 
@@ -52,8 +52,8 @@ pub fn create_function_chunk(name: &str, arity: u8) -> Chunk {
 /// fall through without explicit return).
 /// Stack: [] → diverges (return)
 pub fn emit_function_epilogue(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::null, line);
-    chunk.emit_op(Op::r#return, line);
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op(Op::RETURN, line);
 }
 
 /// Emit ref_func to push a closure reference onto the stack.
@@ -61,7 +61,7 @@ pub fn emit_function_epilogue(chunk: &mut Chunk, line: u32) {
 /// `upvalue_count`: 0 for most functions, >0 for closures.
 /// Stack: [] → [closure_ref]
 pub fn emit_ref_func(chunk: &mut Chunk, func_chunk_idx: usize, upvalue_count: u8, line: u32) {
-    chunk.emit_op_u16(Op::ref_func, func_chunk_idx as u16, line);
+    chunk.emit_op_u16(Op::REF_FUNC, func_chunk_idx as u16, line);
     chunk.emit(upvalue_count, line);
 }
 
@@ -70,16 +70,16 @@ pub fn emit_ref_func(chunk: &mut Chunk, func_chunk_idx: usize, upvalue_count: u8
 /// Stack before: [closure_ref]  Stack after: []
 pub fn emit_store_global_func(chunk: &mut Chunk, name: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::global_set, idx, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// Store a function in a local slot.
 /// Caller must have closure_ref on stack (from emit_ref_func).
 /// Stack before: [closure_ref]  Stack after: []
 pub fn emit_store_local_func(chunk: &mut Chunk, slot: u16, line: u32) {
-    chunk.emit_op_u16(Op::local_set, slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 // ── Cross-language function call ────────────────────────────────────────
@@ -89,13 +89,13 @@ pub fn emit_store_local_func(chunk: &mut Chunk, slot: u16, line: u32) {
 /// Stack: [] → [function_ref]
 pub fn emit_push_global_func(chunk: &mut Chunk, name: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::global_get, idx, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
 }
 
 /// Emit the call opcode after function ref + args are on stack.
 /// Stack before: [func_ref, arg1, arg2, ...]  Stack after: [return_value]
 pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
-    chunk.emit_op_u8(Op::call, arg_count, line);
+    chunk.emit_op_u8(Op::CALL, arg_count, line);
 }
 
 // ── Async/await (WASM Stack Switching + JSPI) ───────────────────────────
@@ -109,7 +109,7 @@ pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
 //
 //   await expression:
 //     1. Compile the expression (produces a value or Promise)
-//     2. Emit Op::promise_suspend (WASM JSPI) — VM checks if Promise, suspends fiber if pending
+//     2. Emit Op::PROMISE_SUSPEND (WASM JSPI) — VM checks if Promise, suspends fiber if pending
 //
 // Python `async def`, Dart `async`, JS `async function`, C# `async Task`
 // all compile to the same opcodes.
@@ -120,7 +120,7 @@ pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
 /// If the value is not a Promise, it passes through unchanged.
 /// Stack before: [value_or_promise]  Stack after: [resolved_value]
 pub fn emit_await(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::promise_suspend, line);
+    chunk.emit_op(Op::PROMISE_SUSPEND, line);
 }
 
 /// Emit async function wrapper: wraps the body chunk as a continuation.
@@ -134,13 +134,13 @@ pub fn emit_await(chunk: &mut Chunk, line: u32) {
 /// Stack: [] → [promise]
 pub fn emit_async_wrapper(chunk: &mut Chunk, body_chunk_idx: usize, line: u32) {
     // Create continuation from the body function
-    chunk.emit_op_u16(Op::ref_func, body_chunk_idx as u16, line);
+    chunk.emit_op_u16(Op::REF_FUNC, body_chunk_idx as u16, line);
     chunk.emit(0, line); // 0 upvalues
-    chunk.emit_op(Op::cont_new, line);
+    chunk.emit_op(Op::CONT_NEW, line);
     // Resume the continuation immediately — it will suspend at each await point
     // The VM's event loop handles re-resumption when promises resolve
     let zero_tag = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::resume, zero_tag, line);
+    chunk.emit_op_u16(Op::RESUME, zero_tag, line);
 }
 
 /// Create an async function body chunk.
@@ -164,12 +164,12 @@ pub fn create_async_body_chunk(name: &str, arity: u8) -> Chunk {
 /// Call this for each non-spread argument in a spread call.
 /// Stack before: [args_array, value]  Stack after: [args_array]
 pub fn emit_spread_push_arg(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_push, line);
+    chunk.emit_op(Op::ARRAY_PUSH, line);
 }
 
 /// Emit: concat a spread array into the args array.
 /// Call this for each spread argument: `...arr`.
 /// Stack before: [args_array, spread_array]  Stack after: [merged_array]
 pub fn emit_spread_concat_arg(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::array_concat, line);
+    chunk.emit_op(Op::ARRAY_CONCAT, line);
 }

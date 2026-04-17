@@ -124,11 +124,11 @@ impl Compiler {
             };
             if !has_explicit_ctor {
                 let parent_idx = self.add_string_constant(&parent_name);
-                self.emit_u16(Op::global_get, parent_idx);
-                self.emit_u8(Op::call, 0);
+                self.emit_u16(Op::GLOBAL_GET, parent_idx);
+                self.emit_u8(Op::CALL, 0);
                 // Store returned object as me
-                self.emit_u16(Op::local_set, this_slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, this_slot);
+                self.emit(Op::DROP);
             }
             // If explicit ctor: MyBase.New() in the body will handle it
         } else {
@@ -142,15 +142,15 @@ impl Compiler {
 
         // Initialize fields
         for field in &class.fields {
-            self.emit_u16(Op::local_get, this_slot);
+            self.emit_u16(Op::LOCAL_GET, this_slot);
             if let Some(ref init) = field.initializer {
                 self.compile_expression(init)?;
             } else {
-                self.emit(Op::null);
+                self.emit(Op::NULL);
             }
             let prop_idx = self.add_string_constant(&field.name.as_str().to_lowercase());
-            self.emit_u16(Op::struct_set, prop_idx);
-            self.emit(Op::drop);
+            self.emit_u16(Op::STRUCT_SET, prop_idx);
+            self.emit(Op::DROP);
         }
 
         // Save parent methods as __base_name before attaching child overrides
@@ -179,15 +179,15 @@ impl Compiler {
                 MethodDecl::Function(func) => func.name.as_str().to_lowercase(),
             };
             // Compile method chunk — pushes closure ref onto stack
-            self.emit_u16(Op::local_get, this_slot);
+            self.emit_u16(Op::LOCAL_GET, this_slot);
             self.compile_method_decl(method)?;
             // Record chunk index for type table (the chunk was just added)
             let chunk_idx = self.chunks.len() - 1;
             method_entries.push((method_name.clone(), chunk_idx));
             // Attach to instance (backward compat)
             let prop_idx = self.add_string_constant(&method_name);
-            self.emit_u16(Op::struct_set, prop_idx);
-            self.emit(Op::drop);
+            self.emit_u16(Op::STRUCT_SET, prop_idx);
+            self.emit(Op::DROP);
             // Emit cross-language aliases (e.g. VB tostring → JS toString, Python __str__)
             // Uses 0-upvalue ref_func — safe because aliases point to the same chunk
             // and VB instance methods don't capture constructor-scope upvalues.
@@ -257,13 +257,13 @@ impl Compiler {
                         self.emit_constant(Value::String(Arc::from(ctrl_str.as_str())));
                         self.emit_constant(Value::String(Arc::from(event)));
                         // Push the method as a closure reference
-                        self.emit_u16(Op::local_get, this_slot);
+                        self.emit_u16(Op::LOCAL_GET, this_slot);
                         let method_idx = self.add_string_constant(&method_name);
-                        self.emit_u16(Op::struct_get, method_idx);
+                        self.emit_u16(Op::STRUCT_GET, method_idx);
                         // Call host onEvent(ctrl, event, handler) — same as AddHandler
                         let import_idx = self.import("vybe:gui", "onEvent");
                         self.emit_host_call(import_idx, 3);
-                        self.emit(Op::drop);
+                        self.emit(Op::DROP);
                     }
                 }
             }
@@ -274,13 +274,13 @@ impl Compiler {
             let prop_name = prop.name.as_str().to_lowercase();
 
             if let Some(ref getter_body) = prop.getter {
-                self.emit_u16(Op::local_get, this_slot);
+                self.emit_u16(Op::LOCAL_GET, this_slot);
                 self.compile_property_accessor(&format!("get_{}", prop_name), 1, getter_body, true, Some(&prop_name))?;
                 let getter_chunk_idx = self.chunks.len() - 1;
                 let get_name = format!("__get_{}", prop_name);
                 let prop_idx = self.add_string_constant(&get_name);
-                self.emit_u16(Op::struct_set, prop_idx);
-                self.emit(Op::drop);
+                self.emit_u16(Op::STRUCT_SET, prop_idx);
+                self.emit(Op::DROP);
                 // Emit cross-language aliases for getter (e.g. __get_tostring for Python/JS interop)
                 let line = self.line;
                 for alias in common::classes::cross_language_aliases(&prop_name) {
@@ -295,14 +295,14 @@ impl Compiler {
             }
 
             if let Some((ref value_param, ref setter_body)) = prop.setter {
-                self.emit_u16(Op::local_get, this_slot);
+                self.emit_u16(Op::LOCAL_GET, this_slot);
                 let param_name = value_param.name.as_str().to_lowercase();
                 self.compile_property_accessor_with_param(&format!("set_{}", prop_name), &param_name, setter_body)?;
                 let setter_chunk_idx = self.chunks.len() - 1;
                 let set_name = format!("__set_{}", prop_name);
                 let prop_idx = self.add_string_constant(&set_name);
-                self.emit_u16(Op::struct_set, prop_idx);
-                self.emit(Op::drop);
+                self.emit_u16(Op::STRUCT_SET, prop_idx);
+                self.emit(Op::DROP);
                 // Emit cross-language aliases for setter
                 let line = self.line;
                 for alias in common::classes::cross_language_aliases(&prop_name) {
@@ -329,15 +329,15 @@ impl Compiler {
         if has_user_base {
             let tid_name = format!("__tid_{}", name.to_lowercase());
             let tid_idx = self.add_string_constant(&tid_name);
-            self.emit_u16(Op::local_get, this_slot);
-            self.emit_u16(Op::global_get, tid_idx);
-            self.emit(Op::set_type_id);
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            self.emit_u16(Op::GLOBAL_GET, tid_idx);
+            self.emit(Op::SET_TYPE_ID);
             // Update __type string
-            self.emit_u16(Op::local_get, this_slot);
+            self.emit_u16(Op::LOCAL_GET, this_slot);
             self.emit_constant(Value::String(Arc::from(name)));
             let type_key = self.add_string_constant("__type");
-            self.emit_u16(Op::struct_set, type_key);
-            self.emit(Op::drop);
+            self.emit_u16(Op::STRUCT_SET, type_key);
+            self.emit(Op::DROP);
         }
 
         // Return this
@@ -410,12 +410,12 @@ impl Compiler {
                 _ => String::new(),
             };
             if !parent_name.is_empty() && !self.dotnet_types.is_framework_type(&parent_name) {
-                self.emit(Op::dup);
+                self.emit(Op::DUP);
                 let parent_idx = self.add_string_constant(&parent_name);
-                self.emit_u16(Op::global_get, parent_idx);
+                self.emit_u16(Op::GLOBAL_GET, parent_idx);
                 let assign_idx = self.import("vybe:object", "assign");
                 self.emit_host_call(assign_idx, 2);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
         }
 
@@ -425,11 +425,11 @@ impl Compiler {
                 MethodDecl::Sub(sub) => sub.name.as_str().to_lowercase(),
                 MethodDecl::Function(func) => func.name.as_str().to_lowercase(),
             };
-            self.emit(Op::dup); // keep constructor on stack
+            self.emit(Op::DUP); // keep constructor on stack
             self.compile_shared_method(method)?;
             let prop_idx = self.add_string_constant(&method_name);
-            self.emit_u16(Op::struct_set, prop_idx);
-            self.emit(Op::drop);
+            self.emit_u16(Op::STRUCT_SET, prop_idx);
+            self.emit(Op::DROP);
         }
 
         Ok(())
@@ -480,17 +480,17 @@ impl Compiler {
                 self.scopes.push(scope);
 
                 self.function_name_stack.push(func.name.as_str().to_lowercase());
-                self.emit(Op::null);
+                self.emit(Op::NULL);
                 let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
-                self.emit_u16(Op::local_set, rv_slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, rv_slot);
+                self.emit(Op::DROP);
 
                 for stmt in &func.body { self.compile_statement(stmt)?; }
 
                 self.function_name_stack.pop();
                 let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
-                self.emit_u16(Op::local_get, rv_slot);
-                self.emit(Op::r#return);
+                self.emit_u16(Op::LOCAL_GET, rv_slot);
+                self.emit(Op::RETURN);
 
                 let lc = self.current_scope().next_slot;
                 self.chunks[idx].local_count = lc;
@@ -546,17 +546,17 @@ impl Compiler {
                 self.scopes.push(scope);
 
                 self.function_name_stack.push(func.name.as_str().to_lowercase());
-                self.emit(Op::null);
+                self.emit(Op::NULL);
                 let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
-                self.emit_u16(Op::local_set, rv_slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, rv_slot);
+                self.emit(Op::DROP);
 
                 for stmt in &func.body { self.compile_statement(stmt)?; }
 
                 self.function_name_stack.pop();
                 let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
-                self.emit_u16(Op::local_get, rv_slot);
-                self.emit(Op::r#return);
+                self.emit_u16(Op::LOCAL_GET, rv_slot);
+                self.emit(Op::RETURN);
 
                 let lc = self.current_scope().next_slot;
                 self.chunks[idx].local_count = lc;
@@ -584,10 +584,10 @@ impl Compiler {
         self.scopes.push(scope);
 
         if has_return {
-            self.emit(Op::null);
+            self.emit(Op::NULL);
             let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
-            self.emit_u16(Op::local_set, rv_slot);
-            self.emit(Op::drop);
+            self.emit_u16(Op::LOCAL_SET, rv_slot);
+            self.emit(Op::DROP);
             // Push property name so `PropertyName = value` sets __return_val
             if let Some(pn) = prop_name {
                 self.function_name_stack.push(pn.to_string());
@@ -601,11 +601,11 @@ impl Compiler {
                 self.function_name_stack.pop();
             }
             let rv_slot = self.current_scope().resolve_local("__return_val").unwrap();
-            self.emit_u16(Op::local_get, rv_slot);
+            self.emit_u16(Op::LOCAL_GET, rv_slot);
         } else {
-            self.emit(Op::null);
+            self.emit(Op::NULL);
         }
-        self.emit(Op::r#return);
+        self.emit(Op::RETURN);
 
         let lc = self.current_scope().next_slot;
         self.chunks[idx].local_count = lc;

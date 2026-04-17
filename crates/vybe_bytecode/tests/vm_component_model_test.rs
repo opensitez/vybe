@@ -16,13 +16,13 @@ fn canon_lift_stamps_type_id() {
     // Create a plain object (type_id = 0)
     let name_c = chunk.add_constant(Value::String(Rc::from("name")));
     let val_c = chunk.add_constant(Value::String(Rc::from("Rex")));
-    chunk.emit_op_u16(Op::r#const, val_c, 0);
-    chunk.emit_op_u16(Op::array_new, 1, 0);
+    chunk.emit_op_u16(Op::CONST, val_c, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW, 1, 0);
 
     // canon_lift with Animal type
-    chunk.emit_op_u16(Op::canon_lift, tid as u16, 0);
+    chunk.emit_op_u16(Op::CANON_LIFT, tid as u16, 0);
 
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
@@ -44,12 +44,12 @@ fn canon_lower_passes_through() {
 
     // Create typed object
     let type_id = chunk.add_constant(Value::I32(tid as i32));
-    chunk.emit_op_u16(Op::r#const, type_id, 0);
-    chunk.emit_op(Op::shared_new, 0);
+    chunk.emit_op_u16(Op::CONST, type_id, 0);
+    chunk.emit_op(Op::SHARED_NEW, 0);
 
     // canon_lower
-    chunk.emit_op_u16(Op::canon_lower, tid as u16, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CANON_LOWER, tid as u16, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Object(_)));
@@ -65,8 +65,8 @@ fn type_import_resolves_registered_type() {
     chunk.type_imports.push(("ui".to_string(), "Widget".to_string()));
 
     // type_import 0 → should push Widget's type_id
-    chunk.emit_op_u16(Op::type_import, 0, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::TYPE_IMPORT, 0, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), tid as i32);
@@ -80,8 +80,8 @@ fn type_import_unknown_returns_null() {
     chunk.local_count = 1;
     chunk.type_imports.push(("pkg".to_string(), "NonExistent".to_string()));
 
-    chunk.emit_op_u16(Op::type_import, 0, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::TYPE_IMPORT, 0, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Null));
@@ -96,10 +96,10 @@ fn type_export_is_noop() {
     chunk.local_count = 1;
 
     // type_export just reads operand, no stack effect
-    chunk.emit_op_u16(Op::type_export, tid as u16, 0);
+    chunk.emit_op_u16(Op::TYPE_EXPORT, tid as u16, 0);
     let val = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::r#const, val, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 1);

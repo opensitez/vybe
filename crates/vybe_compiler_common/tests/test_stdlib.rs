@@ -31,15 +31,15 @@ fn stdlib_range_basic() {
     let zero = script.add_constant(Value::I32(0));
     let five = script.add_constant(Value::I32(5));
     let one = script.add_constant(Value::I32(1));
-    script.emit_op_u16(Op::ref_func, chunk_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, chunk_idx as u16, 0);
     script.emit(0, 0); // 0 upvalues
-    script.emit_op_u16(Op::r#const, zero, 0);
-    script.emit_op_u16(Op::r#const, five, 0);
-    script.emit_op_u16(Op::r#const, one, 0);
-    script.emit_op_u8(Op::call_ref, 3, 0);
+    script.emit_op_u16(Op::CONST, zero, 0);
+    script.emit_op_u16(Op::CONST, five, 0);
+    script.emit_op_u16(Op::CONST, one, 0);
+    script.emit_op_u8(Op::CALL_REF, 3, 0);
     // Result should be array [0,1,2,3,4]
-    script.emit_op(Op::array_length, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op(Op::ARRAY_LENGTH, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 5, "range(0,5,1) should produce 5 elements");
@@ -57,14 +57,14 @@ fn stdlib_range_step() {
     let zero = script.add_constant(Value::I32(0));
     let ten = script.add_constant(Value::I32(10));
     let two = script.add_constant(Value::I32(2));
-    script.emit_op_u16(Op::ref_func, range_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, range_idx as u16, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::r#const, zero, 0);
-    script.emit_op_u16(Op::r#const, ten, 0);
-    script.emit_op_u16(Op::r#const, two, 0);
-    script.emit_op_u8(Op::call_ref, 3, 0);
-    script.emit_op(Op::array_length, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op_u16(Op::CONST, zero, 0);
+    script.emit_op_u16(Op::CONST, ten, 0);
+    script.emit_op_u16(Op::CONST, two, 0);
+    script.emit_op_u8(Op::CALL_REF, 3, 0);
+    script.emit_op(Op::ARRAY_LENGTH, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 5, "range(0,10,2) should produce 5 elements");
@@ -86,19 +86,19 @@ fn stdlib_sum() {
     let v3 = script.add_constant(Value::I32(3));
     let v4 = script.add_constant(Value::I32(4));
     let v5 = script.add_constant(Value::I32(5));
-    script.emit_op_u16(Op::r#const, v1, 0);
-    script.emit_op_u16(Op::r#const, v2, 0);
-    script.emit_op_u16(Op::r#const, v3, 0);
-    script.emit_op_u16(Op::r#const, v4, 0);
-    script.emit_op_u16(Op::r#const, v5, 0);
-    script.emit_op_u16(Op::array_new, 5, 0);
+    script.emit_op_u16(Op::CONST, v1, 0);
+    script.emit_op_u16(Op::CONST, v2, 0);
+    script.emit_op_u16(Op::CONST, v3, 0);
+    script.emit_op_u16(Op::CONST, v4, 0);
+    script.emit_op_u16(Op::CONST, v5, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 5, 0);
 
-    script.emit_op_u16(Op::ref_func, sum_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, sum_idx as u16, 0);
     script.emit(0, 0);
     // swap: need [func, arr] but have [arr, func]
     // store arr, push func, push arr
-    script.emit_op_u16(Op::local_set, 1, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    script.emit_op(Op::DROP, 0);
 
     // Restart: build array, store, then call
     // Actually let me restructure properly
@@ -110,20 +110,20 @@ fn stdlib_sum() {
     let v3 = script.add_constant(Value::I32(3));
     let v4 = script.add_constant(Value::I32(4));
     let v5 = script.add_constant(Value::I32(5));
-    script.emit_op_u16(Op::r#const, v1, 0);
-    script.emit_op_u16(Op::r#const, v2, 0);
-    script.emit_op_u16(Op::r#const, v3, 0);
-    script.emit_op_u16(Op::r#const, v4, 0);
-    script.emit_op_u16(Op::r#const, v5, 0);
-    script.emit_op_u16(Op::array_new, 5, 0);
-    script.emit_op_u16(Op::local_set, 1, 0); // store array
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::CONST, v1, 0);
+    script.emit_op_u16(Op::CONST, v2, 0);
+    script.emit_op_u16(Op::CONST, v3, 0);
+    script.emit_op_u16(Op::CONST, v4, 0);
+    script.emit_op_u16(Op::CONST, v5, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 5, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0); // store array
+    script.emit_op(Op::DROP, 0);
 
-    script.emit_op_u16(Op::ref_func, sum_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, sum_idx as u16, 0);
     script.emit(0, 0); // func ref
-    script.emit_op_u16(Op::local_get, 1, 0); // array arg
-    script.emit_op_u8(Op::call_ref, 1, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0); // array arg
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 15);
@@ -143,22 +143,22 @@ fn stdlib_reversed() {
     let v1 = script.add_constant(Value::I32(1));
     let v2 = script.add_constant(Value::I32(2));
     let v3 = script.add_constant(Value::I32(3));
-    script.emit_op_u16(Op::r#const, v1, 0);
-    script.emit_op_u16(Op::r#const, v2, 0);
-    script.emit_op_u16(Op::r#const, v3, 0);
-    script.emit_op_u16(Op::array_new, 3, 0);
-    script.emit_op_u16(Op::local_set, 1, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::CONST, v1, 0);
+    script.emit_op_u16(Op::CONST, v2, 0);
+    script.emit_op_u16(Op::CONST, v3, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    script.emit_op(Op::DROP, 0);
 
-    script.emit_op_u16(Op::ref_func, rev_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, rev_idx as u16, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::local_get, 1, 0);
-    script.emit_op_u8(Op::call_ref, 1, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
 
     // Get first element — should be 3
-    script.emit_op(Op::i32_const_0, 0);
-    script.emit_op(Op::array_get, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op(Op::I32_CONST_0, 0);
+    script.emit_op(Op::ARRAY_GET, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 3, "first element of reversed [1,2,3] should be 3");
@@ -178,22 +178,22 @@ fn stdlib_sorted() {
     let v3 = script.add_constant(Value::I32(3));
     let v1 = script.add_constant(Value::I32(1));
     let v2 = script.add_constant(Value::I32(2));
-    script.emit_op_u16(Op::r#const, v3, 0);
-    script.emit_op_u16(Op::r#const, v1, 0);
-    script.emit_op_u16(Op::r#const, v2, 0);
-    script.emit_op_u16(Op::array_new, 3, 0);
-    script.emit_op_u16(Op::local_set, 1, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::CONST, v3, 0);
+    script.emit_op_u16(Op::CONST, v1, 0);
+    script.emit_op_u16(Op::CONST, v2, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    script.emit_op(Op::DROP, 0);
 
-    script.emit_op_u16(Op::ref_func, sort_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, sort_idx as u16, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::local_get, 1, 0);
-    script.emit_op_u8(Op::call_ref, 1, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
 
     // First element should be 1 (smallest)
-    script.emit_op(Op::i32_const_0, 0);
-    script.emit_op(Op::array_get, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op(Op::I32_CONST_0, 0);
+    script.emit_op(Op::ARRAY_GET, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 1, "first element of sorted [3,1,2] should be 1");
@@ -210,24 +210,24 @@ fn stdlib_sorted_preserves_original() {
     // sorted should not mutate the original
     let v3 = script.add_constant(Value::I32(3));
     let v1 = script.add_constant(Value::I32(1));
-    script.emit_op_u16(Op::r#const, v3, 0);
-    script.emit_op_u16(Op::r#const, v1, 0);
-    script.emit_op_u16(Op::array_new, 2, 0);
-    script.emit_op_u16(Op::local_set, 1, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::CONST, v3, 0);
+    script.emit_op_u16(Op::CONST, v1, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    script.emit_op(Op::DROP, 0);
 
     // Call sorted
-    script.emit_op_u16(Op::ref_func, sort_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, sort_idx as u16, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::local_get, 1, 0);
-    script.emit_op_u8(Op::call_ref, 1, 0);
-    script.emit_op(Op::drop, 0); // discard sorted result
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op(Op::DROP, 0); // discard sorted result
 
     // Original first element should still be 3
-    script.emit_op_u16(Op::local_get, 1, 0);
-    script.emit_op(Op::i32_const_0, 0);
-    script.emit_op(Op::array_get, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_op(Op::I32_CONST_0, 0);
+    script.emit_op(Op::ARRAY_GET, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 3, "original array should be unchanged");
@@ -246,18 +246,18 @@ fn stdlib_min() {
     let v5 = script.add_constant(Value::I32(5));
     let v2 = script.add_constant(Value::I32(2));
     let v8 = script.add_constant(Value::I32(8));
-    script.emit_op_u16(Op::r#const, v5, 0);
-    script.emit_op_u16(Op::r#const, v2, 0);
-    script.emit_op_u16(Op::r#const, v8, 0);
-    script.emit_op_u16(Op::array_new, 3, 0);
-    script.emit_op_u16(Op::local_set, 1, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::CONST, v5, 0);
+    script.emit_op_u16(Op::CONST, v2, 0);
+    script.emit_op_u16(Op::CONST, v8, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    script.emit_op(Op::DROP, 0);
 
-    script.emit_op_u16(Op::ref_func, min_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, min_idx as u16, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::local_get, 1, 0);
-    script.emit_op_u8(Op::call_ref, 1, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 2);
@@ -274,18 +274,18 @@ fn stdlib_max() {
     let v5 = script.add_constant(Value::I32(5));
     let v2 = script.add_constant(Value::I32(2));
     let v8 = script.add_constant(Value::I32(8));
-    script.emit_op_u16(Op::r#const, v5, 0);
-    script.emit_op_u16(Op::r#const, v2, 0);
-    script.emit_op_u16(Op::r#const, v8, 0);
-    script.emit_op_u16(Op::array_new, 3, 0);
-    script.emit_op_u16(Op::local_set, 1, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::CONST, v5, 0);
+    script.emit_op_u16(Op::CONST, v2, 0);
+    script.emit_op_u16(Op::CONST, v8, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    script.emit_op(Op::DROP, 0);
 
-    script.emit_op_u16(Op::ref_func, max_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, max_idx as u16, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::local_get, 1, 0);
-    script.emit_op_u8(Op::call_ref, 1, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 8);
@@ -302,14 +302,14 @@ fn stdlib_pow() {
     script.local_count = 2;
 
     // 2^10 = 1024
-    script.emit_op_u16(Op::ref_func, pow_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, pow_idx as u16, 0);
     script.emit(0, 0);
     let base = script.add_constant(Value::F64(2.0));
     let exp = script.add_constant(Value::I32(10));
-    script.emit_op_u16(Op::r#const, base, 0);
-    script.emit_op_u16(Op::r#const, exp, 0);
-    script.emit_op_u8(Op::call_ref, 2, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op_u16(Op::CONST, base, 0);
+    script.emit_op_u16(Op::CONST, exp, 0);
+    script.emit_op_u8(Op::CALL_REF, 2, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_f64() as i32, 1024);
@@ -328,20 +328,20 @@ fn stdlib_enumerate() {
     // enumerate(["a", "b"]) → [[0,"a"], [1,"b"]]
     let va = script.add_constant(Value::String(Rc::from("a")));
     let vb = script.add_constant(Value::String(Rc::from("b")));
-    script.emit_op_u16(Op::r#const, va, 0);
-    script.emit_op_u16(Op::r#const, vb, 0);
-    script.emit_op_u16(Op::array_new, 2, 0);
-    script.emit_op_u16(Op::local_set, 1, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::CONST, va, 0);
+    script.emit_op_u16(Op::CONST, vb, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    script.emit_op(Op::DROP, 0);
 
-    script.emit_op_u16(Op::ref_func, enum_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, enum_idx as u16, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::local_get, 1, 0);
-    script.emit_op_u8(Op::call_ref, 1, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
 
     // Result length should be 2
-    script.emit_op(Op::array_length, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op(Op::ARRAY_LENGTH, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 2);
@@ -363,26 +363,26 @@ fn stdlib_zip() {
     let v3 = script.add_constant(Value::I32(3));
     let v4 = script.add_constant(Value::I32(4));
 
-    script.emit_op_u16(Op::r#const, v1, 0);
-    script.emit_op_u16(Op::r#const, v2, 0);
-    script.emit_op_u16(Op::array_new, 2, 0);
-    script.emit_op_u16(Op::local_set, 1, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::CONST, v1, 0);
+    script.emit_op_u16(Op::CONST, v2, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    script.emit_op(Op::DROP, 0);
 
-    script.emit_op_u16(Op::r#const, v3, 0);
-    script.emit_op_u16(Op::r#const, v4, 0);
-    script.emit_op_u16(Op::array_new, 2, 0);
-    script.emit_op_u16(Op::local_set, 2, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::CONST, v3, 0);
+    script.emit_op_u16(Op::CONST, v4, 0);
+    script.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 2, 0);
+    script.emit_op(Op::DROP, 0);
 
-    script.emit_op_u16(Op::ref_func, zip_idx as u16, 0);
+    script.emit_op_u16(Op::REF_FUNC, zip_idx as u16, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::local_get, 1, 0);
-    script.emit_op_u16(Op::local_get, 2, 0);
-    script.emit_op_u8(Op::call_ref, 2, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    script.emit_op_u8(Op::CALL_REF, 2, 0);
 
-    script.emit_op(Op::array_length, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op(Op::ARRAY_LENGTH, 0);
+    script.emit_op(Op::HALT, 0);
 
     let result = run_with_stdlib(script);
     assert_eq!(result.as_i32(), 2);

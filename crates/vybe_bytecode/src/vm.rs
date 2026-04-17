@@ -621,37 +621,56 @@ impl VM {
                 let code = &mut chunk.code;
                 let mut ip = 0;
                 while ip < code.len() {
-                    let op_byte = code[ip];
-                    if let Some(op) = Op::from_byte(op_byte) {
-                        match op {
-                            Op::ref_func => {
-                                if ip + 2 < code.len() {
-                                    let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
-                                    let new_idx = old_idx + script_idx as u16;
-                                    code[ip + 1] = (new_idx >> 8) as u8;
-                                    code[ip + 2] = (new_idx & 0xff) as u8;
-                                }
-                                ip += 3 + 1;
+                    if ip + 1 >= code.len() { break; }
+                    let prefix = code[ip];
+                    let sub = code[ip + 1];
+                    if let Some(op) = Op::decode(prefix, sub) {
+                        if op == Op::REF_FUNC {
+                            if ip + 4 < code.len() {
+                                let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
+                                let new_idx = old_idx + script_idx as u16;
+                                code[ip + 2] = (new_idx >> 8) as u8;
+                                code[ip + 3] = (new_idx & 0xff) as u8;
+                            }
+                            ip += 4 + 1; // 2 opcode + 2 func_idx + 1 uv_count
+                            if ip - 1 < code.len() {
+                                let uv_count = code[ip - 1] as usize;
+                                ip += uv_count * 2;
+                            }
+                            continue;
+                        }
+                        ip += 2; // all opcodes are 2 bytes
+                        // Skip operands based on format
+                        let fmt = op.operand_format();
+                        match fmt {
+                            crate::opcode::OperandFormat::Closure => {
+                                // Already handled above for REF_FUNC
+                                ip += 2 + 1; // u16 func_idx + u8 uv_count
                                 if ip - 1 < code.len() {
                                     let uv_count = code[ip - 1] as usize;
                                     ip += uv_count * 2;
                                 }
-                                continue;
                             }
-                            _ => {}
+                            crate::opcode::OperandFormat::BrTable => {
+                                // u8 count + u8 default + count × u8 labels
+                                if ip < code.len() {
+                                    let count = code[ip] as usize;
+                                    ip += 2 + count; // count + default + labels
+                                }
+                            }
+                            crate::opcode::OperandFormat::TryTable => {
+                                // u8 handler_count + handlers × (u8 tag + u16 offset)
+                                if ip < code.len() {
+                                    let count = code[ip] as usize;
+                                    ip += 1 + count * 3;
+                                }
+                            }
+                            _ => {
+                                ip += fmt.fixed_size();
+                            }
                         }
-                        ip += op.encoded_len();
-                        match op {
-                            Op::call_import => { ip += 3; }
-                            Op::br | Op::br_if_true | Op::br_if_false | Op::br_if_null
-                            | Op::r#loop => { ip += 2; }
-                            Op::try_start => { ip += 4; }
-                            _ => {}
-                        }
-                    } else if op_byte == 0xFE && ip + 1 < code.len() {
-                        ip += 2;
                     } else {
-                        ip += 1;
+                        ip += 2; // skip unknown 2-byte opcode
                     }
                 }
             }
@@ -733,45 +752,52 @@ impl VM {
                 let code = &mut chunk.code;
                 let mut ip = 0;
                 while ip < code.len() {
-                    let op_byte = code[ip];
-                    if let Some(op) = Op::from_byte(op_byte) {
-                        match op {
-                            Op::ref_func => {
-                                // ref_func has u16 chunk_index operand
-                                if ip + 2 < code.len() {
-                                    let old_idx = ((code[ip + 1] as u16) << 8) | (code[ip + 2] as u16);
-                                    let new_idx = old_idx + script_idx as u16;
-                                    code[ip + 1] = (new_idx >> 8) as u8;
-                                    code[ip + 2] = (new_idx & 0xff) as u8;
-                                }
-                                ip += 3 + 1; // op + u16 + upvalue_count byte
-                                // Skip upvalue descriptors
+                    if ip + 1 >= code.len() { break; }
+                    let prefix = code[ip];
+                    let sub = code[ip + 1];
+                    if let Some(op) = Op::decode(prefix, sub) {
+                        if op == Op::REF_FUNC {
+                            if ip + 4 < code.len() {
+                                let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
+                                let new_idx = old_idx + script_idx as u16;
+                                code[ip + 2] = (new_idx >> 8) as u8;
+                                code[ip + 3] = (new_idx & 0xff) as u8;
+                            }
+                            ip += 4 + 1;
+                            if ip - 1 < code.len() {
+                                let uv_count = code[ip - 1] as usize;
+                                ip += uv_count * 2;
+                            }
+                            continue;
+                        }
+                        ip += 2; // all opcodes are 2 bytes
+                        let fmt = op.operand_format();
+                        match fmt {
+                            crate::opcode::OperandFormat::Closure => {
+                                ip += 2 + 1;
                                 if ip - 1 < code.len() {
                                     let uv_count = code[ip - 1] as usize;
                                     ip += uv_count * 2;
                                 }
-                                continue;
                             }
-                            _ => {}
+                            crate::opcode::OperandFormat::BrTable => {
+                                if ip < code.len() {
+                                    let count = code[ip] as usize;
+                                    ip += 2 + count;
+                                }
+                            }
+                            crate::opcode::OperandFormat::TryTable => {
+                                if ip < code.len() {
+                                    let count = code[ip] as usize;
+                                    ip += 1 + count * 3;
+                                }
+                            }
+                            _ => {
+                                ip += fmt.fixed_size();
+                            }
                         }
-                        ip += op.encoded_len();
-                        // Skip operands based on opcode
-                        match op {
-                            Op::r#const | Op::local_get | Op::local_set | Op::global_get
-                            | Op::global_set | Op::struct_get | Op::struct_set | Op::struct_new
-                            | Op::array_new | Op::ref_test => { ip += 2; }
-                            Op::call | Op::call_ref | Op::upvalue_get | Op::upvalue_set
-                            | Op::str_concat_n => { ip += 1; }
-                            Op::call_import => { ip += 3; } // u16 + u8
-                            Op::br | Op::br_if_true | Op::br_if_false | Op::br_if_null
-                            | Op::r#loop => { ip += 2; }
-                            Op::try_start => { ip += 4; }
-                            _ => {}
-                        }
-                    } else if op_byte == 0xFE && ip + 1 < code.len() {
-                        ip += 2; // extended opcode
                     } else {
-                        ip += 1;
+                        ip += 2; // skip unknown 2-byte opcode
                     }
                 }
             }
@@ -1283,19 +1309,12 @@ impl VM {
                 continue;
             }
 
-            let byte = self.read_byte();
-            let op = if byte == 0xFE {
-                // Extended opcode: prefix 0xFE + extension byte
-                let ext = self.read_byte();
-                match Op::from_two_bytes(byte, ext) {
-                    Some(op) => op,
-                    None => return Err(VMError::new(format!("Invalid extended opcode: 0xFE 0x{:02X}", ext))),
-                }
-            } else {
-                match Op::from_byte(byte) {
-                    Some(op) => op,
-                    None => return Err(VMError::new(format!("Invalid opcode: {}", byte))),
-                }
+            // Uniform 2-byte opcode decode: [prefix, sub]
+            let prefix = self.read_byte();
+            let sub = self.read_byte();
+            let op = match Op::decode(prefix, sub) {
+                Some(op) => op,
+                None => return Err(VMError::new(format!("Invalid opcode: 0x{:02X} 0x{:02X}", prefix, sub))),
             };
 
             // ── Execution trace ──────────────────────────────────────────
@@ -1315,7 +1334,7 @@ impl VM {
             }
 
             match op {
-                Op::halt => {
+                _ if op == Op::HALT => {
                     if self.frames.len() <= 1 {
                         // Top-level halt: terminate execution
                         self.close_upvalues(0);
@@ -1330,35 +1349,35 @@ impl VM {
                         self.push(Value::Null)?;
                     }
                 }
-                Op::unreachable => {
+                _ if op == Op::UNREACHABLE => {
                     return Err(VMError::new("trap: unreachable executed"));
                 }
 
-                Op::r#const => {
+                _ if op == Op::CONST => {
                     let idx = self.read_u16();
                     let val = self.get_constant(idx);
                     self.push(val)?;
                 }
-                Op::drop => { self.pop(); }
-                Op::dup => {
+                _ if op == Op::DROP => { self.pop(); }
+                _ if op == Op::DUP => {
                     let val = self.peek(0).clone();
                     self.push(val)?;
                 }
 
                 // -- Variables --
-                Op::local_get => {
+                _ if op == Op::LOCAL_GET => {
                     let slot = self.read_u16() as usize;
                     let base = self.frame().base;
                     let val = self.stack[base + slot].clone();
                     self.push(val)?;
                 }
-                Op::local_set => {
+                _ if op == Op::LOCAL_SET => {
                     let slot = self.read_u16() as usize;
                     let val = self.peek(0).clone();
                     let base = self.frame().base;
                     self.stack[base + slot] = val;
                 }
-                Op::global_get => {
+                _ if op == Op::GLOBAL_GET => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     // In strict isolation mode, prefix globals with module name
@@ -1377,7 +1396,7 @@ impl VM {
                     let val = self.globals.get(&key).cloned().unwrap_or(Value::Undefined);
                     self.push(val)?;
                 }
-                Op::global_set => {
+                _ if op == Op::GLOBAL_SET => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let key = if self.strict_isolation {
@@ -1388,7 +1407,7 @@ impl VM {
                     let val = self.peek(0).clone();
                     self.globals.insert(key, val);
                 }
-                Op::upvalue_get => {
+                _ if op == Op::UPVALUE_GET => {
                     let idx = self.read_byte() as usize;
                     let uv = self.frame().upvalues[idx].clone();
                     let val = match &uv.lock().unwrap().location {
@@ -1397,7 +1416,7 @@ impl VM {
                     };
                     self.push(val)?;
                 }
-                Op::upvalue_set => {
+                _ if op == Op::UPVALUE_SET => {
                     let idx = self.read_byte() as usize;
                     let val = self.peek(0).clone();
                     let uv = self.frame().upvalues[idx].clone();
@@ -1409,7 +1428,7 @@ impl VM {
                 }
 
                 // -- Properties --
-                Op::struct_get => {
+                _ if op == Op::STRUCT_GET => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let obj = self.pop();
@@ -1441,7 +1460,7 @@ impl VM {
                     }
                     self.push(self.resolve_property(&obj, &name)?)?;
                 }
-                Op::struct_set => {
+                _ if op == Op::STRUCT_SET => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let val = self.pop();
@@ -1466,7 +1485,7 @@ impl VM {
                         self.push(val)?;
                     }
                 }
-                Op::array_get => {
+                _ if op == Op::ARRAY_GET => {
                     let key = self.pop();
                     let obj = self.pop();
                     match &obj {
@@ -1510,7 +1529,7 @@ impl VM {
                         _ => self.push(Value::Null)?,
                     }
                 }
-                Op::array_set => {
+                _ if op == Op::ARRAY_SET => {
                     let val = self.pop();
                     let key = self.pop();
                     let obj = self.pop();
@@ -1534,67 +1553,67 @@ impl VM {
                 }
 
                 // -- Float arithmetic --
-                Op::f64_add => {
+                _ if op == Op::F64_ADD => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a + b))?;
                 }
-                Op::f64_sub => {
+                _ if op == Op::F64_SUB => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a - b))?;
                 }
-                Op::f64_mul => {
+                _ if op == Op::F64_MUL => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a * b))?;
                 }
-                Op::f64_div => {
+                _ if op == Op::F64_DIV => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a / b))?;
                 }
                 // f64_mod: removed (non-WASM, use __stdlib_fmod)
-                Op::f64_neg => {
+                _ if op == Op::F64_NEG => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(-a))?;
                 }
 
                 // -- Integer arithmetic --
-                Op::i32_add => {
+                _ if op == Op::I32_ADD => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_add(b)))?;
                 }
-                Op::i32_sub => {
+                _ if op == Op::I32_SUB => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_sub(b)))?;
                 }
-                Op::i32_mul => {
+                _ if op == Op::I32_MUL => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_mul(b)))?;
                 }
-                Op::i32_div_s => {
+                _ if op == Op::I32_DIV_S => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     if b == 0 { return Err(VMError::new("trap: integer divide by zero")); }
                     self.push(Value::I32(a.wrapping_div(b)))?;
                 }
-                Op::i32_div_u => {
+                _ if op == Op::I32_DIV_U => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     if b == 0 { return Err(VMError::new("trap: integer divide by zero")); }
                     self.push(Value::I32((a / b) as i32))?;
                 }
-                Op::i32_rem_s => {
+                _ if op == Op::I32_REM_S => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     if b == 0 { return Err(VMError::new("trap: integer divide by zero")); }
                     self.push(Value::I32(a.wrapping_rem(b)))?;
                 }
-                Op::i32_rem_u => {
+                _ if op == Op::I32_REM_U => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     if b == 0 { return Err(VMError::new("trap: integer divide by zero")); }
@@ -1602,50 +1621,50 @@ impl VM {
                 }
 
                 // -- i64 arithmetic --
-                Op::i64_add => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_add(b)))?; }
-                Op::i64_sub => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_sub(b)))?; }
-                Op::i64_mul => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_mul(b)))?; }
-                Op::i64_div_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64(a.wrapping_div(b)))?; }
-                Op::i64_div_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64((a / b) as i64))?; }
-                Op::i64_rem_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64(a.wrapping_rem(b)))?; }
-                Op::i64_rem_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64((a % b) as i64))?; }
-                Op::i64_and => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a & b))?; }
-                Op::i64_or  => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a | b))?; }
-                Op::i64_xor => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a ^ b))?; }
-                Op::i64_shl   => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a << (b & 0x3f)))?; }
-                Op::i64_shr_s => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a >> (b & 0x3f)))?; }
-                Op::i64_shr_u => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64((a >> (b & 0x3f)) as i64))?; }
-                Op::i64_rotl => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(a.rotate_left((b & 0x3f) as u32) as i64))?; }
-                Op::i64_rotr => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(a.rotate_right((b & 0x3f) as u32) as i64))?; }
-                Op::i64_clz => { let a = self.pop().as_i64(); self.push(Value::I64(a.leading_zeros() as i64))?; }
-                Op::i64_ctz => { let a = self.pop().as_i64(); self.push(Value::I64(a.trailing_zeros() as i64))?; }
-                Op::i64_popcnt => { let a = self.pop().as_i64(); self.push(Value::I64(a.count_ones() as i64))?; }
+                _ if op == Op::I64_ADD => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_add(b)))?; }
+                _ if op == Op::I64_SUB => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_sub(b)))?; }
+                _ if op == Op::I64_MUL => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_mul(b)))?; }
+                _ if op == Op::I64_DIV_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64(a.wrapping_div(b)))?; }
+                _ if op == Op::I64_DIV_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64((a / b) as i64))?; }
+                _ if op == Op::I64_REM_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64(a.wrapping_rem(b)))?; }
+                _ if op == Op::I64_REM_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64((a % b) as i64))?; }
+                _ if op == Op::I64_AND => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a & b))?; }
+                _ if op == Op::I64_OR => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a | b))?; }
+                _ if op == Op::I64_XOR => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a ^ b))?; }
+                _ if op == Op::I64_SHL => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a << (b & 0x3f)))?; }
+                _ if op == Op::I64_SHR_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a >> (b & 0x3f)))?; }
+                _ if op == Op::I64_SHR_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64((a >> (b & 0x3f)) as i64))?; }
+                _ if op == Op::I64_ROTL => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(a.rotate_left((b & 0x3f) as u32) as i64))?; }
+                _ if op == Op::I64_ROTR => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::I64(a.rotate_right((b & 0x3f) as u32) as i64))?; }
+                _ if op == Op::I64_CLZ => { let a = self.pop().as_i64(); self.push(Value::I64(a.leading_zeros() as i64))?; }
+                _ if op == Op::I64_CTZ => { let a = self.pop().as_i64(); self.push(Value::I64(a.trailing_zeros() as i64))?; }
+                _ if op == Op::I64_POPCNT => { let a = self.pop().as_i64(); self.push(Value::I64(a.count_ones() as i64))?; }
 
                 // -- f64 math --
-                Op::f64_abs => { let a = self.pop().as_f64(); self.push(Value::F64(a.abs()))?; }
-                Op::f64_ceil => { let a = self.pop().as_f64(); self.push(Value::F64(a.ceil()))?; }
-                Op::f64_floor => { let a = self.pop().as_f64(); self.push(Value::F64(a.floor()))?; }
-                Op::f64_trunc => { let a = self.pop().as_f64(); self.push(Value::F64(a.trunc()))?; }
-                Op::f64_nearest => { let a = self.pop().as_f64(); self.push(Value::F64(a.round()))?; }
-                Op::f64_sqrt => { let a = self.pop().as_f64(); self.push(Value::F64(a.sqrt()))?; }
-                Op::f64_min => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.min(b)))?; }
-                Op::f64_max => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.max(b)))?; }
-                Op::f64_copysign => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.copysign(b)))?; }
+                _ if op == Op::F64_ABS => { let a = self.pop().as_f64(); self.push(Value::F64(a.abs()))?; }
+                _ if op == Op::F64_CEIL => { let a = self.pop().as_f64(); self.push(Value::F64(a.ceil()))?; }
+                _ if op == Op::F64_FLOOR => { let a = self.pop().as_f64(); self.push(Value::F64(a.floor()))?; }
+                _ if op == Op::F64_TRUNC => { let a = self.pop().as_f64(); self.push(Value::F64(a.trunc()))?; }
+                _ if op == Op::F64_NEAREST => { let a = self.pop().as_f64(); self.push(Value::F64(a.round()))?; }
+                _ if op == Op::F64_SQRT => { let a = self.pop().as_f64(); self.push(Value::F64(a.sqrt()))?; }
+                _ if op == Op::F64_MIN => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.min(b)))?; }
+                _ if op == Op::F64_MAX => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.max(b)))?; }
+                _ if op == Op::F64_COPYSIGN => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.copysign(b)))?; }
 
                 // -- f32 (promoted to f64) --
-                Op::f32_abs => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).abs() as f64))?; }
-                Op::f32_neg => { let a = self.pop().as_f64(); self.push(Value::F64(-(a as f32) as f64))?; }
-                Op::f32_ceil => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).ceil() as f64))?; }
-                Op::f32_floor => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).floor() as f64))?; }
-                Op::f32_trunc => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).trunc() as f64))?; }
-                Op::f32_nearest => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).round() as f64))?; }
-                Op::f32_sqrt => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).sqrt() as f64))?; }
-                Op::f32_min => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).min(b as f32) as f64))?; }
-                Op::f32_max => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).max(b as f32) as f64))?; }
-                Op::f32_copysign => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).copysign(b as f32) as f64))?; }
+                _ if op == Op::F32_ABS => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).abs() as f64))?; }
+                _ if op == Op::F32_NEG => { let a = self.pop().as_f64(); self.push(Value::F64(-(a as f32) as f64))?; }
+                _ if op == Op::F32_CEIL => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).ceil() as f64))?; }
+                _ if op == Op::F32_FLOOR => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).floor() as f64))?; }
+                _ if op == Op::F32_TRUNC => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).trunc() as f64))?; }
+                _ if op == Op::F32_NEAREST => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).round() as f64))?; }
+                _ if op == Op::F32_SQRT => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).sqrt() as f64))?; }
+                _ if op == Op::F32_MIN => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).min(b as f32) as f64))?; }
+                _ if op == Op::F32_MAX => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).max(b as f32) as f64))?; }
+                _ if op == Op::F32_COPYSIGN => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).copysign(b as f32) as f64))?; }
 
                 // -- WASM select --
-                Op::select => {
+                _ if op == Op::SELECT => {
                     let cond = self.pop().as_i32();
                     let val2 = self.pop();
                     let val1 = self.pop();
@@ -1653,24 +1672,24 @@ impl VM {
                 }
 
                 // -- i32 rotation and bit counting --
-                Op::i32_rotl => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32(a.rotate_left(b & 0x1f) as i32))?; }
-                Op::i32_rotr => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32(a.rotate_right(b & 0x1f) as i32))?; }
-                Op::i32_clz => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.leading_zeros() as i32))?; }
-                Op::i32_ctz => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.trailing_zeros() as i32))?; }
-                Op::i32_popcnt => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.count_ones() as i32))?; }
+                _ if op == Op::I32_ROTL => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32(a.rotate_left(b & 0x1f) as i32))?; }
+                _ if op == Op::I32_ROTR => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32(a.rotate_right(b & 0x1f) as i32))?; }
+                _ if op == Op::I32_CLZ => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.leading_zeros() as i32))?; }
+                _ if op == Op::I32_CTZ => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.trailing_zeros() as i32))?; }
+                _ if op == Op::I32_POPCNT => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.count_ones() as i32))?; }
 
                 // -- eqz --
-                Op::i32_eqz => { let a = self.pop().as_i32(); self.push(Value::Bool(a == 0))?; }
-                Op::i64_eqz => { let a = self.pop().as_i64(); self.push(Value::Bool(a == 0))?; }
+                _ if op == Op::I32_EQZ => { let a = self.pop().as_i32(); self.push(Value::Bool(a == 0))?; }
+                _ if op == Op::I64_EQZ => { let a = self.pop().as_i64(); self.push(Value::Bool(a == 0))?; }
 
                 // -- String --
-                Op::str_concat => {
+                _ if op == Op::STR_CONCAT => {
                     let b = self.pop();
                     let a = self.pop();
                     let s = format!("{}{}", a, b);
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
-                Op::str_concat_n => {
+                _ if op == Op::STR_CONCAT_N => {
                     let count = self.read_byte() as usize;
                     let count = count.min(self.stack.len());
                     let start = self.stack.len() - count;
@@ -1683,41 +1702,41 @@ impl VM {
                 }
 
                 // -- Bitwise --
-                Op::i32_and => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a & b))?; }
-                Op::i32_or  => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a | b))?; }
-                Op::i32_xor => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a ^ b))?; }
+                _ if op == Op::I32_AND => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a & b))?; }
+                _ if op == Op::I32_OR => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a | b))?; }
+                _ if op == Op::I32_XOR => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a ^ b))?; }
                 // i32_not: removed (non-WASM, use i32.const -1 + i32.xor)
-                Op::i32_shl    => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a << (b & 0x1f)))?; }
-                Op::i32_shr_s    => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a >> (b & 0x1f)))?; }
-                Op::i32_shr_u   => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32((a >> (b & 0x1f)) as i32))?; }
+                _ if op == Op::I32_SHL => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a << (b & 0x1f)))?; }
+                _ if op == Op::I32_SHR_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a >> (b & 0x1f)))?; }
+                _ if op == Op::I32_SHR_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32((a >> (b & 0x1f)) as i32))?; }
 
                 // -- Comparison --
-                Op::eq => {
+                _ if op == Op::EQ => {
                     let b = self.pop();
                     let a = self.pop();
                     self.push(Value::Bool(a.eq(&b)))?;
                 }
-                Op::ne => {
+                _ if op == Op::NE => {
                     let b = self.pop();
                     let a = self.pop();
                     self.push(Value::Bool(!a.eq(&b)))?;
                 }
-                Op::f64_lt => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a < b))?; }
-                Op::f64_gt => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a > b))?; }
-                Op::f64_le => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a <= b))?; }
-                Op::f64_ge => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a >= b))?; }
+                _ if op == Op::F64_LT => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a < b))?; }
+                _ if op == Op::F64_GT => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a > b))?; }
+                _ if op == Op::F64_LE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a <= b))?; }
+                _ if op == Op::F64_GE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a >= b))?; }
                 // str_lt, str_gt: removed (non-WASM, were unused)
 
                 // -- Logical --
                 // bool_not: removed (non-WASM, use dyn_to_bool + i32_eqz)
 
                 // -- Control flow --
-                Op::br => {
+                _ if op == Op::BR => {
                     let offset = self.read_i16();
                     let f = self.frame_mut();
                     f.ip = (f.ip as i64 + offset as i64) as usize;
                 }
-                Op::br_if_false => {
+                _ if op == Op::BR_IF_FALSE => {
                     let offset = self.read_i16();
                     let val = self.pop();
                     if val.as_bool() == false {
@@ -1725,7 +1744,7 @@ impl VM {
                         f.ip = (f.ip as i64 + offset as i64) as usize;
                     }
                 }
-                Op::br_if_true => {
+                _ if op == Op::BR_IF_TRUE => {
                     let offset = self.read_i16();
                     let val = self.pop();
                     if val.as_bool() == true {
@@ -1733,7 +1752,7 @@ impl VM {
                         f.ip = (f.ip as i64 + offset as i64) as usize;
                     }
                 }
-                Op::br_if_null => {
+                _ if op == Op::BR_IF_NULL => {
                     let offset = self.read_i16();
                     let val = self.pop();
                     if matches!(val, Value::Null) {
@@ -1743,17 +1762,17 @@ impl VM {
                 }
 
                 // -- Functions --
-                Op::call => {
+                _ if op == Op::CALL => {
                     let argc = self.read_byte() as usize;
                     self.call_value(argc)?;
                 }
-                Op::call_ref => {
+                _ if op == Op::CALL_REF => {
                     // Direct call through a function reference — same as call
                     // but the func ref is already on the stack (no table lookup).
                     let argc = self.read_byte() as usize;
                     self.call_value(argc)?;
                 }
-                Op::r#return => {
+                _ if op == Op::RETURN => {
                     let result = self.pop();
                     let base = self.frame().base;
                     self.close_upvalues(base);
@@ -1764,7 +1783,7 @@ impl VM {
                     self.stack.truncate(base);
                     self.push(result)?;
                 }
-                Op::ref_func => {
+                _ if op == Op::REF_FUNC => {
                     let func_idx = self.read_u16() as usize;
                     let chunk = &self.chunks[func_idx];
                     let arity = chunk.arity;
@@ -1796,7 +1815,7 @@ impl VM {
                 }
 
                 // -- Host functions --
-                Op::call_import => {
+                _ if op == Op::CALL_IMPORT => {
                     let import_idx = self.read_u16() as usize;
                     let argc = self.read_byte() as usize;
 
@@ -1870,7 +1889,7 @@ impl VM {
                 }
 
                 // -- Object/Array --
-                Op::struct_new => {
+                _ if op == Op::STRUCT_NEW => {
                     let count = self.read_u16() as usize;
                     let mut obj = Object::new();
                     let needed = count * 2;
@@ -1884,7 +1903,7 @@ impl VM {
                     self.stack.truncate(start);
                     self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
-                Op::array_new => {
+                _ if op == Op::ARRAY_NEW => {
                     let count = self.read_u16() as usize;
                     let count = count.min(self.stack.len());
                     let start = self.stack.len() - count;
@@ -1894,25 +1913,25 @@ impl VM {
                 }
 
                 // -- Immediates --
-                Op::null => self.push(Value::Null)?,
-                Op::r#true => self.push(Value::Bool(true))?,
-                Op::r#false => self.push(Value::Bool(false))?,
-                Op::i32_const_0 => self.push(Value::I32(0))?,
-                Op::i32_const_1 => self.push(Value::I32(1))?,
-                Op::f64_const_0 => self.push(Value::F64(0.0))?,
+                _ if op == Op::NULL => self.push(Value::Null)?,
+                _ if op == Op::TRUE => self.push(Value::Bool(true))?,
+                _ if op == Op::FALSE => self.push(Value::Bool(false))?,
+                _ if op == Op::I32_CONST_0 => self.push(Value::I32(0))?,
+                _ if op == Op::I32_CONST_1 => self.push(Value::I32(1))?,
+                _ if op == Op::F64_CONST_0 => self.push(Value::F64(0.0))?,
 
                 // -- Type checks --
                 // ref_test: TypeOf...Is using TypeRegistry hierarchy.
                 // Delegates to test_type() which handles: type_id lookup,
                 // __type string, __types array (JS inheritance), __control_type.
-                Op::ref_test => {
+                _ if op == Op::REF_TEST => {
                     let type_name_idx = self.read_u16();
                     let target_name = self.constant_str(type_name_idx);
                     let val = self.pop();
                     let result = self.test_type(&val, &target_name);
                     self.push(Value::Bool(result))?;
                 }
-                Op::ref_cast => {
+                _ if op == Op::REF_CAST => {
                     let type_name_idx = self.read_u16();
                     let target_name = self.constant_str(type_name_idx);
                     let val = self.peek(0).clone();
@@ -1922,7 +1941,7 @@ impl VM {
                     }
                     // Value stays on stack (cast is a no-op if it passes)
                 }
-                Op::br_on_cast => {
+                _ if op == Op::BR_ON_CAST => {
                     let type_name_idx = self.read_u16();
                     let offset = self.read_i16();
                     let target_name = self.constant_str(type_name_idx);
@@ -1934,7 +1953,7 @@ impl VM {
                     }
                     // Type doesn't match: fall through (value stays on stack)
                 }
-                Op::br_on_cast_fail => {
+                _ if op == Op::BR_ON_CAST_FAIL => {
                     let type_name_idx = self.read_u16();
                     let offset = self.read_i16();
                     let target_name = self.constant_str(type_name_idx);
@@ -1946,14 +1965,14 @@ impl VM {
                 }
 
                 // -- i31ref (tagged small integers) --
-                Op::i31_new => {
+                _ if op == Op::I31_NEW => {
                     // Box i32 as i31ref. In our VM, I32 is already unboxed,
                     // so this is a no-op identity. The optimization is that
                     // the VM can use I32 directly without heap allocation.
                     let v = self.pop().as_i32();
                     self.push(Value::I32(v & 0x7FFF_FFFF))?; // mask to 31 bits
                 }
-                Op::i31_get_s => {
+                _ if op == Op::I31_GET_S => {
                     let v = self.pop().as_i32();
                     // Sign extend from 31 bits
                     let extended = if v & 0x4000_0000 != 0 {
@@ -1961,34 +1980,34 @@ impl VM {
                     } else { v };
                     self.push(Value::I32(extended))?;
                 }
-                Op::i31_get_u => {
+                _ if op == Op::I31_GET_U => {
                     let v = self.pop().as_i32();
                     self.push(Value::I32(v & 0x7FFF_FFFF))?;
                 }
 
-                Op::ref_is_null => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Null | Value::Undefined)))?; }
-                Op::ref_is_string => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::String(_))))?; }
-                Op::ref_is_number => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::F64(_) | Value::I32(_) | Value::I64(_))))?; }
-                Op::ref_is_bool => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Bool(_))))?; }
-                Op::ref_is_object => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Object(_))))?; }
-                Op::ref_is_func => {
+                _ if op == Op::REF_IS_NULL => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Null | Value::Undefined)))?; }
+                _ if op == Op::REF_IS_STRING => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::String(_))))?; }
+                _ if op == Op::REF_IS_NUMBER => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::F64(_) | Value::I32(_) | Value::I64(_))))?; }
+                _ if op == Op::REF_IS_BOOL => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Bool(_))))?; }
+                _ if op == Op::REF_IS_OBJECT => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Object(_))))?; }
+                _ if op == Op::REF_IS_FUNC => {
                     let v = self.pop();
                     let is_fn = matches!(&v, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Function(_)));
                     self.push(Value::Bool(is_fn))?;
                 }
 
                 // -- Conversions --
-                Op::f64_from_i32 => {
+                _ if op == Op::F64_FROM_I32 => {
                     let v = self.pop();
                     self.push(Value::F64(v.as_f64()))?;
                 }
-                Op::i32_from_f64 => {
+                _ if op == Op::I32_FROM_F64 => {
                     let v = self.pop();
                     self.push(Value::I32(v.as_i32()))?;
                 }
 
                 // -- Dynamic ops (inline type dispatch, no host call) --
-                Op::dyn_add => {
+                _ if op == Op::DYN_ADD => {
                     let b = self.pop();
                     let a = self.pop();
                     let result = match (&a, &b) {
@@ -2006,7 +2025,7 @@ impl VM {
                     };
                     self.push(result)?;
                 }
-                Op::dyn_eq => {
+                _ if op == Op::DYN_EQ => {
                     let b = self.pop();
                     let a = self.pop();
                     // JS abstract equality (==) coercion rules
@@ -2059,7 +2078,7 @@ impl VM {
                     }
                     self.push(Value::Bool(loose_eq(&a, &b)))?;
                 }
-                Op::dyn_ne => {
+                _ if op == Op::DYN_NE => {
                     let b = self.pop();
                     let a = self.pop();
                     let result = match (&a, &b) {
@@ -2082,7 +2101,7 @@ impl VM {
                     };
                     self.push(Value::Bool(result))?;
                 }
-                Op::dyn_lt => {
+                _ if op == Op::DYN_LT => {
                     let b = self.pop(); let a = self.pop();
                     let r = match (&a, &b) {
                         (Value::String(x), Value::String(y)) => *x < *y,
@@ -2092,7 +2111,7 @@ impl VM {
                     };
                     self.push(Value::Bool(r))?;
                 }
-                Op::dyn_gt => {
+                _ if op == Op::DYN_GT => {
                     let b = self.pop(); let a = self.pop();
                     let r = match (&a, &b) {
                         (Value::String(x), Value::String(y)) => *x > *y,
@@ -2102,7 +2121,7 @@ impl VM {
                     };
                     self.push(Value::Bool(r))?;
                 }
-                Op::dyn_le => {
+                _ if op == Op::DYN_LE => {
                     let b = self.pop(); let a = self.pop();
                     let r = match (&a, &b) {
                         (Value::String(x), Value::String(y)) => *x <= *y,
@@ -2112,7 +2131,7 @@ impl VM {
                     };
                     self.push(Value::Bool(r))?;
                 }
-                Op::dyn_ge => {
+                _ if op == Op::DYN_GE => {
                     let b = self.pop(); let a = self.pop();
                     let r = match (&a, &b) {
                         (Value::String(x), Value::String(y)) => *x >= *y,
@@ -2122,15 +2141,15 @@ impl VM {
                     };
                     self.push(Value::Bool(r))?;
                 }
-                Op::dyn_neg => {
+                _ if op == Op::DYN_NEG => {
                     let a = self.pop();
                     self.push(Value::F64(-a.as_f64()))?;
                 }
-                Op::dyn_not => {
+                _ if op == Op::DYN_NOT => {
                     let a = self.pop();
                     self.push(Value::Bool(!dyn_truthy(&a)))?;
                 }
-                Op::dyn_to_bool => {
+                _ if op == Op::DYN_TO_BOOL => {
                     let a = self.pop();
                     self.push(Value::Bool(dyn_truthy(&a)))?;
                 }
@@ -2138,7 +2157,7 @@ impl VM {
                 // -- Async (await) --
                 // r#await: removed (duplicate of promise_suspend, use JSPI proposal name)
 
-                Op::set_timer => {
+                _ if op == Op::SET_TIMER => {
                     let ms = self.pop().as_f64();
                     let callback = self.pop();
                     self.event_loop.borrow_mut().queue_timer(callback, ms);
@@ -2146,7 +2165,7 @@ impl VM {
                 }
 
                 // -- Exceptions (WASM exception proposal) --
-                Op::try_start => {
+                _ if op == Op::TRY_START => {
                     let catch_offset = self.read_u16() as i16;
                     let _finally_offset = self.read_u16(); // reserved for finally
                     let f = self.frame();
@@ -2159,11 +2178,11 @@ impl VM {
                         tag: 0, // catch-all
                     });
                 }
-                Op::try_end => {
+                _ if op == Op::TRY_END => {
                     // Normal exit from try block — pop the handler
                     self.exception_handlers.pop();
                 }
-                Op::throw | Op::throw_ref => {
+                _ if op == Op::THROW || op == Op::THROW_REF => {
                     let val = self.pop();
                     // Find a matching handler by walking the handler stack.
                     // Tag 0 = catch-all (always matches).
@@ -2213,7 +2232,7 @@ impl VM {
                         return Err(VMError::new(format!("{}", val)).with_stack(stack));
                     }
                 }
-                Op::try_table => {
+                _ if op == Op::TRY_TABLE => {
                     // WASM EH Phase 4: [try_table, u8 handler_count, then for each: u8 tag, u16 offset]
                     // Tag 0 = catch-all. Tag N = typed catch for exception_tags[N].
                     // Handlers are pushed in reverse order so the most specific (first) handler
@@ -2239,7 +2258,7 @@ impl VM {
                 }
 
                 // -- Tail call --
-                Op::return_call => {
+                _ if op == Op::RETURN_CALL => {
                     let argc = self.read_byte() as usize;
                     // Reuse current frame: move args to base, reset IP
                     let base = self.frame().base;
@@ -2254,7 +2273,7 @@ impl VM {
                     self.frames.pop();
                     self.call_value(argc)?;
                 }
-                Op::return_call_indirect => {
+                _ if op == Op::RETURN_CALL_INDIRECT => {
                     let argc = self.read_byte() as usize;
                     // Stack: [..., func_table_idx, arg0, arg1, ..., argN]
                     // table_idx is BELOW the args
@@ -2275,7 +2294,7 @@ impl VM {
                         self.call_value(argc)?;
                     }
                 }
-                Op::return_call_ref => {
+                _ if op == Op::RETURN_CALL_REF => {
                     // Same as return_call — func ref is already on stack
                     let argc = self.read_byte() as usize;
                     let base = self.frame().base;
@@ -2290,52 +2309,52 @@ impl VM {
                 }
 
                 // -- Linear memory --
-                Op::memory_size => {
+                _ if op == Op::MEMORY_SIZE => {
                     let pages = (self.active_mem_len() / 65536) as i32;
                     self.push(Value::I32(pages))?;
                 }
-                Op::memory_grow => {
+                _ if op == Op::MEMORY_GROW => {
                     let pages = self.pop().as_f64() as usize;
                     let old_pages = self.active_mem_grow(pages);
                     self.push(Value::I32(old_pages as i32))?;
                 }
-                Op::i32_load => {
+                _ if op == Op::I32_LOAD => {
                     let addr = self.pop().as_f64() as usize;
                     self.push(Value::I32(self.memory.load_i32(addr)?))?;
                 }
-                Op::i32_store => {
+                _ if op == Op::I32_STORE => {
                     let val = self.pop().as_f64() as i32;
                     let addr = self.pop().as_f64() as usize;
                     self.memory.store_i32(addr, val)?;
                 }
-                Op::i64_load => {
+                _ if op == Op::I64_LOAD => {
                     let addr = self.pop().as_f64() as usize;
                     self.push(Value::I64(self.memory.load_i64(addr)?))?;
                 }
-                Op::i64_store => {
+                _ if op == Op::I64_STORE => {
                     let val = self.pop().as_f64() as i64;
                     let addr = self.pop().as_f64() as usize;
                     self.memory.store_i64(addr, val)?;
                 }
-                Op::f64_load => {
+                _ if op == Op::F64_LOAD => {
                     let addr = self.pop().as_f64() as usize;
                     self.push(Value::F64(self.memory.load_f64(addr)?))?;
                 }
-                Op::f64_store => {
+                _ if op == Op::F64_STORE => {
                     let val = self.pop().as_f64();
                     let addr = self.pop().as_f64() as usize;
                     self.memory.store_f64(addr, val)?;
                 }
-                Op::i32_load8_u => {
+                _ if op == Op::I32_LOAD8_U => {
                     let addr = self.pop().as_f64() as usize;
                     self.push(Value::I32(self.memory.load_u8(addr)? as i32))?;
                 }
-                Op::i32_store8 => {
+                _ if op == Op::I32_STORE8 => {
                     let val = self.pop().as_f64() as u8;
                     let addr = self.pop().as_f64() as usize;
                     self.memory.store_u8(addr, val)?;
                 }
-                Op::f32_load => {
+                _ if op == Op::F32_LOAD => {
                     let addr = self.pop().as_i32() as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 4 <= buf.len() {
@@ -2344,7 +2363,7 @@ impl VM {
                     });
                     self.push(Value::F64(val))?;
                 }
-                Op::f32_store => {
+                _ if op == Op::F32_STORE => {
                     let val = self.pop().as_f64() as f32;
                     let addr = self.pop().as_i32() as usize;
                     self.memory.with_buffer_mut(|buf| {
@@ -2353,118 +2372,118 @@ impl VM {
                         }
                     });
                 }
-                Op::i32_load8_s => {
+                _ if op == Op::I32_LOAD8_S => {
                     let addr = self.pop().as_i32() as usize;
                     self.push(Value::I32(self.memory.load_u8(addr)? as i8 as i32))?;
                 }
-                Op::i32_load16_s => {
+                _ if op == Op::I32_LOAD16_S => {
                     let addr = self.pop().as_i32() as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 2 <= buf.len() { i16::from_le_bytes(buf[addr..addr+2].try_into().unwrap()) as i32 } else { 0 }
                     });
                     self.push(Value::I32(val))?;
                 }
-                Op::i32_load16_u => {
+                _ if op == Op::I32_LOAD16_U => {
                     let addr = self.pop().as_i32() as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 2 <= buf.len() { u16::from_le_bytes(buf[addr..addr+2].try_into().unwrap()) as i32 } else { 0 }
                     });
                     self.push(Value::I32(val))?;
                 }
-                Op::i32_store16 => {
+                _ if op == Op::I32_STORE16 => {
                     let val = self.pop().as_i32() as i16;
                     let addr = self.pop().as_i32() as usize;
                     self.memory.with_buffer_mut(|buf| {
                         if addr + 2 <= buf.len() { buf[addr..addr+2].copy_from_slice(&val.to_le_bytes()); }
                     });
                 }
-                Op::i64_load8_s => {
+                _ if op == Op::I64_LOAD8_S => {
                     let addr = self.pop().as_i32() as usize;
                     self.push(Value::I64(self.memory.load_u8(addr)? as i8 as i64))?;
                 }
-                Op::i64_load8_u => {
+                _ if op == Op::I64_LOAD8_U => {
                     let addr = self.pop().as_i32() as usize;
                     self.push(Value::I64(self.memory.load_u8(addr)? as i64))?;
                 }
-                Op::i64_load16_s => {
+                _ if op == Op::I64_LOAD16_S => {
                     let addr = self.pop().as_i32() as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 2 <= buf.len() { i16::from_le_bytes(buf[addr..addr+2].try_into().unwrap()) as i64 } else { 0 }
                     });
                     self.push(Value::I64(val))?;
                 }
-                Op::i64_load16_u => {
+                _ if op == Op::I64_LOAD16_U => {
                     let addr = self.pop().as_i32() as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 2 <= buf.len() { u16::from_le_bytes(buf[addr..addr+2].try_into().unwrap()) as i64 } else { 0 }
                     });
                     self.push(Value::I64(val))?;
                 }
-                Op::i64_load32_s => {
+                _ if op == Op::I64_LOAD32_S => {
                     let addr = self.pop().as_i32() as usize;
                     self.push(Value::I64(self.memory.load_i32(addr)? as i64))?;
                 }
-                Op::i64_load32_u => {
+                _ if op == Op::I64_LOAD32_U => {
                     let addr = self.pop().as_i32() as usize;
                     self.push(Value::I64(self.memory.load_i32(addr)? as u32 as i64))?;
                 }
-                Op::i64_store8 => {
+                _ if op == Op::I64_STORE8 => {
                     let val = self.pop().as_i64() as u8;
                     let addr = self.pop().as_i32() as usize;
                     self.memory.store_u8(addr, val)?;
                 }
-                Op::i64_store16 => {
+                _ if op == Op::I64_STORE16 => {
                     let val = self.pop().as_i64() as i16;
                     let addr = self.pop().as_i32() as usize;
                     self.memory.with_buffer_mut(|buf| {
                         if addr + 2 <= buf.len() { buf[addr..addr+2].copy_from_slice(&val.to_le_bytes()); }
                     });
                 }
-                Op::i64_store32 => {
+                _ if op == Op::I64_STORE32 => {
                     let val = self.pop().as_i64() as i32;
                     let addr = self.pop().as_i32() as usize;
                     self.memory.store_i32(addr, val)?;
                 }
 
                 // -- Conversions --
-                Op::i32_wrap_i64 => { let a = self.pop().as_i64(); self.push(Value::I32(a as i32))?; }
-                Op::i64_extend_i32_s => { let a = self.pop().as_i32(); self.push(Value::I64(a as i64))?; }
-                Op::i64_extend_i32_u => { let a = self.pop().as_i32() as u32; self.push(Value::I64(a as i64))?; }
-                Op::i64_trunc_f64_s => { let a = self.pop().as_f64(); self.push(Value::I64(a as i64))?; }
-                Op::i64_trunc_f64_u => { let a = self.pop().as_f64(); self.push(Value::I64(a as u64 as i64))?; }
-                Op::f64_promote_f32 => { let a = self.pop().as_f64(); self.push(Value::F64(a))?; }
-                Op::f32_demote_f64 => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32) as f64))?; }
-                Op::i32_reinterpret_f32 => { let a = self.pop().as_f64() as f32; self.push(Value::I32(a.to_bits() as i32))?; }
-                Op::i64_reinterpret_f64 => { let a = self.pop().as_f64(); self.push(Value::I64(a.to_bits() as i64))?; }
-                Op::f32_reinterpret_i32 => { let a = self.pop().as_i32(); self.push(Value::F64(f32::from_bits(a as u32) as f64))?; }
-                Op::f64_reinterpret_i64 => { let a = self.pop().as_i64(); self.push(Value::F64(f64::from_bits(a as u64)))?; }
+                _ if op == Op::I32_WRAP_I64 => { let a = self.pop().as_i64(); self.push(Value::I32(a as i32))?; }
+                _ if op == Op::I64_EXTEND_I32_S => { let a = self.pop().as_i32(); self.push(Value::I64(a as i64))?; }
+                _ if op == Op::I64_EXTEND_I32_U => { let a = self.pop().as_i32() as u32; self.push(Value::I64(a as i64))?; }
+                _ if op == Op::I64_TRUNC_F64_S => { let a = self.pop().as_f64(); self.push(Value::I64(a as i64))?; }
+                _ if op == Op::I64_TRUNC_F64_U => { let a = self.pop().as_f64(); self.push(Value::I64(a as u64 as i64))?; }
+                _ if op == Op::F64_PROMOTE_F32 => { let a = self.pop().as_f64(); self.push(Value::F64(a))?; }
+                _ if op == Op::F32_DEMOTE_F64 => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32) as f64))?; }
+                _ if op == Op::I32_REINTERPRET_F32 => { let a = self.pop().as_f64() as f32; self.push(Value::I32(a.to_bits() as i32))?; }
+                _ if op == Op::I64_REINTERPRET_F64 => { let a = self.pop().as_f64(); self.push(Value::I64(a.to_bits() as i64))?; }
+                _ if op == Op::F32_REINTERPRET_I32 => { let a = self.pop().as_i32(); self.push(Value::F64(f32::from_bits(a as u32) as f64))?; }
+                _ if op == Op::F64_REINTERPRET_I64 => { let a = self.pop().as_i64(); self.push(Value::F64(f64::from_bits(a as u64)))?; }
 
                 // -- Sign extension --
-                Op::i32_extend8_s => { let a = self.pop().as_i32() as i8; self.push(Value::I32(a as i32))?; }
-                Op::i32_extend16_s => { let a = self.pop().as_i32() as i16; self.push(Value::I32(a as i32))?; }
-                Op::i64_extend8_s => { let a = self.pop().as_i64() as i8; self.push(Value::I64(a as i64))?; }
-                Op::i64_extend16_s => { let a = self.pop().as_i64() as i16; self.push(Value::I64(a as i64))?; }
-                Op::i64_extend32_s => { let a = self.pop().as_i64() as i32; self.push(Value::I64(a as i64))?; }
+                _ if op == Op::I32_EXTEND8_S => { let a = self.pop().as_i32() as i8; self.push(Value::I32(a as i32))?; }
+                _ if op == Op::I32_EXTEND16_S => { let a = self.pop().as_i32() as i16; self.push(Value::I32(a as i32))?; }
+                _ if op == Op::I64_EXTEND8_S => { let a = self.pop().as_i64() as i8; self.push(Value::I64(a as i64))?; }
+                _ if op == Op::I64_EXTEND16_S => { let a = self.pop().as_i64() as i16; self.push(Value::I64(a as i64))?; }
+                _ if op == Op::I64_EXTEND32_S => { let a = self.pop().as_i64() as i32; self.push(Value::I64(a as i64))?; }
 
                 // -- Multi-value --
                 // pack, unpack: removed (non-WASM, were unused by compilers)
 
                 // -- Block/loop structured control --
-                Op::block => {
+                _ if op == Op::BLOCK => {
                     let end_offset = self.read_u16() as usize;
                     let ip = self.frame().ip;
                     self.label_stack.push(LabelEntry { target: ip + end_offset, is_loop: false });
                 }
-                Op::r#loop => {
+                _ if op == Op::LOOP => {
                     let _body_size = self.read_u16();
                     let ip = self.frame().ip;
                     // Loop target is the start (current position, after reading the operand)
                     self.label_stack.push(LabelEntry { target: ip, is_loop: true });
                 }
-                Op::end => {
+                _ if op == Op::END => {
                     self.label_stack.pop();
                 }
-                Op::br_label => {
+                _ if op == Op::BR_LABEL => {
                     let depth = self.read_byte() as usize;
                     if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
                         let target = entry.target;
@@ -2477,7 +2496,7 @@ impl VM {
                         }
                     }
                 }
-                Op::br_if_label => {
+                _ if op == Op::BR_IF_LABEL => {
                     let depth = self.read_byte() as usize;
                     let cond = self.pop();
                     if dyn_truthy(&cond) {
@@ -2491,7 +2510,7 @@ impl VM {
                         }
                     }
                 }
-                Op::br_table => {
+                _ if op == Op::BR_TABLE => {
                     let count = self.read_byte() as usize;
                     let default_depth = self.read_byte() as usize;
                     let mut labels = Vec::with_capacity(count);
@@ -2505,7 +2524,7 @@ impl VM {
                 }
 
                 // -- call_indirect --
-                Op::call_indirect => {
+                _ if op == Op::CALL_INDIRECT => {
                     let argc = self.read_byte() as usize;
                     let table_idx_pos = self.stack.len() - 1 - argc;
                     let raw_idx = self.stack[table_idx_pos].as_f64();
@@ -2522,7 +2541,7 @@ impl VM {
                 }
 
                 // -- Component Model --
-                Op::canon_lift => {
+                _ if op == Op::CANON_LIFT => {
                     let type_idx = self.read_u16() as usize;
                     // Lift: convert core value to component interface type.
                     // For now: if value is an object, stamp its type_id.
@@ -2536,7 +2555,7 @@ impl VM {
                     }
                     self.push(val)?;
                 }
-                Op::canon_lower => {
+                _ if op == Op::CANON_LOWER => {
                     let type_idx = self.read_u16() as usize;
                     // Lower: convert component interface type to core value.
                     // For now: validate type_id matches, strip interface metadata.
@@ -2549,7 +2568,7 @@ impl VM {
                     }
                     self.push(val)?;
                 }
-                Op::type_import => {
+                _ if op == Op::TYPE_IMPORT => {
                     let import_idx = self.read_u16() as usize;
                     // Resolve type import: look up in type_imports table and register.
                     // The type should already be registered during linking.
@@ -2565,14 +2584,14 @@ impl VM {
                         self.push(Value::Null)?;
                     }
                 }
-                Op::type_export => {
+                _ if op == Op::TYPE_EXPORT => {
                     let type_id = self.read_u16() as usize;
                     // Mark type as exported. This is a compile-time declaration;
                     // at runtime, ensure the type is visible to the linker.
                     // No stack effect.
                     let _ = type_id;
                 }
-                Op::shared_new => {
+                _ if op == Op::SHARED_NEW => {
                     // Create a new shared object from the type_id on stack.
                     let type_id_val = self.pop();
                     let type_id = type_id_val.as_f64() as usize;
@@ -2585,7 +2604,7 @@ impl VM {
                 }
 
                 // -- Shared-Everything Threads (shared GC objects) --
-                Op::shared_struct_get => {
+                _ if op == Op::SHARED_STRUCT_GET => {
                     let field_idx = self.read_u16() as usize;
                     let obj_val = self.pop();
                     if let Value::Object(ref obj) = obj_val {
@@ -2601,7 +2620,7 @@ impl VM {
                         self.push(Value::Null)?;
                     }
                 }
-                Op::shared_struct_set => {
+                _ if op == Op::SHARED_STRUCT_SET => {
                     let field_idx = self.read_u16() as usize;
                     let value = self.pop();
                     let obj_val = self.pop();
@@ -2619,7 +2638,7 @@ impl VM {
                         }
                     }
                 }
-                Op::shared_array_get => {
+                _ if op == Op::SHARED_ARRAY_GET => {
                     let idx_val = self.pop();
                     let arr_val = self.pop();
                     let idx = idx_val.as_f64() as usize;
@@ -2634,7 +2653,7 @@ impl VM {
                         self.push(Value::Null)?;
                     }
                 }
-                Op::shared_array_set => {
+                _ if op == Op::SHARED_ARRAY_SET => {
                     let value = self.pop();
                     let idx_val = self.pop();
                     let arr_val = self.pop();
@@ -2648,7 +2667,7 @@ impl VM {
                         }
                     }
                 }
-                Op::shared_struct_cas => {
+                _ if op == Op::SHARED_STRUCT_CAS => {
                     let field_idx = self.read_u16() as usize;
                     let new_val = self.pop();
                     let expected = self.pop();
@@ -2671,7 +2690,7 @@ impl VM {
                 }
 
                 // -- Weak References & Finalizers --
-                Op::ref_make_weak => {
+                _ if op == Op::REF_MAKE_WEAK => {
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
                         self.push(Value::WeakRef(Arc::downgrade(obj)))?;
@@ -2679,7 +2698,7 @@ impl VM {
                         self.push(Value::Null)?;
                     }
                 }
-                Op::ref_deref_weak => {
+                _ if op == Op::REF_DEREF_WEAK => {
                     let val = self.pop();
                     if let Value::WeakRef(ref weak) = val {
                         if let Some(strong) = weak.upgrade() {
@@ -2692,7 +2711,7 @@ impl VM {
                         self.push(val)?;
                     }
                 }
-                Op::ref_is_alive => {
+                _ if op == Op::REF_IS_ALIVE => {
                     let val = self.pop();
                     let alive = match &val {
                         Value::WeakRef(weak) => weak.upgrade().is_some(),
@@ -2701,7 +2720,7 @@ impl VM {
                     };
                     self.push(Value::Bool(alive))?;
                 }
-                Op::ref_register_finalizer => {
+                _ if op == Op::REF_REGISTER_FINALIZER => {
                     let callback = self.pop();
                     let target = self.pop();
                     if let Value::Object(ref obj) = target {
@@ -2713,17 +2732,17 @@ impl VM {
                 }
 
                 // -- Multi-Memory --
-                Op::memory_select => {
+                _ if op == Op::MEMORY_SELECT => {
                     let mem_idx = self.read_byte() as usize;
                     self.active_memory = mem_idx;
                 }
-                Op::memory_init => {
+                _ if op == Op::MEMORY_INIT => {
                     let pages = self.pop().as_f64() as usize;
                     let mem_idx = self.extra_memories.len() + 1; // 0 is default memory
                     self.extra_memories.push(vec![0u8; pages * 65536]);
                     self.push(Value::I32(mem_idx as i32))?;
                 }
-                Op::memory_copy_cross => {
+                _ if op == Op::MEMORY_COPY_CROSS => {
                     let len = self.pop().as_f64() as usize;
                     let src_addr = self.pop().as_f64() as usize;
                     let src_mem = self.pop().as_f64() as usize;
@@ -2753,7 +2772,7 @@ impl VM {
                 }
 
                 // -- JS String Builtins (wasm:js-string proposal) --
-                Op::str_length => {
+                _ if op == Op::STR_LENGTH => {
                     let s = self.pop();
                     let len = match &s {
                         Value::String(s) => s.chars().count() as i32,
@@ -2767,7 +2786,7 @@ impl VM {
                     };
                     self.push(Value::I32(len))?;
                 }
-                Op::str_char_code_at => {
+                _ if op == Op::STR_CHAR_CODE_AT => {
                     let idx = self.pop().as_i32() as usize;
                     let s = self.pop();
                     let code = if let Value::String(s) = &s {
@@ -2775,12 +2794,12 @@ impl VM {
                     } else { -1 };
                     self.push(Value::I32(code))?;
                 }
-                Op::str_from_char_code => {
+                _ if op == Op::STR_FROM_CHAR_CODE => {
                     let code = self.pop().as_i32() as u32;
                     let ch = char::from_u32(code).unwrap_or('\0');
                     self.push(Value::String(Arc::from(ch.to_string().as_str())))?;
                 }
-                Op::str_char_at => {
+                _ if op == Op::STR_CHAR_AT => {
                     let idx = self.pop().as_i32() as usize;
                     let s = self.pop();
                     let ch = if let Value::String(s) = &s {
@@ -2789,7 +2808,7 @@ impl VM {
                     } else { Arc::from("") };
                     self.push(Value::String(ch))?;
                 }
-                Op::str_substring | Op::str_slice => {
+                _ if op == Op::STR_SUBSTRING || op == Op::STR_SLICE => {
                     let end = self.pop().as_i32() as usize;
                     let start = self.pop().as_i32() as usize;
                     let s = self.pop();
@@ -2802,7 +2821,7 @@ impl VM {
                     } else { Arc::from("") };
                     self.push(Value::String(result))?;
                 }
-                Op::str_index_of => {
+                _ if op == Op::STR_INDEX_OF => {
                     let needle = self.pop();
                     let haystack = self.pop();
                     let pos = match (&haystack, &needle) {
@@ -2813,7 +2832,7 @@ impl VM {
                     };
                     self.push(Value::I32(pos))?;
                 }
-                Op::str_last_index_of => {
+                _ if op == Op::STR_LAST_INDEX_OF => {
                     let needle = self.pop();
                     let haystack = self.pop();
                     let pos = match (&haystack, &needle) {
@@ -2824,7 +2843,7 @@ impl VM {
                     };
                     self.push(Value::I32(pos))?;
                 }
-                Op::str_equals => {
+                _ if op == Op::STR_EQUALS => {
                     let b = self.pop(); let a = self.pop();
                     let eq = match (&a, &b) {
                         (Value::String(a), Value::String(b)) => a == b,
@@ -2832,7 +2851,7 @@ impl VM {
                     };
                     self.push(Value::Bool(eq))?;
                 }
-                Op::str_compare => {
+                _ if op == Op::STR_COMPARE => {
                     let b = self.pop(); let a = self.pop();
                     let cmp = match (&a, &b) {
                         (Value::String(a), Value::String(b)) => {
@@ -2846,36 +2865,36 @@ impl VM {
                     };
                     self.push(Value::I32(cmp))?;
                 }
-                Op::str_to_upper => {
+                _ if op == Op::STR_TO_UPPER => {
                     let s = self.pop();
                     let r = if let Value::String(s) = &s {
                         Arc::from(s.to_uppercase().as_str())
                     } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
-                Op::str_to_lower => {
+                _ if op == Op::STR_TO_LOWER => {
                     let s = self.pop();
                     let r = if let Value::String(s) = &s {
                         Arc::from(s.to_lowercase().as_str())
                     } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
-                Op::str_trim => {
+                _ if op == Op::STR_TRIM => {
                     let s = self.pop();
                     let r = if let Value::String(s) = &s { Arc::from(s.trim()) } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
-                Op::str_trim_start => {
+                _ if op == Op::STR_TRIM_START => {
                     let s = self.pop();
                     let r = if let Value::String(s) = &s { Arc::from(s.trim_start()) } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
-                Op::str_trim_end => {
+                _ if op == Op::STR_TRIM_END => {
                     let s = self.pop();
                     let r = if let Value::String(s) = &s { Arc::from(s.trim_end()) } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
-                Op::str_starts_with => {
+                _ if op == Op::STR_STARTS_WITH => {
                     let prefix = self.pop(); let s = self.pop();
                     let r = match (&s, &prefix) {
                         (Value::String(s), Value::String(p)) => s.starts_with(p.as_ref()),
@@ -2883,7 +2902,7 @@ impl VM {
                     };
                     self.push(Value::Bool(r))?;
                 }
-                Op::str_ends_with => {
+                _ if op == Op::STR_ENDS_WITH => {
                     let suffix = self.pop(); let s = self.pop();
                     let r = match (&s, &suffix) {
                         (Value::String(s), Value::String(p)) => s.ends_with(p.as_ref()),
@@ -2891,7 +2910,7 @@ impl VM {
                     };
                     self.push(Value::Bool(r))?;
                 }
-                Op::str_contains => {
+                _ if op == Op::STR_CONTAINS => {
                     let needle = self.pop(); let s = self.pop();
                     let r = match (&s, &needle) {
                         (Value::String(s), Value::String(n)) => s.contains(n.as_ref()),
@@ -2899,7 +2918,7 @@ impl VM {
                     };
                     self.push(Value::Bool(r))?;
                 }
-                Op::str_replace => {
+                _ if op == Op::STR_REPLACE => {
                     let new = self.pop(); let old = self.pop(); let s = self.pop();
                     let r = match (&s, &old, &new) {
                         (Value::String(s), Value::String(o), Value::String(n)) => {
@@ -2909,7 +2928,7 @@ impl VM {
                     };
                     self.push(Value::String(r))?;
                 }
-                Op::str_split => {
+                _ if op == Op::STR_SPLIT => {
                     let delim = self.pop(); let s = self.pop();
                     let parts: Vec<Value> = match (&s, &delim) {
                         (Value::String(s), Value::String(d)) => {
@@ -2919,7 +2938,7 @@ impl VM {
                     };
                     self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(parts)))))?;
                 }
-                Op::str_repeat => {
+                _ if op == Op::STR_REPEAT => {
                     let count = self.pop().as_i32().max(0) as usize;
                     let s = self.pop();
                     let r = if let Value::String(s) = &s {
@@ -2927,7 +2946,7 @@ impl VM {
                     } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
-                Op::str_pad_start => {
+                _ if op == Op::STR_PAD_START => {
                     let fill = self.pop(); let target_len = self.pop().as_i32().max(0) as usize;
                     let s = self.pop();
                     let r = if let (Value::String(s), Value::String(f)) = (&s, &fill) {
@@ -2940,7 +2959,7 @@ impl VM {
                     } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
-                Op::str_pad_end => {
+                _ if op == Op::STR_PAD_END => {
                     let fill = self.pop(); let target_len = self.pop().as_i32().max(0) as usize;
                     let s = self.pop();
                     let r = if let (Value::String(s), Value::String(f)) = (&s, &fill) {
@@ -2953,7 +2972,7 @@ impl VM {
                     } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
-                Op::str_reverse => {
+                _ if op == Op::STR_REVERSE => {
                     let s = self.pop();
                     let r = if let Value::String(s) = &s {
                         Arc::from(s.chars().rev().collect::<String>().as_str())
@@ -2961,12 +2980,12 @@ impl VM {
                     self.push(Value::String(r))?;
                 }
                 // Unicode code points (beyond BMP — emoji, CJK)
-                Op::str_from_code_point => {
+                _ if op == Op::STR_FROM_CODE_POINT => {
                     let cp = self.pop().as_i32() as u32;
                     let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
                     self.push(Value::String(Arc::from(ch.to_string().as_str())))?;
                 }
-                Op::str_code_point_at => {
+                _ if op == Op::STR_CODE_POINT_AT => {
                     let idx = self.pop().as_i32() as usize;
                     let s = self.pop();
                     let cp = if let Value::String(s) = &s {
@@ -2975,14 +2994,14 @@ impl VM {
                     self.push(Value::I32(cp))?;
                 }
                 // Bulk char code operations
-                Op::str_into_char_codes => {
+                _ if op == Op::STR_INTO_CHAR_CODES => {
                     let s = self.pop();
                     let codes: Vec<Value> = if let Value::String(s) = &s {
                         s.chars().map(|c| Value::I32(c as i32)).collect()
                     } else { vec![] };
                     self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(codes)))))?;
                 }
-                Op::str_from_char_codes => {
+                _ if op == Op::STR_FROM_CHAR_CODES => {
                     let arr = self.pop();
                     let s = if let Value::Object(obj) = &arr {
                         let o = obj.lock().unwrap();
@@ -2993,7 +3012,7 @@ impl VM {
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
                 // Type discrimination opcodes
-                Op::ref_typeof => {
+                _ if op == Op::REF_TYPEOF => {
                     let v = self.pop();
                     let tag = match &v {
                         Value::Undefined => "undefined",
@@ -3014,14 +3033,14 @@ impl VM {
                     };
                     self.push(Value::String(Arc::from(tag)))?;
                 }
-                Op::ref_is_array => {
+                _ if op == Op::REF_IS_ARRAY => {
                     let v = self.pop();
                     let is_arr = matches!(&v, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Array(_)));
                     self.push(Value::Bool(is_arr))?;
                 }
 
                 // -- Array builtins --
-                Op::array_length => {
+                _ if op == Op::ARRAY_LENGTH => {
                     let arr = self.pop();
                     let len = if let Value::Object(obj) = &arr {
                         let o = obj.lock().unwrap();
@@ -3031,7 +3050,7 @@ impl VM {
                     } else { 0 };
                     self.push(Value::I32(len))?;
                 }
-                Op::array_push => {
+                _ if op == Op::ARRAY_PUSH => {
                     let val = self.pop(); let arr = self.pop();
                     if let Value::Object(obj) = &arr {
                         let mut o = obj.lock().unwrap();
@@ -3039,7 +3058,7 @@ impl VM {
                     }
                     self.push(arr)?;
                 }
-                Op::array_pop => {
+                _ if op == Op::ARRAY_POP => {
                     let arr = self.pop();
                     let val = if let Value::Object(obj) = &arr {
                         let mut o = obj.lock().unwrap();
@@ -3048,7 +3067,7 @@ impl VM {
                     } else { Value::Null };
                     self.push(val)?;
                 }
-                Op::array_slice => {
+                _ if op == Op::ARRAY_SLICE => {
                     let end = self.pop().as_i32(); let start = self.pop().as_i32();
                     let arr = self.pop();
                     let result = if let Value::Object(obj) = &arr {
@@ -3063,7 +3082,7 @@ impl VM {
                     } else { Value::Null };
                     self.push(result)?;
                 }
-                Op::array_join => {
+                _ if op == Op::ARRAY_JOIN => {
                     let delim = self.pop(); let arr = self.pop();
                     let r = if let (Value::Object(obj), Value::String(d)) = (&arr, &delim) {
                         let o = obj.lock().unwrap();
@@ -3074,7 +3093,7 @@ impl VM {
                     } else { Arc::from("") };
                     self.push(Value::String(r))?;
                 }
-                Op::array_reverse => {
+                _ if op == Op::ARRAY_REVERSE => {
                     let arr = self.pop();
                     if let Value::Object(obj) = &arr {
                         let mut o = obj.lock().unwrap();
@@ -3082,7 +3101,7 @@ impl VM {
                     }
                     self.push(arr)?;
                 }
-                Op::array_contains => {
+                _ if op == Op::ARRAY_CONTAINS => {
                     // Compare compiles: left(needle) then right(haystack)
                     // Stack: [needle, haystack]. Pop: haystack (TOS), needle.
                     let haystack = self.pop();
@@ -3105,7 +3124,7 @@ impl VM {
                     };
                     self.push(Value::Bool(found))?;
                 }
-                Op::array_index_of => {
+                _ if op == Op::ARRAY_INDEX_OF => {
                     let needle = self.pop(); let arr = self.pop();
                     let idx = if let Value::Object(obj) = &arr {
                         let o = obj.lock().unwrap();
@@ -3117,12 +3136,12 @@ impl VM {
                 }
 
                 // WASM GC array ops
-                Op::array_new_default => {
+                _ if op == Op::ARRAY_NEW_DEFAULT => {
                     let len = self.pop().as_i32().max(0) as usize;
                     let elems = vec![Value::Null; len];
                     self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(elems)))))?;
                 }
-                Op::array_fill => {
+                _ if op == Op::ARRAY_FILL => {
                     let count = self.pop().as_i32().max(0) as usize;
                     let start = self.pop().as_i32().max(0) as usize;
                     let val = self.pop();
@@ -3135,7 +3154,7 @@ impl VM {
                         }
                     }
                 }
-                Op::array_copy => {
+                _ if op == Op::ARRAY_COPY => {
                     let len = self.pop().as_i32().max(0) as usize;
                     let src_off = self.pop().as_i32().max(0) as usize;
                     let src = self.pop();
@@ -3160,7 +3179,7 @@ impl VM {
                         }
                     }
                 }
-                Op::array_concat => {
+                _ if op == Op::ARRAY_CONCAT => {
                     let b = self.pop();
                     let a = self.pop();
                     let mut result = Vec::new();
@@ -3174,7 +3193,7 @@ impl VM {
                     }
                     self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(result)))))?;
                 }
-                Op::array_shift => {
+                _ if op == Op::ARRAY_SHIFT => {
                     let arr = self.pop();
                     let val = if let Value::Object(obj) = &arr {
                         let mut o = obj.lock().unwrap();
@@ -3186,7 +3205,7 @@ impl VM {
                 }
 
                 // -- Stack Switching (wasm stack-switching proposal) --
-                Op::cont_new => {
+                _ if op == Op::CONT_NEW => {
                     // Create a continuation from a function reference.
                     // The continuation wraps a function + saved state.
                     let func_val = self.pop();
@@ -3196,7 +3215,7 @@ impl VM {
                     obj.properties.insert("__cont_value".into(), Value::Null);
                     self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
-                Op::suspend => {
+                _ if op == Op::SUSPEND => {
                     let _tag = self.read_u16();
                     // Yield a value from the current continuation.
                     // The yielded value stays on the stack for the caller.
@@ -3204,7 +3223,7 @@ impl VM {
                     let val = self.pop();
                     return Ok(val);
                 }
-                Op::resume => {
+                _ if op == Op::RESUME => {
                     let _tag = self.read_u16();
                     // Resume a continuation, passing a value to it.
                     // [continuation, value] → [result]
@@ -3228,7 +3247,7 @@ impl VM {
                         self.push(val)?;
                     }
                 }
-                Op::switch => {
+                _ if op == Op::SWITCH => {
                     let _tag = self.read_u16();
                     // Symmetric switch: suspend current continuation, resume target
                     let val = self.pop();
@@ -3242,7 +3261,7 @@ impl VM {
                 }
 
                 // -- wasi-threads: real OS thread spawning --
-                Op::thread_spawn => {
+                _ if op == Op::THREAD_SPAWN => {
                     // [func_ref] → [task_object]
                     // Per wasi-threads: spawn a real OS thread.
                     // Value is now Arc-based (Send+Sync), so chunks and host_fns
@@ -3338,7 +3357,7 @@ impl VM {
                         self.push(Value::Null)?;
                     }
                 }
-                Op::thread_join => {
+                _ if op == Op::THREAD_JOIN => {
                     // [task_object] → [status: i32]
                     // Wait for a thread to complete. Accepts either a task object
                     // (with __thread_id) or a raw i32 thread ID.
@@ -3375,7 +3394,7 @@ impl VM {
                 }
 
                 // -- Extended Const Expressions --
-                Op::global_init => {
+                _ if op == Op::GLOBAL_INIT => {
                     let idx = self.read_u16() as usize;
                     // Evaluate the const expr for global at index idx and store result.
                     // This is a runtime opcode for cases where init can't be done at load time.
@@ -3387,7 +3406,7 @@ impl VM {
                 }
 
                 // -- Typed Continuations --
-                Op::cont_new_typed => {
+                _ if op == Op::CONT_NEW_TYPED => {
                     let tag_idx = self.read_u16() as usize;
                     let func_val = self.pop();
                     let mut obj = Object::new_typed(0);
@@ -3403,7 +3422,7 @@ impl VM {
                     }
                     self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
-                Op::suspend_typed => {
+                _ if op == Op::SUSPEND_TYPED => {
                     let _tag_idx = self.read_u16();
                     // Typed suspend: yield a value, with type validation.
                     let val = self.pop();
@@ -3411,7 +3430,7 @@ impl VM {
                     // of the current continuation's tag. For now, just yield.
                     return Ok(val);
                 }
-                Op::resume_typed => {
+                _ if op == Op::RESUME_TYPED => {
                     let _tag_idx = self.read_u16();
                     let val = self.pop();
                     let cont = self.pop();
@@ -3448,7 +3467,7 @@ impl VM {
                 }
 
                 // -- String References (zero-copy) --
-                Op::string_as_ref => {
+                _ if op == Op::STRING_AS_REF => {
                     // String → StringRef: since our strings are already Arc<str>,
                     // this is effectively a no-op — we keep the same Arc.
                     // The semantic difference: stringref signals cross-component sharing intent.
@@ -3456,12 +3475,12 @@ impl VM {
                     // Just pass through — Arc<str> is already shared
                     self.push(val)?;
                 }
-                Op::string_from_ref => {
+                _ if op == Op::STRING_FROM_REF => {
                     // StringRef → String: dereference (zero-copy with Arc).
                     let val = self.pop();
                     self.push(val)?;
                 }
-                Op::string_ref_eq => {
+                _ if op == Op::STRING_REF_EQ => {
                     // Pointer identity comparison for string refs.
                     let b = self.pop();
                     let a = self.pop();
@@ -3473,39 +3492,39 @@ impl VM {
                 }
 
                 // -- SIMD (128-bit vectors) --
-                Op::v128_load => {
+                _ if op == Op::V128_LOAD => {
                     let addr = self.pop().as_i32() as usize;
                     let mut bytes = [0u8; 16];
                     self.memory.read_bytes(addr, &mut bytes);
                     self.push(Value::V128(bytes))?;
                 }
-                Op::v128_store => {
+                _ if op == Op::V128_STORE => {
                     let val = self.pop();
                     let addr = self.pop().as_i32() as usize;
                     if let Value::V128(bytes) = val {
                         self.memory.write_bytes(addr, &bytes);
                     }
                 }
-                Op::v128_const => {
+                _ if op == Op::V128_CONST => {
                     let mut bytes = [0u8; 16];
                     for i in 0..16 { bytes[i] = self.read_byte(); }
                     self.push(Value::V128(bytes))?;
                 }
 
                 // i32x4 ops
-                Op::i32x4_splat => {
+                _ if op == Op::I32X4_SPLAT => {
                     let v = self.pop().as_i32();
                     let mut bytes = [0u8; 16];
                     for i in 0..4 { bytes[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); }
                     self.push(Value::V128(bytes))?;
                 }
-                Op::i32x4_add => { self.simd_i32x4_binop(|a, b| a.wrapping_add(b))?; }
-                Op::i32x4_sub => { self.simd_i32x4_binop(|a, b| a.wrapping_sub(b))?; }
-                Op::i32x4_mul => { self.simd_i32x4_binop(|a, b| a.wrapping_mul(b))?; }
-                Op::i32x4_eq =>  { self.simd_i32x4_binop(|a, b| if a == b { -1 } else { 0 })?; }
-                Op::i32x4_gt_s => { self.simd_i32x4_binop(|a, b| if a > b { -1 } else { 0 })?; }
-                Op::i32x4_lt_s => { self.simd_i32x4_binop(|a, b| if a < b { -1 } else { 0 })?; }
-                Op::i32x4_shl => {
+                _ if op == Op::I32X4_ADD => { self.simd_i32x4_binop(|a, b| a.wrapping_add(b))?; }
+                _ if op == Op::I32X4_SUB => { self.simd_i32x4_binop(|a, b| a.wrapping_sub(b))?; }
+                _ if op == Op::I32X4_MUL => { self.simd_i32x4_binop(|a, b| a.wrapping_mul(b))?; }
+                _ if op == Op::I32X4_EQ =>  { self.simd_i32x4_binop(|a, b| if a == b { -1 } else { 0 })?; }
+                _ if op == Op::I32X4_GT_S => { self.simd_i32x4_binop(|a, b| if a > b { -1 } else { 0 })?; }
+                _ if op == Op::I32X4_LT_S => { self.simd_i32x4_binop(|a, b| if a < b { -1 } else { 0 })?; }
+                _ if op == Op::I32X4_SHL => {
                     let shift = self.pop().as_i32() as u32 & 31;
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
@@ -3516,7 +3535,7 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
-                Op::i32x4_shr_s => {
+                _ if op == Op::I32X4_SHR_S => {
                     let shift = self.pop().as_i32() as u32 & 31;
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
@@ -3527,7 +3546,7 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
-                Op::i32x4_shr_u => {
+                _ if op == Op::I32X4_SHR_U => {
                     let shift = self.pop().as_i32() as u32 & 31;
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
@@ -3538,14 +3557,14 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
-                Op::i32x4_extract_lane => {
+                _ if op == Op::I32X4_EXTRACT_LANE => {
                     let lane = self.read_byte() as usize & 3;
                     if let Value::V128(a) = self.pop() {
                         let v = i32::from_le_bytes([a[lane*4], a[lane*4+1], a[lane*4+2], a[lane*4+3]]);
                         self.push(Value::I32(v))?;
                     } else { self.push(Value::I32(0))?; }
                 }
-                Op::i32x4_replace_lane => {
+                _ if op == Op::I32X4_REPLACE_LANE => {
                     let lane = self.read_byte() as usize & 3;
                     let val = self.pop().as_i32();
                     if let Value::V128(mut a) = self.pop() {
@@ -3555,23 +3574,23 @@ impl VM {
                 }
 
                 // f64x2 ops
-                Op::f64x2_splat => {
+                _ if op == Op::F64X2_SPLAT => {
                     let v = self.pop().as_f64();
                     let mut bytes = [0u8; 16];
                     bytes[0..8].copy_from_slice(&v.to_le_bytes());
                     bytes[8..16].copy_from_slice(&v.to_le_bytes());
                     self.push(Value::V128(bytes))?;
                 }
-                Op::f64x2_add => { self.simd_f64x2_binop(|a, b| a + b)?; }
-                Op::f64x2_sub => { self.simd_f64x2_binop(|a, b| a - b)?; }
-                Op::f64x2_mul => { self.simd_f64x2_binop(|a, b| a * b)?; }
-                Op::f64x2_div => { self.simd_f64x2_binop(|a, b| a / b)?; }
-                Op::f64x2_min => { self.simd_f64x2_binop(|a, b| a.min(b))?; }
-                Op::f64x2_max => { self.simd_f64x2_binop(|a, b| a.max(b))?; }
-                Op::f64x2_eq => { self.simd_f64x2_cmp(|a, b| a == b)?; }
-                Op::f64x2_lt => { self.simd_f64x2_cmp(|a, b| a < b)?; }
-                Op::f64x2_le => { self.simd_f64x2_cmp(|a, b| a <= b)?; }
-                Op::f64x2_sqrt => {
+                _ if op == Op::F64X2_ADD => { self.simd_f64x2_binop(|a, b| a + b)?; }
+                _ if op == Op::F64X2_SUB => { self.simd_f64x2_binop(|a, b| a - b)?; }
+                _ if op == Op::F64X2_MUL => { self.simd_f64x2_binop(|a, b| a * b)?; }
+                _ if op == Op::F64X2_DIV => { self.simd_f64x2_binop(|a, b| a / b)?; }
+                _ if op == Op::F64X2_MIN => { self.simd_f64x2_binop(|a, b| a.min(b))?; }
+                _ if op == Op::F64X2_MAX => { self.simd_f64x2_binop(|a, b| a.max(b))?; }
+                _ if op == Op::F64X2_EQ => { self.simd_f64x2_cmp(|a, b| a == b)?; }
+                _ if op == Op::F64X2_LT => { self.simd_f64x2_cmp(|a, b| a < b)?; }
+                _ if op == Op::F64X2_LE => { self.simd_f64x2_cmp(|a, b| a <= b)?; }
+                _ if op == Op::F64X2_SQRT => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -3581,7 +3600,7 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
-                Op::f64x2_abs => {
+                _ if op == Op::F64X2_ABS => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -3591,7 +3610,7 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
-                Op::f64x2_neg => {
+                _ if op == Op::F64X2_NEG => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -3601,14 +3620,14 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
-                Op::f64x2_extract_lane => {
+                _ if op == Op::F64X2_EXTRACT_LANE => {
                     let lane = self.read_byte() as usize & 1;
                     if let Value::V128(a) = self.pop() {
                         let v = f64::from_le_bytes(a[lane*8..lane*8+8].try_into().unwrap());
                         self.push(Value::F64(v))?;
                     } else { self.push(Value::F64(0.0))?; }
                 }
-                Op::f64x2_replace_lane => {
+                _ if op == Op::F64X2_REPLACE_LANE => {
                     let lane = self.read_byte() as usize & 1;
                     let val = self.pop().as_f64();
                     if let Value::V128(mut a) = self.pop() {
@@ -3618,73 +3637,73 @@ impl VM {
                 }
 
                 // f32x4, i8x16, i16x8 — same patterns, delegate to helpers
-                Op::f32x4_splat => { let v = self.pop().as_f64() as f32; let b = v.to_le_bytes(); let mut out = [0u8;16]; for i in 0..4 { out[i*4..i*4+4].copy_from_slice(&b); } self.push(Value::V128(out))?; }
-                Op::f32x4_add => { self.simd_f32x4_binop(|a,b| a+b)?; }
-                Op::f32x4_sub => { self.simd_f32x4_binop(|a,b| a-b)?; }
-                Op::f32x4_mul => { self.simd_f32x4_binop(|a,b| a*b)?; }
-                Op::f32x4_div => { self.simd_f32x4_binop(|a,b| a/b)?; }
-                Op::f32x4_extract_lane => { let lane = self.read_byte() as usize & 3; if let Value::V128(a) = self.pop() { let v = f32::from_le_bytes(a[lane*4..lane*4+4].try_into().unwrap()); self.push(Value::F64(v as f64))?; } else { self.push(Value::F64(0.0))?; } }
-                Op::f32x4_replace_lane => { let lane = self.read_byte() as usize & 3; let val = self.pop().as_f64() as f32; if let Value::V128(mut a) = self.pop() { a[lane*4..lane*4+4].copy_from_slice(&val.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
-                Op::i8x16_splat => { let v = self.pop().as_i32() as u8; self.push(Value::V128([v;16]))?; }
-                Op::i8x16_add => { self.simd_i8x16_binop(|a,b| a.wrapping_add(b))?; }
-                Op::i8x16_sub => { self.simd_i8x16_binop(|a,b| a.wrapping_sub(b))?; }
-                Op::i8x16_eq =>  { self.simd_i8x16_binop(|a,b| if a==b {0xFF} else {0})?; }
-                Op::i8x16_extract_lane_s => { let lane = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[lane] as i8 as i32))?; } else { self.push(Value::I32(0))?; } }
-                Op::i8x16_extract_lane_u => { let lane = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[lane] as i32))?; } else { self.push(Value::I32(0))?; } }
-                Op::i8x16_replace_lane => { let lane = self.read_byte() as usize & 15; let val = self.pop().as_i32() as u8; if let Value::V128(mut a) = self.pop() { a[lane] = val; self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
-                Op::i8x16_shuffle => { let mut indices = [0u8;16]; for i in 0..16 { indices[i] = self.read_byte(); } let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let combined: Vec<u8> = va.iter().chain(vb.iter()).copied().collect(); let mut out = [0u8;16]; for i in 0..16 { out[i] = combined.get(indices[i] as usize).copied().unwrap_or(0); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                Op::i8x16_swizzle => { let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let mut out = [0u8;16]; for i in 0..16 { let idx = vb[i] as usize; out[i] = if idx < 16 { va[idx] } else { 0 }; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                Op::i16x8_splat => { let v = self.pop().as_i32() as i16; let b = v.to_le_bytes(); let mut out = [0u8;16]; for i in 0..8 { out[i*2..i*2+2].copy_from_slice(&b); } self.push(Value::V128(out))?; }
-                Op::i16x8_add => { self.simd_i16x8_binop(|a,b| a.wrapping_add(b))?; }
-                Op::i16x8_sub => { self.simd_i16x8_binop(|a,b| a.wrapping_sub(b))?; }
-                Op::i16x8_mul => { self.simd_i16x8_binop(|a,b| a.wrapping_mul(b))?; }
-                Op::i16x8_extract_lane_s => { let lane = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { let v = i16::from_le_bytes([a[lane*2], a[lane*2+1]]); self.push(Value::I32(v as i32))?; } else { self.push(Value::I32(0))?; } }
-                Op::i16x8_extract_lane_u => { let lane = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { let v = u16::from_le_bytes([a[lane*2], a[lane*2+1]]); self.push(Value::I32(v as i32))?; } else { self.push(Value::I32(0))?; } }
-                Op::i16x8_replace_lane => { let lane = self.read_byte() as usize & 7; let val = self.pop().as_i32() as i16; if let Value::V128(mut a) = self.pop() { a[lane*2..lane*2+2].copy_from_slice(&val.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::F32X4_SPLAT => { let v = self.pop().as_f64() as f32; let b = v.to_le_bytes(); let mut out = [0u8;16]; for i in 0..4 { out[i*4..i*4+4].copy_from_slice(&b); } self.push(Value::V128(out))?; }
+                _ if op == Op::F32X4_ADD => { self.simd_f32x4_binop(|a,b| a+b)?; }
+                _ if op == Op::F32X4_SUB => { self.simd_f32x4_binop(|a,b| a-b)?; }
+                _ if op == Op::F32X4_MUL => { self.simd_f32x4_binop(|a,b| a*b)?; }
+                _ if op == Op::F32X4_DIV => { self.simd_f32x4_binop(|a,b| a/b)?; }
+                _ if op == Op::F32X4_EXTRACT_LANE => { let lane = self.read_byte() as usize & 3; if let Value::V128(a) = self.pop() { let v = f32::from_le_bytes(a[lane*4..lane*4+4].try_into().unwrap()); self.push(Value::F64(v as f64))?; } else { self.push(Value::F64(0.0))?; } }
+                _ if op == Op::F32X4_REPLACE_LANE => { let lane = self.read_byte() as usize & 3; let val = self.pop().as_f64() as f32; if let Value::V128(mut a) = self.pop() { a[lane*4..lane*4+4].copy_from_slice(&val.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I8X16_SPLAT => { let v = self.pop().as_i32() as u8; self.push(Value::V128([v;16]))?; }
+                _ if op == Op::I8X16_ADD => { self.simd_i8x16_binop(|a,b| a.wrapping_add(b))?; }
+                _ if op == Op::I8X16_SUB => { self.simd_i8x16_binop(|a,b| a.wrapping_sub(b))?; }
+                _ if op == Op::I8X16_EQ =>  { self.simd_i8x16_binop(|a,b| if a==b {0xFF} else {0})?; }
+                _ if op == Op::I8X16_EXTRACT_LANE_S => { let lane = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[lane] as i8 as i32))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I8X16_EXTRACT_LANE_U => { let lane = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[lane] as i32))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I8X16_REPLACE_LANE => { let lane = self.read_byte() as usize & 15; let val = self.pop().as_i32() as u8; if let Value::V128(mut a) = self.pop() { a[lane] = val; self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I8X16_SHUFFLE => { let mut indices = [0u8;16]; for i in 0..16 { indices[i] = self.read_byte(); } let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let combined: Vec<u8> = va.iter().chain(vb.iter()).copied().collect(); let mut out = [0u8;16]; for i in 0..16 { out[i] = combined.get(indices[i] as usize).copied().unwrap_or(0); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I8X16_SWIZZLE => { let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let mut out = [0u8;16]; for i in 0..16 { let idx = vb[i] as usize; out[i] = if idx < 16 { va[idx] } else { 0 }; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_SPLAT => { let v = self.pop().as_i32() as i16; let b = v.to_le_bytes(); let mut out = [0u8;16]; for i in 0..8 { out[i*2..i*2+2].copy_from_slice(&b); } self.push(Value::V128(out))?; }
+                _ if op == Op::I16X8_ADD => { self.simd_i16x8_binop(|a,b| a.wrapping_add(b))?; }
+                _ if op == Op::I16X8_SUB => { self.simd_i16x8_binop(|a,b| a.wrapping_sub(b))?; }
+                _ if op == Op::I16X8_MUL => { self.simd_i16x8_binop(|a,b| a.wrapping_mul(b))?; }
+                _ if op == Op::I16X8_EXTRACT_LANE_S => { let lane = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { let v = i16::from_le_bytes([a[lane*2], a[lane*2+1]]); self.push(Value::I32(v as i32))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I16X8_EXTRACT_LANE_U => { let lane = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { let v = u16::from_le_bytes([a[lane*2], a[lane*2+1]]); self.push(Value::I32(v as i32))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I16X8_REPLACE_LANE => { let lane = self.read_byte() as usize & 7; let val = self.pop().as_i32() as i16; if let Value::V128(mut a) = self.pop() { a[lane*2..lane*2+2].copy_from_slice(&val.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
 
                 // v128 bitwise
-                Op::v128_and => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] & b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                Op::v128_or  => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] | b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                Op::v128_xor => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] ^ b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                Op::v128_not => { if let Value::V128(a) = self.pop() { let mut out = [0u8;16]; for i in 0..16 { out[i] = !a[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                Op::v128_andnot => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] & !b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                Op::v128_any_true => { if let Value::V128(a) = self.pop() { self.push(Value::I32(if a.iter().any(|&b| b != 0) { 1 } else { 0 }))?; } else { self.push(Value::I32(0))?; } }
-                Op::v128_bitselect => { let mask = self.pop(); let v2 = self.pop(); let v1 = self.pop(); if let (Value::V128(a), Value::V128(b), Value::V128(m)) = (v1, v2, mask) { let mut out = [0u8;16]; for i in 0..16 { out[i] = (a[i] & m[i]) | (b[i] & !m[i]); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_AND => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] & b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_OR => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] | b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_XOR => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] ^ b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_NOT => { if let Value::V128(a) = self.pop() { let mut out = [0u8;16]; for i in 0..16 { out[i] = !a[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_ANDNOT => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] & !b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_ANY_TRUE => { if let Value::V128(a) = self.pop() { self.push(Value::I32(if a.iter().any(|&b| b != 0) { 1 } else { 0 }))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::V128_BITSELECT => { let mask = self.pop(); let v2 = self.pop(); let v1 = self.pop(); if let (Value::V128(a), Value::V128(b), Value::V128(m)) = (v1, v2, mask) { let mut out = [0u8;16]; for i in 0..16 { out[i] = (a[i] & m[i]) | (b[i] & !m[i]); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
 
                 // -- Atomics (single-threaded: same as non-atomic for now) --
-                Op::atomic_fence => {} // no-op in single-threaded
-                Op::i32_atomic_load => { let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_load_i32(addr)))?; }
+                _ if op == Op::ATOMIC_FENCE => {} // no-op in single-threaded
+                _ if op == Op::I32_ATOMIC_LOAD => { let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_load_i32(addr)))?; }
                 // Atomic store: stack is [addr, value] — pop value first (top), then addr
-                Op::i32_atomic_store => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.memory.atomic_store_i32(addr, v); }
+                _ if op == Op::I32_ATOMIC_STORE => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.memory.atomic_store_i32(addr, v); }
                 // Atomic RMW: stack is [addr, value] — pop value (top), addr (second), return old
-                Op::i32_atomic_rmw_add => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_add_i32(addr, v)))?; }
-                Op::i32_atomic_rmw_sub => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_sub_i32(addr, v)))?; }
-                Op::i32_atomic_rmw_and => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_and_i32(addr, v)))?; }
-                Op::i32_atomic_rmw_or  => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_or_i32(addr, v)))?; }
-                Op::i32_atomic_rmw_xor => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_xor_i32(addr, v)))?; }
-                Op::i32_atomic_rmw_xchg => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_xchg_i32(addr, v)))?; }
+                _ if op == Op::I32_ATOMIC_RMW_ADD => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_add_i32(addr, v)))?; }
+                _ if op == Op::I32_ATOMIC_RMW_SUB => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_sub_i32(addr, v)))?; }
+                _ if op == Op::I32_ATOMIC_RMW_AND => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_and_i32(addr, v)))?; }
+                _ if op == Op::I32_ATOMIC_RMW_OR => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_or_i32(addr, v)))?; }
+                _ if op == Op::I32_ATOMIC_RMW_XOR => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_rmw_xor_i32(addr, v)))?; }
+                _ if op == Op::I32_ATOMIC_RMW_XCHG => { let v = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_xchg_i32(addr, v)))?; }
                 // Atomic CmpXchg: stack is [addr, expected, replacement]
-                Op::i32_atomic_rmw_cmpxchg => { let replacement = self.pop().as_i32(); let expected = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_cmpxchg_i32(addr, expected, replacement)))?; }
-                Op::i64_atomic_load => { let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_load_i64(addr)))?; }
-                Op::i64_atomic_store => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.memory.atomic_store_i64(addr, v); }
-                Op::i64_atomic_rmw_add => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_rmw_add_i64(addr, v)))?; }
-                Op::i64_atomic_rmw_sub => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_rmw_sub_i64(addr, v)))?; }
-                Op::i64_atomic_rmw_cmpxchg => { let repl = self.pop().as_i64(); let exp = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_cmpxchg_i64(addr, exp, repl)))?; }
-                Op::memory_atomic_wait32 => { let timeout = self.pop().as_i64(); let expected = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.wait32(addr, expected, timeout)))?; }
-                Op::memory_atomic_notify => { let count = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.notify(addr, count)))?; }
+                _ if op == Op::I32_ATOMIC_RMW_CMPXCHG => { let replacement = self.pop().as_i32(); let expected = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.atomic_cmpxchg_i32(addr, expected, replacement)))?; }
+                _ if op == Op::I64_ATOMIC_LOAD => { let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_load_i64(addr)))?; }
+                _ if op == Op::I64_ATOMIC_STORE => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.memory.atomic_store_i64(addr, v); }
+                _ if op == Op::I64_ATOMIC_RMW_ADD => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_rmw_add_i64(addr, v)))?; }
+                _ if op == Op::I64_ATOMIC_RMW_SUB => { let v = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_rmw_sub_i64(addr, v)))?; }
+                _ if op == Op::I64_ATOMIC_RMW_CMPXCHG => { let repl = self.pop().as_i64(); let exp = self.pop().as_i64(); let addr = self.pop().as_i32() as usize; self.push(Value::I64(self.memory.atomic_cmpxchg_i64(addr, exp, repl)))?; }
+                _ if op == Op::MEMORY_ATOMIC_WAIT32 => { let timeout = self.pop().as_i64(); let expected = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.wait32(addr, expected, timeout)))?; }
+                _ if op == Op::MEMORY_ATOMIC_NOTIFY => { let count = self.pop().as_i32(); let addr = self.pop().as_i32() as usize; self.push(Value::I32(self.memory.notify(addr, count)))?; }
 
                 // -- Memory64 --
-                Op::i64_memory_size => { self.push(Value::I64((self.memory.len() / 65536) as i64))?; }
-                Op::i64_memory_grow => { let pages = self.pop().as_i64() as usize; let old = self.memory.grow(pages); self.push(Value::I64(old as i64))?; }
-                Op::i32_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I32(self.memory.load_i32(addr)?))?; }
-                Op::i64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I64(self.memory.load_i64(addr)?))?; }
-                Op::f64_load_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::F64(self.memory.load_f64(addr)?))?; }
-                Op::i32_store_64 => { let v = self.pop().as_i32(); let addr = self.pop().as_i64() as usize; self.memory.store_i32(addr, v)?; }
-                Op::i64_store_64 => { let v = self.pop().as_i64(); let addr = self.pop().as_i64() as usize; let _ = self.memory.store_i64(addr, v); }
-                Op::f64_store_64 => { let v = self.pop().as_f64(); let addr = self.pop().as_i64() as usize; let _ = self.memory.store_f64(addr, v); }
+                _ if op == Op::I64_MEMORY_SIZE => { self.push(Value::I64((self.memory.len() / 65536) as i64))?; }
+                _ if op == Op::I64_MEMORY_GROW => { let pages = self.pop().as_i64() as usize; let old = self.memory.grow(pages); self.push(Value::I64(old as i64))?; }
+                _ if op == Op::I32_LOAD_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I32(self.memory.load_i32(addr)?))?; }
+                _ if op == Op::I64_LOAD_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::I64(self.memory.load_i64(addr)?))?; }
+                _ if op == Op::F64_LOAD_64 => { let addr = self.pop().as_i64() as usize; self.push(Value::F64(self.memory.load_f64(addr)?))?; }
+                _ if op == Op::I32_STORE_64 => { let v = self.pop().as_i32(); let addr = self.pop().as_i64() as usize; self.memory.store_i32(addr, v)?; }
+                _ if op == Op::I64_STORE_64 => { let v = self.pop().as_i64(); let addr = self.pop().as_i64() as usize; let _ = self.memory.store_i64(addr, v); }
+                _ if op == Op::F64_STORE_64 => { let v = self.pop().as_f64(); let addr = self.pop().as_i64() as usize; let _ = self.memory.store_f64(addr, v); }
 
                 // -- Relaxed SIMD FMA --
-                Op::f32x4_relaxed_madd => {
+                _ if op == Op::F32X4_RELAXED_MADD => {
                     let c = self.pop(); let b = self.pop(); let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb), Value::V128(vc)) = (a, b, c) {
                         let mut out = [0u8; 16];
@@ -3697,7 +3716,7 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
-                Op::f32x4_relaxed_nmadd => {
+                _ if op == Op::F32X4_RELAXED_NMADD => {
                     let c = self.pop(); let b = self.pop(); let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb), Value::V128(vc)) = (a, b, c) {
                         let mut out = [0u8; 16];
@@ -3710,7 +3729,7 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
-                Op::f64x2_relaxed_madd => {
+                _ if op == Op::F64X2_RELAXED_MADD => {
                     let c = self.pop(); let b = self.pop(); let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb), Value::V128(vc)) = (a, b, c) {
                         let mut out = [0u8; 16];
@@ -3723,7 +3742,7 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else { self.push(Value::V128([0; 16]))?; }
                 }
-                Op::f64x2_relaxed_nmadd => {
+                _ if op == Op::F64X2_RELAXED_NMADD => {
                     let c = self.pop(); let b = self.pop(); let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb), Value::V128(vc)) = (a, b, c) {
                         let mut out = [0u8; 16];
@@ -3738,7 +3757,7 @@ impl VM {
                 }
 
                 // -- JS Promise Integration (JSPI) --
-                Op::promise_suspend => {
+                _ if op == Op::PROMISE_SUSPEND => {
                     // Explicit JSPI suspend point. Like await, but can be inserted
                     // by the compiler for synchronous-looking code that calls async APIs.
                     let val = self.pop();
@@ -3769,7 +3788,7 @@ impl VM {
                 }
 
                 // -- WASM GC Type System --
-                Op::set_type_id => {
+                _ if op == Op::SET_TYPE_ID => {
                     // Stack: [obj, type_id_i32] → [obj]
                     let type_id = self.pop().as_i32() as usize;
                     let obj = self.peek(0);
@@ -3780,7 +3799,7 @@ impl VM {
 
                 // -- Iteration protocol --
                 // iter_get, iter_next: removed (non-WASM, were unused by compilers)
-                Op::spread => {
+                _ if op == Op::SPREAD => {
                     // Spread array onto stack: [array] → [elem0, elem1, ...]
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
@@ -3793,6 +3812,9 @@ impl VM {
                     }
                 }
                 // class_new, method_def, inherit: removed (non-WASM, were NOPs)
+                _ => {
+                    return Err(VMError::new(format!("Unhandled opcode: {:?} (0x{:04X})", op, op.0)));
+                }
             }
         }
     }

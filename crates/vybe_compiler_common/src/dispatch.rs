@@ -32,7 +32,7 @@ pub fn emit_common(name: &str, chunk: &mut Chunk, line: u32) -> bool {
         // ── Dict ops ──
         "dict.set_dynamic" => {
             dict::emit_set_dynamic(chunk, line);
-            chunk.emit_op(Op::null, line); // void return
+            chunk.emit_op(Op::NULL, line); // void return
         }
         "dict.get_dynamic" => dict::emit_get_dynamic(chunk, line),
         "dict.has" => dict::emit_method_has(chunk, line),
@@ -124,7 +124,7 @@ pub fn emit_common_with_imports(
             threading::emit_sleep(chunk, idx, line);
             // emit_sleep already drops the import return; push null so the
             // call site has a stack value to consume.
-            chunk.emit_op(Op::null, line);
+            chunk.emit_op(Op::NULL, line);
         }
         _ => return false,
     }

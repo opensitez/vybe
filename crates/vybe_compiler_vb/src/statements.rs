@@ -30,8 +30,8 @@ impl Compiler {
                             self.compile_expression(bound_expr)?;
                             // Add 1 to get size (VB upper bound is inclusive)
                             self.emit_constant(Value::F64(1.0));
-                            self.emit(Op::dyn_add);
-                            self.emit(Op::array_new_default);
+                            self.emit(Op::DYN_ADD);
+                            self.emit(Op::ARRAY_NEW_DEFAULT);
                         } else {
                             // Dim arr() — empty array
                             common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 0, self.line);
@@ -39,7 +39,7 @@ impl Compiler {
                     } else if let Some(ref init) = var.initializer {
                         self.compile_expression(init)?;
                     } else {
-                        self.emit(Op::null);
+                        self.emit(Op::NULL);
                     }
                     let name = var.name.as_str().to_lowercase();
                     if var.array_bounds.is_some() {
@@ -48,11 +48,11 @@ impl Compiler {
                     // Top-level scope: store as global (matches Declaration::Variable behavior)
                     if self.scopes.len() == 1 && self.current_scope().depth == 0 {
                         self.emit_global_set(&name);
-                        self.emit(Op::drop);
+                        self.emit(Op::DROP);
                     } else {
                         let slot = self.define_local(&name);
-                        self.emit_u16(Op::local_set, slot);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                        self.emit(Op::DROP);
                     }
                 }
             }
@@ -78,13 +78,13 @@ impl Compiler {
                 if emit_side_effect {
                     // Save value to temp BEFORE struct_set consumes it
                     let tmp = self.define_local("__csp_val");
-                    self.emit(Op::dup);
-                    self.emit_u16(Op::local_set, tmp);
-                    self.emit(Op::drop);
+                    self.emit(Op::DUP);
+                    self.emit_u16(Op::LOCAL_SET, tmp);
+                    self.emit(Op::DROP);
 
                     let idx = self.add_string_constant(&member_lower);
-                    self.emit_u16(Op::struct_set, idx);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::STRUCT_SET, idx);
+                    self.emit(Op::DROP);
 
                     // Emit controlSetProperty with saved value (no re-evaluation)
                     self.compile_expression(object)?;
@@ -96,24 +96,24 @@ impl Compiler {
                         }
                     };
                     self.emit_constant(Value::String(Arc::from(cap.as_str())));
-                    self.emit_u16(Op::local_get, tmp);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
                     let set_idx = self.import("vybe:gui", "controlSetProperty");
                     self.emit_host_call(set_idx, 3);
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 } else {
                     let idx = self.add_string_constant(&member_lower);
-                    self.emit_u16(Op::struct_set, idx);
-                    self.emit(Op::drop);
+                    self.emit_u16(Op::STRUCT_SET, idx);
+                    self.emit(Op::DROP);
                 }
             }
             Statement::ArrayAssignment { array, indices, value } => {
                 // Stack order for array_set: obj (bottom), key, val (top)
                 let name = array.as_str().to_lowercase();
                 match self.resolve_variable(&name) {
-                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Local(slot) => self.emit_u16(Op::LOCAL_GET, slot),
                     VarResolution::Global => {
                         let idx = self.add_string_constant(&name);
-                        self.emit_u16(Op::global_get, idx);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
                     }
                 }
                 if let Some(index) = indices.first() {
@@ -121,24 +121,24 @@ impl Compiler {
                 }
                 self.compile_expression(value)?;
                 common_collections::emit_set(&mut self.chunks[self.current_chunk_idx], self.line);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Statement::If { condition, then_branch, elseif_branches, else_branch } => {
                 self.compile_expression(condition)?;
                 common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
-                let else_jump = self.emit_jump(Op::br_if_false);
+                let else_jump = self.emit_jump(Op::BR_IF_FALSE);
                 for s in then_branch { self.compile_statement(s)?; }
                 let mut end_jumps = vec![];
                 if !elseif_branches.is_empty() || else_branch.is_some() {
-                    end_jumps.push(self.emit_jump(Op::br));
+                    end_jumps.push(self.emit_jump(Op::BR));
                 }
                 self.patch_jump(else_jump);
                 for (cond, body) in elseif_branches {
                     self.compile_expression(cond)?;
                     common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
-                    let next = self.emit_jump(Op::br_if_false);
+                    let next = self.emit_jump(Op::BR_IF_FALSE);
                     for s in body { self.compile_statement(s)?; }
-                    end_jumps.push(self.emit_jump(Op::br));
+                    end_jumps.push(self.emit_jump(Op::BR));
                     self.patch_jump(next);
                 }
                 if let Some(els) = else_branch {
@@ -151,37 +151,37 @@ impl Compiler {
                 self.compile_expression(start)?;
                 let var_name = variable.as_str().to_lowercase();
                 let i_slot = self.define_local(&var_name);
-                self.emit_u16(Op::local_set, i_slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, i_slot);
+                self.emit(Op::DROP);
 
                 // Determine step direction at compile time for the loop condition
                 let negative_step = step.as_ref().map(|s| is_negative_expr(s)).unwrap_or(false);
 
                 let loop_start = self.current_offset();
-                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
                 self.compile_expression(end)?;
                 if negative_step {
-                    self.emit(Op::dyn_ge); // i >= end for negative step
+                    self.emit(Op::DYN_GE); // i >= end for negative step
                 } else {
-                    self.emit(Op::dyn_le); // i <= end for positive step
+                    self.emit(Op::DYN_LE); // i <= end for positive step
                 }
                 common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
-                let exit = self.emit_jump(Op::br_if_false);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
                 self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
                 let ctx = self.loop_stack.pop().unwrap();
                 // Patch continue jumps to step
                 let _step_offset = self.current_offset();
                 for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
-                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
                 if let Some(step_expr) = step {
                     self.compile_expression(step_expr)?;
                 } else {
                     self.emit_constant(Value::F64(1.0));
                 }
-                self.emit(Op::dyn_add);
-                self.emit_u16(Op::local_set, i_slot);
-                self.emit(Op::drop);
+                self.emit(Op::DYN_ADD);
+                self.emit_u16(Op::LOCAL_SET, i_slot);
+                self.emit(Op::DROP);
                 self.emit_loop(loop_start);
                 self.patch_jump(exit);
                 for bj in &ctx.break_jumps { self.patch_jump(*bj); }
@@ -191,30 +191,30 @@ impl Compiler {
                 self.current_scope_mut().begin_scope();
                 self.compile_expression(collection)?;
                 let arr_slot = self.define_local("__foreach_arr");
-                self.emit_u16(Op::local_set, arr_slot); self.emit(Op::drop);
-                self.emit(Op::i32_const_0);
+                self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                self.emit(Op::I32_CONST_0);
                 let i_slot = self.define_local("__foreach_i");
-                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, i_slot); self.emit(Op::DROP);
                 let loop_start = self.current_offset();
-                self.emit_u16(Op::local_get, i_slot);
-                self.emit_u16(Op::local_get, arr_slot);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
+                self.emit_u16(Op::LOCAL_GET, arr_slot);
                 common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line); // works for both arrays and strings
-                self.emit(Op::dyn_lt); common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
-                let exit = self.emit_jump(Op::br_if_false);
-                self.emit_u16(Op::local_get, arr_slot);
-                self.emit_u16(Op::local_get, i_slot);
+                self.emit(Op::DYN_LT); common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, arr_slot);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
                 common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                 let var_name = variable.as_str().to_lowercase();
                 let elem_slot = self.define_local(&var_name);
-                self.emit_u16(Op::local_set, elem_slot); self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
                 self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
                 let ctx = self.loop_stack.pop().unwrap();
                 for cj in &ctx.continue_jumps { self.patch_jump(*cj); }
-                self.emit_u16(Op::local_get, i_slot);
+                self.emit_u16(Op::LOCAL_GET, i_slot);
                 self.emit_constant(Value::F64(1.0));
-                self.emit(Op::dyn_add);
-                self.emit_u16(Op::local_set, i_slot); self.emit(Op::drop);
+                self.emit(Op::DYN_ADD);
+                self.emit_u16(Op::LOCAL_SET, i_slot); self.emit(Op::DROP);
                 self.emit_loop(loop_start);
                 self.patch_jump(exit);
                 for bj in &ctx.break_jumps { self.patch_jump(*bj); }
@@ -224,7 +224,7 @@ impl Compiler {
                 let loop_start = self.current_offset();
                 self.compile_expression(condition)?;
                 common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
-                let exit = self.emit_jump(Op::br_if_false);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
                 self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
                 for s in body { self.compile_statement(s)?; }
                 let ctx = self.loop_stack.pop().unwrap();
@@ -240,8 +240,8 @@ impl Compiler {
                     self.compile_expression(cond_expr)?;
                     common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                     exit_jump = Some(match cond_type {
-                        LoopConditionType::While => self.emit_jump(Op::br_if_false),
-                        LoopConditionType::Until => self.emit_jump(Op::br_if_true),
+                        LoopConditionType::While => self.emit_jump(Op::BR_IF_FALSE),
+                        LoopConditionType::Until => self.emit_jump(Op::BR_IF_TRUE),
                     });
                 }
                 self.loop_stack.push(LoopContext { _start: loop_start, break_jumps: vec![], continue_jumps: vec![] });
@@ -253,12 +253,12 @@ impl Compiler {
                     common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                     match cond_type {
                         LoopConditionType::While => {
-                            let ex = self.emit_jump(Op::br_if_false);
+                            let ex = self.emit_jump(Op::BR_IF_FALSE);
                             self.emit_loop(loop_start);
                             self.patch_jump(ex);
                         }
                         LoopConditionType::Until => {
-                            let ex = self.emit_jump(Op::br_if_true);
+                            let ex = self.emit_jump(Op::BR_IF_TRUE);
                             self.emit_loop(loop_start);
                             self.patch_jump(ex);
                         }
@@ -274,7 +274,7 @@ impl Compiler {
                 if fname == "console.writeline" || fname == "console.write" || fname == "console" {
                     for arg in arguments { self.compile_expression(arg)?; }
                     self.emit_print(arguments.len() as u8);
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                     return Ok(());
                 }
 
@@ -287,13 +287,13 @@ impl Compiler {
                             return Ok(());
                         }
                         // Generic: struct_get method on Me, call with Me as this
-                        self.emit_u16(Op::local_get, me_slot);
+                        self.emit_u16(Op::LOCAL_GET, me_slot);
                         let prop_idx = self.add_string_constant(method);
-                        self.emit_u16(Op::struct_get, prop_idx);
-                        self.emit_u16(Op::local_get, me_slot);
+                        self.emit_u16(Op::STRUCT_GET, prop_idx);
+                        self.emit_u16(Op::LOCAL_GET, me_slot);
                         for arg in arguments { self.compile_expression(arg)?; }
-                        self.emit_u8(Op::call, (arguments.len() + 1) as u8);
-                        self.emit(Op::drop);
+                        self.emit_u8(Op::CALL, (arguments.len() + 1) as u8);
+                        self.emit(Op::DROP);
                         return Ok(());
                     }
                 }
@@ -307,22 +307,22 @@ impl Compiler {
                 if is_class_method {
                     let me_slot = self.current_scope().resolve_local("me").unwrap();
                     // Push the method: Me.methodname
-                    self.emit_u16(Op::local_get, me_slot);
+                    self.emit_u16(Op::LOCAL_GET, me_slot);
                     let prop_idx = self.add_string_constant(&fname);
-                    self.emit_u16(Op::struct_get, prop_idx);
+                    self.emit_u16(Op::STRUCT_GET, prop_idx);
                     // Push Me as first arg
-                    self.emit_u16(Op::local_get, me_slot);
+                    self.emit_u16(Op::LOCAL_GET, me_slot);
                     // Push remaining args
                     for arg in arguments { self.compile_expression(arg)?; }
-                    self.emit_u8(Op::call, (arguments.len() + 1) as u8);
-                    self.emit(Op::drop);
+                    self.emit_u8(Op::CALL, (arguments.len() + 1) as u8);
+                    self.emit(Op::DROP);
                 } else {
                     // Push function reference
                     match self.resolve_variable(&fname) {
-                        VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                        VarResolution::Local(slot) => self.emit_u16(Op::LOCAL_GET, slot),
                         VarResolution::Global => {
                             let idx = self.add_string_constant(&fname);
-                            self.emit_u16(Op::global_get, idx);
+                            self.emit_u16(Op::GLOBAL_GET, idx);
                         }
                     }
 
@@ -336,9 +336,9 @@ impl Compiler {
                                 self.compile_expression(arg)?;
                                 common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 1, self.line);
                                 let box_local = self.define_local(&format!("__box_{}", i));
-                                self.emit(Op::dup);
-                                self.emit_u16(Op::local_set, box_local);
-                                self.emit(Op::drop);
+                                self.emit(Op::DUP);
+                                self.emit_u16(Op::LOCAL_SET, box_local);
+                                self.emit(Op::DROP);
                                 if let VarResolution::Local(var_slot) = self.resolve_variable(&var_name) {
                                     byref_info.push((box_local, var_slot));
                                 }
@@ -350,43 +350,43 @@ impl Compiler {
                             self.compile_expression(arg)?;
                         }
                     }
-                    self.emit_u8(Op::call, arguments.len() as u8);
-                    self.emit(Op::drop);
+                    self.emit_u8(Op::CALL, arguments.len() as u8);
+                    self.emit(Op::DROP);
 
                     // Writeback: read from boxes back into caller's variables
                     for (box_local, var_local) in &byref_info {
-                        self.emit_u16(Op::local_get, *box_local);
-                        self.emit(Op::i32_const_0);
+                        self.emit_u16(Op::LOCAL_GET, *box_local);
+                        self.emit(Op::I32_CONST_0);
                         common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
-                        self.emit_u16(Op::local_set, *var_local);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::LOCAL_SET, *var_local);
+                        self.emit(Op::DROP);
                     }
                 }
             }
             Statement::ExpressionStatement(expr) => {
                 self.compile_expression(expr)?;
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Statement::Return(Some(expr)) => {
                 self.compile_expression(expr)?;
-                self.emit(Op::r#return);
+                self.emit(Op::RETURN);
             }
             Statement::Return(None) | Statement::ExitSub | Statement::ExitFunction => {
-                self.emit(Op::null);
-                self.emit(Op::r#return);
+                self.emit(Op::NULL);
+                self.emit(Op::RETURN);
             }
             Statement::ExitProperty | Statement::ExitTry => {
-                self.emit(Op::null);
-                self.emit(Op::r#return);
+                self.emit(Op::NULL);
+                self.emit(Op::RETURN);
             }
             Statement::ExitFor | Statement::ExitDo | Statement::ExitWhile | Statement::ExitSelect => {
-                let j = self.emit_jump(Op::br);
+                let j = self.emit_jump(Op::BR);
                 if let Some(ctx) = self.loop_stack.last_mut() {
                     ctx.break_jumps.push(j);
                 }
             }
             Statement::Continue(_cont_type) => {
-                let j = self.emit_jump(Op::br);
+                let j = self.emit_jump(Op::BR);
                 if let Some(ctx) = self.loop_stack.last_mut() {
                     ctx.continue_jumps.push(j);
                 }
@@ -395,20 +395,20 @@ impl Compiler {
             Statement::CompoundAssignment { target, operator, value, .. } => {
                 let name = target.as_str().to_lowercase();
                 match self.resolve_variable(&name) {
-                    VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                    VarResolution::Local(slot) => self.emit_u16(Op::LOCAL_GET, slot),
                     VarResolution::Global => {
                         let idx = self.add_string_constant(&name);
-                        self.emit_u16(Op::global_get, idx);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
                     }
                 }
                 self.compile_expression(value)?;
                 match operator {
-                    CompoundOp::AddAssign => self.emit(Op::dyn_add),
-                    CompoundOp::SubtractAssign => self.emit(Op::f64_sub),
-                    CompoundOp::MultiplyAssign => self.emit(Op::f64_mul),
-                    CompoundOp::DivideAssign => self.emit(Op::f64_div),
+                    CompoundOp::AddAssign => self.emit(Op::DYN_ADD),
+                    CompoundOp::SubtractAssign => self.emit(Op::F64_SUB),
+                    CompoundOp::MultiplyAssign => self.emit(Op::F64_MUL),
+                    CompoundOp::DivideAssign => self.emit(Op::F64_DIV),
                     CompoundOp::IntDivideAssign => {
-                        self.emit(Op::f64_div);
+                        self.emit(Op::F64_DIV);
                         let idx = self.import("vybe:math", "floor");
                         self.emit_host_call(idx, 1);
                     }
@@ -417,7 +417,7 @@ impl Compiler {
                         let idx = self.import("vybe:math", "pow");
                         self.emit_host_call(idx, 2);
                     }
-                    _ => self.emit(Op::dyn_add),
+                    _ => self.emit(Op::DYN_ADD),
                 }
                 self.compile_store_ident(target)?;
             }
@@ -430,17 +430,17 @@ impl Compiler {
                     self.compile_expression(dim)?;
                     // VB ReDim arr(N) means indices 0..N inclusive, size = N+1
                     self.emit_constant(Value::F64(1.0));
-                    self.emit(Op::dyn_add);
+                    self.emit(Op::DYN_ADD);
                 } else {
-                    self.emit(Op::i32_const_0);
+                    self.emit(Op::I32_CONST_0);
                 }
-                if *preserve { self.emit(Op::r#true); } else { self.emit(Op::r#false); }
+                if *preserve { self.emit(Op::TRUE); } else { self.emit(Op::FALSE); }
                 let idx = self.import("vybe:array", "redim");
                 self.emit_host_call(idx, 3);
                 // Store result back
                 let slot_idx = self.add_string_constant(&arr_name);
-                self.emit_u16(Op::global_set, slot_idx);
-                self.emit(Op::drop);
+                self.emit_u16(Op::GLOBAL_SET, slot_idx);
+                self.emit(Op::DROP);
             }
             // Using block — resource stored as the named variable
             Statement::Using { variable, resource, body } => {
@@ -448,8 +448,8 @@ impl Compiler {
                 self.compile_expression(resource)?;
                 let var_name = variable.as_str().to_lowercase();
                 let slot = self.define_local(&var_name);
-                self.emit_u16(Op::local_set, slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, slot);
+                self.emit(Op::DROP);
                 for s in body { self.compile_statement(s)?; }
                 self.current_scope_mut().end_scope();
             }
@@ -464,19 +464,19 @@ impl Compiler {
                 self.emit_constant(Value::String(Arc::from(handler.as_str())));
                 let idx = self.import("vybe:gui", "removeHandler");
                 self.emit_host_call(idx, 2);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             // StaticVar — treated as regular local
             Statement::StaticVar { name, initializer, .. } => {
                 if let Some(init) = initializer {
                     self.compile_expression(init)?;
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
                 let n = name.as_str().to_lowercase();
                 let slot = self.define_local(&n);
-                self.emit_u16(Op::local_set, slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, slot);
+                self.emit(Op::DROP);
             }
             // GoTo / Label — compile labels as jump targets, GoTo as jumps
             Statement::Label(_) => {
@@ -489,10 +489,10 @@ impl Compiler {
                 // Without a label pre-pass, we emit a host call that sets a
                 // __goto global and returns, allowing the caller to re-dispatch.
                 let lbl = self.add_string_constant(&label.as_str().to_lowercase());
-                self.emit_u16(Op::r#const, lbl);
+                self.emit_u16(Op::CONST, lbl);
                 let idx = self.import("vybe:runtime", "goto");
                 self.emit_host_call(idx, 1);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             // On Error GoTo label — wraps remaining code in try/catch
             Statement::OnErrorGoTo(label) => {
@@ -521,8 +521,8 @@ impl Compiler {
                 // Compile the lock object expression (should evaluate to a memory address i32)
                 self.compile_expression(lock_object)?;
                 let addr_slot = self.define_local("__lock_addr");
-                self.emit_u16(Op::local_set, addr_slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, addr_slot);
+                self.emit(Op::DROP);
                 // Acquire lock
                 let line = self.line;
                 common_thread::emit_lock_acquire(&mut self.chunks[self.current_chunk_idx], addr_slot, line);
@@ -546,7 +546,7 @@ impl Compiler {
                 self.compile_expression(file_number)?;
                 let idx = self.import("wasi:filesystem", "openFile");
                 self.emit_host_call(idx, 3);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Statement::CloseFile { file_number } => {
                 if let Some(fnum) = file_number {
@@ -556,21 +556,21 @@ impl Compiler {
                 }
                 let idx = self.import("wasi:filesystem", "closeFile");
                 self.emit_host_call(idx, 1);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Statement::PrintFile { file_number, items, newline: _ } => {
                 self.compile_expression(file_number)?;
                 for v in items { self.compile_expression(v)?; }
                 let idx = self.import("wasi:filesystem", "printFile");
                 self.emit_host_call(idx, (items.len() + 1) as u8);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Statement::WriteFile { file_number, items } => {
                 self.compile_expression(file_number)?;
                 for v in items { self.compile_expression(v)?; }
                 let idx = self.import("wasi:filesystem", "writeFile");
                 self.emit_host_call(idx, (items.len() + 1) as u8);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Statement::InputFile { file_number, variables } => {
                 self.compile_expression(file_number)?;
@@ -578,12 +578,12 @@ impl Compiler {
                 self.emit_host_call(idx, 1);
                 // Result is an array of values — assign to each variable
                 for (i, var) in variables.iter().enumerate() {
-                    self.emit(Op::dup);
+                    self.emit(Op::DUP);
                     self.emit_constant(Value::F64(i as f64));
                     common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.compile_store_ident(var)?;
                 }
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             Statement::LineInput { file_number, variable } => {
                 self.compile_expression(file_number)?;
@@ -596,21 +596,21 @@ impl Compiler {
                 let catch_jump = common_errors::emit_try_start(&mut self.chunks[self.current_chunk_idx], line);
                 for s in body { self.compile_statement(s)?; }
                 common_errors::emit_try_end(&mut self.chunks[self.current_chunk_idx], self.line);
-                let skip = self.emit_jump(Op::br);
+                let skip = self.emit_jump(Op::BR);
                 common_errors::patch_catch(&mut self.chunks[self.current_chunk_idx], catch_jump);
                 if let Some(catch) = catches.first() {
                     self.current_scope_mut().begin_scope();
                     if let Some((ref var_name, _)) = catch.variable {
                         let slot = self.define_local(&var_name.as_str().to_lowercase());
-                        self.emit_u16(Op::local_set, slot);
-                        self.emit(Op::drop);
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                        self.emit(Op::DROP);
                     } else {
-                        self.emit(Op::drop);
+                        self.emit(Op::DROP);
                     }
                     for s in &catch.body { self.compile_statement(s)?; }
                     self.current_scope_mut().end_scope();
                 } else {
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
                 }
                 self.patch_jump(skip);
                 if let Some(fin) = finally_block {
@@ -621,7 +621,7 @@ impl Compiler {
                 if let Some(e) = expr {
                     self.compile_expression(e)?;
                 } else {
-                    self.emit(Op::null);
+                    self.emit(Op::NULL);
                 }
                 common_errors::emit_throw(&mut self.chunks[self.current_chunk_idx], self.line);
             }
@@ -629,15 +629,15 @@ impl Compiler {
                 self.compile_expression(&c.value)?;
                 let name = c.name.as_str().to_lowercase();
                 let slot = self.define_local(&name);
-                self.emit_u16(Op::local_set, slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, slot);
+                self.emit(Op::DROP);
             }
             Statement::Select { test_expr, cases, else_block } => {
                 self.current_scope_mut().begin_scope();
                 self.compile_expression(test_expr)?;
                 let test_slot = self.define_local("__select_val");
-                self.emit_u16(Op::local_set, test_slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, test_slot);
+                self.emit(Op::DROP);
                 let mut end_jumps = vec![];
                 for case in cases {
                     let mut case_false_jumps = vec![];
@@ -645,58 +645,58 @@ impl Compiler {
                     for (ci, cond) in case.conditions.iter().enumerate() {
                         match cond {
                             CaseCondition::Value(expr) => {
-                                self.emit_u16(Op::local_get, test_slot);
+                                self.emit_u16(Op::LOCAL_GET, test_slot);
                                 self.compile_expression(expr)?;
-                                self.emit(Op::dyn_eq);
+                                self.emit(Op::DYN_EQ);
                                 common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                                 if ci < case.conditions.len() - 1 {
-                                    case_true_jump = Some(self.emit_jump(Op::br_if_true));
+                                    case_true_jump = Some(self.emit_jump(Op::BR_IF_TRUE));
                                 } else {
-                                    case_false_jumps.push(self.emit_jump(Op::br_if_false));
+                                    case_false_jumps.push(self.emit_jump(Op::BR_IF_FALSE));
                                 }
                             }
                             CaseCondition::Range { from, to } => {
-                                self.emit_u16(Op::local_get, test_slot);
+                                self.emit_u16(Op::LOCAL_GET, test_slot);
                                 self.compile_expression(from)?;
-                                self.emit(Op::dyn_ge);
+                                self.emit(Op::DYN_GE);
                                 common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
-                                let not_in_range = self.emit_jump(Op::br_if_false);
-                                self.emit_u16(Op::local_get, test_slot);
+                                let not_in_range = self.emit_jump(Op::BR_IF_FALSE);
+                                self.emit_u16(Op::LOCAL_GET, test_slot);
                                 self.compile_expression(to)?;
-                                self.emit(Op::dyn_le);
+                                self.emit(Op::DYN_LE);
                                 common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                                 if ci < case.conditions.len() - 1 {
-                                    case_true_jump = Some(self.emit_jump(Op::br_if_true));
+                                    case_true_jump = Some(self.emit_jump(Op::BR_IF_TRUE));
                                     self.patch_jump(not_in_range);
                                 } else {
-                                    case_false_jumps.push(self.emit_jump(Op::br_if_false));
+                                    case_false_jumps.push(self.emit_jump(Op::BR_IF_FALSE));
                                     self.patch_jump(not_in_range);
-                                    case_false_jumps.push(self.emit_jump(Op::br));
+                                    case_false_jumps.push(self.emit_jump(Op::BR));
                                 }
                             }
                             CaseCondition::Comparison { op, expr } => {
-                                self.emit_u16(Op::local_get, test_slot);
+                                self.emit_u16(Op::LOCAL_GET, test_slot);
                                 self.compile_expression(expr)?;
                                 match op {
-                                    CompOp::Equal => self.emit(Op::dyn_eq),
-                                    CompOp::NotEqual => self.emit(Op::dyn_ne),
-                                    CompOp::LessThan => self.emit(Op::dyn_lt),
-                                    CompOp::LessThanOrEqual => self.emit(Op::dyn_le),
-                                    CompOp::GreaterThan => self.emit(Op::dyn_gt),
-                                    CompOp::GreaterThanOrEqual => self.emit(Op::dyn_ge),
+                                    CompOp::Equal => self.emit(Op::DYN_EQ),
+                                    CompOp::NotEqual => self.emit(Op::DYN_NE),
+                                    CompOp::LessThan => self.emit(Op::DYN_LT),
+                                    CompOp::LessThanOrEqual => self.emit(Op::DYN_LE),
+                                    CompOp::GreaterThan => self.emit(Op::DYN_GT),
+                                    CompOp::GreaterThanOrEqual => self.emit(Op::DYN_GE),
                                 }
                                 common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
                                 if ci < case.conditions.len() - 1 {
-                                    case_true_jump = Some(self.emit_jump(Op::br_if_true));
+                                    case_true_jump = Some(self.emit_jump(Op::BR_IF_TRUE));
                                 } else {
-                                    case_false_jumps.push(self.emit_jump(Op::br_if_false));
+                                    case_false_jumps.push(self.emit_jump(Op::BR_IF_FALSE));
                                 }
                             }
                         }
                     }
                     if let Some(tj) = case_true_jump { self.patch_jump(tj); }
                     for s in &case.body { self.compile_statement(s)?; }
-                    end_jumps.push(self.emit_jump(Op::br));
+                    end_jumps.push(self.emit_jump(Op::BR));
                     for fj in case_false_jumps { self.patch_jump(fj); }
                 }
                 if let Some(els) = else_block {
@@ -709,8 +709,8 @@ impl Compiler {
                 self.current_scope_mut().begin_scope();
                 self.compile_expression(object)?;
                 let with_slot = self.define_local("__with_obj");
-                self.emit_u16(Op::local_set, with_slot);
-                self.emit(Op::drop);
+                self.emit_u16(Op::LOCAL_SET, with_slot);
+                self.emit(Op::DROP);
                 for s in body { self.compile_statement(s)?; }
                 self.current_scope_mut().end_scope();
             }
@@ -720,9 +720,9 @@ impl Compiler {
                 let event = parts.get(1).unwrap_or(&"Click").to_string();
                 match self.resolve_variable(&control) {
                     VarResolution::Local(slot) => {
-                        self.emit_u16(Op::local_get, slot);
+                        self.emit_u16(Op::LOCAL_GET, slot);
                         let name_idx = self.add_string_constant("__control_name");
-                        self.emit_u16(Op::struct_get, name_idx);
+                        self.emit_u16(Op::STRUCT_GET, name_idx);
                     }
                     VarResolution::Global => {
                         self.emit_constant(Value::String(Arc::from(control.as_str())));
@@ -732,10 +732,10 @@ impl Compiler {
                 let handler_lower = handler.to_lowercase();
                 let handler_lower = handler_lower.trim_start_matches("me.");
                 let idx = self.add_string_constant(handler_lower);
-                self.emit_u16(Op::global_get, idx);
+                self.emit_u16(Op::GLOBAL_GET, idx);
                 let import_idx = self.import("vybe:gui", "onEvent");
                 self.emit_host_call(import_idx, 3);
-                self.emit(Op::drop);
+                self.emit(Op::DROP);
             }
             // RaiseEvent EventName(args)
             // → look up __event_EventName on Me, call if not null
@@ -744,22 +744,22 @@ impl Compiler {
                 let handler_key = format!("__event_{}", name_lower);
                 match self.resolve_variable("me") {
                     VarResolution::Local(slot) => {
-                        self.emit_u16(Op::local_get, slot);
+                        self.emit_u16(Op::LOCAL_GET, slot);
                         let key_idx = self.add_string_constant(&handler_key);
-                        self.emit_u16(Op::struct_get, key_idx);
+                        self.emit_u16(Op::STRUCT_GET, key_idx);
                         // Check if handler exists (not null)
-                        self.emit(Op::dup);
-                        self.emit(Op::null);
-                        self.emit(Op::dyn_eq);
+                        self.emit(Op::DUP);
+                        self.emit(Op::NULL);
+                        self.emit(Op::DYN_EQ);
                         common_convert::emit_to_bool(&mut self.chunks[self.current_chunk_idx], self.line);
-                        let skip = self.emit_jump(Op::br_if_true);
+                        let skip = self.emit_jump(Op::BR_IF_TRUE);
                         // Call handler with args
                         for arg in arguments { self.compile_expression(arg)?; }
-                        self.emit_u8(Op::call, arguments.len() as u8);
-                        self.emit(Op::drop);
-                        let end = self.emit_jump(Op::br);
+                        self.emit_u8(Op::CALL, arguments.len() as u8);
+                        self.emit(Op::DROP);
+                        let end = self.emit_jump(Op::BR);
                         self.patch_jump(skip);
-                        self.emit(Op::drop); // drop the null handler
+                        self.emit(Op::DROP); // drop the null handler
                         self.patch_jump(end);
                     }
                     _ => {}

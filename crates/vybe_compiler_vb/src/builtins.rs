@@ -18,12 +18,12 @@ impl Compiler {
             if let Some(me_slot) = self.current_scope().resolve_local("me") {
                 let method = &fname[3..];
                 // Generic: struct_get on Me, call with Me as this
-                self.emit_u16(Op::local_get, me_slot);
+                self.emit_u16(Op::LOCAL_GET, me_slot);
                 let prop_idx = self.add_string_constant(method);
-                self.emit_u16(Op::struct_get, prop_idx);
-                self.emit_u16(Op::local_get, me_slot);
+                self.emit_u16(Op::STRUCT_GET, prop_idx);
+                self.emit_u16(Op::LOCAL_GET, me_slot);
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, (args.len() + 1) as u8);
+                self.emit_u8(Op::CALL, (args.len() + 1) as u8);
                 return Ok(());
             }
         }
@@ -36,12 +36,12 @@ impl Compiler {
         // Inside a class: bare method call → Me.method(Me, args...)
         if self.class_methods.contains(&fname) {
             if let Some(me_slot) = self.current_scope().resolve_local("me") {
-                self.emit_u16(Op::local_get, me_slot);
+                self.emit_u16(Op::LOCAL_GET, me_slot);
                 let prop_idx = self.add_string_constant(&fname);
-                self.emit_u16(Op::struct_get, prop_idx);
-                self.emit_u16(Op::local_get, me_slot);
+                self.emit_u16(Op::STRUCT_GET, prop_idx);
+                self.emit_u16(Op::LOCAL_GET, me_slot);
                 for arg in args { self.compile_expression(arg)?; }
-                self.emit_u8(Op::call, (args.len() + 1) as u8);
+                self.emit_u8(Op::CALL, (args.len() + 1) as u8);
                 return Ok(());
             }
         }
@@ -50,10 +50,10 @@ impl Compiler {
         // (VB uses parens for both calls and array indexing)
         if self.known_arrays.contains(&fname) {
             match self.resolve_variable(&fname) {
-                VarResolution::Local(slot) => self.emit_u16(Op::local_get, slot),
+                VarResolution::Local(slot) => self.emit_u16(Op::LOCAL_GET, slot),
                 VarResolution::Global => {
                     let idx = self.add_string_constant(&fname);
-                    self.emit_u16(Op::global_get, idx);
+                    self.emit_u16(Op::GLOBAL_GET, idx);
                 }
             }
             if let Some(index) = args.first() {
@@ -68,18 +68,18 @@ impl Compiler {
         match self.resolve_variable(&fname) {
             VarResolution::Local(slot) => {
                 if !self.defined_globals.contains(&fname) {
-                    self.emit_u16(Op::local_get, slot);
+                    self.emit_u16(Op::LOCAL_GET, slot);
                     if let Some(index) = args.first() {
                         self.compile_expression(index)?;
                         common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
                     }
                     return Ok(());
                 }
-                self.emit_u16(Op::local_get, slot);
+                self.emit_u16(Op::LOCAL_GET, slot);
             }
             VarResolution::Global => {
                 let idx = self.add_string_constant(&fname);
-                self.emit_u16(Op::global_get, idx);
+                self.emit_u16(Op::GLOBAL_GET, idx);
             }
         }
         // Box ByRef args if function signature is known
@@ -93,9 +93,9 @@ impl Compiler {
                     self.compile_expression(arg)?;
                     common_collections::emit_array_new(&mut self.chunks[self.current_chunk_idx], 1, self.line);
                     let box_local = self.define_local(&format!("__box_{}", i));
-                    self.emit(Op::dup);
-                    self.emit_u16(Op::local_set, box_local);
-                    self.emit(Op::drop);
+                    self.emit(Op::DUP);
+                    self.emit_u16(Op::LOCAL_SET, box_local);
+                    self.emit(Op::DROP);
                     if let VarResolution::Local(var_slot) = self.resolve_variable(&var_name) {
                         byref_info.push((box_local, var_slot));
                     }
@@ -107,15 +107,15 @@ impl Compiler {
                 self.compile_expression(arg)?;
             }
         }
-        self.emit_u8(Op::call, args.len() as u8);
+        self.emit_u8(Op::CALL, args.len() as u8);
 
         // Writeback ByRef vars from boxes
         for (box_local, var_local) in &byref_info {
-            self.emit_u16(Op::local_get, *box_local);
-            self.emit(Op::i32_const_0);
+            self.emit_u16(Op::LOCAL_GET, *box_local);
+            self.emit(Op::I32_CONST_0);
             common_collections::emit_get(&mut self.chunks[self.current_chunk_idx], self.line);
-            self.emit_u16(Op::local_set, *var_local);
-            self.emit(Op::drop);
+            self.emit_u16(Op::LOCAL_SET, *var_local);
+            self.emit(Op::DROP);
         }
 
         Ok(())
@@ -140,10 +140,10 @@ impl Compiler {
             if all_parts.len() >= 2 && self.is_namespace(all_parts[0]) && all_parts[0] != "console" {
                 // Chain: global_get root → struct_get part1 → struct_get part2 → ...
                 let root_idx = self.add_string_constant(all_parts[0]);
-                self.emit_u16(Op::global_get, root_idx);
+                self.emit_u16(Op::GLOBAL_GET, root_idx);
                 for part in &all_parts[1..] {
                     let idx = self.add_string_constant(part);
-                    self.emit_u16(Op::struct_get, idx);
+                    self.emit_u16(Op::STRUCT_GET, idx);
                 }
                 // Known constants (Math.PI, Math.E) — don't call, just access
                 let last = *all_parts.last().unwrap();
@@ -151,7 +151,7 @@ impl Compiler {
                     | "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon");
                 if !is_constant {
                     for arg in args { self.compile_expression(arg)?; }
-                    self.emit_u8(Op::call, args.len() as u8);
+                    self.emit_u8(Op::CALL, args.len() as u8);
                 }
                 return Ok(Some(()));
             }
@@ -165,17 +165,17 @@ impl Compiler {
                     let resolved_parts: Vec<&str> = full_path.split('.').collect();
                     if self.is_namespace(resolved_parts[0]) {
                         let root_idx = self.add_string_constant(resolved_parts[0]);
-                        self.emit_u16(Op::global_get, root_idx);
+                        self.emit_u16(Op::GLOBAL_GET, root_idx);
                         for part in &resolved_parts[1..] {
                             let idx = self.add_string_constant(part);
-                            self.emit_u16(Op::struct_get, idx);
+                            self.emit_u16(Op::STRUCT_GET, idx);
                         }
                         let last = *resolved_parts.last().unwrap();
                         let is_constant = matches!(last, "pi" | "e" | "maxvalue" | "minvalue"
                             | "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon");
                         if !is_constant {
                             for arg in args { self.compile_expression(arg)?; }
-                            self.emit_u8(Op::call, args.len() as u8);
+                            self.emit_u8(Op::CALL, args.len() as u8);
                         }
                         return Ok(Some(()));
                     }
@@ -380,7 +380,7 @@ impl Compiler {
         // Special cases
         match fname {
             "doevents" => {
-                self.emit(Op::null);
+                self.emit(Op::NULL);
                 Ok(Some(()))
             }
             _ => Ok(None),
@@ -402,16 +402,16 @@ impl Compiler {
                 if full_name == "string.isnullorempty" {
                     self.compile_expression(&args[0])?;
                     common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
-                    self.emit(Op::i32_const_0);
-                    self.emit(Op::dyn_eq);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_EQ);
                     return Ok(Some(()));
                 }
                 // Chain: global_get root → struct_get part1 → ... → call (or property access)
                 let root_idx = self.add_string_constant(all_parts[0]);
-                self.emit_u16(Op::global_get, root_idx);
+                self.emit_u16(Op::GLOBAL_GET, root_idx);
                 for part in &all_parts[1..] {
                     let idx = self.add_string_constant(part);
-                    self.emit_u16(Op::struct_get, idx);
+                    self.emit_u16(Op::STRUCT_GET, idx);
                 }
                 // Known constants — don't call, just access the value
                 let last = *all_parts.last().unwrap();
@@ -419,7 +419,7 @@ impl Compiler {
                     | "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon");
                 if !is_constant && !args.is_empty() {
                     for arg in args { self.compile_expression(arg)?; }
-                    self.emit_u8(Op::call, args.len() as u8);
+                    self.emit_u8(Op::CALL, args.len() as u8);
                 }
                 return Ok(Some(()));
             }
@@ -440,17 +440,17 @@ impl Compiler {
                     let resolved_parts: Vec<&str> = full_path.split('.').collect();
                     if self.is_namespace(resolved_parts[0]) {
                         let root_idx = self.add_string_constant(resolved_parts[0]);
-                        self.emit_u16(Op::global_get, root_idx);
+                        self.emit_u16(Op::GLOBAL_GET, root_idx);
                         for part in &resolved_parts[1..] {
                             let idx = self.add_string_constant(part);
-                            self.emit_u16(Op::struct_get, idx);
+                            self.emit_u16(Op::STRUCT_GET, idx);
                         }
                         let last = *resolved_parts.last().unwrap();
                         let is_constant = matches!(last, "pi" | "e" | "maxvalue" | "minvalue"
                             | "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon");
                         if !is_constant && !args.is_empty() {
                             for arg in args { self.compile_expression(arg)?; }
-                            self.emit_u8(Op::call, args.len() as u8);
+                            self.emit_u8(Op::CALL, args.len() as u8);
                         }
                         return Ok(Some(()));
                     }
@@ -517,7 +517,7 @@ impl Compiler {
             "strreverse" => {
                 if args.len() == 1 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_reverse);
+                    self.emit(Op::STR_REVERSE);
                     return Ok(Some(()));
                 }
             }
@@ -525,8 +525,8 @@ impl Compiler {
             "asc" | "ascw" => {
                 if args.len() == 1 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::i32_const_0);
-                    self.emit(Op::str_char_code_at);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::STR_CHAR_CODE_AT);
                     return Ok(Some(()));
                 }
             }
@@ -534,7 +534,7 @@ impl Compiler {
             "chr" | "chr$" | "chrw" => {
                 if args.len() == 1 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::str_from_char_code);
+                    self.emit(Op::STR_FROM_CHAR_CODE);
                     return Ok(Some(()));
                 }
             }
@@ -592,7 +592,7 @@ impl Compiler {
             "left" | "left$" => {
                 if args.len() == 2 {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::i32_const_0);
+                    self.emit(Op::I32_CONST_0);
                     self.compile_expression(&args[1])?;
                     common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
@@ -605,13 +605,13 @@ impl Compiler {
                     self.compile_expression(&args[0])?; // string
                     self.compile_expression(&args[1])?; // start (1-based in VB)
                     // VB Mid is 1-based, subtract 1 for 0-based str_substring
-                    self.emit(Op::i32_const_1);
-                    self.emit(Op::i32_sub);
+                    self.emit(Op::I32_CONST_1);
+                    self.emit(Op::I32_SUB);
                     if args.len() >= 3 {
                         // start + len for end position
-                        self.emit(Op::dup);
+                        self.emit(Op::DUP);
                         self.compile_expression(&args[2])?;
-                        self.emit(Op::dyn_add);
+                        self.emit(Op::DYN_ADD);
                     } else {
                         // No length — go to end (use large number)
                         self.emit_constant(Value::I32(i32::MAX));
@@ -647,7 +647,7 @@ impl Compiler {
                 if args.len() >= 2 {
                     self.compile_expression(&args[0])?;
                     self.compile_expression(&args[1])?;
-                    self.emit(Op::str_compare);
+                    self.emit(Op::STR_COMPARE);
                     return Ok(Some(()));
                 }
             }
@@ -661,7 +661,7 @@ impl Compiler {
         if args.is_empty() {
             match fname {
                 "lbound" => {
-                    self.emit(Op::i32_const_0);
+                    self.emit(Op::I32_CONST_0);
                     return Ok(Some(()));
                 }
                 _ => {}
@@ -673,29 +673,29 @@ impl Compiler {
             // Direct single-opcode intrinsics
             let op = match fname {
                 // Math functions → f64 opcodes
-                "math.abs" | "abs" | "system.math.abs" => Some(Op::f64_abs),
-                "math.floor" | "fix" | "int" | "system.math.floor" => Some(Op::f64_floor),
-                "math.ceiling" | "math.ceil" | "system.math.ceiling" | "system.math.ceil" => Some(Op::f64_ceil),
-                "math.sqrt" | "sqr" | "system.math.sqrt" => Some(Op::f64_sqrt),
-                "math.truncate" | "system.math.truncate" => Some(Op::f64_trunc),
-                "math.round" | "round" | "system.math.round" => Some(Op::f64_nearest),
+                "math.abs" | "abs" | "system.math.abs" => Some(Op::F64_ABS),
+                "math.floor" | "fix" | "int" | "system.math.floor" => Some(Op::F64_FLOOR),
+                "math.ceiling" | "math.ceil" | "system.math.ceiling" | "system.math.ceil" => Some(Op::F64_CEIL),
+                "math.sqrt" | "sqr" | "system.math.sqrt" => Some(Op::F64_SQRT),
+                "math.truncate" | "system.math.truncate" => Some(Op::F64_TRUNC),
+                "math.round" | "round" | "system.math.round" => Some(Op::F64_NEAREST),
                 // Type conversions → opcodes
-                "convert.toint32" | "convert.toint" | "cint" => Some(Op::i32_from_f64),
-                "convert.todouble" | "cdbl" => Some(Op::f64_from_i32),
-                "cbool" => Some(Op::dyn_to_bool),
+                "convert.toint32" | "convert.toint" | "cint" => Some(Op::I32_FROM_F64),
+                "convert.todouble" | "cdbl" => Some(Op::F64_FROM_I32),
+                "cbool" => Some(Op::DYN_TO_BOOL),
                 // Type checks
-                "isnothing" | "isnull" => Some(Op::ref_is_null),
-                "isarray" => Some(Op::ref_is_array),
-                "typename" => Some(Op::ref_typeof),
+                "isnothing" | "isnull" => Some(Op::REF_IS_NULL),
+                "isarray" => Some(Op::REF_IS_ARRAY),
+                "typename" => Some(Op::REF_TYPEOF),
                 // String builtins (wasm:js-string proposal)
-                "len" => Some(Op::str_length),
-                "ucase" => Some(Op::str_to_upper),
-                "lcase" => Some(Op::str_to_lower),
-                "trim" => Some(Op::str_trim),
-                "ltrim" => Some(Op::str_trim_start),
-                "rtrim" => Some(Op::str_trim_end),
-                "strreverse" => Some(Op::str_reverse),
-                "chr" | "chr$" | "chrw" => Some(Op::str_from_char_code),
+                "len" => Some(Op::STR_LENGTH),
+                "ucase" => Some(Op::STR_TO_UPPER),
+                "lcase" => Some(Op::STR_TO_LOWER),
+                "trim" => Some(Op::STR_TRIM),
+                "ltrim" => Some(Op::STR_TRIM_START),
+                "rtrim" => Some(Op::STR_TRIM_END),
+                "strreverse" => Some(Op::STR_REVERSE),
+                "chr" | "chr$" | "chrw" => Some(Op::STR_FROM_CHAR_CODE),
                 _ => None,
             };
             if let Some(op) = op {
@@ -711,7 +711,7 @@ impl Compiler {
                     self.compile_expression(&args[0])?;
                     common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(0xFF));
-                    self.emit(Op::i32_and);
+                    self.emit(Op::I32_AND);
                     return Ok(Some(()));
                 }
                 // UBound: array length - 1
@@ -719,14 +719,14 @@ impl Compiler {
                     self.compile_expression(&args[0])?;
                     common_collections::emit_len(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
-                    self.emit(Op::i32_sub);
+                    self.emit(Op::I32_SUB);
                     return Ok(Some(()));
                 }
                 // Asc(s) → str_char_code_at(s, 0)
                 "asc" | "ascw" => {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::i32_const_0);
-                    self.emit(Op::str_char_code_at);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::STR_CHAR_CODE_AT);
                     return Ok(Some(()));
                 }
                 // Space(n) → str_repeat(" ", n)
@@ -740,12 +740,12 @@ impl Compiler {
                 // String.IsNullOrEmpty(s) → ref_is_null OR str_length == 0
                 "string.isnullorempty" => {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::dup);
-                    self.emit(Op::ref_is_null);
-                    let done = self.emit_jump(Op::br_if_true);
+                    self.emit(Op::DUP);
+                    self.emit(Op::REF_IS_NULL);
+                    let done = self.emit_jump(Op::BR_IF_TRUE);
                     common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);
-                    self.emit(Op::i32_const_0);
-                    self.emit(Op::dyn_eq);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_EQ);
                     self.patch_jump(done);
                     return Ok(Some(()));
                 }
@@ -756,12 +756,12 @@ impl Compiler {
         // Two-argument intrinsics
         if args.len() == 2 {
             let op = match fname {
-                "math.min" | "system.math.min" => Some(Op::f64_min),
-                "math.max" | "system.math.max" => Some(Op::f64_max),
-                "split" => Some(Op::str_split),
-                "join" => Some(Op::array_join),
-                "string" | "string$" => Some(Op::str_repeat),
-                "strcomp" => Some(Op::str_compare),
+                "math.min" | "system.math.min" => Some(Op::F64_MIN),
+                "math.max" | "system.math.max" => Some(Op::F64_MAX),
+                "split" => Some(Op::STR_SPLIT),
+                "join" => Some(Op::ARRAY_JOIN),
+                "string" | "string$" => Some(Op::STR_REPEAT),
+                "strcomp" => Some(Op::STR_COMPARE),
                 _ => None,
             };
             if let Some(op) = op {
@@ -779,7 +779,7 @@ impl Compiler {
                     self.compile_expression(&args[1])?;
                     common_strings::emit_last_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
-                    self.emit(Op::i32_add);
+                    self.emit(Op::I32_ADD);
                     return Ok(Some(()));
                 }
                 // InStr(s, needle) → str_index_of + 1 (VB is 1-based: 1=first, 0=not found)
@@ -788,13 +788,13 @@ impl Compiler {
                     self.compile_expression(&args[1])?;
                     common_strings::emit_index_of(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
-                    self.emit(Op::i32_add); // -1→0, 0→1, 5→6
+                    self.emit(Op::I32_ADD); // -1→0, 0→1, 5→6
                     return Ok(Some(()));
                 }
                 // Left(s, n) → str_substring(s, 0, n)
                 "left" | "left$" => {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::i32_const_0);
+                    self.emit(Op::I32_CONST_0);
                     self.compile_expression(&args[1])?;
                     common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
@@ -803,18 +803,18 @@ impl Compiler {
                 // Right(s, n) → str_substring(s, len-n, len)
                 "right" | "right$" => {
                     self.compile_expression(&args[0])?;
-                    self.emit(Op::dup);
+                    self.emit(Op::DUP);
                     common_strings::emit_length(&mut self.chunks[self.current_chunk_idx], self.line);        // [s, len]
-                    self.emit(Op::dup);               // [s, len, len]
+                    self.emit(Op::DUP);               // [s, len, len]
                     self.compile_expression(&args[1])?;
                     common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
-                    self.emit(Op::i32_sub);           // [s, len, len-n]
+                    self.emit(Op::I32_SUB);           // [s, len, len-n]
                     // need: [s, len-n, len] — swap top two
                     // No swap opcode, so recompute: use the stack
                     // Actually let's just fall through to host call for Right — it's complex
-                    self.emit(Op::drop);
-                    self.emit(Op::drop);
-                    self.emit(Op::drop);
+                    self.emit(Op::DROP);
+                    self.emit(Op::DROP);
+                    self.emit(Op::DROP);
                     return Ok(None); // fall through to host call
                 }
                 _ => {}
@@ -828,7 +828,7 @@ impl Compiler {
             self.compile_expression(&args[1])?;
             common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
             self.emit_constant(Value::I32(1));
-            self.emit(Op::i32_sub);
+            self.emit(Op::I32_SUB);
             // end = large number (rest of string)
             self.emit_constant(Value::I32(0x7FFF_FFFF));
             common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
@@ -846,27 +846,27 @@ impl Compiler {
                     self.compile_expression(&args[0])?; // startPos
                     common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
-                    self.emit(Op::i32_sub);             // start0
-                    self.emit(Op::dup);                 // [s, start0, start0]
+                    self.emit(Op::I32_SUB);             // start0
+                    self.emit(Op::DUP);                 // [s, start0, start0]
                     self.emit_constant(Value::I32(0x7FFF_FFFF));
                     common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);       // [start0, tail]
                     self.compile_expression(&args[2])?; // needle
                     common_strings::emit_index_of(&mut self.chunks[self.current_chunk_idx], self.line);        // [start0, pos_in_tail]
                     // if pos_in_tail == -1, result = 0; else result = pos_in_tail + start0 + 1
-                    self.emit(Op::dup);                 // [start0, pos, pos]
+                    self.emit(Op::DUP);                 // [start0, pos, pos]
                     self.emit_constant(Value::I32(-1));
-                    self.emit(Op::dyn_eq);              // [start0, pos, is_not_found]
-                    let found = self.emit_jump(Op::br_if_true);
+                    self.emit(Op::DYN_EQ);              // [start0, pos, is_not_found]
+                    let found = self.emit_jump(Op::BR_IF_TRUE);
                     // Found: pos + start0 + 1
-                    self.emit(Op::i32_add);             // pos + start0
+                    self.emit(Op::I32_ADD);             // pos + start0
                     self.emit_constant(Value::I32(1));
-                    self.emit(Op::i32_add);
-                    let end = self.emit_jump(Op::br);
+                    self.emit(Op::I32_ADD);
+                    let end = self.emit_jump(Op::BR);
                     self.patch_jump(found);
                     // Not found: drop pos and start0, push 0
-                    self.emit(Op::drop);
-                    self.emit(Op::drop);
-                    self.emit(Op::i32_const_0);
+                    self.emit(Op::DROP);
+                    self.emit(Op::DROP);
+                    self.emit(Op::I32_CONST_0);
                     self.patch_jump(end);
                     return Ok(Some(()));
                 }
@@ -884,11 +884,11 @@ impl Compiler {
                     self.compile_expression(&args[1])?;
                     common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                     self.emit_constant(Value::I32(1));
-                    self.emit(Op::i32_sub);           // start0 = start - 1
-                    self.emit(Op::dup);               // [s, start0, start0]
+                    self.emit(Op::I32_SUB);           // start0 = start - 1
+                    self.emit(Op::DUP);               // [s, start0, start0]
                     self.compile_expression(&args[2])?;
                     common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
-                    self.emit(Op::i32_add);           // [s, start0, start0+length]
+                    self.emit(Op::I32_ADD);           // [s, start0, start0+length]
                     common_strings::emit_substring(&mut self.chunks[self.current_chunk_idx], self.line);
                     return Ok(Some(()));
                 }

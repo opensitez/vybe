@@ -6,7 +6,7 @@ use std::cell::RefCell;
 fn make_vm_with_chunk(build: impl FnOnce(&mut Chunk)) -> VM {
     let mut chunk = Chunk::new("<test>");
     build(&mut chunk);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::HALT, 0);
     let mut vm = VM::new();
     vm.run(vec![chunk]).unwrap();
     vm
@@ -20,15 +20,15 @@ fn make_vm_with_chunk(build: impl FnOnce(&mut Chunk)) -> VM {
 fn memory_grow_and_size() {
     let mut chunk = Chunk::new("<test>");
     // Grow by 1 page (64KB)
-    chunk.emit_op(Op::r#const, 0);
+    chunk.emit_op(Op::CONST, 0);
     let idx = chunk.add_constant(Value::F64(1.0));
     chunk.emit((idx >> 8) as u8, 0);
     chunk.emit((idx & 0xff) as u8, 0);
-    chunk.emit_op(Op::memory_grow, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
     // Result should be 0 (old size)
-    chunk.emit_op(Op::memory_size, 0);
+    chunk.emit_op(Op::MEMORY_SIZE, 0);
     // Size should now be 1
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     vm.run(vec![chunk]).unwrap();
@@ -40,22 +40,22 @@ fn memory_i32_store_load() {
     let mut chunk = Chunk::new("<test>");
     // Grow 1 page
     let c1 = chunk.add_constant(Value::F64(1.0));
-    chunk.emit_op_u16(Op::r#const, c1, 0);
-    chunk.emit_op(Op::memory_grow, 0);
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     // Store 42 at address 100
     let c100 = chunk.add_constant(Value::F64(100.0));
     let c42 = chunk.add_constant(Value::F64(42.0));
-    chunk.emit_op_u16(Op::r#const, c100, 0);
-    chunk.emit_op_u16(Op::r#const, c42, 0);
-    chunk.emit_op(Op::i32_store, 0);
+    chunk.emit_op_u16(Op::CONST, c100, 0);
+    chunk.emit_op_u16(Op::CONST, c42, 0);
+    chunk.emit_op(Op::I32_STORE, 0);
 
     // Load from address 100
-    chunk.emit_op_u16(Op::r#const, c100, 0);
-    chunk.emit_op(Op::i32_load, 0);
+    chunk.emit_op_u16(Op::CONST, c100, 0);
+    chunk.emit_op(Op::I32_LOAD, 0);
 
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     let result = vm.run(vec![chunk]).unwrap();
@@ -66,19 +66,19 @@ fn memory_i32_store_load() {
 fn memory_f64_store_load() {
     let mut chunk = Chunk::new("<test>");
     let c1 = chunk.add_constant(Value::F64(1.0));
-    chunk.emit_op_u16(Op::r#const, c1, 0);
-    chunk.emit_op(Op::memory_grow, 0);
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     let c0 = chunk.add_constant(Value::F64(0.0));
     let pi = chunk.add_constant(Value::F64(std::f64::consts::PI));
-    chunk.emit_op_u16(Op::r#const, c0, 0);
-    chunk.emit_op_u16(Op::r#const, pi, 0);
-    chunk.emit_op(Op::f64_store, 0);
+    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_op_u16(Op::CONST, pi, 0);
+    chunk.emit_op(Op::F64_STORE, 0);
 
-    chunk.emit_op_u16(Op::r#const, c0, 0);
-    chunk.emit_op(Op::f64_load, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_op(Op::F64_LOAD, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     let result = vm.run(vec![chunk]).unwrap();
@@ -89,20 +89,20 @@ fn memory_f64_store_load() {
 fn memory_byte_store_load() {
     let mut chunk = Chunk::new("<test>");
     let c1 = chunk.add_constant(Value::F64(1.0));
-    chunk.emit_op_u16(Op::r#const, c1, 0);
-    chunk.emit_op(Op::memory_grow, 0);
-    chunk.emit_op(Op::drop, 0);
+    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     // Store byte 0xFF at address 0
     let c0 = chunk.add_constant(Value::F64(0.0));
     let c255 = chunk.add_constant(Value::F64(255.0));
-    chunk.emit_op_u16(Op::r#const, c0, 0);
-    chunk.emit_op_u16(Op::r#const, c255, 0);
-    chunk.emit_op(Op::i32_store8, 0);
+    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_op_u16(Op::CONST, c255, 0);
+    chunk.emit_op(Op::I32_STORE8, 0);
 
-    chunk.emit_op_u16(Op::r#const, c0, 0);
-    chunk.emit_op(Op::i32_load8_u, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_op(Op::I32_LOAD8_U, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     let result = vm.run(vec![chunk]).unwrap();
@@ -119,16 +119,16 @@ fn pack_unpack() {
     let c1 = chunk.add_constant(Value::F64(10.0));
     let c2 = chunk.add_constant(Value::F64(20.0));
     let c3 = chunk.add_constant(Value::F64(30.0));
-    chunk.emit_op_u16(Op::r#const, c1, 0);
-    chunk.emit_op_u16(Op::r#const, c2, 0);
-    chunk.emit_op_u16(Op::r#const, c3, 0);
+    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_op_u16(Op::CONST, c2, 0);
+    chunk.emit_op_u16(Op::CONST, c3, 0);
     // pack/unpack removed — test array_new instead (3 values → array)
-    chunk.emit_op_u16(Op::array_new, 3, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
     // Get last element: array[2] = 30
     let idx = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::r#const, idx, 0);
-    chunk.emit_op(Op::array_get, 0);
-    chunk.emit_op(Op::halt, 0);
+    chunk.emit_op_u16(Op::CONST, idx, 0);
+    chunk.emit_op(Op::ARRAY_GET, 0);
+    chunk.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     let result = vm.run(vec![chunk]).unwrap();
@@ -148,31 +148,31 @@ fn call_indirect_basic() {
     let mut add_chunk = Chunk::new("add");
     add_chunk.arity = 2;
     add_chunk.local_count = 2;
-    add_chunk.emit_op_u16(Op::local_get, 1, 0); // a (slot 1, slot 0 is fn)
-    add_chunk.emit_op_u16(Op::local_get, 2, 0); // b (slot 2)
+    add_chunk.emit_op_u16(Op::LOCAL_GET, 1, 0); // a (slot 1, slot 0 is fn)
+    add_chunk.emit_op_u16(Op::LOCAL_GET, 2, 0); // b (slot 2)
     // Wait - local_get slot 0 is the implicit fn slot, 1 is first param
     // Actually for arity=2, slot 0=fn, slot 1=a, slot 2=b
     // But the Function only has 2 params; local_count needs to be >= 3
     add_chunk.local_count = 3;
-    add_chunk.emit_op(Op::f64_add, 0);
-    add_chunk.emit_op(Op::r#return, 0);
+    add_chunk.emit_op(Op::F64_ADD, 0);
+    add_chunk.emit_op(Op::RETURN, 0);
 
     // Script: create closure, add to func_table, call_indirect
     // ref_func 1 (creates closure for chunk 1)
-    script.emit_op_u16(Op::ref_func, 1, 0);
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0); // 0 upvalues
     // Store result (closure) as global "add_fn"
     let add_name = script.add_constant(Value::String(Rc::from("add_fn")));
-    script.emit_op_u16(Op::global_set, add_name, 0);
-    script.emit_op(Op::drop, 0);
+    script.emit_op_u16(Op::GLOBAL_SET, add_name, 0);
+    script.emit_op(Op::DROP, 0);
 
     // Push table index 0 + args, call_indirect
     // First we need to populate func_table at runtime...
     // Actually call_indirect reads table index from stack, not from bytecode.
     // Let's just use a regular call for now since func_table is set up externally.
 
-    script.emit_op(Op::null, 0);
-    script.emit_op(Op::halt, 0);
+    script.emit_op(Op::NULL, 0);
+    script.emit_op(Op::HALT, 0);
     script.local_count = 0;
 
     let mut vm = VM::new();

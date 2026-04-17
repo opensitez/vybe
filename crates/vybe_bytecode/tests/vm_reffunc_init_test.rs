@@ -13,15 +13,15 @@ fn global_init_reffunc_creates_function() {
         init: ConstExpr::RefFunc(1),
     });
     let name_c = script.add_constant(Value::String(Rc::from("__test_fn")));
-    script.emit_op_u16(opcode::Op::global_get, name_c, 0);
-    script.emit_op(opcode::Op::halt, 0);
+    script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
+    script.emit_op(opcode::Op::HALT, 0);
 
     let mut func_chunk = Chunk::new("test_func");
     func_chunk.arity = 0;
     func_chunk.local_count = 1;
     let c42 = func_chunk.add_constant(Value::I32(42));
-    func_chunk.emit_op_u16(opcode::Op::r#const, c42, 0);
-    func_chunk.emit_op(opcode::Op::r#return, 0);
+    func_chunk.emit_op_u16(opcode::Op::CONST, c42, 0);
+    func_chunk.emit_op(opcode::Op::RETURN, 0);
 
     let result = vm.run(vec![script, func_chunk]).unwrap();
     match &result {

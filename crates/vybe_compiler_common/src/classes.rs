@@ -41,37 +41,37 @@ use vybe_bytecode::chunk::TypeEntry;
 /// canonical AST and bytecode shape works for both.
 pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
     // Create empty object → store in this_slot
-    chunk.emit_op_u16(Op::struct_new, 0, line);
-    chunk.emit_op_u16(Op::local_set, this_slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // Stamp __type string (untyped fallback for typeof/instanceof)
     // struct_set expects [obj, val] → leaves [val]
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let type_str = chunk.add_constant(Value::String(Arc::from(class_name)));
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_op_u16(Op::r#const, type_str, line);
-    chunk.emit_op_u16(Op::struct_set, type_key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::CONST, type_str, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_op(Op::DROP, line);
 
     // Stamp __control_name = lowercased class name (canonical control identity).
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let cname_str = chunk.add_constant(
         Value::String(Arc::from(class_name.to_lowercase().as_str()))
     );
     let cname_key = chunk.add_constant(Value::String(Arc::from("__control_name")));
-    chunk.emit_op_u16(Op::r#const, cname_str, line);
-    chunk.emit_op_u16(Op::struct_set, cname_key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::CONST, cname_str, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, cname_key, line);
+    chunk.emit_op(Op::DROP, line);
 
     // Stamp WASM GC type_id via __tid_ global (set at load time by TypeRegistry)
     let tid_name = chunk.add_constant(
         Value::String(Arc::from(format!("__tid_{}", class_name.to_lowercase()).as_str()))
     );
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
-    chunk.emit_op_u16(Op::global_get, tid_name, line);
-    chunk.emit_op(Op::set_type_id, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
+    chunk.emit_op(Op::SET_TYPE_ID, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// Stamp `class_name` into `this.__types` array for cross-language instanceof.
@@ -100,37 +100,35 @@ pub fn emit_instanceof_chain(chunk: &mut Chunk, this_slot: u16, class_name: &str
     let types_key = chunk.add_constant(Value::String(Arc::from("__types")));
 
     // [this]
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     // [this, this]
-    chunk.emit_op(Op::dup, line);
+    chunk.emit_op(Op::DUP, line);
     // [this, types_or_null]
-    chunk.emit_op_u16(Op::struct_get, types_key, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, types_key, line);
     // [this, types_or_null, types_or_null]
-    chunk.emit_op(Op::dup, line);
+    chunk.emit_op(Op::DUP, line);
     // [this, types_or_null, bool]
-    chunk.emit_op(Op::ref_is_null, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
     // br_if_false → skip past array creation when __types already exists
-    let patch_pos = chunk.code.len();
-    chunk.emit_op_u16(Op::br_if_false, 0, line); // placeholder offset
+    // Use emit_jump for correct offset handling (2-byte opcode + 2-byte placeholder)
+    let skip_jump = chunk.emit_jump(Op::BR_IF_FALSE, line);
     // [this, null] — null path: drop null and create empty array
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op(Op::DROP, line);
     // [this, []]
-    chunk.emit_op_u16(Op::array_new, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
     // Patch the forward jump to land here
-    let offset = (chunk.code.len() as i16) - (patch_pos as i16) - 3;
-    chunk.code[patch_pos + 1] = (offset >> 8) as u8;
-    chunk.code[patch_pos + 2] = (offset & 0xff) as u8;
+    chunk.patch_jump(skip_jump);
 
     // skip: [this, array]
     let name_const = chunk.add_constant(Value::String(Arc::from(class_name)));
     // [this, array, "class_name"]
-    chunk.emit_op_u16(Op::r#const, name_const, line);
+    chunk.emit_op_u16(Op::CONST, name_const, line);
     // [this, array_with_name]
-    chunk.emit_op(Op::array_push, line);
+    chunk.emit_op(Op::ARRAY_PUSH, line);
     // struct_set expects [obj, val] → stores this.__types = array_with_name
-    chunk.emit_op_u16(Op::struct_set, types_key, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, types_key, line);
     // drop the result left by struct_set
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 // ── Method binding ──────────────────────────────────────────────────────
@@ -139,12 +137,12 @@ pub fn emit_instanceof_chain(chunk: &mut Chunk, this_slot: u16, class_name: &str
 /// Emits: local_get this → ref_func ci → struct_set key → drop
 /// Stack: unchanged
 pub fn emit_bind_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
-    chunk.emit_op_u16(Op::ref_func, method_chunk_idx as u16, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
     let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_op_u16(Op::struct_set, key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// Bind a method AND all its cross-language aliases.
@@ -258,8 +256,8 @@ pub fn emit_super_call_store_result(
     line: u32,
 ) {
     // Store parent-created object as this
-    chunk.emit_op_u16(Op::local_set, this_slot, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // Save parent's methods that child will override (for super.method() calls)
     for method_name in child_method_names {
@@ -275,37 +273,37 @@ pub fn emit_super_call_store_result(
 /// Stack: unchanged
 pub fn emit_save_base_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
     let base_name = format!("__base_{}", method_name);
-    chunk.emit_op_u16(Op::local_get, this_slot, line);  // obj for struct_set
-    chunk.emit_op_u16(Op::local_get, this_slot, line);  // obj for struct_get
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);  // obj for struct_set
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);  // obj for struct_get
     let prop_idx = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_op_u16(Op::struct_get, prop_idx, line);   // val = this.method (parent version)
+    chunk.emit_op_u16(Op::STRUCT_GET, prop_idx, line);   // val = this.method (parent version)
     let base_idx = chunk.add_constant(Value::String(Arc::from(base_name.as_str())));
-    chunk.emit_op_u16(Op::struct_set, base_idx, line);   // this.__base_method = val
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, base_idx, line);   // this.__base_method = val
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// Store parent constructor ref as __super on the instance.
 /// Stack: unchanged
 pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let parent_c = chunk.add_constant(Value::String(Arc::from(parent_name)));
-    chunk.emit_op_u16(Op::global_get, parent_c, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, parent_c, line);
     let super_key = chunk.add_constant(Value::String(Arc::from("__super")));
-    chunk.emit_op_u16(Op::struct_set, super_key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, super_key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// Inherit static methods from parent constructor via Object.assign.
 /// Caller must have the constructor on TOS (typically via dup before this call).
 /// Stack before: [constructor]  Stack after: [constructor]
 pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
-    chunk.emit_op(Op::dup, line);
+    chunk.emit_op(Op::DUP, line);
     let parent_c = chunk.add_constant(Value::String(Arc::from(parent_name)));
-    chunk.emit_op_u16(Op::global_get, parent_c, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, parent_c, line);
     let assign_fn = chunk.add_import("vybe:object", "assign");
-    chunk.emit_op_u16(Op::call_import, assign_fn, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, assign_fn, line);
     chunk.emit(2, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 // ── Static methods ──────────────────────────────────────────────────────
@@ -314,12 +312,12 @@ pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
 /// Same pattern as VB Shared, JS static, C# static, Python @staticmethod.
 /// Stack: unchanged (reads constructor from local)
 pub fn emit_attach_static_method(chunk: &mut Chunk, ctor_local: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
-    chunk.emit_op_u16(Op::local_get, ctor_local, line);
-    chunk.emit_op_u16(Op::ref_func, method_chunk_idx as u16, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ctor_local, line);
+    chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line);
     let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_op_u16(Op::struct_set, key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 // ── Property accessors ──────────────────────────────────────────────────
@@ -345,8 +343,8 @@ pub fn emit_bind_setter(chunk: &mut Chunk, this_slot: u16, prop_name: &str, sett
 /// Emit return-this at the end of a constructor.
 /// Stack: [] → returns this to caller
 pub fn emit_constructor_return(chunk: &mut Chunk, this_slot: u16, line: u32) {
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
-    chunk.emit_op(Op::r#return, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op(Op::RETURN, line);
 }
 
 // ── Constructor storage ─────────────────────────────────────────────────
@@ -354,20 +352,20 @@ pub fn emit_constructor_return(chunk: &mut Chunk, this_slot: u16, line: u32) {
 /// Store a constructor function as a local + global variable.
 /// Stack: unchanged
 pub fn emit_store_constructor(chunk: &mut Chunk, class_name: &str, ctor_chunk_idx: usize, local_slot: u16, line: u32) {
-    chunk.emit_op_u16(Op::ref_func, ctor_chunk_idx as u16, line);
+    chunk.emit_op_u16(Op::REF_FUNC, ctor_chunk_idx as u16, line);
     chunk.emit(0, line);
-    chunk.emit_op_u16(Op::local_set, local_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, local_slot, line);
     // Store under original name (case-sensitive lookup)
     let global_name = chunk.add_constant(Value::String(Arc::from(class_name)));
-    chunk.emit_op_u16(Op::global_set, global_name, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, global_name, line);
+    chunk.emit_op(Op::DROP, line);
     // Also store under lowercase alias for cross-language lookup (VB is case-insensitive)
     let lower = class_name.to_lowercase();
     if lower != class_name {
-        chunk.emit_op_u16(Op::local_get, local_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, local_slot, line);
         let lower_name = chunk.add_constant(Value::String(Arc::from(lower.as_str())));
-        chunk.emit_op_u16(Op::global_set, lower_name, line);
-        chunk.emit_op(Op::drop, line);
+        chunk.emit_op_u16(Op::GLOBAL_SET, lower_name, line);
+        chunk.emit_op(Op::DROP, line);
     }
 }
 
@@ -376,33 +374,33 @@ pub fn emit_store_constructor(chunk: &mut Chunk, class_name: &str, ctor_chunk_id
 /// Set a field on the object to null (pre-declaration / auto-property init).
 /// Stack: unchanged
 pub fn emit_init_field_null(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
-    chunk.emit_op(Op::null, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op(Op::NULL, line);
     let key = chunk.add_constant(Value::String(Arc::from(field_name)));
-    chunk.emit_op_u16(Op::struct_set, key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// Push `this` onto the stack to start a field initialization.
 /// Caller compiles the value expression next, then calls `emit_init_field_end`.
 /// This wraps the language-specific value-compilation in a compiler_common pattern.
 pub fn emit_init_field_start(chunk: &mut Chunk, this_slot: u16, line: u32) {
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
 
 /// Finish a field initialization started with `emit_init_field_start`.
 /// Stack before: [this, value]. Stack after: [].
 pub fn emit_init_field_end(chunk: &mut Chunk, field_name: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field_name)));
-    chunk.emit_op_u16(Op::struct_set, key, line);
-    chunk.emit_op(Op::drop, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// Get a field value from `this`. Stack before: []. Stack after: [value].
 pub fn emit_get_field(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::local_get, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let key = chunk.add_constant(Value::String(Arc::from(field_name)));
-    chunk.emit_op_u16(Op::struct_get, key, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
 }
 
 /// Set a field value on `this` from a value already on the stack.
@@ -505,12 +503,12 @@ pub fn emit_auto_init_component(chunk: &mut Chunk, this_slot: u16, line: u32) {
 /// method listed in the profile's `auto_init_methods`.  The method name is
 /// lowercased for the struct_get lookup (all method keys are stored lowercase).
 pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::local_get, this_slot, line);   // [this]
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);   // [this]
     let name_idx = chunk.add_constant(Value::String(Arc::from(method_name.to_lowercase())));
-    chunk.emit_op_u16(Op::struct_get, name_idx, line);    // [method_ref]
-    chunk.emit_op_u16(Op::local_get, this_slot, line);    // [method_ref, this]
-    chunk.emit_op_u8(Op::call, 1, line);                  // call(1) → [result]
-    chunk.emit_op(Op::drop, line);                        // []
+    chunk.emit_op_u16(Op::STRUCT_GET, name_idx, line);    // [method_ref]
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);    // [method_ref, this]
+    chunk.emit_op_u8(Op::CALL, 1, line);                  // call(1) → [result]
+    chunk.emit_op(Op::DROP, line);                        // []
 }
 
 // NOTE: needs_auto_init_component() has moved to type_registry.rs where it

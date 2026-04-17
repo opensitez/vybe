@@ -165,9 +165,9 @@ impl Chunk {
     }
 
     pub fn emit_op(&mut self, op: Op, line: u32) {
-        let (b1, b2) = op.encode();
-        self.emit(b1, line);
-        if let Some(b) = b2 { self.emit(b, line); }
+        let (prefix, sub) = op.encode();
+        self.emit(prefix, line);
+        self.emit(sub, line);
     }
 
     pub fn emit_op_u16(&mut self, op: Op, operand: u16, line: u32) {
@@ -210,7 +210,7 @@ impl Chunk {
     }
 
     pub fn emit_loop(&mut self, target_offset: usize, line: u32) {
-        self.emit_op(Op::br, line);
+        self.emit_op(Op::BR, line);
         let jump = target_offset as i32 - (self.code.len() as i32 + 2);
         self.emit((jump >> 8) as u8, line);
         self.emit((jump & 0xff) as u8, line);
