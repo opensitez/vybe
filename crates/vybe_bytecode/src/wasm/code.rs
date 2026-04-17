@@ -24,7 +24,11 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
     while ip < chunk.code.len() {
         if ip + 1 >= chunk.code.len() { break; }
         if let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
-            if op == Op::ARRAY_SET || op == Op::STR_SUBSTRING {
+            if op == Op::ARRAY_CONCAT {
+                need = need.max(5); // need 5 temps for concat (2 arrays + 2 lens + new)
+            } else if op == Op::ARRAY_PUSH || op == Op::ARRAY_SLICE {
+                need = need.max(4); // need 4 temps for push/slice
+            } else if op == Op::ARRAY_SET || op == Op::STR_SUBSTRING {
                 need = need.max(2); // need 2 temps for 3-operand reorder
             } else if is_binary_typed_op(op) || op == Op::GLOBAL_SET || op == Op::DUP
                 || op == Op::ARRAY_GET || op == Op::ARRAY_LENGTH
@@ -168,7 +172,7 @@ pub fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], type_c
                 ip += op.operand_format().fixed_size();
             } else {
                 // ── VM-internal ops (0xFF) ──
-                emit_vm_internal_op(&mut body, op, chunk, &mut ip, &rt_idx, temp_local_idx, nesting_depth);
+                emit_vm_internal_op(&mut body, op, chunk, &mut ip, &rt_idx, temp_local_idx, nesting_depth, type_ctx);
             }
         }
 
@@ -574,7 +578,7 @@ fn emit_ref_cast_array(body: &mut Vec<u8>, arr_type_idx: u32) {
 }
 
 /// Emit a VM-internal op (prefix 0xFF) — lowered to WASM equivalents or runtime calls.
-fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize, rt_idx: &std::collections::HashMap<(&str, &str), usize>, temp_idx: u32, nesting_depth: u32) {
+fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize, rt_idx: &std::collections::HashMap<(&str, &str), usize>, temp_idx: u32, nesting_depth: u32, type_ctx: &WasmTypeContext) {
     match op {
         _ if op == Op::CONST => {
             let idx = read_u16(&chunk.code, ip);
@@ -697,8 +701,19 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
             emit_import_call(body, rt_idx, "wasm:js-string", "substring");
         }
         // String ops not in wasm:js-string → stub: drop args, return first arg or null
+        _ if op == Op::STR_INDEX_OF => {
+            // Stack: [externref_str, externref_substr]
+            // Inline indexOf using wasm:js-string equals on substrings
+            // Simplified: compare each substring(i, i+sublen) with needle
+            // This needs a loop — for now return -1 boxed (not found)
+            // TODO: implement as inline WASM loop with substring + equals
+            body.push(0x1A); // drop substr
+            body.push(0x1A); // drop str
+            body.push(0x41); write_leb128_i32(body, -1); // i32.const -1
+            emit_box_i32(body, rt_idx); // → externref
+        }
         // Binary string ops (2 args → 1 result): drop second, keep first
-        _ if op == Op::STR_INDEX_OF || op == Op::STR_LAST_INDEX_OF
+        _ if op == Op::STR_LAST_INDEX_OF
           || op == Op::STR_STARTS_WITH || op == Op::STR_ENDS_WITH || op == Op::STR_CONTAINS
           || op == Op::STR_SPLIT || op == Op::STR_REPEAT => {
             body.push(0x1A); // drop second arg, keep first as result
@@ -724,33 +739,169 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
         }
 
         // ── Array ops → inline WASM GC sequences ──
+        // All i32 intermediates (lengths, indices) are boxed to externref for temp storage.
         _ if op == Op::ARRAY_PUSH => {
             // Stack: [externref_arr, externref_val]
-            // WASM GC arrays are fixed-size. array_push needs:
-            // 1. Get old array length
-            // 2. Create new array of length+1
-            // 3. Copy old elements
-            // 4. Set new element at end
-            // This is complex — for now drop val, keep arr (TODO: proper impl)
-            body.push(0x1A); // drop val
-            // leaves arr on stack
-        }
-        _ if op == Op::ARRAY_POP || op == Op::ARRAY_SHIFT => {
-            // TODO: proper impl — for now just return the array unchanged
-            body.push(0x01); // nop
+            // 1. Save val, save arr, get old length
+            body.push(0x21); write_leb128_u32(body, temp_idx);     // $t0 = val
+            body.push(0x22); write_leb128_u32(body, temp_idx + 1); // $t1 = arr (tee)
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0xFB); write_leb128_u32(body, 0x0F); // array.len → i32
+            // 2. Box len, save it
+            emit_box_i32(body, rt_idx); // i32 → externref
+            body.push(0x22); write_leb128_u32(body, temp_idx + 2); // $t2 = len (boxed)
+            // 3. Create new array: array.new(init=null, size=len+1)
+            emit_unbox_i32(body, rt_idx);  // len → i32
+            body.push(0x41); write_leb128_i32(body, 1);
+            body.push(0x6A); // i32.add → len+1
+            // array.new takes (init_val, i32_size)
+            // Stack has [i32_len+1]. Save as boxed, push init, unbox size.
+            emit_box_i32(body, rt_idx); // box size for temp storage
+            body.push(0x21); write_leb128_u32(body, temp_idx + 3); // $t3 = size (boxed)
+            body.push(0xD0); body.push(0x6F); // init val (externref null)
+            body.push(0x20); write_leb128_u32(body, temp_idx + 3); // size (boxed)
+            emit_unbox_i32(body, rt_idx); // → i32
+            body.push(0xFB); write_leb128_u32(body, 0x06); // array.new
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            emit_externalize(body); // (ref $arr) → externref
+            body.push(0x22); write_leb128_u32(body, temp_idx + 3); // $t3 = new_arr
+            // 4. array.copy: dst=new, src=old, d_off=0, s_off=0, len=old_len
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x41); write_leb128_i32(body, 0); // dst_offset
+            body.push(0x20); write_leb128_u32(body, temp_idx + 1); // old arr
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x41); write_leb128_i32(body, 0); // src_offset
+            body.push(0x20); write_leb128_u32(body, temp_idx + 2); // old len (boxed)
+            emit_unbox_i32(body, rt_idx); // → i32
+            body.push(0xFB); write_leb128_u32(body, 0x11); // array.copy
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            // 5. array.set new[old_len] = val
+            body.push(0x20); write_leb128_u32(body, temp_idx + 3); // new_arr
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 2); // old len (boxed)
+            emit_unbox_i32(body, rt_idx); // → i32 index
+            body.push(0x20); write_leb128_u32(body, temp_idx); // val
+            body.push(0xFB); write_leb128_u32(body, 0x0E); // array.set
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            // 6. Result = new_arr
+            body.push(0x20); write_leb128_u32(body, temp_idx + 3);
         }
         _ if op == Op::ARRAY_SLICE => {
-            // Stack: [arr, start, end] → TODO: proper slice
-            body.push(0x1A); // drop end
-            body.push(0x1A); // drop start
-            // leaves arr on stack
+            // Stack: [externref_arr, externref_start, externref_end]
+            // All intermediates boxed as externref for temp storage
+            body.push(0x21); write_leb128_u32(body, temp_idx);     // $t0 = end
+            body.push(0x21); write_leb128_u32(body, temp_idx + 1); // $t1 = start
+            body.push(0x21); write_leb128_u32(body, temp_idx + 2); // $t2 = arr
+            // Compute slice_len = end - start, box it
+            body.push(0x20); write_leb128_u32(body, temp_idx);     // end
+            emit_unbox_i32(body, rt_idx);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 1); // start
+            emit_unbox_i32(body, rt_idx);
+            body.push(0x6B); // i32.sub → slice_len (i32)
+            emit_box_i32(body, rt_idx); // → externref
+            body.push(0x21); write_leb128_u32(body, temp_idx + 3); // $t3 = slice_len (boxed)
+            // Create new array: array.new(init=null, size=slice_len)
+            body.push(0xD0); body.push(0x6F); // init val
+            body.push(0x20); write_leb128_u32(body, temp_idx + 3); // slice_len
+            emit_unbox_i32(body, rt_idx); // → i32
+            body.push(0xFB); write_leb128_u32(body, 0x06); // array.new
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            emit_externalize(body);
+            body.push(0x22); write_leb128_u32(body, temp_idx + 3); // $t3 = new_arr (reuse)
+            // array.copy: dst=new, src=old, d_off=0, s_off=start, len=slice_len
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x41); write_leb128_i32(body, 0); // dst_offset
+            body.push(0x20); write_leb128_u32(body, temp_idx + 2); // old arr
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 1); // start
+            emit_unbox_i32(body, rt_idx); // → i32 src_offset
+            // length = end - start
+            body.push(0x20); write_leb128_u32(body, temp_idx);     // end
+            emit_unbox_i32(body, rt_idx);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 1); // start
+            emit_unbox_i32(body, rt_idx);
+            body.push(0x6B); // i32.sub → copy_len
+            body.push(0xFB); write_leb128_u32(body, 0x11); // array.copy
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            // Result = new_arr
+            body.push(0x20); write_leb128_u32(body, temp_idx + 3);
         }
-        _ if op == Op::ARRAY_CONCAT || op == Op::ARRAY_JOIN
-          || op == Op::ARRAY_REVERSE || op == Op::ARRAY_CONTAINS
-          || op == Op::ARRAY_INDEX_OF => {
-            // Binary array ops — TODO: proper impl
-            body.push(0x1A); // drop second arg
-            // leaves first arg on stack
+        _ if op == Op::ARRAY_POP || op == Op::ARRAY_SHIFT => {
+            // Pop/shift: return array slice [0..len-1] or [1..len]
+            // For now: pass through (array unchanged)
+            body.push(0x01); // nop — TODO: proper slice
+        }
+        _ if op == Op::ARRAY_CONCAT => {
+            // Stack: [externref_arr1, externref_arr2]
+            // All i32 intermediates boxed for externref temp storage
+            body.push(0x21); write_leb128_u32(body, temp_idx);     // $t0 = arr2
+            body.push(0x22); write_leb128_u32(body, temp_idx + 1); // $t1 = arr1 (tee)
+            // Get len1, box
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0xFB); write_leb128_u32(body, 0x0F); // array.len → i32
+            emit_box_i32(body, rt_idx);
+            body.push(0x21); write_leb128_u32(body, temp_idx + 2); // $t2 = len1 (boxed)
+            // Get len2, box
+            body.push(0x20); write_leb128_u32(body, temp_idx);
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0xFB); write_leb128_u32(body, 0x0F);
+            emit_box_i32(body, rt_idx);
+            body.push(0x21); write_leb128_u32(body, temp_idx + 3); // $t3 = len2 (boxed)
+            // array.new(init, len1+len2)
+            body.push(0xD0); body.push(0x6F); // init
+            body.push(0x20); write_leb128_u32(body, temp_idx + 2);
+            emit_unbox_i32(body, rt_idx);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 3);
+            emit_unbox_i32(body, rt_idx);
+            body.push(0x6A); // i32.add
+            body.push(0xFB); write_leb128_u32(body, 0x06); // array.new
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            emit_externalize(body);
+            body.push(0x22); write_leb128_u32(body, temp_idx + 4); // $t4 = new_arr
+            // Copy arr1: new[0..len1]
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x41); write_leb128_i32(body, 0);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 1);
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x41); write_leb128_i32(body, 0);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 2);
+            emit_unbox_i32(body, rt_idx);
+            body.push(0xFB); write_leb128_u32(body, 0x11); // array.copy
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            // Copy arr2: new[len1..len1+len2]
+            body.push(0x20); write_leb128_u32(body, temp_idx + 4);
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 2);
+            emit_unbox_i32(body, rt_idx); // dst_off = len1
+            body.push(0x20); write_leb128_u32(body, temp_idx);
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x41); write_leb128_i32(body, 0);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 3);
+            emit_unbox_i32(body, rt_idx); // len2
+            body.push(0xFB); write_leb128_u32(body, 0x11); // array.copy
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            body.push(0x20); write_leb128_u32(body, temp_idx + 4); // result
+        }
+        _ if op == Op::ARRAY_JOIN || op == Op::ARRAY_REVERSE
+          || op == Op::ARRAY_CONTAINS || op == Op::ARRAY_INDEX_OF => {
+            // TODO: implement as inline loops
+            body.push(0x1A); // drop second arg, keep first
         }
 
         // ── Type introspection → wasm:js-* test builtins ──
@@ -767,10 +918,18 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
             emit_box_i32(body, rt_idx);
         }
         _ if op == Op::REF_TYPEOF => {
-            // typeof → check types in order, return string
-            // For now: drop value, push null (TODO: proper impl)
-            body.push(0x1A); // drop
-            body.push(0xD0); body.push(0x6F); // ref.null extern
+            // typeof: check types using wasm:js-* test builtins, return type string
+            // wasm:js-number test → "number", wasm:js-string test → "string", etc.
+            // For now: test if number, return "number" or "object" (simplified)
+            // The full impl needs if/else chains — just use number test for now
+            body.push(0x22); write_leb128_u32(body, temp_idx); // tee to temp
+            emit_import_call(body, rt_idx, "wasm:js-number", "test");
+            // Returns i32 (0 or 1). We need externref string.
+            // TODO: proper if/else chain returning "number"/"string"/"boolean"/"undefined"/"object"
+            body.push(0x1A); // drop the i32 test result
+            body.push(0x20); write_leb128_u32(body, temp_idx); // restore original value
+            // Pass through — caller gets the original value which is wrong but type-safe
+            // Real impl needs string constants which need WASM data section
         }
         _ if op == Op::REF_IS_OBJECT || op == Op::REF_IS_FUNC || op == Op::REF_IS_ARRAY => {
             // TODO: proper type checks
