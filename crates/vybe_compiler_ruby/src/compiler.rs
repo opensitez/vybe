@@ -664,7 +664,7 @@ impl Compiler {
                     UnaryOp::Neg => { self.emit(Op::dyn_neg); }
                     UnaryOp::Pos => {}
                     UnaryOp::Not => { self.emit(Op::dyn_not); }
-                    UnaryOp::BitNot => { self.emit(Op::i32_not); }
+                    UnaryOp::BitNot => { let l = self.line; vybe_compiler_common::expressions::emit_i32_not(&mut self.chunks[self.current_chunk_idx], l); }
                 }
             }
 
@@ -1222,7 +1222,7 @@ impl Compiler {
             AssignOp::SubAssign => { self.emit(Op::f64_sub); }
             AssignOp::MulAssign => { self.emit(Op::f64_mul); }
             AssignOp::DivAssign => { self.emit(Op::f64_div); }
-            AssignOp::ModAssign => { self.emit(Op::f64_mod); }
+            AssignOp::ModAssign => { { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }; }
             AssignOp::AndAssign => { self.emit(Op::i32_and); }
             AssignOp::OrAssign => { self.emit(Op::i32_or); }
             AssignOp::BitAndAssign => { self.emit(Op::i32_and); }
@@ -1343,7 +1343,7 @@ impl Compiler {
                     let i = self.import("vybe:string", "format");
                     self.emit_host_call(i, 2);
                 } else {
-                    self.emit(Op::f64_mod);
+                    { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); };
                 }
             }
             BinaryOp::Pow => {
@@ -2144,7 +2144,7 @@ impl Compiler {
                 "even?" => {
                     self.compile_expression(recv)?;
                     self.emit_constant(Value::F64(2.0));
-                    self.emit(Op::f64_mod);
+                    { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); };
                     self.emit_constant(Value::F64(0.0));
                     self.emit(Op::dyn_eq);
                     return Ok(());
@@ -2152,7 +2152,7 @@ impl Compiler {
                 "odd?" => {
                     self.compile_expression(recv)?;
                     self.emit_constant(Value::F64(2.0));
-                    self.emit(Op::f64_mod);
+                    { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); };
                     self.emit_constant(Value::F64(0.0));
                     self.emit(Op::dyn_ne);
                     return Ok(());
@@ -2941,7 +2941,7 @@ impl Compiler {
                     self.emit(Op::f64_trunc);
                     self.emit_u16(Op::local_get, a_slot);
                     self.emit_u16(Op::local_get, b_slot);
-                    self.emit(Op::f64_mod);
+                    { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); };
                     self.emit_u16(Op::array_new, 2);
                     return Ok(());
                 }

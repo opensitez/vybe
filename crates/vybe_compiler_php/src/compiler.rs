@@ -581,7 +581,7 @@ impl Compiler {
                     UnaryOp::Neg => { self.emit(Op::dyn_neg); }
                     UnaryOp::Pos => {}
                     UnaryOp::Not => { self.emit(Op::dyn_not); }
-                    UnaryOp::BitNot => { self.emit(Op::i32_not); }
+                    UnaryOp::BitNot => { let l = self.line; vybe_compiler_common::expressions::emit_i32_not(&mut self.chunks[self.current_chunk_idx], l); }
                 }
             }
             Expression::PreUpdate { op, expr } => {
@@ -855,7 +855,7 @@ impl Compiler {
             AssignOp::SubAssign => { self.emit(Op::f64_sub); }
             AssignOp::MulAssign => { self.emit(Op::f64_mul); }
             AssignOp::DivAssign => { self.emit(Op::f64_div); }
-            AssignOp::ModAssign => { self.emit(Op::f64_mod); }
+            AssignOp::ModAssign => { { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }; }
             AssignOp::PowAssign => {
                 let c = self.current_chunk_idx;
                 let line = self.line;
@@ -1012,7 +1012,7 @@ impl Compiler {
             BinaryOp::Sub => { self.emit(Op::f64_sub); }
             BinaryOp::Mul => { self.emit(Op::f64_mul); }
             BinaryOp::Div => { self.emit(Op::f64_div); }
-            BinaryOp::Mod => { self.emit(Op::f64_mod); }
+            BinaryOp::Mod => { { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }; }
             BinaryOp::Pow => {
                 common::math::emit_pow(&mut self.chunks[c], line);
             }
@@ -2159,7 +2159,7 @@ impl Compiler {
             "pi" => { let i = self.import("vybe:math", "PI"); self.emit_host_call(i, 0); return Ok(Some(())); }
             "m_pi" => { let i = self.import("vybe:math", "PI"); self.emit_host_call(i, 0); return Ok(Some(())); }
             "intdiv" => { compile_args!(); self.emit(Op::f64_div); self.emit(Op::f64_trunc); return Ok(Some(())); }
-            "fmod" => { compile_args!(); self.emit(Op::f64_mod); return Ok(Some(())); }
+            "fmod" => { compile_args!(); { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }; return Ok(Some(())); }
             "fdiv" => { compile_args!(); self.emit(Op::f64_div); return Ok(Some(())); }
 
             // ── Network / Sockets (existing vybe:net host — same as VB/C#) ──

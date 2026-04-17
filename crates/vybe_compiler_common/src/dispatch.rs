@@ -70,6 +70,9 @@ pub fn emit_common(name: &str, chunk: &mut Chunk, line: u32) -> bool {
 
         // ── Expression ops ──
         "expressions.undefined" => crate::expressions::emit_undefined(chunk, line),
+        "expressions.i32_not" => crate::expressions::emit_i32_not(chunk, line),
+        "expressions.f64_mod" => crate::expressions::emit_f64_mod(chunk, line),
+        "expressions.bool_not" => crate::expressions::emit_bool_not(chunk, line),
 
         // ── Threading ops ──
         // Real WASM threading opcodes (wasi-threads proposal):

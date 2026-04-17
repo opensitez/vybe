@@ -1504,7 +1504,7 @@ impl Compiler {
             CompoundOp::SubAssign => self.emit(Op::f64_sub),
             CompoundOp::MulAssign => self.emit(Op::f64_mul),
             CompoundOp::DivAssign => self.emit(Op::f64_div),
-            CompoundOp::ModAssign => self.emit(Op::f64_mod),
+            CompoundOp::ModAssign => { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); },
             CompoundOp::AndAssign => self.emit(Op::i32_and),
             CompoundOp::OrAssign => self.emit(Op::i32_or),
             CompoundOp::XorAssign => self.emit(Op::i32_xor),
@@ -1685,7 +1685,7 @@ impl Compiler {
                 match op {
                     UnaryOp::Neg => self.emit(Op::dyn_neg),
                     UnaryOp::Not => self.emit(Op::dyn_not),
-                    UnaryOp::BitNot => self.emit(Op::i32_not),
+                    UnaryOp::BitNot => { let l = self.line; vybe_compiler_common::expressions::emit_i32_not(&mut self.chunks[self.current_chunk_idx], l); }
                 }
             }
 
@@ -1922,7 +1922,7 @@ impl Compiler {
             BinaryOp::Sub => self.emit(Op::f64_sub),
             BinaryOp::Mul => self.emit(Op::f64_mul),
             BinaryOp::Div => self.emit(Op::f64_div),
-            BinaryOp::Mod => self.emit(Op::f64_mod),
+            BinaryOp::Mod => { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); },
             BinaryOp::Eq => self.emit(Op::dyn_eq),
             BinaryOp::Neq => self.emit(Op::dyn_ne),
             BinaryOp::Lt => self.emit(Op::dyn_lt),

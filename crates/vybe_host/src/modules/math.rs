@@ -12,6 +12,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:math", "min",    Box::new(|_ctx, a| Value::F64(f(a, 0).min(f(a, 1)))));
     vm.register_host_fn("vybe:math", "max",    Box::new(|_ctx, a| Value::F64(f(a, 0).max(f(a, 1)))));
     vm.register_host_fn("vybe:math", "pow",    Box::new(|_ctx, a| Value::F64(f(a, 0).powf(f(a, 1)))));
+    vm.register_host_fn("vybe:math", "fmod",   Box::new(|_ctx, a| Value::F64(f(a, 0) % f(a, 1))));
     vm.register_host_fn("vybe:math", "random", Box::new(|_ctx, _| {
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

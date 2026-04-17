@@ -135,7 +135,7 @@ impl Compiler {
                 common_convert::emit_to_int(&mut self.chunks[self.current_chunk_idx], self.line);
                 self.emit(Op::i32_div_s);
             }
-            Expression::Modulo(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; self.emit(Op::f64_mod); }
+            Expression::Modulo(a, b) => { self.compile_expression(a)?; self.compile_expression(b)?; { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }; }
             Expression::Exponent(a, b) => {
                 self.compile_expression(a)?; self.compile_expression(b)?;
                 let idx = self.import("vybe:math", "pow");

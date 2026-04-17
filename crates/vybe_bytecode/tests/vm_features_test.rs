@@ -122,11 +122,12 @@ fn pack_unpack() {
     chunk.emit_op_u16(Op::r#const, c1, 0);
     chunk.emit_op_u16(Op::r#const, c2, 0);
     chunk.emit_op_u16(Op::r#const, c3, 0);
-    // Pack 3 values into array
-    chunk.emit_op_u8(Op::pack, 3, 0);
-    // Unpack back onto stack
-    chunk.emit_op(Op::unpack, 0);
-    // Stack should have 10, 20, 30 — top is 30
+    // pack/unpack removed — test array_new instead (3 values → array)
+    chunk.emit_op_u16(Op::array_new, 3, 0);
+    // Get last element: array[2] = 30
+    let idx = chunk.add_constant(Value::I32(2));
+    chunk.emit_op_u16(Op::r#const, idx, 0);
+    chunk.emit_op(Op::array_get, 0);
     chunk.emit_op(Op::halt, 0);
 
     let mut vm = VM::new();

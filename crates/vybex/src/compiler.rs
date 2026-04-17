@@ -2611,7 +2611,7 @@ impl Compiler {
                                 self.emit_host_call(idx, 1);
                             }
                             UnaryOp::Not => self.emit(Op::dyn_not),
-                            UnaryOp::BitNot => self.emit(Op::i32_not),
+                            UnaryOp::BitNot => { let l = self.line; common::expressions::emit_i32_not(self.chunk(), l); }
                             UnaryOp::Typeof => self.emit(Op::ref_typeof),
                             UnaryOp::Void => { self.emit(Op::drop); self.emit(Op::null); }
                             UnaryOp::Delete => { self.emit(Op::drop); self.emit(Op::r#true); }
@@ -4362,7 +4362,7 @@ impl Compiler {
             BinOp::Div => self.emit(Op::f64_div),
             BinOp::IDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
             BinOp::FloorDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_floor(self.chunk(), l); }
-            BinOp::Mod => self.emit(Op::f64_mod),
+            BinOp::Mod => { let idx = self.import("vybe:math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); },
             BinOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             BinOp::Eq => self.emit(Op::dyn_eq),
             BinOp::NotEq => self.emit(Op::dyn_ne),
@@ -4477,7 +4477,7 @@ impl Compiler {
             CompoundOp::Mul => self.emit(Op::f64_mul),
             CompoundOp::Div => self.emit(Op::f64_div),
             CompoundOp::IDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
-            CompoundOp::Mod => self.emit(Op::f64_mod),
+            CompoundOp::Mod => { let idx = self.import("vybe:math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); },
             CompoundOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             CompoundOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             CompoundOp::BitAnd => self.emit(Op::i32_and),

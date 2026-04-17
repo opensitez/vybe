@@ -395,7 +395,7 @@ fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)]) -> Vec<u8>
                 Op::ref_func => { let _ = read_u16(&chunk.code, &mut ip); let uv = chunk.code[ip] as usize; ip += 1 + uv * 2; body.push(0x01); }
                 Op::try_start => { ip += 4; body.push(0x01); }
                 Op::upvalue_get | Op::upvalue_set => { ip += 1; body.push(0x01); }
-                Op::str_concat_n | Op::return_call | Op::call_indirect | Op::pack | Op::br_label | Op::br_if_label => { ip += 1; body.push(0x01); }
+                Op::str_concat_n | Op::return_call | Op::call_indirect | Op::br_label | Op::br_if_label => { ip += 1; body.push(0x01); }
                 Op::br_table => { let count = chunk.code[ip] as usize; ip += 2 + count; body.push(0x01); }
                 Op::ref_test => { ip += 2; body.push(0x01); }
                 Op::dup => body.push(0x01), // nop (can't easily dup in WASM)
@@ -1243,11 +1243,11 @@ fn opcode_size(op: Op, code: &[u8], ip: usize) -> usize {
     match op {
         Op::r#const | Op::local_get | Op::local_set | Op::global_get | Op::global_set
         | Op::struct_get | Op::struct_set | Op::struct_new | Op::array_new
-        | Op::ref_test | Op::block | Op::r#loop | Op::class_new | Op::method_def
+        | Op::ref_test | Op::block | Op::r#loop
         | Op::canon_lift | Op::canon_lower => 3, // 1 op + 2 operand
         Op::br | Op::br_if_false | Op::br_if_true | Op::br_if_null => 3,
         Op::upvalue_get | Op::upvalue_set | Op::call | Op::str_concat_n
-        | Op::return_call | Op::call_indirect | Op::pack | Op::br_label | Op::br_if_label => 2,
+        | Op::return_call | Op::call_indirect | Op::br_label | Op::br_if_label => 2,
         Op::call_import => 4, // 1 + u16 + u8
         Op::try_start => 5, // 1 + u16 + u16
         Op::ref_func => {

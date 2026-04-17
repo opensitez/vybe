@@ -883,7 +883,7 @@ impl Compiler {
                 match op {
                     UnaryOp::Neg => { let l = self.line; common::math::emit_neg(self.chunk(), l); }
                     UnaryOp::Not => self.emit(Op::dyn_not),
-                    UnaryOp::BitNot => self.emit(Op::i32_not),
+                    UnaryOp::BitNot => { let l = self.line; common::expressions::emit_i32_not(self.chunk(), l); }
                     UnaryOp::Pos => {} // no-op
                     UnaryOp::Deref => { let idx = self.str_const("__value"); self.emit_u16(Op::struct_get, idx); }
                     UnaryOp::AddrOf => {} // no-op in our VM
@@ -1224,7 +1224,7 @@ impl Compiler {
             BinOp::Mul => self.emit(Op::f64_mul),
             BinOp::Div => self.emit(Op::f64_div),
             BinOp::IDiv => { self.emit(Op::f64_div); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
-            BinOp::Mod => self.emit(Op::f64_mod),
+            BinOp::Mod => { let idx = self.import("vybe:math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); }
             BinOp::Pow => { let i = self.import("vybe:math", "pow"); self.emit_host_call(i, 2); }
             BinOp::Eq => self.emit(Op::dyn_eq),
             BinOp::NotEq => self.emit(Op::dyn_ne),

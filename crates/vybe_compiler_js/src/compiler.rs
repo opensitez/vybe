@@ -1026,7 +1026,7 @@ impl Compiler {
                     BinaryOp::Sub => self.emit(Op::f64_sub),
                     BinaryOp::Mul => self.emit(Op::f64_mul),
                     BinaryOp::Div => self.emit(Op::f64_div),
-                    BinaryOp::Mod => self.emit(Op::f64_mod),
+                    BinaryOp::Mod => { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); },
                     BinaryOp::Exp => {
                         let idx = self.import("vybe:math", "pow");
                         self.emit_host_call(idx, 2);
@@ -1093,7 +1093,7 @@ impl Compiler {
                     UnaryOp::Neg => self.emit(Op::dyn_neg),
                     UnaryOp::Pos => {}
                     UnaryOp::Not => self.emit(Op::dyn_not),
-                    UnaryOp::BitNot => self.emit(Op::i32_not),
+                    UnaryOp::BitNot => { let l = self.line; vybe_compiler_common::expressions::emit_i32_not(&mut self.chunks[self.current_chunk_idx], l); }
                 }
             }
             Expression::Update { op, prefix, argument } => {
@@ -2501,7 +2501,7 @@ impl Compiler {
             AssignOp::SubAssign => self.emit(Op::f64_sub),
             AssignOp::MulAssign => self.emit(Op::f64_mul),
             AssignOp::DivAssign => self.emit(Op::f64_div),
-            AssignOp::ModAssign => self.emit(Op::f64_mod),
+            AssignOp::ModAssign => { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); },
             AssignOp::BitAndAssign => self.emit(Op::i32_and),
             AssignOp::BitOrAssign => self.emit(Op::i32_or),
             AssignOp::BitXorAssign => self.emit(Op::i32_xor),

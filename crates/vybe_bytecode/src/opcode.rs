@@ -36,8 +36,8 @@ pub enum Op {
     f64_sub,
     f64_mul,
     f64_div,
-    f64_mod,
-    f64_neg,
+    // 17: removed f64_mod (non-WASM, use __stdlib_fmod via compiler_common::expressions::emit_f64_mod)
+    f64_neg = 18,
 
     // -- i32 arithmetic --
     i32_add,
@@ -56,8 +56,8 @@ pub enum Op {
     i32_and,
     i32_or,
     i32_xor,
-    i32_not,
-    i32_shl,
+    // 31: removed i32_not (non-WASM, use i32.const -1 + i32.xor via compiler_common::expressions::emit_i32_not)
+    i32_shl = 32,
     i32_shr_s,      // signed shift right
     i32_shr_u,      // unsigned shift right
     i32_rotl,        // rotate left
@@ -73,14 +73,10 @@ pub enum Op {
     f64_gt,
     f64_le,
     f64_ge,
-    str_lt,
-    str_gt,
-
-    // -- Logical --
-    bool_not,
+    // 46-48: removed str_lt, str_gt (non-WASM, unused), bool_not
 
     // -- Control flow --
-    br,              // unconditional: [br, hi, lo] (signed i16 offset)
+    br = 49,              // unconditional: [br, hi, lo] (signed i16 offset)
     br_if_false,     // branch if Bool(false), pops: [br_if_false, hi, lo]
     br_if_true,      // branch if Bool(true), pops
     br_if_null,      // branch if Null, pops
@@ -167,27 +163,19 @@ pub enum Op {
     /// [try_table, u8 handler_count, then for each: u8 tag, u16 offset]
     try_table,
 
-    // -- Async (WASI async proposal) --
-    /// Await a Promise value. If pending, suspends the current fiber.
-    /// Stack: [promise_or_value] → [resolved_value]
-    r#await,
+    // 97: removed r#await (duplicate of promise_suspend, use JSPI name)
     /// Schedule a timer callback. Stack: [callback, ms] → [null]
-    set_timer,
+    set_timer = 98,
 
-    // -- Iteration (future) --
-    iter_get,
-    iter_next,
-    spread,
+    // 99-100: removed iter_get, iter_next (non-WASM, were unused)
+    spread = 101,
 
-    // -- Class (future) --
-    class_new,       // [class_new, u16 name]
-    method_def,      // [method_def, u16 name]
-    inherit,
+    // 102-104: removed class_new, method_def, inherit (non-WASM, were NOPs)
 
     // -- Tail call (WASM tail call proposal) --
     /// return_call: reuses current frame for tail-call optimization.
     /// Prevents stack overflow on deep recursion.
-    return_call,     // [return_call, u8 arg_count]
+    return_call = 105,     // [return_call, u8 arg_count]
     /// Tail call through function table index.
     return_call_indirect, // stack: [fn_table_idx, args...]; operand: u8 arg_count
     /// Tail call through a typed function reference.
@@ -289,15 +277,11 @@ pub enum Op {
     i32_eqz,
     i64_eqz,
 
-    // -- Multi-value (WASM multi-value) --
-    /// Pack N values from stack into an array.
-    pack,            // [pack, u8 count] → [array]
-    /// Unpack array onto stack.
-    unpack,          // [array] → [val, val, ...]
+    // 189-190: removed pack, unpack (non-WASM, were unused by compilers)
 
     // -- Block/loop structured control (WASM MVP) --
     /// Begin a block with a label. break jumps to end.
-    block,           // [block, u16 end_offset]
+    block = 191,           // [block, u16 end_offset]
     /// Begin a loop. continue jumps to start.
     r#loop,          // [loop, u16 body_size]
     /// End of block/loop.
@@ -609,7 +593,7 @@ pub enum Op {
 
 impl Op {
     /// Decode a single-byte opcode. Returns None for gaps and out-of-range values.
-    /// O(1) lookup table — no unsafe transmute.
+    /// O(1) const lookup table — no unsafe transmute. Handles gaps naturally.
     pub fn from_byte(byte: u8) -> Option<Op> {
         Self::DECODE[byte as usize]
     }
@@ -640,6 +624,8 @@ impl Op {
     }
 
     /// Single-byte decode table. Index = byte value, value = Some(Op) or None for gaps.
+    /// Generated from the enum with explicit discriminants. Gaps are naturally None.
+    /// No unsafe transmute — pure const array lookup.
     const DECODE: [Option<Op>; 256] = {
         let mut t: [Option<Op>; 256] = [None; 256];
         t[0] = Some(Op::r#const);
@@ -659,7 +645,7 @@ impl Op {
         t[14] = Some(Op::f64_sub);
         t[15] = Some(Op::f64_mul);
         t[16] = Some(Op::f64_div);
-        t[17] = Some(Op::f64_mod);
+        // 17: gap (removed f64_mod)
         t[18] = Some(Op::f64_neg);
         t[19] = Some(Op::i32_add);
         t[20] = Some(Op::i32_sub);
@@ -673,7 +659,7 @@ impl Op {
         t[28] = Some(Op::i32_and);
         t[29] = Some(Op::i32_or);
         t[30] = Some(Op::i32_xor);
-        t[31] = Some(Op::i32_not);
+        // 31: gap (removed i32_not)
         t[32] = Some(Op::i32_shl);
         t[33] = Some(Op::i32_shr_s);
         t[34] = Some(Op::i32_shr_u);
@@ -688,9 +674,7 @@ impl Op {
         t[43] = Some(Op::f64_gt);
         t[44] = Some(Op::f64_le);
         t[45] = Some(Op::f64_ge);
-        t[46] = Some(Op::str_lt);
-        t[47] = Some(Op::str_gt);
-        t[48] = Some(Op::bool_not);
+        // 46-48: gaps (removed str_lt, str_gt, bool_not)
         t[49] = Some(Op::br);
         t[50] = Some(Op::br_if_false);
         t[51] = Some(Op::br_if_true);
@@ -703,157 +687,197 @@ impl Op {
         t[58] = Some(Op::struct_new);
         t[59] = Some(Op::array_new);
         t[60] = Some(Op::null);
-        // 61..=105: unassigned (105 was `undefined`, removed)
-        t[106] = Some(Op::r#true);
-        t[107] = Some(Op::r#false);
-        t[108] = Some(Op::i32_const_0);
-        t[109] = Some(Op::i32_const_1);
-        t[110] = Some(Op::f64_const_0);
-        t[111] = Some(Op::ref_is_null);
-        t[112] = Some(Op::ref_is_string);
-        t[113] = Some(Op::ref_is_number);
-        t[114] = Some(Op::ref_is_bool);
-        t[115] = Some(Op::ref_is_object);
-        t[116] = Some(Op::ref_is_func);
-        t[117] = Some(Op::ref_test);
-        t[118] = Some(Op::ref_cast);
-        t[119] = Some(Op::br_on_cast);
-        t[120] = Some(Op::br_on_cast_fail);
-        t[121] = Some(Op::i31_new);
-        t[122] = Some(Op::i31_get_s);
-        t[123] = Some(Op::i31_get_u);
-        t[124] = Some(Op::f64_from_i32);
-        t[125] = Some(Op::i32_from_f64);
-        t[126] = Some(Op::dyn_add);
-        t[127] = Some(Op::dyn_eq);
-        t[128] = Some(Op::dyn_ne);
-        t[129] = Some(Op::dyn_lt);
-        t[130] = Some(Op::dyn_gt);
-        t[131] = Some(Op::dyn_le);
-        t[132] = Some(Op::dyn_ge);
-        t[133] = Some(Op::dyn_neg);
-        t[134] = Some(Op::dyn_not);
-        t[135] = Some(Op::dyn_to_bool);
-        t[136] = Some(Op::try_start);
-        t[137] = Some(Op::try_end);
-        t[138] = Some(Op::throw);
-        t[139] = Some(Op::throw_ref);
-        t[140] = Some(Op::try_table);
-        t[141] = Some(Op::r#await);
-        t[142] = Some(Op::set_timer);
-        t[143] = Some(Op::iter_get);
-        t[144] = Some(Op::iter_next);
-        t[145] = Some(Op::spread);
-        t[146] = Some(Op::class_new);
-        t[147] = Some(Op::method_def);
-        t[148] = Some(Op::inherit);
-        t[149] = Some(Op::return_call);
-        t[150] = Some(Op::return_call_indirect);
-        t[151] = Some(Op::return_call_ref);
-        t[152] = Some(Op::i64_add);
-        t[153] = Some(Op::i64_sub);
-        t[154] = Some(Op::i64_mul);
-        t[155] = Some(Op::i64_div_s);
-        t[156] = Some(Op::i64_div_u);
-        t[157] = Some(Op::i64_rem_s);
-        t[158] = Some(Op::i64_rem_u);
-        t[159] = Some(Op::i64_and);
-        t[160] = Some(Op::i64_or);
-        t[161] = Some(Op::i64_xor);
-        t[162] = Some(Op::i64_shl);
-        t[163] = Some(Op::i64_shr_s);
-        t[164] = Some(Op::i64_shr_u);
-        t[165] = Some(Op::i64_rotl);
-        t[166] = Some(Op::i64_rotr);
-        t[167] = Some(Op::i64_clz);
-        t[168] = Some(Op::i64_ctz);
-        t[169] = Some(Op::i64_popcnt);
-        t[170] = Some(Op::f64_abs);
-        t[171] = Some(Op::f64_ceil);
-        t[172] = Some(Op::f64_floor);
-        t[173] = Some(Op::f64_trunc);
-        t[174] = Some(Op::f64_nearest);
-        t[175] = Some(Op::f64_sqrt);
-        t[176] = Some(Op::f64_min);
-        t[177] = Some(Op::f64_max);
-        t[178] = Some(Op::f64_copysign);
-        t[179] = Some(Op::f32_abs);
-        t[180] = Some(Op::f32_neg);
-        t[181] = Some(Op::f32_ceil);
-        t[182] = Some(Op::f32_floor);
-        t[183] = Some(Op::f32_trunc);
-        t[184] = Some(Op::f32_nearest);
-        t[185] = Some(Op::f32_sqrt);
-        t[186] = Some(Op::f32_min);
-        t[187] = Some(Op::f32_max);
-        t[188] = Some(Op::f32_copysign);
-        t[189] = Some(Op::select);
-        t[190] = Some(Op::memory_size);
-        t[191] = Some(Op::memory_grow);
-        t[192] = Some(Op::i32_load);
-        t[193] = Some(Op::i32_store);
-        t[194] = Some(Op::i64_load);
-        t[195] = Some(Op::i64_store);
-        t[196] = Some(Op::f64_load);
-        t[197] = Some(Op::f64_store);
-        t[198] = Some(Op::f32_load);
-        t[199] = Some(Op::f32_store);
-        t[200] = Some(Op::i32_load8_s);
-        t[201] = Some(Op::i32_load8_u);
-        t[202] = Some(Op::i32_load16_s);
-        t[203] = Some(Op::i32_load16_u);
-        t[204] = Some(Op::i32_store16);
-        t[205] = Some(Op::i32_store8);
-        t[206] = Some(Op::i64_load8_s);
-        t[207] = Some(Op::i64_load8_u);
-        t[208] = Some(Op::i64_load16_s);
-        t[209] = Some(Op::i64_load16_u);
-        t[210] = Some(Op::i64_load32_s);
-        t[211] = Some(Op::i64_load32_u);
-        t[212] = Some(Op::i64_store8);
-        t[213] = Some(Op::i64_store16);
-        t[214] = Some(Op::i64_store32);
-        t[215] = Some(Op::i32_wrap_i64);
-        t[216] = Some(Op::i64_extend_i32_s);
-        t[217] = Some(Op::i64_extend_i32_u);
-        t[218] = Some(Op::i64_trunc_f64_s);
-        t[219] = Some(Op::i64_trunc_f64_u);
-        t[220] = Some(Op::f64_promote_f32);
-        t[221] = Some(Op::f32_demote_f64);
-        t[222] = Some(Op::i32_reinterpret_f32);
-        t[223] = Some(Op::i64_reinterpret_f64);
-        t[224] = Some(Op::f32_reinterpret_i32);
-        t[225] = Some(Op::f64_reinterpret_i64);
-        t[226] = Some(Op::i32_extend8_s);
-        t[227] = Some(Op::i32_extend16_s);
-        t[228] = Some(Op::i64_extend8_s);
-        t[229] = Some(Op::i64_extend16_s);
-        t[230] = Some(Op::i64_extend32_s);
-        t[231] = Some(Op::i32_eqz);
-        t[232] = Some(Op::i64_eqz);
-        t[233] = Some(Op::pack);
-        t[234] = Some(Op::unpack);
-        t[235] = Some(Op::block);
-        t[236] = Some(Op::r#loop);
-        t[237] = Some(Op::end);
-        t[238] = Some(Op::br_label);
-        t[239] = Some(Op::br_if_label);
-        t[240] = Some(Op::br_table);
-        t[241] = Some(Op::call_indirect);
-        t[242] = Some(Op::canon_lift);
-        t[243] = Some(Op::canon_lower);
-        t[244] = Some(Op::type_import);
-        t[245] = Some(Op::type_export);
-        t[246] = Some(Op::shared_new);
-        t[247] = Some(Op::shared_struct_get);
-        t[248] = Some(Op::shared_struct_set);
-        t[249] = Some(Op::shared_array_get);
-        t[250] = Some(Op::shared_array_set);
-        t[251] = Some(Op::shared_struct_cas);
-        t[252] = Some(Op::str_length);
-        t[253] = Some(Op::str_char_code_at);
-        t[254] = Some(Op::str_from_char_code);
-        t[255] = Some(Op::str_substring);
+        // 61: gap — removed `undefined` (non-WASM)
+        t[62] = Some(Op::r#true);
+        t[63] = Some(Op::r#false);
+        t[64] = Some(Op::i32_const_0);
+        t[65] = Some(Op::i32_const_1);
+        t[66] = Some(Op::f64_const_0);
+        t[67] = Some(Op::ref_is_null);
+        t[68] = Some(Op::ref_is_string);
+        t[69] = Some(Op::ref_is_number);
+        t[70] = Some(Op::ref_is_bool);
+        t[71] = Some(Op::ref_is_object);
+        t[72] = Some(Op::ref_is_func);
+        t[73] = Some(Op::ref_test);
+        t[74] = Some(Op::ref_cast);
+        t[75] = Some(Op::br_on_cast);
+        t[76] = Some(Op::br_on_cast_fail);
+        t[77] = Some(Op::i31_new);
+        t[78] = Some(Op::i31_get_s);
+        t[79] = Some(Op::i31_get_u);
+        t[80] = Some(Op::f64_from_i32);
+        t[81] = Some(Op::i32_from_f64);
+        t[82] = Some(Op::dyn_add);
+        t[83] = Some(Op::dyn_eq);
+        t[84] = Some(Op::dyn_ne);
+        t[85] = Some(Op::dyn_lt);
+        t[86] = Some(Op::dyn_gt);
+        t[87] = Some(Op::dyn_le);
+        t[88] = Some(Op::dyn_ge);
+        t[89] = Some(Op::dyn_neg);
+        t[90] = Some(Op::dyn_not);
+        t[91] = Some(Op::dyn_to_bool);
+        t[92] = Some(Op::try_start);
+        t[93] = Some(Op::try_end);
+        t[94] = Some(Op::throw);
+        t[95] = Some(Op::throw_ref);
+        t[96] = Some(Op::try_table);
+        // 97: gap (removed r#await, use promise_suspend)
+        t[98] = Some(Op::set_timer);
+        // 99-100: gaps (removed iter_get, iter_next)
+        t[101] = Some(Op::spread);
+        // 102-104: gaps (removed class_new, method_def, inherit)
+        t[105] = Some(Op::return_call);
+        t[106] = Some(Op::return_call_indirect);
+        t[107] = Some(Op::return_call_ref);
+        t[108] = Some(Op::i64_add);
+        t[109] = Some(Op::i64_sub);
+        t[110] = Some(Op::i64_mul);
+        t[111] = Some(Op::i64_div_s);
+        t[112] = Some(Op::i64_div_u);
+        t[113] = Some(Op::i64_rem_s);
+        t[114] = Some(Op::i64_rem_u);
+        t[115] = Some(Op::i64_and);
+        t[116] = Some(Op::i64_or);
+        t[117] = Some(Op::i64_xor);
+        t[118] = Some(Op::i64_shl);
+        t[119] = Some(Op::i64_shr_s);
+        t[120] = Some(Op::i64_shr_u);
+        t[121] = Some(Op::i64_rotl);
+        t[122] = Some(Op::i64_rotr);
+        t[123] = Some(Op::i64_clz);
+        t[124] = Some(Op::i64_ctz);
+        t[125] = Some(Op::i64_popcnt);
+        t[126] = Some(Op::f64_abs);
+        t[127] = Some(Op::f64_ceil);
+        t[128] = Some(Op::f64_floor);
+        t[129] = Some(Op::f64_trunc);
+        t[130] = Some(Op::f64_nearest);
+        t[131] = Some(Op::f64_sqrt);
+        t[132] = Some(Op::f64_min);
+        t[133] = Some(Op::f64_max);
+        t[134] = Some(Op::f64_copysign);
+        t[135] = Some(Op::f32_abs);
+        t[136] = Some(Op::f32_neg);
+        t[137] = Some(Op::f32_ceil);
+        t[138] = Some(Op::f32_floor);
+        t[139] = Some(Op::f32_trunc);
+        t[140] = Some(Op::f32_nearest);
+        t[141] = Some(Op::f32_sqrt);
+        t[142] = Some(Op::f32_min);
+        t[143] = Some(Op::f32_max);
+        t[144] = Some(Op::f32_copysign);
+        t[145] = Some(Op::select);
+        t[146] = Some(Op::memory_size);
+        t[147] = Some(Op::memory_grow);
+        t[148] = Some(Op::i32_load);
+        t[149] = Some(Op::i32_store);
+        t[150] = Some(Op::i64_load);
+        t[151] = Some(Op::i64_store);
+        t[152] = Some(Op::f64_load);
+        t[153] = Some(Op::f64_store);
+        t[154] = Some(Op::f32_load);
+        t[155] = Some(Op::f32_store);
+        t[156] = Some(Op::i32_load8_s);
+        t[157] = Some(Op::i32_load8_u);
+        t[158] = Some(Op::i32_load16_s);
+        t[159] = Some(Op::i32_load16_u);
+        t[160] = Some(Op::i32_store16);
+        t[161] = Some(Op::i32_store8);
+        t[162] = Some(Op::i64_load8_s);
+        t[163] = Some(Op::i64_load8_u);
+        t[164] = Some(Op::i64_load16_s);
+        t[165] = Some(Op::i64_load16_u);
+        t[166] = Some(Op::i64_load32_s);
+        t[167] = Some(Op::i64_load32_u);
+        t[168] = Some(Op::i64_store8);
+        t[169] = Some(Op::i64_store16);
+        t[170] = Some(Op::i64_store32);
+        t[171] = Some(Op::i32_wrap_i64);
+        t[172] = Some(Op::i64_extend_i32_s);
+        t[173] = Some(Op::i64_extend_i32_u);
+        t[174] = Some(Op::i64_trunc_f64_s);
+        t[175] = Some(Op::i64_trunc_f64_u);
+        t[176] = Some(Op::f64_promote_f32);
+        t[177] = Some(Op::f32_demote_f64);
+        t[178] = Some(Op::i32_reinterpret_f32);
+        t[179] = Some(Op::i64_reinterpret_f64);
+        t[180] = Some(Op::f32_reinterpret_i32);
+        t[181] = Some(Op::f64_reinterpret_i64);
+        t[182] = Some(Op::i32_extend8_s);
+        t[183] = Some(Op::i32_extend16_s);
+        t[184] = Some(Op::i64_extend8_s);
+        t[185] = Some(Op::i64_extend16_s);
+        t[186] = Some(Op::i64_extend32_s);
+        t[187] = Some(Op::i32_eqz);
+        t[188] = Some(Op::i64_eqz);
+        // 189-190: gaps (removed pack, unpack)
+        t[191] = Some(Op::block);
+        t[192] = Some(Op::r#loop);
+        t[193] = Some(Op::end);
+        t[194] = Some(Op::br_label);
+        t[195] = Some(Op::br_if_label);
+        t[196] = Some(Op::br_table);
+        t[197] = Some(Op::call_indirect);
+        t[198] = Some(Op::canon_lift);
+        t[199] = Some(Op::canon_lower);
+        t[200] = Some(Op::type_import);
+        t[201] = Some(Op::type_export);
+        t[202] = Some(Op::shared_new);
+        t[203] = Some(Op::shared_struct_get);
+        t[204] = Some(Op::shared_struct_set);
+        t[205] = Some(Op::shared_array_get);
+        t[206] = Some(Op::shared_array_set);
+        t[207] = Some(Op::shared_struct_cas);
+        t[208] = Some(Op::str_length);
+        t[209] = Some(Op::str_char_code_at);
+        t[210] = Some(Op::str_from_char_code);
+        t[211] = Some(Op::str_substring);
+        t[212] = Some(Op::str_index_of);
+        t[213] = Some(Op::str_last_index_of);
+        t[214] = Some(Op::str_equals);
+        t[215] = Some(Op::str_compare);
+        t[216] = Some(Op::str_to_upper);
+        t[217] = Some(Op::str_to_lower);
+        t[218] = Some(Op::str_trim);
+        t[219] = Some(Op::str_trim_start);
+        t[220] = Some(Op::str_trim_end);
+        t[221] = Some(Op::str_starts_with);
+        t[222] = Some(Op::str_ends_with);
+        t[223] = Some(Op::str_contains);
+        t[224] = Some(Op::str_replace);
+        t[225] = Some(Op::str_split);
+        t[226] = Some(Op::str_repeat);
+        t[227] = Some(Op::str_pad_start);
+        t[228] = Some(Op::str_pad_end);
+        t[229] = Some(Op::str_slice);
+        t[230] = Some(Op::str_char_at);
+        t[231] = Some(Op::str_reverse);
+        t[232] = Some(Op::str_from_code_point);
+        t[233] = Some(Op::str_code_point_at);
+        t[234] = Some(Op::str_into_char_codes);
+        t[235] = Some(Op::str_from_char_codes);
+        t[236] = Some(Op::ref_typeof);
+        t[237] = Some(Op::ref_is_array);
+        t[238] = Some(Op::array_length);
+        t[239] = Some(Op::array_push);
+        t[240] = Some(Op::array_pop);
+        t[241] = Some(Op::array_slice);
+        t[242] = Some(Op::array_join);
+        t[243] = Some(Op::array_reverse);
+        t[244] = Some(Op::array_contains);
+        t[245] = Some(Op::array_index_of);
+        t[246] = Some(Op::array_new_default);
+        t[247] = Some(Op::array_fill);
+        t[248] = Some(Op::array_copy);
+        t[249] = Some(Op::array_concat);
+        t[250] = Some(Op::array_shift);
+        t[251] = Some(Op::cont_new);
+        t[252] = Some(Op::suspend);
+        t[253] = Some(Op::resume);
+        t[254] = Some(Op::switch);
+        t[255] = Some(Op::halt);
         t
     };
 

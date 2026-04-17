@@ -28,6 +28,40 @@ pub fn emit_undefined(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::global_get, name, line);
 }
 
+/// Emit bitwise NOT (i32). WASM equivalent: i32.const -1, i32.xor.
+/// Stack: [i32] → [i32]
+pub fn emit_i32_not(chunk: &mut Chunk, line: u32) {
+    let neg1 = chunk.add_constant(Value::I32(-1));
+    chunk.emit_op_u16(Op::r#const, neg1, line);
+    chunk.emit_op(Op::i32_xor, line);
+}
+
+/// Emit f64 modulo via stdlib function `__vybe_fmod`.
+/// Pure bytecode implementation: a % b = a - trunc(a/b) * b.
+/// Host can override with native fmod for performance.
+/// `import_idx` is the resolved import index for `vybe:math:fmod`.
+/// Stack: [a, b] → [result]
+pub fn emit_f64_mod_with_import(chunk: &mut Chunk, import_idx: u16, line: u32) {
+    chunk.emit_op_u16(Op::call_import, import_idx, line);
+    chunk.emit(2, line);
+}
+
+/// Convenience: emit f64 modulo, adding the import to the same chunk.
+/// Use only when imports go on the same chunk as the code (old compilers).
+/// Stack: [a, b] → [result]
+pub fn emit_f64_mod(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("vybe:math", "fmod");
+    emit_f64_mod_with_import(chunk, idx, line);
+}
+
+/// Emit boolean NOT. Converts value to bool then negates.
+/// WASM equivalent: dyn_to_bool + i32.eqz.
+/// Stack: [value] → [bool]
+pub fn emit_bool_not(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::dyn_to_bool, line);
+    chunk.emit_op(Op::i32_eqz, line);
+}
+
 // ── Ternary / conditional expression ────────────────────────────────────
 //
 // Usage:

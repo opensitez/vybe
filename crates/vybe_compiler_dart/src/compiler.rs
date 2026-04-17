@@ -1524,7 +1524,7 @@ impl Compiler {
                         BinOp::Mul => self.emit(Op::f64_mul),
                         BinOp::Div => self.emit(Op::f64_div),
                         BinOp::IntDiv => { self.emit(Op::f64_div); self.emit(Op::f64_floor); }
-                        BinOp::Mod => self.emit(Op::f64_mod),
+                        BinOp::Mod => { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); },
                         BinOp::Eq => self.emit(Op::dyn_eq),
                         BinOp::NotEq => self.emit(Op::dyn_ne),
                         BinOp::Lt => self.emit(Op::dyn_lt),
@@ -1553,7 +1553,7 @@ impl Compiler {
                     }
                     UnaryOp::BitNot => {
                         self.compile_expression(inner)?;
-                        self.emit(Op::i32_not);
+                        { let l = self.line; vybe_compiler_common::expressions::emit_i32_not(&mut self.chunks[self.current_chunk_idx], l); }
                     }
                     UnaryOp::PreInc => {
                         self.compile_expression(inner)?;
@@ -1620,7 +1620,7 @@ impl Compiler {
                             AssignOp::SubAssign => self.emit(Op::f64_sub),
                             AssignOp::MulAssign => self.emit(Op::f64_mul),
                             AssignOp::DivAssign => self.emit(Op::f64_div),
-                            AssignOp::ModAssign => self.emit(Op::f64_mod),
+                            AssignOp::ModAssign => { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); },
                             _ => self.emit(Op::dyn_add), // fallback
                         }
                     }
@@ -1835,7 +1835,7 @@ impl Compiler {
                 self.compile_expression(inner)?;
                 let type_idx = self.add_string_constant(&self.runtime_type_name(&type_ann.name));
                 self.emit_u16(Op::ref_test, type_idx);
-                if *negated { self.emit(Op::bool_not); }
+                if *negated { let l = self.line; vybe_compiler_common::expressions::emit_bool_not(&mut self.chunks[self.current_chunk_idx], l); }
             }
             Expression::As { expr: inner, type_ann } => {
                 self.compile_expression(inner)?;

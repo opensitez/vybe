@@ -2126,7 +2126,7 @@ impl Compiler {
             "MIN" => { common::collections::emit_min(&mut self.chunks[c], args.len() as u8, line); }
             "MOD" | "REM" => {
                 // MOD(a, b) — args already on stack [a, b]
-                self.emit(Op::f64_mod);
+                { let l = self.line; vybe_compiler_common::expressions::emit_f64_mod(&mut self.chunks[self.current_chunk_idx], l); }
             }
             "NUMVAL" | "NUMVAL-C" => {
                 common::convert::emit_parse_float(&mut self.chunks[c], line);

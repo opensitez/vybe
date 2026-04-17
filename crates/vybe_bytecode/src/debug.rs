@@ -34,7 +34,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
     match op {
         // No operands
         Op::drop | Op::dup |
-        Op::f64_add | Op::f64_sub | Op::f64_mul | Op::f64_div | Op::f64_mod | Op::f64_neg |
+        Op::f64_add | Op::f64_sub | Op::f64_mul | Op::f64_div | Op::f64_neg |
         Op::f64_abs | Op::f64_ceil | Op::f64_floor | Op::f64_trunc | Op::f64_nearest | Op::f64_sqrt |
         Op::f64_min | Op::f64_max | Op::f64_copysign |
         Op::f32_abs | Op::f32_neg | Op::f32_ceil | Op::f32_floor | Op::f32_trunc | Op::f32_nearest | Op::f32_sqrt |
@@ -45,13 +45,11 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::i64_and | Op::i64_or | Op::i64_xor | Op::i64_shl | Op::i64_shr_s | Op::i64_shr_u |
         Op::i64_rotl | Op::i64_rotr | Op::i64_clz | Op::i64_ctz | Op::i64_popcnt | Op::i64_eqz |
         Op::str_concat |
-        Op::i32_and | Op::i32_or | Op::i32_xor | Op::i32_not | Op::i32_shl | Op::i32_shr_s | Op::i32_shr_u |
+        Op::i32_and | Op::i32_or | Op::i32_xor | Op::i32_shl | Op::i32_shr_s | Op::i32_shr_u |
         Op::eq | Op::ne | Op::f64_lt | Op::f64_gt | Op::f64_le | Op::f64_ge |
-        Op::str_lt | Op::str_gt |
-        Op::bool_not |
         Op::dyn_add | Op::dyn_eq | Op::dyn_ne | Op::dyn_lt | Op::dyn_gt |
         Op::dyn_le | Op::dyn_ge | Op::dyn_neg | Op::dyn_not | Op::dyn_to_bool |
-        Op::r#await | Op::set_timer |
+        Op::set_timer |
         Op::r#return | Op::halt | Op::unreachable |
         Op::shared_new | Op::shared_array_get | Op::shared_array_set |
         Op::ref_make_weak | Op::ref_deref_weak | Op::ref_is_alive | Op::ref_register_finalizer |
@@ -70,8 +68,8 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         Op::select |
         Op::try_end | Op::throw | Op::throw_ref |
         Op::i31_new | Op::i31_get_s | Op::i31_get_u |
-        Op::inherit | Op::iter_get | Op::iter_next | Op::spread |
-        Op::memory_size | Op::end | Op::unpack |
+        Op::spread |
+        Op::memory_size | Op::end |
         // String builtins
         Op::str_length | Op::str_char_code_at | Op::str_from_char_code | Op::str_char_at |
         Op::str_substring | Op::str_slice | Op::str_index_of | Op::str_last_index_of |
@@ -123,7 +121,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
 
         // u16 operand
         Op::r#const | Op::local_get | Op::local_set | Op::global_get | Op::global_set |
-        Op::struct_get | Op::struct_set | Op::struct_new | Op::array_new | Op::class_new | Op::method_def |
+        Op::struct_get | Op::struct_set | Op::struct_new | Op::array_new |
         Op::block | Op::r#loop | Op::memory_grow | Op::canon_lift | Op::canon_lower |
         Op::type_import | Op::type_export |
         Op::shared_struct_get | Op::shared_struct_set | Op::shared_struct_cas |
@@ -144,7 +142,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         // u8 operand
         Op::upvalue_get | Op::upvalue_set | Op::call | Op::call_ref | Op::str_concat_n |
         Op::return_call | Op::return_call_indirect | Op::return_call_ref |
-        Op::call_indirect | Op::pack |
+        Op::call_indirect |
         Op::br_label | Op::br_if_label |
         // SIMD lane ops (u8 lane index)
         Op::i32x4_extract_lane | Op::i32x4_replace_lane | Op::i32x4_shl | Op::i32x4_shr_s | Op::i32x4_shr_u |

@@ -115,6 +115,9 @@ pub fn build_stdlib() -> StdLib {
     chunks.push(build_string_raw());
     exports.push("__stdlib_string_raw");
 
+    chunks.push(build_fmod());
+    exports.push("__stdlib_fmod");
+
     StdLib { chunks, exports }
 }
 
@@ -1552,6 +1555,29 @@ fn build_string_raw() -> Chunk {
     c.patch_jump(exit);
 
     c.emit_op_u16(Op::local_get, result, 0);
+    c.emit_op(Op::r#return, 0);
+    c
+}
+
+// ── fmod(a, b) → a % b (floating-point remainder) ──────────
+// WASM has no f64.rem. Pure bytecode: a - trunc(a/b) * b.
+// Host can override __vybe_fmod with native fmod for performance.
+fn build_fmod() -> Chunk {
+    let mut c = Chunk::new("__stdlib_fmod");
+    c.arity = 2; // a, b
+    c.local_count = 3; // callee(0) + a(1) + b(2)
+    let a = 1u16;
+    let b = 2u16;
+
+    // result = a - trunc(a / b) * b
+    c.emit_op_u16(Op::local_get, a, 0);   // a
+    c.emit_op_u16(Op::local_get, a, 0);   // a
+    c.emit_op_u16(Op::local_get, b, 0);   // b
+    c.emit_op(Op::f64_div, 0);            // a / b
+    c.emit_op(Op::f64_trunc, 0);          // trunc(a / b)
+    c.emit_op_u16(Op::local_get, b, 0);   // b
+    c.emit_op(Op::f64_mul, 0);            // trunc(a / b) * b
+    c.emit_op(Op::f64_sub, 0);            // a - trunc(a / b) * b
     c.emit_op(Op::r#return, 0);
     c
 }

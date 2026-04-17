@@ -1554,11 +1554,7 @@ impl VM {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a / b))?;
                 }
-                Op::f64_mod => {
-                    let b = self.pop().as_f64();
-                    let a = self.pop().as_f64();
-                    self.push(Value::F64(a % b))?;
-                }
+                // f64_mod: removed (non-WASM, use __stdlib_fmod)
                 Op::f64_neg => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(-a))?;
@@ -1690,7 +1686,7 @@ impl VM {
                 Op::i32_and => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a & b))?; }
                 Op::i32_or  => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a | b))?; }
                 Op::i32_xor => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a ^ b))?; }
-                Op::i32_not => { let a = self.pop().as_i32(); self.push(Value::I32(!a))?; }
+                // i32_not: removed (non-WASM, use i32.const -1 + i32.xor)
                 Op::i32_shl    => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a << (b & 0x1f)))?; }
                 Op::i32_shr_s    => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a >> (b & 0x1f)))?; }
                 Op::i32_shr_u   => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32((a >> (b & 0x1f)) as i32))?; }
@@ -1710,22 +1706,10 @@ impl VM {
                 Op::f64_gt => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a > b))?; }
                 Op::f64_le => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a <= b))?; }
                 Op::f64_ge => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a >= b))?; }
-                Op::str_lt => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    self.push(Value::Bool(a.as_str() < b.as_str()))?;
-                }
-                Op::str_gt => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    self.push(Value::Bool(a.as_str() > b.as_str()))?;
-                }
+                // str_lt, str_gt: removed (non-WASM, were unused)
 
                 // -- Logical --
-                Op::bool_not => {
-                    let a = self.pop().as_bool();
-                    self.push(Value::Bool(!a))?;
-                }
+                // bool_not: removed (non-WASM, use dyn_to_bool + i32_eqz)
 
                 // -- Control flow --
                 Op::br => {
@@ -2152,48 +2136,7 @@ impl VM {
                 }
 
                 // -- Async (await) --
-                Op::r#await => {
-                    let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        let o = obj.lock().unwrap();
-                        let is_promise = o.properties.get("__type")
-                            .map(|v| format!("{}", v) == "Promise")
-                            .unwrap_or(false);
-                        if is_promise {
-                            let state = o.properties.get("__state")
-                                .map(|v| format!("{}", v))
-                                .unwrap_or_default();
-                            if state == "fulfilled" {
-                                // Already resolved — push the value and continue
-                                let resolved = o.properties.get("__value").cloned().unwrap_or(Value::Null);
-                                drop(o);
-                                self.push(resolved)?;
-                            } else if state == "pending" {
-                                // Not yet resolved — suspend the fiber
-                                let promise_id = o.properties.get("__id")
-                                    .map(|v| v.as_f64() as u64)
-                                    .unwrap_or(0);
-                                drop(o);
-                                let fiber = self.save_fiber();
-                                self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
-                                // Signal suspension via special error
-                                return Err(VMError::new(format!("__await__:{}", promise_id)));
-                            } else {
-                                // Rejected — push the rejection value
-                                let rejected = o.properties.get("__value").cloned().unwrap_or(Value::Null);
-                                drop(o);
-                                self.push(rejected)?;
-                            }
-                        } else {
-                            drop(o);
-                            // Not a Promise — await on non-Promise returns the value as-is
-                            self.push(val)?;
-                        }
-                    } else {
-                        // Not an object — return as-is
-                        self.push(val)?;
-                    }
-                }
+                // r#await: removed (duplicate of promise_suspend, use JSPI proposal name)
 
                 Op::set_timer => {
                     let ms = self.pop().as_f64();
@@ -2504,25 +2447,7 @@ impl VM {
                 Op::i64_extend32_s => { let a = self.pop().as_i64() as i32; self.push(Value::I64(a as i64))?; }
 
                 // -- Multi-value --
-                Op::pack => {
-                    let count = self.read_byte() as usize;
-                    let start = self.stack.len() - count;
-                    let values: Vec<Value> = self.stack.drain(start..).collect();
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(values)))))?;
-                }
-                Op::unpack => {
-                    let arr = self.pop();
-                    if let Value::Object(obj) = arr {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(ref elems) = o.kind {
-                            let elems = elems.clone();
-                            drop(o);
-                            for elem in elems {
-                                self.push(elem)?;
-                            }
-                        }
-                    }
-                }
+                // pack, unpack: removed (non-WASM, were unused by compilers)
 
                 // -- Block/loop structured control --
                 Op::block => {
@@ -3854,136 +3779,7 @@ impl VM {
                 }
 
                 // -- Iteration protocol --
-                Op::iter_get => {
-                    // Get an iterator from an iterable.
-                    // Checks: __iter__ (Python), Symbol.iterator (JS), GetEnumerator (C#)
-                    // Fallback: if it's an array, create an index-based iterator object.
-                    let iterable = self.pop();
-                    let mut iter_obj = Object::new();
-
-                    match &iterable {
-                        Value::Object(o) => {
-                            let ob = o.lock().unwrap();
-                            // Check for __iter__ method
-                            if ob.properties.contains_key("__iter__") {
-                                // Store the iterable and we'll call __iter__ via iter_next
-                                drop(ob);
-                                iter_obj.properties.insert("__iterable".into(), iterable.clone());
-                                iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("dunder")));
-                                iter_obj.properties.insert("__started".into(), Value::Bool(false));
-                            } else if matches!(&ob.kind, ObjectKind::Array(_)) {
-                                // Array: index-based iteration
-                                drop(ob);
-                                iter_obj.properties.insert("__iterable".into(), iterable.clone());
-                                iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("array")));
-                                iter_obj.properties.insert("__index".into(), Value::I32(0));
-                            } else {
-                                // Dict/Object: iterate keys
-                                let keys: Vec<Value> = ob.properties.keys()
-                                    .filter(|k| !k.starts_with("__"))
-                                    .map(|k| Value::String(Arc::from(k.as_str())))
-                                    .collect();
-                                drop(ob);
-                                let keys_arr = Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
-                                iter_obj.properties.insert("__iterable".into(), keys_arr);
-                                iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("array")));
-                                iter_obj.properties.insert("__index".into(), Value::I32(0));
-                            }
-                        }
-                        Value::String(s) => {
-                            // String: iterate characters
-                            let chars: Vec<Value> = s.chars()
-                                .map(|c| Value::String(Arc::from(c.to_string().as_str())))
-                                .collect();
-                            let chars_arr = Value::Object(Arc::new(Mutex::new(Object::new_array(chars))));
-                            iter_obj.properties.insert("__iterable".into(), chars_arr);
-                            iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("array")));
-                            iter_obj.properties.insert("__index".into(), Value::I32(0));
-                        }
-                        _ => {
-                            // Not iterable
-                            iter_obj.properties.insert("__protocol".into(), Value::String(Arc::from("empty")));
-                        }
-                    }
-                    iter_obj.properties.insert("__type".into(), Value::String(Arc::from("iterator")));
-                    iter_obj.properties.insert("__done".into(), Value::Bool(false));
-                    self.push(Value::Object(Arc::new(Mutex::new(iter_obj))))?;
-                }
-                Op::iter_next => {
-                    // Advance iterator. Returns {value, done}.
-                    // Stack: [iterator] → [value, bool_done]
-                    let iter_val = self.pop();
-                    if let Value::Object(ref iter_obj) = iter_val {
-                        let protocol = {
-                            let ob = iter_obj.lock().unwrap();
-                            ob.properties.get("__protocol").map(|v| v.to_string()).unwrap_or_default()
-                        };
-
-                        match protocol.as_str() {
-                            "array" => {
-                                let (value, done) = {
-                                    let mut ob = iter_obj.lock().unwrap();
-                                    let idx = ob.properties.get("__index")
-                                        .map(|v| v.as_i32() as usize).unwrap_or(0);
-                                    let iterable = ob.properties.get("__iterable").cloned().unwrap_or(Value::Null);
-                                    let (val, is_done) = if let Value::Object(arr) = &iterable {
-                                        let arr_ob = arr.lock().unwrap();
-                                        if let ObjectKind::Array(elems) = &arr_ob.kind {
-                                            if idx < elems.len() {
-                                                (elems[idx].clone(), false)
-                                            } else {
-                                                (Value::Null, true)
-                                            }
-                                        } else {
-                                            (Value::Null, true)
-                                        }
-                                    } else {
-                                        (Value::Null, true)
-                                    };
-                                    ob.properties.insert("__index".into(), Value::I32((idx + 1) as i32));
-                                    ob.properties.insert("__done".into(), Value::Bool(is_done));
-                                    (val, is_done)
-                                };
-                                self.push(value)?;
-                                self.push(Value::Bool(done))?;
-                            }
-                            "dunder" => {
-                                // Python __iter__/__next__ protocol
-                                // First call: call __iter__ to get the iterator object
-                                // Subsequent: call __next__ on the iterator
-                                let started = {
-                                    let ob = iter_obj.lock().unwrap();
-                                    ob.properties.get("__started").map(|v| dyn_truthy(v)).unwrap_or(false)
-                                };
-                                if !started {
-                                    // Call __iter__ on the iterable
-                                    let iterable = iter_obj.lock().unwrap().properties.get("__iterable").cloned().unwrap_or(Value::Null);
-                                    if let Value::Object(ref it_obj) = iterable {
-                                        let iter_fn = it_obj.lock().unwrap().properties.get("__iter__").cloned();
-                                        if let Some(func) = iter_fn {
-                                            self.push(func)?;
-                                            self.push(iterable.clone())?;
-                                            self.call_value(1)?;
-                                            // __iter__ returns the iterator — store it
-                                            // For simplicity, assume __iter__ returns self or an array
-                                        }
-                                    }
-                                    iter_obj.lock().unwrap().properties.insert("__started".into(), Value::Bool(true));
-                                }
-                                // For now, treat dunder iterators as done (full protocol needs coroutines)
-                                self.push(Value::Null)?;
-                                self.push(Value::Bool(true))?;
-                            }
-                            _ => {
-                                self.push(Value::Null)?;
-                                self.push(Value::Bool(true))?;
-                            }
-                        }
-                    } else {
-                        self.push(Value::Null)?;
-                        self.push(Value::Bool(true))?;
-                    }
-                }
+                // iter_get, iter_next: removed (non-WASM, were unused by compilers)
                 Op::spread => {
                     // Spread array onto stack: [array] → [elem0, elem1, ...]
                     let val = self.pop();
@@ -3996,9 +3792,7 @@ impl VM {
                         }
                     }
                 }
-                Op::class_new => { let _ = self.read_u16(); self.push(Value::Null)?; }
-                Op::method_def => { let _ = self.read_u16(); }
-                Op::inherit => { self.pop(); }
+                // class_new, method_def, inherit: removed (non-WASM, were NOPs)
             }
         }
     }

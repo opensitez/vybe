@@ -45,6 +45,7 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_dynmul",     "__vybe_dynmul"),
     ("__stdlib_concat",     "__vybe_concat"),
     ("__stdlib_string_raw", "__vybe_string_raw"),
+    ("__stdlib_fmod",       "__vybe_fmod"),
 ];
 
 /// Additional alias mappings: import name → __vybe_* global name.
@@ -74,6 +75,7 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("vybe:array",   "redim",    "__vybe_redim"),
     ("vybe:array",   "sliceStep","__vybe_slicestep"),
     ("vybe:math",    "dynMul",   "__vybe_dynmul"),
+    ("vybe:math",    "fmod",     "__vybe_fmod"),
 ];
 
 /// Emit the stdlib preamble at the START of a script chunk.

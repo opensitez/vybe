@@ -109,18 +109,18 @@ pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
 //
 //   await expression:
 //     1. Compile the expression (produces a value or Promise)
-//     2. Emit Op::r#await — VM checks if Promise, suspends fiber if pending
+//     2. Emit Op::promise_suspend (WASM JSPI) — VM checks if Promise, suspends fiber if pending
 //
 // Python `async def`, Dart `async`, JS `async function`, C# `async Task`
 // all compile to the same opcodes.
 
-/// Emit an await expression.
+/// Emit an await expression (WASM JSPI: promise_suspend).
 /// Caller must have compiled the awaited expression onto the stack.
 /// If the value is a Promise, the VM suspends the current fiber until resolved.
 /// If the value is not a Promise, it passes through unchanged.
 /// Stack before: [value_or_promise]  Stack after: [resolved_value]
 pub fn emit_await(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::r#await, line);
+    chunk.emit_op(Op::promise_suspend, line);
 }
 
 /// Emit async function wrapper: wraps the body chunk as a continuation.

@@ -738,7 +738,7 @@ impl Compiler {
                         self.emit(Op::f64_div);
                         common::math::emit_trunc(self.chunk(), line);
                     }
-                    BinOp::Mod => self.emit(Op::f64_mod),
+                    BinOp::Mod => { let idx = self.import("vybe:math", "fmod"); let l = self.line; vybe_compiler_common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); }
                     BinOp::Eq => self.emit(Op::dyn_eq),
                     BinOp::NotEq => self.emit(Op::dyn_ne),
                     BinOp::Lt => self.emit(Op::dyn_lt),
