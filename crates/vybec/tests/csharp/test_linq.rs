@@ -1,5 +1,5 @@
-use vybe_parser_csharp::parse;
-use vybe_compiler_csharp::Compiler;
+use vybec::parser_csharp::parse;
+use vybec::compiler_csharp::Compiler;
 
 fn compile_ok(src: &str) {
     let program = parse(src).expect("parse failed");

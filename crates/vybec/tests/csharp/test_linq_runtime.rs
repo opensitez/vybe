@@ -1,25 +1,5 @@
-use std::rc::Rc;
-use std::cell::RefCell;
-use vybe_bytecode::{VM, Value};
+use super::helpers::run_cs;
 
-fn run_cs(source: &str) -> Vec<String> {
-    let unit = vybe_parser_csharp::parse(source).unwrap_or_else(|e| panic!("Parse error: {e}"));
-    let mut vm = VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let out = output.clone();
-    vybe_host::register_all(&mut vm);
-    vybe_host::setup_namespaces(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-        out.borrow_mut().push(parts.join(" "));
-        Value::Null
-    }));
-    let chunks = vybe_compiler_csharp::Compiler::new().compile(&unit)
-        .unwrap_or_else(|e| panic!("Compile error: {e}"));
-    vm.run(chunks).unwrap_or_else(|e| panic!("Runtime error: {e}"));
-    let result = output.borrow().clone();
-    result
-}
 
 // ═══════════════════════════════════════════════════════════
 // LINQ Where — filters with VM callback

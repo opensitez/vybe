@@ -9,8 +9,8 @@ class Calculator {
 }
 Console.WriteLine("Component test");
 "#;
-    let program = vybe_parser_csharp::parse(src).expect("parse failed");
-    let chunks = vybe_compiler_csharp::Compiler::new().compile(&program).expect("compile failed");
+    let program = vybec::parser_csharp::parse(src).expect("parse failed");
+    let chunks = vybec::compiler_csharp::Compiler::new().compile(&program).expect("compile failed");
     let component = vybe_compiler_common::components::build_component(
         "calc_module",
         vybe_bytecode::component::Language::CSharp,
@@ -42,8 +42,8 @@ class MathUtils {
     public static int Square(int x) { return x * x; }
 }
 "#;
-    let prog1 = vybe_parser_csharp::parse(src1).expect("parse1 failed");
-    let chunks1 = vybe_compiler_csharp::Compiler::new().compile(&prog1).expect("compile1 failed");
+    let prog1 = vybec::parser_csharp::parse(src1).expect("parse1 failed");
+    let chunks1 = vybec::compiler_csharp::Compiler::new().compile(&prog1).expect("compile1 failed");
     let comp1 = vybe_compiler_common::components::build_component(
         "math_utils", vybe_bytecode::component::Language::CSharp, chunks1,
     );
@@ -51,8 +51,8 @@ class MathUtils {
     let src2 = r#"
 Console.WriteLine("Main app");
 "#;
-    let prog2 = vybe_parser_csharp::parse(src2).expect("parse2 failed");
-    let chunks2 = vybe_compiler_csharp::Compiler::new().compile(&prog2).expect("compile2 failed");
+    let prog2 = vybec::parser_csharp::parse(src2).expect("parse2 failed");
+    let chunks2 = vybec::compiler_csharp::Compiler::new().compile(&prog2).expect("compile2 failed");
     let comp2 = vybe_compiler_common::components::build_component(
         "main_app", vybe_bytecode::component::Language::CSharp, chunks2,
     );
@@ -77,8 +77,8 @@ fn component_isolation() {
 var x = 42;
 Console.WriteLine(x);
 "#;
-    let program = vybe_parser_csharp::parse(src).expect("parse failed");
-    let chunks = vybe_compiler_csharp::Compiler::new().compile(&program).expect("compile failed");
+    let program = vybec::parser_csharp::parse(src).expect("parse failed");
+    let chunks = vybec::compiler_csharp::Compiler::new().compile(&program).expect("compile failed");
     let component = vybe_compiler_common::components::build_component(
         "isolated_mod", vybe_bytecode::component::Language::CSharp, chunks,
     );

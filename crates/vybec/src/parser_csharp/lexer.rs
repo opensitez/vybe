@@ -1,4 +1,4 @@
-use crate::token::{Token, TokenKind};
+use super::token::{Token, TokenKind};
 
 pub fn tokenize(source: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
