@@ -96,7 +96,7 @@ pub fn RuntimePanel() -> Element {
                 }
             } else {
                 // Console project — capture output in-process
-                let (all_code, _) = vybe_cli::runner::build_project_code(proj);
+                let (all_code, _) = vybec::runner::build_project_code(proj);
 
                 if all_code.trim().is_empty() {
                     *rs.error.lock().unwrap() = Some("No code to run.".to_string());
@@ -127,12 +127,11 @@ pub fn RuntimePanel() -> Element {
                     };
 
                     let mut vm = vybe_bytecode::VM::new();
-                    let queue = std::rc::Rc::new(std::cell::RefCell::new(vybe_host::SideEffectQueue::new()));
-                    vybe_host::register_all_with_gui(&mut vm, queue.clone());
+                    let _gui = vybe_host::register_all_with_gui(&mut vm);
                     vybe_host::setup_namespaces(&mut vm);
 
                     let captured = out.clone();
-                    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[vybe_bytecode::Value]| {
+                    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
                         let line = args.iter().map(|v| format!("{v}")).collect::<Vec<_>>().join(" ");
                         captured.lock().unwrap().push(line);
                         vybe_bytecode::Value::Null
@@ -145,12 +144,6 @@ pub fn RuntimePanel() -> Element {
                             if !msg.starts_with("__") {
                                 *err.lock().unwrap() = Some(format!("Runtime error: {}", msg));
                             }
-                        }
-                    }
-
-                    for effect in queue.borrow_mut().drain() {
-                        if let vybe_host::SideEffect::ConsoleOutput(msg) = effect {
-                            out.lock().unwrap().push(msg);
                         }
                     }
 

@@ -16,7 +16,7 @@ vybe_project = { workspace = true }
 vybe_host = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_compiler_vb = { workspace = true }
-vybe_cli = { workspace = true }
+vybec = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 
