@@ -17,5 +17,5 @@ Demonstrates the `System.Threading` and `System.Diagnostics` namespace features 
 Open this project in the vybe IDE and press Run, or from the command line:
 
 ```
-cargo run -p vybe_cli -- examples/threads_processes/Module1.bas
+cargo run -p vybec -- examples/threads_processes/Module1.bas
 ```

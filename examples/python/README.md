@@ -5,6 +5,6 @@ Minimal Python examples for Vybe
 Run with:
 
 ```bash
-cargo build -p vybe_cli
+cargo build -p vybec
 target/debug/vybec examples/python/hello.py
 ```
