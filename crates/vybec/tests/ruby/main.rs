@@ -1,0 +1,11 @@
+mod test_builtins;
+mod test_classes;
+mod test_control_flow;
+mod test_functions;
+mod test_host_compat;
+mod test_literals;
+mod test_new_features;
+mod test_operators;
+mod test_programs;
+mod test_round2_features;
+mod test_round3_fixes;

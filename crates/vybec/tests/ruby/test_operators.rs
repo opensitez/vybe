@@ -1,5 +1,5 @@
-use vybe_parser_ruby::parse;
-use vybe_compiler_ruby::Compiler;
+use vybec::parser_ruby::parse;
+use vybec::compiler_ruby::Compiler;
 
 fn compile_ok(src: &str) {
     let program = parse(src).expect("parse failed");

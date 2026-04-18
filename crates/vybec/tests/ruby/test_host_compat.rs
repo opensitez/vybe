@@ -1,5 +1,5 @@
-use vybe_parser_ruby::parse;
-use vybe_compiler_ruby::Compiler;
+use vybec::parser_ruby::parse;
+use vybec::compiler_ruby::Compiler;
 
 fn compile_ok(src: &str) {
     let program = parse(src).expect("parse failed");
@@ -66,6 +66,6 @@ def multiply(a, b)
 end
 "#;
     let program = parse(src).expect("parse failed");
-    let result = vybe_compiler_ruby::compile_component(&program, "math_utils");
+    let result = vybec::compiler_ruby::compile_component(&program, "math_utils");
     assert!(result.is_ok(), "component compile failed: {:?}", result.err());
 }
