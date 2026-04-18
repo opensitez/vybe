@@ -1,9 +1,0 @@
-[package]
-name = "vybe_parser_generic"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-
-[dependencies]
-toml = "0.8"
