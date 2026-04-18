@@ -2,7 +2,7 @@ use vybe_widgets::{FontSystem, SwashCache, TextColor as CosmicColor};
 use vybe_widgets::color_picker::{ColorPicker, ColorPickerEvent};
 use tiny_skia::{Paint, Pixmap, Transform, Stroke, PathBuilder};
 use uuid::Uuid;
-use vybe_forms::{Form, Control, ControlType};
+use vybex::projects::{Form, Control, ControlType};
 
 use crate::ide_text::{draw_text, draw_text_with_font, measure_text_with_font};
 

@@ -421,10 +421,10 @@ impl App {
                                 
                                 match action {
                                     crate::form_designer_tab::MenuAction::NewProject => {
-                                        self.project = vybe_project::project::Project::new("Project1".to_string());
-                                        let mut form = vybe_forms::Form::new("Form1".to_string());
+                                        self.project = vybex::projects::project::Project::new("Project1".to_string());
+                                        let mut form = vybex::projects::Form::new("Form1".to_string());
                                         form.width = 640; form.height = 480;
-                                        let fm = vybe_project::project::FormModule::new_classic(form);
+                                        let fm = vybex::projects::project::FormModule::new_classic(form);
                                         self.project.forms.push(fm);
                                         if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
                                             self.active_tab = idx;
@@ -439,7 +439,7 @@ impl App {
                                             .pick_file()
                                         {
                                             let path_str = path.to_string_lossy().to_string();
-                                            match vybe_project::serialization::load_project_auto(&path_str) {
+                                            match vybex::projects::serialization::load_project_auto(&path_str) {
                                                 Ok(proj) => {
                                                     self.tabs.retain(|t| !matches!(&t.content, TabContent::Code(_)) && !matches!(&t.content, TabContent::Resources(_)));
                                                     if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
@@ -472,7 +472,7 @@ impl App {
                                         {
                                             let path_str = path.to_string_lossy().to_string();
                                             self.project_path = Some(path_str.clone());
-                                            match vybe_project::serialization::save_project_auto(&self.project, &path_str) {
+                                            match vybex::projects::serialization::save_project_auto(&self.project, &path_str) {
                                                 Ok(_) => { println!("Saved: {}", path_str); }
                                                 Err(e) => { println!("Save error: {}", e); }
                                             }
@@ -483,10 +483,10 @@ impl App {
                                     }
                                     crate::form_designer_tab::MenuAction::AddForm => {
                                         let name = format!("Form{}", self.project.forms.len() + 1);
-                                        let mut form = vybe_forms::Form::new(name.clone());
+                                        let mut form = vybex::projects::Form::new(name.clone());
                                         form.width = 640; form.height = 480;
                                         let form_clone = form.clone();
-                                        let fm = vybe_project::project::FormModule::new_classic(form);
+                                        let fm = vybex::projects::project::FormModule::new_classic(form);
                                         self.project.forms.push(fm);
                                         if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
                                             if let TabContent::Form(fd) = &mut self.tabs[idx].content {
@@ -498,14 +498,14 @@ impl App {
                                     }
                                     crate::form_designer_tab::MenuAction::AddModule => {
                                         let name = format!("Module{}.vb", self.project.code_files.len() + 1);
-                                        self.project.code_files.push(vybe_project::project::CodeFile {
+                                        self.project.code_files.push(vybex::projects::project::CodeFile {
                                             name: name.clone(),
                                             code: format!("Module {}\n\nEnd Module\n", name.replace(".vb", "")),
                                         });
                                     }
                                     crate::form_designer_tab::MenuAction::AddResourceFile => {
                                         if self.project.resource_files.is_empty() {
-                                            self.project.resource_files.push(vybe_project::ResourceManager::new());
+                                            self.project.resource_files.push(vybex::projects::ResourceManager::new());
                                         }
                                         if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Resources(_))) {
                                             self.active_tab = idx;
@@ -625,10 +625,10 @@ impl App {
                                         }
                                         crate::form_designer_tab::ToolbarAction::AddForm => {
                                             let name = format!("Form{}", self.project.forms.len() + 1);
-                                            let mut form = vybe_forms::Form::new(name.clone());
+                                            let mut form = vybex::projects::Form::new(name.clone());
                                             form.width = 640; form.height = 480;
                                             let form_clone = form.clone();
-                                            self.project.forms.push(vybe_project::project::FormModule::new_classic(form));
+                                            self.project.forms.push(vybex::projects::project::FormModule::new_classic(form));
                                             if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
                                                 if let TabContent::Form(fd) = &mut self.tabs[idx].content {
                                                     fd.form = form_clone;
@@ -640,7 +640,7 @@ impl App {
                                         crate::form_designer_tab::ToolbarAction::AddCode => {
                                             let name = format!("Module{}.vb", self.project.code_files.len() + 1);
                                             let code = format!("Module {}\n\nEnd Module\n", name.replace(".vb", ""));
-                                            self.project.code_files.push(vybe_project::project::CodeFile {
+                                            self.project.code_files.push(vybex::projects::project::CodeFile {
                                                 name: name.clone(),
                                                 code: code.clone(),
                                             });

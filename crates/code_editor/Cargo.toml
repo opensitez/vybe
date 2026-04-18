@@ -22,7 +22,5 @@ url = "2.5"
 vybex = { path = "../vybex" }
 fuzzy-matcher = "0.3.7"
 vybe_widgets = { path = "../vybe_widgets" }
-vybe_forms = { path = "../vybe_forms" }
-vybe_project = { path = "../vybe_project" }
 uuid = { version = "1", features = ["v4"] }
 rfd = "0.14"

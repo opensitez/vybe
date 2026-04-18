@@ -9,12 +9,12 @@ pub(crate) struct ProjectPropsDialog {
 impl ProjectPropsDialog {
     pub fn new() -> Self { Self { visible: false, selected_startup: 0 } }
 
-    pub fn open(&mut self, project: &vybe_project::project::Project) {
+    pub fn open(&mut self, project: &vybex::projects::project::Project) {
         self.visible = true;
         self.selected_startup = match &project.startup_object {
-            vybe_project::project::StartupObject::SubMain => 0,
-            vybe_project::project::StartupObject::None => 1,
-            vybe_project::project::StartupObject::Form(name) => {
+            vybex::projects::project::StartupObject::SubMain => 0,
+            vybex::projects::project::StartupObject::None => 1,
+            vybex::projects::project::StartupObject::Form(name) => {
                 project.forms.iter().position(|f| &f.form.name == name).map(|i| i + 2).unwrap_or(0)
             }
         };
@@ -22,28 +22,28 @@ impl ProjectPropsDialog {
 
     pub fn close(&mut self) { self.visible = false; }
 
-    pub fn apply(&self, project: &mut vybe_project::project::Project) {
+    pub fn apply(&self, project: &mut vybex::projects::project::Project) {
         match self.selected_startup {
-            0 => { project.startup_object = vybe_project::project::StartupObject::SubMain; project.startup_form = None; }
-            1 => { project.startup_object = vybe_project::project::StartupObject::None; project.startup_form = None; }
+            0 => { project.startup_object = vybex::projects::project::StartupObject::SubMain; project.startup_form = None; }
+            1 => { project.startup_object = vybex::projects::project::StartupObject::None; project.startup_form = None; }
             n => {
                 let idx = n - 2;
                 if let Some(fm) = project.forms.get(idx) {
                     let name = fm.form.name.clone();
-                    project.startup_object = vybe_project::project::StartupObject::Form(name.clone());
+                    project.startup_object = vybex::projects::project::StartupObject::Form(name.clone());
                     project.startup_form = Some(name);
                 }
             }
         }
     }
 
-    pub fn startup_options(&self, project: &vybe_project::project::Project) -> Vec<String> {
+    pub fn startup_options(&self, project: &vybex::projects::project::Project) -> Vec<String> {
         let mut opts = vec!["Sub Main".into(), "(None)".into()];
         for fm in &project.forms { opts.push(fm.form.name.clone()); }
         opts
     }
 
-    pub fn render(&self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, win_w: f32, win_h: f32, scale: f32, project: &vybe_project::project::Project) {
+    pub fn render(&self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, win_w: f32, win_h: f32, scale: f32, project: &vybex::projects::project::Project) {
         if !self.visible { return; }
         let s = scale;
         let mut paint = Paint::default();
@@ -116,7 +116,7 @@ impl ProjectPropsDialog {
         crate::ide_text::draw_text(pix, fs, sc, "Cancel", cancel_x + 20.0, btn_y + 6.0, 12.0, text_col, s);
     }
 
-    pub fn handle_click(&mut self, mx: f32, my: f32, win_w: f32, win_h: f32, project: &vybe_project::project::Project) -> bool {
+    pub fn handle_click(&mut self, mx: f32, my: f32, win_w: f32, win_h: f32, project: &vybex::projects::project::Project) -> bool {
         if !self.visible { return false; }
         let dw = 400.0f32; let dh = 280.0f32;
         let dx = (win_w - dw) / 2.0; let dy = (win_h - dh) / 2.0;

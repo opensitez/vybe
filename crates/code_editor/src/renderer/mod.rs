@@ -134,10 +134,10 @@ pub(crate) struct App {
     pub(crate) keybindings: Vec<Keybinding>,
     pub(crate) _open_form: bool,
     pub(crate) sidebar_tab: SidebarTab,
-    pub(crate) project: vybe_project::project::Project,
+    pub(crate) project: vybex::projects::project::Project,
     pub(crate) project_explorer: ProjectExplorerState,
     pub(crate) project_props_dialog: ProjectPropsDialog,
-    pub(crate) control_clipboard: Vec<vybe_forms::Control>,
+    pub(crate) control_clipboard: Vec<vybex::projects::Control>,
     pub(crate) project_path: Option<String>,
     pub(crate) run_child: Option<std::process::Child>,
     pub(crate) pe_context_menu: Option<(f32, f32, String)>,
@@ -244,11 +244,11 @@ impl App {
             },
             sidebar_tab: SidebarTab::Project,
             project: {
-                let mut p = vybe_project::project::Project::new("Project1".to_string());
-                let mut form = vybe_forms::Form::new("Form1".to_string());
+                let mut p = vybex::projects::project::Project::new("Project1".to_string());
+                let mut form = vybex::projects::Form::new("Form1".to_string());
                 form.width = 640; form.height = 480;
-                p.forms.push(vybe_project::project::FormModule::new_classic(form));
-                p.startup_object = vybe_project::project::StartupObject::Form("Form1".to_string());
+                p.forms.push(vybex::projects::project::FormModule::new_classic(form));
+                p.startup_object = vybex::projects::project::StartupObject::Form("Form1".to_string());
                 p
             },
             project_explorer: ProjectExplorerState::new(),

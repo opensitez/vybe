@@ -2,10 +2,19 @@
 //!
 //! Dispatches by file extension to the appropriate loader.
 //! Single source files are also handled here (a project of one).
+//!
+//! Also provides the IDE project model (`Project`, `FormModule`, etc.)
+//! for the code editor — load, edit, and save `.vbproj` projects with
+//! full form designer round-trip support.
 
 mod single_file;
 mod vybe;
 mod vbproj;
+pub mod encoding;
+pub mod vbforms;
+
+pub use vbforms::*;
+pub use encoding::read_text_file;
 
 use std::path::Path;
 use crate::bundle::Bundle;

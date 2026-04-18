@@ -1,4 +1,5 @@
 mod walker;
+pub mod forms;
 
 use pest_derive::Parser;
 

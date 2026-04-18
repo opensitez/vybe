@@ -9,12 +9,16 @@ pest_derive = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_compiler_common = { workspace = true }
 vybe_host = { workspace = true, features = ["gui"] }
+vybe_widgets = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 crossbeam-channel = "0.5"
 toml = "0.8"
 quick-xml = "0.39"
 
 [dev-dependencies]
-vybe_widgets = { path = "../vybe_widgets" }
 
 [[bin]]
 name = "vybex"
