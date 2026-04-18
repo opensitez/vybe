@@ -175,11 +175,11 @@ fn run_project(path: &Path, dump: bool) {
             }
             "py" | "py3" => {
                 let source = read_file(&file_path);
-                let module = match crate::parser_python::parse(&source) {
+                let module = match vybec::parser_python::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                let c = match crate::compiler_python::Compiler::new().compile(&module) {
+                let c = match vybec::compiler_python::Compiler::new().compile(&module) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
                 };
@@ -199,11 +199,11 @@ fn run_project(path: &Path, dump: bool) {
             }
             "rb" => {
                 let source = read_file(&file_path);
-                let program = match vybe_parser_ruby::parse(&source) {
+                let program = match vybec::parser_ruby::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                let c = match vybe_compiler_ruby::Compiler::new().compile(&program) {
+                let c = match vybec::compiler_ruby::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
                 };
@@ -211,11 +211,11 @@ fn run_project(path: &Path, dump: bool) {
             }
             "cob" | "cbl" | "cobol" => {
                 let source = read_file(&file_path);
-                let program = match vybe_parser_cobol::parse(&source) {
+                let program = match vybec::parser_cobol::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                let c = match vybe_compiler_cobol::Compiler::new().compile(&program) {
+                let c = match vybec::compiler_cobol::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
                 };
@@ -223,11 +223,11 @@ fn run_project(path: &Path, dump: bool) {
             }
             "pas" | "pp" | "dpr" => {
                 let source = read_file(&file_path);
-                let program = match vybe_parser_pascal::parse(&source) {
+                let program = match vybec::parser_pascal::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                let c = match vybe_compiler_pascal::Compiler::new().compile(&program) {
+                let c = match vybec::compiler_pascal::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
                 };
@@ -511,7 +511,7 @@ fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
 
 fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable: bool) {
     let source = read_file(path);
-    let module = match crate::parser_python::parse(&source) {
+    let module = match vybec::parser_python::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
@@ -547,7 +547,7 @@ fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable:
         Arc::new(Mutex::new(vybe_host::GuiState::new()))
     };
 
-    let chunks = match crate::compiler_python::Compiler::new().compile(&module) {
+    let chunks = match vybec::compiler_python::Compiler::new().compile(&module) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };
@@ -611,7 +611,7 @@ fn run_php(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: b
 
 fn run_cobol(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
     let source = read_file(path);
-    let program = match vybe_parser_cobol::parse(&source) {
+    let program = match vybec::parser_cobol::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
@@ -627,7 +627,7 @@ fn run_cobol(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable:
     };
     vybe_host::setup_namespaces(&mut vm);
 
-    let chunks = match vybe_compiler_cobol::Compiler::new().compile(&program) {
+    let chunks = match vybec::compiler_cobol::Compiler::new().compile(&program) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };
@@ -651,7 +651,7 @@ fn run_cobol(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable:
 
 fn run_ruby(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
     let source = read_file(path);
-    let program = match vybe_parser_ruby::parse(&source) {
+    let program = match vybec::parser_ruby::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
@@ -667,7 +667,7 @@ fn run_ruby(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
     };
     vybe_host::setup_namespaces(&mut vm);
 
-    let chunks = match vybe_compiler_ruby::Compiler::new().compile(&program) {
+    let chunks = match vybec::compiler_ruby::Compiler::new().compile(&program) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };
@@ -691,7 +691,7 @@ fn run_ruby(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
 
 fn run_pascal(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
     let source = read_file(path);
-    let program = match vybe_parser_pascal::parse(&source) {
+    let program = match vybec::parser_pascal::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
@@ -707,7 +707,7 @@ fn run_pascal(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable
     };
     vybe_host::setup_namespaces(&mut vm);
 
-    let chunks = match vybe_compiler_pascal::Compiler::new().compile(&program) {
+    let chunks = match vybec::compiler_pascal::Compiler::new().compile(&program) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };

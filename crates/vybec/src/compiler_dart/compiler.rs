@@ -16,9 +16,8 @@ use crate::parser_dart::*;
 use super::scope::Scope;
 
 struct LoopContext {
-    _start_offset: usize,
-    break_patches: Vec<usize>,
-    continue_patches: Vec<usize>,
+    break_label_depth: u32,
+    continue_label_depth: u32,
 }
 
 enum VarResolution { Local(u16), Upvalue(u8), Global }
@@ -28,6 +27,7 @@ pub struct Compiler {
     scopes: Vec<Scope>,
     current_chunk_idx: usize,
     loop_stack: Vec<LoopContext>,
+    label_depth: u32,
     line: u32,
     defined_globals: std::collections::HashSet<String>,
     defined_classes: std::collections::HashSet<String>,
@@ -44,6 +44,7 @@ impl Compiler {
             scopes: vec![Scope::new()],
             current_chunk_idx: 0,
             loop_stack: Vec::new(),
+            label_depth: 0,
             line: 1,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
@@ -105,6 +106,11 @@ impl Compiler {
         let idx = self.chunks[self.current_chunk_idx].add_constant(value);
         self.emit_u16(Op::CONST, idx);
     }
+    fn chunk(&mut self) -> &mut Chunk {
+        &mut self.chunks[self.current_chunk_idx]
+    }
+    /// Forward-only conditional jump (for expressions, try/catch, assertions, pattern matching).
+    /// Loop/break/continue use structured CF via emit_br/emit_block/emit_loop_s.
     fn emit_jump(&mut self, op: Op) -> usize {
         let line = self.line;
         self.chunks[self.current_chunk_idx].emit_jump(op, line)
@@ -114,10 +120,6 @@ impl Compiler {
     }
     fn current_offset(&self) -> usize {
         self.chunks[self.current_chunk_idx].current_offset()
-    }
-    fn emit_loop(&mut self, target: usize) {
-        let line = self.line;
-        self.chunks[self.current_chunk_idx].emit_loop(target, line);
     }
     fn add_string_constant(&mut self, s: &str) -> u16 {
         self.chunks[self.current_chunk_idx].add_constant(Value::String(Arc::from(s)))
@@ -594,46 +596,46 @@ impl Compiler {
                 }
             }
             Statement::If { condition, then_branch, else_branch } => {
+                let line = self.line;
+                let outer = self.chunk().emit_block(line); self.label_depth += 1;
+                let then_block = self.chunk().emit_block(line); self.label_depth += 1;
                 self.compile_expression(condition)?;
                 { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
-                let else_j = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit(Op::DYN_NOT);
+                self.chunk().emit_br_if(0, line);
                 self.compile_statement(then_branch)?;
+                self.chunk().emit_br(1, line);
+                self.chunk().emit_end(line); self.chunk().patch_block(then_block); self.label_depth -= 1;
                 if let Some(alt) = else_branch {
-                    let end_j = self.emit_jump(Op::BR);
-                    self.patch_jump(else_j);
                     self.compile_statement(alt)?;
-                    self.patch_jump(end_j);
-                } else {
-                    self.patch_jump(else_j);
                 }
+                self.chunk().emit_end(line); self.chunk().patch_block(outer); self.label_depth -= 1;
             }
             Statement::While { condition, body } => {
-                let start = self.current_offset();
-                self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![] });
+                let line = self.line;
+                let lp = common_loops::emit_loop_start(self.chunk(), line);
+                self.label_depth += 2;
+                self.loop_stack.push(LoopContext { break_label_depth: self.label_depth - 1, continue_label_depth: self.label_depth });
                 self.compile_expression(condition)?;
-                { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
-                let exit = self.emit_jump(Op::BR_IF_FALSE);
+                common_loops::emit_loop_cond(self.chunk(), line);
                 self.compile_statement(body)?;
-                for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
-                self.emit_loop(start);
-                self.patch_jump(exit);
-                let ctx = self.loop_stack.pop().unwrap();
-                for p in ctx.break_patches { self.patch_jump(p); }
+                self.loop_stack.pop();
+                common_loops::emit_loop_end(self.chunk(), lp, line);
+                self.label_depth -= 2;
             }
             Statement::DoWhile { body, condition } => {
-                let start = self.current_offset();
-                self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![] });
+                let line = self.line;
+                let lp = common_loops::emit_do_loop_start(self.chunk(), line);
+                self.label_depth += 2;
+                self.loop_stack.push(LoopContext { break_label_depth: self.label_depth - 1, continue_label_depth: self.label_depth });
                 self.compile_statement(body)?;
-                for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
                 self.compile_expression(condition)?;
-                { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
-                let exit = self.emit_jump(Op::BR_IF_FALSE);
-                self.emit_loop(start);
-                self.patch_jump(exit);
-                let ctx = self.loop_stack.pop().unwrap();
-                for p in ctx.break_patches { self.patch_jump(p); }
+                common_loops::emit_do_loop_end(self.chunk(), lp, false, line);
+                self.label_depth -= 2;
+                self.loop_stack.pop();
             }
             Statement::For(for_stmt) => {
+                let line = self.line;
                 self.current_scope_mut().begin_scope();
                 if let Some(init) = &for_stmt.init {
                     match init {
@@ -641,101 +643,88 @@ impl Compiler {
                         ForInit::Expression(e) => { self.compile_expression(e)?; self.emit(Op::DROP); }
                     }
                 }
-                let start = self.current_offset();
-                self.loop_stack.push(LoopContext { _start_offset: start, break_patches: vec![], continue_patches: vec![] });
-                let exit = if let Some(cond) = &for_stmt.condition {
+                let block_p = self.chunk().emit_block(line);
+                let (loop_p, _) = self.chunk().emit_loop_s(line);
+                self.label_depth += 2;
+                if let Some(cond) = &for_stmt.condition {
                     self.compile_expression(cond)?;
-                    { let line = self.line; common_convert::emit_to_bool(self.chunk_mut(), line); }
-                    Some(self.emit_jump(Op::BR_IF_FALSE))
+                    common_loops::emit_loop_cond(self.chunk(), line);
+                }
+                let has_update = !for_stmt.update.is_empty();
+                let body_block_p = if has_update {
+                    let bp = self.chunk().emit_block(line); self.label_depth += 1; Some(bp)
                 } else { None };
+                let break_depth = self.label_depth - (if has_update { 2 } else { 1 });
+                let continue_depth = self.label_depth;
+                self.loop_stack.push(LoopContext { break_label_depth: break_depth, continue_label_depth: continue_depth });
                 self.compile_statement(&for_stmt.body)?;
-                for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
+                self.loop_stack.pop();
+                if let Some(bp) = body_block_p {
+                    self.chunk().emit_end(line); self.chunk().patch_block(bp); self.label_depth -= 1;
+                }
                 for upd in &for_stmt.update {
                     self.compile_expression(upd)?;
                     self.emit(Op::DROP);
                 }
-                self.emit_loop(start);
-                if let Some(e) = exit { self.patch_jump(e); }
-                let ctx = self.loop_stack.pop().unwrap();
-                for p in ctx.break_patches { self.patch_jump(p); }
+                self.chunk().emit_br(0, line);
+                self.chunk().emit_end(line); self.chunk().patch_loop(loop_p); self.label_depth -= 1;
+                self.chunk().emit_end(line); self.chunk().patch_block(block_p); self.label_depth -= 1;
                 self.current_scope_mut().end_scope();
             }
             Statement::ForIn { var_name, iterable, body, .. } => {
                 self.current_scope_mut().begin_scope();
-                // __arr = iterable
                 self.compile_expression(iterable)?;
                 let arr_slot = self.define_local("__for_in_arr", true, false);
                 self.emit_u16(Op::LOCAL_SET, arr_slot);
                 self.emit(Op::DROP);
-                // __i — reserve slot (common helper sets it to 0)
                 let i_slot = self.define_local("__for_in_i", false, false);
 
                 let line = self.line;
                 let lp = common_loops::emit_for_in_start(self.chunk_mut(), arr_slot, i_slot, line);
-                self.loop_stack.push(LoopContext { _start_offset: 0, break_patches: vec![], continue_patches: vec![] });
+                let break_depth = self.label_depth + 1;
+                let continue_depth = self.label_depth + 3;
+                self.label_depth += 3;
+                self.loop_stack.push(LoopContext { break_label_depth: break_depth, continue_label_depth: continue_depth });
 
-                // element is on stack from emit_for_in_start → assign to loop var
                 let var_slot = self.define_local(var_name, false, false);
                 self.emit_u16(Op::LOCAL_SET, var_slot);
                 self.emit(Op::DROP);
                 self.compile_statement(body)?;
-                for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
 
+                self.loop_stack.pop();
                 let line = self.line;
                 common_loops::emit_for_in_end(self.chunk_mut(), i_slot, lp, line);
-
-                let ctx = self.loop_stack.pop().unwrap();
-                for p in ctx.break_patches { self.patch_jump(p); }
+                self.label_depth -= 3;
                 self.current_scope_mut().end_scope();
             }
             Statement::Switch { expr, cases } => {
+                let line = self.line;
                 self.compile_expression(expr)?;
-                self.loop_stack.push(LoopContext { _start_offset: 0, break_patches: vec![], continue_patches: vec![] });
-                let mut test_jumps: Vec<(usize, usize)> = Vec::new();
-                let mut default_idx: Option<usize> = None;
-                for (i, case) in cases.iter().enumerate() {
+                let disc_slot = self.define_local("__switch_disc", false, false);
+                self.emit_u16(Op::LOCAL_SET, disc_slot);
+                self.emit(Op::DROP);
+
+                let outer = self.chunk().emit_block(line); self.label_depth += 1;
+                self.loop_stack.push(LoopContext { break_label_depth: self.label_depth, continue_label_depth: self.label_depth });
+
+                for case in cases {
+                    let arm_block = self.chunk().emit_block(line); self.label_depth += 1;
                     if let Some(lbl) = &case.label {
-                        self.emit(Op::DUP);
+                        let match_block = self.chunk().emit_block(line); self.label_depth += 1;
+                        self.emit_u16(Op::LOCAL_GET, disc_slot);
                         self.compile_expression(lbl)?;
                         self.emit(Op::EQ);
-                        let body_jump = self.emit_jump(Op::BR_IF_TRUE);
-                        test_jumps.push((i, body_jump));
-                    } else {
-                        default_idx = Some(i);
+                        self.emit(Op::DYN_TO_BOOL);
+                        self.chunk().emit_br_if(0, line); // match → body
+                        self.chunk().emit_br(1, line); // no match → skip arm
+                        self.chunk().emit_end(line); self.chunk().patch_block(match_block); self.label_depth -= 1;
                     }
-                }
-                let to_default_or_end = self.emit_jump(Op::BR);
-                let mut body_offsets: Vec<usize> = Vec::new();
-                for case in cases {
-                    body_offsets.push(self.current_offset());
                     for s in &case.body { self.compile_statement(s)?; }
+                    self.chunk().emit_br(1, line);
+                    self.chunk().emit_end(line); self.chunk().patch_block(arm_block); self.label_depth -= 1;
                 }
-                let _end = self.current_offset();
-                for (case_idx, jump) in &test_jumps {
-                    if *case_idx < body_offsets.len() {
-                        let target = body_offsets[*case_idx];
-                        let jump_ip = *jump + 2;
-                        let offset = target as i16 - jump_ip as i16;
-                        let c = &mut self.chunks[self.current_chunk_idx];
-                        c.code[*jump] = (offset >> 8) as u8;
-                        c.code[*jump + 1] = (offset & 0xff) as u8;
-                    }
-                }
-                if let Some(di) = default_idx {
-                    if di < body_offsets.len() {
-                        let target = body_offsets[di];
-                        let jump_ip = to_default_or_end + 2;
-                        let offset = target as i16 - jump_ip as i16;
-                        let c = &mut self.chunks[self.current_chunk_idx];
-                        c.code[to_default_or_end] = (offset >> 8) as u8;
-                        c.code[to_default_or_end + 1] = (offset & 0xff) as u8;
-                    }
-                } else {
-                    self.patch_jump(to_default_or_end);
-                }
-                let ctx = self.loop_stack.pop().unwrap();
-                for p in ctx.break_patches { self.patch_jump(p); }
-                self.emit(Op::DROP);
+                self.loop_stack.pop();
+                self.chunk().emit_end(line); self.chunk().patch_block(outer); self.label_depth -= 1;
             }
             Statement::Return(val) => {
                 if let Some(e) = val { self.compile_expression(e)?; }
@@ -743,12 +732,18 @@ impl Compiler {
                 self.emit(Op::RETURN);
             }
             Statement::Break(_) => {
-                let p = self.emit_jump(Op::BR);
-                if let Some(ctx) = self.loop_stack.last_mut() { ctx.break_patches.push(p); }
+                let line = self.line;
+                if let Some(ctx) = self.loop_stack.last() {
+                    let depth = (self.label_depth - ctx.break_label_depth) as u8;
+                    self.chunk().emit_br(depth, line);
+                }
             }
             Statement::Continue(_) => {
-                let p = self.emit_jump(Op::BR);
-                if let Some(ctx) = self.loop_stack.last_mut() { ctx.continue_patches.push(p); }
+                let line = self.line;
+                if let Some(ctx) = self.loop_stack.last() {
+                    let depth = (self.label_depth - ctx.continue_label_depth) as u8;
+                    self.chunk().emit_br(depth, line);
+                }
             }
             Statement::Throw(expr) => {
                 self.compile_expression(expr)?;

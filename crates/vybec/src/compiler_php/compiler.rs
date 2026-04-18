@@ -6,8 +6,8 @@ use vybe_compiler_common::strings as common_strings;
 use super::scope::Scope;
 
 struct LoopContext {
-    break_patches: Vec<usize>,
-    continue_patches: Vec<usize>,
+    break_label_depth: u32,
+    continue_label_depth: u32,
 }
 
 pub struct Compiler {
@@ -15,6 +15,7 @@ pub struct Compiler {
     scopes: Vec<Scope>,
     current_chunk_idx: usize,
     loop_stack: Vec<LoopContext>,
+    label_depth: u32,
     line: u32,
     defined_globals: std::collections::HashSet<String>,
     defined_classes: std::collections::HashSet<String>,
@@ -29,6 +30,7 @@ impl Compiler {
             scopes: vec![Scope::new()],
             current_chunk_idx: 0,
             loop_stack: Vec::new(),
+            label_depth: 0,
             line: 1,
             defined_globals: std::collections::HashSet::new(),
             defined_classes: std::collections::HashSet::new(),
@@ -76,22 +78,8 @@ impl Compiler {
         self.chunks[self.current_chunk_idx].add_constant(Value::String(Arc::from(s)))
     }
 
-    fn current_offset(&self) -> usize {
-        self.chunks[self.current_chunk_idx].code.len()
-    }
-
-    fn emit_jump(&mut self, op: Op) -> usize {
-        let line = self.line;
-        self.chunks[self.current_chunk_idx].emit_jump(op, line)
-    }
-
-    fn patch_jump(&mut self, site: usize) {
-        self.chunks[self.current_chunk_idx].patch_jump(site);
-    }
-
-    fn emit_loop(&mut self, loop_start: usize) {
-        let line = self.line;
-        self.chunks[self.current_chunk_idx].emit_loop(loop_start, line);
+    fn chunk(&mut self) -> &mut Chunk {
+        &mut self.chunks[self.current_chunk_idx]
     }
 
     fn import(&mut self, module: &str, name: &str) -> u16 {
@@ -254,95 +242,106 @@ impl Compiler {
             }
 
             Statement::Break(_) => {
-                let patch = self.emit_jump(Op::BR);
-                if let Some(ctx) = self.loop_stack.last_mut() {
-                    ctx.break_patches.push(patch);
+                let line = self.line;
+                if let Some(ctx) = self.loop_stack.last() {
+                    let depth = (self.label_depth - ctx.break_label_depth) as u8;
+                    self.chunk().emit_br(depth, line);
                 }
             }
 
             Statement::Continue(_) => {
-                let patch = self.emit_jump(Op::BR);
-                if let Some(ctx) = self.loop_stack.last_mut() {
-                    ctx.continue_patches.push(patch);
+                let line = self.line;
+                if let Some(ctx) = self.loop_stack.last() {
+                    let depth = (self.label_depth - ctx.continue_label_depth) as u8;
+                    self.chunk().emit_br(depth, line);
                 }
             }
 
             Statement::If { test, consequent, alternates, alternate } => {
+                let line = self.line;
+                let outer = self.chunk().emit_block(line); self.label_depth += 1;
+                let then_block = self.chunk().emit_block(line); self.label_depth += 1;
                 self.compile_expression(test)?;
                 self.emit(Op::DYN_TO_BOOL);
-                let mut end_jumps = Vec::new();
-                let skip = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit(Op::DYN_NOT);
+                self.chunk().emit_br_if(0, line);
                 self.compile_statement(consequent)?;
-                end_jumps.push(self.emit_jump(Op::BR));
-                self.patch_jump(skip);
+                self.chunk().emit_br(1, line);
+                self.chunk().emit_end(line); self.chunk().patch_block(then_block); self.label_depth -= 1;
                 for elif in alternates {
+                    let elif_block = self.chunk().emit_block(line); self.label_depth += 1;
                     self.compile_expression(&elif.test)?;
                     self.emit(Op::DYN_TO_BOOL);
-                    let s = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::DYN_NOT);
+                    self.chunk().emit_br_if(0, line);
                     self.compile_statement(&elif.body)?;
-                    end_jumps.push(self.emit_jump(Op::BR));
-                    self.patch_jump(s);
+                    self.chunk().emit_br(1, line);
+                    self.chunk().emit_end(line); self.chunk().patch_block(elif_block); self.label_depth -= 1;
                 }
                 if let Some(alt) = alternate {
                     self.compile_statement(alt)?;
                 }
-                for j in end_jumps { self.patch_jump(j); }
+                self.chunk().emit_end(line); self.chunk().patch_block(outer); self.label_depth -= 1;
             }
 
             Statement::While { test, body } => {
-                let loop_start = self.current_offset();
-                self.loop_stack.push(LoopContext { break_patches: Vec::new(), continue_patches: Vec::new() });
+                let line = self.line;
+                let lp = common::loops::emit_loop_start(self.chunk(), line);
+                self.label_depth += 2;
+                self.loop_stack.push(LoopContext { break_label_depth: self.label_depth - 1, continue_label_depth: self.label_depth });
                 self.compile_expression(test)?;
-                self.emit(Op::DYN_TO_BOOL);
-                let exit = self.emit_jump(Op::BR_IF_FALSE);
+                common::loops::emit_loop_cond(self.chunk(), line);
                 self.compile_statement(body)?;
-                let continues: Vec<usize> = self.loop_stack.last().unwrap().continue_patches.clone();
-                for c in &continues { self.patch_jump(*c); }
-                self.emit_loop(loop_start);
-                self.patch_jump(exit);
-                let breaks: Vec<usize> = self.loop_stack.pop().unwrap().break_patches;
-                for b in breaks { self.patch_jump(b); }
+                self.loop_stack.pop();
+                common::loops::emit_loop_end(self.chunk(), lp, line);
+                self.label_depth -= 2;
             }
 
             Statement::DoWhile { body, test } => {
-                let loop_start = self.current_offset();
-                self.loop_stack.push(LoopContext { break_patches: Vec::new(), continue_patches: Vec::new() });
+                let line = self.line;
+                let lp = common::loops::emit_do_loop_start(self.chunk(), line);
+                self.label_depth += 2;
+                self.loop_stack.push(LoopContext { break_label_depth: self.label_depth - 1, continue_label_depth: self.label_depth });
                 self.compile_statement(body)?;
-                let continues: Vec<usize> = self.loop_stack.last().unwrap().continue_patches.clone();
-                for c in &continues { self.patch_jump(*c); }
                 self.compile_expression(test)?;
-                self.emit(Op::DYN_TO_BOOL);
-                self.emit_loop(loop_start);
-                let breaks: Vec<usize> = self.loop_stack.pop().unwrap().break_patches;
-                for b in breaks { self.patch_jump(b); }
+                common::loops::emit_do_loop_end(self.chunk(), lp, false, line);
+                self.label_depth -= 2;
+                self.loop_stack.pop();
             }
 
             Statement::For { init, test, update, body } => {
+                let line = self.line;
                 for e in init { self.compile_expression(e)?; self.emit(Op::DROP); }
-                let loop_start = self.current_offset();
-                self.loop_stack.push(LoopContext { break_patches: Vec::new(), continue_patches: Vec::new() });
-                let exit = if let Some(t) = test {
+                let block_p = self.chunk().emit_block(line);
+                let (loop_p, _) = self.chunk().emit_loop_s(line);
+                self.label_depth += 2;
+                if let Some(t) = test {
                     self.compile_expression(t)?;
-                    self.emit(Op::DYN_TO_BOOL);
-                    Some(self.emit_jump(Op::BR_IF_FALSE))
+                    common::loops::emit_loop_cond(self.chunk(), line);
+                }
+                let has_update = !update.is_empty();
+                let body_block_p = if has_update {
+                    let bp = self.chunk().emit_block(line); self.label_depth += 1; Some(bp)
                 } else { None };
+                let break_depth = self.label_depth - (if has_update { 2 } else { 1 });
+                let continue_depth = self.label_depth;
+                self.loop_stack.push(LoopContext { break_label_depth: break_depth, continue_label_depth: continue_depth });
                 self.compile_statement(body)?;
-                let continues: Vec<usize> = self.loop_stack.last().unwrap().continue_patches.clone();
-                for c in &continues { self.patch_jump(*c); }
+                self.loop_stack.pop();
+                if let Some(bp) = body_block_p {
+                    self.chunk().emit_end(line); self.chunk().patch_block(bp); self.label_depth -= 1;
+                }
                 for e in update { self.compile_expression(e)?; self.emit(Op::DROP); }
-                self.emit_loop(loop_start);
-                if let Some(e) = exit { self.patch_jump(e); }
-                let breaks: Vec<usize> = self.loop_stack.pop().unwrap().break_patches;
-                for b in breaks { self.patch_jump(b); }
+                self.chunk().emit_br(0, line);
+                self.chunk().emit_end(line); self.chunk().patch_loop(loop_p); self.label_depth -= 1;
+                self.chunk().emit_end(line); self.chunk().patch_block(block_p); self.label_depth -= 1;
             }
 
             Statement::ForEach { array, key, value, body } => {
-                // Use common::dict::emit_keys to get keys, then iterate with array_get
+                let line = self.line;
                 self.compile_expression(array)?;
                 let arr_slot = self.define_local("__foreach_arr");
                 self.emit_u16(Op::LOCAL_SET, arr_slot);
-
-                // Get keys array: dict.__keys via common helper, or array indices
                 {
                     let line = self.line;
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
@@ -350,26 +349,26 @@ impl Compiler {
                 }
                 let keys_slot = self.define_local("__foreach_keys");
                 self.emit_u16(Op::LOCAL_SET, keys_slot);
-
-                // length of keys
                 self.emit_u16(Op::LOCAL_GET, keys_slot);
                 self.emit(Op::ARRAY_LENGTH);
                 let len_slot = self.define_local("__foreach_len");
                 self.emit_u16(Op::LOCAL_SET, len_slot);
-
-                // index = 0
                 self.emit_constant(Value::I32(0));
                 let idx_slot = self.define_local("__foreach_idx");
                 self.emit_u16(Op::LOCAL_SET, idx_slot);
 
-                let loop_start = self.current_offset();
-                self.loop_stack.push(LoopContext { break_patches: Vec::new(), continue_patches: Vec::new() });
+                let block_p = self.chunk().emit_block(line);
+                let (loop_p, _) = self.chunk().emit_loop_s(line);
+                self.label_depth += 2;
+                // Body block for continue (continue skips to increment)
+                let body_block_p = self.chunk().emit_block(line); self.label_depth += 1;
+                self.loop_stack.push(LoopContext { break_label_depth: self.label_depth - 2, continue_label_depth: self.label_depth });
 
                 // while idx < len
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_u16(Op::LOCAL_GET, len_slot);
                 self.emit(Op::DYN_LT);
-                let exit = self.emit_jump(Op::BR_IF_FALSE);
+                common::loops::emit_loop_cond(&mut self.chunks[self.current_chunk_idx], line);
 
                 // current_key = keys[idx]
                 self.emit_u16(Op::LOCAL_GET, keys_slot);
@@ -384,7 +383,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, key_slot);
                 }
 
-                // $val = $arr[current_key] — use array_get (works for both arrays and dicts)
                 self.emit_u16(Op::LOCAL_GET, arr_slot);
                 self.emit_u16(Op::LOCAL_GET, key_tmp_slot);
                 self.emit(Op::ARRAY_GET);
@@ -393,43 +391,47 @@ impl Compiler {
 
                 self.compile_statement(body)?;
 
-                // continue point: idx++
-                let continues: Vec<usize> = self.loop_stack.last().unwrap().continue_patches.clone();
-                for c in &continues { self.patch_jump(*c); }
+                self.loop_stack.pop();
+                // End body block (continue lands here)
+                self.chunk().emit_end(line); self.chunk().patch_block(body_block_p); self.label_depth -= 1;
+                // idx++
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_constant(Value::I32(1));
                 self.emit(Op::I32_ADD);
                 self.emit_u16(Op::LOCAL_SET, idx_slot);
-                self.emit_loop(loop_start);
-
-                self.patch_jump(exit);
-                let breaks: Vec<usize> = self.loop_stack.pop().unwrap().break_patches;
-                for b in breaks { self.patch_jump(b); }
+                self.chunk().emit_br(0, line);
+                self.chunk().emit_end(line); self.chunk().patch_loop(loop_p); self.label_depth -= 1;
+                self.chunk().emit_end(line); self.chunk().patch_block(block_p); self.label_depth -= 1;
             }
 
             Statement::Switch { discriminant, cases } => {
+                let line = self.line;
                 self.compile_expression(discriminant)?;
                 let disc_slot = self.define_local("__switch_disc");
                 self.emit_u16(Op::LOCAL_SET, disc_slot);
 
-                let mut end_jumps: Vec<usize> = Vec::new();
-                let mut next_case_jump: Option<usize> = None;
+                // Outer block for break
+                let outer = self.chunk().emit_block(line); self.label_depth += 1;
+                self.loop_stack.push(LoopContext { break_label_depth: self.label_depth, continue_label_depth: self.label_depth });
 
                 for case in cases {
-                    if let Some(nj) = next_case_jump.take() {
-                        self.patch_jump(nj);
-                    }
+                    let arm_block = self.chunk().emit_block(line); self.label_depth += 1;
                     if let Some(test) = &case.test {
+                        let match_block = self.chunk().emit_block(line); self.label_depth += 1;
                         self.emit_u16(Op::LOCAL_GET, disc_slot);
                         self.compile_expression(test)?;
                         self.emit(Op::EQ);
-                        next_case_jump = Some(self.emit_jump(Op::BR_IF_FALSE));
+                        self.emit(Op::DYN_TO_BOOL);
+                        self.chunk().emit_br_if(0, line); // match → body
+                        self.chunk().emit_br(1, line); // no match → skip arm
+                        self.chunk().emit_end(line); self.chunk().patch_block(match_block); self.label_depth -= 1;
                     }
                     for s in &case.body { self.compile_statement(s)?; }
-                    end_jumps.push(self.emit_jump(Op::BR));
+                    self.chunk().emit_br(1, line); // jump to outer end
+                    self.chunk().emit_end(line); self.chunk().patch_block(arm_block); self.label_depth -= 1;
                 }
-                if let Some(nj) = next_case_jump { self.patch_jump(nj); }
-                for j in end_jumps { self.patch_jump(j); }
+                self.loop_stack.pop();
+                self.chunk().emit_end(line); self.chunk().patch_block(outer); self.label_depth -= 1;
             }
 
             Statement::Throw(expr) => {
@@ -439,26 +441,24 @@ impl Compiler {
             }
 
             Statement::Try { block, catches, finalizer } => {
-                // Use common::errors helpers (same as Python/JS/Dart)
                 let line = self.line;
                 let c = self.current_chunk_idx;
+                let outer = self.chunks[c].emit_block(line); self.label_depth += 1;
+                let try_block = self.chunks[c].emit_block(line); self.label_depth += 1;
                 let catch_jump = common::errors::emit_try_start(&mut self.chunks[c], line);
 
-                // Compile try body
                 for s in block { self.compile_statement(s)?; }
                 let line = self.line;
+                let c = self.current_chunk_idx;
                 common::errors::emit_try_end(&mut self.chunks[c], line);
-                let skip_catch = self.emit_jump(Op::BR);
+                self.chunk().emit_br(1, line);
+                self.chunk().emit_end(line); self.chunk().patch_block(try_block); self.label_depth -= 1;
 
-                // Patch catch offset
-                common::errors::patch_catch(&mut self.chunks[c], catch_jump);
+                common::errors::patch_catch(&mut self.chunks[self.current_chunk_idx], catch_jump);
 
-                // Catch blocks — exception value is on stack
                 for catch in catches {
-                    // Map PHP exception types to canonical names for cross-language compat
                     for type_name in &catch.types {
                         let _canonical = common::errors::canonical_exception_name(type_name);
-                        // TODO: type-check exception against canonical name
                     }
                     if let Some(var) = &catch.var {
                         let slot = self.define_local_or_get(var);
@@ -470,12 +470,10 @@ impl Compiler {
                     for s in &catch.body { self.compile_statement(s)?; }
                 }
 
-                self.patch_jump(skip_catch);
-
-                // Finally block
                 if let Some(fin) = finalizer {
                     for s in fin { self.compile_statement(s)?; }
                 }
+                self.chunk().emit_end(line); self.chunk().patch_block(outer); self.label_depth -= 1;
             }
 
             Statement::FunctionDeclaration(decl) => {
@@ -770,36 +768,35 @@ impl Compiler {
                 common::functions::emit_ref_func(&mut self.chunks[self.current_chunk_idx], ci, upvalue_count as u8, line);
             }
             Expression::Match { subject, arms } => {
+                let line = self.line;
                 self.compile_expression(subject)?;
                 let disc_slot = self.define_local("__match_disc");
                 self.emit_u16(Op::LOCAL_SET, disc_slot);
-                let mut end_jumps = Vec::new();
-                let mut next_arm_jump: Option<usize> = None;
+                let outer = self.chunk().emit_block(line); self.label_depth += 1;
                 for arm in arms {
-                    if let Some(nj) = next_arm_jump.take() { self.patch_jump(nj); }
                     if let Some(conds) = &arm.conditions {
-                        let mut skip_jumps = Vec::new();
-                        let mut fail_jumps = Vec::new();
+                        let arm_block = self.chunk().emit_block(line); self.label_depth += 1;
+                        let match_block = self.chunk().emit_block(line); self.label_depth += 1;
                         for cond in conds {
                             self.emit_u16(Op::LOCAL_GET, disc_slot);
                             self.compile_expression(cond)?;
                             self.emit(Op::EQ);
-                            skip_jumps.push(self.emit_jump(Op::BR_IF_TRUE));
+                            self.emit(Op::DYN_TO_BOOL);
+                            self.chunk().emit_br_if(0, line);
                         }
-                        fail_jumps.push(self.emit_jump(Op::BR));
-                        for s in &skip_jumps { self.patch_jump(*s); }
+                        self.chunk().emit_br(1, line); // no match
+                        self.chunk().emit_end(line); self.chunk().patch_block(match_block); self.label_depth -= 1;
                         self.compile_expression(&arm.body)?;
-                        end_jumps.push(self.emit_jump(Op::BR));
-                        for f in fail_jumps { self.patch_jump(f); }
-                        next_arm_jump = None;
+                        self.chunk().emit_br(1, line);
+                        self.chunk().emit_end(line); self.chunk().patch_block(arm_block); self.label_depth -= 1;
                     } else {
+                        // default arm
                         self.compile_expression(&arm.body)?;
-                        end_jumps.push(self.emit_jump(Op::BR));
+                        self.chunk().emit_br(0, line);
                     }
                 }
-                if let Some(nj) = next_arm_jump { self.patch_jump(nj); }
                 self.emit(Op::NULL);
-                for j in end_jumps { self.patch_jump(j); }
+                self.chunk().emit_end(line); self.chunk().patch_block(outer); self.label_depth -= 1;
             }
             Expression::Spread(inner) => {
                 self.compile_expression(inner)?;
@@ -1026,36 +1023,36 @@ impl Compiler {
             BinaryOp::Le => { self.emit(Op::DYN_LE); }
             BinaryOp::Ge => { self.emit(Op::DYN_GE); }
             BinaryOp::Spaceship => {
-                // Inline: (a < b) ? -1 : ((a > b) ? 1 : 0)
-                // a and b already on stack, use temp locals
+                let line = self.line;
                 let b_tmp = self.define_local("__cmp_b");
                 let a_tmp = self.define_local("__cmp_a");
                 self.emit_u16(Op::LOCAL_SET, b_tmp);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_SET, a_tmp);
                 self.emit(Op::DROP);
-                // a < b?
+                let outer = self.chunk().emit_block(line); self.label_depth += 1;
+                let lt_block = self.chunk().emit_block(line); self.label_depth += 1;
                 self.emit_u16(Op::LOCAL_GET, a_tmp);
                 self.emit_u16(Op::LOCAL_GET, b_tmp);
                 self.emit(Op::DYN_LT);
-                let lt_jump = self.emit_jump(Op::BR_IF_TRUE);
-                // a > b?
+                self.emit(Op::DYN_TO_BOOL);
+                self.emit(Op::DYN_NOT);
+                self.chunk().emit_br_if(0, line);
+                self.emit_constant(Value::F64(-1.0));
+                self.chunk().emit_br(1, line);
+                self.chunk().emit_end(line); self.chunk().patch_block(lt_block); self.label_depth -= 1;
+                let gt_block = self.chunk().emit_block(line); self.label_depth += 1;
                 self.emit_u16(Op::LOCAL_GET, a_tmp);
                 self.emit_u16(Op::LOCAL_GET, b_tmp);
                 self.emit(Op::DYN_GT);
-                let gt_jump = self.emit_jump(Op::BR_IF_TRUE);
-                // equal → 0
-                self.emit_constant(Value::F64(0.0));
-                let end_jump = self.emit_jump(Op::BR);
-                // a > b → 1
-                self.patch_jump(gt_jump);
+                self.emit(Op::DYN_TO_BOOL);
+                self.emit(Op::DYN_NOT);
+                self.chunk().emit_br_if(0, line);
                 self.emit_constant(Value::F64(1.0));
-                let end_jump2 = self.emit_jump(Op::BR);
-                // a < b → -1
-                self.patch_jump(lt_jump);
-                self.emit_constant(Value::F64(-1.0));
-                self.patch_jump(end_jump);
-                self.patch_jump(end_jump2);
+                self.chunk().emit_br(1, line);
+                self.chunk().emit_end(line); self.chunk().patch_block(gt_block); self.label_depth -= 1;
+                self.emit_constant(Value::F64(0.0));
+                self.chunk().emit_end(line); self.chunk().patch_block(outer); self.label_depth -= 1;
             }
             BinaryOp::BitAnd => { self.emit(Op::I32_AND); }
             BinaryOp::BitOr => { self.emit(Op::I32_OR); }
@@ -1769,18 +1766,22 @@ impl Compiler {
                 self.emit(Op::DROP);
                 let lp = common::loops::emit_for_in_start(&mut self.chunks[c], arr_slot, i_slot, line);
                 // element on stack — test truthiness
+                self.label_depth += 3;
                 let val_slot = self.define_local("__filt_val");
                 self.emit_u16(Op::LOCAL_SET, val_slot);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, val_slot);
                 self.emit(Op::DYN_TO_BOOL);
-                let skip = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit(Op::DYN_NOT);
+                let skip_block = self.chunk().emit_block(line); self.label_depth += 1;
+                self.chunk().emit_br_if(0, line);
                 self.emit_u16(Op::LOCAL_GET, res_slot);
                 self.emit_u16(Op::LOCAL_GET, val_slot);
                 self.emit(Op::ARRAY_PUSH);
                 self.emit(Op::DROP);
-                self.patch_jump(skip);
+                self.chunk().emit_end(line); self.chunk().patch_block(skip_block); self.label_depth -= 1;
                 common::loops::emit_for_in_end(&mut self.chunks[c], i_slot, lp, line);
+                self.label_depth -= 3;
                 self.emit_u16(Op::LOCAL_GET, res_slot);
                 return Ok(Some(()));
             }
@@ -1884,19 +1885,21 @@ impl Compiler {
                 return Ok(Some(()));
             }
             "is_string" => {
-                // Check ref_is_null first, then check if it's a string via str_length (doesn't throw on strings)
+                let line = self.line;
                 compile_args!();
                 self.emit(Op::DUP);
                 self.emit(Op::REF_IS_NULL);
-                let is_null = self.emit_jump(Op::BR_IF_TRUE);
-                // Try str_length — if it doesn't crash, it's a string-like value
-                // Simplest: use convert toString and check if unchanged (approximate)
-                self.emit(Op::TRUE); // approximate: treat as true for now
-                let end = self.emit_jump(Op::BR);
-                self.patch_jump(is_null);
+                let outer = self.chunk().emit_block(line); self.label_depth += 1;
+                let null_check = self.chunk().emit_block(line); self.label_depth += 1;
+                self.chunk().emit_br_if(0, line); // skip if null
+                // Not null: approximate as true
+                self.emit(Op::TRUE);
+                self.chunk().emit_br(1, line);
+                self.chunk().emit_end(line); self.chunk().patch_block(null_check); self.label_depth -= 1;
+                // Null case
                 self.emit(Op::DROP);
                 self.emit(Op::FALSE);
-                self.patch_jump(end);
+                self.chunk().emit_end(line); self.chunk().patch_block(outer); self.label_depth -= 1;
                 return Ok(Some(()));
             }
             "is_int" | "is_integer" | "is_long" => {
