@@ -91,13 +91,19 @@ pub fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], type_c
         // Check how many temp locals we need for stack manipulation
         let temp_count = count_temp_locals(chunk);
         let has_temp = temp_count > 0;
-        let temp_local_idx = (chunk.arity as u32) + (chunk.local_count as u32);
+        // WASM params = arity + 1 (callee at slot 0 + user args)
+        let wasm_params = chunk.arity as u32 + 1;
+        // Extra locals beyond params
+        let extra_locals = if chunk.local_count as u32 > wasm_params {
+            chunk.local_count as u32 - wasm_params
+        } else { 0 };
+        let temp_local_idx = wasm_params + extra_locals;
 
-        // Locals declaration
-        if chunk.local_count > 0 || has_temp {
-            let total_locals = chunk.local_count as u32 + temp_count;
+        // Locals declaration (only declare locals beyond params)
+        let declared_locals = extra_locals + temp_count;
+        if declared_locals > 0 {
             write_leb128_u32(&mut body, 1); // 1 local type group
-            write_leb128_u32(&mut body, total_locals);
+            write_leb128_u32(&mut body, declared_locals);
             body.push(TYPE_EXTERNREF);
         } else {
             write_leb128_u32(&mut body, 0);
@@ -152,21 +158,26 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
         _ if op == Op::CALL_REF => {
             let argc = chunk.code[*ip]; *ip += 1;
             // Stack: [externref_funcref, arg1, ..., argN] — funcref is below args
-            // call_indirect needs: [arg1, ..., argN, i32_table_idx]
+            // call_indirect needs: [callee_ref, arg1, ..., argN, i32_table_idx]
+            // VM convention: slot 0 = callee ref, slots 1..N = user args
+            // WASM function type has arity+1 params to match VM layout
+            //
             // 1. Save all args to temps
             for i in (0..argc).rev() {
                 body.push(0x21); write_leb128_u32(body, temp_idx + i as u32);
             }
             // Stack: [externref_funcref]
-            // 2. Save funcref (externref) as-is — we'll unbox to i32 at the end
-            body.push(0x21); write_leb128_u32(body, temp_idx + argc as u32); // save funcref
-            // 3. Restore args
+            // 2. Save funcref
+            body.push(0x21); write_leb128_u32(body, temp_idx + argc as u32);
+            // 3. Push callee ref as first param (slot 0 in VM)
+            body.push(0x20); write_leb128_u32(body, temp_idx + argc as u32);
+            // 4. Restore user args
             for i in 0..argc {
                 body.push(0x20); write_leb128_u32(body, temp_idx + i as u32);
             }
-            // 4. Push funcref, unbox to i32 table index
+            // 5. Push table index (unbox funcref to i32)
             body.push(0x20); write_leb128_u32(body, temp_idx + argc as u32);
-            emit_unbox_i32(body, rt_idx); // externref → i32 table index
+            emit_unbox_i32(body, rt_idx);
             // 5. call_indirect with matching function type
             if let Some(&type_idx) = type_ctx.func_type_by_arity.get(&argc) {
                 body.push(0x11); // call_indirect

@@ -252,11 +252,13 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     for (i, chunk) in chunks.iter().enumerate() {
         let type_idx = ctx.func_type_base + import_count as u32 + i as u32;
         out.push(TYPE_FUNC);
-        write_leb128_u32(&mut out, chunk.arity as u32);
-        for _ in 0..chunk.arity { out.push(TYPE_EXTERNREF); }
+        // arity + 1 params: slot 0 = callee ref (VM convention), slots 1..arity = user args
+        let param_count = chunk.arity as u32 + 1;
+        write_leb128_u32(&mut out, param_count);
+        for _ in 0..param_count { out.push(TYPE_EXTERNREF); }
         write_leb128_u32(&mut out, 1);
         out.push(TYPE_EXTERNREF);
-        // Record first type index seen for each arity (for call_ref dispatch)
+        // Record first type index seen for each arity (for call_ref/call_indirect dispatch)
         ctx.func_type_by_arity.entry(chunk.arity).or_insert(type_idx);
     }
 
