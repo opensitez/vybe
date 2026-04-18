@@ -153,11 +153,14 @@ fn build_range() -> Chunk {
     // i = start (local 1 already has it, but copy for clarity — it IS local 1)
     // Loop: while i < stop (for positive step) or i > stop (negative step)
     // For simplicity, always check i < stop (works for positive step, which is 99% of usage)
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    // condition: i < stop
     c.emit_op_u16(Op::LOCAL_GET, start, 0);
     c.emit_op_u16(Op::LOCAL_GET, stop, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop (depth 1 = block)
 
     // result.push(i)
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -172,8 +175,9 @@ fn build_range() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, start, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop (depth 0 = loop)
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
@@ -212,11 +216,13 @@ fn build_sorted() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let outer_loop = c.current_offset();
+    let outer_block_p = c.emit_block(0);
+    let (outer_loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let outer_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit outer loop
 
     // key = result[i]
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -233,18 +239,21 @@ fn build_sorted() -> Chunk {
     c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && result[j] > key
-    let inner_loop = c.current_offset();
+    let inner_block_p = c.emit_block(0);
+    let (inner_loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_GE, 0);
-    let inner_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit inner loop
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
     c.emit_op(Op::DYN_GT, 0);
-    let inner_exit2 = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit inner loop (second condition)
 
     // result[j+1] = result[j]
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -265,9 +274,9 @@ fn build_sorted() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(inner_loop, 0);
-    c.patch_jump(inner_exit);
-    c.patch_jump(inner_exit2);
+    c.emit_br(0, 0); // continue inner loop
+    c.emit_end(0); c.patch_loop(inner_loop_p);
+    c.emit_end(0); c.patch_block(inner_block_p);
 
     // result[j+1] = key
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -285,8 +294,9 @@ fn build_sorted() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(outer_loop, 0);
-    c.patch_jump(outer_exit);
+    c.emit_br(0, 0); // continue outer loop
+    c.emit_end(0); c.patch_loop(outer_loop_p);
+    c.emit_end(0); c.patch_block(outer_block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
@@ -322,11 +332,13 @@ fn build_sort_in_place() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let outer_loop = c.current_offset();
+    let outer_block_p = c.emit_block(0);
+    let (outer_loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let outer_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit outer loop
 
     // key = arr[i]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -343,18 +355,21 @@ fn build_sort_in_place() -> Chunk {
     c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && arr[j] > key
-    let inner_loop = c.current_offset();
+    let inner_block_p = c.emit_block(0);
+    let (inner_loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_GE, 0);
-    let inner_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit inner loop
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
     c.emit_op(Op::DYN_GT, 0);
-    let inner_exit2 = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit inner loop (second condition)
 
     // arr[j+1] = arr[j]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -374,9 +389,9 @@ fn build_sort_in_place() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(inner_loop, 0);
-    c.patch_jump(inner_exit);
-    c.patch_jump(inner_exit2);
+    c.emit_br(0, 0); // continue inner loop
+    c.emit_end(0); c.patch_loop(inner_loop_p);
+    c.emit_end(0); c.patch_block(inner_block_p);
 
     // arr[j+1] = key
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -394,8 +409,9 @@ fn build_sort_in_place() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(outer_loop, 0);
-    c.patch_jump(outer_exit);
+    c.emit_br(0, 0); // continue outer loop
+    c.emit_end(0); c.patch_loop(outer_loop_p);
+    c.emit_end(0); c.patch_block(outer_block_p);
 
     // return arr (same reference, now sorted in place)
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -432,11 +448,13 @@ fn build_sort_with_comparator() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let outer_loop = c.current_offset();
+    let outer_block_p = c.emit_block(0);
+    let (outer_loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let outer_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit outer loop
 
     // key = arr[i]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -453,11 +471,13 @@ fn build_sort_with_comparator() -> Chunk {
     c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && cmp(arr[j], key) > 0
-    let inner_loop = c.current_offset();
+    let inner_block_p = c.emit_block(0);
+    let (inner_loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_GE, 0);
-    let inner_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit inner loop
 
     // call cmp(arr[j], key) → result
     c.emit_op_u16(Op::LOCAL_GET, cmp, 0);
@@ -469,7 +489,8 @@ fn build_sort_with_comparator() -> Chunk {
     // result > 0 → swap needed
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_GT, 0);
-    let inner_exit2 = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit inner loop (second condition)
 
     // arr[j+1] = arr[j]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -489,9 +510,9 @@ fn build_sort_with_comparator() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(inner_loop, 0);
-    c.patch_jump(inner_exit);
-    c.patch_jump(inner_exit2);
+    c.emit_br(0, 0); // continue inner loop
+    c.emit_end(0); c.patch_loop(inner_loop_p);
+    c.emit_end(0); c.patch_block(inner_block_p);
 
     // arr[j+1] = key
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -509,8 +530,9 @@ fn build_sort_with_comparator() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(outer_loop, 0);
-    c.patch_jump(outer_exit);
+    c.emit_br(0, 0); // continue outer loop
+    c.emit_end(0); c.patch_loop(outer_loop_p);
+    c.emit_end(0); c.patch_block(outer_block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op(Op::RETURN, 0);
@@ -539,11 +561,13 @@ fn build_reversed() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_GE, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -558,8 +582,9 @@ fn build_reversed() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
@@ -589,11 +614,13 @@ fn build_enumerate() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop
 
     // Build pair [i, arr[i]], then push onto result.
     // array_push takes [array, value] — so emit result first, then pair.
@@ -612,8 +639,9 @@ fn build_enumerate() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
@@ -645,11 +673,13 @@ fn build_zip() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop
 
     // result.push([a[i], b[i]])
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -669,8 +699,9 @@ fn build_zip() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
@@ -700,11 +731,13 @@ fn build_sum() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop
 
     c.emit_op_u16(Op::LOCAL_GET, total, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -720,8 +753,9 @@ fn build_sum() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, total, 0);
     c.emit_op(Op::RETURN, 0);
@@ -754,11 +788,13 @@ fn build_min() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop
 
     // if arr[i] < best: best = arr[i]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -766,13 +802,15 @@ fn build_min() -> Chunk {
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let skip = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let skip_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip if NOT less than
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
     c.emit_op(Op::DROP, 0);
-    c.patch_jump(skip);
+    c.emit_end(0); c.patch_block(skip_block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::I32_CONST_1, 0);
@@ -780,8 +818,9 @@ fn build_min() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     c.emit_op(Op::RETURN, 0);
@@ -813,24 +852,28 @@ fn build_max() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     c.emit_op(Op::DYN_GT, 0);
-    let skip = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let skip_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip if NOT greater than
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
     c.emit_op(Op::DROP, 0);
-    c.patch_jump(skip);
+    c.emit_end(0); c.patch_block(skip_block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::I32_CONST_1, 0);
@@ -838,8 +881,9 @@ fn build_max() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     c.emit_op(Op::RETURN, 0);
@@ -871,12 +915,14 @@ fn build_pow() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, n, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let positive = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let pos_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip negate if NOT negative
     c.emit_op_u16(Op::LOCAL_GET, n, 0);
     c.emit_op(Op::F64_NEG, 0);
     c.emit_op_u16(Op::LOCAL_SET, n, 0);
     c.emit_op(Op::DROP, 0);
-    c.patch_jump(positive);
+    c.emit_end(0); c.patch_block(pos_block_p);
 
     // result = 1.0
     let one = c.add_constant(Value::F64(1.0));
@@ -885,11 +931,13 @@ fn build_pow() -> Chunk {
     c.emit_op(Op::DROP, 0);
 
     // while n > 0: result *= base; n -= 1
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, n, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_GT, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, base, 0);
@@ -903,20 +951,23 @@ fn build_pow() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, n, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     // If original exp was negative, take reciprocal: result = 1.0 / result
     c.emit_op_u16(Op::LOCAL_GET, exp, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let no_reciprocal = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let recip_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip reciprocal if NOT negative
     c.emit_op_u16(Op::CONST, one, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::F64_DIV, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
-    c.patch_jump(no_reciprocal);
+    c.emit_end(0); c.patch_block(recip_block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
@@ -956,7 +1007,8 @@ fn build_str_count() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, pos, 0);
     c.emit_op(Op::DROP, 0);
 
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, haystack, 0);
     c.emit_op_u16(Op::LOCAL_GET, pos, 0);
     let max = c.add_constant(Value::I32(i32::MAX));
@@ -967,7 +1019,7 @@ fn build_str_count() -> Chunk {
     c.emit_op(Op::DUP, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let exit = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_br_if(1, 0); // exit loop if index < 0 (truthy = true)
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, count, 0);
     c.emit_op(Op::I32_CONST_1, 0);
@@ -979,8 +1031,9 @@ fn build_str_count() -> Chunk {
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, pos, 0);
     c.emit_op(Op::DROP, 0);
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
     c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, count, 0);
@@ -1018,11 +1071,13 @@ fn build_splice() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, end, 0);
     c.emit_op(Op::DROP, 0);
 
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop
 
     c.emit_op_u16(Op::LOCAL_GET, result_local, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -1037,8 +1092,9 @@ fn build_splice() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     // Return removed elements (actual array mutation would need more complex bytecode)
     c.emit_op_u16(Op::LOCAL_GET, result_local, 0);
@@ -1063,9 +1119,10 @@ fn build_is_numeric() -> Chunk {
     c.emit_op_u16(Op::CONST, num_str, 0);
     c.emit_op(Op::STR_EQUALS, 0);
 
-    // If true, return true
+    // If true, return true — skip second check
     c.emit_op(Op::DUP, 0);
-    let done = c.emit_jump(Op::BR_IF_TRUE, 0);
+    let done_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip to end if already true
     c.emit_op(Op::DROP, 0);
 
     // Also check for string that parses as number: try val + 0 and see if NaN
@@ -1078,7 +1135,7 @@ fn build_is_numeric() -> Chunk {
     c.emit_op_u16(Op::CONST, i32_str, 0);
     c.emit_op(Op::STR_EQUALS, 0);
 
-    c.patch_jump(done);
+    c.emit_end(0); c.patch_block(done_block_p);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -1113,7 +1170,9 @@ fn build_slice() -> Chunk {
     // if ref_is_string(obj) → str_substring; else → array_slice
     c.emit_op_u16(Op::LOCAL_GET, obj, 0);
     c.emit_op(Op::REF_IS_STRING, 0);
-    let to_array = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let str_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip string branch if NOT string
 
     // String branch: [obj, start, end] → str_substring
     c.emit_op_u16(Op::LOCAL_GET, obj, 0);
@@ -1123,7 +1182,7 @@ fn build_slice() -> Chunk {
     c.emit_op(Op::RETURN, 0);
 
     // Array branch
-    c.patch_jump(to_array);
+    c.emit_end(0); c.patch_block(str_block_p);
     c.emit_op_u16(Op::LOCAL_GET, obj, 0);
     c.emit_op_u16(Op::LOCAL_GET, start, 0);
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
@@ -1239,51 +1298,73 @@ fn build_redim() -> Chunk {
 fn build_slice_step() -> Chunk {
     let mut c = Chunk::new("__stdlib_slicestep");
     c.arity = 4;
-    c.local_count = 7; // arr(1) start(2) end(3) step(4) result(5) i(6)
+    c.local_count = 8; // arr(1) start(2) end(3) step(4) result(5) i(6) cond(7)
     let zero = c.add_constant(Value::I32(0));
     c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, 5, 0);
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op_u16(Op::LOCAL_SET, 6, 0);
-    let loop_start = c.current_offset();
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    // Compute condition: if step > 0 then i < end else i > end
+    // Store in local 7 (cond) to avoid value-on-stack across branches
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op_u16(Op::CONST, zero, 0);
     c.emit_op(Op::DYN_GT, 0);
-    let step_pos = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let pos_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip positive branch if step <= 0
+    // positive step: cond = i < end
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_op(Op::DROP, 0);
+    let skip_neg_p = c.emit_block(0);
+    c.emit_br(1, 0); // skip negative branch (jump past skip_neg block end + neg block)
+    c.emit_end(0); c.patch_block(skip_neg_p);
+    c.emit_end(0); c.patch_block(pos_block_p);
+
+    // negative step: cond = i > end
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     c.emit_op_u16(Op::LOCAL_GET, 3, 0);
     c.emit_op(Op::DYN_GT, 0);
-    let cond_done = c.emit_jump(Op::BR, 0);
-    c.patch_jump(step_pos);
-    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
-    c.emit_op(Op::DYN_LT, 0);
-    c.patch_jump(cond_done);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
-    // bounds check
+    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // Check condition — exit if false
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop (depth 1 = outer block)
+
+    // bounds check: skip push if i < 0 or i >= arr.length
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     c.emit_op_u16(Op::CONST, zero, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let skip = c.emit_jump(Op::BR_IF_TRUE, 0);
+    let skip_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip push if i < 0
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op(Op::ARRAY_LENGTH, 0);
     c.emit_op(Op::DYN_GE, 0);
-    let skip2 = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_br_if(0, 0); // skip push if i >= length
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op(Op::ARRAY_PUSH, 0);
     c.emit_op(Op::DROP, 0);
-    c.patch_jump(skip);
-    c.patch_jump(skip2);
+    c.emit_end(0); c.patch_block(skip_block_p);
+
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op(Op::DYN_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, 6, 0);
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -1301,23 +1382,27 @@ fn build_dyn_mul() -> Chunk {
     c.emit_op(Op::REF_TYPEOF, 0);
     c.emit_op_u16(Op::CONST, str_tag, 0);
     c.emit_op(Op::DYN_EQ, 0);
-    let a_not_str = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let a_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip if a is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::STR_REPEAT, 0);
     c.emit_op(Op::RETURN, 0);
-    c.patch_jump(a_not_str);
+    c.emit_end(0); c.patch_block(a_block_p);
     // if typeof(b) == "string": return str_repeat(b, a)
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::REF_TYPEOF, 0);
     c.emit_op_u16(Op::CONST, str_tag, 0);
     c.emit_op(Op::DYN_EQ, 0);
-    let b_not_str = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let b_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip if b is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op(Op::STR_REPEAT, 0);
     c.emit_op(Op::RETURN, 0);
-    c.patch_jump(b_not_str);
+    c.emit_end(0); c.patch_block(b_block_p);
     // numeric
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
@@ -1355,11 +1440,13 @@ fn build_sort_by_key() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    let outer_loop = c.current_offset();
+    let outer_block_p = c.emit_block(0);
+    let (outer_loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let outer_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit outer loop
 
     // key = arr[i]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -1383,11 +1470,13 @@ fn build_sort_by_key() -> Chunk {
     c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && keyFn(arr[j]) > keyVal
-    let inner_loop = c.current_offset();
+    let inner_block_p = c.emit_block(0);
+    let (inner_loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_GE, 0);
-    let inner_exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit inner loop
 
     // compare: keyFn(arr[j]) > keyVal
     c.emit_op_u16(Op::LOCAL_GET, key_fn, 0);
@@ -1397,7 +1486,8 @@ fn build_sort_by_key() -> Chunk {
     c.emit_op_u8(Op::CALL_REF, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, key_val, 0);
     c.emit_op(Op::DYN_GT, 0);
-    let inner_exit2 = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit inner loop (second condition)
 
     // arr[j+1] = arr[j]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -1417,9 +1507,9 @@ fn build_sort_by_key() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(inner_loop, 0);
-    c.patch_jump(inner_exit);
-    c.patch_jump(inner_exit2);
+    c.emit_br(0, 0); // continue inner loop
+    c.emit_end(0); c.patch_loop(inner_loop_p);
+    c.emit_end(0); c.patch_block(inner_block_p);
 
     // arr[j+1] = key
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -1437,8 +1527,9 @@ fn build_sort_by_key() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(outer_loop, 0);
-    c.patch_jump(outer_exit);
+    c.emit_br(0, 0); // continue outer loop
+    c.emit_end(0); c.patch_loop(outer_loop_p);
+    c.emit_end(0); c.patch_block(outer_block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op(Op::RETURN, 0);
@@ -1458,7 +1549,9 @@ fn build_concat() -> Chunk {
     // if ref_is_string(a) → str_concat
     c.emit_op_u16(Op::LOCAL_GET, a, 0);
     c.emit_op(Op::REF_IS_STRING, 0);
-    let not_string = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let str_block_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip string path if NOT string
 
     // String path: str_concat(a, b)
     c.emit_op_u16(Op::LOCAL_GET, a, 0);
@@ -1466,7 +1559,7 @@ fn build_concat() -> Chunk {
     c.emit_op(Op::STR_CONCAT, 0);
     c.emit_op(Op::RETURN, 0);
 
-    c.patch_jump(not_string);
+    c.emit_end(0); c.patch_block(str_block_p);
 
     // Array path: array_concat(a, b)
     c.emit_op_u16(Op::LOCAL_GET, a, 0);
@@ -1512,11 +1605,13 @@ fn build_string_raw() -> Chunk {
     c.emit_op(Op::DROP, 0);
 
     // loop: while i < len
-    let loop_start = c.current_offset();
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let exit = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop
 
     // result += strings[i]
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -1532,7 +1627,9 @@ fn build_string_raw() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, values, 0);
     c.emit_op(Op::ARRAY_LENGTH, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let skip_val = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    let skip_val_p = c.emit_block(0);
+    c.emit_br_if(0, 0); // skip if i >= values.length
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, values, 0);
@@ -1542,7 +1639,7 @@ fn build_string_raw() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.patch_jump(skip_val);
+    c.emit_end(0); c.patch_block(skip_val_p);
 
     // i += 1
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -1551,8 +1648,9 @@ fn build_string_raw() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_loop(loop_start, 0);
-    c.patch_jump(exit);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);

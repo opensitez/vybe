@@ -216,6 +216,55 @@ impl Chunk {
         self.emit((jump & 0xff) as u8, line);
     }
 
+    // ── Structured control flow (WASM-compatible) ──────────────────────
+
+    /// Emit BLOCK with placeholder end_offset. Returns patch position.
+    /// Caller emits block body, then calls patch_block + emit_end.
+    pub fn emit_block(&mut self, line: u32) -> usize {
+        self.emit_op(Op::BLOCK, line);
+        self.emit(0x00, line);
+        self.emit(0x00, line);
+        self.code.len() - 2 // position of the u16 end_offset
+    }
+
+    /// Emit LOOP with placeholder body_size. Returns (patch_pos, loop_start).
+    /// loop_start is the ip AFTER the LOOP instruction (where br depth=0 restarts).
+    pub fn emit_loop_s(&mut self, line: u32) -> (usize, usize) {
+        self.emit_op(Op::LOOP, line);
+        self.emit(0x00, line);
+        self.emit(0x00, line);
+        let patch = self.code.len() - 2;
+        let start = self.code.len();
+        (patch, start)
+    }
+
+    /// Emit END to close a BLOCK or LOOP.
+    pub fn emit_end(&mut self, line: u32) {
+        self.emit_op(Op::END, line);
+    }
+
+    /// Patch a BLOCK's end_offset: distance from after the BLOCK operand to the END.
+    pub fn patch_block(&mut self, patch_pos: usize) {
+        let end_offset = self.code.len() - (patch_pos + 2);
+        self.code[patch_pos] = (end_offset >> 8) as u8;
+        self.code[patch_pos + 1] = (end_offset & 0xff) as u8;
+    }
+
+    /// Patch a LOOP's body_size (same encoding as block).
+    pub fn patch_loop(&mut self, patch_pos: usize) {
+        self.patch_block(patch_pos);
+    }
+
+    /// Emit BR_LABEL depth (unconditional branch to label at depth).
+    pub fn emit_br(&mut self, depth: u8, line: u32) {
+        self.emit_op_u8(Op::BR_LABEL, depth, line);
+    }
+
+    /// Emit BR_IF_LABEL depth (branch if TOS is truthy).
+    pub fn emit_br_if(&mut self, depth: u8, line: u32) {
+        self.emit_op_u8(Op::BR_IF_LABEL, depth, line);
+    }
+
     pub fn read_u16(&self, offset: usize) -> u16 {
         ((self.code[offset] as u16) << 8) | (self.code[offset + 1] as u16)
     }

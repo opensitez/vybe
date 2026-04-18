@@ -31,6 +31,9 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     let rt_imports = sections::collect_rt_imports(chunks);
     let total_imports = rt_imports.len();
 
+    // Collect globals (string-keyed → indexed)
+    let (globals, global_map) = sections::collect_globals(chunks);
+
     // Type section: GC struct types + array type + function types
     let (type_section_data, type_ctx) = types::build_type_context(chunks, total_imports, &rt_imports);
     write_section(&mut out, SECTION_TYPE, &type_section_data);
@@ -41,14 +44,25 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // Function section
     write_section(&mut out, SECTION_FUNCTION, &sections::encode_func_section(chunks, total_imports, type_ctx.func_type_base));
 
+    // Table section — funcref table for call_indirect
+    write_section(&mut out, 4, &sections::encode_table_section(chunks, total_imports));
+
     // Memory section
     write_section(&mut out, SECTION_MEMORY, &sections::encode_memory_section());
+
+    // Global section — indexed externref globals
+    if !globals.is_empty() {
+        write_section(&mut out, SECTION_GLOBAL, &sections::encode_global_section(&globals));
+    }
 
     // Export section
     write_section(&mut out, SECTION_EXPORT, &sections::encode_export_section(chunks, total_imports));
 
+    // Element section — populate funcref table with chunk functions
+    write_section(&mut out, 9, &sections::encode_element_section(chunks, total_imports));
+
     // Code section
-    write_section(&mut out, SECTION_CODE, &code::encode_code_section(chunks, &rt_imports, &type_ctx));
+    write_section(&mut out, SECTION_CODE, &code::encode_code_section(chunks, &rt_imports, &type_ctx, &global_map));
 
     out
 }

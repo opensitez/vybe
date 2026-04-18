@@ -19,51 +19,97 @@ use vybe_bytecode::opcode::Op;
 // These are the building blocks for while, do-while, and C-style for loops.
 // All compilers MUST use these instead of hand-rolling loop bytecode.
 
-/// Emit the start of a while loop: mark loop start, compile condition already
-/// on stack, branch out if false.
-/// Returns (loop_start, exit_jump) — caller compiles body, then calls emit_loop_end.
+/// Emit the start of a while loop using WASM structured control flow.
+/// Emits: block { loop { ... }}
+/// Returns (block_patch, loop_patch) — caller compiles condition+body, then calls emit_loop_end.
 ///
 /// Usage:
-///   let (start, exit) = emit_while_start(chunk, line);
+///   let lp = emit_loop_start(chunk, line);
 ///   // caller: compile condition expression
-///   // caller: emit dyn_to_bool
-///   // caller: let exit = emit_while_cond(chunk, line);
+///   let _ = emit_loop_cond(chunk, line);
 ///   // caller: compile body
-///   emit_loop_end(chunk, start, exit, line);
-pub fn emit_loop_start(chunk: &mut Chunk) -> usize {
-    chunk.current_offset()
+///   emit_loop_end(chunk, lp, line);
+pub struct LoopState {
+    pub block_patch: usize,
+    pub loop_patch: usize,
+    /// If set, there's an inner body block for continue-to-increment pattern.
+    /// continue = BR_LABEL 0 (body block), break = BR_LABEL 2 (outer block)
+    /// If None, continue = BR_LABEL 0 (loop), break = BR_LABEL 1 (outer block)
+    pub body_block_patch: Option<usize>,
 }
 
-/// After condition is on stack: convert to bool, jump out if false.
-/// Returns exit_jump to patch later.
-pub fn emit_loop_cond(chunk: &mut Chunk, line: u32) -> usize {
+impl LoopState {
+    /// Depth for `continue` (restart loop or skip to increment)
+    pub fn continue_depth(&self, nesting_offset: u8) -> u8 {
+        // body_block is innermost if present
+        nesting_offset
+    }
+    /// Depth for `break` (exit block/loop entirely)
+    pub fn break_depth(&self, nesting_offset: u8) -> u8 {
+        if self.loop_patch == 0 {
+            nesting_offset // block-only: break targets the block itself (depth 0)
+        } else {
+            let levels = if self.body_block_patch.is_some() { 3 } else { 2 };
+            nesting_offset + levels - 1
+        }
+    }
+    /// Number of label stack entries this loop occupies
+    pub fn depth_count(&self) -> u8 {
+        if self.loop_patch == 0 {
+            1 // block-only (e.g. switch)
+        } else if self.body_block_patch.is_some() {
+            3 // block + loop + body block
+        } else {
+            2 // block + loop
+        }
+    }
+}
+
+pub fn emit_loop_start(chunk: &mut Chunk, line: u32) -> LoopState {
+    let block_patch = chunk.emit_block(line);
+    let (loop_patch, _) = chunk.emit_loop_s(line);
+    LoopState { block_patch, loop_patch, body_block_patch: None }
+}
+
+/// After condition is on stack: convert to bool, branch out of block if false.
+pub fn emit_loop_cond(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::DYN_TO_BOOL, line);
-    chunk.emit_jump(Op::BR_IF_FALSE, line)
+    chunk.emit_op(Op::DYN_NOT, line);
+    // br_if_label 1 = break out of loop to block end (depth 0=loop, 1=block)
+    chunk.emit_br_if(1, line);
 }
 
-/// End of loop: jump back to start, patch the exit.
-pub fn emit_loop_end(chunk: &mut Chunk, loop_start: usize, exit_jump: usize, line: u32) {
-    chunk.emit_loop(loop_start, line);
-    chunk.patch_jump(exit_jump);
+/// End of loop: branch back to loop start, emit END for loop and block.
+pub fn emit_loop_end(chunk: &mut Chunk, state: LoopState, line: u32) {
+    // br_label 0 = continue loop (jump to loop start)
+    chunk.emit_br(0, line);
+    chunk.emit_end(line); // end loop
+    chunk.patch_loop(state.loop_patch);
+    chunk.emit_end(line); // end block
+    chunk.patch_block(state.block_patch);
 }
 
-/// Emit unconditional loop back (for do-while where condition is at the end).
-/// Returns loop_start for the unconditional loop point.
-pub fn emit_do_loop_start(chunk: &mut Chunk) -> usize {
-    chunk.current_offset()
+/// Emit start of a do-while loop using structured CF.
+/// Returns LoopState — caller compiles body+condition, then calls emit_do_loop_end.
+pub fn emit_do_loop_start(chunk: &mut Chunk, line: u32) -> LoopState {
+    let block_patch = chunk.emit_block(line);
+    let (loop_patch, _) = chunk.emit_loop_s(line);
+    LoopState { block_patch, loop_patch, body_block_patch: None }
 }
 
-/// End of do-while: condition on stack, branch back to start if true.
+/// End of do-while: condition on stack, branch back to loop if true.
 /// `negate` = true for `until` (loop while condition is FALSE).
-pub fn emit_do_loop_end(chunk: &mut Chunk, loop_start: usize, negate: bool, line: u32) {
+pub fn emit_do_loop_end(chunk: &mut Chunk, state: LoopState, negate: bool, line: u32) {
     chunk.emit_op(Op::DYN_TO_BOOL, line);
     if negate {
         chunk.emit_op(Op::DYN_NOT, line);
     }
-    // Branch back to start if condition is true
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    chunk.emit_loop(loop_start, line);
-    chunk.patch_jump(exit);
+    // br_if_label 0 = continue loop if condition is true
+    chunk.emit_br_if(0, line);
+    chunk.emit_end(line); // end loop
+    chunk.patch_loop(state.loop_patch);
+    chunk.emit_end(line); // end block
+    chunk.patch_block(state.block_patch);
 }
 
 // ── For-in iteration ────────────────────────────────────────────────────
@@ -73,38 +119,53 @@ pub fn emit_do_loop_end(chunk: &mut Chunk, loop_start: usize, negate: bool, line
 /// Returns (loop_start, exit_jump) — caller must pass these to `emit_for_in_end`.
 ///
 /// Stack after: [element] on top (caller assigns to loop variable)
-pub fn emit_for_in_start(chunk: &mut Chunk, arr_slot: u16, idx_slot: u16, line: u32) -> (usize, usize) {
+pub fn emit_for_in_start(chunk: &mut Chunk, arr_slot: u16, idx_slot: u16, line: u32) -> LoopState {
     // i = 0
     chunk.emit_op(Op::I32_CONST_0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
-    let loop_start = chunk.current_offset();
+    // block $exit { loop $loop {
+    let block_patch = chunk.emit_block(line);
+    let (loop_patch, _) = chunk.emit_loop_s(line);
 
     // while i < arr.length
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     chunk.emit_op(Op::DYN_LT, line);
-    let exit_jump = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    emit_loop_cond(chunk, line);
+
+    // block $body { — continue targets this, skips to increment
+    let body_block_patch = chunk.emit_block(line);
 
     // element = arr[i]
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
 
-    (loop_start, exit_jump)
+    LoopState { block_patch, loop_patch, body_block_patch: Some(body_block_patch) }
 }
 
-/// Emit the end of a for-in loop: increment index, loop back, patch exit.
-pub fn emit_for_in_end(chunk: &mut Chunk, idx_slot: u16, loop_start: usize, exit_jump: usize, line: u32) {
-    // i += 1
+/// Emit the end of a for-in loop: increment index, continue loop, close block+loop.
+pub fn emit_for_in_end(chunk: &mut Chunk, idx_slot: u16, state: LoopState, line: u32) {
+    // Close body block (continue lands here, before increment)
+    if let Some(bp) = state.body_block_patch {
+        chunk.emit_end(line);
+        chunk.patch_block(bp);
+    }
+
+    // i += 1 (increment — runs after continue)
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op(Op::I32_CONST_1, line);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
-    chunk.emit_loop(loop_start, line);
-    chunk.patch_jump(exit_jump);
+    // br $loop (continue loop)
+    chunk.emit_br(0, line);
+    chunk.emit_end(line); // end loop
+    chunk.patch_loop(state.loop_patch);
+    chunk.emit_end(line); // end block
+    chunk.patch_block(state.block_patch);
 }
 
 // ── Map ─────────────────────────────────────────────────────────────────
@@ -118,13 +179,7 @@ pub fn emit_map(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    let (loop_start, exit_jump) = emit_for_in_start(chunk, arr_slot, idx_slot, line);
-
-    // Stack: [element]. Call fn(element), push result.
-    let _elem_slot = idx_slot; // reuse naming — element is on stack, not in slot
-    // Actually we need: result.push(fn(arr[i]))
-    // Stack has [element] from for_in_start. Store it, then build call.
-    // Simpler: rewrite to not use for_in_start since we need the fn call pattern.
+    let state = emit_for_in_start(chunk, arr_slot, idx_slot, line);
 
     // Drop element from for_in_start — we'll re-fetch inline
     chunk.emit_op(Op::DROP, line);
@@ -135,12 +190,12 @@ pub fn emit_map(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);  // pass index as 2nd arg
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 2, line);
     chunk.emit_op(Op::ARRAY_PUSH, line);
     chunk.emit_op(Op::DROP, line);
 
-    emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
+    emit_for_in_end(chunk, idx_slot, state, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
@@ -154,7 +209,7 @@ pub fn emit_filter(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: 
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    let (loop_start, exit_jump) = emit_for_in_start(chunk, arr_slot, idx_slot, line);
+    let state = emit_for_in_start(chunk, arr_slot, idx_slot, line);
 
     // Store element
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
@@ -165,16 +220,20 @@ pub fn emit_filter(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: 
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
     chunk.emit_op(Op::DYN_TO_BOOL, line);
-    let skip_push = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    // Use structured if for the conditional push
+    let if_block = chunk.emit_block(line);
+    chunk.emit_op(Op::DYN_NOT, line);
+    chunk.emit_br_if(0, line); // skip push if false
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunk.emit_op(Op::ARRAY_PUSH, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.patch_jump(skip_push);
+    chunk.emit_end(line); // end if block
+    chunk.patch_block(if_block);
 
-    emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
+    emit_for_in_end(chunk, idx_slot, state, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
@@ -182,11 +241,8 @@ pub fn emit_filter(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: 
 /// Emit `forEach(fn, arr)` → call fn(x) for each x, returns null.
 /// Stack after: [null]
 pub fn emit_foreach(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: u16, line: u32) {
-    let (loop_start, exit_jump) = emit_for_in_start(chunk, arr_slot, idx_slot, line);
+    let state = emit_for_in_start(chunk, arr_slot, idx_slot, line);
 
-    // Drop element from for_in_start, call fn(arr[i], i) directly.
-    // Pass index as 2nd arg (JS forEach contract: value, index, array).
-    // Languages whose callbacks take only 1 arg safely ignore the extra.
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
@@ -197,7 +253,7 @@ pub fn emit_foreach(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: u1
     chunk.emit_op_u8(Op::CALL_REF, 2, line);
     chunk.emit_op(Op::DROP, line);
 
-    emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
+    emit_for_in_end(chunk, idx_slot, state, line);
 
     chunk.emit_op(Op::NULL, line);
 }
@@ -221,14 +277,15 @@ pub fn emit_reduce(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, acc_slot: u16
     chunk.emit_op_u16(Op::CONST, one, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
-    let loop_start = chunk.current_offset();
+    // block { loop {
+    let state = emit_loop_start(chunk, line);
 
     // while i < arr.length
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     chunk.emit_op(Op::DYN_LT, line);
-    let exit_jump = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    emit_loop_cond(chunk, line);
 
     // acc = fn(acc, arr[i])
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
@@ -240,7 +297,13 @@ pub fn emit_reduce(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, acc_slot: u16
     chunk.emit_op_u16(Op::LOCAL_SET, acc_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
+    // i += 1
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::I32_CONST_1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+
+    emit_loop_end(chunk, state, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, acc_slot, line);
 }
@@ -259,7 +322,14 @@ pub fn emit_any_every(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: 
     //     if fn(elem) (any) → push true, jump to end
     //     if !fn(elem) (every) → push false, jump to end
     //   (loop fell through with no match) → push false (any) or true (every)
-    let (loop_start, exit_jump) = emit_for_in_start(chunk, arr_slot, idx_slot, line);
+    let result_local = idx_slot + 1; // assume caller allocated enough locals
+
+    // Set default result BEFORE the loop
+    if is_any { chunk.emit_op(Op::FALSE, line); } else { chunk.emit_op(Op::TRUE, line); }
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    chunk.emit_op(Op::DROP, line);
+
+    let state = emit_for_in_start(chunk, arr_slot, idx_slot, line);
 
     // Drop element from for_in_start, call fn(arr[i]) directly
     chunk.emit_op(Op::DROP, line);
@@ -270,28 +340,32 @@ pub fn emit_any_every(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, idx_slot: 
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
     chunk.emit_op(Op::DYN_TO_BOOL, line);
-
-    // Patches that jump to the "found a match — leave result on stack" arm.
-    let mut early_exit_patches: Vec<usize> = Vec::new();
+    // Structure from emit_for_in_start: block $exit { loop $loop { cond, block $body {
+    // From here: depth 0=$body, 1=$loop, 2=$exit
+    // With an extra block $skip: depth 0=$skip, 1=$body, 2=$loop, 3=$exit
     if is_any {
-        // any: if true → break out with `true`
-        let no_match = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        let skip = chunk.emit_block(line);
+        chunk.emit_op(Op::DYN_NOT, line);
+        chunk.emit_br_if(0, line); // skip if false
         chunk.emit_op(Op::TRUE, line);
-        early_exit_patches.push(chunk.emit_jump(Op::BR, line));
-        chunk.patch_jump(no_match);
+        chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_br(3, line); // break: skip=0, body=1, loop=2, exit=3
+        chunk.emit_end(line);
+        chunk.patch_block(skip);
     } else {
-        // every: if false → break out with `false`
-        let still_ok = chunk.emit_jump(Op::BR_IF_TRUE, line);
+        let skip = chunk.emit_block(line);
+        chunk.emit_br_if(0, line); // skip if true
         chunk.emit_op(Op::FALSE, line);
-        early_exit_patches.push(chunk.emit_jump(Op::BR, line));
-        chunk.patch_jump(still_ok);
+        chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_br(3, line); // break: skip=0, body=1, loop=2, exit=3
+        chunk.emit_end(line);
+        chunk.patch_block(skip);
     }
 
-    emit_for_in_end(chunk, idx_slot, loop_start, exit_jump, line);
+    emit_for_in_end(chunk, idx_slot, state, line);
 
-    // Loop completed with no early exit → any=false, every=true
-    if is_any { chunk.emit_op(Op::FALSE, line); } else { chunk.emit_op(Op::TRUE, line); }
-
-    // Land here from the early-exit branch with the result already on the stack.
-    for p in early_exit_patches { chunk.patch_jump(p); }
+    // Result already set (default or early exit override) — push it
+    chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
 }

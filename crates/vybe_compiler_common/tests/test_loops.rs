@@ -54,9 +54,9 @@ fn emit_every_produces_bytecode() {
 fn emit_for_in_produces_loop() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 10;
-    let (loop_start, exit_jump) = loops::emit_for_in_start(&mut chunk, 1, 2, 0);
+    let lp = loops::emit_for_in_start(&mut chunk, 1, 2, 0);
     // element is on stack here — drop it to simulate body
     chunk.emit_op(vybe_bytecode::opcode::Op::DROP, 0);
-    loops::emit_for_in_end(&mut chunk, 2, loop_start, exit_jump, 0);
+    loops::emit_for_in_end(&mut chunk, 2, lp, 0);
     assert!(chunk.code.len() > 10, "for-in should emit loop bytecode");
 }

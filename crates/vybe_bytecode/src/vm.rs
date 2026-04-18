@@ -2477,7 +2477,6 @@ impl VM {
                 _ if op == Op::LOOP => {
                     let _body_size = self.read_u16();
                     let ip = self.frame().ip;
-                    // Loop target is the start (current position, after reading the operand)
                     self.label_stack.push(LabelEntry { target: ip, is_loop: true });
                 }
                 _ if op == Op::END => {
@@ -2487,11 +2486,13 @@ impl VM {
                     let depth = self.read_byte() as usize;
                     if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
                         let target = entry.target;
-                        let _ci = self.frame().chunk_index;
                         self.frames.last_mut().unwrap().ip = target;
-                        // If branching out of a block (not loop), pop labels
-                        if !entry.is_loop {
-                            let len = self.label_stack.len();
+                        let len = self.label_stack.len();
+                        if entry.is_loop {
+                            // Loop: pop labels above the loop (keep the loop + block below)
+                            self.label_stack.truncate(len - depth);
+                        } else {
+                            // Block: pop the block and everything above it
                             self.label_stack.truncate(len - depth - 1);
                         }
                     }
@@ -2503,8 +2504,10 @@ impl VM {
                         if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
                             let target = entry.target;
                             self.frames.last_mut().unwrap().ip = target;
-                            if !entry.is_loop {
-                                let len = self.label_stack.len();
+                            let len = self.label_stack.len();
+                            if entry.is_loop {
+                                self.label_stack.truncate(len - depth);
+                            } else {
                                 self.label_stack.truncate(len - depth - 1);
                             }
                         }

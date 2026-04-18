@@ -29,6 +29,8 @@ pub struct WasmTypeContext {
     pub func_type_base: u32,
     /// Total number of GC types (structs + descriptors + array)
     pub gc_type_count: u32,
+    /// arity → WASM type index for (externref * arity) -> externref
+    pub func_type_by_arity: std::collections::HashMap<u8, u32>,
 }
 
 impl WasmTypeContext {
@@ -60,6 +62,7 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         array_type_idx: 0,
         func_type_base: 0,
         gc_type_count: 0,
+        func_type_by_arity: std::collections::HashMap::new(),
     };
 
     // Collect TypeEntry definitions from chunk 0
@@ -246,12 +249,15 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         }
     }
 
-    for chunk in chunks {
+    for (i, chunk) in chunks.iter().enumerate() {
+        let type_idx = ctx.func_type_base + (import_count + rt_imports.len()) as u32 + i as u32;
         out.push(TYPE_FUNC);
         write_leb128_u32(&mut out, chunk.arity as u32);
         for _ in 0..chunk.arity { out.push(TYPE_EXTERNREF); }
         write_leb128_u32(&mut out, 1);
         out.push(TYPE_EXTERNREF);
+        // Record first type index seen for each arity (for call_ref dispatch)
+        ctx.func_type_by_arity.entry(chunk.arity).or_insert(type_idx);
     }
 
     (out, ctx)

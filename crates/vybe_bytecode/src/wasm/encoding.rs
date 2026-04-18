@@ -15,6 +15,7 @@ pub const SECTION_TYPE: u8 = 1;
 pub const SECTION_IMPORT: u8 = 2;
 pub const SECTION_FUNCTION: u8 = 3;
 pub const SECTION_MEMORY: u8 = 5;
+pub const SECTION_GLOBAL: u8 = 6;
 pub const SECTION_EXPORT: u8 = 7;
 pub const SECTION_CODE: u8 = 10;
 

@@ -272,7 +272,7 @@ pub fn emit_values_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16,
     chunk.emit_op(Op::DROP, line);
 
     // for i in 0..keys.length: result.push(dict[keys[i]])
-    let (loop_start, exit) = crate::loops::emit_for_in_start(chunk, keys_slot, idx_slot, line);
+    let state = crate::loops::emit_for_in_start(chunk, keys_slot, idx_slot, line);
     // Stack: [key_string]. Use it to get value from dict.
     // Store key, get dict[key], push to result
     chunk.emit_op_u16(Op::LOCAL_GET, dict_slot, line);
@@ -294,7 +294,7 @@ pub fn emit_values_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16,
     chunk.emit_op(Op::ARRAY_PUSH, line); // result.push(value)
     chunk.emit_op(Op::DROP, line);
 
-    crate::loops::emit_for_in_end(chunk, idx_slot, loop_start, exit, line);
+    crate::loops::emit_for_in_end(chunk, idx_slot, state, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
@@ -316,7 +316,7 @@ pub fn emit_items_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16, 
     chunk.emit_op(Op::DROP, line);
 
     // for i in 0..keys.length: result.push([keys[i], dict[keys[i]]])
-    let (loop_start, exit) = crate::loops::emit_for_in_start(chunk, keys_slot, idx_slot, line);
+    let state = crate::loops::emit_for_in_start(chunk, keys_slot, idx_slot, line);
     chunk.emit_op(Op::DROP, line); // drop element from for_in_start
 
     // Build [key, value] pair
@@ -368,7 +368,7 @@ pub fn emit_items_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16, 
     chunk.emit_op(Op::ARRAY_PUSH, line); // result.push(pair)
     chunk.emit_op(Op::DROP, line);
 
-    crate::loops::emit_for_in_end(chunk, idx_slot, loop_start, exit, line);
+    crate::loops::emit_for_in_end(chunk, idx_slot, state, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
