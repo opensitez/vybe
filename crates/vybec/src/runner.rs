@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use vybe_parser_basic::parse_program;
+use crate::parser_basic::parse_program;
 
 // ---------------------------------------------------------------------------
 // Thread-local used to pass the Project into the named Dioxus App component.
@@ -91,11 +91,11 @@ fn run_js_file(path: &Path) {
 /// Wire event handlers by finding compiled chunks that match method names with Handles clauses.
 #[allow(dead_code)]
 fn wire_handles_from_chunks(
-    program: &vybe_parser_basic::ast::Program,
+    program: &crate::parser_basic::ast::Program,
     vm: &mut vybe_bytecode::VM,
     gui: &Arc<Mutex<vybe_host::GuiState>>,
 ) {
-    use vybe_parser_basic::ast::*;
+    use crate::parser_basic::ast::*;
     for decl in &program.declarations {
         let methods = match decl {
             Declaration::Class(c) => &c.methods,
@@ -143,11 +143,11 @@ fn wire_handles_from_chunks(
 /// Looks up the compiled function in VM globals and wires it to the control.event.
 #[allow(dead_code)]
 fn wire_handles_from_ast(
-    program: &vybe_parser_basic::ast::Program,
+    program: &crate::parser_basic::ast::Program,
     vm: &vybe_bytecode::VM,
     gui: &std::sync::Arc<std::sync::Mutex<vybe_host::GuiState>>,
 ) {
-    use vybe_parser_basic::ast::*;
+    use crate::parser_basic::ast::*;
     for decl in &program.declarations {
         let (class_name, methods) = match decl {
             Declaration::Class(c) => (c.name.as_str().to_lowercase(), &c.methods),
@@ -302,7 +302,7 @@ fn run_vb_file(path: &Path, _extra_args: &[String]) {
     let gui = vybe_host::register_all_with_gui(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
 
-    let chunks = match vybe_compiler_vb::Compiler::new().compile(&program) {
+    let chunks = match crate::compiler_vb::Compiler::new().compile(&program) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Compile error: {e}");
@@ -406,7 +406,7 @@ pub fn run_project_in_memory(project: &vybe_project::Project) {
 
     match parse_program(&all_code) {
         Ok(program) => {
-            match vybe_compiler_vb::Compiler::new().compile(&program) {
+            match crate::compiler_vb::Compiler::new().compile(&program) {
                 Ok(chunks) => {
                     if let Err(e) = vm.run(chunks) {
                         let msg = format!("{}", e);
@@ -454,7 +454,7 @@ fn run_project(path: &Path, _extra_args: &[String]) {
     if !all_code.trim().is_empty() {
         match parse_program(&all_code) {
             Ok(program) => {
-                match vybe_compiler_vb::Compiler::new().compile(&program) {
+                match crate::compiler_vb::Compiler::new().compile(&program) {
                     Ok(chunks) => {
                         if let Err(e) = vm.run(chunks) {
                             let msg = format!("{}", e);

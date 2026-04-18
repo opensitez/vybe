@@ -20,7 +20,6 @@ path = "src/lib.rs"
 [dependencies]
 vybe_bytecode = { workspace = true }
 vybe_parser_basic = { workspace = true }
-vybe_compiler_vb = { workspace = true }
 vybe_host = { workspace = true, features = ["gui_forms"] }
 serde = { workspace = true }
 vybe_compiler_common = { workspace = true }

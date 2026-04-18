@@ -1,4 +1,5 @@
 pub mod runner;
+pub mod compiler_vb;
 pub mod parser_dart;
 pub mod compiler_dart;
 pub mod parser_php;
