@@ -652,6 +652,9 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
     let _name = &data[pos..pos + name_len as usize];
     pos += name_len as usize;
 
+    // Version byte
+    let _version = data[pos]; pos += 1;
+
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
 

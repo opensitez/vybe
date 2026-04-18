@@ -797,13 +797,14 @@ fn build_min() -> Chunk {
     c.emit_br_if(1, 0); // exit loop
 
     // if arr[i] < best: best = arr[i]
+    // block must wrap ALL condition operands + comparison + body
+    let skip_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     c.emit_op(Op::DYN_LT, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let skip_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip if NOT less than
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -860,13 +861,13 @@ fn build_max() -> Chunk {
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(1, 0); // exit loop
 
+    let skip_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     c.emit_op(Op::DYN_GT, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let skip_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip if NOT greater than
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -912,11 +913,11 @@ fn build_pow() -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, n, 0);
     c.emit_op(Op::DROP, 0);
     // if n < 0 then n = -n
+    let pos_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, n, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_LT, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let pos_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip negate if NOT negative
     c.emit_op_u16(Op::LOCAL_GET, n, 0);
     c.emit_op(Op::F64_NEG, 0);
@@ -956,11 +957,11 @@ fn build_pow() -> Chunk {
     c.emit_end(0); c.patch_block(block_p);
 
     // If original exp was negative, take reciprocal: result = 1.0 / result
+    let recip_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, exp, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_LT, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let recip_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip reciprocal if NOT negative
     c.emit_op_u16(Op::CONST, one, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -1016,11 +1017,16 @@ fn build_str_count() -> Chunk {
     c.emit_op(Op::STR_SUBSTRING, 0);
     c.emit_op_u16(Op::LOCAL_GET, needle, 0);
     c.emit_op(Op::STR_INDEX_OF, 0);
-    c.emit_op(Op::DUP, 0);
+    // Save indexOf result to local (don't use DUP — value can't cross block boundary)
+    let idx_result = 5u16; // reuse local slot (local_count=5, slot 5 is beyond declared but safe with extra locals)
+    c.local_count = 6; // need one more local for idx_result
+    c.emit_op_u16(Op::LOCAL_SET, idx_result, 0);
+    c.emit_op(Op::DROP, 0);
+    // Check if index < 0
+    c.emit_op_u16(Op::LOCAL_GET, idx_result, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op(Op::DYN_LT, 0);
-    c.emit_br_if(1, 0); // exit loop if index < 0 (truthy = true)
-    c.emit_op(Op::DROP, 0);
+    c.emit_br_if(1, 0); // exit loop if index < 0
     c.emit_op_u16(Op::LOCAL_GET, count, 0);
     c.emit_op(Op::I32_CONST_1, 0);
     c.emit_op(Op::I32_ADD, 0);
@@ -1034,7 +1040,6 @@ fn build_str_count() -> Chunk {
     c.emit_br(0, 0); // continue loop
     c.emit_end(0); c.patch_loop(loop_p);
     c.emit_end(0); c.patch_block(block_p);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, count, 0);
     c.emit_op(Op::RETURN, 0);
@@ -1110,32 +1115,35 @@ fn build_is_numeric() -> Chunk {
     c.local_count = 2; // callee(0) + val(1)
     let val = 1u16;
 
+    // Check if type is "number" (covers I32, I64, F64)
+    // Block must wrap ALL values consumed inside it (typeof result + STR_EQUALS + DUP)
+    let num_str = c.add_constant(Value::String(std::sync::Arc::from("number")));
+    let done_block_p = c.emit_block(0);
     // typeof(val) → string
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     c.emit_op(Op::REF_TYPEOF, 0);
-
-    // Check if type is "number" (covers I32, I64, F64)
-    let num_str = c.add_constant(Value::String(std::sync::Arc::from("number")));
     c.emit_op_u16(Op::CONST, num_str, 0);
     c.emit_op(Op::STR_EQUALS, 0);
 
-    // If true, return true — skip second check
-    c.emit_op(Op::DUP, 0);
-    let done_block_p = c.emit_block(0);
-    c.emit_br_if(0, 0); // skip to end if already true
+    // If true, save and skip second check
+    let result_slot = 2u16;
+    c.local_count = 3;
+    c.emit_op_u16(Op::LOCAL_SET, result_slot, 0);
     c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result_slot, 0);
+    c.emit_br_if(0, 0); // skip to end if already true
 
-    // Also check for string that parses as number: try val + 0 and see if NaN
-    // Simpler: check if typeof is "i32"
-    // Actually ref_typeof returns "number" for all numeric types already.
-    // Also check if it's a numeric string by trying to convert.
+    // Also check if typeof is "i32"
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     c.emit_op(Op::REF_TYPEOF, 0);
     let i32_str = c.add_constant(Value::String(std::sync::Arc::from("i32")));
     c.emit_op_u16(Op::CONST, i32_str, 0);
     c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result_slot, 0);
+    c.emit_op(Op::DROP, 0);
 
     c.emit_end(0); c.patch_block(done_block_p);
+    c.emit_op_u16(Op::LOCAL_GET, result_slot, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -1168,10 +1176,10 @@ fn build_slice() -> Chunk {
     let end = 3u16;
 
     // if ref_is_string(obj) → str_substring; else → array_slice
+    let str_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, obj, 0);
     c.emit_op(Op::REF_IS_STRING, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let str_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip string branch if NOT string
 
     // String branch: [obj, start, end] → str_substring
@@ -1310,11 +1318,11 @@ fn build_slice_step() -> Chunk {
 
     // Compute condition: if step > 0 then i < end else i > end
     // Store in local 7 (cond) to avoid value-on-stack across branches
+    let pos_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op_u16(Op::CONST, zero, 0);
     c.emit_op(Op::DYN_GT, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let pos_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip positive branch if step <= 0
     // positive step: cond = i < end
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
@@ -1340,10 +1348,11 @@ fn build_slice_step() -> Chunk {
     c.emit_br_if(1, 0); // exit loop (depth 1 = outer block)
 
     // bounds check: skip push if i < 0 or i >= arr.length
+    // Block must wrap the condition values consumed by br_if inside it
+    let skip_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     c.emit_op_u16(Op::CONST, zero, 0);
     c.emit_op(Op::DYN_LT, 0);
-    let skip_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip push if i < 0
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -1378,12 +1387,12 @@ fn build_dyn_mul() -> Chunk {
     c.local_count = 3;
     let str_tag = c.add_constant(Value::String(Arc::from("string")));
     // if typeof(a) == "string": return str_repeat(a, b)
+    let a_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op(Op::REF_TYPEOF, 0);
     c.emit_op_u16(Op::CONST, str_tag, 0);
     c.emit_op(Op::DYN_EQ, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let a_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip if a is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
@@ -1391,12 +1400,12 @@ fn build_dyn_mul() -> Chunk {
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0); c.patch_block(a_block_p);
     // if typeof(b) == "string": return str_repeat(b, a)
+    let b_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::REF_TYPEOF, 0);
     c.emit_op_u16(Op::CONST, str_tag, 0);
     c.emit_op(Op::DYN_EQ, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let b_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip if b is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -1547,10 +1556,10 @@ fn build_concat() -> Chunk {
     let b = 2u16;
 
     // if ref_is_string(a) → str_concat
+    let str_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, a, 0);
     c.emit_op(Op::REF_IS_STRING, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let str_block_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip string path if NOT string
 
     // String path: str_concat(a, b)
@@ -1623,12 +1632,12 @@ fn build_string_raw() -> Chunk {
     c.emit_op(Op::DROP, 0);
 
     // if i < values.length: result += String(values[i])
+    let skip_val_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, values, 0);
     c.emit_op(Op::ARRAY_LENGTH, 0);
     c.emit_op(Op::DYN_LT, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    let skip_val_p = c.emit_block(0);
     c.emit_br_if(0, 0); // skip if i >= values.length
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);

@@ -137,13 +137,13 @@ fn run_project(path: &Path, dump: bool) {
                 (vybe_bytecode::Language::VB, c)
             }
             "js" => {
-                vybe_compiler_js::register_js_coercion(&mut vm);
+                vybec::compiler_js::register_js_coercion(&mut vm);
                 let source = read_file(&file_path);
-                let program = match vybe_parser_js::parse(&source) {
+                let program = match vybec::parser_js::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                let c = match vybe_compiler_js::Compiler::new().compile(&program) {
+                let c = match vybec::compiler_js::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
                 };
@@ -151,11 +151,11 @@ fn run_project(path: &Path, dump: bool) {
             }
             "cs" => {
                 let source = read_file(&file_path);
-                let program = match vybe_parser_csharp::parse(&source) {
+                let program = match vybec::parser_csharp::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                let c = match vybe_compiler_csharp::Compiler::new().compile(&program) {
+                let c = match vybec::compiler_csharp::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
                 };
@@ -430,7 +430,7 @@ fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bo
 
 fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
     let source = read_file(path);
-    let program = match vybe_parser_js::parse(&source) {
+    let program = match vybec::parser_js::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
@@ -444,10 +444,10 @@ fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bo
     } else {
         vybe_host::register_all_with_gui(&mut vm)
     };
-    vybe_compiler_js::register_js_coercion(&mut vm);
+    vybec::compiler_js::register_js_coercion(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
 
-    let chunks = match vybe_compiler_js::Compiler::new().compile(&program) {
+    let chunks = match vybec::compiler_js::Compiler::new().compile(&program) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };

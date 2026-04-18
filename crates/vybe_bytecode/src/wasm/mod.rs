@@ -27,9 +27,10 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // Custom section: Vybe metadata for round-trip
     write_section(&mut out, SECTION_CUSTOM, &encode_custom_section(chunks));
 
-    // Collect imports
+    // Collect imports — total_imports = host imports + wasm:js-* builtins
     let rt_imports = sections::collect_rt_imports(chunks);
-    let total_imports = rt_imports.len();
+    let host_import_count = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
+    let total_imports = host_import_count + rt_imports.len(); // ALL WASM-level imports
 
     // Collect globals (string-keyed → indexed)
     let (globals, global_map) = sections::collect_globals(chunks);

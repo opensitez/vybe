@@ -250,7 +250,7 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     }
 
     for (i, chunk) in chunks.iter().enumerate() {
-        let type_idx = ctx.func_type_base + (import_count + rt_imports.len()) as u32 + i as u32;
+        let type_idx = ctx.func_type_base + import_count as u32 + i as u32;
         out.push(TYPE_FUNC);
         write_leb128_u32(&mut out, chunk.arity as u32);
         for _ in 0..chunk.arity { out.push(TYPE_EXTERNREF); }

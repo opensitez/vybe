@@ -55,9 +55,9 @@ fn run_js_file(path: &Path) {
     let mut vm = vybe_bytecode::VM::new();
 
     let gui = vybe_host::register_all_with_gui(&mut vm);
-    vybe_compiler_js::register_js_coercion(&mut vm);
+    crate::compiler_js::register_js_coercion(&mut vm);
 
-    let chunks = match vybe_compiler_js::load_and_compile(path) {
+    let chunks = match crate::compiler_js::load_and_compile(path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("JS error: {e}");
@@ -249,7 +249,7 @@ fn run_cs_file(path: &Path) {
         }
     };
 
-    let unit = match vybe_parser_csharp::parse(&code) {
+    let unit = match crate::parser_csharp::parse(&code) {
         Ok(u) => u,
         Err(e) => {
             eprintln!("Parse error: {e}");
@@ -261,7 +261,7 @@ fn run_cs_file(path: &Path) {
     let gui = vybe_host::register_all_with_gui(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
 
-    let chunks = match vybe_compiler_csharp::Compiler::new().compile(&unit) {
+    let chunks = match crate::compiler_csharp::Compiler::new().compile(&unit) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Compile error: {e}");

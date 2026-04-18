@@ -11,3 +11,7 @@ pub mod parser_cobol;
 pub mod compiler_cobol;
 pub mod parser_pascal;
 pub mod compiler_pascal;
+pub mod parser_csharp;
+pub mod compiler_csharp;
+pub mod parser_js;
+pub mod compiler_js;

@@ -39,6 +39,8 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 need = need.max(2); // need 2 temps for 3-operand reorder
             } else if is_binary_typed_op(op) || op == Op::GLOBAL_SET || op == Op::DUP
                 || op == Op::ARRAY_GET || op == Op::ARRAY_LENGTH
+                || op == Op::ARRAY_POP || op == Op::ARRAY_SHIFT
+                || op == Op::REF_TYPEOF || op == Op::REF_IS_NULL
                 // Dynamic binary ops also use temp for unbox pattern
                 || op == Op::DYN_ADD || op == Op::DYN_LT || op == Op::DYN_GT
                 || op == Op::DYN_LE || op == Op::DYN_GE || op == Op::DYN_EQ || op == Op::DYN_NE {
@@ -115,7 +117,7 @@ pub fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], type_c
             ip += 2;
 
             if op.prefix() == 0x00 && !op.is_vm_internal() {
-                emit_core_op(&mut body, op, chunk, &mut ip, &rt_idx, temp_local_idx, has_temp, type_ctx, global_map);
+                emit_core_op(&mut body, op, chunk, &mut ip, &rt_idx, temp_local_idx, has_temp, type_ctx, global_map, host_import_count);
             } else if op.prefix() == 0xFB {
                 emit_gc_op(&mut body, op, chunk, &mut ip, &rt_idx, type_ctx, temp_local_idx);
             } else if op.prefix() >= 0xFC && op.prefix() <= 0xFE {
@@ -141,7 +143,8 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
                 rt_idx: &std::collections::HashMap<(&str, &str), usize>,
                 temp_idx: u32, _has_temp: bool,
                 type_ctx: &WasmTypeContext,
-                global_map: &std::collections::HashMap<String, u32>) {
+                global_map: &std::collections::HashMap<String, u32>,
+                host_import_count: usize) {
     match op {
         _ if op == Op::LOCAL_GET => { body.push(op.sub()); write_leb128_u32(body, read_u16(&chunk.code, ip) as u32); }
         _ if op == Op::LOCAL_SET => { body.push(0x22); write_leb128_u32(body, read_u16(&chunk.code, ip) as u32); } // local.tee
@@ -232,7 +235,7 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
                 }
             }
         }
-        _ if op == Op::HALT => { body.push(0x00); } // unreachable
+        _ if op == Op::HALT => { body.push(0x0F); } // return (not unreachable — _start should return cleanly)
         // ref.null needs heaptype byte — can't just emit op.sub()
         _ if op == Op::NULL => { body.push(0xD0); body.push(0x6F); } // ref.null externref
         // ref.is_null produces i32 — box it since our value representation is externref
@@ -303,6 +306,21 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
             emit_unbox_i32(body, rt_idx);
             body.push(op.sub());
             emit_box_f64(body, rt_idx);
+        }
+
+        // ref.func (Closure format): emit ref.func with WASM function index
+        _ if op == Op::REF_FUNC => {
+            let chunk_idx = read_u16(&chunk.code, ip);
+            let uv_count = chunk.code[*ip] as usize; *ip += 1;
+            *ip += uv_count * 2; // skip upvalue descriptors
+            // WASM function index = total_imports + chunk_idx
+            let total_imports = host_import_count + rt_idx.len();
+            let wasm_func_idx = total_imports + chunk_idx as usize;
+            // Store as table index (i32) for call_indirect — box as externref
+            // The chunk_idx is the table index since element section maps chunks 0..N to table slots
+            body.push(0x41); // i32.const
+            write_leb128_i32(body, chunk_idx as i32);
+            emit_box_i32(body, rt_idx); // i32 → externref
         }
 
         _ => {
@@ -1282,7 +1300,7 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
         }
         // Set type ID — GC type stamps handled by WASM GC type system
         _ if op == Op::SET_TYPE_ID => { body.push(0x01); } // nop (type is structural in GC)
-        _ if op == Op::HALT => { body.push(0x00); } // unreachable
+        _ if op == Op::HALT => { body.push(0x0F); } // return (not unreachable — _start should return cleanly)
         // global_get/set are core ops (prefix 0x00) — handled in emit_core_op
         _ => {
             // Skip operands, emit nop
