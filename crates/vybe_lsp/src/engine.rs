@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use crossbeam_channel::{Sender, Receiver, TryRecvError};
-#[allow(unused_imports)]
-use vybe_parser_generic::Lang;
+use vybex::ast::Lang;
+use vybex::languages;
 use crate::extract;
 use crate::symbols::*;
 
@@ -81,6 +81,71 @@ impl Drop for AnalysisEngine {
     }
 }
 
+/// Synchronous analysis — parse + extract symbols + diagnostics.
+/// Used by code_editor for inline analysis when no external LSP is running.
+pub fn analyze(uri: &str, content: &str) -> AnalysisResult {
+    let lang = extract::detect_language(uri);
+    let keywords = extract::language_keywords(lang);
+    let (symbols, diagnostics) = parse_content(lang, content);
+    AnalysisResult { uri: uri.to_string(), version: 0, symbols, diagnostics, keywords }
+}
+
+fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>) {
+    let parse_fn: Option<fn(&str) -> Result<vybex::ast::Module, String>> = match lang {
+        Lang::VB => Some(languages::vb::parse),
+        Lang::JavaScript => Some(languages::js::parse),
+        Lang::CSharp => Some(languages::csharp::parse),
+        Lang::Python => Some(languages::python::parse),
+        Lang::Ruby => Some(languages::ruby::parse),
+        Lang::PHP => Some(languages::php::parse),
+        Lang::Dart => Some(languages::dart::parse),
+        Lang::Pascal => Some(languages::pascal::parse),
+        Lang::Cobol => Some(languages::cobol::parse),
+        _ => None,
+    };
+
+    if let Some(parser) = parse_fn {
+        match parser(content) {
+            Ok(module) => (extract::extract_symbols(&module), Vec::new()),
+            Err(msg) => {
+                let (line, col) = parse_error_location(&msg);
+                (Vec::new(), vec![LspDiagnostic {
+                    line, col, end_col: col + 10,
+                    message: msg,
+                    severity: DiagSeverity::Error,
+                }])
+            }
+        }
+    } else {
+        (Vec::new(), Vec::new())
+    }
+}
+
+fn parse_error_location(msg: &str) -> (u32, u32) {
+    // Try pest format: " --> LINE:COL"
+    if let Some(arrow_pos) = msg.find(" --> ") {
+        let after = &msg[arrow_pos + 4..];
+        let parts: Vec<&str> = after.splitn(2, ':').collect();
+        if parts.len() == 2 {
+            if let Ok(line) = parts[0].trim().parse::<u32>() {
+                let col = parts[1].trim().split(|c: char| !c.is_ascii_digit()).next()
+                    .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                return (line.saturating_sub(1), col.saturating_sub(1));
+            }
+        }
+    }
+    // Try "line N" format
+    if let Some(idx) = msg.to_lowercase().find("line ") {
+        let after = &msg[idx + 5..];
+        if let Some(line) = after.split(|c: char| !c.is_ascii_digit()).next()
+            .and_then(|s| s.parse::<u32>().ok())
+        {
+            return (line.saturating_sub(1), 0);
+        }
+    }
+    (0, 0)
+}
+
 /// The background analysis loop.
 fn analysis_loop(
     rx: Receiver<AnalysisRequest>,
@@ -125,18 +190,14 @@ fn analysis_loop(
         }
 
         // Check if debounce period elapsed
-        if let Some((ref uri, ref _content, version, at)) = pending {
+        if let Some((ref uri, ref content, version, at)) = pending {
             if at.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
                 let current = latest_version.load(Ordering::Relaxed);
                 if version >= current {
                     let lang = extract::detect_language(uri);
                     let keywords = extract::language_keywords(lang);
 
-                    // Parse using the common AST (via adapter — to be implemented per parser).
-                    // For now, return empty symbols + keywords. Once parsers are migrated
-                    // to emit vybe_parser_generic::Module, this will use extract_symbols().
-                    let symbols = Vec::new();
-                    let diagnostics = Vec::new();
+                    let (symbols, diagnostics) = parse_content(lang, content);
 
                     tx.send(AnalysisEvent::Analysis(AnalysisResult {
                         uri: uri.clone(),

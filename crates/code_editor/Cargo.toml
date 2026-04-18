@@ -19,10 +19,7 @@ lsp-types = "0.97.0"
 lsp-server = "0.7.9"
 crossbeam-channel = "0.5.15"
 url = "2.5"
-vybe_parser_basic = { path = "../vybe_parser_basic" }
-vybe_parser_js = { path = "../vybe_parser_js" }
-vybe_parser_csharp = { path = "../vybe_parser_csharp" }
-pest = "2.8"
+vybe_lsp = { path = "../vybe_lsp" }
 fuzzy-matcher = "0.3.7"
 vybe_widgets = { path = "../vybe_widgets" }
 vybe_forms = { path = "../vybe_forms" }

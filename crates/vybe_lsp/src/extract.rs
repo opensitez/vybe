@@ -1,13 +1,12 @@
 //! Symbol extraction from the common AST.
 //!
 //! ONE extractor for ALL languages. Each parser converts to
-//! `vybe_parser_generic::Module`, then this module extracts symbols.
+//! `vybex::ast::Module`, then this module extracts symbols.
 
-use vybe_parser_generic::*;
+use vybex::ast::*;
 use crate::symbols::*;
 
 /// Extract symbols from a parsed common AST module.
-#[allow(dead_code)]
 pub fn extract_symbols(module: &Module) -> Vec<Symbol> {
     let mut out = Vec::new();
     for stmt in &module.body {
@@ -16,20 +15,24 @@ pub fn extract_symbols(module: &Module) -> Vec<Symbol> {
     out
 }
 
+fn format_params(params: &[Param]) -> String {
+    params.iter().map(|p| {
+        if let Some(ref t) = p.type_hint {
+            format!("{}: {}", p.name, t)
+        } else {
+            p.name.clone()
+        }
+    }).collect::<Vec<_>>().join(", ")
+}
+
 fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
     match &stmt.kind {
-        StmtKind::FunctionDecl { name, params, return_type, body, modifiers: _ } => {
-            let param_str: Vec<String> = params.iter().map(|p| {
-                if let Some(ref t) = p.type_hint {
-                    format!("{}: {}", p.name, t)
-                } else {
-                    p.name.clone()
-                }
-            }).collect();
+        StmtKind::FunctionDecl { name, params, return_type, body, .. } => {
+            let param_str = format_params(params);
             let detail = if let Some(rt) = return_type {
-                format!("({}): {}", param_str.join(", "), rt)
+                format!("({}): {}", param_str, rt)
             } else {
-                format!("({})", param_str.join(", "))
+                format!("({})", param_str)
             };
             let kind = if return_type.is_some() { SymbolKind::Function } else { SymbolKind::Procedure };
             let mut children = Vec::new();
@@ -41,10 +44,10 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
             });
         }
 
-        StmtKind::ClassDecl { name, parent, members, modifiers: _, .. } => {
+        StmtKind::ClassDecl { name, parents, members, .. } => {
             let mut children = Vec::new();
-            for m in members { extract_stmt(m, &mut children); }
-            let detail = parent.as_ref().map(|p| format!("({})", p)).unwrap_or_default();
+            for m in members { extract_class_member(m, &mut children); }
+            let detail = if parents.is_empty() { String::new() } else { format!("({})", parents.join(", ")) };
             out.push(Symbol {
                 name: name.clone(), kind: SymbolKind::Class, detail,
                 line: stmt.span.start_line, end_line: stmt.span.end_line,
@@ -54,7 +57,7 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
 
         StmtKind::InterfaceDecl { name, members, .. } => {
             let mut children = Vec::new();
-            for m in members { extract_stmt(m, &mut children); }
+            for m in members { extract_interface_member(m, &mut children); }
             out.push(Symbol {
                 name: name.clone(), kind: SymbolKind::Interface, detail: String::new(),
                 line: stmt.span.start_line, end_line: stmt.span.end_line,
@@ -62,7 +65,7 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
             });
         }
 
-        StmtKind::EnumDecl { name, members } => {
+        StmtKind::EnumDecl { name, members, .. } => {
             let children: Vec<Symbol> = members.iter().map(|m| Symbol {
                 name: m.name.clone(), kind: SymbolKind::EnumMember, detail: String::new(),
                 line: 0, end_line: 0, children: Vec::new(),
@@ -74,9 +77,9 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
             });
         }
 
-        StmtKind::StructDecl { name, members } => {
+        StmtKind::StructDecl { name, members, .. } => {
             let mut children = Vec::new();
-            for m in members { extract_stmt(m, &mut children); }
+            for m in members { extract_class_member(m, &mut children); }
             out.push(Symbol {
                 name: name.clone(), kind: SymbolKind::Struct, detail: String::new(),
                 line: stmt.span.start_line, end_line: stmt.span.end_line,
@@ -84,7 +87,17 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
             });
         }
 
-        StmtKind::ModuleDecl { name, body } => {
+        StmtKind::ModuleDecl { name, members, .. } => {
+            let mut children = Vec::new();
+            for m in members { extract_class_member(m, &mut children); }
+            out.push(Symbol {
+                name: name.clone(), kind: SymbolKind::Module, detail: String::new(),
+                line: stmt.span.start_line, end_line: stmt.span.end_line,
+                children,
+            });
+        }
+
+        StmtKind::NamespaceDecl { name, body } => {
             let mut children = Vec::new();
             for s in body { extract_stmt(s, &mut children); }
             out.push(Symbol {
@@ -94,37 +107,32 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
             });
         }
 
-        StmtKind::VarDecl { name, type_hint, is_const, .. } => {
-            let kind = if *is_const { SymbolKind::Constant } else { SymbolKind::Variable };
-            let detail = type_hint.clone().unwrap_or_default();
-            out.push(Symbol {
-                name: name.clone(), kind, detail,
-                line: stmt.span.start_line, end_line: stmt.span.end_line,
-                children: Vec::new(),
-            });
+        StmtKind::VarDecl { declarations, kind } => {
+            let is_const = matches!(kind, VarDeclKind::Const);
+            let sym_kind = if is_const { SymbolKind::Constant } else { SymbolKind::Variable };
+            for decl in declarations {
+                let name = match &decl.pattern {
+                    BindingPattern::Ident(n) => n.clone(),
+                    _ => continue,
+                };
+                let detail = decl.type_hint.clone().unwrap_or_default();
+                out.push(Symbol {
+                    name, kind: sym_kind, detail,
+                    line: stmt.span.start_line, end_line: stmt.span.end_line,
+                    children: Vec::new(),
+                });
+            }
         }
 
-        StmtKind::PropertyDecl { name, type_hint, .. } => {
+        StmtKind::DelegateDecl { name, params, return_type, .. } => {
+            let param_str = format_params(params);
+            let detail = if let Some(rt) = return_type {
+                format!("({}): {}", param_str, rt)
+            } else {
+                format!("({})", param_str)
+            };
             out.push(Symbol {
-                name: name.clone(), kind: SymbolKind::Property,
-                detail: type_hint.clone().unwrap_or_default(),
-                line: stmt.span.start_line, end_line: stmt.span.end_line,
-                children: Vec::new(),
-            });
-        }
-
-        StmtKind::EventDecl { name, type_hint } => {
-            out.push(Symbol {
-                name: name.clone(), kind: SymbolKind::Event,
-                detail: type_hint.clone().unwrap_or_default(),
-                line: stmt.span.start_line, end_line: stmt.span.end_line,
-                children: Vec::new(),
-            });
-        }
-
-        StmtKind::TypeAlias { name, target } => {
-            out.push(Symbol {
-                name: name.clone(), kind: SymbolKind::Type, detail: target.clone(),
+                name: name.clone(), kind: SymbolKind::Type, detail,
                 line: stmt.span.start_line, end_line: stmt.span.end_line,
                 children: Vec::new(),
             });
@@ -137,6 +145,85 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
 
         // Skip non-declaration statements
         _ => {}
+    }
+}
+
+fn extract_class_member(member: &ClassMember, out: &mut Vec<Symbol>) {
+    match member {
+        ClassMember::Field { name, type_hint, .. } => {
+            out.push(Symbol {
+                name: name.clone(), kind: SymbolKind::Field,
+                detail: type_hint.clone().unwrap_or_default(),
+                line: 0, end_line: 0, children: Vec::new(),
+            });
+        }
+        ClassMember::Method(stmt) => {
+            extract_stmt(stmt, out);
+        }
+        ClassMember::Constructor { params, .. } => {
+            let param_str = format_params(params);
+            out.push(Symbol {
+                name: "New".to_string(), kind: SymbolKind::Constructor,
+                detail: format!("({})", param_str),
+                line: 0, end_line: 0, children: Vec::new(),
+            });
+        }
+        ClassMember::Property { name, type_hint, .. } => {
+            out.push(Symbol {
+                name: name.clone(), kind: SymbolKind::Property,
+                detail: type_hint.clone().unwrap_or_default(),
+                line: 0, end_line: 0, children: Vec::new(),
+            });
+        }
+        ClassMember::Event { name, type_hint, .. } => {
+            out.push(Symbol {
+                name: name.clone(), kind: SymbolKind::Event,
+                detail: type_hint.clone().unwrap_or_default(),
+                line: 0, end_line: 0, children: Vec::new(),
+            });
+        }
+        ClassMember::Const { name, type_hint, .. } => {
+            out.push(Symbol {
+                name: name.clone(), kind: SymbolKind::Constant,
+                detail: type_hint.clone().unwrap_or_default(),
+                line: 0, end_line: 0, children: Vec::new(),
+            });
+        }
+        ClassMember::NestedType(stmt) => {
+            extract_stmt(stmt, out);
+        }
+    }
+}
+
+fn extract_interface_member(member: &InterfaceMember, out: &mut Vec<Symbol>) {
+    match member {
+        InterfaceMember::Method { name, params, return_type, .. } => {
+            let param_str = format_params(params);
+            let detail = if let Some(rt) = return_type {
+                format!("({}): {}", param_str, rt)
+            } else {
+                format!("({})", param_str)
+            };
+            let kind = if return_type.is_some() { SymbolKind::Function } else { SymbolKind::Procedure };
+            out.push(Symbol {
+                name: name.clone(), kind, detail,
+                line: 0, end_line: 0, children: Vec::new(),
+            });
+        }
+        InterfaceMember::Property { name, type_hint, .. } => {
+            out.push(Symbol {
+                name: name.clone(), kind: SymbolKind::Property,
+                detail: type_hint.clone().unwrap_or_default(),
+                line: 0, end_line: 0, children: Vec::new(),
+            });
+        }
+        InterfaceMember::Event { name, type_hint, .. } => {
+            out.push(Symbol {
+                name: name.clone(), kind: SymbolKind::Event,
+                detail: type_hint.clone().unwrap_or_default(),
+                line: 0, end_line: 0, children: Vec::new(),
+            });
+        }
     }
 }
 

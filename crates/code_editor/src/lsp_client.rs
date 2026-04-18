@@ -225,67 +225,27 @@ impl LspClient {
 }
 
 fn run_internal_analysis(lang: &str, content: &str, uri: &str, tx: &Sender<LspEvent>) {
-    let mut diagnostics = Vec::new();
-    match lang {
-        "vb" | "basic" => {
-            if let Err(e) = vybe_parser_basic::parse_program(content) {
-                    match e {
-                    vybe_parser_basic::ParseError::PestError(pe) => {
-                        let (start_line, start_col) = match pe.line_col {
-                            pest::error::LineColLocation::Pos((l, c)) => (l, c),
-                            pest::error::LineColLocation::Span((l, c), _end) => (l, c),
-                        };
-                        let sl = start_line.saturating_sub(1) as u32;
-                        let sc = start_col.saturating_sub(1) as u32;
-                        diagnostics.push(Diagnostic {
-                            range: Range::new(Position::new(sl, sc), Position::new(sl, sc + 5)),
-                            severity: Some(DiagnosticSeverity::ERROR),
-                            code: None,
-                            code_description: None,
-                            source: Some("vybe-basic".to_string()),
-                            message: pe.to_string(),
-                            related_information: None,
-                            tags: None,
-                            data: None,
-                        });
-                    }
-                    _ => {}
-                }
-            }
+    let result = vybe_lsp::analyze(uri, content);
+    let diagnostics = result.diagnostics.into_iter().map(|d| {
+        Diagnostic {
+            range: Range::new(
+                Position::new(d.line, d.col),
+                Position::new(d.line, d.end_col),
+            ),
+            severity: Some(match d.severity {
+                vybe_lsp::DiagSeverity::Error => DiagnosticSeverity::ERROR,
+                vybe_lsp::DiagSeverity::Warning => DiagnosticSeverity::WARNING,
+                vybe_lsp::DiagSeverity::Info => DiagnosticSeverity::INFORMATION,
+            }),
+            code: None,
+            code_description: None,
+            source: Some(format!("vybe-{}", lang)),
+            message: d.message,
+            related_information: None,
+            tags: None,
+            data: None,
         }
-        "javascript" | "js" => {
-            if let Err(msg) = vybe_parser_js::parse(content) {
-                let line = msg.split("line ").nth(1).and_then(|s| s.split(':').next()).and_then(|s| s.parse::<u32>().ok()).unwrap_or(1).saturating_sub(1);
-                diagnostics.push(Diagnostic {
-                    range: Range::new(Position::new(line, 0), Position::new(line, 80)),
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    code: None,
-                    code_description: None,
-                    source: Some("vybe-js".to_string()),
-                    message: msg,
-                    related_information: None,
-                    tags: None,
-                    data: None,
-                });
-            }
-        }
-        "csharp" | "cs" => {
-            if let Err(msg) = vybe_parser_csharp::parse(content) {
-                diagnostics.push(Diagnostic {
-                    range: Range::new(Position::new(0, 0), Position::new(0, 80)),
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    code: None,
-                    code_description: None,
-                    source: Some("vybe-cs".to_string()),
-                    message: msg,
-                    related_information: None,
-                    tags: None,
-                    data: None,
-                });
-            }
-        }
-        _ => {}
-    }
+    }).collect();
     tx.send(LspEvent::Diagnostics(uri.to_string(), diagnostics)).ok();
 }
 

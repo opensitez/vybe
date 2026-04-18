@@ -7,4 +7,4 @@ license.workspace = true
 
 [dependencies]
 crossbeam-channel = "0.5"
-vybe_parser_generic = { workspace = true }
+vybex = { workspace = true }
