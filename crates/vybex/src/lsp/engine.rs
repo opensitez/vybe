@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use crossbeam_channel::{Sender, Receiver, TryRecvError};
-use vybex::ast::Lang;
-use vybex::languages;
-use crate::extract;
-use crate::symbols::*;
+use crate::ast::Lang;
+use crate::languages;
+use super::extract;
+use super::symbols::*;
 
 /// Request from the UI thread to the analysis thread.
 pub enum AnalysisRequest {
@@ -91,7 +91,7 @@ pub fn analyze(uri: &str, content: &str) -> AnalysisResult {
 }
 
 fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>) {
-    let parse_fn: Option<fn(&str) -> Result<vybex::ast::Module, String>> = match lang {
+    let parse_fn: Option<fn(&str) -> Result<crate::ast::Module, String>> = match lang {
         Lang::VB => Some(languages::vb::parse),
         Lang::JavaScript => Some(languages::js::parse),
         Lang::CSharp => Some(languages::csharp::parse),

@@ -3,8 +3,8 @@
 //! ONE extractor for ALL languages. Each parser converts to
 //! `vybex::ast::Module`, then this module extracts symbols.
 
-use vybex::ast::*;
-use crate::symbols::*;
+use crate::ast::*;
+use super::symbols::*;
 
 /// Extract symbols from a parsed common AST module.
 pub fn extract_symbols(module: &Module) -> Vec<Symbol> {
