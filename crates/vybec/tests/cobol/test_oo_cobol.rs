@@ -1,5 +1,5 @@
-use vybe_parser_cobol::parse;
-use vybe_compiler_cobol::Compiler;
+use vybec::parser_cobol::parse;
+use vybec::compiler_cobol::Compiler;
 
 fn compile_ok(src: &str) {
     let program = parse(src).expect("parse failed");
@@ -401,7 +401,7 @@ END OBJECT.
 END CLASS CALCULATOR.
 "#;
     let program = parse(src).expect("parse failed");
-    let result = vybe_compiler_cobol::compile_component(&program, "calculator");
+    let result = vybec::compiler_cobol::compile_component(&program, "calculator");
     assert!(result.is_ok(), "component compile failed: {:?}", result.err());
     let component = result.unwrap();
     assert_eq!(component.language, vybe_bytecode::component::Language::Cobol);
@@ -421,7 +421,7 @@ END METHOD DESERIALIZE.
 END INTERFACE SERIALIZABLE.
 "#;
     let program = parse(src).expect("parse failed");
-    let result = vybe_compiler_cobol::compile_component(&program, "serializable");
+    let result = vybec::compiler_cobol::compile_component(&program, "serializable");
     assert!(result.is_ok(), "component compile failed: {:?}", result.err());
 }
 

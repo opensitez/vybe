@@ -1,0 +1,17 @@
+mod test_arithmetic;
+mod test_async_threads;
+mod test_cics_full;
+mod test_cobol;
+mod test_control_flow;
+mod test_data_division;
+mod test_embedded_sql;
+mod test_enterprise;
+mod test_final_features;
+mod test_intrinsics;
+mod test_io_and_misc;
+mod test_new_features;
+mod test_oo_cobol;
+mod test_parse_debug;
+mod test_pic_decimal_padding;
+mod test_programs;
+mod test_strings;

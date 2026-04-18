@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value, Op};
-use vybe_parser_cobol::ast::*;
+use crate::parser_cobol::ast::*;
 use vybe_compiler_common as common;
 use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::strings as common_strings;
