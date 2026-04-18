@@ -1,9 +1,0 @@
-[package]
-name = "vybe_parser_dart"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-
-[dependencies]
-serde = { workspace = true }

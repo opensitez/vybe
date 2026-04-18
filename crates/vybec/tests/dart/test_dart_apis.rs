@@ -1,5 +1,5 @@
-use vybe_parser_dart::parse;
-use vybe_compiler_dart::Compiler;
+use vybec::parser_dart::parse;
+use vybec::compiler_dart::Compiler;
 
 fn compile_ok(src: &str) {
     let program = parse(src).expect("parse failed");

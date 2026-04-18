@@ -11,9 +11,9 @@ use vybe_compiler_common::strings as common_strings;
 use vybe_compiler_common::threading as common_thread;
 use vybe_compiler_common::convert as common_convert;
 use vybe_compiler_common::errors as common_errors;
-use vybe_parser_dart::*;
+use crate::parser_dart::*;
 
-use crate::scope::Scope;
+use super::scope::Scope;
 
 struct LoopContext {
     _start_offset: usize,
@@ -138,7 +138,7 @@ impl Compiler {
         self.emit_u16(Op::GLOBAL_SET, idx);
         self.defined_globals.insert(name.to_string());
     }
-    fn emit_ref_func(&mut self, func_idx: usize, upvalues: &[crate::scope::UpvalueDesc]) {
+    fn emit_ref_func(&mut self, func_idx: usize, upvalues: &[super::scope::UpvalueDesc]) {
         let line = self.line;
         self.chunks[self.current_chunk_idx].emit_op_u16(Op::REF_FUNC, func_idx as u16, line);
         self.chunks[self.current_chunk_idx].emit(upvalues.len() as u8, line);
@@ -671,8 +671,8 @@ impl Compiler {
                 let i_slot = self.define_local("__for_in_i", false, false);
 
                 let line = self.line;
-                let (loop_start, exit) = common_loops::emit_for_in_start(self.chunk_mut(), arr_slot, i_slot, line);
-                self.loop_stack.push(LoopContext { _start_offset: loop_start, break_patches: vec![], continue_patches: vec![] });
+                let lp = common_loops::emit_for_in_start(self.chunk_mut(), arr_slot, i_slot, line);
+                self.loop_stack.push(LoopContext { _start_offset: 0, break_patches: vec![], continue_patches: vec![] });
 
                 // element is on stack from emit_for_in_start → assign to loop var
                 let var_slot = self.define_local(var_name, false, false);
@@ -682,7 +682,7 @@ impl Compiler {
                 for p in self.loop_stack.last().unwrap().continue_patches.clone() { self.patch_jump(p); }
 
                 let line = self.line;
-                common_loops::emit_for_in_end(self.chunk_mut(), i_slot, loop_start, exit, line);
+                common_loops::emit_for_in_end(self.chunk_mut(), i_slot, lp, line);
 
                 let ctx = self.loop_stack.pop().unwrap();
                 for p in ctx.break_patches { self.patch_jump(p); }

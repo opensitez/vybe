@@ -9,17 +9,16 @@ use vybe_bytecode::{VM, Value, HostContext};
 /// Set up VM with all host functions needed by Dart, then compile.
 pub fn setup_and_compile(
     vm: &mut VM,
-    program: &vybe_parser_dart::Program,
+    program: &crate::parser_dart::Program,
 ) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     vybe_host::register_all(vm);
     Compiler::new().compile(program)
 }
 
 /// Set up VM with all host functions + GUI, then compile.
-#[cfg(feature = "gui")]
 pub fn setup_and_compile_with_gui(
     vm: &mut VM,
-    program: &vybe_parser_dart::Program,
+    program: &crate::parser_dart::Program,
 ) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     vybe_host::register_all_with_gui(vm);
     Compiler::new().compile(program)
@@ -27,7 +26,7 @@ pub fn setup_and_compile_with_gui(
 
 /// Convenience: parse Dart source + compile + run, return captured output.
 pub fn compile_and_run(source: &str) -> Result<Vec<String>, String> {
-    let program = vybe_parser_dart::parse(source)
+    let program = crate::parser_dart::parse(source)
         .map_err(|e| format!("Parse error: {e}"))?;
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
