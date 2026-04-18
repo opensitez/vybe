@@ -1,0 +1,40 @@
+use super::helpers;
+use helpers::compile_ok;
+
+// ── Type coercion / juggling ────────────────────────────────
+#[test] fn string_to_int_add() { compile_ok("<?php $x = '5' + 3; echo $x;"); }
+#[test] fn string_to_int_sub() { compile_ok("<?php $x = '10' - 3; echo $x;"); }
+#[test] fn string_to_float() { compile_ok("<?php $x = '3.14' + 0; echo $x;"); }
+#[test] fn bool_to_int() { compile_ok("<?php $x = true + true + false; echo $x;"); }
+#[test] fn null_to_int() { compile_ok("<?php $x = null + 5; echo $x;"); }
+#[test] fn concat_coerce() { compile_ok("<?php $x = 'count: ' . 42; echo $x;"); }
+#[test] fn comparison_coerce() { compile_ok("<?php $x = '0' == false; $y = '' == false; $z = '1' == true;"); }
+
+// ── Type checking ───────────────────────────────────────────
+#[test] fn is_null() { compile_ok("<?php echo is_null(null); echo is_null(0); echo is_null('');"); }
+#[test] fn is_numeric() { compile_ok("<?php echo is_numeric(42); echo is_numeric('3.14'); echo is_numeric('abc');"); }
+#[test] fn is_string() { compile_ok("<?php echo is_string('hi'); echo is_string(42);"); }
+#[test] fn is_int() { compile_ok("<?php echo is_int(42); echo is_int(3.14);"); }
+#[test] fn is_bool() { compile_ok("<?php echo is_bool(true); echo is_bool(0);"); }
+#[test] fn is_array() { compile_ok("<?php echo is_array([]); echo is_array('x');"); }
+#[test] fn gettype_check() { compile_ok("<?php echo gettype(42); echo gettype('hi'); echo gettype(null); echo gettype(true); echo gettype([]);"); }
+
+// ── Casting ─────────────────────────────────────────────────
+#[test] fn cast_int() { compile_ok("<?php $x = (int)'42'; echo $x;"); }
+#[test] fn cast_float() { compile_ok("<?php $x = (float)'3.14'; echo $x;"); }
+#[test] fn cast_string() { compile_ok("<?php $x = (string)42; echo $x;"); }
+#[test] fn cast_bool() { compile_ok("<?php $x = (bool)''; $y = (bool)'hello';"); }
+#[test] fn cast_array() { compile_ok("<?php $x = (array)'hello';"); }
+
+// ── intval / floatval / strval / boolval ────────────────────
+#[test] fn intval_string() { compile_ok("<?php echo intval('42abc');"); }
+#[test] fn floatval_string() { compile_ok("<?php echo floatval('3.14xyz');"); }
+#[test] fn strval_number() { compile_ok("<?php echo strval(42);"); }
+#[test] fn boolval_values() { compile_ok("<?php echo boolval(0); echo boolval(1); echo boolval(''); echo boolval('x');"); }
+
+// ── isset / empty / unset ───────────────────────────────────
+#[test] fn isset_defined() { compile_ok("<?php $x = 1; echo isset($x);"); }
+#[test] fn isset_null() { compile_ok("<?php $x = null; echo isset($x);"); }
+#[test] fn isset_multi() { compile_ok("<?php $a = 1; $b = 2; echo isset($a, $b);"); }
+#[test] fn empty_values() { compile_ok("<?php echo empty(''); echo empty(0); echo empty(null); echo empty('x'); echo empty([]);"); }
+#[test] fn unset_var() { compile_ok("<?php $x = 1; unset($x);"); }
