@@ -1,4 +1,4 @@
-mod helpers;
+use super::helpers;
 use helpers::run;
 
 #[test] fn var_integer()      { assert_eq!(run("program T; var x: Integer; begin x := 10; WriteLn(x); end."), &["10"]); }

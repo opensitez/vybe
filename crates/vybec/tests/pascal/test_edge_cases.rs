@@ -1,4 +1,4 @@
-mod helpers;
+use super::helpers;
 use helpers::run;
 
 #[test] fn edge_empty_program()    { assert_eq!(run("program T; begin end."), &[] as &[&str]); }

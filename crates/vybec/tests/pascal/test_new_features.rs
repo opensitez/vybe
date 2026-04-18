@@ -1,5 +1,5 @@
 /// Tests for new Object Pascal features.
-mod helpers;
+use super::helpers;
 use helpers::run;
 
 // ═══════════════════════════════════════════════════════════

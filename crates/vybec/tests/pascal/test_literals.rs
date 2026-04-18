@@ -1,4 +1,4 @@
-mod helpers;
+use super::helpers;
 use helpers::run;
 
 #[test] fn lit_integer()       { assert_eq!(run("program T; begin WriteLn(42); end."), &["42"]); }
