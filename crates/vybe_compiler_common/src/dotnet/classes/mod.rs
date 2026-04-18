@@ -263,8 +263,8 @@ impl MethodTarget {
 /// at `PushArg(1)`, `x1` at `PushArg(2)`, etc.
 #[derive(Debug, Clone, Copy)]
 pub enum MethodOp {
-    /// Push `this` (slot 1 in the call frame, after the closure ref at
-    /// slot 0).
+    /// Push `this` (slot 0 in the call frame — WASM convention: the first
+    /// argument is slot 0, and `this` is passed as the first argument).
     PushThis,
     /// Push user arg `n` (1-indexed). Arg 1 is the first user arg
     /// AFTER `this`.

@@ -148,12 +148,32 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     // TODO: wasm:js-number needs (i32)->externref, (f64)->externref, (externref)->f64 etc.
 
     // Import function types — per-import typed signatures
-    // Host imports from chunk 0
+    // Host imports from chunk 0 — scan CALL_IMPORT bytecode to find actual arity
     let host_import_count = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
-    for _ in 0..host_import_count {
-        // Host imports: (externref*) -> externref (dynamic)
+    let mut host_arity: Vec<u8> = vec![0; host_import_count];
+    for chunk in chunks {
+        let mut ip = 0;
+        while ip < chunk.code.len() {
+            if ip + 1 >= chunk.code.len() { break; }
+            if let Some(op) = crate::opcode::Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
+                if op == crate::opcode::Op::CALL_IMPORT {
+                    let import_idx = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
+                    let argc = chunk.code[ip + 4];
+                    if (import_idx as usize) < host_import_count {
+                        host_arity[import_idx as usize] = host_arity[import_idx as usize].max(argc);
+                    }
+                }
+                ip += super::code::opcode_size(op, &chunk.code, ip);
+            } else {
+                ip += 2;
+            }
+        }
+    }
+    for i in 0..host_import_count {
+        let argc = host_arity[i];
         out.push(TYPE_FUNC);
-        write_leb128_u32(&mut out, 0); // variadic — simplified to 0 params
+        write_leb128_u32(&mut out, argc as u32);
+        for _ in 0..argc { out.push(TYPE_EXTERNREF); }
         write_leb128_u32(&mut out, 1);
         out.push(TYPE_EXTERNREF);
     }
@@ -252,8 +272,8 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     for (i, chunk) in chunks.iter().enumerate() {
         let type_idx = ctx.func_type_base + import_count as u32 + i as u32;
         out.push(TYPE_FUNC);
-        // arity + 1 params: slot 0 = callee ref (VM convention), slots 1..arity = user args
-        let param_count = chunk.arity as u32 + 1;
+        // WASM convention: arity params (slot 0 = first arg, no reserved callee slot).
+        let param_count = chunk.arity as u32;
         write_leb128_u32(&mut out, param_count);
         for _ in 0..param_count { out.push(TYPE_EXTERNREF); }
         write_leb128_u32(&mut out, 1);

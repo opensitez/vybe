@@ -91,8 +91,8 @@ pub fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], type_c
         // Check how many temp locals we need for stack manipulation
         let temp_count = count_temp_locals(chunk);
         let has_temp = temp_count > 0;
-        // WASM params = arity + 1 (callee at slot 0 + user args)
-        let wasm_params = chunk.arity as u32 + 1;
+        // WASM convention: params = arity (slot 0 = first arg, no callee slot).
+        let wasm_params = chunk.arity as u32;
         // Extra locals beyond params
         let extra_locals = if chunk.local_count as u32 > wasm_params {
             chunk.local_count as u32 - wasm_params
@@ -158,9 +158,8 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
         _ if op == Op::CALL_REF => {
             let argc = chunk.code[*ip]; *ip += 1;
             // Stack: [externref_funcref, arg1, ..., argN] — funcref is below args
-            // call_indirect needs: [callee_ref, arg1, ..., argN, i32_table_idx]
-            // VM convention: slot 0 = callee ref, slots 1..N = user args
-            // WASM function type has arity+1 params to match VM layout
+            // call_indirect needs: [arg1, ..., argN, i32_table_idx]
+            // WASM convention: slot 0 = first arg, no reserved callee slot.
             //
             // 1. Save all args to temps
             for i in (0..argc).rev() {
@@ -169,13 +168,11 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
             // Stack: [externref_funcref]
             // 2. Save funcref
             body.push(0x21); write_leb128_u32(body, temp_idx + argc as u32);
-            // 3. Push callee ref as first param (slot 0 in VM)
-            body.push(0x20); write_leb128_u32(body, temp_idx + argc as u32);
-            // 4. Restore user args
+            // 3. Restore user args
             for i in 0..argc {
                 body.push(0x20); write_leb128_u32(body, temp_idx + i as u32);
             }
-            // 5. Push table index (unbox funcref to i32)
+            // 4. Push table index (unbox funcref to i32)
             body.push(0x20); write_leb128_u32(body, temp_idx + argc as u32);
             emit_unbox_i32(body, rt_idx);
             // 5. call_indirect with matching function type

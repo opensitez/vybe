@@ -139,11 +139,11 @@ impl StdLib {
 fn build_range() -> Chunk {
     let mut c = Chunk::new("__stdlib_range");
     c.arity = 3; // start, stop, step
-    c.local_count = 5; // callee(0) + start(1) + stop(2) + step(3) + result(4)
-    let start = 1u16;
-    let stop = 2;
-    let step = 3;
-    let result = 4;
+    c.local_count = 4; // start(0) + stop(1) + step(2) + result(3)
+    let start = 0u16;
+    let stop = 1;
+    let step = 2;
+    let result = 3;
 
     // result = []
     c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
@@ -188,13 +188,13 @@ fn build_range() -> Chunk {
 fn build_sorted() -> Chunk {
     let mut c = Chunk::new("__stdlib_sorted");
     c.arity = 1;
-    c.local_count = 7; // callee(0) + arr(1) + result(2) + i(3) + j(4) + len(5) + key(6)
-    let arr = 1u16;
-    let result = 2;
-    let i = 3;
-    let j = 4;
-    let len = 5;
-    let key = 6;
+    c.local_count = 6; // arr(0) + result(1) + i(2) + j(3) + len(4) + key(5)
+    let arr = 0u16;
+    let result = 1;
+    let i = 2;
+    let j = 3;
+    let len = 4;
+    let key = 5;
 
     // Copy input array → result (so we don't mutate the original)
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -314,12 +314,12 @@ fn build_sorted() -> Chunk {
 fn build_sort_in_place() -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_in_place");
     c.arity = 1;
-    c.local_count = 6; // callee(0) + arr(1) + i(2) + j(3) + len(4) + key(5)
-    let arr = 1u16;
-    let i = 2;
-    let j = 3;
-    let len = 4;
-    let key = 5;
+    c.local_count = 5; // arr(0) + i(1) + j(2) + len(3) + key(4)
+    let arr = 0u16;
+    let i = 1;
+    let j = 2;
+    let len = 3;
+    let key = 4;
 
     // len = arr.length
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -429,13 +429,13 @@ fn build_sort_in_place() -> Chunk {
 fn build_sort_with_comparator() -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_with_comparator");
     c.arity = 2;
-    c.local_count = 7; // callee(0) + arr(1) + cmp(2) + i(3) + j(4) + len(5) + key(6)
-    let arr = 1u16;
-    let cmp = 2;
-    let i = 3;
-    let j = 4;
-    let len = 5;
-    let key = 6;
+    c.local_count = 6; // arr(0) + cmp(1) + i(2) + j(3) + len(4) + key(5)
+    let arr = 0u16;
+    let cmp = 1;
+    let i = 2;
+    let j = 3;
+    let len = 4;
+    let key = 5;
 
     // len = arr.length
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -543,10 +543,10 @@ fn build_sort_with_comparator() -> Chunk {
 fn build_reversed() -> Chunk {
     let mut c = Chunk::new("__stdlib_reversed");
     c.arity = 1;
-    c.local_count = 4; // callee(0) + arr(1) + result(2) + i(3)
-    let arr = 1u16;
-    let result = 2;
-    let i = 3;
+    c.local_count = 3; // arr(0) + result(1) + i(2)
+    let arr = 0u16;
+    let result = 1;
+    let i = 2;
 
     // result = []
     c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
@@ -595,11 +595,11 @@ fn build_reversed() -> Chunk {
 fn build_enumerate() -> Chunk {
     let mut c = Chunk::new("__stdlib_enumerate");
     c.arity = 1;
-    c.local_count = 5; // callee(0) + arr(1) + result(2) + i(3) + len(4)
-    let arr = 1u16;
-    let result = 2;
-    let i = 3;
-    let len = 4;
+    c.local_count = 4; // arr(0) + result(1) + i(2) + len(3)
+    let arr = 0u16;
+    let result = 1;
+    let i = 2;
+    let len = 3;
 
     c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
@@ -652,12 +652,12 @@ fn build_enumerate() -> Chunk {
 fn build_zip() -> Chunk {
     let mut c = Chunk::new("__stdlib_zip");
     c.arity = 2;
-    c.local_count = 6; // callee(0) + a(1) + b(2) + result(3) + i(4) + len(5)
-    let a = 1u16;
-    let b = 2;
-    let result = 3;
-    let i = 4;
-    let len = 5;
+    c.local_count = 5; // a(0) + b(1) + result(2) + i(3) + len(4)
+    let a = 0u16;
+    let b = 1;
+    let result = 2;
+    let i = 3;
+    let len = 4;
 
     c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
@@ -712,11 +712,11 @@ fn build_zip() -> Chunk {
 fn build_sum() -> Chunk {
     let mut c = Chunk::new("__stdlib_sum");
     c.arity = 1;
-    c.local_count = 5; // callee(0) + arr(1) + total(2) + i(3) + len(4)
-    let arr = 1u16;
-    let total = 2;
-    let i = 3;
-    let len = 4;
+    c.local_count = 4; // arr(0) + total(1) + i(2) + len(3)
+    let arr = 0u16;
+    let total = 1;
+    let i = 2;
+    let len = 3;
 
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op_u16(Op::LOCAL_SET, total, 0);
@@ -766,11 +766,11 @@ fn build_sum() -> Chunk {
 fn build_min() -> Chunk {
     let mut c = Chunk::new("__stdlib_min");
     c.arity = 1;
-    c.local_count = 5; // callee(0) + arr(1) + best(2) + i(3) + len(4)
-    let arr = 1u16;
-    let best = 2;
-    let i = 3;
-    let len = 4;
+    c.local_count = 4; // arr(0) + best(1) + i(2) + len(3)
+    let arr = 0u16;
+    let best = 1;
+    let i = 2;
+    let len = 3;
 
     // best = arr[0]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -832,11 +832,11 @@ fn build_min() -> Chunk {
 fn build_max() -> Chunk {
     let mut c = Chunk::new("__stdlib_max");
     c.arity = 1;
-    c.local_count = 5;
-    let arr = 1u16;
-    let best = 2;
-    let i = 3;
-    let len = 4;
+    c.local_count = 4;
+    let arr = 0u16;
+    let best = 1;
+    let i = 2;
+    let len = 3;
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op(Op::I32_CONST_0, 0);
@@ -901,11 +901,11 @@ fn build_pow() -> Chunk {
     // and only needs to be correct for the common integer-exp case.
     let mut c = Chunk::new("__stdlib_pow");
     c.arity = 2;
-    c.local_count = 5; // callee(0) + base(1) + exp(2) + result(3) + n(4)
-    let base = 1u16;
-    let exp = 2;
-    let result = 3;
-    let n = 4;
+    c.local_count = 4; // base(0) + exp(1) + result(2) + n(3)
+    let base = 0u16;
+    let exp = 1;
+    let result = 2;
+    let n = 3;
 
     // n = abs(exp) — branchless via select would need both values; use a flag
     // We compute n = (exp < 0) ? -exp : exp
@@ -980,8 +980,8 @@ fn build_pow() -> Chunk {
 fn build_to_string() -> Chunk {
     let mut c = Chunk::new("__stdlib_tostring");
     c.arity = 1;
-    c.local_count = 2;
-    let val = 1u16;
+    c.local_count = 1;
+    let val = 0u16;
     let empty = c.add_constant(Value::String(std::sync::Arc::from("")));
     c.emit_op_u16(Op::CONST, empty, 0);
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
@@ -995,11 +995,11 @@ fn build_to_string() -> Chunk {
 fn build_str_count() -> Chunk {
     let mut c = Chunk::new("__stdlib_count");
     c.arity = 2;
-    c.local_count = 5;
-    let haystack = 1u16;
-    let needle = 2;
-    let count = 3;
-    let pos = 4;
+    c.local_count = 4;
+    let haystack = 0u16;
+    let needle = 1;
+    let count = 2;
+    let pos = 3;
 
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op_u16(Op::LOCAL_SET, count, 0);
@@ -1018,8 +1018,8 @@ fn build_str_count() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, needle, 0);
     c.emit_op(Op::STR_INDEX_OF, 0);
     // Save indexOf result to local (don't use DUP — value can't cross block boundary)
-    let idx_result = 5u16; // reuse local slot (local_count=5, slot 5 is beyond declared but safe with extra locals)
-    c.local_count = 6; // need one more local for idx_result
+    let idx_result = 4u16; // reuse local slot (local_count=4, slot 4 is beyond declared but safe with extra locals)
+    c.local_count = 5; // need one more local for idx_result
     c.emit_op_u16(Op::LOCAL_SET, idx_result, 0);
     c.emit_op(Op::DROP, 0);
     // Check if index < 0
@@ -1052,13 +1052,13 @@ fn build_str_count() -> Chunk {
 fn build_splice() -> Chunk {
     let mut c = Chunk::new("__stdlib_splice");
     c.arity = 3;
-    c.local_count = 7; // callee(0) + arr(1) + index(2) + delete_count(3) + result(4) + i(5) + end(6)
-    let arr = 1u16;
-    let index = 2;
-    let delete_count = 3;
-    let result_local = 4;
-    let i = 5;
-    let end = 6;
+    c.local_count = 6; // arr(0) + index(1) + delete_count(2) + result(3) + i(4) + end(5)
+    let arr = 0u16;
+    let index = 1;
+    let delete_count = 2;
+    let result_local = 3;
+    let i = 4;
+    let end = 5;
 
     // result = [] (removed elements)
     c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
@@ -1112,8 +1112,8 @@ fn build_splice() -> Chunk {
 fn build_is_numeric() -> Chunk {
     let mut c = Chunk::new("__stdlib_isnumeric");
     c.arity = 1;
-    c.local_count = 2; // callee(0) + val(1)
-    let val = 1u16;
+    c.local_count = 1; // val(0)
+    let val = 0u16;
 
     // Check if type is "number" (covers I32, I64, F64)
     // Block must wrap ALL values consumed inside it (typeof result + STR_EQUALS + DUP)
@@ -1126,8 +1126,8 @@ fn build_is_numeric() -> Chunk {
     c.emit_op(Op::STR_EQUALS, 0);
 
     // If true, save and skip second check
-    let result_slot = 2u16;
-    c.local_count = 3;
+    let result_slot = 1u16;
+    c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_SET, result_slot, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, result_slot, 0);
@@ -1152,8 +1152,8 @@ fn build_is_numeric() -> Chunk {
 fn build_floor() -> Chunk {
     let mut c = Chunk::new("__stdlib_floor");
     c.arity = 1;
-    c.local_count = 2;
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.local_count = 1;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op(Op::F64_FLOOR, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -1170,10 +1170,10 @@ fn build_slice() -> Chunk {
     // C# `arr[1..3]` / `s[0..5]`, Python `arr[1:3]` / `s[0:5]`, etc.
     let mut c = Chunk::new("__stdlib_slice");
     c.arity = 3;
-    c.local_count = 4; // callee + obj + start + end
-    let obj = 1u16;
-    let start = 2u16;
-    let end = 3u16;
+    c.local_count = 3; // obj + start + end
+    let obj = 0u16;
+    let start = 1u16;
+    let end = 2u16;
 
     // if ref_is_string(obj) → str_substring; else → array_slice
     let str_block_p = c.emit_block(0);
@@ -1207,7 +1207,7 @@ fn build_keys() -> Chunk {
     // Fallback: return empty array. On Vybe, host fn handles it.
     let mut c = Chunk::new("__stdlib_keys");
     c.arity = 1;
-    c.local_count = 2;
+    c.local_count = 1;
     // Return empty array as fallback (properties aren't enumerable in pure WASM)
     c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
     c.emit_op(Op::RETURN, 0);
@@ -1218,9 +1218,9 @@ fn build_keys() -> Chunk {
 fn build_has_property() -> Chunk {
     let mut c = Chunk::new("__stdlib_hasproperty");
     c.arity = 2;
-    c.local_count = 3;
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // obj
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // key
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // key
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
     c.emit_op(Op::DYN_NOT, 0);
@@ -1234,8 +1234,8 @@ fn build_assign() -> Chunk {
     // Fallback: return target unchanged.
     let mut c = Chunk::new("__stdlib_assign");
     c.arity = 2;
-    c.local_count = 3;
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // return target
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // return target
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -1244,14 +1244,14 @@ fn build_assign() -> Chunk {
 fn build_instance_of() -> Chunk {
     let mut c = Chunk::new("__stdlib_instanceof");
     c.arity = 2;
-    c.local_count = 3;
+    c.local_count = 2;
     // ref_test needs a constant pool string, but we have a dynamic value.
     // Workaround: compare __type property with the type name string.
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // obj
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
     let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
     c.emit_op_u16(Op::CONST, type_key, 0);
     c.emit_op(Op::ARRAY_GET, 0); // obj["__type"]
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // type_name
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // type_name
     c.emit_op(Op::STR_EQUALS, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -1262,9 +1262,9 @@ fn build_delete_property() -> Chunk {
     // Can't delete properties in pure bytecode. Set to null as fallback.
     let mut c = Chunk::new("__stdlib_deleteproperty");
     c.arity = 2;
-    c.local_count = 3;
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // obj
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // key
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // key
     c.emit_op(Op::NULL, 0);             // value = null
     c.emit_op(Op::ARRAY_SET, 0);
     c.emit_op(Op::DROP, 0);
@@ -1277,9 +1277,9 @@ fn build_delete_property() -> Chunk {
 fn build_array_from() -> Chunk {
     let mut c = Chunk::new("__stdlib_from");
     c.arity = 1;
-    c.local_count = 2;
+    c.local_count = 1;
     // Slice the entire array (copy)
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op(Op::I32_CONST_0, 0);
     let max = c.add_constant(Value::I32(i32::MAX));
     c.emit_op_u16(Op::CONST, max, 0);
@@ -1293,10 +1293,10 @@ fn build_redim() -> Chunk {
     // Create new array of new_size, copy elements from old
     let mut c = Chunk::new("__stdlib_redim");
     c.arity = 2;
-    c.local_count = 3;
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // arr
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // arr
     c.emit_op(Op::I32_CONST_0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // new_size
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // new_size
     c.emit_op(Op::ARRAY_SLICE, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -1306,29 +1306,29 @@ fn build_redim() -> Chunk {
 fn build_slice_step() -> Chunk {
     let mut c = Chunk::new("__stdlib_slicestep");
     c.arity = 4;
-    c.local_count = 8; // arr(1) start(2) end(3) step(4) result(5) i(6) cond(7)
+    c.local_count = 7; // arr(0) start(1) end(2) step(3) result(4) i(5) cond(6)
     let zero = c.add_constant(Value::I32(0));
     c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 4, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, 5, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
-    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
 
     // Compute condition: if step > 0 then i < end else i > end
-    // Store in local 7 (cond) to avoid value-on-stack across branches
+    // Store in local 6 (cond) to avoid value-on-stack across branches
     let pos_block_p = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
     c.emit_op_u16(Op::CONST, zero, 0);
     c.emit_op(Op::DYN_GT, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(0, 0); // skip positive branch if step <= 0
     // positive step: cond = i < end
-    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::DYN_LT, 0);
-    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
     c.emit_op(Op::DROP, 0);
     let skip_neg_p = c.emit_block(0);
     c.emit_br(1, 0); // skip negative branch (jump past skip_neg block end + neg block)
@@ -1336,45 +1336,45 @@ fn build_slice_step() -> Chunk {
     c.emit_end(0); c.patch_block(pos_block_p);
 
     // negative step: cond = i > end
-    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::DYN_GT, 0);
-    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
     c.emit_op(Op::DROP, 0);
 
     // Check condition — exit if false
-    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(1, 0); // exit loop (depth 1 = outer block)
 
     // bounds check: skip push if i < 0 or i >= arr.length
     // Block must wrap the condition values consumed by br_if inside it
     let skip_block_p = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
     c.emit_op_u16(Op::CONST, zero, 0);
     c.emit_op(Op::DYN_LT, 0);
     c.emit_br_if(0, 0); // skip push if i < 0
-    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op(Op::ARRAY_LENGTH, 0);
     c.emit_op(Op::DYN_GE, 0);
     c.emit_br_if(0, 0); // skip push if i >= length
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op(Op::ARRAY_PUSH, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_end(0); c.patch_block(skip_block_p);
 
-    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
     c.emit_op(Op::DYN_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 5, 0);
     c.emit_br(0, 0); // continue loop
     c.emit_end(0); c.patch_loop(loop_p);
     c.emit_end(0); c.patch_block(block_p);
-    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -1384,37 +1384,37 @@ fn build_dyn_mul() -> Chunk {
     use std::sync::Arc;
     let mut c = Chunk::new("__stdlib_dynmul");
     c.arity = 2;
-    c.local_count = 3;
+    c.local_count = 2;
     let str_tag = c.add_constant(Value::String(Arc::from("string")));
     // if typeof(a) == "string": return str_repeat(a, b)
     let a_block_p = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op(Op::REF_TYPEOF, 0);
     c.emit_op_u16(Op::CONST, str_tag, 0);
     c.emit_op(Op::DYN_EQ, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(0, 0); // skip if a is NOT string
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::STR_REPEAT, 0);
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0); c.patch_block(a_block_p);
     // if typeof(b) == "string": return str_repeat(b, a)
     let b_block_p = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op(Op::REF_TYPEOF, 0);
     c.emit_op_u16(Op::CONST, str_tag, 0);
     c.emit_op(Op::DYN_EQ, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(0, 0); // skip if b is NOT string
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op(Op::STR_REPEAT, 0);
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0); c.patch_block(b_block_p);
     // numeric
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::F64_MUL, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -1429,14 +1429,14 @@ fn build_dyn_mul() -> Chunk {
 fn build_sort_by_key() -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_by_key");
     c.arity = 2;
-    c.local_count = 8; // callee(0) + arr(1) + keyFn(2) + i(3) + j(4) + len(5) + key(6) + keyVal(7)
-    let arr = 1u16;
-    let key_fn = 2;
-    let i = 3;
-    let j = 4;
-    let len = 5;
-    let key = 6;
-    let key_val = 7;
+    c.local_count = 7; // arr(0) + keyFn(1) + i(2) + j(3) + len(4) + key(5) + keyVal(6)
+    let arr = 0u16;
+    let key_fn = 1;
+    let i = 2;
+    let j = 3;
+    let len = 4;
+    let key = 5;
+    let key_val = 6;
 
     // len = arr.length
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -1551,9 +1551,9 @@ fn build_sort_by_key() -> Chunk {
 fn build_concat() -> Chunk {
     let mut c = Chunk::new("__stdlib_concat");
     c.arity = 2; // a, b
-    c.local_count = 3; // callee(0) + a(1) + b(2)
-    let a = 1u16;
-    let b = 2u16;
+    c.local_count = 2; // a(0) + b(1)
+    let a = 0u16;
+    let b = 1u16;
 
     // if ref_is_string(a) → str_concat
     let str_block_p = c.emit_block(0);
@@ -1589,12 +1589,12 @@ fn build_string_raw() -> Chunk {
 
     let mut c = Chunk::new("__stdlib_string_raw");
     c.arity = 2; // strings_array, values_array (rest-packed by caller)
-    c.local_count = 6; // callee(0) + strings(1) + values(2) + result(3) + i(4) + len(5)
-    let strings = 1u16;
-    let values = 2u16;
-    let result = 3u16;
-    let i = 4u16;
-    let len = 5u16;
+    c.local_count = 5; // strings(0) + values(1) + result(2) + i(3) + len(4)
+    let strings = 0u16;
+    let values = 1u16;
+    let result = 2u16;
+    let i = 3u16;
+    let len = 4u16;
 
     // result = ""
     let empty = c.add_constant(Value::String(Arc::from("")));
@@ -1672,9 +1672,9 @@ fn build_string_raw() -> Chunk {
 fn build_fmod() -> Chunk {
     let mut c = Chunk::new("__stdlib_fmod");
     c.arity = 2; // a, b
-    c.local_count = 3; // callee(0) + a(1) + b(2)
-    let a = 1u16;
-    let b = 2u16;
+    c.local_count = 2; // a(0) + b(1)
+    let a = 0u16;
+    let b = 1u16;
 
     // result = a - trunc(a / b) * b
     c.emit_op_u16(Op::LOCAL_GET, a, 0);   // a

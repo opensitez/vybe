@@ -28,10 +28,9 @@ impl Scope {
     }
 
     pub fn new_function() -> Self {
-        let mut s = Self::new();
-        s.locals.push(Local { name: String::new(), depth: 0, slot: 0, is_captured: false });
-        s.next_slot = 1;
-        s
+        // WASM convention: slot 0 is the first argument (not a reserved callee).
+        // User-visible locals (params and additional locals) start at slot 0.
+        Self::new()
     }
 
     pub fn define(&mut self, name: &str) -> u16 {

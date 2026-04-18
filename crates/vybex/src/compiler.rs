@@ -306,9 +306,12 @@ impl Compiler {
         // the type name as a string so vybe:object:instanceOf can look it up
         // via its String fallback. Without this, `RangeError` would become
         // `global_get` of a nonexistent global → null.
-        if self.profile.known_types.contains_key(name) {
-            // Only do this when the name isn't shadowed by an actual global.
-            // We emit the name string; instanceOf accepts strings as type names.
+        // Only do this when the name isn't shadowed by an actual global
+        // (e.g. `Dim list As New List(Of String)` shadows the `list` type name).
+        if self.profile.known_types.contains_key(name)
+            && !self.defined_globals.contains(name)
+            && !self.defined_globals.contains(&self.canon(name))
+        {
             self.emit_const(Value::String(Arc::from(name)));
             return;
         }
@@ -873,6 +876,16 @@ impl Compiler {
             StmtKind::Break(target) => {
                 let line = self.line;
                 match target {
+                    // Exit Sub / Exit Function → RETURN (not a loop break)
+                    BreakTarget::Kind(ExitKind::Sub) | BreakTarget::Kind(ExitKind::Function) => {
+                        // Return with current result slot value, or null
+                        if let Some(result_slot) = self.current_result_slot {
+                            self.emit_u16(Op::LOCAL_GET, result_slot);
+                        } else {
+                            self.emit(Op::NULL);
+                        }
+                        self.emit(Op::RETURN);
+                    }
                     BreakTarget::Implicit | BreakTarget::Kind(_) | BreakTarget::Level(_) => {
                         if let Some(depth) = self.break_depth(None) {
                             self.chunk().emit_br(depth, line);
@@ -2112,8 +2125,8 @@ impl Compiler {
                 self.patch_jump(has_val);
             }
         }
-        self.scope_mut().define(&self_kw); // this_slot = user_arity + 1
-        let this_slot = (user_arity as u16) + 1;
+        self.scope_mut().define(&self_kw); // this_slot = user_arity
+        let this_slot = user_arity as u16;
 
         let is_child = parent.is_some();
         let line = self.line;

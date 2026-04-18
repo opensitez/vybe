@@ -2260,50 +2260,49 @@ impl VM {
                 // -- Tail call --
                 _ if op == Op::RETURN_CALL => {
                     let argc = self.read_byte() as usize;
-                    // Reuse current frame: move args to base, reset IP
-                    let base = self.frame().base;
-                    let args_start = self.stack.len() - argc;
-                    // Copy callee + args down to base
-                    let callee_idx = args_start - 1;
+                    // Reuse current frame: move callee + args down to base-1.
+                    // Stack: [..., callee, arg0, ..., argN-1]
+                    // After: [..., callee, arg0, ..., argN-1] starting at base-1
+                    // call_value will pop the callee and set base = stack.len() - argc
+                    let old_base = self.frame().base;
+                    // Place callee + args starting at old_base - 0 (function frame had callee ABOVE old_base,
+                    // but in new convention there's no callee in the frame). Just truncate down to old_base
+                    // and keep callee + args on top.
+                    let callee_idx = self.stack.len() - argc - 1;
+                    // Copy callee + args down to start at old_base
                     for i in 0..=argc {
-                        self.stack[base + i] = self.stack[callee_idx + i].clone();
+                        self.stack[old_base + i] = self.stack[callee_idx + i].clone();
                     }
-                    self.stack.truncate(base + 1 + argc);
-                    // Pop current frame and call
+                    self.stack.truncate(old_base + 1 + argc);
                     self.frames.pop();
                     self.call_value(argc)?;
                 }
                 _ if op == Op::RETURN_CALL_INDIRECT => {
                     let argc = self.read_byte() as usize;
-                    // Stack: [..., func_table_idx, arg0, arg1, ..., argN]
-                    // table_idx is BELOW the args
                     let args_start = self.stack.len() - argc;
                     let table_idx_pos = args_start - 1;
                     let table_idx = self.stack[table_idx_pos].as_i32() as usize;
                     if table_idx < self.func_table.len() {
                         let func = self.func_table[table_idx].clone();
-                        // Replace table_idx with the resolved function
                         self.stack[table_idx_pos] = func;
-                        let base = self.frame().base;
+                        let old_base = self.frame().base;
                         let callee_idx = table_idx_pos;
                         for i in 0..=argc {
-                            self.stack[base + i] = self.stack[callee_idx + i].clone();
+                            self.stack[old_base + i] = self.stack[callee_idx + i].clone();
                         }
-                        self.stack.truncate(base + 1 + argc);
+                        self.stack.truncate(old_base + 1 + argc);
                         self.frames.pop();
                         self.call_value(argc)?;
                     }
                 }
                 _ if op == Op::RETURN_CALL_REF => {
-                    // Same as return_call — func ref is already on stack
                     let argc = self.read_byte() as usize;
-                    let base = self.frame().base;
-                    let args_start = self.stack.len() - argc;
-                    let callee_idx = args_start - 1;
+                    let old_base = self.frame().base;
+                    let callee_idx = self.stack.len() - argc - 1;
                     for i in 0..=argc {
-                        self.stack[base + i] = self.stack[callee_idx + i].clone();
+                        self.stack[old_base + i] = self.stack[callee_idx + i].clone();
                     }
-                    self.stack.truncate(base + 1 + argc);
+                    self.stack.truncate(old_base + 1 + argc);
                     self.frames.pop();
                     self.call_value(argc)?;
                 }
@@ -3853,7 +3852,11 @@ impl VM {
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Function(func) => {
-                        self.call_function(func, argc)?;
+                        let func = func.clone();
+                        drop(o);
+                        // Remove callee from stack (WASM convention: only args, no callee)
+                        self.stack.remove(callee_idx);
+                        self.call_function(&func, argc)?;
                     }
                     ObjectKind::HostFunction(idx) => {
                         let idx = *idx;
@@ -3902,16 +3905,12 @@ impl VM {
 
         let chunk_index = func.chunk_index;
         let arity = func.arity as usize;
-        let base = self.stack.len() - argc - 1;
+        // WASM-compliant: slot 0 = first arg (not callee).
+        // The caller must remove the callee from the stack before this call.
+        let base = self.stack.len() - argc;
 
-
-        // Arity validation: warn on mismatch but don't trap.
-        // Dynamic languages (JS, Python, Ruby) rely on flexible arity.
-        // WASM strict mode would trap here; we pad missing args with Null
-        // and ignore excess args (they stay on caller's stack frame).
+        // Arity validation: pad missing args, truncate extras (dynamic language semantics)
         if argc > arity && arity > 0 {
-            // Excess arguments — truncate to expected arity.
-            // Pop the extras so they don't corrupt the callee's locals.
             for _ in 0..(argc - arity) {
                 self.pop();
             }
@@ -3921,7 +3920,7 @@ impl VM {
         }
 
         let local_count = self.chunks[chunk_index].local_count as usize;
-        let total = 1 + local_count.max(arity);
+        let total = local_count.max(arity);
         let have = self.stack.len() - base;
         for _ in have..total {
             self.push(Value::Null)?;

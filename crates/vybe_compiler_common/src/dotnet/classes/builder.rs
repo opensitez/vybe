@@ -14,8 +14,8 @@
 //! - Constructor chunks have arity 0 (the .NET BCL classes have no
 //!   user-visible constructor params at this layer — user code that wants
 //!   to pass args sits in a child class that overrides `New()` and calls
-//!   the parameterless base ctor). Slot 0 is `this`. The child-class flow
-//!   in `compile_class` already supports this shape by emitting
+//!   the parameterless base ctor). The child-class flow in `compile_class`
+//!   already supports this shape by emitting
 //!   `global_get parent; call(0); local_set this_slot`.
 //!
 //! ## Import indices
@@ -57,12 +57,10 @@ use super::{DotnetClass, DotnetMethod, MethodTarget, MethodOp};
 ///
 /// ## Local layout
 ///
-/// VM call frames reserve slot 0 for the closure ref of the function being
-/// called; user-visible locals (params and additional locals) start at
-/// slot 1. So for a setter with `arity = 2 (this, value)`:
-/// - slot 0 = closure ref (reserved by the VM)
-/// - slot 1 = `this`
-/// - slot 2 = `value`
+/// WASM convention: slot 0 is the first argument. For a setter with
+/// `arity = 2 (this, value)`:
+/// - slot 0 = `this`
+/// - slot 1 = `value`
 pub fn build_setter_chunk(
     class_name: &str,
     prop_pascal: &str,
@@ -73,12 +71,12 @@ pub fn build_setter_chunk(
     let line = 0u32;
 
     // [this]
-    chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
     // [this, "PropName"]
     let prop_const = chunk.add_constant(Value::String(Arc::from(prop_pascal)));
     chunk.emit_op_u16(Op::CONST, prop_const, line);
     // [this, "PropName", value]
-    chunk.emit_op_u16(Op::LOCAL_GET, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
     // [this, "PropName", value] → call_import controlSetProperty(3) → [result]
     chunk.emit_op_u16(Op::CALL_IMPORT, set_property_import_idx, line);
     chunk.emit(3, line);
@@ -139,9 +137,9 @@ pub fn build_setter_chunk(
 ///
 /// ## Local layout
 ///
-/// - slot 0 = closure ref (reserved by the VM call frame)
-/// - slot 1 = `this`
-/// - slot 2..=arity = user args
+/// WASM convention: slot 0 is the first argument.
+/// - slot 0 = `this`
+/// - slot 1..=arity-1 = user args
 pub fn build_method_thunk_chunk(
     class_name: &str,
     method: &DotnetMethod,
@@ -155,7 +153,7 @@ pub fn build_method_thunk_chunk(
     match method.target {
         MethodTarget::Host { .. } => {
             // Push this + each user arg in order, then call_import.
-            for slot in 1..=method.arity as u16 {
+            for slot in 0..method.arity as u16 {
                 chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
             }
             chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
@@ -166,13 +164,13 @@ pub fn build_method_thunk_chunk(
             chunk.emit_op(Op::RETURN, line);
         }
         MethodTarget::DotnetCtor { class: target_class } => {
-            // Discard `this` (slot 1) — factory-style methods don't pass
+            // Discard `this` (slot 0) — factory-style methods don't pass
             // it to the target ctor. Push the target class global, then
-            // the user args (slots 2..=arity), then call.
+            // the user args (slots 1..=arity-1), then call.
             let target_const = chunk.add_constant(Value::String(Arc::from(target_class)));
             chunk.emit_op_u16(Op::GLOBAL_GET, target_const, line);
-            // User args only — skip slot 1 (this).
-            for slot in 2..=method.arity as u16 {
+            // User args only — skip slot 0 (this).
+            for slot in 1..method.arity as u16 {
                 chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
             }
             // arity - 1 because we dropped `this`.
@@ -196,9 +194,8 @@ pub fn build_method_thunk_chunk(
 /// builder doesn't have to touch the imports vec.
 ///
 /// Slot layout (matches the rest of the builder):
-/// - slot 0 = closure ref (reserved by the VM)
-/// - slot 1 = `this`
-/// - slots 2..=arity = user args
+/// - slot 0 = `this`
+/// - slots 1..=arity-1 = user args
 fn compile_body(
     chunk: &mut Chunk,
     ops: &[MethodOp],
@@ -212,17 +209,17 @@ fn compile_body(
     for op in ops {
         match *op {
             MethodOp::PushThis => {
-                chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
             }
             MethodOp::PushArg(n) => {
                 debug_assert!(n >= 1 && n <= arity - 1,
                     "PushArg({}) out of range for method arity {} (this + {} args)",
                     n, arity, arity - 1);
-                // arg N (1-indexed after `this`) lives in slot 1 + N.
-                chunk.emit_op_u16(Op::LOCAL_GET, (1 + n) as u16, line);
+                // arg N (1-indexed after `this`) lives in slot N.
+                chunk.emit_op_u16(Op::LOCAL_GET, n as u16, line);
             }
             MethodOp::PushThisField(field) => {
-                chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
                 chunk.emit_op_u16(Op::STRUCT_GET, key, line);
             }
@@ -230,7 +227,7 @@ fn compile_body(
                 debug_assert!(n >= 1 && n <= arity - 1,
                     "PushArgField({}, _) out of range for method arity {}",
                     n, arity);
-                chunk.emit_op_u16(Op::LOCAL_GET, (1 + n) as u16, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, n as u16, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
                 chunk.emit_op_u16(Op::STRUCT_GET, key, line);
             }
@@ -238,7 +235,7 @@ fn compile_body(
                 debug_assert!(n >= 1 && n <= arity - 1,
                     "PushArgFieldField({}, _, _) out of range for method arity {}",
                     n, arity);
-                chunk.emit_op_u16(Op::LOCAL_GET, (1 + n) as u16, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, n as u16, line);
                 let k1 = chunk.add_constant(Value::String(Arc::from(f1)));
                 chunk.emit_op_u16(Op::STRUCT_GET, k1, line);
                 let k2 = chunk.add_constant(Value::String(Arc::from(f2)));
@@ -422,12 +419,10 @@ pub struct MethodBinding<'a> {
 ///
 /// ## Local layout
 ///
-/// VM call frames reserve slot 0 for the closure ref; locals start at
-/// slot 1. For a `ctor_arity = N` ctor:
-/// - slot 0 = closure ref (reserved by the VM)
-/// - slots 1..=N = user-supplied ctor args
-/// - slot N+1 = `this`
-/// - slot N+2 = `widget` (only when wiring a concrete widget host fn)
+/// WASM convention: slot 0 is the first argument. For a `ctor_arity = N` ctor:
+/// - slots 0..N-1 = user-supplied ctor args
+/// - slot N     = `this`
+/// - slot N+1   = `widget` (only when wiring a concrete widget host fn)
 ///
 /// `widget_new_import_idx` (when class is concrete) is the chunk[0] import
 /// index for the configured `widget_host_module::widget_host_fn`.
@@ -440,8 +435,8 @@ pub fn build_constructor_chunk(
     let mut chunk = create_function_chunk(class.name, class.ctor_arity);
     let line = 0u32;
     let arity = class.ctor_arity as u16;
-    let this_slot: u16 = arity + 1;
-    let widget_slot: u16 = arity + 2;
+    let this_slot: u16 = arity;
+    let widget_slot: u16 = arity + 1;
 
     // ── Step 1: get `this` ──────────────────────────────────────────────────
     if let Some(parent_name) = class.parent {
@@ -509,10 +504,10 @@ pub fn build_constructor_chunk(
     // keys here.
     //
     // Args: for `class.ctor_arity > 0` we forward the user-supplied ctor
-    // args (slots 1..=arity) to the host fn. For arity-0 classes the host
+    // args (slots 0..arity-1) to the host fn. For arity-0 classes the host
     // fn is called with no args.
     if let Some(import_idx) = widget_new_import_idx {
-        for i in 1..=arity {
+        for i in 0..arity {
             chunk.emit_op_u16(Op::LOCAL_GET, i, line);
         }
         chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
@@ -550,10 +545,10 @@ pub fn build_constructor_chunk(
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op(Op::RETURN, line);
 
-    // Locals beyond the closure ref slot 0:
-    //   slots 1..=ctor_arity = ctor args
-    //   slot ctor_arity+1     = this   (always present)
-    //   slot ctor_arity+2     = widget (only when wiring a backing host fn)
+    // Local layout (WASM convention):
+    //   slots 0..ctor_arity-1 = ctor args
+    //   slot ctor_arity       = this   (always present)
+    //   slot ctor_arity+1     = widget (only when wiring a backing host fn)
     chunk.local_count = if widget_new_import_idx.is_some() {
         arity + 2
     } else {
