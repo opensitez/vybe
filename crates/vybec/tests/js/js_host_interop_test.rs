@@ -1,53 +1,28 @@
-/// Tests for JS → host function interop: objects crossing the boundary,
-/// namespace resolution, Map/Set via host, invoke from Rust.
-
-use std::rc::Rc;
-use std::cell::RefCell;
+use super::helpers::run_js;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::Value;
-
-fn run_js(code: &str) -> Vec<String> {
-    let program = vybe_parser_js::parse(code).expect("parse failed");
-    let mut vm = vybe_bytecode::VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let out = output.clone();
-    vybe_host::register_all(&mut vm);
-    vybe_compiler_js::register_js_coercion(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-        out.borrow_mut().push(parts.join(" "));
-        Value::Null
-    }));
-    vybe_host::setup_namespaces(&mut vm);
-    let chunks = vybe_compiler_js::Compiler::new().compile(&program).expect("compile failed");
-    vm.run(chunks).expect("runtime error");
-    output.borrow().clone()
-}
 
 fn run_js_one(code: &str) -> String {
     run_js(code).into_iter().next().unwrap_or_default()
 }
 
-fn run_js_vm(code: &str) -> (vybe_bytecode::VM, Rc<RefCell<Vec<String>>>) {
-    let program = vybe_parser_js::parse(code).expect("parse failed");
+fn run_js_vm(code: &str) -> (vybe_bytecode::VM, Arc<Mutex<Vec<String>>>) {
+    let program = vybec::parser_js::parse(code).expect("parse failed");
     let mut vm = vybe_bytecode::VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vybe_compiler_js::register_js_coercion(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+    vybec::compiler_js::register_js_coercion(&mut vm);
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-        out.borrow_mut().push(parts.join(" "));
-        Value::Null
+        out.lock().unwrap().push(parts.join(" "));
+        vybe_bytecode::Value::Null
     }));
     vybe_host::setup_namespaces(&mut vm);
-    let chunks = vybe_compiler_js::Compiler::new().compile(&program).expect("compile failed");
+    let chunks = vybec::compiler_js::Compiler::new().compile(&program).expect("compile failed");
     vm.run(chunks).expect("runtime error");
     (vm, output)
 }
-
-// ============================================================
-// A. MAP HOST OBJECT
-// ============================================================
 
 #[test]
 fn map_set_get_has_delete_size() {
@@ -285,8 +260,8 @@ fn invoke_js_global_function() {
         }
     "#);
     let func = vm.globals.get("greet").cloned().unwrap();
-    vm.invoke(&func, &[Value::String(Rc::from("world"))]).unwrap();
-    assert_eq!(output.borrow().last().map(|s| s.as_str()), Some("hello world"));
+    vm.invoke(&func, &[Value::String(Arc::from("world"))]).unwrap();
+    assert_eq!(output.lock().unwrap().last().map(|s| s.as_str()), Some("hello world"));
 }
 
 #[test]
@@ -303,16 +278,16 @@ fn invoke_js_class_method() {
     assert!(instance.is_some(), "var c should be a global");
     let instance = instance.unwrap();
     let inc = if let Value::Object(obj) = &instance {
-        obj.borrow().properties.get("inc").cloned()
+        obj.lock().unwrap().properties.get("inc").cloned()
     } else { None }.unwrap();
     let report = if let Value::Object(obj) = &instance {
-        obj.borrow().properties.get("report").cloned()
+        obj.lock().unwrap().properties.get("report").cloned()
     } else { None }.unwrap();
 
     vm.invoke(&inc, &[instance.clone()]).unwrap();
     vm.invoke(&inc, &[instance.clone()]).unwrap();
     vm.invoke(&report, &[instance.clone()]).unwrap();
-    assert_eq!(output.borrow().last().map(|s| s.as_str()), Some("2"));
+    assert_eq!(output.lock().unwrap().last().map(|s| s.as_str()), Some("2"));
 }
 
 #[test]
@@ -325,7 +300,7 @@ fn invoke_preserves_state() {
     vm.invoke(&func, &[]).unwrap();
     vm.invoke(&func, &[]).unwrap();
     vm.invoke(&func, &[]).unwrap();
-    let out = output.borrow();
+    let out = output.lock().unwrap();
     assert_eq!(out.as_slice(), &["1", "2", "3"]);
 }
 

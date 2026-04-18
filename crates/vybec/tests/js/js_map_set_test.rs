@@ -1,33 +1,12 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use super::helpers::run_js;
 
-fn run_js(code: &str) -> Vec<String> {
-    let program = vybe_parser_js::parse(code).expect("parse failed");
-    let mut vm = vybe_bytecode::VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let out = output.clone();
-    vybe_host::register_all(&mut vm);
-    vybe_compiler_js::register_js_coercion(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-        out.borrow_mut().push(parts.join(" "));
-        vybe_bytecode::Value::Null
-    }));
-    vybe_host::setup_namespaces(&mut vm);
-    let chunks = vybe_compiler_js::Compiler::new().compile(&program).expect("compile failed");
-    vm.run(chunks).expect("runtime error");
-    output.borrow().clone()
-}
-
-fn run_one(code: &str) -> String {
+fn run_js_one(code: &str) -> String {
     run_js(code).into_iter().next().unwrap_or_default()
 }
 
-// ── Map tests ──────────────────────────────────────────────
-
 #[test]
 fn map_set_get() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let m = new Map();
         m.set("name", "Alice");
         console.log(m.get("name"));
@@ -36,7 +15,7 @@ fn map_set_get() {
 
 #[test]
 fn map_has() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let m = new Map();
         m.set("x", 1);
         console.log(m.has("x"), m.has("y"));
@@ -45,7 +24,7 @@ fn map_has() {
 
 #[test]
 fn map_size() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let m = new Map();
         m.set("a", 1);
         m.set("b", 2);
@@ -55,7 +34,7 @@ fn map_size() {
 
 #[test]
 fn map_overwrite_no_size_change() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let m = new Map();
         m.set("a", 1);
         m.set("a", 2);
@@ -65,7 +44,7 @@ fn map_overwrite_no_size_change() {
 
 #[test]
 fn map_delete() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let m = new Map();
         m.set("a", 1);
         m.set("b", 2);
@@ -76,7 +55,7 @@ fn map_delete() {
 
 #[test]
 fn map_clear() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let m = new Map();
         m.set("a", 1);
         m.set("b", 2);
@@ -99,7 +78,7 @@ fn map_keys() {
 
 #[test]
 fn map_chaining() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let m = new Map();
         m.set("a", 1).set("b", 2).set("c", 3);
         console.log(m.size);
@@ -108,7 +87,7 @@ fn map_chaining() {
 
 #[test]
 fn map_operations_sequence() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let m = new Map();
         m.set("a", 1);
         m.set("b", 2);
@@ -123,7 +102,7 @@ fn map_operations_sequence() {
 
 #[test]
 fn set_add_has() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let s = new Set();
         s.add("hello");
         console.log(s.has("hello"), s.has("world"));
@@ -132,7 +111,7 @@ fn set_add_has() {
 
 #[test]
 fn set_size() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let s = new Set();
         s.add(1);
         s.add(2);
@@ -143,7 +122,7 @@ fn set_size() {
 
 #[test]
 fn set_no_duplicates() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let s = new Set();
         s.add(1);
         s.add(2);
@@ -156,7 +135,7 @@ fn set_no_duplicates() {
 
 #[test]
 fn set_delete() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let s = new Set();
         s.add("a");
         s.add("b");
@@ -167,7 +146,7 @@ fn set_delete() {
 
 #[test]
 fn set_clear() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         let s = new Set();
         s.add(1);
         s.add(2);
@@ -180,7 +159,7 @@ fn set_clear() {
 
 #[test]
 fn builder_chain() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         class Builder {
             constructor() { this.parts = []; }
             add(s) { this.parts.push(s); return this; }
@@ -193,7 +172,7 @@ fn builder_chain() {
 
 #[test]
 fn chain_two() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         class B {
             constructor() { this.parts = []; }
             add(s) { this.parts.push(s); return this; }
@@ -206,7 +185,7 @@ fn chain_two() {
 
 #[test]
 fn chain_separate_calls() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         class B {
             constructor() { this.parts = []; }
             add(s) { this.parts.push(s); return this; }
@@ -224,7 +203,7 @@ fn chain_separate_calls() {
 
 #[test]
 fn closure_read_on_object() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         function make() { let x = 99; return { getValue: () => { return x; } }; }
         let o = make();
         console.log(o.getValue());
@@ -233,7 +212,7 @@ fn closure_read_on_object() {
 
 #[test]
 fn closure_mutate_on_object() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         function make() {
             let n = 0;
             return {
@@ -253,7 +232,7 @@ fn closure_mutate_on_object() {
 
 #[test]
 fn class_map_field() {
-    assert_eq!(run_one(r#"
+    assert_eq!(run_js_one(r#"
         class Registry {
             constructor() { this.data = new Map(); }
             register(key, val) { this.data.set(key, val); }

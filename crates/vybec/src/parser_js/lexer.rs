@@ -1,4 +1,4 @@
-use crate::token::{Span, Token, TokenKind};
+use super::token::{Span, Token, TokenKind};
 
 pub struct Lexer {
     source: Vec<char>,

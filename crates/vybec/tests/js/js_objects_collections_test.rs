@@ -1,33 +1,9 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
-fn run_js(code: &str) -> Vec<String> {
-    let program = vybe_parser_js::parse(code).expect("parse failed");
-    let mut vm = vybe_bytecode::VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let out = output.clone();
-    vybe_host::register_all(&mut vm);
-    vybe_compiler_js::register_js_coercion(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-        out.borrow_mut().push(parts.join(" "));
-        vybe_bytecode::Value::Null
-    }));
-    vybe_host::setup_namespaces(&mut vm);
-    let chunks = vybe_compiler_js::Compiler::new().compile(&program).expect("compile failed");
-    vm.run(chunks).expect("runtime error");
-    output.borrow().clone()
-}
+use super::helpers::run_js;
 
 fn run_js_one(code: &str) -> String {
     run_js(code).into_iter().next().unwrap_or_default()
 }
 
-// ============================================================
-// A. Object creation and properties (12 tests)
-// ============================================================
-
-// A1. Object literal with properties
 #[test]
 fn test_a01_object_literal_with_properties() {
     let code = r#"

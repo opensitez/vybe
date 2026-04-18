@@ -1,42 +1,24 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
-fn run_js(code: &str) -> Vec<String> {
-    let program = vybe_parser_js::parse(code).expect("parse failed");
-    let mut vm = vybe_bytecode::VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let out = output.clone();
-    vybe_host::register_all(&mut vm);
-    vybe_compiler_js::register_js_coercion(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-        out.borrow_mut().push(parts.join(" "));
-        vybe_bytecode::Value::Null
-    }));
-    vybe_host::setup_namespaces(&mut vm);
-    let chunks = vybe_compiler_js::Compiler::new().compile(&program).expect("compile failed");
-    vm.run(chunks).expect("runtime error");
-    output.borrow().clone()
-}
+use super::helpers::run_js;
+use std::sync::{Arc, Mutex};
 
 fn run_js_one(code: &str) -> String {
     run_js(code).into_iter().next().unwrap_or_default()
 }
 
-fn run_js_vm(code: &str) -> (vybe_bytecode::VM, Rc<RefCell<Vec<String>>>) {
-    let program = vybe_parser_js::parse(code).expect("parse failed");
+fn run_js_vm(code: &str) -> (vybe_bytecode::VM, Arc<Mutex<Vec<String>>>) {
+    let program = vybec::parser_js::parse(code).expect("parse failed");
     let mut vm = vybe_bytecode::VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vybe_compiler_js::register_js_coercion(&mut vm);
+    vybec::compiler_js::register_js_coercion(&mut vm);
     vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-        out.borrow_mut().push(parts.join(" "));
+        out.lock().unwrap().push(parts.join(" "));
         vybe_bytecode::Value::Null
     }));
     vybe_host::setup_namespaces(&mut vm);
-    let chunks = vybe_compiler_js::Compiler::new().compile(&program).expect("compile failed");
+    let chunks = vybec::compiler_js::Compiler::new().compile(&program).expect("compile failed");
     vm.run(chunks).expect("runtime error");
     (vm, output)
 }
@@ -689,7 +671,7 @@ fn test_e46_invoke_method_on_global_object() {
     let obj = vm.globals.get("obj").cloned().expect("obj not in globals");
     // Extract the method from the object
     if let vybe_bytecode::Value::Object(ref rc) = obj {
-        let borrowed = rc.borrow();
+        let borrowed = rc.lock().unwrap();
         let method = borrowed.properties.get("getX").cloned().expect("getX not on obj");
         // Invoke as standalone function (this may not bind correctly without method_call)
         let result = vm.invoke(&method, &[]);
@@ -749,7 +731,7 @@ fn test_e49_invoke_class_method_with_this() {
     let (mut vm, _output) = run_js_vm(code);
     let adder = vm.globals.get("adder").cloned().expect("adder not found");
     if let vybe_bytecode::Value::Object(ref rc) = adder {
-        let borrowed = rc.borrow();
+        let borrowed = rc.lock().unwrap();
         let method = borrowed.properties.get("add").cloned().expect("add not found");
         // Pass adder as `this` (first arg) + the actual arg
         let result = vm.invoke(&method, &[adder.clone(), vybe_bytecode::Value::F64(5.0)]).expect("invoke failed");

@@ -10,7 +10,7 @@ use std::sync::Arc;
 /// Set up VM with all host functions needed by JS, then compile.
 pub fn setup_and_compile(
     vm: &mut VM,
-    program: &vybe_parser_js::Program,
+    program: &crate::parser_js::Program,
 ) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     vybe_host::register_all(vm);
     register_js_coercion(vm);
@@ -20,7 +20,7 @@ pub fn setup_and_compile(
 /// Set up VM with all host functions + GUI stubs, then compile.
 pub fn setup_and_compile_with_gui(
     vm: &mut VM,
-    program: &vybe_parser_js::Program,
+    program: &crate::parser_js::Program,
     _queue: Arc<std::sync::Mutex<vybe_host::SideEffectQueue>>,
 ) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     vybe_host::register_all(vm);

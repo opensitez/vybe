@@ -12,9 +12,9 @@ use vybe_compiler_common::errors as common_errors;
 use vybe_compiler_common::collections as common_collections;
 use vybe_compiler_common::math as common_math;
 use vybe_compiler_common::convert as common_convert;
-use vybe_parser_js::ast::*;
+use crate::parser_js::ast::*;
 
-use crate::scope::Scope;
+use super::scope::Scope;
 
 struct LoopContext {
     _start_offset: usize,

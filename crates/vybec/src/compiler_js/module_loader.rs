@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use vybe_bytecode::Chunk;
 
-use crate::Compiler;
+use super::Compiler;
 
 /// Load a JS file and all its dependencies, compile as a single program.
 /// Dependencies are prepended so their exports (globals) are available.
@@ -18,8 +18,8 @@ pub fn load_and_compile(entry_path: &Path) -> Result<Vec<Chunk>, String> {
     collect_sources(entry_path, &mut loaded, &mut combined_source)?;
 
     // Parse and compile the combined source as one program
-    let program = vybe_parser_js::parse(&combined_source)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let program = crate::parser_js::parse(&combined_source)
+        .map_err(|e| format!("Parse error: {}", e))?;;
 
     Compiler::new().compile(&program)
 }
@@ -44,14 +44,14 @@ fn collect_sources(
         .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
 
     // Parse to find imports
-    let program = vybe_parser_js::parse(&source)
-        .map_err(|e| format!("Parse error in {}: {}", path.display(), e))?;
+    let program = crate::parser_js::parse(&source)
+        .map_err(|e| format!("Parse error in {}: {}", path.display(), e))?;;
 
     let base_dir = path.parent().unwrap_or(Path::new("."));
 
     // Recursively load dependencies first
     for stmt in &program.body {
-        if let vybe_parser_js::Statement::Import { source: src, .. } = stmt {
+        if let crate::parser_js::Statement::Import { source: src, .. } = stmt {
             if src.starts_with("vybe:") || src.starts_with("js:") {
                 continue; // host modules — resolved at runtime
             }
