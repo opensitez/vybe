@@ -15,5 +15,5 @@ fn main() {
     }
 
     let extra_args: Vec<String> = args[2..].to_vec();
-    vybe_cli::runner::run(&file_path, &extra_args);
+    vybec::runner::run(&file_path, &extra_args);
 }

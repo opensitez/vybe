@@ -547,7 +547,7 @@ fn fn_arity(val: &vybe_bytecode::Value) -> usize {
 // `register_dialog_fns` overrides the host stubs registered by
 // `vybe_host` with real native-dialog implementations. The actual
 // dialog work goes through `vybe_widgets::dialogs::*` (which wraps
-// `rfd`) — vybe_cli no longer talks to `rfd` directly. The CLI's job
+// `rfd`) — vybec no longer talks to `rfd` directly. The CLI's job
 // is glue: it owns the VM, registers host fns, dispatches events.
 // All GUI primitives — including dialogs — live in `vybe_widgets`.
 //

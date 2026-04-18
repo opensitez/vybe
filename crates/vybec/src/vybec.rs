@@ -64,8 +64,8 @@ fn main() {
         "pas" | "pp" | "dpr" => run_pascal(path, dump, emit_wasm, sandbox, portable),
         "wasm" => run_wasm(path),
         "vybe" => run_project(path, dump),
-        "vbp" | "vbproj" => vybe_cli::runner::run(path, &[]),
-        "cs" => vybe_cli::runner::run(path, &[]),
+        "vbp" | "vbproj" => vybec::runner::run(path, &[]),
+        "cs" => vybec::runner::run(path, &[]),
         _ => {
             // Check if directory has a .vybe project file
             let vybe_path = path.join("project.vybe");
@@ -163,11 +163,11 @@ fn run_project(path: &Path, dump: bool) {
             }
             "dart" => {
                 let source = read_file(&file_path);
-                let program = match vybe_parser_dart::parse(&source) {
+                let program = match vybec::parser_dart::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                let c = match vybe_compiler_dart::Compiler::new().compile(&program) {
+                let c = match vybec::compiler_dart::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
                 };
@@ -175,11 +175,11 @@ fn run_project(path: &Path, dump: bool) {
             }
             "py" | "py3" => {
                 let source = read_file(&file_path);
-                let module = match vybe_parser_python::parse(&source) {
+                let module = match crate::parser_python::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                let c = match vybe_compiler_python::Compiler::new().compile(&module) {
+                let c = match crate::compiler_python::Compiler::new().compile(&module) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
                 };
@@ -187,11 +187,11 @@ fn run_project(path: &Path, dump: bool) {
             }
             "php" => {
                 let source = read_file(&file_path);
-                let program = match vybe_parser_php::parse(&source) {
+                let program = match vybec::parser_php::parse(&source) {
                     Ok(p) => p,
                     Err(e) => { eprintln!("Parse error in {}: {e}", file); std::process::exit(1); }
                 };
-                let c = match vybe_compiler_php::Compiler::new().compile(&program) {
+                let c = match vybec::compiler_php::Compiler::new().compile(&program) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("Compile error in {}: {e}", file); std::process::exit(1); }
                 };
@@ -385,7 +385,7 @@ fn run_project(path: &Path, dump: bool) {
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -425,7 +425,7 @@ fn run_vb(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bo
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -466,12 +466,12 @@ fn run_js(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bo
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
     let source = read_file(path);
-    let program = match vybe_parser_dart::parse(&source) {
+    let program = match vybec::parser_dart::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
@@ -487,7 +487,7 @@ fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
     };
     vybe_host::setup_namespaces(&mut vm);
 
-    let chunks = match vybe_compiler_dart::Compiler::new().compile(&program) {
+    let chunks = match vybec::compiler_dart::Compiler::new().compile(&program) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };
@@ -506,12 +506,12 @@ fn run_dart(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable: bool) {
     let source = read_file(path);
-    let module = match vybe_parser_python::parse(&source) {
+    let module = match crate::parser_python::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
@@ -547,7 +547,7 @@ fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable:
         Arc::new(Mutex::new(vybe_host::GuiState::new()))
     };
 
-    let chunks = match vybe_compiler_python::Compiler::new().compile(&module) {
+    let chunks = match crate::compiler_python::Compiler::new().compile(&module) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };
@@ -566,12 +566,12 @@ fn run_python(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, portable:
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn run_php(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
     let source = read_file(path);
-    let program = match vybe_parser_php::parse(&source) {
+    let program = match vybec::parser_php::parse(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
     };
@@ -587,7 +587,7 @@ fn run_php(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: b
     };
     vybe_host::setup_namespaces(&mut vm);
 
-    let chunks = match vybe_compiler_php::Compiler::new().compile(&program) {
+    let chunks = match vybec::compiler_php::Compiler::new().compile(&program) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
     };
@@ -606,7 +606,7 @@ fn run_php(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: b
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn run_cobol(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -646,7 +646,7 @@ fn run_cobol(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable:
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn run_ruby(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -686,7 +686,7 @@ fn run_ruby(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: 
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn run_pascal(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable: bool) {
@@ -726,7 +726,7 @@ fn run_pascal(path: &Path, dump: bool, emit_wasm: bool, sandbox: bool, _portable
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
 
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn run_wasm(path: &Path) {
@@ -752,7 +752,7 @@ fn run_wasm(path: &Path) {
         Ok(_) => {}
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
-    vybe_cli::runner::launch_vm_form(vm, gui, None);
+    vybec::runner::launch_vm_form(vm, gui, None);
 }
 
 fn read_file(path: &Path) -> String {

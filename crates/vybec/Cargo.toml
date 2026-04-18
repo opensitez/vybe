@@ -1,5 +1,5 @@
 [package]
-name = "vybe_cli"
+name = "vybec"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -14,7 +14,7 @@ name = "vybec"
 path = "src/vybec.rs"
 
 [lib]
-name = "vybe_cli"
+name = "vybec"
 path = "src/lib.rs"
 
 [dependencies]
@@ -25,13 +25,8 @@ vybe_compiler_vb = { workspace = true }
 vybe_compiler_js = { workspace = true }
 vybe_parser_csharp = { workspace = true }
 vybe_compiler_csharp = { workspace = true }
-vybe_parser_dart = { workspace = true }
-vybe_compiler_dart = { workspace = true }
 vybe_host = { workspace = true, features = ["gui_forms"] }
-vybe_parser_php = { workspace = true }
-vybe_compiler_php = { workspace = true }
-vybe_parser_python = { workspace = true }
-vybe_compiler_python = { workspace = true }
+serde = { workspace = true }
 vybe_parser_ruby = { workspace = true }
 vybe_compiler_ruby = { workspace = true }
 vybe_parser_cobol = { workspace = true }
