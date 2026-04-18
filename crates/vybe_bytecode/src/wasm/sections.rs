@@ -6,7 +6,7 @@ use crate::opcode::Op;
 
 /// Collect all runtime imports needed by the chunks.
 /// Returns (module, name) pairs for both vybe:rt and wasm:js-* builtins.
-pub fn collect_rt_imports(chunks: &[Chunk]) -> Vec<(&'static str, &'static str)> {
+pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)> {
     let mut needed: Vec<(&str, &str)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -138,7 +138,7 @@ pub fn encode_global_section(globals: &[String]) -> Vec<u8> {
     out
 }
 
-pub fn encode_table_section(chunks: &[Chunk], import_count: usize) -> Vec<u8> {
+pub fn encode_table_section(chunks: &[Chunk], _import_count: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let table_size = chunks.len() as u32;
     write_leb128_u32(&mut out, 1); // 1 table

@@ -1,0 +1,10 @@
+[package]
+name = "vybe_lsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+crossbeam-channel = "0.5"
+vybex = { workspace = true }

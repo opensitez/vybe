@@ -15,7 +15,6 @@ pub mod reader;
 
 use encoding::*;
 use crate::Chunk;
-use crate::value::Value;
 
 // ── Writer ──────────────────────────────────────────────────────────────
 

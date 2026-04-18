@@ -149,8 +149,6 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
 
 /// Emit VB.NET designer code from the current widget state.
 pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
-    use vybe_widgets::PanelWidget;
-
     let mut out = String::new();
     out.push_str(&format!("<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()> _\n"));
     out.push_str(&format!("Partial Class {}\n", class_name));

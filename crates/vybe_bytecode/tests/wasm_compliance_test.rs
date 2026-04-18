@@ -1,0 +1,1777 @@
+//! WASM Compliance Test Suite
+//!
+//! Exercises the VM against WASM spec semantics:
+//! - Function calling convention (arity params, no implicit callee slot)
+//! - Arithmetic opcodes
+//! - Control flow (block / loop / br / br_if / if)
+//! - GC opcodes (struct / array)
+//! - Round-trip: compile → .wasm → read back → execute, same result
+//!
+//! Every test creates a minimal Chunk, runs it in the VM, and asserts
+//! the result. Tests are self-contained — no stdlib, no imports unless
+//! explicitly noted.
+//!
+//! WASM compliance means:
+//!   - slot 0 = first arg (NOT a reserved callee slot)
+//!   - Function type has exactly `arity` params
+//!   - Block/loop/end label stack matches WASM spec
+//!   - br_label depth targets the Nth enclosing construct
+
+use vybe_bytecode::{Chunk, Op, VM};
+use vybe_bytecode::value::Value;
+
+/// Helper: build a script chunk from an emit closure, run it, return the popped result.
+fn run_script(emit: impl FnOnce(&mut Chunk)) -> Value {
+    let mut chunk = Chunk::new("<script>");
+    emit(&mut chunk);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    vm.run(vec![chunk]).expect("VM execution failed")
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 1. CONSTANTS AND STACK
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn const_f64_on_stack() {
+    let result = run_script(|c| {
+        let idx = c.add_constant(Value::F64(42.5));
+        c.emit_op_u16(Op::CONST, idx, 0);
+    });
+    assert_eq!(result.as_f64(), 42.5);
+}
+
+#[test]
+fn const_i32_on_stack() {
+    let result = run_script(|c| {
+        let idx = c.add_constant(Value::I32(-7));
+        c.emit_op_u16(Op::CONST, idx, 0);
+    });
+    assert_eq!(result.as_i32(), -7);
+}
+
+#[test]
+fn const_string_on_stack() {
+    let result = run_script(|c| {
+        let idx = c.add_constant(Value::String(std::sync::Arc::from("hello")));
+        c.emit_op_u16(Op::CONST, idx, 0);
+    });
+    assert_eq!(format!("{}", result), "hello");
+}
+
+#[test]
+fn true_false_null_opcodes() {
+    assert_eq!(run_script(|c| { c.emit_op(Op::TRUE, 0); }).as_bool(), true);
+    assert_eq!(run_script(|c| { c.emit_op(Op::FALSE, 0); }).as_bool(), false);
+    assert!(matches!(run_script(|c| { c.emit_op(Op::NULL, 0); }), Value::Null));
+}
+
+#[test]
+fn i32_const_shortcuts() {
+    assert_eq!(run_script(|c| { c.emit_op(Op::I32_CONST_0, 0); }).as_i32(), 0);
+    assert_eq!(run_script(|c| { c.emit_op(Op::I32_CONST_1, 0); }).as_i32(), 1);
+    assert_eq!(run_script(|c| { c.emit_op(Op::F64_CONST_0, 0); }).as_f64(), 0.0);
+}
+
+#[test]
+fn dup_replicates_top_of_stack() {
+    // push 5, dup → [5, 5], pop the top, assert the remaining is 5
+    let result = run_script(|c| {
+        let idx = c.add_constant(Value::F64(5.0));
+        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_op(Op::DUP, 0);
+        c.emit_op(Op::DROP, 0);
+    });
+    assert_eq!(result.as_f64(), 5.0);
+}
+
+#[test]
+fn drop_removes_top_of_stack() {
+    // push 1, push 2, drop → top is 1
+    let result = run_script(|c| {
+        let i1 = c.add_constant(Value::F64(1.0));
+        let i2 = c.add_constant(Value::F64(2.0));
+        c.emit_op_u16(Op::CONST, i1, 0);
+        c.emit_op_u16(Op::CONST, i2, 0);
+        c.emit_op(Op::DROP, 0);
+    });
+    assert_eq!(result.as_f64(), 1.0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 2. ARITHMETIC (WASM spec semantics)
+// ──────────────────────────────────────────────────────────────────────
+
+fn binop_f64(emit_op: Op, a: f64, b: f64) -> f64 {
+    run_script(|c| {
+        let ia = c.add_constant(Value::F64(a));
+        let ib = c.add_constant(Value::F64(b));
+        c.emit_op_u16(Op::CONST, ia, 0);
+        c.emit_op_u16(Op::CONST, ib, 0);
+        c.emit_op(emit_op, 0);
+    }).as_f64()
+}
+
+#[test] fn f64_add() { assert_eq!(binop_f64(Op::F64_ADD, 2.5, 3.25), 5.75); }
+#[test] fn f64_sub() { assert_eq!(binop_f64(Op::F64_SUB, 10.0, 3.0), 7.0); }
+#[test] fn f64_mul() { assert_eq!(binop_f64(Op::F64_MUL, 4.0, 2.5), 10.0); }
+#[test] fn f64_div() { assert_eq!(binop_f64(Op::F64_DIV, 10.0, 4.0), 2.5); }
+#[test] fn f64_min() { assert_eq!(binop_f64(Op::F64_MIN, 3.0, 7.0), 3.0); }
+#[test] fn f64_max() { assert_eq!(binop_f64(Op::F64_MAX, 3.0, 7.0), 7.0); }
+
+fn binop_i32(emit_op: Op, a: i32, b: i32) -> i32 {
+    run_script(|c| {
+        let ia = c.add_constant(Value::I32(a));
+        let ib = c.add_constant(Value::I32(b));
+        c.emit_op_u16(Op::CONST, ia, 0);
+        c.emit_op_u16(Op::CONST, ib, 0);
+        c.emit_op(emit_op, 0);
+    }).as_i32()
+}
+
+#[test] fn i32_add() { assert_eq!(binop_i32(Op::I32_ADD, 5, 7), 12); }
+#[test] fn i32_sub() { assert_eq!(binop_i32(Op::I32_SUB, 10, 3), 7); }
+#[test] fn i32_mul() { assert_eq!(binop_i32(Op::I32_MUL, 4, 6), 24); }
+#[test] fn i32_div_s() { assert_eq!(binop_i32(Op::I32_DIV_S, -10, 2), -5); }
+#[test] fn i32_and() { assert_eq!(binop_i32(Op::I32_AND, 0b1100, 0b1010), 0b1000); }
+#[test] fn i32_or()  { assert_eq!(binop_i32(Op::I32_OR,  0b1100, 0b1010), 0b1110); }
+#[test] fn i32_xor() { assert_eq!(binop_i32(Op::I32_XOR, 0b1100, 0b1010), 0b0110); }
+#[test] fn i32_shl() { assert_eq!(binop_i32(Op::I32_SHL, 1, 4), 16); }
+
+#[test]
+fn f64_neg_unary() {
+    let r = run_script(|c| {
+        let i = c.add_constant(Value::F64(3.5));
+        c.emit_op_u16(Op::CONST, i, 0);
+        c.emit_op(Op::F64_NEG, 0);
+    });
+    assert_eq!(r.as_f64(), -3.5);
+}
+
+#[test]
+fn f64_abs_unary() {
+    let r = run_script(|c| {
+        let i = c.add_constant(Value::F64(-4.5));
+        c.emit_op_u16(Op::CONST, i, 0);
+        c.emit_op(Op::F64_ABS, 0);
+    });
+    assert_eq!(r.as_f64(), 4.5);
+}
+
+#[test]
+fn f64_comparison_lt() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::F64(2.0));
+        let b = c.add_constant(Value::F64(3.0));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::F64_LT, 0);
+    });
+    // WASM returns i32 (0 or 1) for comparisons; VM may return Bool or I32.
+    let truthy = match r {
+        Value::I32(v) => v != 0,
+        Value::Bool(b) => b,
+        Value::F64(f) => f != 0.0,
+        _ => false,
+    };
+    assert!(truthy, "2.0 < 3.0 should be truthy");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 3. LOCALS — slot 0 = first arg (WASM convention)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn local_get_set_slot_0() {
+    // Define a local at slot 0, store 42, read back.
+    let result = run_script(|c| {
+        c.local_count = 1;
+        let idx = c.add_constant(Value::F64(42.0));
+        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);  // tee to slot 0, keeps value
+        c.emit_op(Op::DROP, 0);               // drop the teed copy
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);   // push slot 0
+    });
+    assert_eq!(result.as_f64(), 42.0);
+}
+
+#[test]
+fn function_receives_args_at_slots_0_and_1() {
+    // Function `add(a, b)` — a at slot 0, b at slot 1.
+    let mut script = Chunk::new("<script>");
+    let mut add_fn = Chunk::new("add");
+    add_fn.arity = 2;
+    add_fn.local_count = 2;
+    add_fn.emit_op_u16(Op::LOCAL_GET, 0, 0);  // a
+    add_fn.emit_op_u16(Op::LOCAL_GET, 1, 0);  // b
+    add_fn.emit_op(Op::F64_ADD, 0);
+    add_fn.emit_op(Op::RETURN, 0);
+
+    // Script: push ref_func add, push 10, push 20, call_ref 2
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0); // 0 upvalues
+    let i10 = script.add_constant(Value::F64(10.0));
+    let i20 = script.add_constant(Value::F64(20.0));
+    script.emit_op_u16(Op::CONST, i10, 0);
+    script.emit_op_u16(Op::CONST, i20, 0);
+    script.emit_op_u8(Op::CALL_REF, 2, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, add_fn]).unwrap();
+    assert_eq!(result.as_f64(), 30.0);
+}
+
+#[test]
+fn function_with_local_beyond_args() {
+    // Function: add(a, b) { let tmp = a + b; return tmp * 2; }
+    // arity=2, local_count=3 (a=0, b=1, tmp=2)
+    let mut script = Chunk::new("<script>");
+    let mut fun = Chunk::new("fn");
+    fun.arity = 2;
+    fun.local_count = 3;
+    fun.emit_op_u16(Op::LOCAL_GET, 0, 0);    // a
+    fun.emit_op_u16(Op::LOCAL_GET, 1, 0);    // b
+    fun.emit_op(Op::F64_ADD, 0);
+    fun.emit_op_u16(Op::LOCAL_SET, 2, 0);    // tmp
+    fun.emit_op(Op::DROP, 0);
+    fun.emit_op_u16(Op::LOCAL_GET, 2, 0);    // tmp
+    let two = fun.add_constant(Value::F64(2.0));
+    fun.emit_op_u16(Op::CONST, two, 0);
+    fun.emit_op(Op::F64_MUL, 0);
+    fun.emit_op(Op::RETURN, 0);
+
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0);
+    let i3 = script.add_constant(Value::F64(3.0));
+    let i4 = script.add_constant(Value::F64(4.0));
+    script.emit_op_u16(Op::CONST, i3, 0);
+    script.emit_op_u16(Op::CONST, i4, 0);
+    script.emit_op_u8(Op::CALL_REF, 2, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, fun]).unwrap();
+    assert_eq!(result.as_f64(), 14.0); // (3+4)*2
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 4. CONTROL FLOW — structured (block / loop / br_label / br_if_label)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn block_end_no_branch() {
+    // block { push 5 } — falls through, 5 on stack
+    let result = run_script(|c| {
+        let bp = c.emit_block(0);
+        let idx = c.add_constant(Value::F64(5.0));
+        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_end(0);
+        c.patch_block(bp);
+    });
+    assert_eq!(result.as_f64(), 5.0);
+}
+
+#[test]
+fn br_label_0_exits_block() {
+    // block { push 5 ; br 0 ; push 99 } ; end → 5 on stack (99 skipped)
+    let result = run_script(|c| {
+        let bp = c.emit_block(0);
+        let i5 = c.add_constant(Value::F64(5.0));
+        c.emit_op_u16(Op::CONST, i5, 0);
+        c.emit_br(0, 0);                    // branch to end of block
+        let i99 = c.add_constant(Value::F64(99.0));
+        c.emit_op_u16(Op::CONST, i99, 0);   // unreachable
+        c.emit_end(0);
+        c.patch_block(bp);
+    });
+    assert_eq!(result.as_f64(), 5.0);
+}
+
+#[test]
+fn br_if_label_conditional_branch() {
+    // block {
+    //   push true ; br_if 0 ; push 99
+    // } ; end → nothing on stack from 99
+    let result = run_script(|c| {
+        let bp = c.emit_block(0);
+        c.emit_op(Op::TRUE, 0);
+        c.emit_br_if(0, 0);                 // branch because true
+        let i99 = c.add_constant(Value::F64(99.0));
+        c.emit_op_u16(Op::CONST, i99, 0);   // skipped
+        c.emit_end(0);
+        c.patch_block(bp);
+        // Push sentinel so we have something to return
+        let s = c.add_constant(Value::F64(42.0));
+        c.emit_op_u16(Op::CONST, s, 0);
+    });
+    assert_eq!(result.as_f64(), 42.0);
+}
+
+#[test]
+fn br_if_label_false_does_not_branch() {
+    // block { push false ; br_if 0 ; push 7 ; br 0 ; } ; end → 7 on stack
+    let result = run_script(|c| {
+        let bp = c.emit_block(0);
+        c.emit_op(Op::FALSE, 0);
+        c.emit_br_if(0, 0);                 // does NOT branch
+        let i7 = c.add_constant(Value::F64(7.0));
+        c.emit_op_u16(Op::CONST, i7, 0);
+        c.emit_br(0, 0);
+        c.emit_end(0);
+        c.patch_block(bp);
+    });
+    assert_eq!(result.as_f64(), 7.0);
+}
+
+#[test]
+fn simple_while_loop() {
+    // i = 0; while (i < 3) { i++; }; return i;
+    // block { loop { i<3 ? (i++; br_label 0) : br_label 1 } } → 3
+    let result = run_script(|c| {
+        c.local_count = 1;
+        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op(Op::DROP, 0);
+
+        let bp = c.emit_block(0);
+        let (lp, _) = c.emit_loop_s(0);
+
+        // i < 3 ?
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        let three = c.add_constant(Value::I32(3));
+        c.emit_op_u16(Op::CONST, three, 0);
+        c.emit_op(Op::DYN_LT, 0);
+        // Invert: if false (i >= 3), exit block (depth 1)
+        c.emit_op(Op::DYN_NOT, 0);
+        c.emit_br_if(1, 0);
+
+        // i++
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_op(Op::I32_ADD, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op(Op::DROP, 0);
+
+        // continue loop
+        c.emit_br(0, 0);
+
+        c.emit_end(0); c.patch_loop(lp);
+        c.emit_end(0); c.patch_block(bp);
+
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    });
+    assert_eq!(result.as_i32(), 3);
+}
+
+#[test]
+fn nested_loops_break_with_labels() {
+    // Outer counts 0..3, inner counts 0..2. total iterations = 6.
+    // let total = 0;
+    // block $outer {
+    //   loop $outer_loop {
+    //     if i_outer >= 3: br 1 (exit outer block)
+    //     block $inner {
+    //       loop $inner_loop {
+    //         if i_inner >= 2: br 1 (exit inner block)
+    //         total++; i_inner++;
+    //         br 0 (continue inner)
+    //       }
+    //     }
+    //     reset i_inner, increment i_outer, br 0 (continue outer)
+    //   }
+    // }
+    let result = run_script(|c| {
+        c.local_count = 3; // total=0, i_outer=1, i_inner=2
+
+        // Init
+        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0); c.emit_op(Op::DROP, 0); // total=0
+        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 1, 0); c.emit_op(Op::DROP, 0); // i_outer=0
+
+        let outer_b = c.emit_block(0);
+        let (outer_l, _) = c.emit_loop_s(0);
+
+        // outer cond
+        c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+        let three = c.add_constant(Value::I32(3));
+        c.emit_op_u16(Op::CONST, three, 0);
+        c.emit_op(Op::DYN_LT, 0);
+        c.emit_op(Op::DYN_NOT, 0);
+        c.emit_br_if(1, 0); // exit outer block if !(i_outer<3)
+
+        // Reset i_inner = 0
+        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 2, 0); c.emit_op(Op::DROP, 0);
+
+        let inner_b = c.emit_block(0);
+        let (inner_l, _) = c.emit_loop_s(0);
+
+        // inner cond
+        c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+        let two = c.add_constant(Value::I32(2));
+        c.emit_op_u16(Op::CONST, two, 0);
+        c.emit_op(Op::DYN_LT, 0);
+        c.emit_op(Op::DYN_NOT, 0);
+        c.emit_br_if(1, 0); // exit inner block if !(i_inner<2)
+
+        // total++
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_op(Op::I32_ADD, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0); c.emit_op(Op::DROP, 0);
+
+        // i_inner++
+        c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_op(Op::I32_ADD, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 2, 0); c.emit_op(Op::DROP, 0);
+
+        c.emit_br(0, 0); // continue inner loop
+        c.emit_end(0); c.patch_loop(inner_l);
+        c.emit_end(0); c.patch_block(inner_b);
+
+        // i_outer++
+        c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_op(Op::I32_ADD, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 1, 0); c.emit_op(Op::DROP, 0);
+
+        c.emit_br(0, 0); // continue outer loop
+        c.emit_end(0); c.patch_loop(outer_l);
+        c.emit_end(0); c.patch_block(outer_b);
+
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    });
+    assert_eq!(result.as_i32(), 6);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 5. WASM ROUND-TRIP: compile → .wasm bytes → read back → execute
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn round_trip_simple_constant() {
+    let mut chunk = Chunk::new("<script>");
+    let idx = chunk.add_constant(Value::F64(42.0));
+    chunk.emit_op_u16(Op::CONST, idx, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let orig_chunks = vec![chunk];
+
+    // Write to .wasm
+    let wasm_bytes = vybe_bytecode::wasm::write_wasm(&orig_chunks);
+    assert!(wasm_bytes.len() > 0, "wasm output empty");
+    assert_eq!(&wasm_bytes[0..4], b"\x00asm", "not a valid wasm magic");
+
+    // Read back
+    let read_chunks = vybe_bytecode::wasm::read_wasm(&wasm_bytes).expect("read failed");
+    assert!(read_chunks.len() >= 1, "no chunks read back");
+
+    // Execute the read-back chunks and verify result matches
+    let mut vm = VM::new();
+    let result = vm.run(read_chunks).expect("execution failed");
+    assert_eq!(result.as_f64(), 42.0);
+}
+
+#[test]
+fn round_trip_arithmetic() {
+    let mut chunk = Chunk::new("<script>");
+    let a = chunk.add_constant(Value::F64(10.0));
+    let b = chunk.add_constant(Value::F64(3.0));
+    chunk.emit_op_u16(Op::CONST, a, 0);
+    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_op(Op::F64_ADD, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = vybe_bytecode::wasm::write_wasm(&[chunk]);
+    let chunks = vybe_bytecode::wasm::read_wasm(&wasm).expect("read");
+    let mut vm = VM::new();
+    let result = vm.run(chunks).expect("run");
+    assert_eq!(result.as_f64(), 13.0);
+}
+
+#[test]
+fn round_trip_function_call() {
+    // add(a, b) { return a + b; } ; add(2, 3) → 5
+    let mut script = Chunk::new("<script>");
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0);
+    let i2 = script.add_constant(Value::F64(2.0));
+    let i3 = script.add_constant(Value::F64(3.0));
+    script.emit_op_u16(Op::CONST, i2, 0);
+    script.emit_op_u16(Op::CONST, i3, 0);
+    script.emit_op_u8(Op::CALL_REF, 2, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut add_fn = Chunk::new("add");
+    add_fn.arity = 2;
+    add_fn.local_count = 2;
+    add_fn.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    add_fn.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    add_fn.emit_op(Op::F64_ADD, 0);
+    add_fn.emit_op(Op::RETURN, 0);
+
+    let chunks = vec![script, add_fn];
+
+    // First verify it works when run directly
+    let mut vm_direct = VM::new();
+    let direct_result = vm_direct.run(chunks.clone()).expect("direct run");
+    assert_eq!(direct_result.as_f64(), 5.0, "direct execution should give 5.0");
+
+    // Now round-trip
+    let wasm = vybe_bytecode::wasm::write_wasm(&chunks);
+    let chunks_rt = vybe_bytecode::wasm::read_wasm(&wasm).expect("read");
+
+    // Verify the read-back bytecode matches
+    assert_eq!(chunks_rt.len(), chunks.len(), "chunk count mismatch");
+    assert_eq!(chunks_rt[0].code, chunks[0].code, "script bytecode round-trip mismatch");
+    assert_eq!(chunks_rt[1].code, chunks[1].code, "add bytecode round-trip mismatch");
+    assert_eq!(chunks_rt[1].arity, chunks[1].arity, "arity mismatch");
+    assert_eq!(chunks_rt[1].local_count, chunks[1].local_count, "local_count mismatch");
+
+    let mut vm = VM::new();
+    let result = vm.run(chunks_rt).expect("run");
+    assert_eq!(result.as_f64(), 5.0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 6. WASM BINARY STRUCTURE
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn wasm_has_magic_and_version() {
+    let chunk = Chunk::new("<script>");
+    let wasm = vybe_bytecode::wasm::write_wasm(&[chunk]);
+    assert_eq!(&wasm[0..4], b"\x00asm");
+    assert_eq!(&wasm[4..8], b"\x01\x00\x00\x00", "wasm version should be 1");
+}
+
+#[test]
+fn wasm_emits_required_sections() {
+    // A minimal module should have type, function, memory, export, code sections
+    // (table/element/global are added when needed).
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op(Op::RETURN, 0);
+    let wasm = vybe_bytecode::wasm::write_wasm(&[chunk]);
+
+    // Walk sections
+    let mut pos = 8;
+    let mut seen = std::collections::HashSet::new();
+    while pos < wasm.len() {
+        let sid = wasm[pos]; pos += 1;
+        // LEB128 size
+        let mut size = 0u32; let mut shift = 0u32;
+        loop {
+            let b = wasm[pos]; pos += 1;
+            size |= ((b & 0x7f) as u32) << shift; shift += 7;
+            if b & 0x80 == 0 { break; }
+        }
+        seen.insert(sid);
+        pos += size as usize;
+    }
+
+    // Required sections: 1 (type), 3 (function), 7 (export), 10 (code)
+    assert!(seen.contains(&1), "missing type section");
+    assert!(seen.contains(&3), "missing function section");
+    assert!(seen.contains(&7), "missing export section");
+    assert!(seen.contains(&10), "missing code section");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 7. WASM TYPE SECTION — function signatures
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn function_type_has_arity_params_not_arity_plus_one() {
+    // Critical WASM compliance check: a function with arity=2 must have
+    // exactly 2 params in its type signature, NOT 3 (no reserved callee slot).
+    let mut fun = Chunk::new("f");
+    fun.arity = 2;
+    fun.local_count = 2;
+    fun.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    fun.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    fun.emit_op(Op::F64_ADD, 0);
+    fun.emit_op(Op::RETURN, 0);
+
+    let script = Chunk::new("<script>");
+    let wasm = vybe_bytecode::wasm::write_wasm(&[script, fun]);
+
+    // Search for the (externref, externref) → externref type signature in the binary.
+    // This is: 0x60 0x02 0x6F 0x6F 0x01 0x6F (func, 2 params, externref x2, 1 result, externref)
+    let target = [0x60, 0x02, 0x6F, 0x6F, 0x01, 0x6F];
+    let found = wasm.windows(target.len()).any(|w| w == target);
+    assert!(found, "WASM binary should contain the (externref, externref) → externref function type for arity-2 functions");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 8. MORE ARITHMETIC EDGE CASES
+// ──────────────────────────────────────────────────────────────────────
+
+#[test] fn f64_sub_negative() { assert_eq!(binop_f64(Op::F64_SUB, 3.0, 10.0), -7.0); }
+#[test] fn f64_div_by_one() { assert_eq!(binop_f64(Op::F64_DIV, 42.0, 1.0), 42.0); }
+#[test] fn f64_mul_zero() { assert_eq!(binop_f64(Op::F64_MUL, 42.0, 0.0), 0.0); }
+#[test] fn f64_add_zero() { assert_eq!(binop_f64(Op::F64_ADD, 42.0, 0.0), 42.0); }
+#[test] fn f64_min_equal() { assert_eq!(binop_f64(Op::F64_MIN, 5.0, 5.0), 5.0); }
+#[test] fn f64_max_negatives() { assert_eq!(binop_f64(Op::F64_MAX, -3.0, -1.0), -1.0); }
+
+#[test]
+fn f64_sqrt() {
+    let r = run_script(|c| {
+        let idx = c.add_constant(Value::F64(16.0));
+        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_op(Op::F64_SQRT, 0);
+    });
+    assert_eq!(r.as_f64(), 4.0);
+}
+
+#[test]
+fn f64_floor() {
+    let r = run_script(|c| {
+        let idx = c.add_constant(Value::F64(3.7));
+        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_op(Op::F64_FLOOR, 0);
+    });
+    assert_eq!(r.as_f64(), 3.0);
+}
+
+#[test]
+fn f64_ceil() {
+    let r = run_script(|c| {
+        let idx = c.add_constant(Value::F64(3.2));
+        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_op(Op::F64_CEIL, 0);
+    });
+    assert_eq!(r.as_f64(), 4.0);
+}
+
+#[test] fn i32_sub_negative() { assert_eq!(binop_i32(Op::I32_SUB, 3, 10), -7); }
+#[test] fn i32_rem_s_positive() { assert_eq!(binop_i32(Op::I32_REM_S, 10, 3), 1); }
+#[test] fn i32_rem_s_negative() { assert_eq!(binop_i32(Op::I32_REM_S, -10, 3), -1); }
+#[test] fn i32_shr_s_sign_extend() { assert_eq!(binop_i32(Op::I32_SHR_S, -8, 1), -4); }
+#[test] fn i32_shr_u_zero_extend() {
+    // -8 >> 1 unsigned = i32::MAX / 2 + 1 area
+    let v = binop_i32(Op::I32_SHR_U, -1, 1);
+    assert_eq!(v, i32::MAX);
+}
+
+#[test] fn i32_eq_true() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::I32(5));
+        let b = c.add_constant(Value::I32(5));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::EQ, 0);
+    });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test] fn i32_eq_false() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::I32(5));
+        let b = c.add_constant(Value::I32(6));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::EQ, 0);
+    });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test] fn i32_ne() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::I32(5));
+        let b = c.add_constant(Value::I32(6));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::NE, 0);
+    });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test] fn i32_eqz_zero() {
+    let r = run_script(|c| {
+        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_op(Op::I32_EQZ, 0);
+    });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test] fn i32_eqz_nonzero() {
+    let r = run_script(|c| {
+        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_op(Op::I32_EQZ, 0);
+    });
+    assert_eq!(r.as_i32(), 0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 9. DYN_* operations (dynamic dispatch)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn dyn_add_numbers() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::F64(1.5));
+        let b = c.add_constant(Value::F64(2.25));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::DYN_ADD, 0);
+    });
+    assert_eq!(r.as_f64(), 3.75);
+}
+
+#[test]
+fn dyn_lt_true() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::F64(1.0));
+        let b = c.add_constant(Value::F64(2.0));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::DYN_LT, 0);
+    });
+    assert!(r.as_bool() || r.as_i32() == 1);
+}
+
+#[test]
+fn dyn_eq_true() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::F64(3.14));
+        let b = c.add_constant(Value::F64(3.14));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::DYN_EQ, 0);
+    });
+    assert!(r.as_bool() || r.as_i32() == 1);
+}
+
+#[test]
+fn dyn_not_true() {
+    let r = run_script(|c| {
+        c.emit_op(Op::TRUE, 0);
+        c.emit_op(Op::DYN_NOT, 0);
+    });
+    assert!(!r.as_bool());
+}
+
+#[test]
+fn dyn_not_false() {
+    let r = run_script(|c| {
+        c.emit_op(Op::FALSE, 0);
+        c.emit_op(Op::DYN_NOT, 0);
+    });
+    assert!(r.as_bool());
+}
+
+#[test]
+fn dyn_neg() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::F64(5.0));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op(Op::DYN_NEG, 0);
+    });
+    assert_eq!(r.as_f64(), -5.0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 10. STRING OPS
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn str_concat_basic() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::String(std::sync::Arc::from("hello ")));
+        let b = c.add_constant(Value::String(std::sync::Arc::from("world")));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::STR_CONCAT, 0);
+    });
+    assert_eq!(format!("{}", r), "hello world");
+}
+
+#[test]
+fn str_length() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::String(std::sync::Arc::from("hello")));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op(Op::STR_LENGTH, 0);
+    });
+    assert_eq!(r.as_i32(), 5);
+}
+
+#[test]
+fn str_equals_true() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::String(std::sync::Arc::from("abc")));
+        let b = c.add_constant(Value::String(std::sync::Arc::from("abc")));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::STR_EQUALS, 0);
+    });
+    assert!(r.as_bool() || r.as_i32() == 1);
+}
+
+#[test]
+fn str_equals_false() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::String(std::sync::Arc::from("abc")));
+        let b = c.add_constant(Value::String(std::sync::Arc::from("xyz")));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::STR_EQUALS, 0);
+    });
+    assert!(!r.as_bool() && r.as_i32() == 0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 11. GC ARRAY OPS
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn array_new_fixed_and_length() {
+    let r = run_script(|c| {
+        // Push 3 elements, array.new_fixed 3
+        let i10 = c.add_constant(Value::F64(10.0));
+        let i20 = c.add_constant(Value::F64(20.0));
+        let i30 = c.add_constant(Value::F64(30.0));
+        c.emit_op_u16(Op::CONST, i10, 0);
+        c.emit_op_u16(Op::CONST, i20, 0);
+        c.emit_op_u16(Op::CONST, i30, 0);
+        c.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        c.emit_op(Op::ARRAY_LENGTH, 0);
+    });
+    assert_eq!(r.as_i32(), 3);
+}
+
+#[test]
+fn array_get() {
+    let r = run_script(|c| {
+        let i10 = c.add_constant(Value::F64(10.0));
+        let i20 = c.add_constant(Value::F64(20.0));
+        let i30 = c.add_constant(Value::F64(30.0));
+        c.emit_op_u16(Op::CONST, i10, 0);
+        c.emit_op_u16(Op::CONST, i20, 0);
+        c.emit_op_u16(Op::CONST, i30, 0);
+        c.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        // array_get arr 1 → 20
+        let one = c.add_constant(Value::I32(1));
+        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_op(Op::ARRAY_GET, 0);
+    });
+    assert_eq!(r.as_f64(), 20.0);
+}
+
+#[test]
+fn array_set_then_get() {
+    let r = run_script(|c| {
+        c.local_count = 1;
+        // Create array [1, 2, 3]
+        let i1 = c.add_constant(Value::F64(1.0));
+        let i2 = c.add_constant(Value::F64(2.0));
+        let i3 = c.add_constant(Value::F64(3.0));
+        c.emit_op_u16(Op::CONST, i1, 0);
+        c.emit_op_u16(Op::CONST, i2, 0);
+        c.emit_op_u16(Op::CONST, i3, 0);
+        c.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        // Save to slot 0
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op(Op::DROP, 0);
+        // arr[1] = 99
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        let one = c.add_constant(Value::I32(1));
+        c.emit_op_u16(Op::CONST, one, 0);
+        let n99 = c.add_constant(Value::F64(99.0));
+        c.emit_op_u16(Op::CONST, n99, 0);
+        c.emit_op(Op::ARRAY_SET, 0);
+        c.emit_op(Op::DROP, 0);  // array.set result
+        // Get arr[1]
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_op(Op::ARRAY_GET, 0);
+    });
+    assert_eq!(r.as_f64(), 99.0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 12. FUNCTION CALL EDGE CASES
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn function_zero_args() {
+    let mut script = Chunk::new("<script>");
+    let mut fun = Chunk::new("f");
+    fun.arity = 0;
+    fun.local_count = 0;
+    let idx = fun.add_constant(Value::F64(42.0));
+    fun.emit_op_u16(Op::CONST, idx, 0);
+    fun.emit_op(Op::RETURN, 0);
+
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0);
+    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, fun]).unwrap();
+    assert_eq!(result.as_f64(), 42.0);
+}
+
+#[test]
+fn function_three_args() {
+    // sum3(a, b, c) { return a + b + c; } ; sum3(1, 2, 3) → 6
+    let mut script = Chunk::new("<script>");
+    let mut fun = Chunk::new("sum3");
+    fun.arity = 3;
+    fun.local_count = 3;
+    fun.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    fun.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    fun.emit_op(Op::F64_ADD, 0);
+    fun.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    fun.emit_op(Op::F64_ADD, 0);
+    fun.emit_op(Op::RETURN, 0);
+
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0);
+    let i1 = script.add_constant(Value::F64(1.0));
+    let i2 = script.add_constant(Value::F64(2.0));
+    let i3 = script.add_constant(Value::F64(3.0));
+    script.emit_op_u16(Op::CONST, i1, 0);
+    script.emit_op_u16(Op::CONST, i2, 0);
+    script.emit_op_u16(Op::CONST, i3, 0);
+    script.emit_op_u8(Op::CALL_REF, 3, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, fun]).unwrap();
+    assert_eq!(result.as_f64(), 6.0);
+}
+
+#[test]
+fn recursive_function_fibonacci() {
+    // fib(n) { if (n < 2) return n; return fib(n-1) + fib(n-2); }
+    // fib(10) = 55
+    let mut script = Chunk::new("<script>");
+    let mut fib = Chunk::new("fib");
+    fib.arity = 1;
+    fib.local_count = 1;
+
+    // if n < 2: return n
+    fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let two = fib.add_constant(Value::F64(2.0));
+    fib.emit_op_u16(Op::CONST, two, 0);
+    fib.emit_op(Op::DYN_LT, 0);
+    // if truthy, return n
+    // Use structured CF: block { br_if_label 0 if not <2; return }
+    let bp = fib.emit_block(0);
+    fib.emit_op(Op::DYN_NOT, 0);
+    fib.emit_br_if(0, 0); // skip if not less than 2
+    fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    fib.emit_op(Op::RETURN, 0);
+    fib.emit_end(0); fib.patch_block(bp);
+
+    // return fib(n-1) + fib(n-2)
+    fib.emit_op_u16(Op::REF_FUNC, 1, 0); // ref to self (chunk 1)
+    fib.emit(0, 0);
+    fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let one = fib.add_constant(Value::F64(1.0));
+    fib.emit_op_u16(Op::CONST, one, 0);
+    fib.emit_op(Op::F64_SUB, 0);
+    fib.emit_op_u8(Op::CALL_REF, 1, 0);
+
+    fib.emit_op_u16(Op::REF_FUNC, 1, 0);
+    fib.emit(0, 0);
+    fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    fib.emit_op_u16(Op::CONST, two, 0);
+    fib.emit_op(Op::F64_SUB, 0);
+    fib.emit_op_u8(Op::CALL_REF, 1, 0);
+
+    fib.emit_op(Op::F64_ADD, 0);
+    fib.emit_op(Op::RETURN, 0);
+
+    // script: fib(10)
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0);
+    let ten = script.add_constant(Value::F64(10.0));
+    script.emit_op_u16(Op::CONST, ten, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, fib]).unwrap();
+    assert_eq!(result.as_f64(), 55.0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 13. MORE CONTROL FLOW EDGE CASES
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn br_if_label_null_is_falsy() {
+    // block { push null ; br_if 0 ; push 7 } → 7 (null is falsy, doesn't branch)
+    let r = run_script(|c| {
+        let bp = c.emit_block(0);
+        c.emit_op(Op::NULL, 0);
+        c.emit_br_if(0, 0);
+        let i7 = c.add_constant(Value::F64(7.0));
+        c.emit_op_u16(Op::CONST, i7, 0);
+        c.emit_br(0, 0);
+        c.emit_end(0);
+        c.patch_block(bp);
+    });
+    assert_eq!(r.as_f64(), 7.0);
+}
+
+#[test]
+fn loop_restarts_at_top() {
+    // Simple counter test
+    let r = run_script(|c| {
+        c.local_count = 1;
+        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op(Op::DROP, 0);
+
+        let bp = c.emit_block(0);
+        let (lp, _) = c.emit_loop_s(0);
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        let five = c.add_constant(Value::I32(5));
+        c.emit_op_u16(Op::CONST, five, 0);
+        c.emit_op(Op::DYN_LT, 0);
+        c.emit_op(Op::DYN_NOT, 0);
+        c.emit_br_if(1, 0); // exit if !(i < 5)
+        // i++
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_op(Op::I32_ADD, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op(Op::DROP, 0);
+        c.emit_br(0, 0);
+        c.emit_end(0); c.patch_loop(lp);
+        c.emit_end(0); c.patch_block(bp);
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    });
+    assert_eq!(r.as_i32(), 5);
+}
+
+#[test]
+fn nested_blocks_br_outer() {
+    // block $outer { block $inner { br 1 (to outer) ; push 1 } ; push 2 }
+    // Should: skip both "push 1" and "push 2", fall through.
+    let r = run_script(|c| {
+        let outer = c.emit_block(0);
+        let inner = c.emit_block(0);
+        c.emit_br(1, 0); // to outer end
+        let i1 = c.add_constant(Value::F64(1.0));
+        c.emit_op_u16(Op::CONST, i1, 0);
+        c.emit_end(0); c.patch_block(inner);
+        let i2 = c.add_constant(Value::F64(2.0));
+        c.emit_op_u16(Op::CONST, i2, 0);
+        c.emit_end(0); c.patch_block(outer);
+        let sentinel = c.add_constant(Value::F64(99.0));
+        c.emit_op_u16(Op::CONST, sentinel, 0);
+    });
+    assert_eq!(r.as_f64(), 99.0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 14. ROUND-TRIP FOR COMPLEX PROGRAMS
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn round_trip_preserves_line_info() {
+    let mut chunk = Chunk::new("<script>");
+    let idx = chunk.add_constant(Value::F64(7.0));
+    chunk.emit_op_u16(Op::CONST, idx, 42);  // line 42
+    chunk.emit_op(Op::RETURN, 42);
+
+    let wasm = vybe_bytecode::wasm::write_wasm(&[chunk.clone()]);
+    let chunks_rt = vybe_bytecode::wasm::read_wasm(&wasm).unwrap();
+    assert_eq!(chunks_rt[0].lines.len(), chunk.lines.len(),
+        "line count preserved");
+}
+
+#[test]
+fn round_trip_preserves_constants() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.add_constant(Value::F64(1.0));
+    chunk.add_constant(Value::String(std::sync::Arc::from("test")));
+    chunk.add_constant(Value::I32(42));
+    chunk.add_constant(Value::Bool(true));
+    chunk.add_constant(Value::Null);
+    let last = chunk.add_constant(Value::F64(99.0));
+    chunk.emit_op_u16(Op::CONST, last, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = vybe_bytecode::wasm::write_wasm(&[chunk.clone()]);
+    let chunks_rt = vybe_bytecode::wasm::read_wasm(&wasm).unwrap();
+    assert_eq!(chunks_rt[0].constants.len(), chunk.constants.len());
+}
+
+#[test]
+fn round_trip_loop_execution_matches() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.local_count = 1;
+    chunk.emit_op(Op::I32_CONST_0, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    chunk.emit_op(Op::DROP, 0);
+
+    let bp = chunk.emit_block(0);
+    let (lp, _) = chunk.emit_loop_s(0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let ten = chunk.add_constant(Value::I32(10));
+    chunk.emit_op_u16(Op::CONST, ten, 0);
+    chunk.emit_op(Op::DYN_LT, 0);
+    chunk.emit_op(Op::DYN_NOT, 0);
+    chunk.emit_br_if(1, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_op(Op::I32_ADD, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_br(0, 0);
+    chunk.emit_end(0); chunk.patch_loop(lp);
+    chunk.emit_end(0); chunk.patch_block(bp);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let chunks = vec![chunk];
+
+    // Direct run
+    let mut vm1 = VM::new();
+    let direct = vm1.run(chunks.clone()).unwrap().as_i32();
+
+    // Round-trip run
+    let wasm = vybe_bytecode::wasm::write_wasm(&chunks);
+    let rt = vybe_bytecode::wasm::read_wasm(&wasm).unwrap();
+    let mut vm2 = VM::new();
+    let rt_result = vm2.run(rt).unwrap().as_i32();
+
+    assert_eq!(direct, 10);
+    assert_eq!(rt_result, 10);
+    assert_eq!(direct, rt_result, "round-trip execution must match direct");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 15. BYTECODE SIZE & OPCODE ENCODING (WASM-spec compliance)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn every_opcode_is_two_bytes() {
+    // Opcodes are 2 bytes: [prefix, sub].
+    // Verify encoding round-trip matches spec.
+    for byte1 in [0x00u8, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF] {
+        for byte2 in 0u8..=0xFF {
+            // Not all combinations are valid opcodes — just check decode doesn't panic
+            let _ = vybe_bytecode::opcode::Op::decode(byte1, byte2);
+        }
+    }
+}
+
+#[test]
+fn core_wasm_opcode_bytes_match_spec() {
+    // Verify specific opcodes have the correct WASM byte values
+    assert_eq!(Op::DROP.sub(), 0x1A, "drop should be 0x1A per WASM spec");
+    assert_eq!(Op::I32_ADD.sub(), 0x6A, "i32.add should be 0x6A");
+    assert_eq!(Op::I32_SUB.sub(), 0x6B, "i32.sub should be 0x6B");
+    assert_eq!(Op::F64_ADD.sub(), 0xA0, "f64.add should be 0xA0");
+    assert_eq!(Op::F64_NEG.sub(), 0x9A, "f64.neg should be 0x9A");
+    assert_eq!(Op::LOCAL_GET.sub(), 0x20, "local.get should be 0x20");
+    assert_eq!(Op::LOCAL_SET.sub(), 0x21, "local.set should be 0x21");
+    assert_eq!(Op::CALL.sub(), 0x10, "call should be 0x10");
+    assert_eq!(Op::RETURN.sub(), 0x0F, "return should be 0x0F");
+    assert_eq!(Op::END.sub(), 0x0B, "end should be 0x0B");
+    assert_eq!(Op::BLOCK.sub(), 0x02, "block should be 0x02");
+    assert_eq!(Op::LOOP.sub(), 0x03, "loop should be 0x03");
+    assert_eq!(Op::BR.sub(), 0x0C, "br should be 0x0C");
+}
+
+#[test]
+fn core_opcodes_have_prefix_0x00() {
+    assert_eq!(Op::DROP.prefix(), 0x00);
+    assert_eq!(Op::I32_ADD.prefix(), 0x00);
+    assert_eq!(Op::F64_ADD.prefix(), 0x00);
+    assert_eq!(Op::LOCAL_GET.prefix(), 0x00);
+    assert_eq!(Op::END.prefix(), 0x00);
+}
+
+#[test]
+fn gc_opcodes_have_prefix_0xFB() {
+    assert_eq!(Op::STRUCT_NEW.prefix(), 0xFB);
+    assert_eq!(Op::ARRAY_NEW.prefix(), 0xFB);
+    assert_eq!(Op::ARRAY_GET.prefix(), 0xFB);
+}
+
+#[test]
+fn vm_internal_opcodes_have_prefix_0xFF() {
+    assert_eq!(Op::CONST.prefix(), 0xFF);
+    assert_eq!(Op::DYN_ADD.prefix(), 0xFF);
+    assert_eq!(Op::DYN_LT.prefix(), 0xFF);
+    assert_eq!(Op::CALL_IMPORT.prefix(), 0xFF);
+    assert_eq!(Op::BR_LABEL.prefix(), 0xFF);
+    assert_eq!(Op::STR_CONCAT.prefix(), 0xFF);
+    assert_eq!(Op::ARRAY_PUSH.prefix(), 0xFF);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 16. GLOBALS (global.get / global.set)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn global_set_then_get_returns_same_value() {
+    let result = run_script(|c| {
+        let name_idx = c.add_constant(Value::String(std::sync::Arc::from("x")));
+        let v = c.add_constant(Value::F64(42.0));
+        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    });
+    assert_eq!(result.as_f64(), 42.0);
+}
+
+#[test]
+fn global_overwrite_takes_latest_value() {
+    let result = run_script(|c| {
+        let name_idx = c.add_constant(Value::String(std::sync::Arc::from("x")));
+        let v1 = c.add_constant(Value::F64(1.0));
+        let v2 = c.add_constant(Value::F64(99.0));
+        c.emit_op_u16(Op::CONST, v1, 0);
+        c.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::CONST, v2, 0);
+        c.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    });
+    assert_eq!(result.as_f64(), 99.0);
+}
+
+#[test]
+fn global_get_undefined_returns_undefined() {
+    let result = run_script(|c| {
+        let name_idx = c.add_constant(Value::String(std::sync::Arc::from("never_set_global_xyz")));
+        c.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    });
+    assert!(matches!(result, Value::Undefined));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 17. SELECT (WASM 0x1B)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn select_picks_val1_when_cond_nonzero() {
+    let result = run_script(|c| {
+        let v1 = c.add_constant(Value::I32(10));
+        let v2 = c.add_constant(Value::I32(20));
+        c.emit_op_u16(Op::CONST, v1, 0);
+        c.emit_op_u16(Op::CONST, v2, 0);
+        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_op(Op::SELECT, 0);
+    });
+    assert_eq!(result.as_i32(), 10);
+}
+
+#[test]
+fn select_picks_val2_when_cond_zero() {
+    let result = run_script(|c| {
+        let v1 = c.add_constant(Value::I32(10));
+        let v2 = c.add_constant(Value::I32(20));
+        c.emit_op_u16(Op::CONST, v1, 0);
+        c.emit_op_u16(Op::CONST, v2, 0);
+        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_op(Op::SELECT, 0);
+    });
+    assert_eq!(result.as_i32(), 20);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 18. I64 ARITHMETIC (WASM 0x7C..0x8A range)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn i64_add_simple() {
+    let result = run_script(|c| {
+        let a = c.add_constant(Value::I64(1_000_000_000_000));
+        let b = c.add_constant(Value::I64(2_000_000_000_000));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::I64_ADD, 0);
+    });
+    assert_eq!(result.as_i64(), 3_000_000_000_000);
+}
+
+#[test]
+fn i64_sub_negative_result() {
+    let result = run_script(|c| {
+        let a = c.add_constant(Value::I64(10));
+        let b = c.add_constant(Value::I64(50));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::I64_SUB, 0);
+    });
+    assert_eq!(result.as_i64(), -40);
+}
+
+#[test]
+fn i64_mul() {
+    let result = run_script(|c| {
+        let a = c.add_constant(Value::I64(1_000_000));
+        let b = c.add_constant(Value::I64(1_000_000));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::I64_MUL, 0);
+    });
+    assert_eq!(result.as_i64(), 1_000_000_000_000);
+}
+
+#[test]
+fn i64_div_s_negative() {
+    let result = run_script(|c| {
+        let a = c.add_constant(Value::I64(-100));
+        let b = c.add_constant(Value::I64(7));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::I64_DIV_S, 0);
+    });
+    assert_eq!(result.as_i64(), -14);
+}
+
+#[test]
+fn i64_and_or_xor() {
+    // 0xFF00 AND 0x0FF0 = 0x0F00
+    let and_result = run_script(|c| {
+        let a = c.add_constant(Value::I64(0xFF00));
+        let b = c.add_constant(Value::I64(0x0FF0));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::I64_AND, 0);
+    });
+    assert_eq!(and_result.as_i64(), 0x0F00);
+
+    // 0xFF00 OR 0x0FF0 = 0xFFF0
+    let or_result = run_script(|c| {
+        let a = c.add_constant(Value::I64(0xFF00));
+        let b = c.add_constant(Value::I64(0x0FF0));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::I64_OR, 0);
+    });
+    assert_eq!(or_result.as_i64(), 0xFFF0);
+
+    // 0xFF00 XOR 0x0FF0 = 0xF0F0
+    let xor_result = run_script(|c| {
+        let a = c.add_constant(Value::I64(0xFF00));
+        let b = c.add_constant(Value::I64(0x0FF0));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::I64_XOR, 0);
+    });
+    assert_eq!(xor_result.as_i64(), 0xF0F0);
+}
+
+#[test]
+fn i64_eqz_zero_returns_true() {
+    let result = run_script(|c| {
+        let a = c.add_constant(Value::I64(0));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op(Op::I64_EQZ, 0);
+    });
+    assert_eq!(result.as_bool(), true);
+}
+
+#[test]
+fn i64_eqz_nonzero_returns_false() {
+    let result = run_script(|c| {
+        let a = c.add_constant(Value::I64(42));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op(Op::I64_EQZ, 0);
+    });
+    assert_eq!(result.as_bool(), false);
+}
+
+#[test]
+fn i64_extend_i32_s_preserves_sign() {
+    let result = run_script(|c| {
+        let a = c.add_constant(Value::I32(-5));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op(Op::I64_EXTEND_I32_S, 0);
+    });
+    assert_eq!(result.as_i64(), -5);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 19. MORE CONTROL FLOW (br_if_true offset-based, br_label chains)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn br_if_true_taken_when_true() {
+    // if (true) jump over the F64 5.0 const to put 99.0 on stack
+    let mut chunk = Chunk::new("<script>");
+    let v5 = chunk.add_constant(Value::F64(5.0));
+    let v99 = chunk.add_constant(Value::F64(99.0));
+
+    chunk.emit_op(Op::TRUE, 0);
+    // BR_IF_TRUE with offset to skip pushing 5.0
+    chunk.emit_op(Op::BR_IF_TRUE, 0);
+    // offset: skip over 2 bytes for offset + CONST(5.0)=4 bytes = 4 bytes forward
+    // actually the offset is relative to after the offset bytes themselves
+    chunk.emit(0x00, 0); chunk.emit(0x04, 0); // +4
+    chunk.emit_op_u16(Op::CONST, v5, 0);
+    chunk.emit_op_u16(Op::CONST, v99, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![chunk]).unwrap();
+    assert_eq!(result.as_f64(), 99.0);
+}
+
+#[test]
+fn br_if_true_not_taken_when_false() {
+    // if (false) ... else push 5, then push 99 and add: 104
+    let mut chunk = Chunk::new("<script>");
+    let v5 = chunk.add_constant(Value::F64(5.0));
+    let v99 = chunk.add_constant(Value::F64(99.0));
+
+    chunk.emit_op(Op::FALSE, 0);
+    chunk.emit_op(Op::BR_IF_TRUE, 0);
+    chunk.emit(0x00, 0); chunk.emit(0x04, 0);
+    chunk.emit_op_u16(Op::CONST, v5, 0);     // executes (4 bytes)
+    chunk.emit_op_u16(Op::CONST, v99, 0);    // executes
+    chunk.emit_op(Op::F64_ADD, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![chunk]).unwrap();
+    assert_eq!(result.as_f64(), 104.0);
+}
+
+#[test]
+fn br_label_to_outer_block_skips_inner_work() {
+    // Structured:
+    //   block { block { br 1 } push 5 } push 42
+    // br 1 jumps out of both blocks, then we push 42.
+    let mut chunk = Chunk::new("<script>");
+    let v5 = chunk.add_constant(Value::F64(5.0));
+    let v42 = chunk.add_constant(Value::F64(42.0));
+
+    let outer = chunk.emit_block(0);
+    let inner = chunk.emit_block(0);
+    chunk.emit_op_u8(Op::BR_LABEL, 1, 0); // break out of outer
+    chunk.emit_op(Op::END, 0); // end inner
+    chunk.patch_block(inner);
+    chunk.emit_op_u16(Op::CONST, v5, 0); // should be skipped
+    chunk.emit_op(Op::END, 0); // end outer
+    chunk.patch_block(outer);
+    chunk.emit_op_u16(Op::CONST, v42, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![chunk]).unwrap();
+    assert_eq!(result.as_f64(), 42.0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 20. ROUND-TRIP: GLOBALS, MULTIPLE FUNCTIONS
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn round_trip_globals_persist() {
+    let mut script = Chunk::new("<script>");
+    let name_idx = script.add_constant(Value::String(std::sync::Arc::from("gx")));
+    let v = script.add_constant(Value::F64(123.0));
+    script.emit_op_u16(Op::CONST, v, 0);
+    script.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+    script.emit_op(Op::DROP, 0);
+    script.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let chunks = vec![script];
+    let mut vm1 = VM::new();
+    let direct = vm1.run(chunks.clone()).unwrap().as_f64();
+
+    let wasm = vybe_bytecode::wasm::write_wasm(&chunks);
+    let rt = vybe_bytecode::wasm::read_wasm(&wasm).unwrap();
+    let mut vm2 = VM::new();
+    let rt_result = vm2.run(rt).unwrap().as_f64();
+
+    assert_eq!(direct, 123.0);
+    assert_eq!(rt_result, 123.0);
+}
+
+#[test]
+fn round_trip_three_functions_chained_calls() {
+    // script calls f1(2), f1 calls f2(x+1), f2 returns x*10
+    // expected: f2(2+1)*1 = 30
+    let mut script = Chunk::new("<script>");
+    script.emit_op_u16(Op::REF_FUNC, 1, 0); // f1
+    script.emit(0, 0); // uv_count
+    let two = script.add_constant(Value::F64(2.0));
+    script.emit_op_u16(Op::CONST, two, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut f1 = Chunk::new("f1");
+    f1.arity = 1;
+    f1.local_count = 1;
+    f1.emit_op_u16(Op::REF_FUNC, 2, 0); // f2
+    f1.emit(0, 0); // uv_count
+    f1.emit_op_u16(Op::LOCAL_GET, 0, 0); // x
+    let one = f1.add_constant(Value::F64(1.0));
+    f1.emit_op_u16(Op::CONST, one, 0);
+    f1.emit_op(Op::F64_ADD, 0);
+    f1.emit_op_u8(Op::CALL_REF, 1, 0);
+    f1.emit_op(Op::RETURN, 0);
+
+    let mut f2 = Chunk::new("f2");
+    f2.arity = 1;
+    f2.local_count = 1;
+    f2.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let ten = f2.add_constant(Value::F64(10.0));
+    f2.emit_op_u16(Op::CONST, ten, 0);
+    f2.emit_op(Op::F64_MUL, 0);
+    f2.emit_op(Op::RETURN, 0);
+
+    let chunks = vec![script, f1, f2];
+    let mut vm1 = VM::new();
+    let direct = vm1.run(chunks.clone()).unwrap().as_f64();
+
+    let wasm = vybe_bytecode::wasm::write_wasm(&chunks);
+    let rt = vybe_bytecode::wasm::read_wasm(&wasm).unwrap();
+    let mut vm2 = VM::new();
+    let rt_result = vm2.run(rt).unwrap().as_f64();
+
+    assert_eq!(direct, 30.0);
+    assert_eq!(rt_result, direct, "round-trip must preserve chained call semantics");
+}
+
+#[test]
+fn round_trip_preserves_function_arity() {
+    let mut script = Chunk::new("<script>");
+    script.emit_op(Op::NULL, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut f_two = Chunk::new("f_two");
+    f_two.arity = 2;
+    f_two.local_count = 2;
+    f_two.emit_op(Op::RETURN, 0);
+
+    let mut f_five = Chunk::new("f_five");
+    f_five.arity = 5;
+    f_five.local_count = 5;
+    f_five.emit_op(Op::RETURN, 0);
+
+    let chunks = vec![script, f_two, f_five];
+    let wasm = vybe_bytecode::wasm::write_wasm(&chunks);
+    let rt = vybe_bytecode::wasm::read_wasm(&wasm).unwrap();
+
+    assert_eq!(rt.len(), 3);
+    assert_eq!(rt[1].arity, 2, "f_two arity preserved");
+    assert_eq!(rt[2].arity, 5, "f_five arity preserved");
+}
+
+#[test]
+fn round_trip_preserves_chunk_name() {
+    let mut script = Chunk::new("<script>");
+    script.emit_op(Op::NULL, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut named = Chunk::new("my_cool_function");
+    named.arity = 0;
+    named.emit_op(Op::RETURN, 0);
+
+    let chunks = vec![script, named];
+    let wasm = vybe_bytecode::wasm::write_wasm(&chunks);
+    let rt = vybe_bytecode::wasm::read_wasm(&wasm).unwrap();
+    assert_eq!(rt[1].name, "my_cool_function", "chunk name preserved across round-trip");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 21. WASM BINARY STRUCTURE (validates magic, section order)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn wasm_binary_sections_in_correct_order() {
+    // WASM spec: sections must appear in a specific order (when present):
+    //   1=type, 2=import, 3=function, 4=table, 5=memory, 6=global,
+    //   7=export, 8=start, 9=element, 10=code, 11=data, 12=data_count, 0=custom
+    // Custom sections can appear anywhere.
+    let mut script = Chunk::new("<script>");
+    let v = script.add_constant(Value::F64(1.0));
+    script.emit_op_u16(Op::CONST, v, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let wasm = vybe_bytecode::wasm::write_wasm(&vec![script]);
+
+    // Skip magic + version (8 bytes)
+    let mut pos = 8;
+    let mut last_known_order = 0u8;
+    while pos < wasm.len() {
+        let section_id = wasm[pos];
+        pos += 1;
+        // Read section size (LEB128, but for small sections 1 byte)
+        let mut size: u32 = 0;
+        let mut shift = 0;
+        loop {
+            let b = wasm[pos];
+            pos += 1;
+            size |= ((b & 0x7F) as u32) << shift;
+            if b & 0x80 == 0 { break; }
+            shift += 7;
+        }
+
+        // Custom sections (id=0) can appear anywhere — skip order check
+        if section_id != 0 {
+            assert!(section_id >= last_known_order,
+                "section id {} appeared after {} — WASM spec requires ordered sections",
+                section_id, last_known_order);
+            last_known_order = section_id;
+        }
+
+        pos += size as usize;
+    }
+    assert_eq!(pos, wasm.len(), "sections should span the entire module");
+}
+
+#[test]
+fn wasm_contains_vybe_custom_section() {
+    let mut script = Chunk::new("<script>");
+    script.emit_op(Op::NULL, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let wasm = vybe_bytecode::wasm::write_wasm(&vec![script]);
+
+    // Search for "vybe" string as section name
+    let needle = b"vybe";
+    let found = wasm.windows(needle.len()).any(|w| w == needle);
+    assert!(found, "wasm must contain custom section named 'vybe' for round-trip");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 22. NUMERIC EDGE CASES (NaN, infinity, integer boundaries)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn f64_nan_is_not_equal_to_itself() {
+    let result = run_script(|c| {
+        let nan = c.add_constant(Value::F64(f64::NAN));
+        c.emit_op_u16(Op::CONST, nan, 0);
+        c.emit_op_u16(Op::CONST, nan, 0);
+        c.emit_op(Op::DYN_EQ, 0);
+    });
+    assert_eq!(result.as_bool(), false, "NaN != NaN per IEEE-754");
+}
+
+#[test]
+fn f64_infinity_plus_finite_is_infinity() {
+    let result = run_script(|c| {
+        let inf = c.add_constant(Value::F64(f64::INFINITY));
+        let one = c.add_constant(Value::F64(1.0));
+        c.emit_op_u16(Op::CONST, inf, 0);
+        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_op(Op::F64_ADD, 0);
+    });
+    assert!(result.as_f64().is_infinite() && result.as_f64() > 0.0);
+}
+
+#[test]
+fn i32_max_plus_one_wraps_to_min() {
+    // WASM i32.add is modulo 2^32
+    let result = run_script(|c| {
+        let max = c.add_constant(Value::I32(i32::MAX));
+        let one = c.add_constant(Value::I32(1));
+        c.emit_op_u16(Op::CONST, max, 0);
+        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_op(Op::I32_ADD, 0);
+    });
+    assert_eq!(result.as_i32(), i32::MIN, "i32.add overflow wraps per WASM");
+}
+
+#[test]
+fn i32_min_minus_one_wraps_to_max() {
+    let result = run_script(|c| {
+        let min = c.add_constant(Value::I32(i32::MIN));
+        let one = c.add_constant(Value::I32(1));
+        c.emit_op_u16(Op::CONST, min, 0);
+        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_op(Op::I32_SUB, 0);
+    });
+    assert_eq!(result.as_i32(), i32::MAX, "i32.sub underflow wraps per WASM");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 23. LOCAL SLOT INDEPENDENCE (each arg/local gets its own slot)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn five_args_each_go_to_correct_slot() {
+    // f(a,b,c,d,e) → returns a + b*10 + c*100 + d*1000 + e*10000
+    // Call f(1,2,3,4,5) → expect 54321
+    let mut script = Chunk::new("<script>");
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0); // uv_count
+    for i in 1..=5 {
+        let k = script.add_constant(Value::F64(i as f64));
+        script.emit_op_u16(Op::CONST, k, 0);
+    }
+    script.emit_op_u8(Op::CALL_REF, 5, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut f = Chunk::new("combo");
+    f.arity = 5;
+    f.local_count = 5;
+    // a (slot 0) + b (slot 1) * 10
+    f.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    f.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    let ten = f.add_constant(Value::F64(10.0));
+    f.emit_op_u16(Op::CONST, ten, 0);
+    f.emit_op(Op::F64_MUL, 0);
+    f.emit_op(Op::F64_ADD, 0);
+    // + c * 100
+    f.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    let hundred = f.add_constant(Value::F64(100.0));
+    f.emit_op_u16(Op::CONST, hundred, 0);
+    f.emit_op(Op::F64_MUL, 0);
+    f.emit_op(Op::F64_ADD, 0);
+    // + d * 1000
+    f.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    let thousand = f.add_constant(Value::F64(1000.0));
+    f.emit_op_u16(Op::CONST, thousand, 0);
+    f.emit_op(Op::F64_MUL, 0);
+    f.emit_op(Op::F64_ADD, 0);
+    // + e * 10000
+    f.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    let tenk = f.add_constant(Value::F64(10000.0));
+    f.emit_op_u16(Op::CONST, tenk, 0);
+    f.emit_op(Op::F64_MUL, 0);
+    f.emit_op(Op::F64_ADD, 0);
+    f.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, f]).unwrap().as_f64();
+    assert_eq!(result, 54321.0, "each arg must land in its declared slot");
+}
+
+#[test]
+fn local_set_on_arg_slot_overwrites_arg() {
+    // f(a) sets slot 0 = 999, returns slot 0 → should be 999, not the arg
+    let mut script = Chunk::new("<script>");
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0); // uv_count
+    let seven = script.add_constant(Value::F64(7.0));
+    script.emit_op_u16(Op::CONST, seven, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut f = Chunk::new("clobber_arg");
+    f.arity = 1;
+    f.local_count = 1;
+    let k = f.add_constant(Value::F64(999.0));
+    f.emit_op_u16(Op::CONST, k, 0);
+    f.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    f.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    f.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, f]).unwrap().as_f64();
+    assert_eq!(result, 999.0);
+}

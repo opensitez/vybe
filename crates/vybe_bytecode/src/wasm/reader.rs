@@ -3,9 +3,7 @@
 use super::encoding::*;
 use crate::{Chunk, Op};
 use crate::value::Value;
-use crate::chunk::Import;
 use std::sync::Arc;
-use std::collections::HashMap;
 
 pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
     if data.len() < 8 || &data[0..4] != &WASM_MAGIC {
@@ -689,41 +687,24 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
         let code = data[pos..pos + code_len as usize].to_vec();
         pos += code_len as usize;
 
+        // Line info
+        let (line_count, read) = read_leb128_u32(&data[pos..]); pos += read;
+        let mut lines = Vec::with_capacity(line_count as usize);
+        for _ in 0..line_count {
+            let (line, read) = read_leb128_u32(&data[pos..]); pos += read;
+            lines.push(line);
+        }
+
         let mut chunk = Chunk::new(&name);
         chunk.arity = arity;
         chunk.local_count = lc as u16;
         chunk.constants = constants;
         chunk.imports = imports;
         chunk.code = code;
+        chunk.lines = lines;
         chunks.push(chunk);
     }
     Ok(chunks)
-}
-
-// ============================================================
-// Custom section: our metadata + raw bytecode for round-trip
-// ============================================================
-
-fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
-    let mut out = Vec::new();
-    write_name(&mut out, "vybe");
-    write_leb128_u32(&mut out, chunks.len() as u32);
-    for chunk in chunks {
-        write_name(&mut out, &chunk.name);
-        out.push(chunk.arity);
-        write_leb128_u32(&mut out, chunk.local_count as u32);
-        write_leb128_u32(&mut out, chunk.constants.len() as u32);
-        for c in &chunk.constants { encode_value(&mut out, c); }
-        write_leb128_u32(&mut out, chunk.imports.len() as u32);
-        for imp in &chunk.imports {
-            write_name(&mut out, &imp.module);
-            write_name(&mut out, &imp.name);
-        }
-        // Store raw bytecode for round-trip
-        write_leb128_u32(&mut out, chunk.code.len() as u32);
-        out.extend_from_slice(&chunk.code);
-    }
-    out
 }
 
 // ============================================================

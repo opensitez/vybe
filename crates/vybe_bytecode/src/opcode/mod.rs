@@ -111,6 +111,7 @@ impl std::fmt::Display for Op {
 
 /// Operand format — what follows the 2-byte opcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
 pub enum OperandFormat {
     /// No operands.
     None,

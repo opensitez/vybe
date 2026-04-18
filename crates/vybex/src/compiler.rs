@@ -176,10 +176,6 @@ impl Compiler {
         Some((self.label_depth - ctx.continue_label_depth) as u8)
     }
 
-    /// Track a BLOCK/LOOP being pushed to the label stack.
-    fn push_label(&mut self) { self.label_depth += 1; }
-    /// Track an END popping from the label stack.
-    fn pop_label(&mut self) { self.label_depth -= 1; }
     #[allow(dead_code)]
     fn current_offset(&self) -> usize { self.chunks[self.current].current_offset() }
     fn str_const(&mut self, s: &str) -> u16 { self.chunks[self.current].add_constant(Value::String(Arc::from(s))) }

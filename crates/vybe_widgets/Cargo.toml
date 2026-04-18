@@ -9,10 +9,9 @@ cosmic-text = "0.18.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ropey = "1.6.1"
-uuid = { version = "1", features = ["v4"] }
 vybe_forms = { path = "../vybe_forms" }
 winit = "0.30"
-arboard = "3.4"
+arboard = { version = "3.4", default-features = false }
 softbuffer = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
-rfd = "0.17"
+rfd = { workspace = true }

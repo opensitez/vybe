@@ -150,7 +150,7 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
                 temp_idx: u32, _has_temp: bool,
                 type_ctx: &WasmTypeContext,
                 global_map: &std::collections::HashMap<String, u32>,
-                host_import_count: usize) {
+                _host_import_count: usize) {
     match op {
         _ if op == Op::LOCAL_GET => { body.push(op.sub()); write_leb128_u32(body, read_u16(&chunk.code, ip) as u32); }
         _ if op == Op::LOCAL_SET => { body.push(0x22); write_leb128_u32(body, read_u16(&chunk.code, ip) as u32); } // local.tee
@@ -321,11 +321,8 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
             let chunk_idx = read_u16(&chunk.code, ip);
             let uv_count = chunk.code[*ip] as usize; *ip += 1;
             *ip += uv_count * 2; // skip upvalue descriptors
-            // WASM function index = total_imports + chunk_idx
-            let total_imports = host_import_count + rt_idx.len();
-            let wasm_func_idx = total_imports + chunk_idx as usize;
-            // Store as table index (i32) for call_indirect — box as externref
-            // The chunk_idx is the table index since element section maps chunks 0..N to table slots
+            // Store as table index (i32) for call_indirect — box as externref.
+            // chunk_idx is the table index because the element section maps chunks 0..N to table slots.
             body.push(0x41); // i32.const
             write_leb128_i32(body, chunk_idx as i32);
             emit_box_i32(body, rt_idx); // i32 → externref
@@ -1230,15 +1227,11 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
             // Find "number" in constants
             let mut number_val = None;
             let mut string_val = None;
-            let mut boolean_val = None;
-            let mut i32_val = None;
             for (ci, c) in chunk.constants.iter().enumerate() {
                 if let Value::String(s) = c {
                     match s.as_ref() {
                         "number" => number_val = Some(ci),
                         "string" => string_val = Some(ci),
-                        "boolean" => boolean_val = Some(ci),
-                        "i32" => i32_val = Some(ci),
                         _ => {}
                     }
                 }

@@ -12,10 +12,9 @@ vybe_host = { workspace = true, features = ["gui"] }
 vybe_widgets = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 crossbeam-channel = "0.5"
-toml = "0.8"
+toml = "1.1"
 quick-xml = "0.39"
 
 [dev-dependencies]

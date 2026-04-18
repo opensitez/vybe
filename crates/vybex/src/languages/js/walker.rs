@@ -1778,17 +1778,6 @@ fn extract_ident_name(pair: &Pair<Rule>) -> String {
     pair.as_str().trim().to_string()
 }
 
-fn extract_ident_from_for_target<'a>(pairs: &mut impl Iterator<Item = Pair<'a, Rule>>) -> Result<String, String> {
-    for p in pairs {
-        match p.as_rule() {
-            Rule::ident_name => return Ok(p.as_str().to_string()),
-            Rule::var_kind => continue,
-            _ => continue,
-        }
-    }
-    Err("Expected identifier in for target".into())
-}
-
 /// Extract the loop variable and any destructuring prefix statements.
 /// For `for (let x of arr)` returns ("x", []).
 /// For `for (let [a, b] of arr)` returns ("__forof_tmp", [VarDecl let [a,b] = __forof_tmp])
