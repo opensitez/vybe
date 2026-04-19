@@ -139,6 +139,13 @@ impl Op {
     pub const I32_STORE_64: Op      = Op::new(0xFF, 0x6D);
     pub const I64_STORE_64: Op      = Op::new(0xFF, 0x6E);
     pub const F64_STORE_64: Op      = Op::new(0xFF, 0x6F);
+    // JS primitive creation / testing (js-primitive-builtins proposal)
+    pub const UNDEFINED: Op         = Op::new(0xFF, 0x70);
+    pub const SYMBOL: Op            = Op::new(0xFF, 0x71); // u16 const-idx (description)
+    pub const BIGINT: Op            = Op::new(0xFF, 0x72); // u16 const-idx (Value::I64)
+    pub const REF_IS_UNDEFINED: Op  = Op::new(0xFF, 0x73);
+    pub const REF_IS_SYMBOL: Op     = Op::new(0xFF, 0x74);
+    pub const REF_IS_BIGINT: Op     = Op::new(0xFF, 0x75);
 }
 
 opcode_category! {
@@ -275,4 +282,11 @@ opcode_category! {
     [0x6D] i32_store_64 => None, "i32.store_64";
     [0x6E] i64_store_64 => None, "i64.store_64";
     [0x6F] f64_store_64 => None, "f64.store_64";
+    // JS primitive creation / testing
+    [0x70] undefined => None, "undefined";
+    [0x71] symbol => U16, "symbol";
+    [0x72] bigint => U16, "bigint";
+    [0x73] ref_is_undefined => None, "ref.is_undefined";
+    [0x74] ref_is_symbol => None, "ref.is_symbol";
+    [0x75] ref_is_bigint => None, "ref.is_bigint";
 }

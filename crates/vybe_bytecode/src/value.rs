@@ -21,6 +21,11 @@ pub enum Value {
     WeakRef(Weak<Mutex<Object>>),
     /// SIMD 128-bit vector (4×i32, 2×f64, 4×f32, 16×i8, 8×i16).
     V128([u8; 16]),
+    /// JS Symbol — unique identity; description is for debugging only.
+    /// Two symbols are `==` only when cloned from the same `Arc<str>`.
+    Symbol(Arc<str>),
+    /// JS BigInt — arbitrary precision in theory, i64-range in our VM.
+    BigInt(i64),
 }
 
 impl Value {
@@ -66,6 +71,7 @@ impl Value {
     pub fn as_str(&self) -> &str {
         match self {
             Value::String(s) => s,
+            Value::Symbol(s) => s,
             _ => "",
         }
     }
@@ -91,6 +97,19 @@ impl Value {
             }
             Value::V128(_) => "v128",
             Value::WeakRef(_) => "weakref",
+            Value::Symbol(_) => "symbol",
+            Value::BigInt(_) => "bigint",
+        }
+    }
+
+    /// Unwrap `Value::BigInt(n)` or coerce narrow integers — used by VM
+    /// arithmetic opcodes that route through BigInt.
+    pub fn as_bigint(&self) -> i64 {
+        match self {
+            Value::BigInt(n) => *n,
+            Value::I64(n)    => *n,
+            Value::I32(n)    => *n as i64,
+            _ => 0,
         }
     }
 
@@ -110,6 +129,11 @@ impl Value {
             }
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
+            // Symbols have IDENTITY equality — same Arc instance only.
+            (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
+            (Value::BigInt(a), Value::BigInt(b)) => a == b,
+            (Value::BigInt(a), Value::I64(b)) | (Value::I64(b), Value::BigInt(a)) => *a == *b,
+            (Value::BigInt(a), Value::I32(b)) | (Value::I32(b), Value::BigInt(a)) => *a == (*b as i64),
             // Cross-type numeric equality: I32(0) == F64(0.0), etc.
             (Value::I32(a), Value::F64(b)) => (*a as f64) == *b,
             (Value::F64(a), Value::I32(b)) => *a == (*b as f64),
@@ -163,6 +187,8 @@ impl fmt::Display for Value {
                 let vals: Vec<String> = bytes.iter().map(|b| format!("{:02x}", b)).collect();
                 write!(f, "v128[{}]", vals.join(""))
             }
+            Value::Symbol(d) => write!(f, "Symbol({})", d),
+            Value::BigInt(n)  => write!(f, "{}n", n),
         }
     }
 }

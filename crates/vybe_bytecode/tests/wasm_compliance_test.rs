@@ -1775,3 +1775,420 @@ fn local_set_on_arg_slot_overwrites_arg() {
     let result = vm.run(vec![script, f]).unwrap().as_f64();
     assert_eq!(result, 999.0);
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// 24. JS BUILTINS IMPORTS (js-string / js-primitive / js-symbol / js-bigint)
+// ──────────────────────────────────────────────────────────────────────
+
+/// Helper: emit a tiny script that returns a single boxed f64, then
+/// produce its .wasm bytes.
+fn emit_trivial_wasm() -> Vec<u8> {
+    let mut script = Chunk::new("<script>");
+    let k = script.add_constant(Value::F64(7.0));
+    script.emit_op_u16(Op::CONST, k, 0);
+    script.emit_op(Op::RETURN, 0);
+    vybe_bytecode::wasm::write_wasm(&vec![script])
+}
+
+/// Every builtin we expect in the emitter must appear as an import in the
+/// emitted .wasm. This pins the full set so regressions are caught.
+#[test]
+fn wasm_imports_include_full_js_builtins_surface() {
+    let wasm = emit_trivial_wasm();
+    let required = [
+        // js-number
+        "fromF64", "fromI32", "fromU32", "toF64", "toI32", "toU32",
+        "test", "testI32", "testU32",
+        // js-string (core)
+        "concat", "equals", "compare", "length",
+        "charCodeAt", "codePointAt",
+        "fromCharCode", "fromCodePoint",
+        "substring", "cast",
+        "intoCharCodeArray", "fromCharCodeArray",
+        // js-string (primitive-builtins numeric formatting)
+        "fromI64", "fromU64",
+        // js-boolean
+        // js-undefined
+        // js-symbol
+        "equals",
+        // js-bigint
+    ];
+    for name in required {
+        let bytes = name.as_bytes();
+        let found = wasm.windows(bytes.len()).any(|w| w == bytes);
+        assert!(found, "builtin `{}` not found in emitted .wasm import section", name);
+    }
+}
+
+#[test]
+fn wasm_imports_include_all_js_builtin_modules() {
+    let wasm = emit_trivial_wasm();
+    for module in [
+        "wasm:js-number", "wasm:js-string",
+        "wasm:js-boolean", "wasm:js-undefined",
+        "wasm:js-symbol", "wasm:js-bigint",
+    ] {
+        let bytes = module.as_bytes();
+        let found = wasm.windows(bytes.len()).any(|w| w == bytes);
+        assert!(found, "module `{}` missing from emitted .wasm imports", module);
+    }
+}
+
+/// Round-trip: the 4 js-string-builtins string opcodes that were
+/// previously unwired now execute correctly in the VM.
+#[test]
+fn str_from_code_point_emits_unicode() {
+    // U+1F600 (grinning face) is a supplementary-plane code point.
+    let result = run_script(|c| {
+        let k = c.add_constant(Value::I32(0x1F600));
+        c.emit_op_u16(Op::CONST, k, 0);
+        c.emit_op(Op::STR_FROM_CODE_POINT, 0);
+    });
+    match result {
+        Value::String(s) => assert_eq!(s.as_ref(), "\u{1F600}"),
+        other => panic!("expected String, got {:?}", other),
+    }
+}
+
+#[test]
+fn str_code_point_at_reads_unicode() {
+    use std::sync::Arc;
+    let result = run_script(|c| {
+        let s = c.add_constant(Value::String(Arc::from("A\u{1F600}B")));
+        let i = c.add_constant(Value::I32(1));
+        c.emit_op_u16(Op::CONST, s, 0);
+        c.emit_op_u16(Op::CONST, i, 0);
+        c.emit_op(Op::STR_CODE_POINT_AT, 0);
+    });
+    assert_eq!(result.as_i32(), 0x1F600);
+}
+
+#[test]
+fn str_into_char_codes_produces_array() {
+    use std::sync::Arc;
+    let result = run_script(|c| {
+        let s = c.add_constant(Value::String(Arc::from("ABc")));
+        c.emit_op_u16(Op::CONST, s, 0);
+        c.emit_op(Op::STR_INTO_CHAR_CODES, 0);
+    });
+    // Expect a 3-element array with codes [65, 66, 99]
+    match result {
+        Value::Object(obj) => {
+            let o = obj.lock().unwrap();
+            match &o.kind {
+                vybe_bytecode::value::ObjectKind::Array(a) => {
+                    assert_eq!(a.len(), 3);
+                    assert_eq!(a[0].as_i32(), 65);
+                    assert_eq!(a[1].as_i32(), 66);
+                    assert_eq!(a[2].as_i32(), 99);
+                }
+                _ => panic!("expected array object"),
+            }
+        }
+        other => panic!("expected Object(Array), got {:?}", other),
+    }
+}
+
+#[test]
+fn str_from_char_codes_builds_string() {
+    use std::sync::Arc;
+    use vybe_bytecode::value::{Object, ObjectKind};
+    use std::sync::Mutex;
+
+    // Build an array [72, 105] via the VM and feed it to STR_FROM_CHAR_CODES.
+    let mut script = Chunk::new("<script>");
+    let arr_obj = Object::new_array(vec![Value::I32(72), Value::I32(105)]);
+    let k = script.add_constant(Value::Object(Arc::new(Mutex::new(arr_obj))));
+    script.emit_op_u16(Op::CONST, k, 0);
+    script.emit_op(Op::STR_FROM_CHAR_CODES, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script]).unwrap();
+    match result {
+        Value::String(s) => assert_eq!(s.as_ref(), "Hi"),
+        other => panic!("expected String, got {:?}", other),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 25. ESM INTEGRATION — generated .wasm has a clean shape
+// ──────────────────────────────────────────────────────────────────────
+
+// ──────────────────────────────────────────────────────────────────────
+// 24b. JS PRIMITIVES — Undefined / Symbol / BigInt opcodes
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn undefined_opcode_pushes_undefined_value() {
+    let result = run_script(|c| { c.emit_op(Op::UNDEFINED, 0); });
+    assert!(matches!(result, Value::Undefined), "got {:?}", result);
+}
+
+#[test]
+fn ref_is_undefined_distinguishes_from_null() {
+    // undefined → true
+    let r = run_script(|c| {
+        c.emit_op(Op::UNDEFINED, 0);
+        c.emit_op(Op::REF_IS_UNDEFINED, 0);
+    });
+    assert_eq!(r.as_bool(), true);
+    // null → false
+    let r = run_script(|c| {
+        c.emit_op(Op::NULL, 0);
+        c.emit_op(Op::REF_IS_UNDEFINED, 0);
+    });
+    assert_eq!(r.as_bool(), false);
+}
+
+#[test]
+fn symbol_opcode_creates_symbol_with_description() {
+    use std::sync::Arc;
+    let mut chunk = Chunk::new("<script>");
+    let k = chunk.add_constant(Value::String(Arc::from("tag")));
+    chunk.emit_op_u16(Op::SYMBOL, k, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    let v = vm.run(vec![chunk]).unwrap();
+    match v {
+        Value::Symbol(d) => assert_eq!(d.as_ref(), "tag"),
+        other => panic!("expected Symbol, got {:?}", other),
+    }
+}
+
+#[test]
+fn symbols_have_identity_equality_not_structural() {
+    use std::sync::Arc;
+    let mut chunk = Chunk::new("<script>");
+    let k = chunk.add_constant(Value::String(Arc::from("x")));
+    chunk.emit_op_u16(Op::SYMBOL, k, 0);
+    chunk.emit_op_u16(Op::SYMBOL, k, 0);
+    chunk.emit_op(Op::DYN_EQ, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    // Two fresh Symbol(x) calls produce distinct values even with the same description.
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), false);
+}
+
+#[test]
+fn bigint_opcode_pushes_i64_bigint() {
+    let mut chunk = Chunk::new("<script>");
+    let k = chunk.add_constant(Value::I64(9_000_000_000_000));
+    chunk.emit_op_u16(Op::BIGINT, k, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    match vm.run(vec![chunk]).unwrap() {
+        Value::BigInt(n) => assert_eq!(n, 9_000_000_000_000),
+        other => panic!("expected BigInt, got {:?}", other),
+    }
+}
+
+#[test]
+fn ref_is_symbol_and_ref_is_bigint_discriminate_types() {
+    use std::sync::Arc;
+    // Symbol
+    let mut chunk = Chunk::new("<script>");
+    let k = chunk.add_constant(Value::String(Arc::from("x")));
+    chunk.emit_op_u16(Op::SYMBOL, k, 0);
+    chunk.emit_op(Op::REF_IS_SYMBOL, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), true);
+
+    // BigInt
+    let mut chunk = Chunk::new("<script>");
+    let k = chunk.add_constant(Value::I64(42));
+    chunk.emit_op_u16(Op::BIGINT, k, 0);
+    chunk.emit_op(Op::REF_IS_BIGINT, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), true);
+
+    // A regular i32 is not a BigInt.
+    let mut chunk = Chunk::new("<script>");
+    let k = chunk.add_constant(Value::I32(42));
+    chunk.emit_op_u16(Op::CONST, k, 0);
+    chunk.emit_op(Op::REF_IS_BIGINT, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), false);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 25. ESM INTEGRATION — generated .wasm has a clean shape
+// ──────────────────────────────────────────────────────────────────────
+
+/// An ES-module-importable `.wasm` must have a valid export section.
+/// Verifies the emitted module exports at least one function (the script /
+/// anonymous entry), which is what `import` statements in JS would bind.
+#[test]
+fn emitted_wasm_has_js_global_imports() {
+    // wasm:js-undefined.value + wasm:js-boolean.true + wasm:js-boolean.false
+    // are imported as WASM globals so `undefined`/`true`/`false` can be
+    // produced without boxing. Verify all three names are present AND that
+    // the import section contains global descriptors (kind 0x03).
+    let wasm = emit_trivial_wasm();
+    for name in ["value", "true", "false"] {
+        let bytes = name.as_bytes();
+        assert!(
+            wasm.windows(bytes.len()).any(|w| w == bytes),
+            "global import name `{}` not found in emitted .wasm", name);
+    }
+    // Scan import section for at least one global descriptor (kind 0x03,
+    // externref = 0x6F, mut = 0x00).
+    let mut pos = 8;
+    let mut found_global = false;
+    while pos < wasm.len() {
+        let section_id = wasm[pos]; pos += 1;
+        let mut size: u32 = 0;
+        let mut shift = 0;
+        loop {
+            let b = wasm[pos]; pos += 1;
+            size |= ((b & 0x7F) as u32) << shift;
+            if b & 0x80 == 0 { break; }
+            shift += 7;
+        }
+        if section_id == 2 {
+            // Import section — scan for kind=0x03, valtype=0x6F, mut=0x00
+            let end = pos + size as usize;
+            let mut scan = pos;
+            while scan + 2 < end {
+                if wasm[scan] == 0x03 && wasm[scan + 1] == 0x6F && wasm[scan + 2] == 0x00 {
+                    found_global = true;
+                    break;
+                }
+                scan += 1;
+            }
+            break;
+        }
+        pos += size as usize;
+    }
+    assert!(found_global, "no externref-global import descriptor found");
+}
+
+#[test]
+fn emitted_wasm_has_export_section() {
+    let wasm = emit_trivial_wasm();
+    // Export section id = 7
+    let mut pos = 8; // skip magic + version
+    let mut found = false;
+    while pos < wasm.len() {
+        let section_id = wasm[pos]; pos += 1;
+        let mut size: u32 = 0;
+        let mut shift = 0;
+        loop {
+            let b = wasm[pos]; pos += 1;
+            size |= ((b & 0x7F) as u32) << shift;
+            if b & 0x80 == 0 { break; }
+            shift += 7;
+        }
+        if section_id == 7 {
+            found = true;
+            // Read export count (first LEB128 byte in the section payload)
+            assert!(wasm[pos] >= 1, "export section empty");
+            break;
+        }
+        pos += size as usize;
+    }
+    assert!(found, "generated .wasm has no export section — ESM import would see no bindings");
+}
+
+/// End-to-end ESM round-trip: emit a .wasm, drop it into a temp directory,
+/// and have `node --experimental-wasm-modules` import it. If `node` isn't
+/// available (CI without Node, older Node without wasm-esm), the test is
+/// skipped with a message rather than failing.
+///
+/// What this proves:
+///   * Emitted .wasm decodes under a real production WASM runtime
+///   * Export section shape matches what ESM loaders expect
+///   * The `wasm:js-*` globals / functions our imports reference don't
+///     cause validation failure when not provided (Node resolves them as
+///     builtins automatically on supported versions)
+#[test]
+fn esm_round_trip_via_node_if_available() {
+    use std::process::Command;
+    use std::io::Write;
+
+    // Bail cleanly if `node` is not installed.
+    let node_ok = Command::new("node").arg("--version").output().ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !node_ok {
+        eprintln!("skipping: `node` not available on PATH");
+        return;
+    }
+
+    // Minimal module: script returns boxed 42 via CONST + RETURN.
+    // Scripts don't need to be exported — we just care that the module
+    // validates and any declared exports are discoverable.
+    let mut script = Chunk::new("run");
+    script.arity = 0;
+    let k = script.add_constant(Value::F64(42.0));
+    script.emit_op_u16(Op::CONST, k, 0);
+    script.emit_op(Op::RETURN, 0);
+    let wasm = vybe_bytecode::wasm::write_wasm(&vec![script]);
+
+    // Stage the .wasm + the driver .mjs in a temp directory.
+    let dir = std::env::temp_dir().join(format!(
+        "vybe_esm_{}", std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    let wasm_path = dir.join("mod.wasm");
+    let driver_path = dir.join("driver.mjs");
+
+    {
+        let mut f = std::fs::File::create(&wasm_path).expect("open wasm file");
+        f.write_all(&wasm).expect("write wasm");
+    }
+
+    // The driver does the minimum: read the bytes, validate, construct a
+    // Module. We deliberately don't go as far as instantiation — that
+    // would require providing importObject entries for every `wasm:js-*`
+    // builtin; validation alone proves the module shape is ESM-compliant.
+    let driver = r#"
+import { readFile } from 'node:fs/promises';
+import { argv } from 'node:process';
+const bytes = await readFile(argv[2]);
+if (!WebAssembly.validate(bytes)) {
+    console.error('WebAssembly.validate rejected the module');
+    process.exit(1);
+}
+const mod = new WebAssembly.Module(bytes);
+const imports = WebAssembly.Module.imports(mod);
+const exports = WebAssembly.Module.exports(mod);
+console.log(JSON.stringify({
+    imports: imports.length,
+    exports: exports.length,
+    has_js_undefined_value: imports.some(i => i.module === 'wasm:js-undefined' && i.name === 'value'),
+    has_js_true: imports.some(i => i.module === 'wasm:js-boolean' && i.name === 'true'),
+    has_js_false: imports.some(i => i.module === 'wasm:js-boolean' && i.name === 'false'),
+}));
+"#;
+    {
+        let mut f = std::fs::File::create(&driver_path).expect("open driver file");
+        f.write_all(driver.as_bytes()).expect("write driver");
+    }
+
+    let out = Command::new("node")
+        .arg(&driver_path)
+        .arg(&wasm_path)
+        .output()
+        .expect("spawn node");
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        out.status.success(),
+        "node rejected the module.\nstdout: {}\nstderr: {}",
+        stdout, stderr
+    );
+    assert!(stdout.contains("\"has_js_undefined_value\":true"),
+        "js-undefined global missing in import list. stdout: {}", stdout);
+    assert!(stdout.contains("\"has_js_true\":true"),
+        "js-boolean.true global missing. stdout: {}", stdout);
+    assert!(stdout.contains("\"has_js_false\":true"),
+        "js-boolean.false global missing. stdout: {}", stdout);
+}

@@ -1229,6 +1229,11 @@ impl VM {
                 }
             }
             Value::Null | Value::Undefined => false,
+            // Symbols and BigInts never participate in GC-type / inheritance
+            // type tests — they're JS primitives.
+            Value::Symbol(_) | Value::BigInt(_) => {
+                target_name.eq_ignore_ascii_case(val.type_tag())
+            }
         }
     }
 
@@ -1914,6 +1919,37 @@ impl VM {
 
                 // -- Immediates --
                 _ if op == Op::NULL => self.push(Value::Null)?,
+                _ if op == Op::UNDEFINED => self.push(Value::Undefined)?,
+                _ if op == Op::SYMBOL => {
+                    let idx = self.read_u16();
+                    let desc = match self.get_constant(idx) {
+                        Value::String(s) => s.clone(),
+                        _ => Arc::from(""),
+                    };
+                    self.push(Value::Symbol(desc))?;
+                }
+                _ if op == Op::BIGINT => {
+                    let idx = self.read_u16();
+                    let n = match self.get_constant(idx) {
+                        Value::I64(n) => n,
+                        Value::I32(n) => n as i64,
+                        Value::F64(n) => n as i64,
+                        _ => 0,
+                    };
+                    self.push(Value::BigInt(n))?;
+                }
+                _ if op == Op::REF_IS_UNDEFINED => {
+                    let v = self.pop();
+                    self.push(Value::Bool(matches!(v, Value::Undefined)))?;
+                }
+                _ if op == Op::REF_IS_SYMBOL => {
+                    let v = self.pop();
+                    self.push(Value::Bool(matches!(v, Value::Symbol(_))))?;
+                }
+                _ if op == Op::REF_IS_BIGINT => {
+                    let v = self.pop();
+                    self.push(Value::Bool(matches!(v, Value::BigInt(_))))?;
+                }
                 _ if op == Op::TRUE => self.push(Value::Bool(true))?,
                 _ if op == Op::FALSE => self.push(Value::Bool(false))?,
                 _ if op == Op::I32_CONST_0 => self.push(Value::I32(0))?,
@@ -3022,6 +3058,8 @@ impl VM {
                         Value::Bool(_) => "boolean",
                         Value::I32(_) | Value::I64(_) | Value::F64(_) => "number",
                         Value::String(_) => "string",
+                        Value::Symbol(_) => "symbol",
+                        Value::BigInt(_) => "bigint",
                         Value::V128(_) => "v128",
                         Value::WeakRef(_) => "weakref",
                         Value::Object(o) => {
@@ -4093,5 +4131,7 @@ fn dyn_truthy(v: &Value) -> bool {
         }
         Value::WeakRef(w) => w.upgrade().is_some(),
         Value::V128(b) => b.iter().any(|&x| x != 0),
+        Value::Symbol(_) => true,
+        Value::BigInt(n) => *n != 0,
     }
 }

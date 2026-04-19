@@ -260,6 +260,121 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
                 write_leb128_u32(&mut out, 1);
                 out.push(TYPE_EXTERNREF);
             }
+            // ── js-string-builtins additions ───────────────────────────
+            // cast: (externref) -> stringref / externref (validates)
+            ("wasm:js-string", "cast") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+            }
+            // fromCodePoint: (i32) -> externref
+            ("wasm:js-string", "fromCodePoint") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+            }
+            // codePointAt: (externref, i32) -> i32
+            ("wasm:js-string", "codePointAt") => {
+                write_leb128_u32(&mut out, 2);
+                out.push(TYPE_EXTERNREF);
+                out.push(TYPE_I32);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+            }
+            // intoCharCodeArray: (externref, arrayref, i32) -> i32  (we simplify
+            // to (externref, externref, i32) -> i32 for externref-array host)
+            ("wasm:js-string", "intoCharCodeArray") => {
+                write_leb128_u32(&mut out, 3);
+                out.push(TYPE_EXTERNREF);
+                out.push(TYPE_EXTERNREF);
+                out.push(TYPE_I32);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+            }
+            // fromCharCodeArray: (arrayref, i32, i32) -> externref
+            ("wasm:js-string", "fromCharCodeArray") => {
+                write_leb128_u32(&mut out, 3);
+                out.push(TYPE_EXTERNREF);
+                out.push(TYPE_I32);
+                out.push(TYPE_I32);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+            }
+            // js-primitive-builtins extensions — number → string formatting
+            ("wasm:js-string", "fromI32")
+            | ("wasm:js-string", "fromU32") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+            }
+            ("wasm:js-string", "fromI64")
+            | ("wasm:js-string", "fromU64") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I64);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+            }
+            ("wasm:js-string", "fromF64") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_F64);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+            }
+
+            // ── js-number unsigned variants ────────────────────────────
+            ("wasm:js-number", "fromU32") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+            }
+            ("wasm:js-number", "toU32") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+            }
+            ("wasm:js-number", "testI32") | ("wasm:js-number", "testU32") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+            }
+
+            // ── js-boolean.cast — (externref) -> i32 ──────────────────
+            ("wasm:js-boolean", "cast") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+            }
+
+            // ── js-symbol ──────────────────────────────────────────────
+            ("wasm:js-symbol", "test") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+            }
+            ("wasm:js-symbol", "equals") => {
+                write_leb128_u32(&mut out, 2);
+                out.push(TYPE_EXTERNREF);
+                out.push(TYPE_EXTERNREF);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+            }
+
+            // ── js-bigint ──────────────────────────────────────────────
+            ("wasm:js-bigint", "test") => {
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_EXTERNREF);
+                write_leb128_u32(&mut out, 1);
+                out.push(TYPE_I32);
+            }
+
             _ => {
                 // Default for unknown vybe:rt calls: () -> externref
                 write_leb128_u32(&mut out, 0);

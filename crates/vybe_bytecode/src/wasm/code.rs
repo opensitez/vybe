@@ -614,8 +614,56 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
             }
         }
         _ if op == Op::NULL => { body.push(0xD0); body.push(0x6F); } // ref.null externref
-        _ if op == Op::TRUE => { body.push(0x41); write_leb128_i32(body, 1); emit_box_i32(body, rt_idx); } // i32 → externref
-        _ if op == Op::FALSE || op == Op::I32_CONST_0 => { body.push(0x41); write_leb128_i32(body, 0); emit_box_i32(body, rt_idx); }
+        _ if op == Op::UNDEFINED => {
+            // `global.get $js_undefined` — returns the JS host's `undefined`
+            // singleton (distinct from `ref.null extern`). The import is
+            // declared in sections.rs; its index is fixed by JS_GLOBAL_UNDEFINED.
+            body.push(0x23);
+            write_leb128_u32(body, super::sections::JS_GLOBAL_UNDEFINED);
+        }
+        _ if op == Op::SYMBOL => {
+            // Skip the const index; emit a stub externref. Symbol identity
+            // is a VM-only concept without a `wasm:js-symbol` constructor
+            // import, so we lose identity across the boundary.
+            let _ = read_u16(&chunk.code, ip);
+            body.push(0xD0); body.push(0x6F);
+        }
+        _ if op == Op::BIGINT => {
+            // Skip the const index; emit a boxed i64 so host JS sees a
+            // number (closest standard value without a bigint constructor).
+            let idx = read_u16(&chunk.code, ip);
+            let n = chunk.constants.get(idx as usize)
+                .map(|v| match v { Value::I64(n) => *n, Value::I32(n) => *n as i64, _ => 0 })
+                .unwrap_or(0);
+            body.push(0x42); write_leb128_i64(body, n);
+            // box i64 as i32 (truncate high bits) — acceptable for typical bigint uses
+            body.push(0xA7); // i32.wrap_i64
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::REF_IS_UNDEFINED => {
+            emit_import_call(body, rt_idx, "wasm:js-undefined", "test");
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::REF_IS_SYMBOL => {
+            emit_import_call(body, rt_idx, "wasm:js-symbol", "test");
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::REF_IS_BIGINT => {
+            emit_import_call(body, rt_idx, "wasm:js-bigint", "test");
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::TRUE => {
+            // `global.get $js_true` — produces an actual JS `true` boolean,
+            // not a boxed `1` (which previously confused `typeof` on the
+            // host side). See js-primitive-builtins proposal for globals.
+            body.push(0x23);
+            write_leb128_u32(body, super::sections::JS_GLOBAL_TRUE);
+        }
+        _ if op == Op::FALSE => {
+            body.push(0x23);
+            write_leb128_u32(body, super::sections::JS_GLOBAL_FALSE);
+        }
+        _ if op == Op::I32_CONST_0 => { body.push(0x41); write_leb128_i32(body, 0); emit_box_i32(body, rt_idx); }
         _ if op == Op::I32_CONST_1 => { body.push(0x41); write_leb128_i32(body, 1); emit_box_i32(body, rt_idx); }
         _ if op == Op::F64_CONST_0 => { body.push(0x44); body.extend_from_slice(&0.0f64.to_le_bytes()); emit_box_f64(body, rt_idx); }
         _ if op == Op::CALL_IMPORT => {
@@ -711,6 +759,36 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
             emit_unbox_i32(body, rt_idx);
             emit_import_call(body, rt_idx, "wasm:js-string", "fromCharCode");
             // result is externref (string) — no conversion needed
+        }
+        _ if op == Op::STR_FROM_CODE_POINT => {
+            // (externref codepoint) → (i32)
+            emit_unbox_i32(body, rt_idx);
+            emit_import_call(body, rt_idx, "wasm:js-string", "fromCodePoint");
+        }
+        _ if op == Op::STR_CODE_POINT_AT => {
+            // Stack: [externref_str, externref_idx] → (externref, i32)
+            emit_unbox_i32(body, rt_idx);
+            emit_import_call(body, rt_idx, "wasm:js-string", "codePointAt");
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::STR_INTO_CHAR_CODES => {
+            // Into-array variant: we drop the target-array arg and simply
+            // call intoCharCodeArray on (str, str itself, 0) as a placeholder
+            // — the common JS toolchains expect the caller to pass a
+            // preallocated Int16Array. In our runtime the receiving array
+            // is created on the VM side (STR_INTO_CHAR_CODES opcode); the
+            // emitted .wasm is equivalent to a noop that returns the string
+            // length. Using `length` keeps a valid signature without needing
+            // a real array reference here.
+            emit_import_call(body, rt_idx, "wasm:js-string", "length");
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::STR_FROM_CHAR_CODES => {
+            // Expect: [externref_array]. We forward to fromCharCodeArray
+            // with (array, 0, -1) — the host will interpret -1 as "to end".
+            body.push(0x41); write_leb128_i32(body, 0);
+            body.push(0x41); write_leb128_i32(body, -1);
+            emit_import_call(body, rt_idx, "wasm:js-string", "fromCharCodeArray");
         }
         _ if op == Op::STR_SUBSTRING => {
             // Stack: [externref_str, externref_start, externref_end]

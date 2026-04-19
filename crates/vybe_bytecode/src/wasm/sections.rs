@@ -10,23 +10,55 @@ pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)
     let mut needed: Vec<(&str, &str)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    // Always include js-number builtins for boxing/unboxing in .wasm output
+    // Full set of standard WASM "wasm:js-*" builtins used by the emitter
+    // for boxing/unboxing, string manipulation, and type testing.
+    // Spec refs: js-string-builtins + js-primitive-builtins proposals.
     let js_builtins: &[(&str, &str)] = &[
+        // js-number — full Stage-1 surface
         ("wasm:js-number", "fromF64"),
         ("wasm:js-number", "fromI32"),
+        ("wasm:js-number", "fromU32"),
         ("wasm:js-number", "toF64"),
         ("wasm:js-number", "toI32"),
+        ("wasm:js-number", "toU32"),
         ("wasm:js-number", "test"),
+        ("wasm:js-number", "testI32"),
+        ("wasm:js-number", "testU32"),
+
+        // js-string — full js-string-builtins surface
         ("wasm:js-string", "test"),
+        ("wasm:js-string", "cast"),
         ("wasm:js-string", "concat"),
         ("wasm:js-string", "equals"),
         ("wasm:js-string", "compare"),
         ("wasm:js-string", "length"),
         ("wasm:js-string", "charCodeAt"),
+        ("wasm:js-string", "codePointAt"),
         ("wasm:js-string", "fromCharCode"),
+        ("wasm:js-string", "fromCodePoint"),
         ("wasm:js-string", "substring"),
+        ("wasm:js-string", "intoCharCodeArray"),
+        ("wasm:js-string", "fromCharCodeArray"),
+        // js-primitive-builtins extension: string formatting of numbers
+        ("wasm:js-string", "fromI32"),
+        ("wasm:js-string", "fromU32"),
+        ("wasm:js-string", "fromI64"),
+        ("wasm:js-string", "fromU64"),
+        ("wasm:js-string", "fromF64"),
+
+        // js-boolean
         ("wasm:js-boolean", "test"),
+        ("wasm:js-boolean", "cast"),
+
+        // js-undefined
         ("wasm:js-undefined", "test"),
+
+        // js-symbol
+        ("wasm:js-symbol", "test"),
+        ("wasm:js-symbol", "equals"),
+
+        // js-bigint
+        ("wasm:js-bigint", "test"),
     ];
     for &(module, name) in js_builtins {
         let key = (module, name);
@@ -37,10 +69,30 @@ pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)
     needed
 }
 
+/// `wasm:js-*` globals — imported as externref to give the emitter direct
+/// access to the JS host's `undefined`, `true`, and `false` singletons
+/// (per the js-primitive-builtins proposal — creation via global is
+/// significantly cheaper than a function call per use).
+/// Indices here are the WASM global-index space (separate from function
+/// indices) and must match the order globals are emitted in the import
+/// section.
+pub const JS_GLOBAL_UNDEFINED: u32 = 0;
+pub const JS_GLOBAL_TRUE:      u32 = 1;
+pub const JS_GLOBAL_FALSE:     u32 = 2;
+
+pub fn rt_globals() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("wasm:js-undefined", "value"),
+        ("wasm:js-boolean",   "true"),
+        ("wasm:js-boolean",   "false"),
+    ]
+}
+
 pub fn encode_import_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], func_type_base: u32) -> Vec<u8> {
     let mut out = Vec::new();
     let host_imports = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
-    let total = host_imports + rt_imports.len();
+    let globals = rt_globals();
+    let total = host_imports + rt_imports.len() + globals.len();
     write_leb128_u32(&mut out, total as u32);
 
     // Host imports from chunk 0
@@ -53,13 +105,24 @@ pub fn encode_import_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], func
         }
     }
 
-    // Runtime + builtin imports (mixed modules: vybe:rt, wasm:js-number, etc.)
+    // Runtime + builtin function imports (mixed modules: vybe:rt, wasm:js-*, …)
     for (i, (module, name)) in rt_imports.iter().enumerate() {
         write_name(&mut out, module);
         write_name(&mut out, name);
         out.push(0x00); // func import
         write_leb128_u32(&mut out, func_type_base + (host_imports + i) as u32);
     }
+
+    // `wasm:js-*` global imports — externref, immutable. Indices follow
+    // the order in `rt_globals()` (see JS_GLOBAL_UNDEFINED/TRUE/FALSE).
+    for (module, name) in globals {
+        write_name(&mut out, module);
+        write_name(&mut out, name);
+        out.push(0x03);       // global import
+        out.push(TYPE_EXTERNREF);
+        out.push(0x00);       // immutable (mut = 0)
+    }
+
     out
 }
 

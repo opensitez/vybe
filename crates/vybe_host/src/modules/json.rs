@@ -157,5 +157,10 @@ fn stringify(v: &Value) -> String {
             format!("[{}]", parts.join(","))
         }
         Value::WeakRef(_) => "null".into(),
+        // JSON.stringify(Symbol(…)) returns undefined → we emit null.
+        Value::Symbol(_) => "null".into(),
+        // BigInt throws in standard JSON.stringify; our host-side encoder
+        // emits the numeric value as a string to preserve precision.
+        Value::BigInt(n) => format!("\"{}\"", n),
     }
 }
