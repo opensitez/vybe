@@ -146,7 +146,7 @@ fn build_range() -> Chunk {
     let result = 3;
 
     // result = []
-    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -549,7 +549,7 @@ fn build_reversed() -> Chunk {
     let i = 2;
 
     // result = []
-    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -601,7 +601,7 @@ fn build_enumerate() -> Chunk {
     let i = 2;
     let len = 3;
 
-    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -629,7 +629,7 @@ fn build_enumerate() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);             // arr[i]
-    c.emit_op_u16(Op::ARRAY_NEW, 2, 0);      // pair = [i, arr[i]]
+    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);      // pair = [i, arr[i]]
     c.emit_op(Op::ARRAY_PUSH, 0);            // result.push(pair)
     c.emit_op(Op::DROP, 0);
 
@@ -659,7 +659,7 @@ fn build_zip() -> Chunk {
     let i = 3;
     let len = 4;
 
-    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -689,7 +689,7 @@ fn build_zip() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, b, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     c.emit_op(Op::ARRAY_PUSH, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -1061,7 +1061,7 @@ fn build_splice() -> Chunk {
     let end = 5;
 
     // result = [] (removed elements)
-    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result_local, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -1209,7 +1209,7 @@ fn build_keys() -> Chunk {
     c.arity = 1;
     c.local_count = 1;
     // Return empty array as fallback (properties aren't enumerable in pure WASM)
-    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -1308,7 +1308,7 @@ fn build_slice_step() -> Chunk {
     c.arity = 4;
     c.local_count = 7; // arr(0) start(1) end(2) step(3) result(4) i(5) cond(6)
     let zero = c.add_constant(Value::I32(0));
-    c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, 4, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, 5, 0);

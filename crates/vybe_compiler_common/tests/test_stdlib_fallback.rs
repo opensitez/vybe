@@ -72,7 +72,7 @@ fn portable_sorted() {
         chunk.emit_op_u16(Op::CONST, v3, 0);
         chunk.emit_op_u16(Op::CONST, v1, 0);
         chunk.emit_op_u16(Op::CONST, v2, 0);
-        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
         chunk.emit_op(Op::I32_CONST_0, 0);
         chunk.emit_op(Op::ARRAY_GET, 0);
@@ -90,7 +90,7 @@ fn portable_sum() {
         chunk.emit_op_u16(Op::CONST, v10, 0);
         chunk.emit_op_u16(Op::CONST, v20, 0);
         chunk.emit_op_u16(Op::CONST, v30, 0);
-        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
     });
     assert_eq!(result.as_i32(), 60);
@@ -119,7 +119,7 @@ fn portable_min_max() {
         chunk.emit_op_u16(Op::CONST, v5, 0);
         chunk.emit_op_u16(Op::CONST, v2, 0);
         chunk.emit_op_u16(Op::CONST, v8, 0);
-        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
     });
     assert_eq!(min_result.as_i32(), 2);
@@ -132,7 +132,7 @@ fn portable_min_max() {
         chunk.emit_op_u16(Op::CONST, v5, 0);
         chunk.emit_op_u16(Op::CONST, v2, 0);
         chunk.emit_op_u16(Op::CONST, v8, 0);
-        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
     });
     assert_eq!(max_result.as_i32(), 8);
@@ -148,7 +148,7 @@ fn portable_reversed() {
         chunk.emit_op_u16(Op::CONST, v1, 0);
         chunk.emit_op_u16(Op::CONST, v2, 0);
         chunk.emit_op_u16(Op::CONST, v3, 0);
-        chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         bundle::emit_call_invoke(chunk, 1, 0);
         chunk.emit_op(Op::I32_CONST_0, 0);
         chunk.emit_op(Op::ARRAY_GET, 0);
@@ -214,7 +214,7 @@ fn portable_slicestep_every_other() {
             let c = chunk.add_constant(Value::I32(i));
             chunk.emit_op_u16(Op::CONST, c, 0);
         }
-        chunk.emit_op_u16(Op::ARRAY_NEW, 6, 0);
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 6, 0);
         chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
         bundle::emit_call_push_func(chunk, "__vybe_slicestep", 0);

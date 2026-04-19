@@ -233,7 +233,7 @@ fn array_from_any_language_is_same() {
     chunk.emit_op_u16(Op::CONST, v1, 0);
     chunk.emit_op_u16(Op::CONST, v2, 0);
     chunk.emit_op(Op::TRUE, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
 
     // Access element 1
     chunk.emit_op(Op::I32_CONST_1, 0);

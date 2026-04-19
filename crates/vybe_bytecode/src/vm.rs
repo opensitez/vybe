@@ -1908,13 +1908,161 @@ impl VM {
                     self.stack.truncate(start);
                     self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
-                _ if op == Op::ARRAY_NEW => {
+                // `array.new_fixed $t N` — pops N values off the stack
+                // and allocates an N-element array initialised from them.
+                _ if op == Op::ARRAY_NEW_FIXED => {
                     let count = self.read_u16() as usize;
                     let count = count.min(self.stack.len());
                     let start = self.stack.len() - count;
                     let elems: Vec<Value> = self.stack[start..].to_vec();
                     self.stack.truncate(start);
                     self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(elems)))))?;
+                }
+                // `array.new $t` — [value, length] -> [array of length,
+                // every lane = value].
+                _ if op == Op::ARRAY_NEW => {
+                    let _typeidx = self.read_u16();
+                    let len = self.pop().as_i32().max(0) as usize;
+                    let value = self.pop();
+                    let elems = vec![value; len];
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(elems)))))?;
+                }
+                // `array.new_default $t` — [length] -> [array of length,
+                // zero-initialised]. We use `Value::Null` as the default
+                // for externref lanes (the only lane type we actually
+                // support) per the "null is the default for refs" rule.
+                _ if op == Op::ARRAY_NEW_DEFAULT => {
+                    let _typeidx = self.read_u16();
+                    let len = self.pop().as_i32().max(0) as usize;
+                    let elems = vec![Value::Null; len];
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(elems)))))?;
+                }
+                // `array.new_data $t $d` / `array.new_elem $t $e` — allocate
+                // a new array initialised from a data or element segment.
+                // Our VM doesn't (yet) model data/element segments, so we
+                // produce an empty array rather than silently returning
+                // garbage. Emitted WASM still carries the spec-correct
+                // opcode bytes, so engines with real segment support
+                // execute these correctly.
+                _ if op == Op::ARRAY_NEW_DATA => {
+                    let _typeidx = self.read_u16();
+                    let _dataidx = self.read_u16();
+                    let _size = self.pop().as_i32();
+                    let _offset = self.pop().as_i32();
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new())))))?;
+                }
+                _ if op == Op::ARRAY_NEW_ELEM => {
+                    let _typeidx = self.read_u16();
+                    let _elemidx = self.read_u16();
+                    let _size = self.pop().as_i32();
+                    let _offset = self.pop().as_i32();
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new())))))?;
+                }
+                // `array.get_s $t` / `array.get_u $t` — only applicable to
+                // arrays of packed element types (i8/i16). Our array model
+                // is externref-only, so no packing conversion is needed:
+                // both behave identically to `array.get`.
+                _ if op == Op::ARRAY_GET_S || op == Op::ARRAY_GET_U => {
+                    let _typeidx = self.read_u16();
+                    let idx = self.pop().as_i32().max(0) as usize;
+                    let arr = self.pop();
+                    let val = if let Value::Object(obj) = arr {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Array(ref elems) = o.kind {
+                            elems.get(idx).cloned().unwrap_or(Value::Null)
+                        } else { Value::Null }
+                    } else { Value::Null };
+                    self.push(val)?;
+                }
+                // `array.init_data $t $d` / `array.init_elem $t $e` — copy
+                // elements into an existing array. Stub to a no-op (same
+                // rationale as new_data / new_elem above).
+                _ if op == Op::ARRAY_INIT_DATA => {
+                    let _typeidx = self.read_u16();
+                    let _dataidx = self.read_u16();
+                    let _size = self.pop().as_i32();
+                    let _src_offset = self.pop().as_i32();
+                    let _dst_offset = self.pop().as_i32();
+                    let _array = self.pop();
+                }
+                _ if op == Op::ARRAY_INIT_ELEM => {
+                    let _typeidx = self.read_u16();
+                    let _elemidx = self.read_u16();
+                    let _size = self.pop().as_i32();
+                    let _src_offset = self.pop().as_i32();
+                    let _dst_offset = self.pop().as_i32();
+                    let _array = self.pop();
+                }
+                // `struct.new_default $t` — no per-field values on stack;
+                // produce an all-null struct. Matches our externref model.
+                _ if op == Op::STRUCT_NEW_DEFAULT => {
+                    let _typeidx = self.read_u16();
+                    self.push(Value::Object(Arc::new(Mutex::new(Object::new()))))?;
+                }
+                // `struct.get_s $t i` / `struct.get_u $t i` — packed field
+                // variants. Our structs have externref fields only, so
+                // there's no sign extension to do — both behave like
+                // `struct.get`.
+                _ if op == Op::STRUCT_GET_S || op == Op::STRUCT_GET_U => {
+                    let field_idx = self.read_u16();
+                    let obj = self.pop();
+                    let val = if let Value::Object(o) = obj {
+                        let o = o.lock().unwrap();
+                        o.fields.get(field_idx as usize).cloned().unwrap_or(Value::Null)
+                    } else { Value::Null };
+                    self.push(val)?;
+                }
+                // `ref.test_null ht` / `ref.cast_null ht` — same as their
+                // non-null variants but succeed when the operand is null.
+                // Our VM already treats null as assignable to externref,
+                // so these short-circuit to true / pass-through on null.
+                _ if op == Op::REF_TEST_NULL => {
+                    let _typeidx = self.read_u16();
+                    let val = self.pop();
+                    let matches = matches!(val, Value::Null | Value::Object(_) | Value::Symbol(_) | Value::String(_));
+                    self.push(Value::I32(if matches { 1 } else { 0 }))?;
+                }
+                _ if op == Op::REF_CAST_NULL => {
+                    let _typeidx = self.read_u16();
+                    // cast_null succeeds for null — pass the value through.
+                    // Our VM is already dynamically typed so this is always
+                    // a pass-through (validation happens at the engine level
+                    // once we emit spec-correct bytes).
+                }
+                // `any.convert_extern` / `extern.convert_any` — identity at
+                // runtime for us: our value ABI is a universal externref.
+                // Spec says composing the two yields the original value, so
+                // emitting them as nops is semantically correct.
+                _ if op == Op::ANY_CONVERT_EXTERN || op == Op::EXTERN_CONVERT_ANY => {}
+                // `ref.as_non_null` — trap if the operand is null, otherwise
+                // pass the value through unchanged.
+                _ if op == Op::REF_AS_NON_NULL => {
+                    if let Some(Value::Null) = self.stack.last() {
+                        return Err(VMError::new("trap: ref.as_non_null on null reference"));
+                    }
+                }
+                // `br_on_null $l` — if TOS is null, pop it and branch;
+                // otherwise leave the value on the stack and fall through.
+                // `br_on_non_null $l` — if TOS is non-null, branch with
+                // the value; otherwise pop and fall through.
+                _ if op == Op::BR_ON_NULL => {
+                    let offset = self.read_i16();
+                    let is_null = matches!(self.stack.last(), Some(Value::Null));
+                    if is_null {
+                        self.pop();
+                        let f = self.frame_mut();
+                        f.ip = (f.ip as i64 + offset as i64) as usize;
+                    }
+                }
+                _ if op == Op::BR_ON_NON_NULL => {
+                    let offset = self.read_i16();
+                    let is_null = matches!(self.stack.last(), Some(Value::Null));
+                    if !is_null {
+                        let f = self.frame_mut();
+                        f.ip = (f.ip as i64 + offset as i64) as usize;
+                    } else {
+                        self.pop();
+                    }
                 }
 
                 // -- Immediates --

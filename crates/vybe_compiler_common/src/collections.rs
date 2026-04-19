@@ -15,7 +15,7 @@ use crate::Target;
 
 /// Create array from N stack values. Stack: [v1, v2, ..., vN] → [array]
 pub fn emit_array_new(chunk: &mut Chunk, count: u16, line: u32) {
-    chunk.emit_op_u16(Op::ARRAY_NEW, count, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
 }
 
 /// Array length. Stack: [array] → [i32]
@@ -141,7 +141,7 @@ pub fn emit_range_targeted(chunk: &mut Chunk, arg_count: u8, target: &Target, li
 
             chunk.emit_op_u16(Op::LOCAL_SET, stop_local, line);  // store stop
             chunk.emit_op(Op::DROP, line);
-            chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);           // result = []
+            chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);           // result = []
             chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
             chunk.emit_op(Op::DROP, line);
             chunk.emit_op(Op::I32_CONST_0, line);                // i = 0

@@ -160,6 +160,11 @@ impl Op {
     pub const NULL: Op              = Op::new(0x00, 0xD0);
     pub const REF_IS_NULL: Op       = Op::new(0x00, 0xD1);
     pub const REF_FUNC: Op          = Op::new(0x00, 0xD2);
+    // GC proposal extensions to the core prefix.
+    pub const REF_EQ: Op            = Op::new(0x00, 0xD3);
+    pub const REF_AS_NON_NULL: Op   = Op::new(0x00, 0xD4);
+    pub const BR_ON_NULL: Op        = Op::new(0x00, 0xD5);
+    pub const BR_ON_NON_NULL: Op    = Op::new(0x00, 0xD6);
 }
 
 // ── Metadata (name + operand format) ────────────────────────────
@@ -317,4 +322,9 @@ opcode_category! {
     [0xD0] null => None, "ref.null";
     [0xD1] ref_is_null => None, "ref.is_null";
     [0xD2] ref_func => Closure, "ref.func";
+    // GC proposal (core prefix extensions).
+    [0xD3] ref_eq => None, "ref.eq";
+    [0xD4] ref_as_non_null => None, "ref.as_non_null";
+    [0xD5] br_on_null => I16, "br_on_null";
+    [0xD6] br_on_non_null => I16, "br_on_non_null";
 }

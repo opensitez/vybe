@@ -35,7 +35,7 @@ fn weak_ref_from_object() {
     chunk.emit_op_u16(Op::CONST, one, 0);
     chunk.emit_op_u16(Op::CONST, two, 0);
     chunk.emit_op_u16(Op::CONST, three, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
 
     // Store in local 1 (keep strong ref)
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
@@ -64,7 +64,7 @@ fn weak_ref_is_alive() {
     // Create object, store in local 1
     let val = chunk.add_constant(Value::I32(42));
     chunk.emit_op_u16(Op::CONST, val, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 1, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // Make weak ref, store in local 2
@@ -106,7 +106,7 @@ fn register_finalizer() {
     // Create an object
     let val = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, val, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 1, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
     chunk.emit_op(Op::DUP, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 

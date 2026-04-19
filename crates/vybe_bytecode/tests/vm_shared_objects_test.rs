@@ -76,7 +76,7 @@ fn shared_array_get_set() {
     chunk.emit_op_u16(Op::CONST, v10, 0);
     chunk.emit_op_u16(Op::CONST, v20, 0);
     chunk.emit_op_u16(Op::CONST, v30, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // shared_array_set: arr[1] = 99

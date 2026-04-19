@@ -91,7 +91,7 @@ fn stdlib_sum() {
     script.emit_op_u16(Op::CONST, v3, 0);
     script.emit_op_u16(Op::CONST, v4, 0);
     script.emit_op_u16(Op::CONST, v5, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 5, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
 
     script.emit_op_u16(Op::REF_FUNC, sum_idx as u16, 0);
     script.emit(0, 0);
@@ -115,7 +115,7 @@ fn stdlib_sum() {
     script.emit_op_u16(Op::CONST, v3, 0);
     script.emit_op_u16(Op::CONST, v4, 0);
     script.emit_op_u16(Op::CONST, v5, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 5, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0); // store array
     script.emit_op(Op::DROP, 0);
 
@@ -146,7 +146,7 @@ fn stdlib_reversed() {
     script.emit_op_u16(Op::CONST, v1, 0);
     script.emit_op_u16(Op::CONST, v2, 0);
     script.emit_op_u16(Op::CONST, v3, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
     script.emit_op(Op::DROP, 0);
 
@@ -181,7 +181,7 @@ fn stdlib_sorted() {
     script.emit_op_u16(Op::CONST, v3, 0);
     script.emit_op_u16(Op::CONST, v1, 0);
     script.emit_op_u16(Op::CONST, v2, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
     script.emit_op(Op::DROP, 0);
 
@@ -212,7 +212,7 @@ fn stdlib_sorted_preserves_original() {
     let v1 = script.add_constant(Value::I32(1));
     script.emit_op_u16(Op::CONST, v3, 0);
     script.emit_op_u16(Op::CONST, v1, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
     script.emit_op(Op::DROP, 0);
 
@@ -249,7 +249,7 @@ fn stdlib_min() {
     script.emit_op_u16(Op::CONST, v5, 0);
     script.emit_op_u16(Op::CONST, v2, 0);
     script.emit_op_u16(Op::CONST, v8, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
     script.emit_op(Op::DROP, 0);
 
@@ -277,7 +277,7 @@ fn stdlib_max() {
     script.emit_op_u16(Op::CONST, v5, 0);
     script.emit_op_u16(Op::CONST, v2, 0);
     script.emit_op_u16(Op::CONST, v8, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
     script.emit_op(Op::DROP, 0);
 
@@ -330,7 +330,7 @@ fn stdlib_enumerate() {
     let vb = script.add_constant(Value::String(Rc::from("b")));
     script.emit_op_u16(Op::CONST, va, 0);
     script.emit_op_u16(Op::CONST, vb, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
     script.emit_op(Op::DROP, 0);
 
@@ -365,13 +365,13 @@ fn stdlib_zip() {
 
     script.emit_op_u16(Op::CONST, v1, 0);
     script.emit_op_u16(Op::CONST, v2, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
     script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::CONST, v3, 0);
     script.emit_op_u16(Op::CONST, v4, 0);
-    script.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 2, 0);
     script.emit_op(Op::DROP, 0);
 

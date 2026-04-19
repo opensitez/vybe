@@ -504,6 +504,35 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
             body.push(0xD1); // ref.is_null → i32
             emit_box_i32(body, rt_idx); // i32 → externref
         }
+        // GC proposal (core prefix): ref.eq produces i32 — rebox as externref.
+        _ if op == Op::REF_EQ => {
+            body.push(0xD3);
+            emit_box_i32(body, rt_idx);
+        }
+        // ref.as_non_null is identity at the WASM level — it only
+        // distinguishes a non-null reference type at validation time.
+        // Since our values are externref (nullable) throughout, emit
+        // the opcode directly; the engine will trap on null per spec.
+        _ if op == Op::REF_AS_NON_NULL => {
+            body.push(0xD4);
+        }
+        // br_on_null / br_on_non_null take an LEB128 u32 label immediate.
+        // Our bytecode stores a 2-byte signed offset; we cannot turn an
+        // offset into a structural label depth here (same gap as BR/BR_IF),
+        // so we emit the spec-correct byte with a conservative label 0.
+        // Until structural CF is fully wired, this is equivalent to the
+        // existing BR treatment: producing spec-visible bytes rather than
+        // silent nops.
+        _ if op == Op::BR_ON_NULL => {
+            let _offset = read_i16(&chunk.code, ip);
+            body.push(0xD5);
+            write_leb128_u32(body, 0);
+        }
+        _ if op == Op::BR_ON_NON_NULL => {
+            let _offset = read_i16(&chunk.code, ip);
+            body.push(0xD6);
+            write_leb128_u32(body, 0);
+        }
 
         // ── f64 binary arithmetic: unbox both → f64 op → rebox ──
         // Stack: [externref_a, externref_b]
@@ -683,16 +712,108 @@ fn emit_gc_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize, _rt_idx
             write_leb128_u32(body, 0);
             body.push(0xD0); body.push(0x6F); // push dummy (struct.set is void in WASM)
         }
-        _ if op == Op::ARRAY_NEW => {
+        _ if op == Op::ARRAY_NEW_FIXED => {
+            // Spec: `array.new_fixed $t N` (0xFB 0x08), pops N values.
             let elem_count = read_u16(&chunk.code, ip);
-            // Elements on stack are externref — need to internalize each.
-            // For 0 elements, no conversion needed.
-            // For N elements, we'd need N conversions — complex.
-            // For now: emit array.new_fixed, then externalize the result.
-            body.push(0xFB); write_leb128_u32(body, 0x08); // array.new_fixed (NOT 0x06 which is array.new)
+            body.push(0xFB); write_leb128_u32(body, 0x08);
             write_leb128_u32(body, type_ctx.array_type_idx);
             write_leb128_u32(body, elem_count as u32);
             emit_externalize(body); // (ref $arr) → externref
+        }
+        _ if op == Op::ARRAY_NEW => {
+            // Spec: `array.new $t` (0xFB 0x06), pops [value, length i32].
+            // Our bytecode emits the 2-byte type-index immediate like the
+            // fixed variant; consume it, drop the type index, and pass
+            // through to the engine (which will fill len copies of value).
+            let _typeidx = read_u16(&chunk.code, ip);
+            body.push(0xFB); write_leb128_u32(body, 0x06);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            emit_externalize(body);
+        }
+        _ if op == Op::ARRAY_NEW_DEFAULT => {
+            // Spec: `array.new_default $t` (0xFB 0x07), pops [length].
+            let _typeidx = read_u16(&chunk.code, ip);
+            body.push(0xFB); write_leb128_u32(body, 0x07);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            emit_externalize(body);
+        }
+        _ if op == Op::ARRAY_NEW_DATA => {
+            // Spec: `array.new_data $t $d`, pops [offset, size].
+            let _typeidx = read_u16(&chunk.code, ip);
+            let data_idx = read_u16(&chunk.code, ip);
+            body.push(0xFB); write_leb128_u32(body, 0x09);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(body, data_idx as u32);
+            emit_externalize(body);
+        }
+        _ if op == Op::ARRAY_NEW_ELEM => {
+            let _typeidx = read_u16(&chunk.code, ip);
+            let elem_idx = read_u16(&chunk.code, ip);
+            body.push(0xFB); write_leb128_u32(body, 0x0A);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(body, elem_idx as u32);
+            emit_externalize(body);
+        }
+        _ if op == Op::ARRAY_GET_S || op == Op::ARRAY_GET_U => {
+            // Packed variants. Semantics identical to array.get for our
+            // externref-only arrays but we must still emit the spec byte.
+            let _typeidx = read_u16(&chunk.code, ip);
+            body.push(0x21); write_leb128_u32(body, temp_idx); // save idx
+            emit_internalize(body);
+            emit_ref_cast_array(body, type_ctx.array_type_idx);
+            body.push(0x20); write_leb128_u32(body, temp_idx);
+            emit_unbox_i32(body, _rt_idx);
+            body.push(0xFB); write_leb128_u32(body, op.sub() as u32);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+        }
+        _ if op == Op::ARRAY_INIT_DATA => {
+            let _typeidx = read_u16(&chunk.code, ip);
+            let data_idx = read_u16(&chunk.code, ip);
+            body.push(0xFB); write_leb128_u32(body, 0x12);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(body, data_idx as u32);
+        }
+        _ if op == Op::ARRAY_INIT_ELEM => {
+            let _typeidx = read_u16(&chunk.code, ip);
+            let elem_idx = read_u16(&chunk.code, ip);
+            body.push(0xFB); write_leb128_u32(body, 0x13);
+            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(body, elem_idx as u32);
+        }
+        _ if op == Op::STRUCT_NEW_DEFAULT => {
+            let _typeidx = read_u16(&chunk.code, ip);
+            body.push(0xFB); write_leb128_u32(body, 0x01);
+            // TODO: emit real struct type index once the compiler attaches one.
+            write_leb128_u32(body, 0);
+            emit_externalize(body);
+        }
+        _ if op == Op::STRUCT_GET_S || op == Op::STRUCT_GET_U => {
+            // Our struct.get uses a field-name-constant u16 operand;
+            // spec packed variants take typeidx + fieldidx. Emit the
+            // spec byte with conservative indices for round-trip sanity.
+            let _field_name_idx = read_u16(&chunk.code, ip);
+            emit_internalize(body);
+            body.push(0xFB); write_leb128_u32(body, op.sub() as u32);
+            write_leb128_u32(body, 0);
+            write_leb128_u32(body, 0);
+        }
+        _ if op == Op::REF_TEST_NULL => {
+            *ip += op.operand_format().fixed_size();
+            body.push(0xFB); write_leb128_u32(body, 0x15);
+            // heaptype placeholder — engine-visible but we don't track specific heap types yet.
+            emit_box_i32(body, _rt_idx);
+        }
+        _ if op == Op::REF_CAST_NULL => {
+            *ip += op.operand_format().fixed_size();
+            body.push(0xFB); write_leb128_u32(body, 0x17);
+        }
+        _ if op == Op::ANY_CONVERT_EXTERN => {
+            // Our externref is the universal value carrier — the op is a
+            // no-op in our VM but spec-emit for round-trip fidelity.
+            body.push(0xFB); write_leb128_u32(body, 0x1A);
+        }
+        _ if op == Op::EXTERN_CONVERT_ANY => {
+            body.push(0xFB); write_leb128_u32(body, 0x1B);
         }
         _ if op == Op::ARRAY_GET => {
             // Stack: [externref_arr, externref_idx]
@@ -755,12 +876,9 @@ fn emit_gc_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize, _rt_idx
             body.push(0xFB); write_leb128_u32(body, op.sub() as u32);
             // TODO: emit proper heap type reference
         }
-        _ if op == Op::REF_EQ => {
-            // (externref, externref) → i32. Result is a WASM primitive i32;
-            // re-box as externref to fit our universal value ABI.
-            body.push(0xFB); write_leb128_u32(body, op.sub() as u32);
-            emit_box_i32(body, _rt_idx);
-        }
+        // `ref.eq` moved to the core prefix (0xD3) — emit path is in
+        // `emit_core_op`. This branch is kept intentionally empty as a
+        // breadcrumb for anyone searching for it.
         _ if op == Op::BR_ON_CAST || op == Op::BR_ON_CAST_FAIL => {
             *ip += op.operand_format().fixed_size();
             body.push(0xFB); write_leb128_u32(body, op.sub() as u32);

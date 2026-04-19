@@ -34,6 +34,14 @@ pub mod drawing;
 pub mod canvas;
 pub mod rt;
 pub mod js_builtins;
+// Dynamic-runtime Phase B3 — JS-canonical collection host handlers.
+// Each submodule provides the Rust side of a `wasm:js-*` import set.
+pub mod js_array_builtins;
+pub mod js_map_builtins;
+pub mod js_object_builtins;
+pub mod js_weakmap_builtins;
+pub mod js_arraybuffer_builtins;
+pub mod js_typedarray_builtins;
 
 use vybe_bytecode::{VM, Value, HostContext};
 use std::collections::HashSet;
@@ -358,6 +366,12 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     drawing::register(vm);
     rt::register(vm);
     js_builtins::register(vm);
+    js_array_builtins::register(vm);
+    js_map_builtins::register(vm);
+    js_object_builtins::register(vm);
+    js_weakmap_builtins::register(vm);
+    js_arraybuffer_builtins::register(vm);
+    js_typedarray_builtins::register(vm);
 
     // Capability-gated modules
     if caps.has(Capability::Console) {

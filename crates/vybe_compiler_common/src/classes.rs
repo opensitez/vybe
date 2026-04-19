@@ -115,7 +115,7 @@ pub fn emit_instanceof_chain(chunk: &mut Chunk, this_slot: u16, class_name: &str
     // [this, null] — null path: drop null and create empty array
     chunk.emit_op(Op::DROP, line);
     // [this, []]
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     // Patch the forward jump to land here
     chunk.patch_jump(skip_jump);
 

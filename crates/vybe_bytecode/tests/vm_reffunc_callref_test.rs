@@ -34,7 +34,7 @@ fn global_init_reffunc_then_callref() {
     range_chunk.local_count = 5; // callee(0) + start(1) + stop(2) + step(3) + result(4)
 
     // result = []
-    range_chunk.emit_op_u16(opcode::Op::ARRAY_NEW, 0, 0);
+    range_chunk.emit_op_u16(opcode::Op::ARRAY_NEW_FIXED, 0, 0);
     range_chunk.emit_op_u16(opcode::Op::LOCAL_SET, 4, 0);
     range_chunk.emit_op(opcode::Op::DROP, 0);
 

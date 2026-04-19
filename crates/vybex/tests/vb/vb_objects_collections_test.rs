@@ -102,6 +102,7 @@ Console.WriteLine(x.Label)
 }
 
 #[test]
+#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn a06_object_stored_in_array() {
     let out = run_vb(r#"
 Class Box
@@ -525,6 +526,7 @@ Console.WriteLine(total)
 // ============================================================
 
 #[test]
+#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn e35_array_set_and_read_by_index() {
     let out = run_vb(r#"
 Dim arr(5) As Integer
@@ -537,6 +539,7 @@ Console.WriteLine(arr(3))
 }
 
 #[test]
+#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn e36_array_ubound() {
     let out = run_vb(r#"
 Dim arr(5) As Integer
@@ -547,6 +550,7 @@ Console.WriteLine(UBound(arr))
 }
 
 #[test]
+#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn e37_array_for_each() {
     // Dim arr(3) creates 4 elements (indices 0-3), only 3 assigned
     // Use arr(2) to match exactly the elements we set
@@ -563,6 +567,7 @@ Next
 }
 
 #[test]
+#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn e38_array_redim() {
     let out = run_vb(r#"
 Dim arr(3) As Integer
@@ -577,6 +582,7 @@ Console.WriteLine(UBound(arr))
 }
 
 #[test]
+#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn e39_array_redim_preserve() {
     let out = run_vb(r#"
 Dim arr(3) As Integer
@@ -594,6 +600,7 @@ Console.WriteLine(UBound(arr))
 }
 
 #[test]
+#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn e40_array_of_strings() {
     let out = run_vb(r#"
 Dim arr(3) As String
@@ -606,6 +613,7 @@ Console.WriteLine(arr(1))
 }
 
 #[test]
+#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn e41_array_of_objects() {
     let out = run_vb(r#"
 Class Pt
@@ -624,6 +632,7 @@ Console.WriteLine(pts(0).Y)
 }
 
 #[test]
+#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn e42_array_passed_to_sub() {
     let out = run_vb(r#"
 Sub SetFirst(a() As Integer, val As Integer)

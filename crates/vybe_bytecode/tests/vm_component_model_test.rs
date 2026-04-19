@@ -17,7 +17,7 @@ fn canon_lift_stamps_type_id() {
     let name_c = chunk.add_constant(Value::String(Rc::from("name")));
     let val_c = chunk.add_constant(Value::String(Rc::from("Rex")));
     chunk.emit_op_u16(Op::CONST, val_c, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 1, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
 
     // canon_lift with Animal type
     chunk.emit_op_u16(Op::CANON_LIFT, tid as u16, 0);

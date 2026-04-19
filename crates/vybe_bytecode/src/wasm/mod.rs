@@ -20,6 +20,18 @@ pub mod extended_name_section;
 pub mod compilation_hints;
 pub mod js_string_builtins;
 pub mod js_primitive_builtins;
+// JS standard collection surface — Phase B of the dynamic-runtime
+// migration. Each module declares the `wasm:js-*` imports Vybe uses
+// to expose JS-canonical collections (Array / Object / Map / Set /
+// WeakMap / WeakSet / ArrayBuffer / DataView / 11 typed-arrays).
+// Marshaling contract pinned in `JS_BUILTIN_CONVENTIONS.md`.
+pub mod js_array_builtins;
+pub mod js_object_builtins;
+pub mod js_map_builtins;
+pub mod js_set_builtins;
+pub mod js_weakmap_builtins;
+pub mod js_arraybuffer_builtins;
+pub mod js_typedarray_builtins;
 pub mod esm_integration;
 pub mod gc;
 pub mod simd;

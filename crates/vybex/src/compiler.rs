@@ -1736,7 +1736,7 @@ impl Compiler {
             let rest_slot = self.scope().resolve(rest_name).unwrap();
             // Build array from slots rest_slot..rest_slot+16, stopping at null.
             // Pattern per slot: if local[N] is null → jump to done; else arr.push(local[N])
-            self.emit_u16(Op::ARRAY_NEW, 0); // arr on stack
+            self.emit_u16(Op::ARRAY_NEW_FIXED, 0); // arr on stack
             let max_rest = 16u16;
             let mut done_patches: Vec<usize> = Vec::new();
             for i in 0..max_rest {
@@ -2969,7 +2969,7 @@ impl Compiler {
                         self.compile_expr(&elem.value)?;
                     }
                     let line = self.line;
-                    self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW, elements.len() as u16, line);
+                    self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, elements.len() as u16, line);
                 } else {
                     // Spread case: build segments and concat.
                     // Collect non-spread elements into an array_new, then
@@ -2981,7 +2981,7 @@ impl Compiler {
                         if elem.spread {
                             // Flush pending non-spread elements
                             if pending_non_spread > 0 {
-                                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW, pending_non_spread as u16, line);
+                                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, pending_non_spread as u16, line);
                                 if have_result { self.emit(Op::ARRAY_CONCAT); }
                                 have_result = true;
                                 pending_non_spread = 0;
@@ -2997,13 +2997,13 @@ impl Compiler {
                     }
                     // Flush remaining non-spread elements
                     if pending_non_spread > 0 {
-                        self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW, pending_non_spread as u16, line);
+                        self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, pending_non_spread as u16, line);
                         if have_result { self.emit(Op::ARRAY_CONCAT); }
                         have_result = true;
                     }
                     if !have_result {
                         // Empty array
-                        self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW, 0, line);
+                        self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
                     }
                 }
             }
@@ -3012,14 +3012,14 @@ impl Compiler {
             ExprKind::Tuple(elements) => {
                 for elem in elements { self.compile_expr(elem)?; }
                 let line = self.line;
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW, elements.len() as u16, line);
+                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, elements.len() as u16, line);
             }
 
             // ── Set (Python) ────────────────────────────────────────────
             ExprKind::Set(elements) => {
                 for elem in elements { self.compile_expr(elem)?; }
                 let line = self.line;
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW, elements.len() as u16, line);
+                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, elements.len() as u16, line);
                 // Convert to set via host call
                 let idx = self.import("vybe:collections", "arrayToSet");
                 self.emit_host_call(idx, 1);
@@ -3308,7 +3308,7 @@ impl Compiler {
             ExprKind::Comprehension { kind: _, element, generators } => {
                 // Simplified: compile as loop building an array
                 let line = self.line;
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW, 0, line);
+                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
                 let result_slot = self.scope_mut().define("__comp_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
 
@@ -4304,7 +4304,7 @@ impl Compiler {
                 // Build flat args array [arg0, arg1, ...spread, argN, ...]
                 // array_push returns the array; array_concat returns the
                 // merged array. Both leave the array on TOS — no drop needed.
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW, 0, line);
+                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
                 let mut known_len: Option<usize> = Some(0);
                 for a in args {
                     if a.spread {
@@ -4375,7 +4375,7 @@ impl Compiler {
         if has_rest {
             let rest_name = &params.last().unwrap().name;
             let rest_slot = self.scope().resolve(rest_name).unwrap();
-            self.emit_u16(Op::ARRAY_NEW, 0);
+            self.emit_u16(Op::ARRAY_NEW_FIXED, 0);
             let max_rest = 16u16;
             let mut done_patches: Vec<usize> = Vec::new();
             for i in 0..max_rest {
@@ -4923,7 +4923,7 @@ impl Compiler {
                     self.compile_expr(arg)?;
                     self.emit(Op::DROP);
                 }
-                self.emit_u16(Op::ARRAY_NEW, 0);
+                self.emit_u16(Op::ARRAY_NEW_FIXED, 0);
             }
             "asc" => {
                 self.compile_expr(args[0])?;

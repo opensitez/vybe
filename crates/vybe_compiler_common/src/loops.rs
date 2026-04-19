@@ -175,7 +175,7 @@ pub fn emit_for_in_end(chunk: &mut Chunk, idx_slot: u16, state: LoopState, line:
 /// Stack after: [result_array]
 pub fn emit_map(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16, idx_slot: u16, line: u32) {
     // result = []
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -205,7 +205,7 @@ pub fn emit_map(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16
 /// Stack after: [result_array]
 pub fn emit_filter(chunk: &mut Chunk, fn_slot: u16, arr_slot: u16, result_slot: u16, idx_slot: u16, elem_slot: u16, line: u32) {
     // result = []
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
 

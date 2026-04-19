@@ -828,7 +828,7 @@ fn array_length_op() {
     chunk.emit_op_u16(Op::CONST, c1, 0);
     chunk.emit_op_u16(Op::CONST, c2, 0);
     chunk.emit_op_u16(Op::CONST, c3, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
@@ -844,7 +844,7 @@ fn array_push_pop() {
     let c30 = chunk.add_constant(Value::I32(30));
     chunk.emit_op_u16(Op::CONST, c10, 0);
     chunk.emit_op_u16(Op::CONST, c20, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     // push 30
     chunk.emit_op_u16(Op::CONST, c30, 0);
     chunk.emit_op(Op::ARRAY_PUSH, 0);
@@ -875,9 +875,9 @@ fn array_concat_op() {
     let c3 = chunk.add_constant(Value::I32(3));
     chunk.emit_op_u16(Op::CONST, c1, 0);
     chunk.emit_op_u16(Op::CONST, c2, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     chunk.emit_op_u16(Op::CONST, c3, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 1, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
     chunk.emit_op(Op::ARRAY_CONCAT, 0);
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);

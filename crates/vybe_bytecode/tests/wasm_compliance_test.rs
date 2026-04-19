@@ -837,7 +837,7 @@ fn array_new_fixed_and_length() {
         c.emit_op_u16(Op::CONST, i10, 0);
         c.emit_op_u16(Op::CONST, i20, 0);
         c.emit_op_u16(Op::CONST, i30, 0);
-        c.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         c.emit_op(Op::ARRAY_LENGTH, 0);
     });
     assert_eq!(r.as_i32(), 3);
@@ -852,7 +852,7 @@ fn array_get() {
         c.emit_op_u16(Op::CONST, i10, 0);
         c.emit_op_u16(Op::CONST, i20, 0);
         c.emit_op_u16(Op::CONST, i30, 0);
-        c.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         // array_get arr 1 → 20
         let one = c.add_constant(Value::I32(1));
         c.emit_op_u16(Op::CONST, one, 0);
@@ -872,7 +872,7 @@ fn array_set_then_get() {
         c.emit_op_u16(Op::CONST, i1, 0);
         c.emit_op_u16(Op::CONST, i2, 0);
         c.emit_op_u16(Op::CONST, i3, 0);
-        c.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         // Save to slot 0
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
         c.emit_op(Op::DROP, 0);
@@ -2691,6 +2691,194 @@ fn exception_type_declared_with_externref_param() {
     }
     assert!(found,
         "type section must declare `(externref) -> ()` for exception tag");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 26f. GC proposal — spec byte-value compliance
+// ──────────────────────────────────────────────────────────────────────
+
+/// Pin every declared GC opcode to the byte position given in MVP.md.
+/// Regression guard: historically we had REF_EQ colliding with
+/// `array.init_elem` and ARRAY_NEW naming `array.new_fixed` — both
+/// silently wrong. This test locks down the entire byte table.
+#[test]
+fn gc_opcodes_use_spec_byte_values() {
+    let table: &[(Op, u8, u8, &str)] = &[
+        // Struct ops
+        (Op::STRUCT_NEW,            0xFB, 0x00, "struct.new"),
+        (Op::STRUCT_NEW_DEFAULT,    0xFB, 0x01, "struct.new_default"),
+        (Op::STRUCT_GET,            0xFB, 0x02, "struct.get"),
+        (Op::STRUCT_GET_S,          0xFB, 0x03, "struct.get_s"),
+        (Op::STRUCT_GET_U,          0xFB, 0x04, "struct.get_u"),
+        (Op::STRUCT_SET,            0xFB, 0x05, "struct.set"),
+        // Array ops
+        (Op::ARRAY_NEW,             0xFB, 0x06, "array.new"),
+        (Op::ARRAY_NEW_DEFAULT,     0xFB, 0x07, "array.new_default"),
+        (Op::ARRAY_NEW_FIXED,       0xFB, 0x08, "array.new_fixed"),
+        (Op::ARRAY_NEW_DATA,        0xFB, 0x09, "array.new_data"),
+        (Op::ARRAY_NEW_ELEM,        0xFB, 0x0A, "array.new_elem"),
+        (Op::ARRAY_GET,             0xFB, 0x0B, "array.get"),
+        (Op::ARRAY_GET_S,           0xFB, 0x0C, "array.get_s"),
+        (Op::ARRAY_GET_U,           0xFB, 0x0D, "array.get_u"),
+        (Op::ARRAY_SET,             0xFB, 0x0E, "array.set"),
+        (Op::ARRAY_LENGTH,          0xFB, 0x0F, "array.len"),
+        (Op::ARRAY_FILL,            0xFB, 0x10, "array.fill"),
+        (Op::ARRAY_COPY,            0xFB, 0x11, "array.copy"),
+        (Op::ARRAY_INIT_DATA,       0xFB, 0x12, "array.init_data"),
+        (Op::ARRAY_INIT_ELEM,       0xFB, 0x13, "array.init_elem"),
+        // Reference tests / casts
+        (Op::REF_TEST,              0xFB, 0x14, "ref.test"),
+        (Op::REF_TEST_NULL,         0xFB, 0x15, "ref.test_null"),
+        (Op::REF_CAST,              0xFB, 0x16, "ref.cast"),
+        (Op::REF_CAST_NULL,         0xFB, 0x17, "ref.cast_null"),
+        (Op::BR_ON_CAST,            0xFB, 0x18, "br_on_cast"),
+        (Op::BR_ON_CAST_FAIL,       0xFB, 0x19, "br_on_cast_fail"),
+        // Extern <-> any
+        (Op::ANY_CONVERT_EXTERN,    0xFB, 0x1A, "any.convert_extern"),
+        (Op::EXTERN_CONVERT_ANY,    0xFB, 0x1B, "extern.convert_any"),
+        // i31
+        (Op::I31_NEW,               0xFB, 0x1C, "ref.i31"),
+        (Op::I31_GET_S,             0xFB, 0x1D, "i31.get_s"),
+        (Op::I31_GET_U,             0xFB, 0x1E, "i31.get_u"),
+        // Core-prefix GC ops
+        (Op::REF_EQ,                0x00, 0xD3, "ref.eq"),
+        (Op::REF_AS_NON_NULL,       0x00, 0xD4, "ref.as_non_null"),
+        (Op::BR_ON_NULL,            0x00, 0xD5, "br_on_null"),
+        (Op::BR_ON_NON_NULL,        0x00, 0xD6, "br_on_non_null"),
+    ];
+    for (op, prefix, sub, name) in table {
+        assert_eq!(op.prefix(), *prefix,
+            "{}: prefix mismatch (got 0x{:02X}, spec 0x{:02X})",
+            name, op.prefix(), *prefix);
+        assert_eq!(op.sub(), *sub,
+            "{}: sub mismatch (got 0x{:02X}, spec 0x{:02X})",
+            name, op.sub(), *sub);
+        assert_eq!(op.wasm_name(), *name,
+            "{}: name mismatch (got {:?})", name, op.wasm_name());
+    }
+}
+
+#[test]
+fn ref_eq_no_longer_collides_with_array_init_elem() {
+    assert_eq!(Op::REF_EQ.prefix(), 0x00);
+    assert_eq!(Op::REF_EQ.sub(), 0xD3);
+    assert_eq!(Op::ARRAY_INIT_ELEM.prefix(), 0xFB);
+    assert_eq!(Op::ARRAY_INIT_ELEM.sub(), 0x13);
+    assert_ne!(Op::REF_EQ.0, Op::ARRAY_INIT_ELEM.0);
+}
+
+#[test]
+fn array_new_fixed_vs_array_new_at_correct_spec_bytes() {
+    assert_eq!(Op::ARRAY_NEW_FIXED.sub(), 0x08);
+    assert_eq!(Op::ARRAY_NEW.sub(), 0x06);
+    assert_eq!(Op::ARRAY_NEW_FIXED.wasm_name(), "array.new_fixed");
+    assert_eq!(Op::ARRAY_NEW.wasm_name(), "array.new");
+}
+
+#[test]
+fn array_new_single_value_and_length() {
+    // `array.new $t`: [value, length i32] -> [array, every lane = value].
+    let mut chunk = Chunk::new("<script>");
+    let seven = chunk.add_constant(Value::I32(7));
+    let three = chunk.add_constant(Value::I32(3));
+    chunk.emit_op_u16(Op::CONST, seven, 0);
+    chunk.emit_op_u16(Op::CONST, three, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    chunk.emit_op(Op::ARRAY_LENGTH, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 3);
+}
+
+#[test]
+fn array_new_default_yields_length_array() {
+    let mut chunk = Chunk::new("<script>");
+    let five = chunk.add_constant(Value::I32(5));
+    chunk.emit_op_u16(Op::CONST, five, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_DEFAULT, 0, 0);
+    chunk.emit_op(Op::ARRAY_LENGTH, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 5);
+}
+
+#[test]
+fn struct_new_default_creates_empty_struct() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    let r = vm.run(vec![chunk]).unwrap();
+    assert!(matches!(r, Value::Object(_)));
+}
+
+#[test]
+fn ref_as_non_null_traps_on_null_passes_on_object() {
+    let r = run_script(|c| {
+        c.emit_op_u16(Op::STRUCT_NEW_DEFAULT, 0, 0);
+        c.emit_op(Op::REF_AS_NON_NULL, 0);
+    });
+    assert!(matches!(r, Value::Object(_)));
+
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_op(Op::REF_AS_NON_NULL, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    let err = vm.run(vec![chunk]).unwrap_err();
+    assert!(err.message.contains("ref.as_non_null"),
+        "expected trap mentioning ref.as_non_null, got {:?}", err.message);
+}
+
+#[test]
+fn any_extern_convert_round_trip_preserves_value() {
+    // Spec: composing any.convert_extern and extern.convert_any yields
+    // the original value. Both are identity in our value ABI.
+    let mut chunk = Chunk::new("<script>");
+    let payload = chunk.add_constant(Value::I32(42));
+    chunk.emit_op_u16(Op::CONST, payload, 0);
+    chunk.emit_op(Op::ANY_CONVERT_EXTERN, 0);
+    chunk.emit_op(Op::EXTERN_CONVERT_ANY, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 42);
+}
+
+#[test]
+fn ref_test_null_accepts_null() {
+    // ref.test_null succeeds on null; ref.test (non-null variant)
+    // rejects it. Verify the former by passing null and expecting 1.
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_op_u16(Op::REF_TEST_NULL, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 1);
+}
+
+#[test]
+fn ref_eq_emits_as_core_0xd3_byte_in_wasm() {
+    // Verify spec byte emission: `ref.eq` is a single-byte core op.
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_op(Op::REF_EQ, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let wasm = vybe_bytecode::wasm::write_wasm(&vec![chunk]);
+    let mut pos = 8;
+    let mut seen = false;
+    while pos < wasm.len() {
+        let section_id = wasm[pos]; pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        if section_id == 10 {
+            let end = pos + size as usize;
+            seen = wasm[pos..end].iter().any(|&b| b == 0xD3);
+            break;
+        }
+        pos += size as usize;
+    }
+    assert!(seen, "code section must contain core ref.eq byte 0xD3");
 }
 
 // ──────────────────────────────────────────────────────────────────────

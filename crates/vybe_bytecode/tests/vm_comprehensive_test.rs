@@ -1068,7 +1068,7 @@ fn array_new_and_length() {
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
     chunk.emit_op_u16(Op::CONST, c, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_i32(&run_chunks(vec![chunk]), 3);
@@ -1084,7 +1084,7 @@ fn array_get_valid_index() {
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
     chunk.emit_op_u16(Op::CONST, c, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     // array_get: stack [obj, key] => [val]
     let idx = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, idx, 0);
@@ -1099,7 +1099,7 @@ fn array_get_out_of_bounds() {
     chunk.local_count = 2;
     let a = chunk.add_constant(Value::I32(10));
     chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 1, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
     let idx = chunk.add_constant(Value::I32(99));
     chunk.emit_op_u16(Op::CONST, idx, 0);
     chunk.emit_op(Op::ARRAY_GET, 0);
@@ -1120,7 +1120,7 @@ fn array_set() {
     let b = chunk.add_constant(Value::I32(20));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     // store in local for reuse
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
     chunk.emit_op(Op::DROP, 0);
@@ -1146,7 +1146,7 @@ fn array_push_and_length() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 2;
     // Start with empty array
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     let val = chunk.add_constant(Value::I32(42));
     chunk.emit_op_u16(Op::CONST, val, 0);
     chunk.emit_op(Op::ARRAY_PUSH, 0); // returns array
@@ -1166,7 +1166,7 @@ fn array_pop() {
     let b = chunk.add_constant(Value::I32(20));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     chunk.emit_op(Op::ARRAY_POP, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_i32(&run_chunks(vec![chunk]), 20);
@@ -1182,7 +1182,7 @@ fn array_join() {
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
     chunk.emit_op_u16(Op::CONST, c, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     let delim = chunk.add_constant(Value::String(Rc::from("-")));
     chunk.emit_op_u16(Op::CONST, delim, 0);
     chunk.emit_op(Op::ARRAY_JOIN, 0);
@@ -1198,12 +1198,12 @@ fn array_concat() {
     let b = chunk.add_constant(Value::I32(2));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     let c = chunk.add_constant(Value::I32(3));
     let d = chunk.add_constant(Value::I32(4));
     chunk.emit_op_u16(Op::CONST, c, 0);
     chunk.emit_op_u16(Op::CONST, d, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 2, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     chunk.emit_op(Op::ARRAY_CONCAT, 0);
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
@@ -1220,7 +1220,7 @@ fn array_reverse() {
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
     chunk.emit_op_u16(Op::CONST, c, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 3, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     chunk.emit_op(Op::ARRAY_REVERSE, 0);
     // Get first element (should be 3 now)
     let idx = chunk.add_constant(Value::I32(0));
@@ -1239,7 +1239,7 @@ fn array_fill() {
     for _ in 0..5 {
         chunk.emit_op_u16(Op::CONST, z, 0);
     }
-    chunk.emit_op_u16(Op::ARRAY_NEW, 5, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
     chunk.emit_op(Op::DROP, 0);
     // array_fill: stack [array, value, start, len]
@@ -1580,7 +1580,7 @@ fn ref_is_null_on_undefined() {
 fn ref_is_array_on_array() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, 0); // empty array
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0); // empty array
     chunk.emit_op(Op::REF_IS_ARRAY, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
@@ -1672,7 +1672,7 @@ fn ref_typeof_undefined() {
 fn ref_typeof_array() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     chunk.emit_op(Op::REF_TYPEOF, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_string(&run_chunks(vec![chunk]), "array");
@@ -2009,7 +2009,7 @@ fn str_length_empty() {
 fn array_empty_pop() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
     chunk.emit_op(Op::ARRAY_POP, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);

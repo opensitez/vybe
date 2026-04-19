@@ -24,7 +24,7 @@ pub fn emit_new(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     // Create empty __keys array and attach it
     chunk.emit_op(Op::DUP, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::STRUCT_SET, keys_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -180,7 +180,7 @@ pub fn emit_method_delete(chunk: &mut Chunk, line: u32) {
 pub fn emit_method_clear(chunk: &mut Chunk, dict_slot: u16, line: u32) {
     // Replace __keys with empty array
     chunk.emit_op_u16(Op::LOCAL_GET, dict_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     chunk.emit_op_u16(Op::STRUCT_SET, keys_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -192,7 +192,7 @@ pub fn emit_method_clear(chunk: &mut Chunk, dict_slot: u16, line: u32) {
 /// Stack before: [dict]  Stack after: [null]
 pub fn emit_method_clear_stack(chunk: &mut Chunk, line: u32) {
     // [dict] → set __keys = []
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
     // struct_set pops [obj, val], pushes [val]
     chunk.emit_op_u16(Op::STRUCT_SET, keys_key, line);
@@ -251,7 +251,7 @@ pub fn emit_keys(chunk: &mut Chunk, line: u32) {
     // Actually, struct_get consumes the dict. We need to dup before.
     // Let's restructure: caller should dup before calling emit_keys if they need dict after.
     // For the fallback, emit empty array.
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     chunk.patch_jump(not_null);
 }
 
@@ -267,7 +267,7 @@ pub fn emit_values_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16,
     chunk.emit_op(Op::DROP, line);
 
     // result = []
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -311,7 +311,7 @@ pub fn emit_items_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16, 
     chunk.emit_op(Op::DROP, line);
 
     // result = []
-    chunk.emit_op_u16(Op::ARRAY_NEW, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -343,7 +343,7 @@ pub fn emit_items_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16, 
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     // pair = [key, value]
-    chunk.emit_op_u16(Op::ARRAY_NEW, 2, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
     // result.push(pair)
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     // Stack: [pair, result]. Need [result, pair] for array_push.
@@ -364,7 +364,7 @@ pub fn emit_items_from_local(chunk: &mut Chunk, dict_slot: u16, keys_slot: u16, 
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line); // key again
     chunk.emit_op(Op::ARRAY_GET, line); // dict[key] = value
-    chunk.emit_op_u16(Op::ARRAY_NEW, 2, line); // [key, value]
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line); // [key, value]
     chunk.emit_op(Op::ARRAY_PUSH, line); // result.push(pair)
     chunk.emit_op(Op::DROP, line);
 
