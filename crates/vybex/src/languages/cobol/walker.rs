@@ -355,7 +355,16 @@ fn walk_regular_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result
             Rule::level_number => {
                 _level = child.as_str().trim().parse::<u32>().unwrap_or(0);
             }
-            Rule::ident_name => {
+            Rule::ident_name | Rule::ident_or_keyword => {
+                // Grammar rule `regular_data_item` emits the data
+                // item's name via `ident_or_keyword` (allows names
+                // that match COBOL keywords like `STATUS`). We
+                // match both here so top-level AND nested items
+                // populate `name` correctly. Historical bug: only
+                // `ident_name` was matched, which silently empty'd
+                // the name and caused the OCCURS branch in
+                // `collect_group_children` to be short-circuited
+                // via the FILLER path.
                 if name.is_empty() {
                     name = child.as_str().to_string();
                 }
@@ -517,7 +526,13 @@ fn collect_group_children(
                 for c in children {
                     match c.as_rule() {
                         Rule::level_number => {}
-                        Rule::ident_name => {
+                        Rule::ident_name | Rule::ident_or_keyword => {
+                            // See the equivalent fix in
+                            // `walk_regular_data_item` — the grammar
+                            // emits `ident_or_keyword` for data-item
+                            // names; matching only `ident_name` was
+                            // a silent no-op that broke nested
+                            // OCCURS handling.
                             if field_name.is_empty() {
                                 field_name = c.as_str().to_string();
                             }
@@ -556,6 +571,7 @@ fn collect_group_children(
                     Expression::new(ExprKind::Object(sub_props))
                 } else if let Some(count_expr) = field_occurs {
                     let element_init = field_init.unwrap_or_else(|| default_value_for_pic(&field_pic));
+                    eprintln!("[D1 WALKER] nested OCCURS path emitting Array(count, init) for field");
                     Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("Array")),
                         args: vec![

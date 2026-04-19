@@ -4588,6 +4588,60 @@ impl Compiler {
     fn try_compile_builtin(&mut self, name: &str, args: &[&Expression]) -> Result<bool, String> {
         let line = self.line;
 
+        // ── Phase D1 pilot: Array(count, init) → wasm:js-array.newWithLength + fill ──
+        //
+        // COBOL's OCCURS walker emits `Call { callee: Array,
+        // args: [count, element_init] }` in the high-level IR. This
+        // intercept routes the pattern through the spec-conformant
+        // `wasm:js-array.*` imports instead of the legacy VM-internal
+        // opcodes. See `dynamicruntime_support.md` Phase D1 and the
+        // reasoning in `project_dynamic_runtime_phase_state.md`.
+        //
+        // Narrow match: only intercept when we see `Array(count, init)`
+        // specifically — 2 positional args, callee identifier "Array".
+        // This avoids colliding with C#/VB `Array` namespace access
+        // (`Array.Empty()`, `Array.IsArray()`, etc.) which hits
+        // different code paths (namespace + member access).
+        if name == "Array" && args.len() == 2 {
+            // Emit: newWithLength(count) → arr
+            //       loop i=0..count-1: wasm:js-array.set(arr, i, init)
+            // Leaves the constructed array on TOS.
+            self.compile_expr(args[0])?;  // push count
+            let new_idx = self.import("wasm:js-array", "newWithLength");
+            self.emit_host_call(new_idx, 1);
+            // Array is now on TOS. If the init is null-ish, we're done
+            // (newWithLength already null-fills). Only emit the fill
+            // loop when the init isn't null / undefined.
+            let init_is_null = matches!(
+                &args[1].kind,
+                ExprKind::Lit(crate::ast::Literal::Null)
+                    | ExprKind::Lit(crate::ast::Literal::Undefined)
+            );
+            if init_is_null {
+                return Ok(true);
+            }
+            // Use wasm:js-array.fill(arr, value, start, end) — spec-spec
+            // behavior fills the whole range when start=0 and end=-1
+            // (our handler treats MAX as end-of-array).
+            // Stack: [arr]. Dup first so we still have the result.
+            self.emit(Op::DUP);
+            // Evaluate init.
+            self.compile_expr(args[1])?;
+            // start = 0
+            let zero_k = self.chunks[self.current].add_constant(vybe_bytecode::Value::I32(0));
+            self.emit_u16(Op::CONST, zero_k);
+            // end = i32::MAX (handler clamps to length)
+            let max_k = self.chunks[self.current].add_constant(vybe_bytecode::Value::I32(i32::MAX));
+            self.emit_u16(Op::CONST, max_k);
+            let fill_idx = self.import("wasm:js-array", "fill");
+            self.emit_host_call(fill_idx, 4);
+            // fill returns the array; drop the duplicate on the stack
+            // (fill's result IS the array, so the one we dup'd earlier
+            // remains on TOS).
+            self.emit(Op::DROP);
+            return Ok(true);
+        }
+
         // Canonical builtins — language-agnostic dispatch via compiler_common::canonical.
         // Walkers normalize language-specific syntax (arr.Length, len(arr), Length(arr),
         // arr.size, etc.) to canonical dunder names (__len__, __str__, etc.).

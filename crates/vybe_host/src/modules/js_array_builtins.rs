@@ -44,6 +44,18 @@ fn make_array(elements: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
 }
 
+/// Marker property set by `wasm:js-fixedarray.freeze` to forbid
+/// length-changing mutations. Mutators check it and no-op rather
+/// than allow the change (spec behavior would be TypeError; we
+/// silently no-op until exception dispatch from host handlers is
+/// wired — Phase B5 follow-up).
+const FROZEN_MARK: &str = "__vybe_frozen";
+
+fn is_frozen(arr: &Arc<Mutex<Object>>) -> bool {
+    let o = arr.lock().unwrap();
+    o.properties.get(FROZEN_MARK).is_some()
+}
+
 /// Keep the array's cached `length` property in sync with the
 /// backing vector's length. Every mutator must call this after
 /// modifying the vector — JS code reading `.length` does not re-query
@@ -257,12 +269,24 @@ fn register_property_access(vm: &mut VM) {
 
 fn register_mutators(vm: &mut VM) {
     // push(arr, v) -> i32 new_length
+    //
+    // Guards against frozen arrays: a frozen array's length cannot
+    // change, so push is a no-op and returns the current length. The
+    // spec says TypeError — we'll upgrade to a throw when host-side
+    // exception dispatch lands.
     vm.register_host_fn(
         "wasm:js-array",
         "push",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let val = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
+                if is_frozen(&arr) {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind {
+                        return Value::I32(v.len() as i32);
+                    }
+                    return Value::I32(0);
+                }
                 let mut o = arr.lock().unwrap();
                 let len = if let ObjectKind::Array(ref mut v) = o.kind {
                     v.push(val);
@@ -277,12 +301,13 @@ fn register_mutators(vm: &mut VM) {
         }),
     );
 
-    // pop(arr) -> popped_value (undefined if empty)
+    // pop(arr) -> popped_value (undefined if empty or frozen)
     vm.register_host_fn(
         "wasm:js-array",
         "pop",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
+                if is_frozen(&arr) { return Value::Undefined; }
                 let mut o = arr.lock().unwrap();
                 let popped = if let ObjectKind::Array(ref mut v) = o.kind {
                     v.pop().unwrap_or(Value::Undefined)
@@ -296,12 +321,13 @@ fn register_mutators(vm: &mut VM) {
         }),
     );
 
-    // shift(arr) -> first_value (undefined if empty)
+    // shift(arr) -> first_value (undefined if empty or frozen)
     vm.register_host_fn(
         "wasm:js-array",
         "shift",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
+                if is_frozen(&arr) { return Value::Undefined; }
                 let mut o = arr.lock().unwrap();
                 let shifted = if let ObjectKind::Array(ref mut v) = o.kind {
                     if v.is_empty() { Value::Undefined } else { v.remove(0) }
@@ -315,13 +341,20 @@ fn register_mutators(vm: &mut VM) {
         }),
     );
 
-    // unshift(arr, v) -> i32 new_length
+    // unshift(arr, v) -> i32 new_length (frozen → current length, no insert)
     vm.register_host_fn(
         "wasm:js-array",
         "unshift",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let val = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
+                if is_frozen(&arr) {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind {
+                        return Value::I32(v.len() as i32);
+                    }
+                    return Value::I32(0);
+                }
                 let mut o = arr.lock().unwrap();
                 let len = if let ObjectKind::Array(ref mut v) = o.kind {
                     v.insert(0, val);
@@ -796,45 +829,443 @@ fn register_iteration(vm: &mut VM) {
         }),
     );
 
-    // Callback-taking methods (forEach / map / filter / reduce / some /
-    // every / find / findIndex / findLast / findLastIndex / flatMap /
-    // group / groupToMap) need `vm.invoke_callback(fn, args)` — which
-    // requires VM access beyond what the host_fn closure signature
-    // provides. These are stubbed here so imports resolve, but their
-    // behavior is "no-op" until Phase B12 integrates callback dispatch
-    // via a richer HostContext. Compilers emitting these can still
-    // link; runtime behavior will light up in a later pass.
-    for name in &[
-        "forEach", "map", "filter", "reduce", "reduceRight", "some", "every",
-        "find", "findIndex", "findLast", "findLastIndex", "flatMap",
-        "group", "groupToMap", "toSpliced",
-    ] {
-        let reg_name = name.to_string();
-        let closure_name = name.to_string();
-        vm.register_host_fn(
-            "wasm:js-array",
-            &reg_name,
-            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-                // For indexed-result methods, return sensible defaults.
-                match closure_name.as_str() {
-                    "some" | "every" => Value::I32(0),
-                    "findIndex" | "findLastIndex" => Value::I32(-1),
-                    "reduce" | "reduceRight" => args.get(2).cloned().unwrap_or(Value::Undefined),
-                    "find" | "findLast" => Value::Undefined,
-                    _ => {
-                        // map / filter / flatMap / group / toSpliced produce arrays
-                        // forEach returns undefined — Value::Null will do
-                        if let Some(arr) = array_of(args, 0) {
-                            let o = arr.lock().unwrap();
-                            if let ObjectKind::Array(ref v) = o.kind {
-                                // MVP: map/filter/flatMap/toSpliced returns a copy.
-                                return make_array(v.clone());
-                            }
-                        }
-                        Value::Null
+    // ── Callback-taking methods (Phase B5 — real dispatch) ────────────
+    //
+    // These invoke the supplied JS callback per element via
+    // `HostContext::invoke`, matching the callback signature
+    // `(element, index, array) → result` that the MDN reference
+    // pages specify for Array.prototype methods.
+    //
+    // Spec references (each method):
+    //   - forEach: §23.1.3.13 — no return; just invoke for side effects
+    //   - map:     §23.1.3.21 — collect invoke results
+    //   - filter:  §23.1.3.8  — keep elements where callback is truthy
+    //   - reduce:  §23.1.3.26 — fold from left, optional initial value
+    //   - reduceRight: §23.1.3.27
+    //   - some:    §23.1.3.30 — any callback returns truthy
+    //   - every:   §23.1.3.6  — all callbacks return truthy
+    //   - find, findLast: §23.1.3.11 — first/last element where truthy
+    //   - findIndex, findLastIndex: §23.1.3.12 — index of first/last match
+    //   - flatMap: §23.1.3.15 — map + flatten one level
+
+    vm.register_host_fn("wasm:js-array", "forEach",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                for (i, elem) in snapshot.iter().enumerate() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    ctx.invoke(&callback, &invoke_args);
+                }
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn("wasm:js-array", "map",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                let mapped: Vec<Value> = snapshot.iter().enumerate()
+                    .map(|(i, elem)| {
+                        let invoke_args = vec![
+                            elem.clone(),
+                            Value::I32(i as i32),
+                            Value::Object(arr.clone()),
+                        ];
+                        ctx.invoke(&callback, &invoke_args)
+                    })
+                    .collect();
+                return make_array(mapped);
+            }
+            make_array(Vec::new())
+        }));
+
+    vm.register_host_fn("wasm:js-array", "filter",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                let filtered: Vec<Value> = snapshot.iter().enumerate()
+                    .filter_map(|(i, elem)| {
+                        let invoke_args = vec![
+                            elem.clone(),
+                            Value::I32(i as i32),
+                            Value::Object(arr.clone()),
+                        ];
+                        let keep = is_truthy(&ctx.invoke(&callback, &invoke_args));
+                        if keep { Some(elem.clone()) } else { None }
+                    })
+                    .collect();
+                return make_array(filtered);
+            }
+            make_array(Vec::new())
+        }));
+
+    vm.register_host_fn("wasm:js-array", "reduce",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            let initial_provided = args.len() > 2 && !matches!(args.get(2), Some(Value::Undefined) | None);
+            let mut acc = if initial_provided {
+                args.get(2).cloned().unwrap_or(Value::Undefined)
+            } else {
+                Value::Undefined
+            };
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                let start_idx = if initial_provided { 0 } else {
+                    if snapshot.is_empty() {
+                        // Spec: TypeError on empty array with no initial.
+                        // MVP returns undefined; Phase B5 doesn't have
+                        // throw-dispatch yet.
+                        return Value::Undefined;
+                    }
+                    acc = snapshot[0].clone();
+                    1
+                };
+                for i in start_idx..snapshot.len() {
+                    let invoke_args = vec![
+                        acc,
+                        snapshot[i].clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    acc = ctx.invoke(&callback, &invoke_args);
+                }
+            }
+            acc
+        }));
+
+    vm.register_host_fn("wasm:js-array", "reduceRight",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            let initial_provided = args.len() > 2 && !matches!(args.get(2), Some(Value::Undefined) | None);
+            let mut acc = if initial_provided {
+                args.get(2).cloned().unwrap_or(Value::Undefined)
+            } else {
+                Value::Undefined
+            };
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                if snapshot.is_empty() {
+                    return if initial_provided { acc } else { Value::Undefined };
+                }
+                let mut i = snapshot.len() as i32 - 1;
+                if !initial_provided {
+                    acc = snapshot[i as usize].clone();
+                    i -= 1;
+                }
+                while i >= 0 {
+                    let invoke_args = vec![
+                        acc,
+                        snapshot[i as usize].clone(),
+                        Value::I32(i),
+                        Value::Object(arr.clone()),
+                    ];
+                    acc = ctx.invoke(&callback, &invoke_args);
+                    i -= 1;
+                }
+            }
+            acc
+        }));
+
+    vm.register_host_fn("wasm:js-array", "some",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                for (i, elem) in snapshot.iter().enumerate() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                        return Value::I32(1);
                     }
                 }
-            }),
-        );
+            }
+            Value::I32(0)
+        }));
+
+    vm.register_host_fn("wasm:js-array", "every",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                for (i, elem) in snapshot.iter().enumerate() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    if !is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                        return Value::I32(0);
+                    }
+                }
+            }
+            Value::I32(1) // spec: empty array → every returns true
+        }));
+
+    vm.register_host_fn("wasm:js-array", "find",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                for (i, elem) in snapshot.iter().enumerate() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                        return elem.clone();
+                    }
+                }
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn("wasm:js-array", "findIndex",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                for (i, elem) in snapshot.iter().enumerate() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                        return Value::I32(i as i32);
+                    }
+                }
+            }
+            Value::I32(-1)
+        }));
+
+    vm.register_host_fn("wasm:js-array", "findLast",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                for (i, elem) in snapshot.iter().enumerate().rev() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                        return elem.clone();
+                    }
+                }
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn("wasm:js-array", "findLastIndex",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                for (i, elem) in snapshot.iter().enumerate().rev() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                        return Value::I32(i as i32);
+                    }
+                }
+            }
+            Value::I32(-1)
+        }));
+
+    vm.register_host_fn("wasm:js-array", "flatMap",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                let mut out = Vec::with_capacity(snapshot.len());
+                for (i, elem) in snapshot.iter().enumerate() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    let r = ctx.invoke(&callback, &invoke_args);
+                    // Flatten one level: if the result is an Array, spread;
+                    // otherwise append as single element.
+                    if let Value::Object(ref o) = r {
+                        let lock = o.lock().unwrap();
+                        if let ObjectKind::Array(ref inner) = lock.kind {
+                            out.extend(inner.iter().cloned());
+                            continue;
+                        }
+                    }
+                    out.push(r);
+                }
+                return make_array(out);
+            }
+            make_array(Vec::new())
+        }));
+
+    // ── ES2025 group / groupToMap ───────────────────────────────────
+    //
+    // Group elements by the result of the callback. `group` returns a
+    // null-prototype Object with string keys; `groupToMap` returns a
+    // Map keyed by any value.
+
+    vm.register_host_fn("wasm:js-array", "group",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            use indexmap::IndexMap;
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            let mut groups: IndexMap<String, Vec<Value>> = IndexMap::new();
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                for (i, elem) in snapshot.iter().enumerate() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    let key = format!("{}", ctx.invoke(&callback, &invoke_args));
+                    groups.entry(key).or_insert_with(Vec::new).push(elem.clone());
+                }
+            }
+            // Materialize as an ordinary object with array-valued properties.
+            let mut out = Object::new();
+            for (k, v) in groups {
+                out.properties.insert(k, make_array(v));
+            }
+            Value::Object(Arc::new(Mutex::new(out)))
+        }));
+
+    vm.register_host_fn("wasm:js-array", "groupToMap",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            use indexmap::IndexMap;
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            let mut groups: IndexMap<Value, Vec<Value>> = IndexMap::new();
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                for (i, elem) in snapshot.iter().enumerate() {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(i as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    let key = ctx.invoke(&callback, &invoke_args);
+                    groups.entry(key).or_insert_with(Vec::new).push(elem.clone());
+                }
+            }
+            // Build a JS Map with one entry per group.
+            let mut map_im: IndexMap<Value, Value> = IndexMap::new();
+            for (k, v) in groups {
+                map_im.insert(k, make_array(v));
+            }
+            let mut obj = Object::new();
+            obj.kind = ObjectKind::Map(map_im);
+            obj.properties.insert("size".into(), Value::I32(obj_map_len(&obj) as i32));
+            Value::Object(Arc::new(Mutex::new(obj)))
+        }));
+
+    // toSpliced — non-mutating splice returning a new array.
+    vm.register_host_fn("wasm:js-array", "toSpliced",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let del = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let items: Vec<Value> = match args.get(3) {
+                Some(Value::Object(o)) => {
+                    let lock = o.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = lock.kind { v.clone() } else { Vec::new() }
+                }
+                _ => Vec::new(),
+            };
+            if let Some(arr) = array_of(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                };
+                let len = snapshot.len();
+                let idx = if start < 0 {
+                    ((len as i32) + start).max(0) as usize
+                } else {
+                    (start as usize).min(len)
+                };
+                let end = (idx + del).min(len);
+                let mut out = Vec::with_capacity(len - (end - idx) + items.len());
+                out.extend_from_slice(&snapshot[..idx]);
+                out.extend(items.into_iter());
+                out.extend_from_slice(&snapshot[end..]);
+                return make_array(out);
+            }
+            make_array(Vec::new())
+        }));
+}
+
+/// JS truthy semantics — used by filter / some / every / find.
+/// Matches ECMA-262 §7.1.2 ToBoolean.
+fn is_truthy(v: &Value) -> bool {
+    match v {
+        Value::Null | Value::Undefined => false,
+        Value::Bool(b) => *b,
+        Value::I32(n) => *n != 0,
+        Value::I64(n) => *n != 0,
+        Value::F64(n) => *n != 0.0 && !n.is_nan(),
+        Value::String(s) => !s.is_empty(),
+        Value::Object(_) | Value::Symbol(_) | Value::BigInt(_)
+            | Value::V128(_) | Value::WeakRef(_) => true,
     }
+}
+
+fn obj_map_len(obj: &Object) -> usize {
+    if let ObjectKind::Map(ref m) = obj.kind { m.len() } else { 0 }
 }

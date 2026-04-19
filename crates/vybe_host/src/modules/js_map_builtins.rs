@@ -258,11 +258,63 @@ fn register_map(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 
+    // forEach(map, callback) — invokes callback(value, key, map) per
+    // entry in insertion order. ECMA-262 §24.1.3.5.
     vm.register_host_fn("wasm:js-map", "forEach",
-        Box::new(|_ctx, _args| Value::Null));
+        Box::new(|ctx, args| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(mapobj) = is_map(args, 0) {
+                let snapshot: Vec<(Value, Value)> = {
+                    let m = mapobj.lock().unwrap();
+                    if let ObjectKind::Map(ref im) = m.kind {
+                        im.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                for (k, v) in snapshot {
+                    let invoke_args = vec![v, k, Value::Object(mapobj.clone())];
+                    ctx.invoke(&callback, &invoke_args);
+                }
+            }
+            Value::Undefined
+        }));
 
+    // Map.groupBy(iterable, fn) → Map — groups iterable entries by the
+    // value fn returns for each. ES2025.
     vm.register_host_fn("wasm:js-map", "groupBy",
-        Box::new(|_ctx, _args| new_map_value()));
+        Box::new(|ctx, args| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            let out = new_map_value();
+            if let (Value::Object(outobj), Some(Value::Object(src))) = (&out, args.first()) {
+                let items: Vec<Value> = {
+                    let s = src.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = s.kind {
+                        v.clone()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                for (i, item) in items.iter().enumerate() {
+                    let invoke_args = vec![item.clone(), Value::I32(i as i32)];
+                    let key = ctx.invoke(&callback, &invoke_args);
+                    let mut mo = outobj.lock().unwrap();
+                    if let ObjectKind::Map(ref mut im) = mo.kind {
+                        let entry = im.entry(key).or_insert_with(|| {
+                            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+                        });
+                        if let Value::Object(group) = entry {
+                            let mut g = group.lock().unwrap();
+                            if let ObjectKind::Array(ref mut v) = g.kind {
+                                v.push(item.clone());
+                            }
+                        }
+                    }
+                    sync_map_size(&mut mo);
+                }
+            }
+            out
+        }));
 }
 
 // ── wasm:js-set ────────────────────────────────────────────────────────
@@ -388,8 +440,29 @@ fn register_set(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 
+    // Set.prototype.forEach(callback) — callback receives (value,
+    // value, set) — the key mirrors the value per §24.2.3.6.
     vm.register_host_fn("wasm:js-set", "forEach",
-        Box::new(|_ctx, _args| Value::Null));
+        Box::new(|ctx, args| {
+            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(setobj) = is_set(args, 0) {
+                let snapshot: Vec<Value> = {
+                    let so = setobj.lock().unwrap();
+                    if let ObjectKind::Set(ref s) = so.kind {
+                        s.iter().cloned().collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                for v in snapshot {
+                    let invoke_args = vec![
+                        v.clone(), v, Value::Object(setobj.clone()),
+                    ];
+                    ctx.invoke(&callback, &invoke_args);
+                }
+            }
+            Value::Undefined
+        }));
 
     // ── Set algebra (ES2025) ────────────────────────────────────────
     //

@@ -24,3 +24,4 @@ mod test_parse_debug;
 mod test_pic_decimal_padding;
 mod test_programs;
 mod test_strings;
+mod test_d1_pilot_wasm_js_array;
