@@ -153,11 +153,16 @@ impl App {
         if self.is_dragging && !self.is_dragging_splitter && self.active_tab < self.tabs.len() {
             let ed_top = (tch + TAB_BAR_HEIGHT) * SCALE;
             let r = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.win_width * SCALE - ed_start_x * SCALE, self.win_height * SCALE - (ed_top + FOOTER_HEIGHT * SCALE)).unwrap();
+            let mut form_touched = false;
             match &mut self.tabs[self.active_tab].content {
                 TabContent::Code(cw) => { cw.handle_mouse_pixels(&mut self.font_system, self.mouse_pos.0, self.mouse_pos.1, r, None, &mut self.clipboard); },
-                TabContent::Form(f) => f.handle_mouse_move(self.mouse_pos.0 / SCALE, self.mouse_pos.1 / SCALE, crate::form_designer_tab::Rect { x: ed_start_x, y: ed_top / SCALE, w: r.width() / SCALE, h: r.height() / SCALE }),
+                TabContent::Form(f) => {
+                    f.handle_mouse_move(self.mouse_pos.0 / SCALE, self.mouse_pos.1 / SCALE, crate::form_designer_tab::Rect { x: ed_start_x, y: ed_top / SCALE, w: r.width() / SCALE, h: r.height() / SCALE });
+                    form_touched = true;
+                }
                 TabContent::Resources(_) => {}
             }
+            if form_touched { self.sync_active_form_to_project(); }
             needs_editor_redraw = true;
         }
 
@@ -482,6 +487,7 @@ impl App {
                                         std::process::exit(0);
                                     }
                                     crate::form_designer_tab::MenuAction::AddForm => {
+                                        self.sync_active_form_to_project();
                                         let name = format!("Form{}", self.project.forms.len() + 1);
                                         let mut form = vybex::projects::Form::new(name.clone());
                                         form.width = 640; form.height = 480;
@@ -751,6 +757,10 @@ impl App {
                         if !self.project_explorer.forms_collapsed {
                             for i in 0..self.project.forms.len() {
                                 if my >= iy && my < iy + item_h {
+                                    // Save the currently displayed form back
+                                    // before switching — clone-based swap
+                                    // would otherwise lose edits.
+                                    self.sync_active_form_to_project();
                                     let form_clone = self.project.forms[i].form.clone();
                                     if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
                                         if let TabContent::Form(fd) = &mut self.tabs[idx].content {
@@ -868,6 +878,13 @@ impl App {
                             let lmx = self.mouse_pos.0 / SCALE;
                             let lmy = self.mouse_pos.1 / SCALE;
                             start_drag = handled && lay.content.contains(lmx, lmy);
+                            let req = f.pending_event_request.take();
+                            if let Some((target, event)) = req {
+                                let form_name = f.form.name.clone();
+                                let is_form = target == form_name;
+                                self.open_or_generate_event_handler(&form_name, &target, &event, is_form);
+                            }
+                            self.sync_active_form_to_project();
                         }
                         TabContent::Resources(r) => {
                             let rx = ed_start_x;
@@ -897,6 +914,7 @@ impl App {
                     let ed_h = height - ed_top - FOOTER_HEIGHT;
                     let ed_w = pw / SCALE - ed_sx;
                     f.handle_mouse_up(crate::form_designer_tab::Rect { x: ed_sx, y: ed_top, w: ed_w, h: ed_h });
+                    self.sync_active_form_to_project();
                 }
             }
             if self.active_tab < self.tabs.len() {

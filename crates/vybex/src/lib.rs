@@ -15,3 +15,4 @@ pub mod scope;
 pub mod bundle;
 pub mod projects;
 pub mod lsp;
+pub mod gui_launch;

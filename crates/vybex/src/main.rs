@@ -161,7 +161,7 @@ fn main() {
     }
 
     if gui.lock().unwrap().should_run {
-        vybe_host::gui_launch::launch_gui(vm, gui);
+        vybex::gui_launch::launch_gui(vm, gui);
     }
 }
 
@@ -199,7 +199,7 @@ fn run_wasm(path: &Path, dump: bool, trace: bool) {
     }
 
     if gui.lock().unwrap().should_run {
-        vybe_host::gui_launch::launch_gui(vm, gui);
+        vybex::gui_launch::launch_gui(vm, gui);
     }
 }
 

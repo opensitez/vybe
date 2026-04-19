@@ -197,6 +197,14 @@ impl ControlType {
             "sqlconnection" => Some(ControlType::SqlConnection),
             "oledbconnection" => Some(ControlType::OleDbConnection),
             "dataview" => Some(ControlType::DataView),
+            // Data-binding / ADO.NET non-visual components
+            "bindingsource" | "bindingsourcecomponent"
+                => Some(ControlType::BindingSourceComponent),
+            "dataset"   | "datasetcomponent"   => Some(ControlType::DataSetComponent),
+            "datatable" | "datatablecomponent" => Some(ControlType::DataTableComponent),
+            "dataadapter" | "sqldataadapter" | "oledbdataadapter"
+                | "mysqldataadapter" | "odbcdataadapter" | "dataadaptercomponent"
+                => Some(ControlType::DataAdapterComponent),
             _ => Some(ControlType::Custom(name.to_string())),
         }
     }
@@ -291,6 +299,7 @@ impl ControlType {
             ControlType::Timer |
             ControlType::ImageList |
             ControlType::ErrorProvider |
+            ControlType::ToolTip |
             ControlType::OpenFileDialog |
             ControlType::SaveFileDialog |
             ControlType::FolderBrowserDialog |

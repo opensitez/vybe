@@ -117,7 +117,7 @@ pub use wrap_panel::WrapPanel;
 pub use tab_panel::TabPanel;
 pub use status_bar_panel::StatusBarPanel;
 pub use output_panel::{OutputPanel, OutputPanelEvent, OutputTab, ProblemEntry, ProblemSeverity};
-pub use properties_panel::{PropertiesPanel, EditingProp, PropTab};
+pub use properties_panel::{PropertiesPanel, PropItem, PropTab, PropEvent};
 pub use form::Form;
 pub use app_window::{Application, run_app};
 pub use canvas_widget::Canvas;

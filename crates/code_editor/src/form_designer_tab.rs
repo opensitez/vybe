@@ -1,5 +1,5 @@
 use vybe_widgets::{FontSystem, SwashCache, TextColor as CosmicColor};
-use vybe_widgets::color_picker::{ColorPicker, ColorPickerEvent};
+use vybe_widgets::{PropertiesPanel, PropItem, PropTab, PropEvent};
 use tiny_skia::{Paint, Pixmap, Transform, Stroke, PathBuilder};
 use uuid::Uuid;
 use vybex::projects::{Form, Control, ControlType};
@@ -28,22 +28,6 @@ pub struct FormLayout {
     pub properties: Rect,
 }
 
-/// A property row or section header.
-enum PropItem {
-    Section(String),
-    Row(String, String),
-    CheckboxRow(String, bool),
-    DropdownRow(String, String, Vec<String>),
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum PropTab { Properties, Events }
-
-const PROP_HEADER_H: f32 = 28.0;
-const PROP_TAB_H: f32 = 26.0;
-const PROP_ROW_H: f32 = 24.0;
-const PROP_SECTION_H: f32 = 20.0;
-const PROP_SCROLLBAR_W: f32 = 10.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlTool {
@@ -346,11 +330,14 @@ pub struct FormDesignerState {
     pub scroll_x: f32,
     pub scroll_y: f32,
     pub toolbox: ToolboxState,
-    pub prop_tab: PropTab,
-    pub prop_scroll_y: f32,
     pub menu_bar: MenuBarState,
-    pub color_picker: ColorPicker,
-    pub color_picker_prop: Option<String>,
+    pub prop_panel: PropertiesPanel,
+    /// Set when the user clicks an event row — the App polls and processes
+    /// this by inserting / navigating to the handler in code-behind.
+    /// `(control_name_or_form_name, event_name)`.
+    pub pending_event_request: Option<(String, String)>,
+    pub undo_stack: Vec<Form>,
+    pub redo_stack: Vec<Form>,
 }
 
 impl FormDesignerState {
@@ -372,12 +359,36 @@ impl FormDesignerState {
             scroll_x: 0.0,
             scroll_y: 0.0,
             toolbox: ToolboxState::new(),
-            prop_tab: PropTab::Properties,
-            prop_scroll_y: 0.0,
             menu_bar: MenuBarState::new(),
-            color_picker: ColorPicker::new(),
-            color_picker_prop: None,
+            prop_panel: PropertiesPanel::new(),
+            pending_event_request: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
+    }
+
+    /// Snapshot the current form into the undo stack. Called before any
+    /// user-driven mutation (property edit, add/delete/paste, drag/resize).
+    /// Keeps at most 50 entries (oldest dropped).
+    pub fn push_undo_snapshot(&mut self) {
+        self.undo_stack.push(self.form.clone());
+        if self.undo_stack.len() > 50 { self.undo_stack.remove(0); }
+        self.redo_stack.clear();
+    }
+
+    /// Pop one undo entry onto the redo stack and restore.
+    pub fn undo(&mut self) -> bool {
+        let Some(prev) = self.undo_stack.pop() else { return false; };
+        self.redo_stack.push(std::mem::replace(&mut self.form, prev));
+        self.selected_controls.clear();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.redo_stack.pop() else { return false; };
+        self.undo_stack.push(std::mem::replace(&mut self.form, next));
+        self.selected_controls.clear();
+        true
     }
 
     /// Centralized layout — all render and hit test code must use this.
@@ -400,7 +411,7 @@ impl FormDesignerState {
     }
 
     pub fn render(
-        &self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache,
+        &mut self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache,
         rect: Rect, scale: f32,
     ) {
         let lay = self.layout(rect);
@@ -495,7 +506,22 @@ impl FormDesignerState {
         self.toolbox.render(pix, fs, sc, toolbox_rect, scale);
 
         // Properties panel (right panel)
-        self.render_properties(pix, fs, sc, properties_rect, scale);
+        let items = self.current_prop_items();
+        let mut ctx = vybe_widgets::layout::RenderContext {
+            pixmap: pix, font_system: fs, swash_cache: sc, scale,
+        };
+        self.prop_panel.draw(
+            &mut ctx,
+            properties_rect.x, properties_rect.y, properties_rect.w, properties_rect.h,
+            &items,
+        );
+    }
+
+    fn current_prop_items(&self) -> Vec<PropItem> {
+        match self.prop_panel.tab {
+            PropTab::Properties => self.collect_props(),
+            PropTab::Events => self.collect_events(),
+        }
     }
 
     const TRAY_H: f32 = 48.0;
@@ -509,15 +535,30 @@ impl FormDesignerState {
 
     fn tray_icon(ct: &ControlType) -> &'static str {
         match ct {
-            ControlType::BindingSourceComponent => "\u{1F517}",
-            ControlType::BindingNavigator => "\u{1F9ED}",
-            ControlType::DataSetComponent => "\u{1F5C4}",
-            ControlType::DataTableComponent => "\u{1F4CB}",
-            ControlType::DataAdapterComponent => "\u{1F50C}",
-            ControlType::Timer => "\u{23F1}",
-            ControlType::ImageList => "\u{1F5BC}",
-            ControlType::ErrorProvider => "\u{26A0}",
-            ControlType::ToolTip => "\u{1F4AC}",
+            ControlType::BindingSourceComponent   => "\u{1F517}", // 🔗
+            ControlType::BindingNavigator         => "\u{1F9ED}", // 🧭
+            ControlType::DataSetComponent         => "\u{1F5C4}", // 🗄
+            ControlType::DataTableComponent       => "\u{1F4CB}", // 📋
+            ControlType::DataAdapterComponent     => "\u{1F50C}", // 🔌
+            ControlType::DataView                 => "\u{1F440}", // 👀
+            ControlType::Timer                    => "\u{23F1}",  // ⏱
+            ControlType::ImageList                => "\u{1F5BC}", // 🖼
+            ControlType::ErrorProvider            => "\u{26A0}",  // ⚠
+            ControlType::ToolTip                  => "\u{1F4AC}", // 💬
+            ControlType::NotifyIcon               => "\u{1F4E2}", // 📢
+            ControlType::HelpProvider             => "\u{2753}",  // ❓
+            ControlType::BackgroundWorker         => "\u{2699}",  // ⚙
+            ControlType::OpenFileDialog           => "\u{1F4C2}", // 📂
+            ControlType::SaveFileDialog           => "\u{1F4BE}", // 💾
+            ControlType::FolderBrowserDialog      => "\u{1F4C1}", // 📁
+            ControlType::FontDialog               => "\u{1F520}", // 🔠
+            ControlType::ColorDialog              => "\u{1F3A8}", // 🎨
+            ControlType::PrintDialog              => "\u{1F5A8}", // 🖨
+            ControlType::PrintDocument            => "\u{1F4C4}", // 📄
+            ControlType::PrintPreviewDialog       => "\u{1F50D}", // 🔍
+            ControlType::PageSetupDialog          => "\u{1F4D0}", // 📐
+            ControlType::SqlConnection            => "\u{1F5C4}", // 🗄
+            ControlType::OleDbConnection          => "\u{1F5C4}", // 🗄
             _ => "\u{2699}",
         }
     }
@@ -527,7 +568,6 @@ impl FormDesignerState {
         tray_x: f32, tray_top: f32, tray_w: f32, s: f32,
     ) {
         let non_visuals = self.non_visual_controls();
-        if non_visuals.is_empty() { return; }
 
         let mut paint = Paint::default();
         let tray_y = tray_top + 8.0;
@@ -539,6 +579,14 @@ impl FormDesignerState {
 
         let dim = CosmicColor::rgba(120, 120, 120, 255);
         draw_text(pix, fs, sc, "Components", tray_x + 4.0, tray_y + 2.0, 9.0, dim, s);
+
+        if non_visuals.is_empty() {
+            draw_text(pix, fs, sc,
+                "(drop non-visual controls here)",
+                tray_x + 6.0, tray_y + Self::TRAY_H / 2.0,
+                10.0, dim, s);
+            return;
+        }
 
         let text_color = CosmicColor::rgba(50, 50, 50, 255);
         let mut ix = tray_x + 4.0;
@@ -579,6 +627,73 @@ impl FormDesignerState {
 
     fn get_prop(ctrl: &Control, key: &str, default: &str) -> String {
         ctrl.properties.get_string(key).unwrap_or(default).to_string()
+    }
+
+    /// Options for DataMember given a DataSource name. Looks up the
+    /// referenced control on the form:
+    ///   - a DataSet → list its child DataTable control names
+    ///   - a BindingSource whose DataSource is a DataSet → same
+    ///   - a DataTable → ["(self)"]
+    /// Always prepends "(none)" so unbinding is possible.
+    fn data_member_options(&self, data_source: &str) -> Vec<String> {
+        use ControlType::*;
+        let mut out = vec!["(none)".to_string()];
+        if data_source.is_empty() { return out; }
+        let referenced = self.form.controls.iter().find(|c| c.name == data_source);
+        let Some(src) = referenced else { return out; };
+        match src.control_type {
+            DataSetComponent => {
+                // A DataSet may own named DataTable components — include them.
+                for c in &self.form.controls {
+                    if c.control_type == DataTableComponent { out.push(c.name.clone()); }
+                }
+            }
+            BindingSourceComponent => {
+                // Chain: bs.DataSource -> DataSet -> DataTables
+                if let Some(chained) = src.properties.get_string("DataSource") {
+                    return self.data_member_options(chained);
+                }
+            }
+            DataTableComponent => {
+                out.push(src.name.clone());
+            }
+            DataAdapterComponent => {
+                // Conventionally the adapter feeds into a DataTable with the
+                // same name. Offer raw table names on the form as hints.
+                for c in &self.form.controls {
+                    if c.control_type == DataTableComponent { out.push(c.name.clone()); }
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// Column-name options for DisplayMember / ValueMember given a
+    /// DataBindings.Source. Columns come from the referenced DataTable's
+    /// `Columns` property (a newline-separated list stashed at load time).
+    fn data_member_column_options(&self, binding_source_name: &str) -> Vec<String> {
+        use ControlType::*;
+        let mut out = vec!["(none)".to_string()];
+        if binding_source_name.is_empty() { return out; }
+        // Walk bs.DataSource / bs.DataMember → DataTable.Columns.
+        let Some(bs) = self.form.controls.iter().find(|c| c.name == binding_source_name) else {
+            return out;
+        };
+        let ds = bs.properties.get_string("DataSource").unwrap_or("").to_string();
+        let dm = bs.properties.get_string("DataMember").unwrap_or("").to_string();
+        let table_name = if dm.is_empty() { ds.clone() } else { dm };
+        let Some(table) = self.form.controls.iter()
+            .find(|c| c.name == table_name && c.control_type == DataTableComponent) else {
+            return out;
+        };
+        if let Some(cols) = table.properties.get_string("Columns") {
+            for c in cols.split(|c: char| c == '\n' || c == ',') {
+                let c = c.trim();
+                if !c.is_empty() { out.push(c.to_string()); }
+            }
+        }
+        out
     }
 
     fn collect_props(&self) -> Vec<PropItem> {
@@ -658,14 +773,19 @@ impl FormDesignerState {
                         items.push(Self::prop("Mask", &Self::get_prop(ctrl, "Mask", "")));
                         items.push(Self::prop("PromptChar", &Self::get_prop(ctrl, "PromptChar", "_")));
                     }
-                    ComboBox | ListBox => {
+                    ComboBox | ListBox | CheckedListBox => {
+                        items.push(PropItem::Section("Items".into()));
+                        let current_items = ctrl.properties.get_string_array("Items")
+                            .cloned().unwrap_or_default().join("\n");
+                        items.push(PropItem::MultilineRow("Items".into(), current_items));
+
                         items.push(PropItem::Section("Behavior".into()));
                         if ctrl.control_type == ComboBox {
                             items.push(PropItem::DropdownRow("DropDownStyle".into(),
                                 Self::get_prop(ctrl, "DropDownStyle", "DropDown"),
                                 vec!["Simple".into(), "DropDown".into(), "DropDownList".into()]));
                         }
-                        if ctrl.control_type == ListBox {
+                        if matches!(ctrl.control_type, ListBox | CheckedListBox) {
                             items.push(PropItem::CheckboxRow("Sorted".into(),
                                 Self::get_prop(ctrl, "Sorted", "False").eq_ignore_ascii_case("true")));
                             items.push(PropItem::DropdownRow("SelectionMode".into(),
@@ -764,14 +884,31 @@ impl FormDesignerState {
                 }
 
                 if has_complex && ctrl.control_type != BindingNavigator {
+                    let current_ds = Self::get_prop(ctrl, "DataSource", "");
                     items.push(PropItem::DropdownRow("DataSource".into(),
-                        Self::get_prop(ctrl, "DataSource", ""), ds_options.clone()));
-                    items.push(Self::prop("DataMember", &Self::get_prop(ctrl, "DataMember", "")));
+                        current_ds.clone(), ds_options.clone()));
+                    let dm_options = self.data_member_options(&current_ds);
+                    if dm_options.len() > 1 {
+                        items.push(PropItem::DropdownRow("DataMember".into(),
+                            Self::get_prop(ctrl, "DataMember", ""), dm_options));
+                    } else {
+                        items.push(Self::prop("DataMember", &Self::get_prop(ctrl, "DataMember", "")));
+                    }
                 }
 
                 if matches!(ctrl.control_type, ListBox | ComboBox) {
-                    items.push(Self::prop("DisplayMember", &Self::get_prop(ctrl, "DisplayMember", "")));
-                    items.push(Self::prop("ValueMember", &Self::get_prop(ctrl, "ValueMember", "")));
+                    let dm_cols = self.data_member_column_options(
+                        &Self::get_prop(ctrl, "DataBindings.Source", ""),
+                    );
+                    if dm_cols.len() > 1 {
+                        items.push(PropItem::DropdownRow("DisplayMember".into(),
+                            Self::get_prop(ctrl, "DisplayMember", ""), dm_cols.clone()));
+                        items.push(PropItem::DropdownRow("ValueMember".into(),
+                            Self::get_prop(ctrl, "ValueMember", ""), dm_cols));
+                    } else {
+                        items.push(Self::prop("DisplayMember", &Self::get_prop(ctrl, "DisplayMember", "")));
+                        items.push(Self::prop("ValueMember", &Self::get_prop(ctrl, "ValueMember", "")));
+                    }
                 }
 
                 if ctrl.control_type == BindingNavigator {
@@ -780,8 +917,16 @@ impl FormDesignerState {
                 }
 
                 if ctrl.control_type == BindingSourceComponent {
-                    items.push(Self::prop("DataSource", &Self::get_prop(ctrl, "DataSource", "")));
-                    items.push(Self::prop("DataMember", &Self::get_prop(ctrl, "DataMember", "")));
+                    let current_ds = Self::get_prop(ctrl, "DataSource", "");
+                    items.push(PropItem::DropdownRow("DataSource".into(),
+                        current_ds.clone(), ds_options.clone()));
+                    let dm_options = self.data_member_options(&current_ds);
+                    if dm_options.len() > 1 {
+                        items.push(PropItem::DropdownRow("DataMember".into(),
+                            Self::get_prop(ctrl, "DataMember", ""), dm_options));
+                    } else {
+                        items.push(Self::prop("DataMember", &Self::get_prop(ctrl, "DataMember", "")));
+                    }
                     items.push(Self::prop("Filter", &Self::get_prop(ctrl, "Filter", "")));
                     items.push(Self::prop("Sort", &Self::get_prop(ctrl, "Sort", "")));
                 }
@@ -810,17 +955,54 @@ impl FormDesignerState {
                 return items;
             }
         }
-        // No control selected — show form properties
+        // No control selected — show form properties.
+        let f = &self.form;
+        let get_str = |key: &str, def: &str| {
+            f.properties.get_string(key).map(|s| s.to_string()).unwrap_or_else(|| def.to_string())
+        };
+        let get_bool = |key: &str, def: bool| -> bool {
+            f.properties.get_string(key)
+                .map(|s| s.eq_ignore_ascii_case("true") || s == "1")
+                .unwrap_or(def)
+        };
         vec![
             PropItem::Section("Form".into()),
-            Self::prop("Name", &self.form.name),
-            Self::prop("Text", &self.form.text),
-            Self::prop("Width", &format!("{}", self.form.width)),
-            Self::prop("Height", &format!("{}", self.form.height)),
+            Self::prop("Name", &f.name),
+            Self::prop("Text", &f.text),
+            Self::prop("Width", &format!("{}", f.width)),
+            Self::prop("Height", &format!("{}", f.height)),
+            Self::prop("MinimumSize", &get_str("MinimumSize", "")),
+            Self::prop("MaximumSize", &get_str("MaximumSize", "")),
+
+            PropItem::Section("Layout".into()),
+            PropItem::DropdownRow("StartPosition".into(),
+                get_str("StartPosition", "WindowsDefaultLocation"),
+                vec!["Manual".into(), "CenterScreen".into(), "CenterParent".into(),
+                     "WindowsDefaultLocation".into(), "WindowsDefaultBounds".into()]),
+            PropItem::DropdownRow("FormBorderStyle".into(),
+                get_str("FormBorderStyle", "Sizable"),
+                vec!["None".into(), "FixedSingle".into(), "Fixed3D".into(),
+                     "FixedDialog".into(), "Sizable".into(),
+                     "FixedToolWindow".into(), "SizableToolWindow".into()]),
+            PropItem::DropdownRow("WindowState".into(),
+                get_str("WindowState", "Normal"),
+                vec!["Normal".into(), "Minimized".into(), "Maximized".into()]),
+            PropItem::CheckboxRow("MaximizeBox".into(), get_bool("MaximizeBox", true)),
+            PropItem::CheckboxRow("MinimizeBox".into(), get_bool("MinimizeBox", true)),
+            PropItem::CheckboxRow("ControlBox".into(), get_bool("ControlBox", true)),
+            PropItem::CheckboxRow("ShowInTaskbar".into(), get_bool("ShowInTaskbar", true)),
+            PropItem::CheckboxRow("TopMost".into(), get_bool("TopMost", false)),
+            PropItem::CheckboxRow("AutoScroll".into(), get_bool("AutoScroll", false)),
+            PropItem::DropdownRow("AutoScaleMode".into(),
+                get_str("AutoScaleMode", "Font"),
+                vec!["None".into(), "Font".into(), "Dpi".into(), "Inherit".into()]),
+
             PropItem::Section("Appearance".into()),
-            Self::prop("BackColor", &self.form.back_color.clone().unwrap_or_default()),
-            Self::prop("ForeColor", &self.form.fore_color.clone().unwrap_or_default()),
-            Self::prop("Font", &self.form.font.clone().unwrap_or_default()),
+            Self::prop("BackColor", &f.back_color.clone().unwrap_or_default()),
+            Self::prop("ForeColor", &f.fore_color.clone().unwrap_or_default()),
+            Self::prop("Font", &f.font.clone().unwrap_or_default()),
+            Self::prop("Opacity", &get_str("Opacity", "1")),
+            Self::prop("Icon", &get_str("Icon", "")),
         ]
     }
 
@@ -865,314 +1047,61 @@ impl FormDesignerState {
         events.iter().map(|&ev| PropItem::Row(ev.into(), String::new())).collect()
     }
 
-    fn items_height(items: &[PropItem]) -> f32 {
-        items.iter().map(|i| match i {
-            PropItem::Section(_) => PROP_SECTION_H,
-            PropItem::Row(_, _) | PropItem::CheckboxRow(_, _) | PropItem::DropdownRow(_, _, _) => PROP_ROW_H,
-        }).sum()
-    }
-
-    fn render_properties(
-        &self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache,
-        rect: Rect, scale: f32,
-    ) {
-        let s = scale;
-        let mut paint = Paint::default();
-
-        // Background
-        paint.set_color_rgba8(250, 250, 250, 255);
-        fill(pix, &paint, rect.x, rect.y, rect.w, rect.h, s);
-
-        // Left border
-        paint.set_color_rgba8(204, 204, 204, 255);
-        fill(pix, &paint, rect.x, rect.y, 1.0, rect.h, s);
-
-        // Title
-        let title_color = CosmicColor::rgba(50, 50, 50, 255);
-        draw_text(pix, fs, sc, "Properties", rect.x + 10.0, rect.y + 6.0, 13.0, title_color, s);
-        paint.set_color_rgba8(204, 204, 204, 255);
-        fill(pix, &paint, rect.x, rect.y + PROP_HEADER_H - 1.0, rect.w, 1.0, s);
-
-        // Tabs
-        let tab_y = rect.y + PROP_HEADER_H;
-        let tab_w = (rect.w - 2.0) / 2.0;
-        let text_color = CosmicColor::rgba(30, 30, 30, 255);
-        let dim_color = CosmicColor::rgba(100, 100, 100, 255);
-
-        if self.prop_tab == PropTab::Properties {
-            paint.set_color_rgba8(227, 242, 253, 255);
-        } else {
-            paint.set_color_rgba8(245, 245, 245, 255);
-        }
-        fill(pix, &paint, rect.x + 1.0, tab_y, tab_w, PROP_TAB_H, s);
-        draw_text(pix, fs, sc, "Properties", rect.x + 14.0, tab_y + 5.0, 12.0,
-            if self.prop_tab == PropTab::Properties { text_color } else { dim_color }, s);
-
-        if self.prop_tab == PropTab::Events {
-            paint.set_color_rgba8(227, 242, 253, 255);
-        } else {
-            paint.set_color_rgba8(245, 245, 245, 255);
-        }
-        fill(pix, &paint, rect.x + 1.0 + tab_w, tab_y, tab_w, PROP_TAB_H, s);
-        draw_text(pix, fs, sc, "Events", rect.x + tab_w + 14.0, tab_y + 5.0, 12.0,
-            if self.prop_tab == PropTab::Events { text_color } else { dim_color }, s);
-
-        paint.set_color_rgba8(204, 204, 204, 255);
-        fill(pix, &paint, rect.x, tab_y + PROP_TAB_H - 1.0, rect.w, 1.0, s);
-
-        // Content area
-        let content_top = tab_y + PROP_TAB_H;
-        let content_h = rect.h - PROP_HEADER_H - PROP_TAB_H;
-        let items = match self.prop_tab {
-            PropTab::Properties => self.collect_props(),
-            PropTab::Events => self.collect_events(),
-        };
-
-        let label_color = CosmicColor::rgba(80, 80, 80, 255);
-        let val_color = CosmicColor::rgba(30, 30, 30, 255);
-        let section_color = CosmicColor::rgba(100, 100, 100, 255);
-        let val_x = rect.x + rect.w * 0.42;
-        let mut y = content_top + 2.0 - self.prop_scroll_y;
-        let mut entry_idx = 0usize;
-
-        for item in &items {
-            match item {
-                PropItem::Section(label) => {
-                    if y + PROP_SECTION_H > content_top && y < content_top + content_h {
-                        paint.set_color_rgba8(240, 240, 240, 255);
-                        fill(pix, &paint, rect.x + 1.0, y, rect.w - 2.0, PROP_SECTION_H, s);
-                        draw_text(pix, fs, sc, label, rect.x + 8.0, y + 3.0, 10.0, section_color, s);
-                    }
-                    y += PROP_SECTION_H;
-                }
-                PropItem::Row(key, value) => {
-                    if y + PROP_ROW_H > content_top && y < content_top + content_h {
-                        if entry_idx % 2 == 1 {
-                            paint.set_color_rgba8(247, 247, 247, 255);
-                            fill(pix, &paint, rect.x + 1.0, y, rect.w - 2.0, PROP_ROW_H, s);
-                        }
-                        draw_text(pix, fs, sc, key, rect.x + 8.0, y + 4.0, 11.0, label_color, s);
-                        paint.set_color_rgba8(230, 230, 230, 255);
-                        fill(pix, &paint, val_x - 2.0, y, 1.0, PROP_ROW_H, s);
-                        draw_text(pix, fs, sc, value, val_x + 4.0, y + 4.0, 11.0, val_color, s);
-
-                        // Color swatch for BackColor / ForeColor
-                        if key == "BackColor" || key == "ForeColor" {
-                            let swatch_x = rect.x + rect.w - PROP_SCROLLBAR_W - 22.0;
-                            let swatch_y = y + 3.0;
-                            let swatch_sz = PROP_ROW_H - 6.0;
-                            if let Some(c) = vybe_widgets::color_picker::PickedColor::from_hex(value) {
-                                let mut sp = Paint::default();
-                                sp.set_color_rgba8(c.r, c.g, c.b, c.a);
-                                fill(pix, &sp, swatch_x, swatch_y, swatch_sz, swatch_sz, s);
-                                sp.set_color_rgba8(160, 160, 160, 255);
-                                stroke_rect(pix, &sp, swatch_x, swatch_y, swatch_sz, swatch_sz, s);
-                            }
-                        }
-
-                        paint.set_color_rgba8(235, 235, 235, 255);
-                        fill(pix, &paint, rect.x + 1.0, y + PROP_ROW_H - 1.0, rect.w - 2.0, 1.0, s);
-                    }
-                    entry_idx += 1;
-                    y += PROP_ROW_H;
-                }
-                PropItem::CheckboxRow(key, checked) => {
-                    if y + PROP_ROW_H > content_top && y < content_top + content_h {
-                        if entry_idx % 2 == 1 {
-                            paint.set_color_rgba8(247, 247, 247, 255);
-                            fill(pix, &paint, rect.x + 1.0, y, rect.w - 2.0, PROP_ROW_H, s);
-                        }
-                        draw_text(pix, fs, sc, key, rect.x + 8.0, y + 4.0, 11.0, label_color, s);
-                        paint.set_color_rgba8(230, 230, 230, 255);
-                        fill(pix, &paint, val_x - 2.0, y, 1.0, PROP_ROW_H, s);
-                        let cb_x = val_x + 4.0;
-                        let cb_y = y + 4.0;
-                        let cb_sz = 14.0;
-                        paint.set_color_rgba8(255, 255, 255, 255);
-                        fill(pix, &paint, cb_x, cb_y, cb_sz, cb_sz, s);
-                        paint.set_color_rgba8(160, 160, 160, 255);
-                        stroke_rect(pix, &paint, cb_x, cb_y, cb_sz, cb_sz, s);
-                        if *checked {
-                            paint.set_color_rgba8(0, 120, 212, 255);
-                            fill(pix, &paint, cb_x + 3.0, cb_y + 3.0, cb_sz - 6.0, cb_sz - 6.0, s);
-                        }
-                        let label_text = if *checked { "True" } else { "False" };
-                        draw_text(pix, fs, sc, label_text, cb_x + cb_sz + 4.0, y + 4.0, 11.0, val_color, s);
-                        paint.set_color_rgba8(235, 235, 235, 255);
-                        fill(pix, &paint, rect.x + 1.0, y + PROP_ROW_H - 1.0, rect.w - 2.0, 1.0, s);
-                    }
-                    entry_idx += 1;
-                    y += PROP_ROW_H;
-                }
-                PropItem::DropdownRow(key, current, _options) => {
-                    if y + PROP_ROW_H > content_top && y < content_top + content_h {
-                        if entry_idx % 2 == 1 {
-                            paint.set_color_rgba8(247, 247, 247, 255);
-                            fill(pix, &paint, rect.x + 1.0, y, rect.w - 2.0, PROP_ROW_H, s);
-                        }
-                        draw_text(pix, fs, sc, key, rect.x + 8.0, y + 4.0, 11.0, label_color, s);
-                        paint.set_color_rgba8(230, 230, 230, 255);
-                        fill(pix, &paint, val_x - 2.0, y, 1.0, PROP_ROW_H, s);
-                        let dd_w = rect.w - (val_x - rect.x) - PROP_SCROLLBAR_W - 2.0;
-                        paint.set_color_rgba8(255, 255, 255, 255);
-                        fill(pix, &paint, val_x, y + 1.0, dd_w, PROP_ROW_H - 2.0, s);
-                        paint.set_color_rgba8(180, 180, 180, 255);
-                        stroke_rect(pix, &paint, val_x, y + 1.0, dd_w, PROP_ROW_H - 2.0, s);
-                        draw_text(pix, fs, sc, current, val_x + 4.0, y + 4.0, 11.0, val_color, s);
-                        // Dropdown arrow
-                        let arrow_x = val_x + dd_w - 14.0;
-                        let arrow_y = y + PROP_ROW_H / 2.0 - 2.0;
-                        paint.set_color_rgba8(80, 80, 80, 255);
-                        fill(pix, &paint, arrow_x, arrow_y, 8.0, 1.0, s);
-                        fill(pix, &paint, arrow_x + 1.0, arrow_y + 1.0, 6.0, 1.0, s);
-                        fill(pix, &paint, arrow_x + 2.0, arrow_y + 2.0, 4.0, 1.0, s);
-                        fill(pix, &paint, arrow_x + 3.0, arrow_y + 3.0, 2.0, 1.0, s);
-                        paint.set_color_rgba8(235, 235, 235, 255);
-                        fill(pix, &paint, rect.x + 1.0, y + PROP_ROW_H - 1.0, rect.w - 2.0, 1.0, s);
-                    }
-                    entry_idx += 1;
-                    y += PROP_ROW_H;
-                }
-            }
-        }
-
-        if items.is_empty() {
-            draw_text(pix, fs, sc, "No selection", rect.x + 10.0, content_top + 8.0, 12.0, dim_color, s);
-        }
-
-        // Overdraw header area to clip scrolled items
-        paint.set_color_rgba8(250, 250, 250, 255);
-        fill(pix, &paint, rect.x, rect.y, rect.w, PROP_HEADER_H + PROP_TAB_H, s);
-        // Re-render header
-        draw_text(pix, fs, sc, "Properties", rect.x + 10.0, rect.y + 6.0, 13.0, title_color, s);
-        paint.set_color_rgba8(204, 204, 204, 255);
-        fill(pix, &paint, rect.x, rect.y + PROP_HEADER_H - 1.0, rect.w, 1.0, s);
-        // Re-render tabs
-        if self.prop_tab == PropTab::Properties {
-            paint.set_color_rgba8(227, 242, 253, 255);
-        } else {
-            paint.set_color_rgba8(245, 245, 245, 255);
-        }
-        fill(pix, &paint, rect.x + 1.0, tab_y, tab_w, PROP_TAB_H, s);
-        draw_text(pix, fs, sc, "Properties", rect.x + 14.0, tab_y + 5.0, 12.0,
-            if self.prop_tab == PropTab::Properties { text_color } else { dim_color }, s);
-        if self.prop_tab == PropTab::Events {
-            paint.set_color_rgba8(227, 242, 253, 255);
-        } else {
-            paint.set_color_rgba8(245, 245, 245, 255);
-        }
-        fill(pix, &paint, rect.x + 1.0 + tab_w, tab_y, tab_w, PROP_TAB_H, s);
-        draw_text(pix, fs, sc, "Events", rect.x + tab_w + 14.0, tab_y + 5.0, 12.0,
-            if self.prop_tab == PropTab::Events { text_color } else { dim_color }, s);
-        paint.set_color_rgba8(204, 204, 204, 255);
-        fill(pix, &paint, rect.x, tab_y + PROP_TAB_H - 1.0, rect.w, 1.0, s);
-
-        // Scrollbar
-        let total_h = Self::items_height(&items);
-        let max_scroll = (total_h - content_h).max(0.0);
-        if max_scroll > 0.0 {
-            let sb_x = rect.x + rect.w - PROP_SCROLLBAR_W;
-            paint.set_color_rgba8(235, 235, 235, 255);
-            fill(pix, &paint, sb_x, content_top, PROP_SCROLLBAR_W, content_h, s);
-            let visible_frac = (content_h / total_h).min(1.0);
-            let thumb_h = (content_h * visible_frac).max(20.0);
-            let scroll_frac = if max_scroll > 0.0 { self.prop_scroll_y / max_scroll } else { 0.0 };
-            let thumb_y = content_top + scroll_frac * (content_h - thumb_h);
-            paint.set_color_rgba8(190, 190, 190, 255);
-            fill(pix, &paint, sb_x + 2.0, thumb_y, PROP_SCROLLBAR_W - 4.0, thumb_h, s);
-        }
-
-        // Left border (re-draw on top)
-        paint.set_color_rgba8(204, 204, 204, 255);
-        fill(pix, &paint, rect.x, rect.y, 1.0, rect.h, s);
-
-        // ── Color picker popup overlay ──
-        if self.color_picker.open {
-            let popup_x = rect.x + 10.0;
-            let popup_y = rect.y + PROP_HEADER_H + PROP_TAB_H + 40.0;
-            self.color_picker.render_popup(pix, popup_x, popup_y, s);
-        }
-    }
-
     pub fn handle_properties_click(&mut self, mx: f32, my: f32, rect: Rect) -> bool {
         if !rect.contains(mx, my) { return false; }
+        let items = self.current_prop_items();
+        let evt = self.prop_panel.handle_click(mx, my, rect.x, rect.y, rect.w, rect.h, &items);
+        self.apply_prop_event(evt);
+        // Whatever the panel decided, the click landed inside its rect so it's consumed.
+        true
+    }
 
-        // ── Color picker popup is open: route click to it first ──
-        if self.color_picker.open {
-            let popup_x = rect.x + 10.0;
-            let popup_y = rect.y + PROP_HEADER_H + PROP_TAB_H + 40.0;
-            match self.color_picker.handle_click(mx, my, popup_x, popup_y) {
-                ColorPickerEvent::Changed(c) => {
-                    let hex = c.to_hex();
-                    if let Some(prop_name) = self.color_picker_prop.clone() {
-                        self.apply_color_prop(&prop_name, &hex);
-                    }
-                    return true;
-                }
-                ColorPickerEvent::Closed => {
-                    let hex = self.color_picker.color.to_hex();
-                    if let Some(prop_name) = self.color_picker_prop.take() {
-                        self.apply_color_prop(&prop_name, &hex);
-                    }
-                    return true;
-                }
-                ColorPickerEvent::None => { return true; }
+    /// Route a keyboard event to the properties panel. Returns true if the
+    /// panel consumed the key (i.e. was editing a value).
+    pub fn handle_properties_key(&mut self, event: &vybe_widgets::KeyEvent) -> bool {
+        if !self.prop_panel.is_editing() { return false; }
+        let evt = self.prop_panel.handle_key(event);
+        self.apply_prop_event(evt);
+        true
+    }
+
+    fn apply_prop_event(&mut self, evt: PropEvent) {
+        match evt {
+            PropEvent::ColorPickerChanged { prop_name, hex }
+            | PropEvent::ColorPickerClosed  { prop_name, hex } => {
+                self.apply_color_prop(&prop_name, &hex);
             }
-        }
-
-        // Tab click
-        let tab_y = rect.y + PROP_HEADER_H;
-        if my >= tab_y && my < tab_y + PROP_TAB_H {
-            let tab_w = (rect.w - 2.0) / 2.0;
-            if mx < rect.x + 1.0 + tab_w {
-                self.prop_tab = PropTab::Properties;
-            } else {
-                self.prop_tab = PropTab::Events;
+            PropEvent::ValueCommitted { key, value } => {
+                self.apply_value_prop(&key, &value);
             }
-            self.prop_scroll_y = 0.0;
-            return true;
-        }
-
-        // Property row click (value column)
-        if self.prop_tab == PropTab::Properties {
-            let content_top = tab_y + PROP_TAB_H;
-            let val_x = rect.x + rect.w * 0.42;
-            if my >= content_top && mx >= val_x {
-                let items = self.collect_props();
-                let mut y = content_top + 2.0 - self.prop_scroll_y;
-                for item in &items {
-                    match item {
-                        PropItem::Section(_) => { y += PROP_SECTION_H; }
-                        PropItem::Row(key, value) => {
-                            if my >= y && my < y + PROP_ROW_H {
-                                if key == "BackColor" || key == "ForeColor" {
-                                    self.color_picker.set_from_hex(value);
-                                    self.color_picker.open = true;
-                                    self.color_picker_prop = Some(key.clone());
-                                    return true;
-                                }
-                            }
-                            y += PROP_ROW_H;
-                        }
-                        PropItem::CheckboxRow(_, _) | PropItem::DropdownRow(_, _, _) => { y += PROP_ROW_H; }
-                    }
-                }
+            PropEvent::ValueToggled { key, value } => {
+                self.apply_value_prop(&key, if value { "True" } else { "False" });
             }
+            PropEvent::ValueSelected { key, value } => {
+                self.apply_value_prop(&key, &value);
+            }
+            PropEvent::EventHandlerRequested { event } => {
+                // Events tab targets either the first-selected control or,
+                // if none, the form itself.
+                let target = self.selected_controls.first()
+                    .and_then(|id| self.form.controls.iter().find(|c| c.id == *id))
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| self.form.name.clone());
+                self.pending_event_request = Some((target, event));
+            }
+            _ => {}
         }
-
-        false
     }
 
     fn apply_color_prop(&mut self, prop_name: &str, hex: &str) {
+        self.push_undo_snapshot();
         if self.selected_controls.is_empty() {
-            // Apply to form itself
             match prop_name {
                 "BackColor" => { self.form.back_color = Some(hex.to_string()); }
                 "ForeColor" => { self.form.fore_color = Some(hex.to_string()); }
                 _ => {}
             }
         } else {
-            // Apply to selected control(s)
             for id in &self.selected_controls {
                 if let Some(ctrl) = self.form.controls.iter_mut().find(|c| c.id == *id) {
                     ctrl.properties.set(prop_name, hex.to_string());
@@ -1181,15 +1110,136 @@ impl FormDesignerState {
         }
     }
 
-    pub fn scroll_properties(&mut self, amount: f32) {
-        let items = match self.prop_tab {
-            PropTab::Properties => self.collect_props(),
-            PropTab::Events => self.collect_events(),
-        };
-        let total_h = Self::items_height(&items);
-        let max_scroll = (total_h - 300.0).max(0.0); // approximate visible height
-        self.prop_scroll_y = (self.prop_scroll_y - amount).clamp(0.0, max_scroll);
+    /// Write a committed/toggled property back into the selected control(s),
+    /// or — if nothing is selected — into the form itself. Mirrors the
+    /// legacy designer's `update_control_property`.
+    fn apply_value_prop(&mut self, key: &str, value: &str) {
+        self.push_undo_snapshot();
+        if self.selected_controls.is_empty() {
+            match key {
+                "Name"      => { if !value.trim().is_empty() { self.form.name = value.trim().to_string(); } }
+                "Text"      => { self.form.text = value.to_string(); }
+                "Width"     => { if let Ok(v) = value.parse::<i32>() { self.form.width  = v.max(0); } }
+                "Height"    => { if let Ok(v) = value.parse::<i32>() { self.form.height = v.max(0); } }
+                "BackColor" => { self.form.back_color = Some(value.to_string()); }
+                "ForeColor" => { self.form.fore_color = Some(value.to_string()); }
+                "Font"      => { self.form.font = Some(value.to_string()); }
+                // Booleans stored in the form's property bag.
+                "MaximizeBox" | "MinimizeBox" | "ControlBox"
+                | "ShowInTaskbar" | "TopMost" | "AutoScroll" => {
+                    if let Ok(b) = parse_bool(value) { self.form.properties.set(key, b); }
+                }
+                // Everything else (MinimumSize / MaximumSize / StartPosition /
+                // FormBorderStyle / WindowState / AutoScaleMode / Opacity /
+                // Icon / …) becomes a raw string on the bag.
+                _ => { self.form.properties.set(key, value.to_string()); }
+            }
+            return;
+        }
+        let ids = self.selected_controls.clone();
+        for id in ids {
+            // Validate Name uniqueness before the mutable borrow.
+            if key == "Name" {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() { continue; }
+                let dup = self.form.controls.iter()
+                    .any(|c| c.id != id && c.name.eq_ignore_ascii_case(&trimmed));
+                if dup { continue; }
+            }
+
+            let Some(ctrl) = self.form.controls.iter_mut().find(|c| c.id == id) else { continue; };
+            match key {
+                // Identity & layout
+                "Name"     => { ctrl.name = value.trim().to_string(); }
+                "Index"    => {
+                    if value.trim().is_empty() { ctrl.index = None; }
+                    else if let Ok(v) = value.parse::<i32>() { ctrl.index = Some(v); }
+                }
+                "Left"     => { if let Ok(v) = value.parse::<i32>() { ctrl.bounds.x = v; } }
+                "Top"      => { if let Ok(v) = value.parse::<i32>() { ctrl.bounds.y = v; } }
+                "Width"    => { if let Ok(v) = value.parse::<i32>() { ctrl.bounds.width  = v.max(0); } }
+                "Height"   => { if let Ok(v) = value.parse::<i32>() { ctrl.bounds.height = v.max(0); } }
+                "TabIndex" => { if let Ok(v) = value.parse::<i32>() { ctrl.tab_index = v; } }
+
+                // Appearance via helpers (they also sync mirrored fields)
+                "Text"      => ctrl.set_text(value.to_string()),
+                "BackColor" => ctrl.set_back_color(value.to_string()),
+                "ForeColor" => ctrl.set_fore_color(value.to_string()),
+                "Font"      => ctrl.set_font(value.to_string()),
+
+                "Enabled"   => { if let Ok(b) = parse_bool(value) { ctrl.set_enabled(b); } }
+                "Visible"   => { if let Ok(b) = parse_bool(value) { ctrl.set_visible(b); } }
+
+                // List-like controls: accept either `\n` or `,` as separator
+                // (the panel's MultilineRow editor uses `, `).
+                "List" | "Items" => {
+                    let items: Vec<String> = value
+                        .split(|c: char| c == '\n' || c == ',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    ctrl.set_list_items(items);
+                }
+
+                // Checked is a tri-state concept — sync Checked + CheckState + Value.
+                "Checked" => {
+                    if let Ok(b) = parse_bool(value) {
+                        ctrl.properties.set("Checked", b);
+                        use vybex::projects::PropertyValue;
+                        let int_val = if b { 1 } else { 0 };
+                        ctrl.properties.set_raw("CheckState", PropertyValue::Integer(int_val));
+                        ctrl.properties.set_raw("Value",      PropertyValue::Integer(int_val));
+                    }
+                }
+
+                // Boolean properties stored directly
+                "ThreeState" | "Multiline" | "ReadOnly" | "Sorted"
+                | "ShowCheckBox" | "ShowUpDown" | "IsSplitterFixed"
+                | "WrapContents" | "ShowToday" | "ShowWeekNumbers"
+                | "LinkVisited" | "AutoScroll" | "CheckOnClick"
+                | "ShowAlways" | "CheckBoxes" | "ShowLines"
+                | "ShowRootLines" | "ShowPlusMinus" | "LabelEdit"
+                | "FullRowSelect" | "GridLines" | "MultiSelect"
+                | "AllowUserToAddRows" | "AllowUserToDeleteRows"
+                | "AutoGenerateColumns" | "WordWrap" | "HidePromptOnLeave" => {
+                    if let Ok(b) = parse_bool(value) { ctrl.properties.set(key, b); }
+                }
+
+                // Integer numeric properties
+                "Value" | "Minimum" | "Maximum" | "Increment"
+                | "DecimalPlaces" | "MaxLength" | "SelectedIndex"
+                | "Cols" | "Rows" => {
+                    if let Ok(v) = value.parse::<i32>() {
+                        use vybex::projects::PropertyValue;
+                        ctrl.properties.set_raw(key, PropertyValue::Integer(v));
+                    }
+                }
+
+                // Data-binding properties (legacy parity list)
+                "DataSource" | "DataMember" | "DisplayMember" | "ValueMember"
+                | "Filter" | "Sort" | "BindingSource" | "DataSetName"
+                | "TableName" | "SelectCommand" | "ConnectionString"
+                | "DbType" | "DbPath" | "DbHost" | "DbPort"
+                | "DbName" | "DbUser" | "DbPassword" => {
+                    ctrl.properties.set(key, value.to_string());
+                }
+
+                // Simple data bindings: DataBindings.Text, DataBindings.Checked, ...
+                k if k.starts_with("DataBindings.") => {
+                    ctrl.properties.set(k, value.to_string());
+                }
+
+                // Default: stash in the property bag as a string.
+                _ => { ctrl.properties.set(key, value.to_string()); }
+            }
+        }
     }
+
+    pub fn scroll_properties(&mut self, amount: f32) {
+        let items = self.current_prop_items();
+        self.prop_panel.scroll(amount, &items, 300.0);
+    }
+
 
     fn hit_test_tray(&self, mx: f32, my: f32, rect: Rect) -> Option<Uuid> {
         let form_x = rect.x + FORM_PADDING - self.scroll_x;
@@ -1252,9 +1302,9 @@ impl FormDesignerState {
         let ch = ctrl.bounds.height as f32;
         let mut paint = Paint::default();
         let ctrl_text = ctrl.properties.get_string("Text").unwrap_or("").to_string();
-        
         let font_prop = ctrl.properties.get_string("Font");
-        
+        let display_text = if ctrl_text.is_empty() { ctrl.name.clone() } else { ctrl_text.clone() };
+
         let text_color = if let Some(hex) = ctrl.properties.get_string("ForeColor") {
             vybe_widgets::color_picker::PickedColor::from_hex(hex)
                 .map(|c| CosmicColor::rgba(c.r, c.g, c.b, c.a))
@@ -1263,249 +1313,284 @@ impl FormDesignerState {
             CosmicColor::rgba(30, 30, 30, 255)
         };
 
-        let back_color = if let Some(hex) = ctrl.properties.get_string("BackColor") {
-            vybe_widgets::color_picker::PickedColor::from_hex(hex)
-                .map(|c| (c.r, c.g, c.b, c.a))
-        } else {
-            None
-        };
+        let back_color = ctrl.properties.get_string("BackColor")
+            .and_then(vybe_widgets::color_picker::PickedColor::from_hex)
+            .map(|c| (c.r, c.g, c.b, c.a));
 
-        let grey = CosmicColor::rgba(150, 150, 150, 255);
-        let display_text = if ctrl_text.is_empty() { &ctrl.name } else { &ctrl_text };
+        // Dispatch to the real widget. Widgets that own an opaque background
+        // get it via `colors.background`; label-style / backgroundless widgets
+        // get a plain fill underneath.
+        use ControlType::*;
         match ctrl.control_type {
-            ControlType::Button => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(225, 225, 225, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(173, 173, 173, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                let tw = measure_text_with_font(fs, display_text, font_prop, 12.0, s);
-                draw_text_with_font(pix, fs, sc, display_text, cx + (cw - tw) / 2.0, cy + (ch - 14.0) / 2.0, font_prop, 12.0, text_color, s);
+            Button => {
+                let mut w = vybe_widgets::Button::new(&display_text);
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                let tw = measure_text_with_font(fs, &display_text, font_prop, 12.0, s);
+                draw_text_with_font(pix, fs, sc, &display_text,
+                    cx + (cw - tw) / 2.0, cy + (ch - 14.0) / 2.0,
+                    font_prop, 12.0, text_color, s);
             }
-            ControlType::Label => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); fill(pix, &paint, cx, cy, cw, ch, s); }
-                draw_text_with_font(pix, fs, sc, display_text, cx + 2.0, cy + 2.0, font_prop, 12.0, text_color, s);
+            Label => {
+                if let Some((r, g, b, a)) = back_color {
+                    paint.set_color_rgba8(r, g, b, a);
+                    fill(pix, &paint, cx, cy, cw, ch, s);
+                }
+                draw_text_with_font(pix, fs, sc, &display_text,
+                    cx + 2.0, cy + 2.0, font_prop, 12.0, text_color, s);
             }
-            ControlType::LinkLabel => {
-                draw_text_with_font(pix, fs, sc, display_text, cx + 2.0, cy + 2.0, font_prop, 12.0, CosmicColor::rgba(0, 102, 204, 255), s);
+            LinkLabel => {
+                let mut w = vybe_widgets::LinkLabel::new(&display_text);
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
             }
-            ControlType::TextBox | ControlType::MaskedTextBox => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                draw_text_with_font(pix, fs, sc, display_text, cx + 3.0, cy + 3.0, font_prop, 12.0, text_color, s);
+            TextBox => {
+                let mut w = vybe_widgets::TextInput::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint_border(pix, cx, cy, s);
+                draw_text_with_font(pix, fs, sc, &display_text,
+                    cx + 6.0, cy + (ch - 14.0) / 2.0 + 2.0,
+                    font_prop, 12.0, text_color, s);
             }
-            ControlType::RichTextBox => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                // Scrollbar indicator
-                paint.set_color_rgba8(230, 230, 230, 255);
-                fill(pix, &paint, cx + cw - 14.0, cy, 14.0, ch, s);
-                draw_text_with_font(pix, fs, sc, display_text, cx + 3.0, cy + 3.0, font_prop, 12.0, text_color, s);
+            MaskedTextBox => {
+                let mut w = vybe_widgets::MaskedTextBox::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
             }
-            ControlType::CheckBox => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); fill(pix, &paint, cx, cy, cw, ch, s); }
-                // Checkbox box
-                paint.set_color_rgba8(255, 255, 255, 255);
-                fill(pix, &paint, cx + 2.0, cy + (ch - 13.0) / 2.0, 13.0, 13.0, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx + 2.0, cy + (ch - 13.0) / 2.0, 13.0, 13.0, s);
-                draw_text_with_font(pix, fs, sc, display_text, cx + 20.0, cy + 2.0, font_prop, 12.0, text_color, s);
+            RichTextBox => {
+                let mut w = vybe_widgets::Panel::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                draw_text_with_font(pix, fs, sc, &display_text,
+                    cx + 3.0, cy + 3.0, font_prop, 12.0, text_color, s);
             }
-            ControlType::RadioButton => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); fill(pix, &paint, cx, cy, cw, ch, s); }
-                // Radio circle (approximated as small box)
-                paint.set_color_rgba8(255, 255, 255, 255);
-                fill(pix, &paint, cx + 2.0, cy + (ch - 13.0) / 2.0, 13.0, 13.0, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx + 2.0, cy + (ch - 13.0) / 2.0, 13.0, 13.0, s);
-                draw_text_with_font(pix, fs, sc, display_text, cx + 20.0, cy + 2.0, font_prop, 12.0, text_color, s);
+            CheckBox => {
+                let mut w = vybe_widgets::Checkbox::new("");
+                w.size = ch.min(cw).min(16.0);
+                w.check_state = if ctrl.properties.get_bool("Checked").unwrap_or(false)
+                    { vybe_widgets::layout::CheckState::Checked }
+                    else { vybe_widgets::layout::CheckState::Unchecked };
+                w.paint(pix, cx, cy, s);
+                draw_text_with_font(pix, fs, sc, &display_text,
+                    cx + w.size + 6.0, cy + (ch - 14.0) / 2.0 + 2.0,
+                    font_prop, 12.0, text_color, s);
             }
-            ControlType::ComboBox => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                // Drop arrow
-                paint.set_color_rgba8(225, 225, 225, 255);
-                fill(pix, &paint, cx + cw - 20.0, cy, 20.0, ch, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx + cw - 20.0, cy, 20.0, ch, s);
-                draw_text(pix, fs, sc, "\u{25BC}", cx + cw - 16.0, cy + 4.0, 10.0, CosmicColor::rgba(60, 60, 60, 255), s);
-                draw_text_with_font(pix, fs, sc, display_text, cx + 3.0, cy + 3.0, font_prop, 12.0, text_color, s);
+            RadioButton => {
+                let mut w = vybe_widgets::Radio::new("");
+                w.selected = ctrl.properties.get_bool("Checked").unwrap_or(false);
+                w.paint(pix, cx, cy, s);
+                draw_text_with_font(pix, fs, sc, &display_text,
+                    cx + w.size + 6.0, cy + (ch - 14.0) / 2.0 + 2.0,
+                    font_prop, 12.0, text_color, s);
             }
-            ControlType::ListBox => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                // Scrollbar
-                paint.set_color_rgba8(230, 230, 230, 255);
-                fill(pix, &paint, cx + cw - 14.0, cy, 14.0, ch, s);
-                draw_text_with_font(pix, fs, sc, &ctrl.name, cx + 3.0, cy + 3.0, font_prop, 11.0, grey, s);
+            ComboBox => {
+                let items = ctrl.properties.get_string_array("Items").cloned().unwrap_or_default();
+                let selected = ctrl.properties.get_int("SelectedIndex").map(|i| i.max(0) as usize).unwrap_or(0);
+                let mut w = vybe_widgets::Select::new(items.clone());
+                w.selected_index = selected;
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                // Draw the selected (or first) item's text inside the box.
+                let shown = items.get(selected).cloned()
+                    .or_else(|| items.first().cloned())
+                    .unwrap_or_else(|| ctrl_text.clone());
+                draw_text_with_font(pix, fs, sc, &shown,
+                    cx + 6.0, cy + (ch - 14.0) / 2.0 + 2.0,
+                    font_prop, 12.0, text_color, s);
             }
-            ControlType::PictureBox => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(210, 210, 210, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(160, 160, 160, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                let mut pb = PathBuilder::new();
-                pb.move_to(cx * s, cy * s); pb.line_to((cx + cw) * s, (cy + ch) * s);
-                pb.move_to((cx + cw) * s, cy * s); pb.line_to(cx * s, (cy + ch) * s);
-                if let Some(path) = pb.finish() {
-                    paint.set_color_rgba8(180, 180, 180, 255);
-                    let mut st = Stroke::default(); st.width = 0.5 * s;
-                    pix.stroke_path(&path, &paint, &st, Transform::identity(), None);
+            ListBox | CheckedListBox => {
+                let items: Vec<String> = ctrl.properties.get_string_array("Items").cloned().unwrap_or_default();
+                let mut w = vybe_widgets::ListBox::new();
+                w.items = items.clone();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                // Draw item text lines (design-time preview).
+                let row_h = 16.0;
+                for (i, item) in items.iter().enumerate() {
+                    let iy = cy + 2.0 + (i as f32) * row_h;
+                    if iy + row_h > cy + ch { break; }
+                    draw_text_with_font(pix, fs, sc, item,
+                        cx + 4.0, iy, font_prop, 11.0, text_color, s);
+                }
+                if items.is_empty() {
+                    draw_text_with_font(pix, fs, sc, &ctrl.name,
+                        cx + 4.0, cy + 4.0, font_prop, 11.0,
+                        CosmicColor::rgba(150, 150, 150, 255), s);
                 }
             }
-            ControlType::ProgressBar => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(230, 230, 230, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(6, 176, 37, 255);
-                fill(pix, &paint, cx + 1.0, cy + 1.0, (cw - 2.0) * 0.3, ch - 2.0, s);
-                paint.set_color_rgba8(188, 188, 188, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
+            PictureBox => {
+                let mut w = vybe_widgets::PictureBox::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
             }
-            ControlType::NumericUpDown => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                // Up/down buttons
-                paint.set_color_rgba8(225, 225, 225, 255);
-                fill(pix, &paint, cx + cw - 18.0, cy, 18.0, ch, s);
-                draw_text(pix, fs, sc, "\u{25B2}", cx + cw - 15.0, cy + 1.0, 8.0, CosmicColor::rgba(60, 60, 60, 255), s);
-                draw_text(pix, fs, sc, "\u{25BC}", cx + cw - 15.0, cy + ch / 2.0, 8.0, CosmicColor::rgba(60, 60, 60, 255), s);
-                draw_text(pix, fs, sc, "0", cx + 4.0, cy + 3.0, 12.0, text_color, s);
+            ProgressBar => {
+                let mut w = vybe_widgets::ProgressBar::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                if let Some(v) = ctrl.properties.get_int("Value") { w.value = (v as f32) / 100.0; }
+                w.paint(pix, cx, cy, s);
             }
-            ControlType::TrackBar => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(240, 240, 240, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                // Track line
-                let track_y = cy + ch / 2.0;
-                paint.set_color_rgba8(188, 188, 188, 255);
-                fill(pix, &paint, cx + 10.0, track_y - 2.0, cw - 20.0, 4.0, s);
-                // Thumb
-                paint.set_color_rgba8(0, 120, 215, 255);
-                fill(pix, &paint, cx + 10.0, track_y - 8.0, 10.0, 16.0, s);
+            NumericUpDown | DomainUpDown => {
+                let mut w = vybe_widgets::NumericUpDown::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
             }
-            ControlType::DateTimePicker => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(225, 225, 225, 255);
-                fill(pix, &paint, cx + cw - 20.0, cy, 20.0, ch, s);
-                draw_text(pix, fs, sc, "\u{1F4C5}", cx + cw - 17.0, cy + 3.0, 11.0, CosmicColor::rgba(60, 60, 60, 255), s);
-                draw_text(pix, fs, sc, "1/1/2024", cx + 4.0, cy + 3.0, 11.0, text_color, s);
+            TrackBar => {
+                let mut w = vybe_widgets::Slider::new(0.0, 100.0, 50.0);
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
             }
-            ControlType::TreeView | ControlType::ListView => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(230, 230, 230, 255);
-                fill(pix, &paint, cx + cw - 14.0, cy, 14.0, ch, s);
-                draw_text_with_font(pix, fs, sc, &ctrl.name, cx + 4.0, cy + 4.0, font_prop, 11.0, grey, s);
+            DateTimePicker => {
+                let mut w = vybe_widgets::DateTimePicker::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
             }
-            ControlType::DataGridView => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                // Header row
-                paint.set_color_rgba8(230, 230, 230, 255);
-                fill(pix, &paint, cx, cy, cw, 22.0_f32.min(ch), s);
-                // Grid lines
-                paint.set_color_rgba8(210, 210, 210, 255);
-                let col_w = 80.0;
-                let mut gx = cx + col_w;
-                while gx < cx + cw { fill(pix, &paint, gx, cy, 1.0, ch, s); gx += col_w; }
-                let mut gy = cy + 22.0;
-                while gy < cy + ch { fill(pix, &paint, cx, gy, cw, 1.0, s); gy += 22.0; }
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
+            TreeView => {
+                let mut w = vybe_widgets::TreeView::new(".", s);
+                w.render_tree(pix, fs, sc, cx, cy, cw,
+                              CosmicColor::rgba(200, 200, 200, 255),
+                              (60, 60, 60, 120));
             }
-            ControlType::Panel | ControlType::Frame | ControlType::SplitContainer |
-            ControlType::FlowLayoutPanel | ControlType::TableLayoutPanel => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(236, 236, 236, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(160, 160, 160, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                if ctrl.control_type == ControlType::Frame {
-                    draw_text_with_font(pix, fs, sc, display_text, cx + 8.0, cy + 2.0, font_prop, 11.0, text_color, s);
+            ListView => {
+                let mut w = vybe_widgets::ListView::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+            }
+            DataGridView | DataGrid => {
+                let cols = ctrl.properties.get_string_array("Columns")
+                    .map(|v| v.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
+                    .unwrap_or_default();
+                let mut w = if cols.is_empty() {
+                    vybe_widgets::DataGrid::new(&[])
                 } else {
-                    draw_text_with_font(pix, fs, sc, &ctrl.name, cx + 4.0, cy + 4.0, font_prop, 11.0, grey, s);
-                }
-            }
-            ControlType::TabControl => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(240, 240, 240, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                // Tab header
-                paint.set_color_rgba8(255, 255, 255, 255);
-                fill(pix, &paint, cx, cy, 80.0_f32.min(cw), 24.0_f32.min(ch), s);
-                paint.set_color_rgba8(160, 160, 160, 255);
-                stroke_rect(pix, &paint, cx, cy, 80.0_f32.min(cw), 24.0_f32.min(ch), s);
-                draw_text(pix, fs, sc, "TabPage1", cx + 6.0, cy + 4.0, 11.0, text_color, s);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-            }
-            ControlType::MenuStrip | ControlType::ToolStrip | ControlType::StatusStrip => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(240, 240, 240, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(204, 204, 204, 255);
-                fill(pix, &paint, cx, cy + ch - 1.0, cw, 1.0, s);
-                let label = match ctrl.control_type {
-                    ControlType::MenuStrip => "File  Edit  View",
-                    ControlType::ToolStrip => "[Toolbar]",
-                    ControlType::StatusStrip => "Ready",
-                    _ => "",
+                    vybe_widgets::DataGrid::new(&cols)
                 };
-                draw_text(pix, fs, sc, label, cx + 6.0, cy + 3.0, 11.0, text_color, s);
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
             }
-            ControlType::MonthCalendar => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(0, 120, 215, 255);
-                fill(pix, &paint, cx, cy, cw, 24.0_f32.min(ch), s);
-                draw_text(pix, fs, sc, "January 2024", cx + 6.0, cy + 4.0, 12.0, CosmicColor::rgba(255, 255, 255, 255), s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
+            Panel | UserControl => {
+                let mut w = vybe_widgets::Panel::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                draw_text_with_font(pix, fs, sc, &ctrl.name,
+                    cx + 4.0, cy + 4.0, font_prop, 11.0,
+                    CosmicColor::rgba(150, 150, 150, 255), s);
             }
-            ControlType::WebBrowser => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(255, 255, 255, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                // Address bar
+            Frame => {
+                let mut w = vybe_widgets::GroupBox::new(display_text.clone());
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+            }
+            SplitContainer => {
+                let horiz = ctrl.properties.get_bool("Horizontal").unwrap_or(true);
+                let mut w = vybe_widgets::SplitContainer::new(horiz);
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+            }
+            FlowLayoutPanel => {
+                let mut w = vybe_widgets::FlowLayoutPanel::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+            }
+            TableLayoutPanel => {
+                let cols = ctrl.properties.get_int("Cols").unwrap_or(2) as usize;
+                let rows = ctrl.properties.get_int("Rows").unwrap_or(2) as usize;
+                let mut w = vybe_widgets::TableLayoutPanel::new(cols, rows);
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+            }
+            TabControl => {
+                let mut w = vybe_widgets::Tabs::new(&["Tab1", "Tab2"]);
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                draw_text(pix, fs, sc, "TabPage1", cx + 8.0, cy + 4.0, 11.0, text_color, s);
+            }
+            TabPage => {
+                let mut w = vybe_widgets::Panel::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                draw_text(pix, fs, sc, &ctrl.name, cx + 4.0, cy + 4.0, 11.0,
+                    CosmicColor::rgba(150, 150, 150, 255), s);
+            }
+            MenuStrip => {
+                let mut w = vybe_widgets::MenuStrip::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                draw_text(pix, fs, sc, "File  Edit  View", cx + 6.0, cy + 4.0, 11.0, text_color, s);
+            }
+            ToolStrip | BindingNavigator => {
+                let mut w = vybe_widgets::ToolStrip::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                let lbl = if ctrl.control_type == BindingNavigator { "|< < > >|  + -" } else { "[Toolbar]" };
+                draw_text(pix, fs, sc, lbl, cx + 6.0, cy + 4.0, 11.0, text_color, s);
+            }
+            StatusStrip => {
+                let mut w = vybe_widgets::StatusStrip::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+                draw_text(pix, fs, sc, "Ready", cx + 6.0, cy + 4.0, 11.0, text_color, s);
+            }
+            MonthCalendar => {
+                let mut w = vybe_widgets::MonthCalendar::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+            }
+            HScrollBar => {
+                let mut w = vybe_widgets::ScrollBar::new(false);
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+            }
+            VScrollBar => {
+                let mut w = vybe_widgets::ScrollBar::new(true);
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
+            }
+            WebBrowser => {
+                let mut w = vybe_widgets::Panel::new();
+                w.width = cw; w.height = ch;
+                if let Some(bc) = back_color { w.colors.background = bc; }
+                w.paint(pix, cx, cy, s);
                 paint.set_color_rgba8(240, 240, 240, 255);
                 fill(pix, &paint, cx, cy, cw, 26.0_f32.min(ch), s);
-                paint.set_color_rgba8(255, 255, 255, 255);
-                fill(pix, &paint, cx + 4.0, cy + 3.0, cw - 8.0, 20.0, s);
-                paint.set_color_rgba8(200, 200, 200, 255);
-                stroke_rect(pix, &paint, cx + 4.0, cy + 3.0, cw - 8.0, 20.0, s);
-                draw_text(pix, fs, sc, "about:blank", cx + 8.0, cy + 5.0, 11.0, grey, s);
-                paint.set_color_rgba8(122, 122, 122, 255);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-            }
-            ControlType::HScrollBar => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(230, 230, 230, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(188, 188, 188, 255);
-                fill(pix, &paint, cx + 16.0, cy + 2.0, 30.0, ch - 4.0, s);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-            }
-            ControlType::VScrollBar => {
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(230, 230, 230, 255); }
-                fill(pix, &paint, cx, cy, cw, ch, s);
-                paint.set_color_rgba8(188, 188, 188, 255);
-                fill(pix, &paint, cx + 2.0, cy + 16.0, cw - 4.0, 30.0, s);
-                stroke_rect(pix, &paint, cx, cy, cw, ch, s);
+                draw_text(pix, fs, sc, "about:blank", cx + 8.0, cy + 5.0, 11.0,
+                    CosmicColor::rgba(120, 120, 120, 255), s);
             }
             _ => {
-                // Default fallback for any unhandled control type
-                if let Some((r, g, b, a)) = back_color { paint.set_color_rgba8(r, g, b, a); } else { paint.set_color_rgba8(230, 230, 230, 255); }
+                // Fallback for anything without a direct widget mapping.
+                paint.set_color_rgba8(230, 230, 230, 255);
                 fill(pix, &paint, cx, cy, cw, ch, s);
                 paint.set_color_rgba8(160, 160, 160, 255);
                 stroke_rect(pix, &paint, cx, cy, cw, ch, s);
-                draw_text_with_font(pix, fs, sc, display_text, cx + 4.0, cy + 4.0, font_prop, 11.0, grey, s);
+                draw_text_with_font(pix, fs, sc, &display_text,
+                    cx + 4.0, cy + 4.0, font_prop, 11.0,
+                    CosmicColor::rgba(150, 150, 150, 255), s);
             }
         }
 
@@ -1547,6 +1632,7 @@ impl FormDesignerState {
             ControlTool::Control(ct) => ct,
             ControlTool::Pointer => return false,
         };
+        self.push_undo_snapshot();
         let (cx0, cy0) = self.form_client_origin(rect);
         let parent_id = Self::find_container_at(&self.form, None, cx0, cy0, mx, my, 0);
 
@@ -1701,12 +1787,12 @@ impl FormDesignerState {
         }
 
         // Close color picker when clicking outside the properties panel
-        if self.color_picker.open {
-            let hex = self.color_picker.color.to_hex();
-            if let Some(prop_name) = self.color_picker_prop.take() {
+        if self.prop_panel.color_picker.open {
+            let hex = self.prop_panel.color_picker.color.to_hex();
+            if let Some(prop_name) = self.prop_panel.color_picker_prop.take() {
                 self.apply_color_prop(&prop_name, &hex);
             }
-            self.color_picker.open = false;
+            self.prop_panel.color_picker.open = false;
             // Don't return — let the click also be processed normally
         }
 
@@ -1778,14 +1864,14 @@ impl FormDesignerState {
 
     pub fn handle_mouse_move(&mut self, mx: f32, my: f32, rect: Rect) {
         // Route drag to color picker if open
-        if self.color_picker.open {
+        if self.prop_panel.color_picker.open {
             let lay = self.layout(rect);
             let popup_x = lay.properties.x + 10.0;
-            let popup_y = lay.properties.y + PROP_HEADER_H + PROP_TAB_H + 40.0;
-            match self.color_picker.handle_drag(mx, my, popup_x, popup_y) {
-                ColorPickerEvent::Changed(c) => {
+            let popup_y = lay.properties.y + vybe_widgets::properties_panel::PROP_HEADER_H + vybe_widgets::properties_panel::PROP_TAB_H + 40.0;
+            match self.prop_panel.color_picker.handle_drag(mx, my, popup_x, popup_y) {
+                vybe_widgets::color_picker::ColorPickerEvent::Changed(c) => {
                     let hex = c.to_hex();
-                    if let Some(prop_name) = self.color_picker_prop.clone() {
+                    if let Some(prop_name) = self.prop_panel.color_picker_prop.clone() {
                         self.apply_color_prop(&prop_name, &hex);
                     }
                     return;
@@ -1793,6 +1879,10 @@ impl FormDesignerState {
                 _ => {}
             }
         }
+
+        // Route to properties panel for scrollbar drag and dropdown hover.
+        let pr = self.layout(rect).properties;
+        self.prop_panel.handle_mouse_move(mx, my, pr.x, pr.y, pr.w, pr.h);
 
         let _content_rect = self.layout(rect).content;
 
@@ -1848,9 +1938,10 @@ impl FormDesignerState {
     }
 
     pub fn handle_mouse_up(&mut self, rect: Rect) {
-        if self.color_picker.open {
-            self.color_picker.handle_mouse_up();
+        if self.prop_panel.color_picker.open {
+            self.prop_panel.color_picker.handle_mouse_up();
         }
+        self.prop_panel.handle_mouse_up();
 
         let content_rect = self.layout(rect).content;
 
@@ -1938,12 +2029,40 @@ fn build_items() -> Vec<ToolItem> {
         ToolItem::Entry(ToolEntry { label: "MonthCalendar", tool: ControlTool::Control(MonthCalendar) }),
         ToolItem::Entry(ToolEntry { label: "HScrollBar", tool: ControlTool::Control(HScrollBar) }),
         ToolItem::Entry(ToolEntry { label: "VScrollBar", tool: ControlTool::Control(VScrollBar) }),
+        ToolItem::Entry(ToolEntry { label: "CheckedListBox", tool: ControlTool::Control(CheckedListBox) }),
+        ToolItem::Entry(ToolEntry { label: "DomainUpDown", tool: ControlTool::Control(DomainUpDown) }),
+        ToolItem::Entry(ToolEntry { label: "PropertyGrid", tool: ControlTool::Control(PropertyGrid) }),
+        ToolItem::Entry(ToolEntry { label: "Splitter", tool: ControlTool::Control(Splitter) }),
+
         ToolItem::Header(SectionHeader { label: "DATA" }),
         ToolItem::Entry(ToolEntry { label: "\u{1F517} BindingSource", tool: ControlTool::Control(BindingSourceComponent) }),
         ToolItem::Entry(ToolEntry { label: "\u{1F9ED} BindingNavigator", tool: ControlTool::Control(BindingNavigator) }),
         ToolItem::Entry(ToolEntry { label: "\u{1F5C4} DataSet", tool: ControlTool::Control(DataSetComponent) }),
         ToolItem::Entry(ToolEntry { label: "\u{1F4CB} DataTable", tool: ControlTool::Control(DataTableComponent) }),
         ToolItem::Entry(ToolEntry { label: "\u{1F50C} DataAdapter", tool: ControlTool::Control(DataAdapterComponent) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F440} DataView", tool: ControlTool::Control(DataView) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F5C4} SqlConnection", tool: ControlTool::Control(SqlConnection) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F5C4} OleDbConnection", tool: ControlTool::Control(OleDbConnection) }),
+
+        ToolItem::Header(SectionHeader { label: "COMPONENTS" }),
+        ToolItem::Entry(ToolEntry { label: "\u{23F1} Timer", tool: ControlTool::Control(Timer) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F5BC} ImageList", tool: ControlTool::Control(ImageList) }),
+        ToolItem::Entry(ToolEntry { label: "\u{26A0} ErrorProvider", tool: ControlTool::Control(ErrorProvider) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F4AC} ToolTip", tool: ControlTool::Control(ToolTip) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F4E2} NotifyIcon", tool: ControlTool::Control(NotifyIcon) }),
+        ToolItem::Entry(ToolEntry { label: "\u{2753} HelpProvider", tool: ControlTool::Control(HelpProvider) }),
+        ToolItem::Entry(ToolEntry { label: "\u{2699} BackgroundWorker", tool: ControlTool::Control(BackgroundWorker) }),
+
+        ToolItem::Header(SectionHeader { label: "DIALOGS" }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F4C2} OpenFileDialog", tool: ControlTool::Control(OpenFileDialog) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F4BE} SaveFileDialog", tool: ControlTool::Control(SaveFileDialog) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F4C1} FolderBrowserDialog", tool: ControlTool::Control(FolderBrowserDialog) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F520} FontDialog", tool: ControlTool::Control(FontDialog) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F3A8} ColorDialog", tool: ControlTool::Control(ColorDialog) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F5A8} PrintDialog", tool: ControlTool::Control(PrintDialog) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F4C4} PrintDocument", tool: ControlTool::Control(PrintDocument) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F50D} PrintPreviewDialog", tool: ControlTool::Control(PrintPreviewDialog) }),
+        ToolItem::Entry(ToolEntry { label: "\u{1F4D0} PageSetupDialog", tool: ControlTool::Control(PageSetupDialog) }),
     ]
 }
 
@@ -2088,6 +2207,15 @@ impl ToolboxState {
 fn fill(pix: &mut Pixmap, paint: &Paint, x: f32, y: f32, w: f32, h: f32, s: f32) {
     if let Some(r) = tiny_skia::Rect::from_xywh(x * s, y * s, w * s, h * s) {
         pix.fill_rect(r, paint, Transform::identity(), None);
+    }
+}
+
+/// Parse a VB/JS-style boolean: accepts "True"/"False" (any case) or "1"/"0".
+fn parse_bool(s: &str) -> Result<bool, ()> {
+    match s.trim() {
+        t if t.eq_ignore_ascii_case("true") || t == "1"  => Ok(true),
+        t if t.eq_ignore_ascii_case("false") || t == "0" => Ok(false),
+        _ => Err(()),
     }
 }
 

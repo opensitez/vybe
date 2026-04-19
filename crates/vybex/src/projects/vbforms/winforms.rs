@@ -119,6 +119,23 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
             continue;
         }
 
+        // Me.Ctrl.DataBindings.Add("Prop", Me.Source, "Field")
+        if let Some((ctrl, prop, source, field_col)) = parse_databindings_add(line) {
+            if let Some(c) = controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(ctrl)) {
+                c.props.push(("DataBindings.Source".to_string(), source.to_string()));
+                c.props.push((format!("DataBindings.{}", prop), field_col.to_string()));
+            }
+            continue;
+        }
+
+        // Me.Ctrl.Items.AddRange(New String() { "a", "b" })
+        if let Some((ctrl, items)) = parse_items_addrange(line) {
+            if let Some(c) = controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(ctrl)) {
+                c.props.push(("Items".to_string(), items.join("\n")));
+            }
+            continue;
+        }
+
         // AddHandler Me.X.Event, AddressOf Me.Handler
         if let Some((ctrl, event, handler)) = parse_addhandler(line) {
             if let Some(et) = event_type_from_name(event) {
@@ -203,6 +220,106 @@ fn parse_addhandler<'a>(line: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
     };
 
     Some((ctrl, event, handler))
+}
+
+/// Parse `Me.Ctrl.DataBindings.Add("Prop", Me.Source, "Field")` →
+/// `(ctrl, prop, source, field)`. Accepts both 3-arg and 4-arg forms
+/// (the 4-arg takes a `True` for formatting_enabled which we discard).
+fn parse_databindings_add<'a>(line: &'a str) -> Option<(&'a str, String, &'a str, String)> {
+    let s = line.strip_prefix("Me.")?;
+    let dot = s.find('.')?;
+    let ctrl = &s[..dot];
+    let after = &s[dot + 1..];
+    // Must look like "DataBindings.Add(...)"
+    let rest = after.strip_prefix("DataBindings.Add(")?;
+    let close = rest.rfind(')')?;
+    let args = &rest[..close];
+
+    // Split by top-level commas (ignore commas inside quotes / parens).
+    let mut parts: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut cur = String::new();
+    for ch in args.chars() {
+        match ch {
+            '"' => { in_str = !in_str; cur.push(ch); }
+            '(' if !in_str => { depth += 1; cur.push(ch); }
+            ')' if !in_str => { depth -= 1; cur.push(ch); }
+            ',' if !in_str && depth == 0 => {
+                parts.push(std::mem::take(&mut cur).trim().to_string());
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() { parts.push(cur.trim().to_string()); }
+    if parts.len() < 3 { return None; }
+
+    let prop = parse_string_value(&parts[0])?;
+    // source is "Me.Name" or bare "Name"
+    let src_raw = parts[1].trim();
+    let source = src_raw.strip_prefix("Me.").unwrap_or(src_raw);
+    let field_col = parse_string_value(&parts[2])?;
+
+    // Static leak of the line's &str isn't possible — return owned
+    // String for prop/field, but ctrl/source borrow from `line`.
+    let source_static: &str = {
+        // find source in original line for &str lifetime
+        let pattern_me = format!("Me.{}", source);
+        if let Some(p) = line.find(&pattern_me) {
+            &line[p + 3 .. p + pattern_me.len()]
+        } else if let Some(p) = line.find(source) {
+            &line[p .. p + source.len()]
+        } else {
+            return None;
+        }
+    };
+    Some((ctrl, prop, source_static, field_col))
+}
+
+/// Parse `Me.Ctrl.Items.AddRange(New String() { "a", "b", "c" })` →
+/// `(ctrl, [items])`. Also handles `Me.Ctrl.Items.Add("x")`.
+fn parse_items_addrange<'a>(line: &'a str) -> Option<(&'a str, Vec<String>)> {
+    let s = line.strip_prefix("Me.")?;
+    let dot = s.find('.')?;
+    let ctrl = &s[..dot];
+    let after = &s[dot + 1..];
+    // Match `Items.AddRange(…)` or `Items.Add(…)`
+    let args = if let Some(r) = after.strip_prefix("Items.AddRange(") {
+        let close = r.rfind(')')?;
+        r[..close].to_string()
+    } else if let Some(r) = after.strip_prefix("Items.Add(") {
+        let close = r.rfind(')')?;
+        let v = parse_string_value(&r[..close])?;
+        return Some((ctrl, vec![v]));
+    } else {
+        return None;
+    };
+    // Drop the `New String() {` wrapper if present.
+    let inner = args.trim();
+    let inner = inner
+        .trim_start_matches(|c: char| c != '{')
+        .trim_start_matches('{')
+        .trim_end_matches(|c: char| c != '}')
+        .trim_end_matches('}')
+        .trim();
+    let mut items = Vec::new();
+    let mut in_str = false;
+    let mut cur = String::new();
+    for ch in inner.chars() {
+        match ch {
+            '"' => { in_str = !in_str; cur.push(ch); }
+            ',' if !in_str => {
+                if let Some(v) = parse_string_value(cur.trim()) { items.push(v); }
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        if let Some(v) = parse_string_value(cur.trim()) { items.push(v); }
+    }
+    if items.is_empty() { return None; }
+    Some((ctrl, items))
 }
 
 /// Extract `New Point(x, y)` or `New System.Drawing.Point(x, y)` → (x, y)
@@ -418,6 +535,27 @@ fn vbnet_type_to_control_type(name: &str) -> Option<ControlType> {
         "checkedlistbox" => Some(ControlType::CheckedListBox),
         "domainupdown" => Some(ControlType::DomainUpDown),
         "propertygrid" => Some(ControlType::PropertyGrid),
+        "splitter" => Some(ControlType::Splitter),
+        "datagrid" => Some(ControlType::DataGrid),
+        "usercontrol" => Some(ControlType::UserControl),
+        // Data binding / ADO.NET components (WinForms classic names)
+        "bindingsource" | "bindingsourcecomponent"
+            => Some(ControlType::BindingSourceComponent),
+        "dataset"   | "datasetcomponent"    => Some(ControlType::DataSetComponent),
+        "datatable" | "datatablecomponent"  => Some(ControlType::DataTableComponent),
+        "dataadapter" | "sqldataadapter" | "oledbdataadapter"
+            | "mysqldataadapter" | "odbcdataadapter" | "dataadaptercomponent"
+            => Some(ControlType::DataAdapterComponent),
+        "dataview"          => Some(ControlType::DataView),
+        "sqlconnection"     => Some(ControlType::SqlConnection),
+        "oledbconnection"   => Some(ControlType::OleDbConnection),
+        // Misc non-visual
+        "helpprovider"      => Some(ControlType::HelpProvider),
+        "backgroundworker"  => Some(ControlType::BackgroundWorker),
+        // Print-related dialogs we missed
+        "printdocument"     => Some(ControlType::PrintDocument),
+        "printpreviewdialog"=> Some(ControlType::PrintPreviewDialog),
+        "pagesetupdialog"   => Some(ControlType::PageSetupDialog),
         _ => None,
     }
 }

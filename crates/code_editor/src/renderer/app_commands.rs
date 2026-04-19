@@ -4,14 +4,71 @@ use crate::language::load_language;
 use crate::lsp_client::LspRequest;
 use vybe_widgets::code_editor_widget::CodeEditorWidget;
 
+/// Insert `snippet` into a VB.NET class body just before its `End Class`.
+/// Mirrors the legacy designer — if there's no `End Class`, appends the
+/// snippet at the end.
+fn insert_before_end_class(code: &str, snippet: &str) -> String {
+    let lower = code.to_lowercase();
+    if let Some(idx) = lower.rfind("end class") {
+        let (head, tail) = code.split_at(idx);
+        format!("{}\n\n{}\n{}", head.trim_end(), snippet, tail)
+    } else {
+        format!("{}\n\n{}", code, snippet)
+    }
+}
+
+/// Line (0-indexed) of the first line that contains `needle`. Case-sensitive.
+fn locate_substring_line(code: &str, needle: &str) -> Option<usize> {
+    code.lines().enumerate().find_map(|(i, ln)| if ln.contains(needle) { Some(i) } else { None })
+}
+
+/// Find an existing VB.NET event handler. Returns the 0-indexed line of the
+/// `Sub` declaration (the body starts on the next line).
+///
+/// Recognizes three patterns (all case-insensitive):
+///   1. `Private Sub {handler_name}(…)`         — legacy naming convention
+///   2. `Public Sub {handler_name}(…)`
+///   3. Any `Sub X(…)` whose `Handles` clause mentions `{target}.{event}` or `Me.{event}`
+fn find_handler_line(
+    code: &str, handler_name: &str, target: &str, event: &str, is_form: bool,
+) -> Option<usize> {
+    let hn = handler_name.to_lowercase();
+    let target_dot = format!("{}.{}", target.to_lowercase(), event.to_lowercase());
+    let me_dot     = format!("me.{}", event.to_lowercase());
+
+    for (i, line) in code.lines().enumerate() {
+        let lower = line.trim_start().to_lowercase();
+        // Name match: Private/Public/Friend/Protected Sub {hn}(...)
+        // or bare "Sub {hn}(".
+        if let Some(sub_start) = lower.find("sub ") {
+            let after = &lower[sub_start + 4..];
+            let end = after.find('(').unwrap_or(after.len());
+            let name_part = after[..end].trim();
+            if name_part == hn {
+                return Some(i);
+            }
+        }
+        // Handles-clause match.
+        if lower.contains(" handles ") {
+            if lower.contains(&target_dot) || (is_form && lower.contains(&me_dot)) {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+const OUTPUT_MAX_LINES: usize = 5_000;
+
 impl App {
-    /// Push a line to the output panel and auto-show it.
+    /// Push a line to the output panel and auto-show it. Maintains a
+    /// rolling buffer of at most `OUTPUT_MAX_LINES` (drops the oldest).
     pub(crate) fn output_push(&mut self, line: String) {
-        // Get current lines, add the new one, and set back
-        let _lines: Vec<String> = Vec::new();
-        // We need to rebuild from scratch since OutputPanel owns the lines
-        // Use a helper: store lines externally and sync
         self.output_lines_buffer.push(line);
+        if self.output_lines_buffer.len() > OUTPUT_MAX_LINES {
+            let drop = self.output_lines_buffer.len() - OUTPUT_MAX_LINES;
+            self.output_lines_buffer.drain(..drop);
+        }
         self.output_panel.set_output_lines(&self.output_lines_buffer);
         self.output_panel.set_visible(true);
     }
@@ -41,6 +98,7 @@ impl App {
 
     pub(super) fn save_project(&mut self) {
         self.flush_code_to_project();
+        self.sync_active_form_to_project();
         if let Some(path) = self.project_path.clone() {
             match vybex::projects::serialization::save_project_auto(&self.project, &path) {
                 Ok(_) => self.output_push(format!("Saved: {}", path)),
@@ -63,6 +121,7 @@ impl App {
 
     pub(super) fn run_project(&mut self) {
         self.flush_code_to_project();
+        self.sync_active_form_to_project();
         let path = match self.project_path.clone() {
             Some(p) => p,
             None => { self.output_push("Save the project first.".to_string()); return; }
@@ -87,14 +146,14 @@ impl App {
                 if let Some(stdout) = child.stdout.take() {
                     use std::io::BufRead;
                     let reader = std::io::BufReader::new(stdout);
-                    for line in reader.lines().take(200) {
+                    for line in reader.lines() {
                         if let Ok(l) = line { self.output_push(l); }
                     }
                 }
                 if let Some(stderr) = child.stderr.take() {
                     use std::io::BufRead;
                     let reader = std::io::BufReader::new(stderr);
-                    for line in reader.lines().take(200) {
+                    for line in reader.lines() {
                         if let Ok(l) = line { self.output_push(format!("ERR: {}", l)); }
                     }
                 }
@@ -137,6 +196,92 @@ impl App {
                 }
                 Err(e) => println!("Failed to load form: {}", e),
             }
+        }
+    }
+
+    /// Insert a VB.NET event handler for `(target, event)` into the form's
+    /// code-behind (user_code) if it doesn't already exist, then open /
+    /// focus a code tab showing it AND jump the cursor to the handler's body.
+    /// `target` is either a control name or the form name; `is_form` selects
+    /// `Handles Me.X` vs `Handles X.Y`.
+    pub(super) fn open_or_generate_event_handler(
+        &mut self,
+        form_name: &str,
+        target: &str,
+        event: &str,
+        is_form: bool,
+    ) {
+        let params = vybex::projects::EventType::from_name(event)
+            .map(|et| et.parameters().to_string())
+            .unwrap_or_else(|| "sender As Object, e As EventArgs".to_string());
+        let handler_name = format!("{}_{}", target, event);
+        let handles = if is_form {
+            format!("Handles Me.{}", event)
+        } else {
+            format!("Handles {}.{}", target, event)
+        };
+        let sub_decl = format!("Private Sub {}({}) {}", handler_name, params, handles);
+        let sub_body = format!("{}\n    ' TODO: Add your code here\nEnd Sub", sub_decl);
+
+        let form_module = self.project.forms.iter_mut().find(|f| f.form.name == form_name);
+        let Some(fm) = form_module else { return; };
+        let current = fm.get_user_code().to_string();
+
+        // Detect: any `Private Sub {handler_name}(` OR `Sub {handler_name}(`
+        // OR an existing Sub with `Handles {target or Me}.{event}`.
+        let existing_line = find_handler_line(&current, &handler_name, target, event, is_form);
+        let (new_code, jump_line) = match existing_line {
+            Some(line) => (current, line),
+            None => {
+                let new_code = insert_before_end_class(&current, &sub_body);
+                // The body line is sub_decl's line + 1.
+                let decl_line = locate_substring_line(&new_code, &sub_decl).unwrap_or(0);
+                (new_code, decl_line.saturating_add(1))
+            }
+        };
+        if new_code != fm.get_user_code() {
+            fm.set_user_code(new_code.clone());
+        }
+
+        // Find or create the code tab for this form's code-behind.
+        let tab_name = format!("{}.vb", form_name);
+        let existing = self.tabs.iter().position(|t| t.name == tab_name && matches!(&t.content, TabContent::Code(_)));
+        if let Some(idx) = existing {
+            if let TabContent::Code(w) = &mut self.tabs[idx].content {
+                w.set_buffer_text(&mut self.font_system, &new_code);
+                w.set_cursor_pos(jump_line, 4);
+            }
+            self.active_tab = idx;
+        } else {
+            let lang = load_language("vb").or_else(|| load_language("rust")).expect("language not found");
+            let my_editor = MyEditor::from_text(&new_code, &lang);
+            let mut widget = CodeEditorWidget::new(my_editor.inner, &mut self.font_system);
+            widget.set_cursor_pos(jump_line, 4);
+            self.tabs.push(Tab {
+                name: tab_name,
+                path: None,
+                content: TabContent::Code(widget),
+                is_sticky: true,
+                buffer: None,
+                is_modified: false,
+            });
+            self.active_tab = self.tabs.len() - 1;
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Copy the active form-designer's `Form` back into the matching
+    /// `FormModule` in the project, then regenerate designer code. Call this
+    /// after any designer mutation so switching forms or saving picks up
+    /// the latest edits.
+    pub(crate) fn sync_active_form_to_project(&mut self) {
+        let Some(tab) = self.tabs.get(self.active_tab) else { return; };
+        let TabContent::Form(f) = &tab.content else { return; };
+        let name = f.form.name.clone();
+        let form_clone = f.form.clone();
+        if let Some(fm) = self.project.forms.iter_mut().find(|fm| fm.form.name == name) {
+            fm.form = form_clone;
+            fm.sync_designer_code();
         }
     }
 
@@ -197,12 +342,16 @@ impl App {
         match &mut self.tabs[self.active_tab].content {
             TabContent::Form(f) => {
                 match action {
+                    EditAction::Undo => { f.undo(); }
+                    EditAction::Redo => { f.redo(); }
                     EditAction::Delete => {
+                        f.push_undo_snapshot();
                         let sel = f.selected_controls.clone();
                         f.form.controls.retain(|c| !sel.contains(&c.id));
                         f.selected_controls.clear();
                     }
                     EditAction::Cut => {
+                        f.push_undo_snapshot();
                         self.control_clipboard = f.selected_controls.iter()
                             .filter_map(|id| f.form.controls.iter().find(|c| c.id == *id).cloned())
                             .collect();
@@ -216,6 +365,7 @@ impl App {
                             .collect();
                     }
                     EditAction::Paste => {
+                        f.push_undo_snapshot();
                         let mut new_ids = Vec::new();
                         for orig in &self.control_clipboard {
                             let mut ctrl = orig.clone();
@@ -235,7 +385,6 @@ impl App {
                         }
                         f.selected_controls = new_ids;
                     }
-                    _ => {}
                 }
             }
             TabContent::Code(cw) => {

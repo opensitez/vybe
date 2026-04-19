@@ -9,6 +9,12 @@ impl App {
         if self.tabs.is_empty() { return; }
         // Handle Form tab keyboard events
         if let TabContent::Form(f) = &mut self.tabs[self.active_tab].content {
+            // Inline property editing takes precedence so typing in the
+            // value cell doesn't collide with form-level shortcuts.
+            if f.handle_properties_key(&event) {
+                self.sync_active_form_to_project();
+                return;
+            }
             let cmd = event.cmd;
             let key = &event.logical_key;
             match key {
@@ -105,7 +111,8 @@ impl App {
                 }
                 _ => {}
             }
-            
+
+            self.sync_active_form_to_project();
             return;
         }
 

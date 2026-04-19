@@ -6,8 +6,6 @@ pub mod builtin_types;
 
 #[cfg(feature = "gui")]
 pub mod gui_state;
-#[cfg(feature = "gui")]
-pub mod gui_launch;
 
 pub use side_effect::{SideEffect, PropValue, UIEvent, SideEffectQueue};
 pub use modules::{register_all, register_with_capabilities, Capabilities, Capability};

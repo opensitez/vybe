@@ -7,13 +7,13 @@
 //!
 //! Two entry points:
 //! - `launch_gui` — programmatic forms (GuiState already has widgets)
-//! - `launch_vybewidget_form` — designer forms (builds widgets from `vybe_forms::Form`)
+//! - `launch_vybewidget_form` — designer forms (builds widgets from `crate::projects::vbforms::Form`)
 //!   (requires `gui_forms` feature)
 
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use crate::GuiState;
+use vybe_host::GuiState;
 
 use vybe_widgets::{
     // Application framework
@@ -69,49 +69,49 @@ struct DataStore {
 // ── Control type → Widget mapping (designer forms only) ────────────────
 
 #[cfg(feature = "gui_forms")]
-fn make_widget(ctrl: &vybe_forms::Control) -> Box<dyn PanelWidget> {
+fn make_widget(ctrl: &crate::projects::vbforms::Control) -> Box<dyn PanelWidget> {
     let text = ctrl.properties.get_string("Text").unwrap_or_default().to_string();
     let name = ctrl.name.to_lowercase();
 
     match ctrl.control_type {
-        vybe_forms::ControlType::Button => {
+        crate::projects::vbforms::ControlType::Button => {
             let mut w = Button::new(&text).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::Label | vybe_forms::ControlType::LinkLabel => {
+        crate::projects::vbforms::ControlType::Label | crate::projects::vbforms::ControlType::LinkLabel => {
             let mut w = Label::new(&text).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::TextBox | vybe_forms::ControlType::RichTextBox => {
+        crate::projects::vbforms::ControlType::TextBox | crate::projects::vbforms::ControlType::RichTextBox => {
             let mut w = TextInput::new().with_name(&name);
             w.value = text;
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::MaskedTextBox => {
+        crate::projects::vbforms::ControlType::MaskedTextBox => {
             let mut w = MaskedTextBox::new().with_name(&name);
             w.value = text;
             Box::new(w)
         }
-        vybe_forms::ControlType::CheckBox => {
+        crate::projects::vbforms::ControlType::CheckBox => {
             Box::new(Checkbox::new(&text).with_name(&name))
         }
-        vybe_forms::ControlType::RadioButton => {
+        crate::projects::vbforms::ControlType::RadioButton => {
             Box::new(Radio::new(&text).with_name(&name))
         }
-        vybe_forms::ControlType::ComboBox => {
+        crate::projects::vbforms::ControlType::ComboBox => {
             let items = ctrl.properties.get_string_array("Items").cloned().unwrap_or_default();
             let mut w = Select::new(items).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::ListBox | vybe_forms::ControlType::CheckedListBox => {
+        crate::projects::vbforms::ControlType::ListBox | crate::projects::vbforms::ControlType::CheckedListBox => {
             let items = ctrl.properties.get_string_array("Items").cloned().unwrap_or_default();
             let mut w = ListBox::new().with_name(&name);
             w.items = items;
@@ -119,91 +119,91 @@ fn make_widget(ctrl: &vybe_forms::Control) -> Box<dyn PanelWidget> {
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::Panel | vybe_forms::ControlType::UserControl => {
+        crate::projects::vbforms::ControlType::Panel | crate::projects::vbforms::ControlType::UserControl => {
             let mut w = Panel::new().with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::Frame => {
+        crate::projects::vbforms::ControlType::Frame => {
             let mut w = GroupBox::new(&text).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::PictureBox => {
+        crate::projects::vbforms::ControlType::PictureBox => {
             let mut w = PictureBox::new().with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::ProgressBar => {
+        crate::projects::vbforms::ControlType::ProgressBar => {
             let mut w = ProgressBar::new().with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::TrackBar => {
+        crate::projects::vbforms::ControlType::TrackBar => {
             Box::new(Slider::new(0.0, 100.0, 50.0).with_name(&name))
         }
-        vybe_forms::ControlType::NumericUpDown => {
+        crate::projects::vbforms::ControlType::NumericUpDown => {
             Box::new(NumericUpDown::new().with_name(&name))
         }
-        vybe_forms::ControlType::DateTimePicker => {
+        crate::projects::vbforms::ControlType::DateTimePicker => {
             Box::new(DateTimePicker::new().with_name(&name))
         }
-        vybe_forms::ControlType::TreeView => {
+        crate::projects::vbforms::ControlType::TreeView => {
             Box::new(TreeView::new("", 1.0).with_name(&name))
         }
-        vybe_forms::ControlType::DataGridView | vybe_forms::ControlType::DataGrid => {
+        crate::projects::vbforms::ControlType::DataGridView | crate::projects::vbforms::ControlType::DataGrid => {
             Box::new(DataGrid::new(&[]).with_name(&name))
         }
-        vybe_forms::ControlType::ListView => {
+        crate::projects::vbforms::ControlType::ListView => {
             Box::new(ListView::new().with_name(&name))
         }
-        vybe_forms::ControlType::TabControl => {
+        crate::projects::vbforms::ControlType::TabControl => {
             let mut w = Tabs::new(&["Tab1"]).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::MonthCalendar => {
+        crate::projects::vbforms::ControlType::MonthCalendar => {
             Box::new(MonthCalendar::new().with_name(&name))
         }
-        vybe_forms::ControlType::HScrollBar => {
+        crate::projects::vbforms::ControlType::HScrollBar => {
             let mut w = ScrollBar::new(false).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::VScrollBar => {
+        crate::projects::vbforms::ControlType::VScrollBar => {
             let mut w = ScrollBar::new(true).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_forms::ControlType::MenuStrip => {
+        crate::projects::vbforms::ControlType::MenuStrip => {
             Box::new(MenuStrip::new().with_name(&name))
         }
-        vybe_forms::ControlType::ToolStrip => {
+        crate::projects::vbforms::ControlType::ToolStrip => {
             Box::new(ToolStrip::new().with_name(&name))
         }
-        vybe_forms::ControlType::StatusStrip => {
+        crate::projects::vbforms::ControlType::StatusStrip => {
             Box::new(StatusStrip::new().with_name(&name))
         }
-        vybe_forms::ControlType::ContextMenuStrip => {
+        crate::projects::vbforms::ControlType::ContextMenuStrip => {
             Box::new(ContextMenu::new().with_name(&name))
         }
-        vybe_forms::ControlType::SplitContainer => {
+        crate::projects::vbforms::ControlType::SplitContainer => {
             Box::new(SplitContainer::new(false).with_name(&name))
         }
-        vybe_forms::ControlType::FlowLayoutPanel => {
+        crate::projects::vbforms::ControlType::FlowLayoutPanel => {
             Box::new(FlowLayoutPanel::new().with_name(&name))
         }
-        vybe_forms::ControlType::TableLayoutPanel => {
+        crate::projects::vbforms::ControlType::TableLayoutPanel => {
             Box::new(TableLayoutPanel::new(2, 2).with_name(&name))
         }
-        vybe_forms::ControlType::BindingNavigator => {
+        crate::projects::vbforms::ControlType::BindingNavigator => {
             Box::new(BindingNavigator::new(&name))
         }
         _ => {
@@ -413,7 +413,7 @@ impl FormApp {
             if conn_str.is_empty() { continue; }
 
             let sql = format!("SELECT * FROM {}", bs_info.data_member);
-            match crate::modules::database::query_rows(&conn_str, &sql) {
+            match vybe_host::modules::database::query_rows(&conn_str, &sql) {
                 Ok((columns, rows)) => {
                     let store = DataStore {
                         columns: columns.clone(),
@@ -614,7 +614,7 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
 // ── Extract binding info from form definition (designer forms only) ────
 
 #[cfg(feature = "gui_forms")]
-fn extract_binding_info(form: &vybe_forms::Form) -> (Vec<DataBindingEntry>, Vec<BindingSourceInfo>, Vec<NavigatorInfo>) {
+fn extract_binding_info(form: &crate::projects::vbforms::Form) -> (Vec<DataBindingEntry>, Vec<BindingSourceInfo>, Vec<NavigatorInfo>) {
     let mut data_bindings = Vec::new();
     let mut binding_sources = Vec::new();
     let mut navigators = Vec::new();
@@ -672,13 +672,13 @@ fn extract_binding_info(form: &vybe_forms::Form) -> (Vec<DataBindingEntry>, Vec<
 
 // ── Public launch functions ────────────────────────────────────────────
 
-/// Launch a designer form — builds widgets from a `vybe_forms::Form` model.
+/// Launch a designer form — builds widgets from a `crate::projects::vbforms::Form` model.
 /// Requires the `gui_forms` feature.
 #[cfg(feature = "gui_forms")]
 pub fn launch_vybewidget_form(
     mut vm: vybe_bytecode::VM,
     gui: Arc<Mutex<GuiState>>,
-    form: &vybe_forms::Form,
+    form: &crate::projects::vbforms::Form,
 ) {
     register_dialog_fns(&mut vm);
 
@@ -776,7 +776,7 @@ pub fn launch_gui(
 pub fn launch_vm_form(
     vm: vybe_bytecode::VM,
     gui: Arc<Mutex<GuiState>>,
-    initial_form: Option<vybe_forms::Form>,
+    initial_form: Option<crate::projects::vbforms::Form>,
 ) {
     let should_launch = gui.lock().unwrap().should_run || initial_form.is_some();
 
