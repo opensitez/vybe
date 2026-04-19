@@ -120,13 +120,25 @@ impl App {
             
         }
 
-        // 2. Tab bar hover — delegated to TabPanel
+        // 2. Tab bar hover — delegated to TabPanel, plus drag-reorder
         let tch = self.top_chrome_h();
         let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
         if my >= tch && my < tch + TAB_BAR_HEIGHT && mx > ed_start_x {
             use vybe_widgets::layout::{MouseEvent as WMouseEvent, MouseEventKind as WMEKind};
             let move_event = WMouseEvent { x: mx, y: my, kind: WMEKind::Move, cmd: self.cmd_held, shift: self.shift_held, alt: self.alt_held };
             self.tab_panel.handle_mouse(&move_event);
+
+            // Drag-reorder: if the user is dragging, move the tab to the new slot.
+            if let Some(from) = self.tab_drag_idx {
+                let to = ((mx - ed_start_x) / 160.0) as usize;
+                if to < self.tabs.len() && to != from {
+                    let tab = self.tabs.remove(from);
+                    self.tabs.insert(to, tab);
+                    self.tab_drag_idx = Some(to);
+                    if self.active_tab == from { self.active_tab = to; }
+                    self.sync_tab_headers();
+                }
+            }
         }
 
         // 3. Menu hover for form designer
@@ -249,8 +261,17 @@ impl App {
         }
 
         if state == ElementState::Pressed && button == MouseButton::Right {
-            // Right-click in project explorer sidebar → context menu
             let tch_r = self.top_chrome_h();
+            // Right-click on a tab in the tab bar → context menu
+            let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
+            if my >= tch_r && my < tch_r + TAB_BAR_HEIGHT && mx > ed_start_x {
+                let tab_idx = ((mx - ed_start_x) / 160.0) as usize;
+                if tab_idx < self.tabs.len() {
+                    self.tab_context_menu = Some((mx, my, tab_idx));
+                    return;
+                }
+            }
+            // Right-click in project explorer sidebar → context menu
             if mx < self.explorer_width && my > tch_r && self.sidebar_tab == SidebarTab::Project {
                 let pe_y = tch_r + SIDEBAR_TAB_H;
                 let item_h = 24.0f32;
@@ -678,20 +699,42 @@ impl App {
                 }
             }
 
+            // 4a. Tab context menu click (if open, absorb click)
+            if let Some((cmx, cmy, tab_idx)) = self.tab_context_menu {
+                let entries_h = 26.0 * 4.0 + 8.0;
+                if mx >= cmx && mx < cmx + 180.0 && my >= cmy && my < cmy + entries_h {
+                    let row = ((my - cmy - 4.0) / 26.0) as usize;
+                    match row {
+                        0 => self.close_tab(tab_idx),
+                        1 => self.close_others(tab_idx),
+                        2 => self.close_all_tabs(),
+                        3 => {
+                            if let Some(t) = self.tabs.get_mut(tab_idx) {
+                                t.is_sticky = !t.is_sticky;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                self.tab_context_menu = None;
+                return;
+            } else if self.tab_context_menu.is_some() {
+                self.tab_context_menu = None;
+            }
+
             // 4. Tab Bar Click
             let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
             if my >= tch && my < tch + TAB_BAR_HEIGHT && mx > ed_start_x {
                 if let Some(idx) = self.hovering_tab_close {
-                     println!("DEBUG: Tab Bar Click -> Close Tab {}", idx);
-                     self.tabs.remove(idx);
-                     if self.tabs.is_empty() { self.active_tab = 0; }
-                     else if self.active_tab >= self.tabs.len() { self.active_tab = self.tabs.len() - 1; }
-                      return;
+                     self.close_tab(idx);
+                     return;
                 }
                 let tab_idx = ((mx - ed_start_x) / 160.0) as usize;
-                if tab_idx < self.tabs.len() { 
-                    println!("DEBUG: Tab Bar Click -> Select Tab {}", tab_idx);
-                    self.active_tab = tab_idx;  
+                if tab_idx < self.tabs.len() {
+                    self.active_tab = tab_idx;
+                    // Arm drag-reorder: the move handler will reorder if the
+                    // user drags the mouse onto another tab.
+                    self.tab_drag_idx = Some(tab_idx);
                 }
                 return;
             }
@@ -905,6 +948,7 @@ impl App {
                 }
             }
         } else if state == ElementState::Released {
+            self.tab_drag_idx = None;
             println!("DEBUG: Mouse Released");
             let tch_rel = self.top_chrome_h();
             if self.active_tab < self.tabs.len() {

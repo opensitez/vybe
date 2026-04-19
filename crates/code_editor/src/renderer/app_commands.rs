@@ -1,4 +1,4 @@
-use super::{App, Tab, TabContent, EditAction};
+use super::{App, Tab, TabContent, EditAction, PaletteAction, ProjectSearchHit};
 use crate::editor::Editor as MyEditor;
 use crate::language::load_language;
 use crate::lsp_client::LspRequest;
@@ -579,5 +579,273 @@ impl App {
                 self.lsp.send(LspRequest::Completion(uri, line as u32, col as u32));
             }
         }
+    }
+
+    /// Execute an action chosen from the command palette.
+    pub(super) fn execute_palette_command(&mut self, action: PaletteAction) {
+        use PaletteAction::*;
+        use crate::form_designer_tab::MenuAction as M;
+        match action {
+            Menu(M::NewProject) | Menu(M::OpenProject) | Menu(M::AddExistingForm)
+            | Menu(M::AddExistingCode) | Menu(M::ProjectProperties) => {
+                // These open file-pickers / dialogs. Easiest to route via the
+                // existing menu click path — emulate by calling the same
+                // command methods directly.
+                match action {
+                    Menu(M::OpenProject) => self.palette_open_project(),
+                    Menu(M::AddExistingForm) => self.add_existing_form(),
+                    Menu(M::AddExistingCode) => self.add_existing_code(),
+                    Menu(M::ProjectProperties) => { self.project_props_dialog.open(&self.project); }
+                    _ => {}
+                }
+            }
+            Menu(M::SaveProject) => self.save_project(),
+            Menu(M::SaveAs)      => self.palette_save_project_as(),
+            Menu(M::Exit)        => { std::process::exit(0); }
+            Menu(M::AddForm)     => self.palette_add_form(),
+            Menu(M::AddModule)   => self.palette_add_module(),
+            Menu(M::AddResourceFile) => self.palette_add_resource_file(),
+            Menu(M::RunProject)  => self.run_project(),
+            Menu(M::StopProject) => self.stop_project(),
+            Menu(M::Undo)        => self.dispatch_edit_action(EditAction::Undo),
+            Menu(M::Redo)        => self.dispatch_edit_action(EditAction::Redo),
+            Menu(M::Cut)         => self.dispatch_edit_action(EditAction::Cut),
+            Menu(M::Copy)        => self.dispatch_edit_action(EditAction::Copy),
+            Menu(M::Paste)       => self.dispatch_edit_action(EditAction::Paste),
+            Menu(M::Delete)      => self.dispatch_edit_action(EditAction::Delete),
+
+            Edit(a) => self.dispatch_edit_action(a),
+            ToggleOutput => {
+                let v = self.output_panel.visible();
+                self.output_panel.set_visible(!v);
+            }
+            ToggleProblems => {
+                self.output_panel.set_visible(true);
+                self.output_panel.set_active_tab(
+                    vybe_widgets::output_panel::OutputTab::Problems);
+            }
+            CloseTab => { self.close_tab(self.active_tab); }
+            CloseOthers => { self.close_others(self.active_tab); }
+            CloseAll => { self.close_all_tabs(); }
+            NextTab => {
+                if !self.tabs.is_empty() {
+                    self.active_tab = (self.active_tab + 1) % self.tabs.len();
+                }
+            }
+            PrevTab => {
+                if !self.tabs.is_empty() {
+                    self.active_tab = if self.active_tab == 0
+                        { self.tabs.len() - 1 } else { self.active_tab - 1 };
+                }
+            }
+            FindInFile => {
+                if let Some(TabContent::Code(cw)) = self.tabs.get_mut(self.active_tab).map(|t| &mut t.content) {
+                    cw.is_search_open = true;
+                }
+            }
+            FindInProject => {
+                self.is_project_search = true;
+                self.project_search_query.clear();
+                self.project_search_results.clear();
+                self.project_search_selected = 0;
+            }
+            GoToLine => { self.goto_line_open = true; self.goto_line_query.clear(); }
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Close the tab at `idx`. Keeps at least the Form-Designer tab if
+    /// that's the one being closed (designer is always pinned).
+    pub(super) fn close_tab(&mut self, idx: usize) {
+        if idx >= self.tabs.len() { return; }
+        if self.tabs[idx].is_sticky { return; }
+        self.tabs.remove(idx);
+        if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+    }
+
+    /// Close everything except the keep_idx tab (and the always-pinned ones).
+    pub(super) fn close_others(&mut self, keep_idx: usize) {
+        let keep_uid: Option<String> = self.tabs.get(keep_idx).map(|t| t.name.clone());
+        self.tabs.retain(|t| t.is_sticky || Some(t.name.clone()) == keep_uid);
+        self.active_tab = self.tabs.iter().position(|t| Some(t.name.clone()) == keep_uid).unwrap_or(0);
+    }
+
+    pub(super) fn close_all_tabs(&mut self) {
+        self.tabs.retain(|t| t.is_sticky);
+        if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+    }
+
+    // ── Palette-action helpers (these wrap flows previously inlined in
+    // app_mouse.rs menu handling). ────────────────────────────────────────
+
+    fn palette_open_project(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("VB Project", &["vbproj", "vbp"])
+            .pick_file()
+        {
+            let path_str = path.to_string_lossy().to_string();
+            if let Ok(proj) = vybex::projects::serialization::load_project_auto(&path_str) {
+                self.tabs.retain(|t| !matches!(&t.content, TabContent::Code(_)) && !matches!(&t.content, TabContent::Resources(_)));
+                if let Some(first_form) = proj.forms.first() {
+                    if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
+                        if let TabContent::Form(fd) = &mut self.tabs[idx].content {
+                            fd.form = first_form.form.clone();
+                            fd.selected_controls.clear();
+                        }
+                        self.active_tab = idx;
+                    }
+                }
+                self.project = proj;
+                self.project_path = Some(path_str);
+            }
+        }
+    }
+
+    fn palette_save_project_as(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("VB Project", &["vbproj"])
+            .save_file()
+        {
+            let path_str = path.to_string_lossy().to_string();
+            self.project_path = Some(path_str.clone());
+            let _ = vybex::projects::serialization::save_project_auto(&self.project, &path_str);
+        }
+    }
+
+    fn palette_add_form(&mut self) {
+        self.sync_active_form_to_project();
+        let name = format!("Form{}", self.project.forms.len() + 1);
+        let mut form = vybex::projects::Form::new(name.clone());
+        form.width = 640; form.height = 480;
+        let form_clone = form.clone();
+        let fm = vybex::projects::project::FormModule::new_classic(form);
+        self.project.forms.push(fm);
+        if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
+            if let TabContent::Form(fd) = &mut self.tabs[idx].content {
+                fd.form = form_clone;
+                fd.selected_controls.clear();
+            }
+            self.active_tab = idx;
+        }
+    }
+
+    fn palette_add_module(&mut self) {
+        let name = format!("Module{}.vb", self.project.code_files.len() + 1);
+        self.project.code_files.push(vybex::projects::project::CodeFile {
+            name: name.clone(),
+            code: format!("Module {}\n\nEnd Module\n", name.replace(".vb", "")),
+        });
+    }
+
+    fn palette_add_resource_file(&mut self) {
+        if self.project.resource_files.is_empty() {
+            self.project.resource_files.push(vybex::projects::ResourceManager::new());
+        }
+        if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Resources(_))) {
+            self.active_tab = idx;
+        } else {
+            let editor = Self::create_resource_editor_from_project(&self.project);
+            self.tabs.push(Tab {
+                name: "Resources".to_string(),
+                path: None,
+                content: TabContent::Resources(editor),
+                is_sticky: true,
+                buffer: None,
+                is_modified: false,
+            });
+            self.active_tab = self.tabs.len() - 1;
+        }
+    }
+
+    // ── Project-wide search ───────────────────────────────────────────────
+
+    /// Re-run search with the current `project_search_query`, updating the
+    /// results list. Search covers every code file and form's user_code.
+    /// Max 500 hits to keep the UI snappy.
+    pub(super) fn run_project_search(&mut self) {
+        self.project_search_results.clear();
+        self.project_search_selected = 0;
+        let q = self.project_search_query.trim();
+        if q.len() < 2 { return; }
+        let needle = q.to_lowercase();
+        let mut hits: Vec<ProjectSearchHit> = Vec::new();
+
+        fn scan_into(
+            out: &mut Vec<ProjectSearchHit>,
+            needle: &str,
+            file: &str,
+            code: &str,
+            cap: usize,
+        ) {
+            for (li, line) in code.lines().enumerate() {
+                if out.len() >= cap { return; }
+                if line.to_lowercase().contains(needle) {
+                    let snippet = line.trim().chars().take(120).collect::<String>();
+                    out.push(ProjectSearchHit {
+                        file: file.to_string(),
+                        line: li,
+                        snippet,
+                    });
+                }
+            }
+        }
+
+        const CAP: usize = 500;
+        for fm in &self.project.forms {
+            if hits.len() >= CAP { break; }
+            scan_into(&mut hits, &needle, &format!("{}.vb", fm.form.name), fm.get_user_code(), CAP);
+        }
+        for cf in &self.project.code_files {
+            if hits.len() >= CAP { break; }
+            scan_into(&mut hits, &needle, &cf.name, &cf.code, CAP);
+        }
+        for tab in &self.tabs {
+            if let TabContent::Code(cw) = &tab.content {
+                if hits.len() >= CAP { break; }
+                let code = cw.my_editor.rope.to_string();
+                scan_into(&mut hits, &needle, &tab.name, &code, CAP);
+            }
+        }
+
+        self.project_search_results = hits;
+    }
+
+    /// Open a search hit in a code tab.
+    pub(super) fn project_search_open_hit(&mut self, hit: &ProjectSearchHit) {
+        // Does a tab already display this file?
+        if let Some(idx) = self.tabs.iter().position(|t|
+            t.name == hit.file && matches!(&t.content, TabContent::Code(_))) {
+            self.active_tab = idx;
+            if let TabContent::Code(cw) = &mut self.tabs[idx].content {
+                cw.set_cursor_pos(hit.line, 0);
+            }
+            return;
+        }
+        // Otherwise load from project.
+        let code = self.project.forms.iter()
+            .find(|fm| format!("{}.vb", fm.form.name) == hit.file)
+            .map(|fm| fm.get_user_code().to_string())
+            .or_else(|| self.project.code_files.iter()
+                .find(|cf| cf.name == hit.file)
+                .map(|cf| cf.code.clone()));
+        let Some(code) = code else { return; };
+
+        let lang = load_language("vb").or_else(|| load_language("rust")).expect("language not found");
+        let my_editor = MyEditor::from_text(&code, &lang);
+        let mut widget = CodeEditorWidget::new(my_editor.inner, &mut self.font_system);
+        widget.set_cursor_pos(hit.line, 0);
+        self.tabs.push(Tab {
+            name: hit.file.clone(),
+            path: None,
+            content: TabContent::Code(widget),
+            is_sticky: false,
+            buffer: None,
+            is_modified: false,
+        });
+        self.active_tab = self.tabs.len() - 1;
     }
 }

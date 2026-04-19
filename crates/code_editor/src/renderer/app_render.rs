@@ -144,6 +144,35 @@ impl App {
             self.tab_panel.render(&mut ctx);
         }
 
+        // 2b. Breadcrumb bar — file path above the editor
+        {
+            let br_top = top_chrome_px + TAB_BAR_HEIGHT * SCALE;
+            let br_x = ed_start_x;
+            let br_w = pix.width() as f32 - ed_start_x;
+            let br_h = UI_BAR_HEIGHT * SCALE;
+            // Background
+            let mut bg = Paint::default();
+            bg.set_color_rgba8(theme.footer_bg.r(), theme.footer_bg.g(), theme.footer_bg.b(), theme.footer_bg.a());
+            pix.fill_rect(Rect::from_xywh(br_x, br_top, br_w, br_h).unwrap(), &bg, Transform::identity(), None);
+            // Bottom divider
+            let mut dp = Paint::default();
+            dp.set_color_rgba8(theme.guide.r(), theme.guide.g(), theme.guide.b(), theme.guide.a());
+            pix.fill_rect(Rect::from_xywh(br_x, br_top + br_h - SCALE, br_w, SCALE).unwrap(), &dp, Transform::identity(), None);
+            // Crumbs text
+            let crumbs = self.tabs.get(self.active_tab).map(|t| {
+                let proj = &self.project.name;
+                let tname = &t.name;
+                format!("{}  \u{203A}  {}", proj, tname)
+            }).unwrap_or_default();
+            App::draw_ui_text(
+                pix, &mut self.font_system, &mut self.swash_cache,
+                &crumbs,
+                br_x + 10.0 * SCALE,
+                br_top + 4.0 * SCALE,
+                theme.inactive_tab_text,
+            );
+        }
+
         // 3. Active Editor or Designer
         let output_h = if self.output_panel.visible() { self.output_panel_height } else { 0.0 };
         if self.active_tab < self.tabs.len() {
@@ -298,6 +327,26 @@ impl App {
             self.status_bar.sections_mut().clear();
             self.status_bar.set_background(theme.footer_bg.r(), theme.footer_bg.g(), theme.footer_bg.b(), theme.footer_bg.a());
 
+            // Left section: diagnostic summary — clickable to open Problems tab.
+            {
+                let mut errors = 0usize;
+                let mut warnings = 0usize;
+                for t in &self.tabs {
+                    if let TabContent::Code(cw) = &t.content {
+                        for d in &cw.my_editor.diagnostics {
+                            match d.severity {
+                                vybe_widgets::DiagnosticSeverity::Error   => errors   += 1,
+                                vybe_widgets::DiagnosticSeverity::Warning => warnings += 1,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                let diag_label = format!("\u{2715} {}   \u{26A0} {}", errors, warnings);
+                self.status_bar.add_section_with_id(
+                    &diag_label, diag_label.len() as f32 * 8.5, false, "diagnostics");
+            }
+
             // Left section: cursor info
             let status_text = if let Some(tab) = self.tabs.get(self.active_tab) {
                 match &tab.content {
@@ -410,6 +459,125 @@ impl App {
             if let Some(path) = pb.finish() { pix.stroke_path(&path, &bp, &Stroke { width: SCALE, ..Default::default() }, Transform::identity(), None); }
             let max_line = self.tabs.get(self.active_tab).map(|t| match &t.content { TabContent::Code(cw) => cw.line_count(), _ => 0 }).unwrap_or(0);
             App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &format!("Go to Line (1-{}): {}|", max_line, self.goto_line_query), gl_x + 12.0 * SCALE, gl_y + 16.0 * SCALE, TextColor::rgb(200, 200, 200));
+        }
+
+        // Command palette overlay
+        if self.is_command_palette {
+            let o_w = 520.0 * SCALE;
+            let o_h = 420.0 * SCALE;
+            let o_x = (pix.width() as f32 - o_w) / 2.0;
+            let o_y = 90.0 * SCALE;
+            let mut bg = Paint::default(); bg.set_color_rgba8(30, 30, 35, 245);
+            pix.fill_rect(Rect::from_xywh(o_x, o_y, o_w, o_h).unwrap(), &bg, Transform::identity(), None);
+            let mut bp = Paint::default(); bp.set_color_rgba8(80, 80, 90, 255);
+            let mut pb = PathBuilder::new(); pb.push_rect(Rect::from_xywh(o_x, o_y, o_w, o_h).unwrap());
+            if let Some(path) = pb.finish() { pix.stroke_path(&path, &bp, &Stroke { width: SCALE, ..Default::default() }, Transform::identity(), None); }
+            App::draw_ui_text(
+                pix, &mut self.font_system, &mut self.swash_cache,
+                &format!("> {}|", self.command_palette_query),
+                o_x + 12.0 * SCALE, o_y + 10.0 * SCALE,
+                TextColor::rgb(220, 220, 220),
+            );
+            let matches = self.command_palette_matches();
+            let cmds = super::palette_commands();
+            let mut iy = o_y + 44.0 * SCALE;
+            for (row, idx) in matches.iter().take(14).enumerate() {
+                if row == self.command_palette_selected {
+                    let mut hp = Paint::default(); hp.set_color_rgba8(0, 122, 204, 70);
+                    pix.fill_rect(Rect::from_xywh(o_x + 4.0, iy - 2.0, o_w - 8.0, 22.0 * SCALE).unwrap(), &hp, Transform::identity(), None);
+                }
+                let col = if row == self.command_palette_selected { TextColor::rgb(240, 240, 240) } else { TextColor::rgb(190, 190, 190) };
+                App::draw_ui_text(
+                    pix, &mut self.font_system, &mut self.swash_cache,
+                    cmds[*idx].label, o_x + 20.0 * SCALE, iy, col,
+                );
+                iy += 22.0 * SCALE;
+            }
+            if matches.is_empty() {
+                App::draw_ui_text(
+                    pix, &mut self.font_system, &mut self.swash_cache,
+                    "(no matching commands)",
+                    o_x + 20.0 * SCALE, iy,
+                    TextColor::rgb(120, 120, 120),
+                );
+            }
+        }
+
+        // Project-wide search overlay
+        if self.is_project_search {
+            let o_w = 640.0 * SCALE;
+            let o_h = 460.0 * SCALE;
+            let o_x = (pix.width() as f32 - o_w) / 2.0;
+            let o_y = 90.0 * SCALE;
+            let mut bg = Paint::default(); bg.set_color_rgba8(30, 30, 35, 245);
+            pix.fill_rect(Rect::from_xywh(o_x, o_y, o_w, o_h).unwrap(), &bg, Transform::identity(), None);
+            let mut bp = Paint::default(); bp.set_color_rgba8(80, 80, 90, 255);
+            let mut pb = PathBuilder::new(); pb.push_rect(Rect::from_xywh(o_x, o_y, o_w, o_h).unwrap());
+            if let Some(path) = pb.finish() { pix.stroke_path(&path, &bp, &Stroke { width: SCALE, ..Default::default() }, Transform::identity(), None); }
+            App::draw_ui_text(
+                pix, &mut self.font_system, &mut self.swash_cache,
+                &format!("Find in Project: {}|", self.project_search_query),
+                o_x + 12.0 * SCALE, o_y + 10.0 * SCALE,
+                TextColor::rgb(220, 220, 220),
+            );
+            let count = self.project_search_results.len();
+            let sub = if count == 0 && self.project_search_query.trim().len() >= 2 {
+                "(no matches)".to_string()
+            } else if count >= 500 {
+                "500+ matches (narrow query)".to_string()
+            } else {
+                format!("{} match{}", count, if count == 1 { "" } else { "es" })
+            };
+            App::draw_ui_text(
+                pix, &mut self.font_system, &mut self.swash_cache,
+                &sub, o_x + 12.0 * SCALE, o_y + 32.0 * SCALE,
+                TextColor::rgb(140, 140, 140),
+            );
+
+            let mut iy = o_y + 58.0 * SCALE;
+            for (row, hit) in self.project_search_results.iter().take(16).enumerate() {
+                if row == self.project_search_selected {
+                    let mut hp = Paint::default(); hp.set_color_rgba8(0, 122, 204, 70);
+                    pix.fill_rect(Rect::from_xywh(o_x + 4.0, iy - 2.0, o_w - 8.0, 22.0 * SCALE).unwrap(), &hp, Transform::identity(), None);
+                }
+                let label = format!("{}:{}  {}", hit.file, hit.line + 1, hit.snippet);
+                let col = if row == self.project_search_selected { TextColor::rgb(240, 240, 240) } else { TextColor::rgb(190, 190, 190) };
+                App::draw_ui_text(
+                    pix, &mut self.font_system, &mut self.swash_cache,
+                    &label, o_x + 16.0 * SCALE, iy, col,
+                );
+                iy += 22.0 * SCALE;
+            }
+        }
+
+        // Tab context menu overlay
+        if let Some((cmx, cmy, tab_idx)) = self.tab_context_menu {
+            let entries = [
+                "Close",
+                "Close Others",
+                "Close All",
+                if self.tabs.get(tab_idx).map(|t| t.is_sticky).unwrap_or(false) { "Unpin" } else { "Pin" },
+            ];
+            let w = 180.0 * SCALE;
+            let row_h = 26.0 * SCALE;
+            let h = row_h * entries.len() as f32 + 8.0 * SCALE;
+            let x = cmx * SCALE;
+            let y = cmy * SCALE;
+            let mut bg = Paint::default(); bg.set_color_rgba8(35, 35, 42, 245);
+            pix.fill_rect(Rect::from_xywh(x, y, w, h).unwrap(), &bg, Transform::identity(), None);
+            let mut bp = Paint::default(); bp.set_color_rgba8(80, 80, 90, 255);
+            let mut pb = PathBuilder::new(); pb.push_rect(Rect::from_xywh(x, y, w, h).unwrap());
+            if let Some(path) = pb.finish() {
+                pix.stroke_path(&path, &bp, &Stroke { width: SCALE, ..Default::default() }, Transform::identity(), None);
+            }
+            for (i, e) in entries.iter().enumerate() {
+                let row_y = y + 4.0 * SCALE + i as f32 * row_h;
+                App::draw_ui_text(
+                    pix, &mut self.font_system, &mut self.swash_cache,
+                    e, x + 12.0 * SCALE, row_y + 4.0 * SCALE,
+                    TextColor::rgb(220, 220, 220),
+                );
+            }
         }
 
         // Menu dropdown overlay

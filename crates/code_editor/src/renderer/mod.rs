@@ -42,7 +42,7 @@ pub(crate) const SCALE: f32 = 2.0;
 pub(crate) const EXPLORER_WIDTH: f32 = 250.0;
 pub(crate) const TAB_BAR_HEIGHT: f32 = 36.0;
 pub(crate) const MINIMAP_WIDTH: f32 = 80.0;
-pub(crate) const UI_BAR_HEIGHT: f32 = 0.0;
+pub(crate) const UI_BAR_HEIGHT: f32 = 22.0;
 pub(crate) const FOOTER_HEIGHT: f32 = 24.0;
 pub(crate) const GUTTER_WIDTH: f32 = 64.0;
 pub(crate) const SPLITTER_WIDTH: f32 = 4.0;
@@ -59,6 +59,73 @@ pub(crate) enum BottomPanelTab { Output, Problems }
 
 #[derive(Clone, Copy)]
 pub(crate) enum EditAction { Undo, Redo, Cut, Copy, Paste, Delete }
+
+/// A single action runnable from the command palette.
+#[derive(Clone)]
+pub(crate) struct PaletteCommand {
+    pub(crate) label: &'static str,
+    pub(crate) action: PaletteAction,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PaletteAction {
+    Menu(crate::form_designer_tab::MenuAction),
+    Edit(EditAction),
+    ToggleOutput,
+    ToggleProblems,
+    CloseTab,
+    CloseOthers,
+    CloseAll,
+    NextTab,
+    PrevTab,
+    FindInFile,
+    FindInProject,
+    GoToLine,
+}
+
+pub(crate) fn palette_commands() -> &'static [PaletteCommand] {
+    use crate::form_designer_tab::MenuAction::*;
+    use PaletteAction::*;
+    &[
+        PaletteCommand { label: "File: New Project",              action: Menu(NewProject) },
+        PaletteCommand { label: "File: Open Project…",            action: Menu(OpenProject) },
+        PaletteCommand { label: "File: Save Project",             action: Menu(SaveProject) },
+        PaletteCommand { label: "File: Save Project As…",         action: Menu(SaveAs) },
+        PaletteCommand { label: "File: Exit",                     action: Menu(Exit) },
+        PaletteCommand { label: "Edit: Undo",                     action: Edit(EditAction::Undo) },
+        PaletteCommand { label: "Edit: Redo",                     action: Edit(EditAction::Redo) },
+        PaletteCommand { label: "Edit: Cut",                      action: Edit(EditAction::Cut) },
+        PaletteCommand { label: "Edit: Copy",                     action: Edit(EditAction::Copy) },
+        PaletteCommand { label: "Edit: Paste",                    action: Edit(EditAction::Paste) },
+        PaletteCommand { label: "Edit: Delete",                   action: Edit(EditAction::Delete) },
+        PaletteCommand { label: "Project: Add Form",              action: Menu(AddForm) },
+        PaletteCommand { label: "Project: Add Module",            action: Menu(AddModule) },
+        PaletteCommand { label: "Project: Add Existing Form…",    action: Menu(AddExistingForm) },
+        PaletteCommand { label: "Project: Add Existing Code…",    action: Menu(AddExistingCode) },
+        PaletteCommand { label: "Project: Add Resource File",     action: Menu(AddResourceFile) },
+        PaletteCommand { label: "Project: Properties…",           action: Menu(ProjectProperties) },
+        PaletteCommand { label: "Run: Start",                     action: Menu(RunProject) },
+        PaletteCommand { label: "Run: Stop",                      action: Menu(StopProject) },
+        PaletteCommand { label: "View: Toggle Output Panel",      action: ToggleOutput },
+        PaletteCommand { label: "View: Show Problems",            action: ToggleProblems },
+        PaletteCommand { label: "View: Close Tab",                action: CloseTab },
+        PaletteCommand { label: "View: Close Other Tabs",         action: CloseOthers },
+        PaletteCommand { label: "View: Close All Tabs",           action: CloseAll },
+        PaletteCommand { label: "View: Next Tab",                 action: NextTab },
+        PaletteCommand { label: "View: Previous Tab",             action: PrevTab },
+        PaletteCommand { label: "Find: In File",                  action: FindInFile },
+        PaletteCommand { label: "Find: In Project",               action: FindInProject },
+        PaletteCommand { label: "Go: To Line",                    action: GoToLine },
+    ]
+}
+
+/// A hit from a project-wide text search.
+#[derive(Clone, Debug)]
+pub(crate) struct ProjectSearchHit {
+    pub(crate) file: String,
+    pub(crate) line: usize,
+    pub(crate) snippet: String,
+}
 
 // ── Helper Structs ─────────────────────────────────────────────────────
 
@@ -127,6 +194,17 @@ pub(crate) struct App {
     pub(crate) lsp: Arc<LspClient>,
     pub(crate) is_quick_open: bool,
     pub(crate) quick_open_query: String,
+    pub(crate) is_command_palette: bool,
+    pub(crate) command_palette_query: String,
+    pub(crate) command_palette_selected: usize,
+    pub(crate) is_project_search: bool,
+    pub(crate) project_search_query: String,
+    pub(crate) project_search_results: Vec<ProjectSearchHit>,
+    pub(crate) project_search_selected: usize,
+    /// `(screen_x, screen_y, tab_idx)` when a right-click menu is open on a tab.
+    pub(crate) tab_context_menu: Option<(f32, f32, usize)>,
+    /// Index of the tab currently being dragged (for reorder), if any.
+    pub(crate) tab_drag_idx: Option<usize>,
     #[allow(dead_code)]
     pub(crate) tab_scroll_x: f32,
     pub(crate) current_theme_idx: usize,
@@ -206,6 +284,15 @@ impl App {
             lsp: Arc::new(LspClient::new()),
             is_quick_open: false,
             quick_open_query: String::new(),
+            is_command_palette: false,
+            command_palette_query: String::new(),
+            command_palette_selected: 0,
+            is_project_search: false,
+            project_search_query: String::new(),
+            project_search_results: Vec::new(),
+            project_search_selected: 0,
+            tab_context_menu: None,
+            tab_drag_idx: None,
             tab_scroll_x: 0.0,
             current_theme_idx: 0,
             breadcrumb_rects: Vec::new(),
@@ -399,6 +486,11 @@ impl App {
                                 BuildConfig::Debug => BuildConfig::Release,
                                 BuildConfig::Release => BuildConfig::Debug,
                             };
+                        }
+                        "diagnostics" => {
+                            self.output_panel.set_visible(true);
+                            self.output_panel.set_active_tab(
+                                vybe_widgets::output_panel::OutputTab::Problems);
                         }
                         _ => {}
                     }

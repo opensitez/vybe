@@ -7,6 +7,17 @@ use vybe_widgets::CursorMotion;
 impl App {
     pub(super) fn handle_key_press(&mut self, event: vybe_widgets::KeyEvent) {
         if self.tabs.is_empty() { return; }
+
+        // ── Global overlays take precedence over any tab-specific handling ──
+        if self.is_command_palette {
+            self.command_palette_handle_key(&event);
+            return;
+        }
+        if self.is_project_search {
+            self.project_search_handle_key(&event);
+            return;
+        }
+
         // Handle Form tab keyboard events
         if let TabContent::Form(f) = &mut self.tabs[self.active_tab].content {
             // Inline property editing takes precedence so typing in the
@@ -293,7 +304,21 @@ impl App {
             Key::Character(c) if cmd && (c == "w" || c == "W") => { w.show_whitespace = !w.show_whitespace; }
             Key::Character(c) if alt && (c == "z" || c == "Z") => { w.wrap_lines = !w.wrap_lines; w.needs_reshape = true; }
             Key::Character(c) if cmd && (c == "m" || c == "M") => { let (cl, ci) = w.cursor_pos(); if let Some(p) = w.my_editor.find_matching_bracket(cl, ci, &w.lang_def) { w.set_cursor_pos(p.0, p.1); } }
-            Key::Character(c) if cmd && (c == "p" || c == "P") => { self.is_quick_open = !self.is_quick_open; self.quick_open_query.clear(); }
+            Key::Character(c) if cmd && shift && (c == "p" || c == "P") => {
+                self.is_command_palette = !self.is_command_palette;
+                self.command_palette_query.clear();
+                self.command_palette_selected = 0;
+            }
+            Key::Character(c) if cmd && !shift && (c == "p" || c == "P") => {
+                self.is_quick_open = !self.is_quick_open;
+                self.quick_open_query.clear();
+            }
+            Key::Character(c) if cmd && shift && (c == "f" || c == "F") => {
+                self.is_project_search = !self.is_project_search;
+                self.project_search_query.clear();
+                self.project_search_results.clear();
+                self.project_search_selected = 0;
+            }
             Key::Character(c) if cmd && (c == "g" || c == "G") => { self.goto_line_open = !self.goto_line_open; self.goto_line_query.clear(); }
             Key::Character(c) if cmd && (c == "`") => { let v = self.output_panel.visible(); self.output_panel.set_visible(!v); }
             Key::Character(c) if cmd && shift && (c == "b" || c == "B") => {
@@ -501,7 +526,108 @@ impl App {
                 self.pending_lsp_update = true;
                 self.last_lsp_update = Instant::now();
             }
-             
+
         }
+    }
+
+    /// Command palette key handler. Fuzzy search + execute.
+    fn command_palette_handle_key(&mut self, event: &vybe_widgets::KeyEvent) {
+        if event.state != winit::event::ElementState::Pressed { return; }
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => { self.is_command_palette = false; }
+            Key::Named(NamedKey::Enter) => {
+                let matches = self.command_palette_matches();
+                let choice = matches.get(self.command_palette_selected).copied();
+                self.is_command_palette = false;
+                if let Some(idx) = choice {
+                    let cmd = super::palette_commands()[idx].action;
+                    self.execute_palette_command(cmd);
+                }
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                let len = self.command_palette_matches().len();
+                if len > 0 {
+                    self.command_palette_selected = (self.command_palette_selected + 1).min(len - 1);
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.command_palette_selected = self.command_palette_selected.saturating_sub(1);
+            }
+            Key::Named(NamedKey::Backspace) => {
+                self.command_palette_query.pop();
+                self.command_palette_selected = 0;
+            }
+            _ => {
+                if let Some(t) = &event.text {
+                    for ch in t.chars() {
+                        if !ch.is_control() { self.command_palette_query.push(ch); }
+                    }
+                    self.command_palette_selected = 0;
+                }
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Project-wide text-search key handler.
+    fn project_search_handle_key(&mut self, event: &vybe_widgets::KeyEvent) {
+        if event.state != winit::event::ElementState::Pressed { return; }
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => { self.is_project_search = false; }
+            Key::Named(NamedKey::Enter) => {
+                // If results are already there and a row is selected, jump.
+                if !self.project_search_results.is_empty() {
+                    let hit = self.project_search_results[self.project_search_selected].clone();
+                    self.is_project_search = false;
+                    self.project_search_open_hit(&hit);
+                } else {
+                    // Run the search.
+                    self.run_project_search();
+                }
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                let len = self.project_search_results.len();
+                if len > 0 {
+                    self.project_search_selected = (self.project_search_selected + 1).min(len - 1);
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.project_search_selected = self.project_search_selected.saturating_sub(1);
+            }
+            Key::Named(NamedKey::Backspace) => {
+                self.project_search_query.pop();
+                self.run_project_search();
+            }
+            _ => {
+                if let Some(t) = &event.text {
+                    for ch in t.chars() {
+                        if !ch.is_control() { self.project_search_query.push(ch); }
+                    }
+                    self.run_project_search();
+                }
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    /// The fuzzy-matched, score-sorted indices into `palette_commands()`
+    /// that are currently visible in the palette UI.
+    pub(super) fn command_palette_matches(&self) -> Vec<usize> {
+        use fuzzy_matcher::FuzzyMatcher;
+        use fuzzy_matcher::skim::SkimMatcherV2;
+        let matcher = SkimMatcherV2::default();
+        let mut hits: Vec<(i64, usize)> = super::palette_commands()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                if self.command_palette_query.is_empty() {
+                    Some((0, i))
+                } else {
+                    matcher.fuzzy_match(c.label, &self.command_palette_query).map(|s| (s, i))
+                }
+            })
+            .collect();
+        hits.sort_by(|a, b| b.0.cmp(&a.0));
+        hits.into_iter().map(|(_, i)| i).collect()
     }
 }
