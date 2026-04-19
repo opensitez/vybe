@@ -224,7 +224,7 @@ format_map      = { emit = "host:vybe:string:format_map",     min_args = 1, max_
 
 # List instance methods
 append          = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
-extend          = { emit = "opcode:array_concat",             min_args = 1, max_args = 1 }
+extend          = { emit = "common:collections.concat",             min_args = 1, max_args = 1 }
 insert          = { emit = "host:vybe:array:insert",          min_args = 2, max_args = 2 }
 remove          = { emit = "host:vybe:array:remove",          min_args = 1, max_args = 1 }
 pop             = { emit = "common:collections.pop",          min_args = 0, max_args = 1 }

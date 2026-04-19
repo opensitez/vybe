@@ -258,7 +258,7 @@ toFixed       = { emit = "host:vybe:convert:toFixed",  min_args = 0, max_args = 
 # Array instance methods (use compiler_common::collections)
 push          = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
 pop           = { emit = "common:collections.pop",     min_args = 0, max_args = 0 }
-shift         = { emit = "opcode:array_shift",         min_args = 0, max_args = 0 }
+shift         = { emit = "common:collections.shift",         min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
 concat        = { emit = "stdlib:concat",               min_args = 1, max_args = 255 }

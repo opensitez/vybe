@@ -95,16 +95,22 @@ is_nan              = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_a
 
 # ── Array functions ─────────────────────────────────────────────────────────
 
-count               = { emit = "opcode:array_length",        min_args = 1, max_args = 2 }
-sizeof              = { emit = "opcode:array_length",        min_args = 1, max_args = 2 }
-array_push          = { emit = "opcode:array_push",          min_args = 2, max_args = 255 }
-array_pop           = { emit = "opcode:array_pop",           min_args = 1, max_args = 1 }
-array_shift         = { emit = "opcode:array_shift",         min_args = 1, max_args = 1 }
-array_reverse       = { emit = "opcode:array_reverse",       min_args = 1, max_args = 1 }
-in_array            = { emit = "opcode:array_contains",      min_args = 2, max_args = 3 }
-array_search        = { emit = "opcode:array_index_of",      min_args = 2, max_args = 3 }
-array_slice         = { emit = "opcode:array_slice",         min_args = 2, max_args = 4 }
-array_merge         = { emit = "opcode:array_concat",        min_args = 1, max_args = 255 }
+count               = { emit = "opcode:array_length",              min_args = 1, max_args = 2 }
+sizeof              = { emit = "opcode:array_length",              min_args = 1, max_args = 2 }
+array_push          = { emit = "opcode:array_push",                min_args = 2, max_args = 255 }
+array_pop           = { emit = "opcode:array_pop",                 min_args = 1, max_args = 1 }
+array_shift         = { emit = "opcode:array_shift",               min_args = 1, max_args = 1 }
+array_reverse       = { emit = "opcode:array_reverse",             min_args = 1, max_args = 1 }
+in_array            = { emit = "opcode:array_contains",            min_args = 2, max_args = 3 }
+array_search        = { emit = "opcode:array_index_of",            min_args = 2, max_args = 3 }
+array_slice         = { emit = "opcode:array_slice",               min_args = 2, max_args = 4 }
+array_merge         = { emit = "opcode:array_concat",              min_args = 1, max_args = 255 }
+# These stay on `opcode:array_*` because they dispatch through
+# `emit_builtin_opcode` which has the variadic-aware per-arg logic
+# (PHP `array_push($a, v1, v2, ...)`, `array_merge($a, $b, $c, ...)`).
+# `emit_builtin_opcode`'s array_* arms route to `common::collections::*`
+# internally so the final emitted `wasm:js-array.*` imports are the same
+# — only the compile-site arg handling differs.
 
 # ── JSON ────────────────────────────────────────────────────────────────────
 

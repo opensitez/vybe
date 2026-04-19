@@ -143,7 +143,7 @@ casecmp         = { emit = "opcode:str_compare",            min_args = 1, max_ar
 push            = { emit = "common:collections.push",       min_args = 1, max_args = 255 }
 append          = { emit = "common:collections.push",       min_args = 1, max_args = 255 }
 pop             = { emit = "common:collections.pop",        min_args = 0, max_args = 1 }
-shift           = { emit = "opcode:array_shift",            min_args = 0, max_args = 0 }
+shift           = { emit = "common:collections.shift",            min_args = 0, max_args = 0 }
 unshift         = { emit = "intrinsic:array_unshift",       min_args = 1, max_args = 255 }
 prepend         = { emit = "intrinsic:array_unshift",       min_args = 1, max_args = 255 }
 # first/last normalized to Index(expr, 0/-1) in walker — pure bytecode
@@ -158,8 +158,8 @@ minmax          = { emit = "host:vybe:array:minmax",        min_args = 0, max_ar
 sum             = { emit = "host:vybe:array:sum",           min_args = 0, max_args = 1 }
 count           = { emit = "str_length",                    min_args = 0, max_args = 1 }
 "empty?"        = { emit = "host:vybe:array:isEmpty",       min_args = 0, max_args = 0 }
-concat          = { emit = "opcode:array_concat",           min_args = 1, max_args = 255 }
-fill            = { emit = "opcode:array_fill",             min_args = 1, max_args = 3 }
+concat          = { emit = "common:collections.concat",           min_args = 1, max_args = 255 }
+fill            = { emit = "common:collections.fill",             min_args = 1, max_args = 3 }
 sample          = { emit = "host:vybe:array:choice",        min_args = 0, max_args = 1 }
 shuffle         = { emit = "host:vybe:array:shuffle",       min_args = 0, max_args = 0 }
 take            = { emit = "common:collections.slice",      min_args = 1, max_args = 1 }

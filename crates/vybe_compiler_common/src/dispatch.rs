@@ -58,6 +58,10 @@ pub fn emit_common(name: &str, chunks: &mut [Chunk], current: usize, line: u32) 
         "collections.join" => collections::emit_join(chunks, current, line),
         "collections.slice" => collections::emit_slice(chunks, current, line),
         "collections.new" => collections::emit_array_new(chunks, current, 0, line),
+        "collections.shift" => collections::emit_shift(chunks, current, line),
+        "collections.concat" => collections::emit_concat(chunks, current, line),
+        "collections.fill" => collections::emit_fill(chunks, current, line),
+        "collections.sort" => collections::emit_sort(chunks, current, line),
 
         // ── String ops ──
         "strings.length" => strings::emit_length(&mut chunks[current], line),

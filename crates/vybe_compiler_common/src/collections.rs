@@ -180,6 +180,50 @@ pub fn emit_fill(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "wasm:js-array", "fill", 4, line);
 }
 
+/// Array sort (in-place). Stack: [array] → [array] via `wasm:js-array.sort`.
+pub fn emit_sort(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "wasm:js-array", "sort", 1, line);
+}
+
+/// Pack N consecutive stack values into a new array (was the
+/// `ARRAY_NEW_FIXED N` opcode). Stack: [v0, v1, …, v(N-1)] → [array].
+///
+/// There's no single `wasm:js-array.*` import that consumes N unknown
+/// stack values, so this stashes each value into a caller-provided
+/// block of consecutive locals, calls `newWithLength(0)`, then pushes
+/// each local back in order.
+///
+/// `slot_base` must be the index of the first of N consecutive caller-
+/// allocated local slots (typically via `scope.define()` in the
+/// vybex compiler). The caller owns the slots; this helper only
+/// reads/writes them.
+pub fn emit_pack_n(
+    chunks: &mut [Chunk],
+    current: usize,
+    n: u16,
+    slot_base: u16,
+    line: u32,
+) {
+    if n == 0 {
+        emit_array_new(chunks, current, 0, line);
+        return;
+    }
+    // Stash in reverse (stack top = v(N-1) goes into slot_base + N-1).
+    for i in (0..n).rev() {
+        let slot = slot_base + i;
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    // Build empty array, push each in forward order.
+    emit_array_new(chunks, current, 0, line);
+    for i in 0..n {
+        chunks[current].emit_op(Op::DUP, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot_base + i, line);
+        emit_import_call(chunks, current, "wasm:js-array", "push", 2, line);
+        chunks[current].emit_op(Op::DROP, line); // drop new_length
+    }
+}
+
 /// Pack two values from stack into a new two-element array.
 /// Stack: [v1, v2] → [array_of_two]. Used by dict building etc.
 /// See `emit_array_pair_into` for the two-chunk variant.

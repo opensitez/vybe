@@ -27,7 +27,7 @@ LENGTH              = { emit = "opcode:str_length",          min_args = 1, max_a
 UPPER-CASE          = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 1 }
 LOWER-CASE          = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 1 }
 TRIM                = { emit = "opcode:str_trim",            min_args = 1, max_args = 1 }
-REVERSE             = { emit = "opcode:array_reverse",       min_args = 1, max_args = 1 }
+REVERSE             = { emit = "common:collections.reverse",       min_args = 1, max_args = 1 }
 CONCATENATE         = { emit = "opcode:str_concat",          min_args = 2, max_args = 255 }
 SUBSTITUTE          = { emit = "opcode:str_replace",         min_args = 3, max_args = 3 }
 ORD                 = { emit = "host:vybe:string:charCodeAt", min_args = 1, max_args = 1 }

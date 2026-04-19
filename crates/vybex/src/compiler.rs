@@ -3031,16 +3031,37 @@ impl Compiler {
 
             // ── Tuple (Python) ──────────────────────────────────────────
             ExprKind::Tuple(elements) => {
-                for elem in elements { self.compile_expr(elem)?; }
                 let line = self.line;
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, elements.len() as u16, line);
+                let n = elements.len();
+                for elem in elements { self.compile_expr(elem)?; }
+                // Allocate N consecutive slots; common::collections::emit_pack_n
+                // stashes stack values and re-pushes into a fresh array —
+                // same wasm:js-array.* surface as literals.
+                let base = if n == 0 { 0 } else {
+                    let mut first = 0u16;
+                    for i in 0..n {
+                        let s = self.scope_mut().define("__pack");
+                        if i == 0 { first = s; }
+                    }
+                    first
+                };
+                common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, base, line);
             }
 
             // ── Set (Python) ────────────────────────────────────────────
             ExprKind::Set(elements) => {
-                for elem in elements { self.compile_expr(elem)?; }
                 let line = self.line;
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, elements.len() as u16, line);
+                let n = elements.len();
+                for elem in elements { self.compile_expr(elem)?; }
+                let base = if n == 0 { 0 } else {
+                    let mut first = 0u16;
+                    for i in 0..n {
+                        let s = self.scope_mut().define("__pack");
+                        if i == 0 { first = s; }
+                    }
+                    first
+                };
+                common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, base, line);
                 // Convert to set via host call
                 let idx = self.import("vybe:collections", "arrayToSet");
                 self.emit_host_call(idx, 1);
@@ -3335,7 +3356,7 @@ impl Compiler {
             ExprKind::Comprehension { kind: _, element, generators } => {
                 // Simplified: compile as loop building an array
                 let line = self.line;
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+                common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
                 let result_slot = self.scope_mut().define("__comp_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
 
@@ -4845,17 +4866,24 @@ impl Compiler {
             "str_pad_end" => self.emit(Op::STR_PAD_END),
             "str_compare" => self.emit(Op::STR_COMPARE),
             "str_concat" => self.emit(Op::STR_CONCAT),
-            "array_push" => self.emit(Op::ARRAY_PUSH),
-            "array_pop" => self.emit(Op::ARRAY_POP),
-            "array_shift" => self.emit(Op::ARRAY_SHIFT),
-            "array_reverse" => self.emit(Op::ARRAY_REVERSE),
-            "array_join" => self.emit(Op::ARRAY_JOIN),
-            "array_concat" => self.emit(Op::ARRAY_CONCAT),
-            "array_fill" => self.emit(Op::ARRAY_FILL),
-            "array_length" => self.emit(Op::ARRAY_LENGTH),
-            "array_slice" => self.emit(Op::ARRAY_SLICE),
-            "array_get" => self.emit(Op::ARRAY_GET),
-            "array_set" => self.emit(Op::ARRAY_SET),
+            // Array primitives — every emit flows through
+            // `common::collections::*` so the emitted bytecode uses
+            // `wasm:js-array.*` imports. One-place-to-change: flip the
+            // provider in collections.rs and every array op in every
+            // language re-routes.
+            "array_push" => { let l = self.line; common::collections::emit_push(&mut self.chunks, self.current, l); }
+            "array_pop" => { let l = self.line; common::collections::emit_pop(&mut self.chunks, self.current, l); }
+            "array_shift" => { let l = self.line; common::collections::emit_shift(&mut self.chunks, self.current, l); }
+            "array_reverse" => { let l = self.line; common::collections::emit_reverse(&mut self.chunks, self.current, l); }
+            "array_join" => { let l = self.line; common::collections::emit_join(&mut self.chunks, self.current, l); }
+            "array_concat" => { let l = self.line; common::collections::emit_concat(&mut self.chunks, self.current, l); }
+            "array_fill" => { let l = self.line; common::collections::emit_fill(&mut self.chunks, self.current, l); }
+            "array_length" => { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
+            "array_slice" => { let l = self.line; common::collections::emit_slice(&mut self.chunks, self.current, l); }
+            "array_get" => { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+            "array_set" => { let l = self.line; common::collections::emit_set(&mut self.chunks, self.current, l); }
+            "array_contains" => { let l = self.line; common::collections::emit_contains(&mut self.chunks, self.current, l); }
+            "array_index_of" => { let l = self.line; common::collections::emit_index_of(&mut self.chunks, self.current, l); }
             _ => { let c = self.str_const(op_name); self.emit_u16(Op::GLOBAL_GET, c); }
         }
     }
@@ -5087,7 +5115,8 @@ impl Compiler {
                     self.compile_expr(arg)?;
                     self.emit(Op::DROP);
                 }
-                self.emit_u16(Op::ARRAY_NEW_FIXED, 0);
+                let l = self.line;
+                common::collections::emit_array_new(&mut self.chunks, self.current, 0, l);
             }
             "asc" => {
                 self.compile_expr(args[0])?;
